@@ -96,6 +96,25 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				slog.Warn("LaunchSystemInstance: failed to attach ENI", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 			}
 		}
+		// Attach any additional pre-created ENIs (multi-subnet ALB VMs).
+		// Use the launcher input slice as the source of truth so the VM
+		// record carries every NIC the ALB spans even if the attach fails
+		// for one of them (we clean up on failure below).
+		for idx, extra := range input.ExtraENIs {
+			if d.vpcService != nil {
+				if _, attachErr := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instance.ID, int64(idx+1)); attachErr != nil {
+					slog.Error("LaunchSystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", instance.ID, "err", attachErr)
+					d.cleanupFailedSystemInstance(instance, instanceType)
+					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)
+				}
+			}
+			instance.ExtraENIs = append(instance.ExtraENIs, vm.ExtraENI{
+				ENIID:    extra.ENIID,
+				ENIMac:   extra.ENIMac,
+				ENIIP:    extra.ENIIP,
+				SubnetID: extra.SubnetID,
+			})
+		}
 	} else if input.SubnetID != "" && d.vpcService != nil {
 		// Auto-create ENI in subnet
 		eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{

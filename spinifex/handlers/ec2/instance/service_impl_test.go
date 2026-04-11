@@ -433,7 +433,7 @@ func TestMockInstanceService(t *testing.T) {
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
 	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "")
+	cfg := generateNetworkConfig("", "", "", "", nil)
 	assert.Contains(t, cfg, "version: 2")
 	assert.Contains(t, cfg, "dhcp4: true")
 	assert.Contains(t, cfg, "dhcp-identifier: mac")
@@ -445,7 +445,7 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 	eniMAC := "02:00:00:61:ef:c2"
 	devMAC := "02:de:00:60:83:0d"
 
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "")
+	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
 
 	// Both MACs present in config
 	assert.Contains(t, cfg, eniMAC)
@@ -465,14 +465,44 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 
 func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
 	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "")
+	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "dev0:")
 
 	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "")
+	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
 	assert.Contains(t, cfg, `name: "e*"`)
 	assert.NotContains(t, cfg, "use-routes")
+}
+
+func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
+	// Multi-subnet ALB VM: primary ENI + two extras, each on a different AZ.
+	extras := []string{
+		"02:00:00:bb:bb:bb",
+		"02:00:00:cc:cc:cc",
+	}
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
+
+	assert.Contains(t, cfg, "vpc0:")
+	assert.Contains(t, cfg, "vpc1:")
+	assert.Contains(t, cfg, "vpc2:")
+	assert.Contains(t, cfg, `macaddress: "02:00:00:aa:aa:aa"`)
+	assert.Contains(t, cfg, `macaddress: "02:00:00:bb:bb:bb"`)
+	assert.Contains(t, cfg, `macaddress: "02:00:00:cc:cc:cc"`)
+	// Each extra NIC gets its own DHCP block with dhcp-identifier: mac.
+	assert.Equal(t, 3, strings.Count(cfg, "dhcp4: true"))
+	assert.Equal(t, 3, strings.Count(cfg, "dhcp-identifier: mac"))
+	// No dev0 / mgmt0 unless explicitly configured.
+	assert.NotContains(t, cfg, "dev0:")
+	assert.NotContains(t, cfg, "mgmt0:")
+}
+
+func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
+	// Empty strings inside the extras slice are ignored rather than producing
+	// a malformed ethernets block.
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
+	assert.Contains(t, cfg, "vpc0:")
+	assert.NotContains(t, cfg, "vpc1:")
 }
 
 func TestRunInstance_WithTags(t *testing.T) {

@@ -33,14 +33,34 @@ resources:
 
 ## Overview
 
-Deploy two Nginx web servers behind an internet-facing Application Load Balancer on Spinifex using Terraform/OpenTofu. This workbook provisions a VPC, two subnets, internet gateway, route table, security group, SSH key pair, an application load balancer (ALB) and two EC2 instances with cloud-init user-data that installs and starts Nginx. Only the ALB is reachable from outside the VPC — the Nginx instances have **private IPs only** and the ALB talks to them over the private VPC network.
+Deploy two Nginx web servers behind an internet-facing Application Load Balancer on Spinifex using Terraform/OpenTofu. This workbook provisions a VPC with public and private subnets, an internet gateway and NAT Gateway, route tables, security group, SSH key pair, an application load balancer (ALB) and two EC2 instances with cloud-init user-data that installs and starts Nginx. Only the ALB is reachable from outside the VPC — the Nginx instances live in the **private subnets** and reach the internet only for cloud-init bootstrapping via the NAT Gateway.
+
+```
+                Internet
+                    │
+               ┌────▼────┐
+               │   IGW   │
+               └────┬────┘
+         ┌──────────┼──────────┐
+         │                     │
+  ┌──────▼─────┐         ┌─────▼──────┐
+  │  public_a  │         │  public_b  │
+  │  ALB ENI   │         │  ALB ENI   │
+  │  NAT GW    │         └────────────┘
+  └──────┬─────┘
+         │ SNAT for private subnets
+  ┌──────▼─────┐         ┌────────────┐
+  │ private_a  │         │ private_b  │
+  │  nginx_1   │         │  nginx_2   │
+  └────────────┘         └────────────┘
+```
 
 **What you'll learn:**
 
 - Configuring the AWS Terraform provider to target Spinifex
-- Creating a VPC with an internet-facing load balancer fronting private instances
+- Creating a VPC with public + private subnets, an IGW and a NAT Gateway
+- Provisioning a multi-AZ internet-facing ALB fronting private workers
 - Provisioning an EC2 instance with cloud-init user-data
-- Provisioning an internet-facing application load balancer
 - Generating SSH key pairs with the TLS provider
 
 **What gets created**
@@ -48,10 +68,13 @@ Deploy two Nginx web servers behind an internet-facing Application Load Balancer
 | Resource | Name | Purpose |
 |---|---|---|
 | VPC | `nginx-alb-vpc` | Isolated network (10.20.0.0/16) |
-| Subnets | `nginx-alb-public-a`, `nginx-alb-public-b` | Two subnets across AZs for the ALB and instances |
-| Internet Gateway | `nginx-alb-igw` | Routes internet traffic for the ALB |
+| Public Subnets | `nginx-alb-public-a`, `nginx-alb-public-b` | Two AZs hosting the ALB and NAT Gateway |
+| Private Subnets | `nginx-alb-private-a`, `nginx-alb-private-b` | Two AZs hosting the Nginx workers |
+| Internet Gateway | `nginx-alb-igw` | Routes internet traffic for the public subnets |
+| Elastic IP | `nginx-alb-nat-eip` | Public address for the NAT Gateway |
+| NAT Gateway | `nginx-alb-nat` | Outbound internet for the private subnets (cloud-init apt bootstrap) |
 | Security Group | `nginx-alb-sg` | Allows SSH (22) and HTTP (80) inbound |
-| EC2 Instances | `nginx-alb-1`, `nginx-alb-2` | Debian 12 with Nginx via cloud-init (private IPs only) |
+| EC2 Instances | `nginx-alb-1`, `nginx-alb-2` | Debian 12 with Nginx via cloud-init (private subnets) |
 | ALB | `nginx-alb` | Internet-facing Application Load Balancer on port 80 |
 | Target Group | `nginx-alb-tg` | HTTP health-checked group for both instances |
 | Listener | HTTP :80 | Forwards traffic to the target group |
@@ -90,7 +113,7 @@ tofu apply
 
 ### Step 3. Verify
 
-> **Note:** EC2 instances can take 30+ seconds to boot after apply. If the ALB returns 5xx or HTTP is unreachable, wait and retry — the target group health checks need a moment to mark both instances healthy.
+> **Note:** EC2 instances can take 30+ seconds to boot after apply, and the NAT Gateway must be `available` before cloud-init on the workers can reach the apt repository. If the ALB returns 5xx or HTTP is unreachable, wait and retry — the target group health checks need a moment to mark both instances healthy once Nginx has installed.
 
 The ALB is internet-facing, but the DNS name Spinifex returns (`*.elb.spinifex.local`) will not resolve from your host. Fetch the ALB's public IP with the AWS CLI:
 
@@ -157,6 +180,12 @@ If targets stay unhealthy, verify the instances are running:
 
 ```bash
 aws ec2 describe-instances --profile spinifex
+```
+
+If cloud-init on the workers never finished, confirm the NAT Gateway is `available` (the private subnets rely on it for outbound apt access):
+
+```bash
+aws ec2 describe-nat-gateways --query 'NatGateways[].[NatGatewayId,State]'
 ```
 
 ### Nginx Not Responding

@@ -136,6 +136,61 @@ func TestCreateLoadBalancer_MultipleSubnets(t *testing.T) {
 	assert.Equal(t, 2, managedCount)
 }
 
+// TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher verifies that
+// every subnet's ENI is threaded through to SystemInstanceInput, not just
+// the first one. Regression guard for mulga-929.
+func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	vpcs, _ := vpcSvc.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	vpcID := *vpcs.Vpcs[0].VpcId
+
+	sub1 := getTestSubnetID(t, vpcSvc, vpcID, "10.0.10.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vpcID, "10.0.11.0/24", "us-east-1b")
+	sub3 := getTestSubnetID(t, vpcSvc, vpcID, "10.0.12.0/24", "us-east-1c")
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{
+			InstanceID: "i-multi-alb",
+			PrivateIP:  "10.0.10.4",
+			PublicIP:   "203.0.113.200",
+		},
+	}
+	svc.InstanceLauncher = mock
+	svc.SetSystemAMIFunc(func() string { return "ami-alb-test" })
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("multi-eni-alb"),
+		Subnets: []*string{aws.String(sub1), aws.String(sub2), aws.String(sub3)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.Len(t, mock.launchCalls, 1)
+	launchInput := mock.launchCalls[0]
+
+	// Primary ENI is the first subnet's ENI.
+	assert.NotEmpty(t, launchInput.ENIID, "primary ENIID must be populated")
+	assert.NotEmpty(t, launchInput.ENIMac, "primary ENIMac must be populated")
+	assert.NotEmpty(t, launchInput.ENIIP, "primary ENIIP must be populated")
+	assert.Equal(t, sub1, launchInput.SubnetID)
+
+	// Two extra ENIs, one per remaining subnet, each with MAC/IP resolved.
+	require.Len(t, launchInput.ExtraENIs, 2, "launcher must receive one ExtraENI per additional subnet")
+	extraSubnets := map[string]bool{}
+	for _, extra := range launchInput.ExtraENIs {
+		assert.NotEmpty(t, extra.ENIID, "extra ENIID must be populated")
+		assert.NotEmpty(t, extra.ENIMac, "extra ENIMac must be populated")
+		assert.NotEmpty(t, extra.ENIIP, "extra ENIIP must be populated")
+		assert.NotEmpty(t, extra.SubnetID, "extra SubnetID must be populated")
+		extraSubnets[extra.SubnetID] = true
+	}
+	assert.True(t, extraSubnets[sub2], "extras should include sub2")
+	assert.True(t, extraSubnets[sub3], "extras should include sub3")
+}
+
 func TestDeleteLoadBalancer_CleansUpENIs(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -241,10 +296,20 @@ func TestCreateLoadBalancer_InternetFacing_AllocatesPublicIP(t *testing.T) {
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternetFacing, mock.launchCalls[0].Scheme)
 
-	// Verify AZ includes public IP for internet-facing
+	// Internet-facing ALB: AZ includes both the public IP and the ENI's private IP.
 	require.Len(t, lb.AvailabilityZones, 1)
-	require.NotEmpty(t, lb.AvailabilityZones[0].LoadBalancerAddresses)
-	assert.Equal(t, "203.0.113.50", *lb.AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress)
+	require.Len(t, lb.AvailabilityZones[0].LoadBalancerAddresses, 2)
+	var gotPublic, gotPrivate bool
+	for _, addr := range lb.AvailabilityZones[0].LoadBalancerAddresses {
+		if aws.StringValue(addr.IpAddress) == "203.0.113.50" {
+			gotPublic = true
+		}
+		if aws.StringValue(addr.PrivateIPv4Address) != "" {
+			gotPrivate = true
+		}
+	}
+	assert.True(t, gotPublic, "expected public IpAddress in LoadBalancerAddresses")
+	assert.True(t, gotPrivate, "expected ENI PrivateIPv4Address in LoadBalancerAddresses")
 }
 
 func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
@@ -276,14 +341,16 @@ func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
 
 	lb := out.LoadBalancers[0]
 	assert.Equal(t, "internal", *lb.Scheme)
+	// Internal ALB: no public IpAddress, but the ENI's private IP should be
+	// exposed in LoadBalancerAddresses[].PrivateIPv4Address.
+	require.Len(t, lb.AvailabilityZones, 1)
+	require.Len(t, lb.AvailabilityZones[0].LoadBalancerAddresses, 1)
+	assert.Nil(t, lb.AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress)
+	assert.NotEmpty(t, aws.StringValue(lb.AvailabilityZones[0].LoadBalancerAddresses[0].PrivateIPv4Address))
 
 	// Verify launcher was called with internal scheme
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternal, mock.launchCalls[0].Scheme)
-
-	// Verify AZ does NOT include public IP
-	require.Len(t, lb.AvailabilityZones, 1)
-	assert.Empty(t, lb.AvailabilityZones[0].LoadBalancerAddresses)
 }
 
 func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
@@ -324,9 +391,11 @@ func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, SchemeInternal, mock.launchCalls[0].Scheme)
 
-	// Verify AZ does NOT include public IP
+	// Internal NLB: no public IpAddress, but the ENI's private IP is exposed.
 	require.Len(t, lb.AvailabilityZones, 1)
-	assert.Empty(t, lb.AvailabilityZones[0].LoadBalancerAddresses)
+	require.Len(t, lb.AvailabilityZones[0].LoadBalancerAddresses, 1)
+	assert.Nil(t, lb.AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress)
+	assert.NotEmpty(t, aws.StringValue(lb.AvailabilityZones[0].LoadBalancerAddresses[0].PrivateIPv4Address))
 
 	// Verify no security groups (NLBs don't support them)
 	assert.Empty(t, lb.SecurityGroups)
@@ -416,8 +485,20 @@ func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
 
 	lb := desc.LoadBalancers[0]
 	require.Len(t, lb.AvailabilityZones, 1)
-	require.NotEmpty(t, lb.AvailabilityZones[0].LoadBalancerAddresses)
-	assert.Equal(t, "203.0.113.52", *lb.AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress)
+	// Internet-facing ALB: both the ENI's private IP and the allocated public
+	// IP should appear in LoadBalancerAddresses.
+	require.Len(t, lb.AvailabilityZones[0].LoadBalancerAddresses, 2)
+	var gotPublic, gotPrivate bool
+	for _, addr := range lb.AvailabilityZones[0].LoadBalancerAddresses {
+		if aws.StringValue(addr.IpAddress) == "203.0.113.52" {
+			gotPublic = true
+		}
+		if aws.StringValue(addr.PrivateIPv4Address) != "" {
+			gotPrivate = true
+		}
+	}
+	assert.True(t, gotPublic, "expected public IpAddress in LoadBalancerAddresses")
+	assert.True(t, gotPrivate, "expected ENI PrivateIPv4Address in LoadBalancerAddresses")
 }
 
 func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
@@ -454,7 +535,10 @@ func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
 
 	lb := desc.LoadBalancers[0]
 	require.Len(t, lb.AvailabilityZones, 1)
-	assert.Empty(t, lb.AvailabilityZones[0].LoadBalancerAddresses)
+	// Internal ALB: private IP of the ENI is exposed via PrivateIPv4Address.
+	require.Len(t, lb.AvailabilityZones[0].LoadBalancerAddresses, 1)
+	assert.Nil(t, lb.AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress)
+	assert.NotEmpty(t, aws.StringValue(lb.AvailabilityZones[0].LoadBalancerAddresses[0].PrivateIPv4Address))
 	// Verify DNS has internal prefix
 	assert.Contains(t, *lb.DNSName, "internal-desc-int-alb")
 }

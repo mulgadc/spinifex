@@ -1752,6 +1752,95 @@ func TestDescribeLoadBalancerAttributes_NLBDefaults(t *testing.T) {
 	assert.Equal(t, "false", attrMap["load_balancing.cross_zone.enabled"])
 }
 
+// TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys guards against
+// regressions where terraform's default ModifyLoadBalancerAttributes call
+// hits ValidationError because the ALB default attribute set is missing a
+// key that the AWS provider sends. Every key here is one the aws-sdk-go
+// elbv2 API documents for ALBs.
+func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
+	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeApplication)
+
+	expected := map[string]string{
+		"deletion_protection.enabled":                              "false",
+		"load_balancing.cross_zone.enabled":                        "true",
+		"access_logs.s3.enabled":                                   "false",
+		"access_logs.s3.bucket":                                    "",
+		"access_logs.s3.prefix":                                    "",
+		"connection_logs.s3.enabled":                               "false",
+		"connection_logs.s3.bucket":                                "",
+		"connection_logs.s3.prefix":                                "",
+		"idle_timeout.timeout_seconds":                             "60",
+		"client_keep_alive.seconds":                                "3600",
+		"routing.http.desync_mitigation_mode":                      "defensive",
+		"routing.http.drop_invalid_header_fields.enabled":          "false",
+		"routing.http.preserve_host_header.enabled":                "false",
+		"routing.http.x_amzn_tls_version_and_cipher_suite.enabled": "false",
+		"routing.http.xff_client_port.enabled":                     "false",
+		"routing.http.xff_header_processing.mode":                  "append",
+		"routing.http2.enabled":                                    "true",
+		"waf.fail_open.enabled":                                    "false",
+		"zonal_shift.config.enabled":                               "false",
+	}
+
+	for k, v := range expected {
+		got, ok := attrs[k]
+		assert.True(t, ok, "ALB default attributes missing key %q — terraform will hit ValidationError", k)
+		assert.Equal(t, v, got, "ALB default value mismatch for key %s", k)
+	}
+}
+
+// TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys is the NLB
+// counterpart guard. NLBs have a smaller but distinct key set.
+func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
+	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeNetwork)
+
+	expected := map[string]string{
+		"deletion_protection.enabled":       "false",
+		"load_balancing.cross_zone.enabled": "false",
+		"access_logs.s3.enabled":            "false",
+		"access_logs.s3.bucket":             "",
+		"access_logs.s3.prefix":             "",
+		"dns_record.client_routing_policy":  "any_availability_zone",
+		"ipv6.deny_all_igw_traffic":         "false",
+		"zonal_shift.config.enabled":        "false",
+	}
+
+	for k, v := range expected {
+		got, ok := attrs[k]
+		assert.True(t, ok, "NLB default attributes missing key %q", k)
+		assert.Equal(t, v, got, "NLB default value mismatch for key %s", k)
+	}
+
+	// ALB-only keys must not leak into NLB defaults.
+	_, hasIdle := attrs["idle_timeout.timeout_seconds"]
+	assert.False(t, hasIdle, "idle_timeout.timeout_seconds is ALB-only, must not appear on NLB")
+	_, hasHTTP2 := attrs["routing.http2.enabled"]
+	assert.False(t, hasHTTP2, "routing.http2.enabled is ALB-only, must not appear on NLB")
+}
+
+// TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey is a regression
+// guard for mulga-931: terraform sends connection_logs.s3.enabled on every
+// aws_lb apply and the handler must accept it.
+func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("alb-conn-logs"),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+		LoadBalancerArn: arn,
+		Attributes: []*elbv2.LoadBalancerAttribute{
+			{Key: aws.String("connection_logs.s3.enabled"), Value: aws.String("false")},
+			{Key: aws.String("routing.http.desync_mitigation_mode"), Value: aws.String("defensive")},
+			{Key: aws.String("waf.fail_open.enabled"), Value: aws.String("false")},
+			{Key: aws.String("zonal_shift.config.enabled"), Value: aws.String("false")},
+		},
+	}, testAccountID)
+	require.NoError(t, err, "terraform-sent attribute keys must be accepted")
+}
+
 func TestModifyDescribeTargetGroupAttributes_RoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-rt")}, testAccountID)

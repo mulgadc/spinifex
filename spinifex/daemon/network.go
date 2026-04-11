@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 )
 
 // sudoCommand wraps exec.Command with sudo when running as non-root.
@@ -95,6 +96,42 @@ func (p *OVSNetworkPlumber) CleanupTapDevice(eniId string) error {
 
 	slog.Info("Network cleanup complete", "tap", tapName)
 	return nil
+}
+
+// setupExtraENINICs creates tap devices on br-int and appends matching QEMU
+// virtio-net device entries to instance.Config for each additional ENI a
+// system VM spans. The primary ENI (instance.ENIId) is handled separately by
+// the LaunchInstance caller. Cloud-init brings the guest interfaces up via
+// per-MAC DHCP blocks written by generateNetworkConfig.
+func (d *Daemon) setupExtraENINICs(instance *vm.VM) error {
+	for idx, extra := range instance.ExtraENIs {
+		if err := d.networkPlumber.SetupTapDevice(extra.ENIID, extra.ENIMac); err != nil {
+			slog.Error("Failed to set up tap device for extra ENI", "eni", extra.ENIID, "err", err)
+			return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
+		}
+		extraTapName := TapDeviceName(extra.ENIID)
+		netID := fmt.Sprintf("net%d", idx+1)
+		instance.Config.NetDevs = append(instance.Config.NetDevs, vm.NetDev{
+			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, extraTapName),
+		})
+		instance.Config.Devices = append(instance.Config.Devices, vm.Device{
+			Value: fmt.Sprintf("virtio-net-pci,netdev=%s,mac=%s", netID, extra.ENIMac),
+		})
+		slog.Info("Extra VPC NIC configured",
+			"tap", extraTapName, "eni", extra.ENIID, "mac", extra.ENIMac, "subnet", extra.SubnetID)
+	}
+	return nil
+}
+
+// cleanupExtraENITaps removes tap devices for every extra ENI attached to a
+// system VM. Errors are logged but not returned so a partial cleanup still
+// frees as many resources as possible.
+func (d *Daemon) cleanupExtraENITaps(instance *vm.VM) {
+	for _, extra := range instance.ExtraENIs {
+		if err := d.networkPlumber.CleanupTapDevice(extra.ENIID); err != nil {
+			slog.Warn("Failed to clean up extra ENI tap device", "eni", extra.ENIID, "err", err)
+		}
+	}
 }
 
 // TapDeviceName returns the Linux tap device name for an ENI.

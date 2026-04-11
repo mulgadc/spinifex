@@ -183,22 +183,51 @@ type ListenerAction struct {
 // source of truth — CreateLoadBalancer no longer seeds attributes, and
 // DescribeLoadBalancerAttributes derives the per-type defaults from lb.Type on
 // read.
+//
+// The key set must be broad enough to satisfy terraform AWS provider's
+// default ModifyLoadBalancerAttributes call after aws_lb creation: the
+// provider sends every attribute it knows about, and any key missing here
+// gets rejected with ValidationError, surfacing as "UnknownError" in tofu.
 func DefaultLoadBalancerAttributes(lbType string) map[string]string {
-	crossZone := "false"
-	if lbType == LoadBalancerTypeApplication {
-		crossZone = "true"
+	// Common to all load balancer types.
+	attrs := map[string]string{
+		"deletion_protection.enabled":       "false",
+		"load_balancing.cross_zone.enabled": "false",
 	}
-	return map[string]string{
-		"deletion_protection.enabled":                     "false",
-		"load_balancing.cross_zone.enabled":               crossZone,
-		"access_logs.s3.enabled":                          "false",
-		"access_logs.s3.bucket":                           "",
-		"access_logs.s3.prefix":                           "",
-		"idle_timeout.timeout_seconds":                    "60",
-		"routing.http.drop_invalid_header_fields.enabled": "false",
-		"routing.http2.enabled":                           "true",
-		"client_keep_alive.seconds":                       "3600",
+
+	switch lbType {
+	case LoadBalancerTypeApplication:
+		// ALB-specific attributes. Defaults match real AWS values as of the
+		// aws-sdk-go 1.55 elbv2 API documentation.
+		attrs["load_balancing.cross_zone.enabled"] = "true"
+		attrs["access_logs.s3.enabled"] = "false"
+		attrs["access_logs.s3.bucket"] = ""
+		attrs["access_logs.s3.prefix"] = ""
+		attrs["connection_logs.s3.enabled"] = "false"
+		attrs["connection_logs.s3.bucket"] = ""
+		attrs["connection_logs.s3.prefix"] = ""
+		attrs["idle_timeout.timeout_seconds"] = "60"
+		attrs["client_keep_alive.seconds"] = "3600"
+		attrs["routing.http.desync_mitigation_mode"] = "defensive"
+		attrs["routing.http.drop_invalid_header_fields.enabled"] = "false"
+		attrs["routing.http.preserve_host_header.enabled"] = "false"
+		attrs["routing.http.x_amzn_tls_version_and_cipher_suite.enabled"] = "false"
+		attrs["routing.http.xff_client_port.enabled"] = "false"
+		attrs["routing.http.xff_header_processing.mode"] = "append"
+		attrs["routing.http2.enabled"] = "true"
+		attrs["waf.fail_open.enabled"] = "false"
+		attrs["zonal_shift.config.enabled"] = "false"
+	case LoadBalancerTypeNetwork:
+		// NLB-specific attributes.
+		attrs["access_logs.s3.enabled"] = "false"
+		attrs["access_logs.s3.bucket"] = ""
+		attrs["access_logs.s3.prefix"] = ""
+		attrs["dns_record.client_routing_policy"] = "any_availability_zone"
+		attrs["ipv6.deny_all_igw_traffic"] = "false"
+		attrs["zonal_shift.config.enabled"] = "false"
 	}
+
+	return attrs
 }
 
 // DefaultTargetGroupAttributes returns the default attribute set for target groups.

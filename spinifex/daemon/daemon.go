@@ -1868,6 +1868,8 @@ func (d *Daemon) stopInstance(instances map[string]*vm.VM, deleteVolume bool) er
 				if err := d.networkPlumber.CleanupTapDevice(instance.ENIId); err != nil {
 					slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 				}
+				// Clean up any extra ENI tap devices (multi-subnet ALB VMs).
+				d.cleanupExtraENITaps(instance)
 			}
 
 			// Clean up management TAP and release IP
@@ -1925,6 +1927,9 @@ func (d *Daemon) stopInstance(instances map[string]*vm.VM, deleteVolume bool) er
 				} else {
 					slog.Info("Deleted ENI on termination", "eni", instance.ENIId, "instanceId", instance.ID)
 				}
+				// Extra ENIs (multi-subnet ALB VMs) are cleaned up by
+				// DeleteLoadBalancer via its own lb.ENIs loop — the daemon
+				// doesn't duplicate that teardown here.
 			}
 
 			// Deallocate resources
@@ -2374,6 +2379,12 @@ func (d *Daemon) StartInstance(instance *vm.VM) error {
 		})
 
 		slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
+
+		// Additional VPC NICs for multi-subnet system VMs (e.g. ALBs with
+		// subnets across multiple AZs).
+		if err := d.setupExtraENINICs(instance); err != nil {
+			return err
+		}
 
 		// DEV_NETWORKING: add a second NIC with hostfwd for SSH dev access
 		if d.config.Daemon.DevNetworking {

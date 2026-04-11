@@ -94,9 +94,13 @@ const cloudInitNetworkConfigWildcard = `network:
 // suppression. Without per-interface config, the wildcard fallback does DHCP on
 // all NICs — which won't work for the mgmt NIC (no DHCP server on br-mgmt).
 //
+// extraENIMACs configures additional VPC NICs for multi-subnet system VMs
+// (e.g. multi-AZ ALB VMs). Each extra MAC produces a DHCP ethernet block named
+// vpc1, vpc2, ... so each interface pulls its address from the subnet it lives in.
+//
 // The dev NIC still gets an IP via DHCP (needed for hostfwd port forwarding)
 // but dhcp4-overrides prevents it from installing routes or DNS.
-func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string) string {
+func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
 	if eniMAC == "" {
 		return cloudInitNetworkConfigWildcard
 	}
@@ -109,6 +113,18 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string) string {
       dhcp4: true
       dhcp-identifier: mac
 `, eniMAC)
+
+	for i, mac := range extraENIMACs {
+		if mac == "" {
+			continue
+		}
+		cfg += fmt.Sprintf(`    vpc%d:
+      match:
+        macaddress: "%s"
+      dhcp4: true
+      dhcp-identifier: mac
+`, i+1, mac)
+	}
 
 	if devMAC != "" {
 		cfg += fmt.Sprintf(`    dev0:
@@ -744,8 +760,13 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 	}
 
 	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
-	// wildcard DHCP otherwise.
-	networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP)
+	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
+	// multi-subnet system VMs (multi-AZ ALBs).
+	extraMACs := make([]string, 0, len(instance.ExtraENIs))
+	for _, extra := range instance.ExtraENIs {
+		extraMACs = append(extraMACs, extra.ENIMac)
+	}
+	networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
 	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
 	if err != nil {
 		slog.Error("failed to add network-config file", "err", err)

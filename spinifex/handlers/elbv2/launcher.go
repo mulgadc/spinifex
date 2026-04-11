@@ -32,6 +32,11 @@ type SystemInstanceInput struct {
 	ENIMac string
 	ENIIP  string
 
+	// ExtraENIs lists additional pre-created ENIs that should be attached to
+	// the VM alongside the primary ENI. Used for multi-subnet ALBs so the VM
+	// has a NIC (and tap on br-int) in every subnet the LB spans.
+	ExtraENIs []ExtraENIInput
+
 	// Scheme is the ALB scheme ("internet-facing" or "internal").
 	// Internet-facing ALBs get a public IP and NAT rules; internal ALBs do not.
 	Scheme string
@@ -44,6 +49,15 @@ type SystemInstanceInput struct {
 	// via the QEMU user-mode dev NIC (dev_networking mode only).
 	// Each entry is a guest port (e.g. 80, 443). The host port is auto-assigned.
 	HostfwdPorts []int
+}
+
+// ExtraENIInput describes an additional pre-created ENI to attach to a
+// system instance. The primary ENI is still passed via ENIID/ENIMac/ENIIP.
+type ExtraENIInput struct {
+	ENIID    string
+	ENIMac   string
+	ENIIP    string
+	SubnetID string
 }
 
 // SystemInstanceOutput contains the result of a successful launch.

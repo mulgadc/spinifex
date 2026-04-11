@@ -24,6 +24,15 @@ type InstanceHealthState struct {
 	FirstCrashTime  time.Time `json:"first_crash_time"`
 }
 
+// ExtraENI describes an additional VPC network interface attached to a VM
+// beyond the primary ENI. Only system VMs (ALBs) use multiple ENIs today.
+type ExtraENI struct {
+	ENIID    string `json:"eni_id"`
+	ENIMac   string `json:"eni_mac"`
+	ENIIP    string `json:"eni_ip"`
+	SubnetID string `json:"subnet_id,omitempty"`
+}
+
 type VM struct {
 	ID           string        `json:"id"`
 	PID          int           `json:"pid"`
@@ -67,6 +76,12 @@ type VM struct {
 	// VPC networking: ENI attached to this instance (set by RunInstances when VPC mode is active)
 	ENIId  string `json:"eni_id,omitempty"`
 	ENIMac string `json:"eni_mac,omitempty"`
+
+	// ExtraENIs lists additional VPC NICs beyond the primary ENIId/ENIMac.
+	// Used by multi-AZ system VMs (ALBs with subnets in multiple subnets) —
+	// each entry gets its own tap device on br-int and its own QEMU NIC.
+	// Empty for customer EC2 instances and single-subnet ALBs.
+	ExtraENIs []ExtraENI `json:"extra_enis,omitempty"`
 
 	// Public IP auto-assigned from external IPAM pool (released on termination)
 	PublicIP     string `json:"public_ip,omitempty"`

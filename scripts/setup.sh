@@ -50,8 +50,8 @@ detect_os() {
 
     case "$ID" in
         debian)
-            if [ "${VERSION_ID%%.*}" -lt 12 ] 2>/dev/null; then
-                fatal "Debian $VERSION_ID is not supported. Minimum: Debian 12"
+            if [ "${VERSION_ID%%.*}" -lt 13 ] 2>/dev/null; then
+                fatal "Debian $VERSION_ID is not supported. Minimum: Debian 13"
             fi
             ;;
         ubuntu)
@@ -61,7 +61,7 @@ detect_os() {
             fi
             ;;
         *)
-            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 12+ or Ubuntu 22.04+"
+            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 22.04+"
             ;;
     esac
 
@@ -142,7 +142,8 @@ spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 
-# Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check
+# Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
+spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl, /usr/bin/ovn-sbctl
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/systemctl is-active --quiet ovn-controller

@@ -46,8 +46,7 @@ else
   _SECQ  = 2>&1 | tee
 endif
 
-build:
-	$(MAKE) go_build
+build: go_build build-installer build-lb-agent
 
 # Build spinifex-ui frontend (requires pnpm)
 build-ui:
@@ -62,6 +61,10 @@ LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSI
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"
 	go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
+
+build-installer:
+	@echo -e "\n....Building spinifex-installer"
+	go build -ldflags "-s -w" -o ./bin/spinifex-installer cmd/installer/main.go
 
 build-lb-agent:
 	@echo -e "\n....Building lb-agent (static)"
@@ -218,7 +221,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-lb-agent build-system-image build-lb-image go_build go_run preflight test test-cover test-race diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-lb-image go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

@@ -12,6 +12,7 @@ ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service awsgw start
 Restart=on-failure
 RestartSec=5
+
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/awsgw/

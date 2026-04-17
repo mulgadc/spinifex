@@ -148,7 +148,7 @@ func (svc *Service) Reload() error {
 var checkBrInt = func() error {
 	cmd := sudoCommand("ovs-vsctl", "br-exists", "br-int")
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("br-int does not exist: run ./scripts/setup-ovn.sh --management")
+		return fmt.Errorf("br-int does not exist (%w): run ./scripts/setup-ovn.sh --management", err)
 	}
 	return nil
 }

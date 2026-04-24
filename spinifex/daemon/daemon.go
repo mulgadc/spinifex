@@ -1713,6 +1713,82 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 	slog.Info("GPU passthrough disabled via config reload")
 }
 
+// setupReload registers a SIGHUP handler that reloads GPU config without restarting.
+func (d *Daemon) setupReload() {
+	d.shutdownWg.Go(func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGHUP)
+		defer signal.Stop(sigChan)
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-sigChan:
+				slog.Info("SIGHUP received — reloading GPU config")
+				d.reloadConfig()
+			}
+		}
+	})
+}
+
+// reloadConfig re-reads spinifex.toml and applies any GPU passthrough changes.
+func (d *Daemon) reloadConfig() {
+	if d.configPath == "" {
+		slog.Warn("SIGHUP: no config path set, cannot reload")
+		return
+	}
+	newCfg, err := config.LoadConfig(d.configPath)
+	if err != nil {
+		slog.Error("SIGHUP: config reload failed", "err", err)
+		return
+	}
+	newNodeCfg := newCfg.Nodes[d.node]
+	d.applyGPUConfig(newNodeCfg.Daemon.GPUPassthrough)
+}
+
+// applyGPUConfig activates or deactivates GPU passthrough at runtime.
+// Transition false→true: re-probes hardware, initialises gpuManager, adds g5 types.
+// Transition true→false: refused when GPU instances are running; otherwise tears down.
+func (d *Daemon) applyGPUConfig(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	wasEnabled := d.gpuManager != nil
+	if enabled == wasEnabled {
+		slog.Debug("GPU passthrough state unchanged on reload", "passthrough", enabled)
+		return
+	}
+
+	if enabled {
+		probe := probeGPU()
+		d.gpuProbe = probe
+		if !probe.Capable {
+			slog.Warn("GPU passthrough enable failed: prerequisites not met",
+				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
+			return
+		}
+		var models []instancetypes.GPUModel
+		for _, dev := range probe.Devices {
+			models = append(models, resolveGPUModel(dev, d.config.Daemon.GPUModelOverrides))
+		}
+		mgr := gpu.NewManager(probe.Devices)
+		d.gpuManager = mgr
+		d.resourceMgr.reloadGPUTypes(models, mgr)
+		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
+		return
+	}
+
+	// true → false: refuse if instances are running
+	if d.gpuManager.AllocatedCount() > 0 {
+		slog.Warn("GPU passthrough disable refused: GPU instances are running",
+			"allocated", d.gpuManager.AllocatedCount())
+		return
+	}
+	d.gpuManager = nil
+	d.resourceMgr.reloadGPUTypes(nil, nil)
+	slog.Info("GPU passthrough disabled via config reload")
+}
+
 func (d *Daemon) setupShutdown() {
 	d.shutdownWg.Go(func() {
 		sigChan := make(chan os.Signal, 1)

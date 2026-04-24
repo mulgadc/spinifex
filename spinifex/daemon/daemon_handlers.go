@@ -197,6 +197,11 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		allocGPUs = d.gpuManager.AllocatedCount()
 	}
 
+	var gpuModelNames []string
+	for _, dev := range d.gpuProbe.Devices {
+		gpuModelNames = append(gpuModelNames, dev.Model)
+	}
+
 	resp := types.NodeStatusResponse{
 		Node:           d.node,
 		Status:         "Ready",

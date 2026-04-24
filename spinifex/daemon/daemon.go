@@ -2214,3 +2214,35 @@ func gpuVendorDisplayName(v gpu.Vendor) string {
 		return "Unknown"
 	}
 }
+
+// gpuProbeResult holds the outcome of the always-on startup hardware probe.
+// Populated before any config-gated activation logic runs.
+type gpuProbeResult struct {
+	Capable     bool // true when Devices, IOMMUActive, and VFIOPresent are all satisfied
+	IOMMUActive bool
+	VFIOPresent bool
+	Devices     []gpu.GPUDevice
+}
+
+// probeGPU discovers GPU hardware and checks passthrough prerequisites.
+// It is read-only and has no side effects.
+func probeGPU() gpuProbeResult {
+	var r gpuProbeResult
+
+	devices, err := gpu.Discover()
+	if err != nil {
+		slog.Debug("GPU probe: discover failed", "err", err)
+	}
+	r.Devices = devices
+
+	// IOMMU is active when the kernel has populated iommu_groups in sysfs.
+	groups, err := os.ReadDir("/sys/kernel/iommu_groups")
+	r.IOMMUActive = err == nil && len(groups) > 0
+
+	// vfio_pci module is present when its sysfs module directory exists.
+	_, err = os.Stat("/sys/module/vfio_pci")
+	r.VFIOPresent = err == nil
+
+	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
+	return r
+}

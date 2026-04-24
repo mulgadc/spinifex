@@ -4,6 +4,14 @@
 # (user creation, directories, systemd units), initializes the cluster,
 # and starts services via systemd.
 #
+# Environment variables:
+#   SPINIFEX_REGION            Region for spx admin init (default: ap-southeast-2)
+#   SPINIFEX_AZ                AZ for spx admin init (default: ${SPINIFEX_REGION}a)
+#   DEV_INSTALL_SKIP_INIT      Internal flag used by reset-dev-env.sh. When 1,
+#                              stops after setup.sh and skips setup-ovn, init,
+#                              CA trust, service start, and LB image import —
+#                              caller owns those steps. Do not set manually.
+#
 # Usage: ./scripts/dev-install.sh
 set -euo pipefail
 
@@ -31,7 +39,7 @@ tar czf /tmp/spinifex-local.tar.gz -C "$STAGING" .
 echo "=== Cleaning stale state from previous installs ==="
 # Stop any running services before modifying files
 sudo systemctl stop spinifex.target 2>/dev/null || true
-sudo systemctl reset-failed 2>/dev/null || true
+sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 
 # Remove stale files owned by the dev user in production paths.
 # Previous dev-mode installs (admin init without sudo, start-dev.sh) leave
@@ -54,11 +62,20 @@ echo "=== Running setup.sh (creates users, dirs, systemd units) ==="
 sudo INSTALL_SPINIFEX_TARBALL=/tmp/spinifex-local.tar.gz INSTALL_SPINIFEX_SKIP_NEWGRP=1 bash "$PROJECT_ROOT/scripts/setup.sh"
 rm -f /tmp/spinifex-local.tar.gz
 
+if [ "${DEV_INSTALL_SKIP_INIT:-0}" = "1" ]; then
+    echo "=== DEV_INSTALL_SKIP_INIT=1 — stopping after setup.sh ==="
+    echo "Caller owns: setup-ovn, spx admin init, CA trust, service start, LB image."
+    exit 0
+fi
+
 echo "=== Setting up OVN ==="
 sudo /usr/local/share/spinifex/setup-ovn.sh --management
 
-echo "=== Initializing ==="
-sudo spx admin init --force --region ap-southeast-2 --az ap-southeast-2a --node node1 --nodes 1
+SPINIFEX_REGION="${SPINIFEX_REGION:-ap-southeast-2}"
+SPINIFEX_AZ="${SPINIFEX_AZ:-${SPINIFEX_REGION}a}"
+
+echo "=== Initializing (region=$SPINIFEX_REGION az=$SPINIFEX_AZ) ==="
+sudo spx admin init --force --region "$SPINIFEX_REGION" --az "$SPINIFEX_AZ" --node node1 --nodes 1
 
 echo "=== Installing CA certificate ==="
 sudo cp /etc/spinifex/ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt

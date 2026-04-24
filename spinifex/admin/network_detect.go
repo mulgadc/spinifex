@@ -55,7 +55,7 @@ func DetectNetwork() (*DetectedNetwork, error) {
 	}
 
 	// Get all routes to find interfaces and their subnets
-	allRoutes, err := exec.Command("ip", "-4", "route", "show", "proto", "kernel", "scope", "link").Output()
+	allRoutes, err := exec.Command("ip", "-4", "route", "show", "scope", "link").Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}

@@ -29,7 +29,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	pool := testPool()
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{pool})
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(nc, js, []handlers_ec2_vpc.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	svc, err := NewEIPServiceImpl(nc, ipam, nil)

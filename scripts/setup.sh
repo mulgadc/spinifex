@@ -9,6 +9,14 @@
 #   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip apt dependency install
 #   INSTALL_SPINIFEX_SKIP_AWS  Set to 1 to skip AWS CLI install
 #   INSTALL_SPINIFEX_SKIP_NEWGRP  Set to 1 to skip newgrp exec at end (for callers like dev-install.sh)
+#   ISO_BUILD                  Set to 1 when running inside a debootstrap chroot from the ISO
+#                              builder: skip handle_upgrade/restart/migrations/newgrp/print_summary,
+#                              skip systemctl daemon-reload + enable, short-circuit setup_sudo.
+#   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
+#   SETUP_STAGES               Comma-separated subset of stages to run:
+#                                deps, aws, users, sudoers, files, directories,
+#                                env, systemd, logrotate, fixown, migrations
+#                              Unset = run every stage appropriate for the current mode.
 
 set -e
 
@@ -25,8 +33,26 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fatal() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+stage() {
+    [ "${VERBOSE:-0}" = "1" ] && echo "[setup] $*"
+    return 0
+}
+
+stage_enabled() {
+    [ -z "${SETUP_STAGES:-}" ] && return 0
+    case ",${SETUP_STAGES}," in
+        *",$1,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- Sudo setup ---
 setup_sudo() {
+    # Inside a debootstrap chroot we are already root and sudo may not be installed.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        SUDO=""
+        return
+    fi
     if [ "$(id -u)" -eq 0 ]; then
         SUDO=""
     elif command -v sudo >/dev/null 2>&1; then
@@ -50,8 +76,8 @@ detect_os() {
 
     case "$ID" in
         debian)
-            if [ "${VERSION_ID%%.*}" -lt 12 ] 2>/dev/null; then
-                fatal "Debian $VERSION_ID is not supported. Minimum: Debian 12"
+            if [ "${VERSION_ID%%.*}" -lt 13 ] 2>/dev/null; then
+                fatal "Debian $VERSION_ID is not supported. Minimum: Debian 13"
             fi
             ;;
         ubuntu)
@@ -61,7 +87,7 @@ detect_os() {
             fi
             ;;
         *)
-            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 12+ or Ubuntu 22.04+"
+            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 22.04+"
             ;;
     esac
 
@@ -92,11 +118,19 @@ detect_arch() {
 
 # --- Create per-service system users ---
 create_service_users() {
+    stage "creating spinifex group and per-service users"
     SPINIFEX_GROUP="spinifex"
 
     # Create shared group
     if ! getent group "$SPINIFEX_GROUP" > /dev/null 2>&1; then
         $SUDO groupadd --system "$SPINIFEX_GROUP"
+    fi
+
+    # Producer-typed access group for viperblock's runtime resources
+    # (/run/spinifex/nbd socket dir). Viperblock writes as owner; daemon reads
+    # via supplementary membership; every other spinifex-* service is excluded.
+    if ! getent group spinifex-viperblock > /dev/null 2>&1; then
+        $SUDO groupadd --system spinifex-viperblock
     fi
 
     # Create per-service users with correct home directories
@@ -120,10 +154,17 @@ create_service_users() {
         fi
     done
 
-    # Add invoking user to spinifex group for admin CLI access
-    ADMIN_USER="${SUDO_USER:-$(whoami)}"
-    if [ "$ADMIN_USER" != "root" ]; then
-        $SUDO usermod -aG "$SPINIFEX_GROUP" "$ADMIN_USER"
+    # Add invoking user to spinifex group for admin CLI access.
+    # Skip under ISO_BUILD: the chroot has no invoking user (tf-user,
+    # whoever ran `sudo make`, etc. don't exist in the rootfs). The ISO's
+    # interactive 'spinifex' login account is created later in Phase 4 of
+    # build-rootfs.sh with spinifex as its primary gid. In curl|bash mode
+    # guard against a stale/missing SUDO_USER too.
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        ADMIN_USER="${SUDO_USER:-$(whoami)}"
+        if [ "$ADMIN_USER" != "root" ] && id -u "$ADMIN_USER" > /dev/null 2>&1; then
+            $SUDO usermod -aG "$SPINIFEX_GROUP" "$ADMIN_USER"
+        fi
     fi
 
     # KVM access for daemon
@@ -131,18 +172,23 @@ create_service_users() {
         $SUDO usermod -aG kvm spinifex-daemon
     fi
 
+    # Daemon consumes viperblock's NBD socket — join the producer-typed group.
+    $SUDO usermod -aG spinifex-viperblock spinifex-daemon
+
     info "Service users created (spinifex-{nats,gw,daemon,storage,viperblock,vpcd,ui})"
 }
 
 # --- Install scoped sudoers rules ---
 install_sudoers() {
+    stage "installing scoped sudoers rules"
     $SUDO tee /etc/sudoers.d/spinifex-network > /dev/null << 'SUDOERS'
 # Spinifex daemon: tap devices, OVS bridge management, and DHCP for external IPs
 spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 
-# Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check
+# Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
+spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl, /usr/bin/ovn-sbctl
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/systemctl is-active --quiet ovn-controller
@@ -153,7 +199,12 @@ SUDOERS
 }
 
 # --- Install apt dependencies ---
+# NOTE: Runtime deps must stay in sync with the ISO package list at
+# scripts/iso-builder/build/packages.list in the mulga repo. When you add,
+# remove, or change a runtime package here, review that file too — drift means
+# the ISO and `curl | bash` paths install different software.
 install_apt_deps() {
+    stage "installing apt dependencies"
     if [ "${INSTALL_SPINIFEX_SKIP_APT}" = "1" ]; then
         info "Skipping apt dependencies (INSTALL_SPINIFEX_SKIP_APT=1)"
         return
@@ -164,7 +215,7 @@ install_apt_deps() {
 
     DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
         nbdkit \
-        $QEMU_PACKAGES qemu-utils qemu-kvm \
+        $QEMU_PACKAGES qemu-utils qemu-kvm less \
         libvirt-daemon-system libvirt-clients \
         jq curl iproute2 netcat-openbsd wget unzip xz-utils file \
         ovn-central ovn-host openvswitch-switch dhcpcd-base \
@@ -175,6 +226,7 @@ install_apt_deps() {
 
 # --- Install AWS CLI ---
 install_aws_cli() {
+    stage "installing AWS CLI v2"
     if [ "${INSTALL_SPINIFEX_SKIP_AWS}" = "1" ]; then
         info "Skipping AWS CLI (INSTALL_SPINIFEX_SKIP_AWS=1)"
         return
@@ -197,6 +249,7 @@ install_aws_cli() {
 
 # --- Download tarball ---
 download_spinifex() {
+    stage "downloading/extracting spinifex release tarball"
     SPINIFEX_TMPDIR=$(mktemp -d)
     TARBALL="$SPINIFEX_TMPDIR/spinifex.tar.gz"
 
@@ -248,6 +301,7 @@ download_spinifex() {
 
 # --- Place files ---
 install_files() {
+    stage "installing binaries and scripts"
     info "Installing files..."
 
     # Binary
@@ -275,10 +329,17 @@ install_files() {
         info "  /usr/local/share/spinifex/setup-ovn.sh"
     fi
 
+    # Install setup.sh itself so firstboot and future re-runs can find it at a
+    # stable path on both ISO and curl|bash installs.
+    if [ -f "$EXTRACT_DIR/setup.sh" ]; then
+        $SUDO install -m 0755 "$EXTRACT_DIR/setup.sh" /usr/local/share/spinifex/setup.sh
+        info "  /usr/local/share/spinifex/setup.sh"
+    fi
 }
 
 # --- Create directories ---
 create_directories() {
+    stage "creating spinifex directory layout"
     info "Creating directories..."
 
     # Top-level directories (root-owned, group-readable by spinifex)
@@ -304,13 +365,20 @@ create_directories() {
     $SUDO chmod 0775 /var/log/spinifex
     $SUDO chown "root:$SPINIFEX_GROUP" /var/log/spinifex
 
-    $SUDO mkdir -p /run/spinifex
-    $SUDO chmod 0775 /run/spinifex
-    $SUDO chown "root:$SPINIFEX_GROUP" /run/spinifex
-
-    $SUDO mkdir -p /run/spinifex/nbd
-    $SUDO chmod 0770 /run/spinifex/nbd
-    $SUDO chown "root:$SPINIFEX_GROUP" /run/spinifex/nbd
+    # /run/spinifex and /run/spinifex/nbd are declared via tmpfiles.d because
+    # /run is tmpfs — direct mkdir doesn't survive reboot, and units have
+    # ReadWritePaths= on these paths which fails namespace setup with ENOENT
+    # if the dirs are absent at service start.
+    $SUDO install -m 0644 /dev/stdin /etc/tmpfiles.d/spinifex.conf <<'TMPEOF'
+# Type  Path               Mode  User                 Group                Age
+d       /run/spinifex      0770  root                 spinifex             -
+d       /run/spinifex/nbd  0770  spinifex-viperblock  spinifex-viperblock  -
+TMPEOF
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        # Live systems: materialise the runtime dirs immediately so a re-run of
+        # setup.sh on an existing host has correct /run state without a reboot.
+        $SUDO systemd-tmpfiles --create /etc/tmpfiles.d/spinifex.conf 2>/dev/null || true
+    fi
 
     # Per-service config directories
     $SUDO mkdir -p /etc/spinifex/nats
@@ -355,16 +423,6 @@ create_directories() {
         $SUDO ln -s /etc/spinifex /var/lib/spinifex/awsgw/config
     fi
 
-    # Top-level config files (root-owned, group-readable)
-    # Generate environment file with install-specific values (e.g. arch-dependent paths)
-    $SUDO tee /etc/spinifex/systemd.env > /dev/null << EOF
-# Generated by setup.sh — install-specific environment variables
-SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${PLUGINDIR}/nbdkit-viperblock-plugin.so
-EOF
-    $SUDO chown "spinifex-viperblock:$SPINIFEX_GROUP" /etc/spinifex/systemd.env
-    $SUDO chmod 0640 /etc/spinifex/systemd.env
-    info "Generated /etc/spinifex/systemd.env"
-
     # Service helper scripts (root-owned, group-executable by all service users)
     if [ -d "$EXTRACT_DIR/scripts" ]; then
         for script in "$EXTRACT_DIR"/scripts/*.sh; do
@@ -375,8 +433,44 @@ EOF
     fi
 }
 
+# --- Generate systemd environment file ---
+# Split out of create_directories so the `env` stage can be refreshed
+# independently (e.g. by inject-bins.sh when the plugin path changes).
+install_systemd_env() {
+    stage "generating /etc/spinifex/systemd.env"
+
+    # nbdkit plugin path is arch-dependent (`nbdkit --dump-config` returns
+    # /usr/lib/{x86_64,aarch64}-linux-gnu/nbdkit/plugins). Resolve it here so
+    # systemd.env always matches wherever install_files placed the .so.
+    local plugindir
+    plugindir=$(nbdkit --dump-config 2>/dev/null | grep ^plugindir= | cut -d= -f2)
+    if [ -z "$plugindir" ]; then
+        if [ "${ARCH:-}" = "arm64" ]; then
+            plugindir="/usr/lib/aarch64-linux-gnu/nbdkit/plugins"
+        else
+            plugindir="/usr/lib/x86_64-linux-gnu/nbdkit/plugins"
+        fi
+    fi
+
+    $SUDO mkdir -p /etc/spinifex
+    $SUDO tee /etc/spinifex/systemd.env > /dev/null << EOF
+# Generated by setup.sh — install-specific environment variables
+SPINIFEX_VIPERBLOCK_PLUGIN_PATH=${plugindir}/nbdkit-viperblock-plugin.so
+EOF
+    $SUDO chown "spinifex-viperblock:${SPINIFEX_GROUP:-spinifex}" /etc/spinifex/systemd.env
+    $SUDO chmod 0640 /etc/spinifex/systemd.env
+    info "Generated /etc/spinifex/systemd.env"
+}
+
 # --- Fix file ownership for upgrades from v1 ---
+# Also invoked from firstboot via SETUP_STAGES=fixown to correct ownership of
+# files that `spx admin init` wrote as root:root.
 fix_file_ownership() {
+    stage "fixing file ownership for privilege separation"
+    # create_service_users normally sets this; if we're invoked via
+    # SETUP_STAGES=fixown on a host that already has the group, users isn't
+    # run and SPINIFEX_GROUP is unset — default it here.
+    SPINIFEX_GROUP="${SPINIFEX_GROUP:-spinifex}"
     info "Fixing file ownership for privilege separation..."
 
     # Per-service data dirs — recursive chown so existing files are accessible
@@ -470,6 +564,7 @@ run_migrations() {
 
 # --- Install systemd units ---
 install_systemd() {
+    stage "installing systemd units"
     info "Installing systemd units..."
 
     if [ ! -d "$EXTRACT_DIR/systemd" ]; then
@@ -481,6 +576,12 @@ install_systemd() {
         info "  /etc/systemd/system/$(basename "$unit")"
     done
 
+    # daemon-reload / enable require a running systemd — skip inside the ISO
+    # chroot. Unit files are still dropped into place; firstboot enables them.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        info "Systemd units installed (ISO_BUILD=1, skipping daemon-reload/enable)"
+        return
+    fi
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable spinifex.target
     info "Systemd units installed and enabled (per-service users)"
@@ -488,6 +589,7 @@ install_systemd() {
 
 # --- Install logrotate ---
 install_logrotate() {
+    stage "installing logrotate config"
     if [ -f "$EXTRACT_DIR/logrotate-spinifex" ]; then
         $SUDO install -m 0644 "$EXTRACT_DIR/logrotate-spinifex" /etc/logrotate.d/spinifex
     else
@@ -503,6 +605,15 @@ handle_upgrade() {
         warn "Spinifex services are running. Stopping for upgrade..."
         $SUDO systemctl stop spinifex.target
         RESTART_AFTER=true
+    fi
+
+    # Pre-tightening hosts have /run/spinifex/nbd as root:spinifex 0770, which
+    # grants access to every spinifex-* service. While services are stopped,
+    # bring it up to the new spinifex-viperblock:spinifex-viperblock 0770
+    # policy so restart picks up the fresh group membership without a reboot.
+    if [ -d /run/spinifex/nbd ]; then
+        $SUDO chown spinifex-viperblock:spinifex-viperblock /run/spinifex/nbd 2>/dev/null || true
+        $SUDO chmod 0770 /run/spinifex/nbd 2>/dev/null || true
     fi
 }
 
@@ -557,22 +668,50 @@ main() {
     info "Spinifex installer"
     echo ""
 
+    # Always needed: sudo resolution, OS/arch detection.
     setup_sudo
     detect_os
     detect_arch
-    handle_upgrade
-    install_apt_deps
-    install_aws_cli
-    create_service_users
-    install_sudoers
-    download_spinifex
-    install_files
-    create_directories
-    fix_file_ownership
-    install_systemd
-    run_migrations
-    install_logrotate
-    rm -rf "$SPINIFEX_TMPDIR"
+
+    # Orchestration (stop running services, fix stale /run/spinifex/nbd perms)
+    # only applies in full-install mode on a live host.
+    if [ "${ISO_BUILD:-0}" != "1" ] && [ -z "${SETUP_STAGES:-}" ]; then
+        handle_upgrade
+    fi
+
+    # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate.
+    # Only download/extract when at least one such stage is enabled.
+    if stage_enabled files || stage_enabled directories \
+        || stage_enabled systemd || stage_enabled logrotate; then
+        download_spinifex
+    fi
+
+    stage_enabled deps       && install_apt_deps
+    stage_enabled aws        && install_aws_cli
+    stage_enabled users      && create_service_users
+    stage_enabled sudoers    && install_sudoers
+    stage_enabled files      && install_files
+    stage_enabled directories && create_directories
+    stage_enabled env        && install_systemd_env
+    stage_enabled fixown     && fix_file_ownership
+    stage_enabled systemd    && install_systemd
+    stage_enabled logrotate  && install_logrotate
+
+    # Migrations are only safe on a live system (need a running NATS and a
+    # persisted config file). Skip under ISO_BUILD and under any explicit
+    # SETUP_STAGES filter that doesn't list migrations.
+    if [ "${ISO_BUILD:-0}" != "1" ] && stage_enabled migrations; then
+        run_migrations
+    fi
+
+    [ -n "${SPINIFEX_TMPDIR:-}" ] && rm -rf "$SPINIFEX_TMPDIR"
+
+    # Post-install orchestration (service restart, summary, newgrp) only in
+    # full-install mode on a live host.
+    if [ "${ISO_BUILD:-0}" = "1" ] || [ -n "${SETUP_STAGES:-}" ]; then
+        return
+    fi
+
     restart_if_needed
     print_summary
 

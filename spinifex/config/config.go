@@ -95,8 +95,14 @@ type VPCDConfig struct {
 	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address (e.g., "tcp:127.0.0.1:6641")
 	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
-	WanBridge         string `json:"WanBridge" mapstructure:"wan_bridge"`                 // OVS bridge for WAN traffic (default "br-wan", maps to OVN "external" network)
-	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "macvlan" (auto-detected if empty)
+	// DhcpBindBridge is the bridge where the DHCP client binds its AF_PACKET
+	// socket — the interface that physically sees LAN DHCP traffic. On hosts
+	// where the WAN NIC is enslaved to a Linux bridge (netplan default), this
+	// is the Linux bridge name (e.g. "br-wan"). On direct-OVS hosts, it is
+	// the OVS bridge holding the WAN NIC. Never set to the OVN-side bridge
+	// ("br-ext") — that never sees LAN DHCP traffic.
+	DhcpBindBridge string `json:"DhcpBindBridge" mapstructure:"dhcp_bind_bridge"`
+	BridgeMode     string `json:"BridgeMode" mapstructure:"bridge_mode"` // "direct" or "veth" (auto-detected if empty)
 }
 
 type PredastoreConfig struct {

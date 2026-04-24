@@ -71,7 +71,7 @@ type ConfigSettings struct {
 	// External networking for public subnets
 	ExternalMode   string   // "pool" or "" (disabled)
 	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
-	WanBridge      string   // OVS bridge for WAN traffic (default "br-wan")
+	DhcpBindBridge string   // Bridge where the DHCP AF_PACKET socket binds (Linux bridge in veth mode, OVS bridge in direct mode; never "br-ext")
 	ExternalDHCP   bool     // Obtain gateway IP via DHCP on macvlan/bridge
 	PoolName       string   // External pool name (e.g., "wan")
 	PoolSource     string   // IP source: "static" (default) or "dhcp" (from router DHCP)
@@ -81,6 +81,12 @@ type ConfigSettings struct {
 	PoolGatewayIP  string   // Explicit SNAT IP (for nat mode without DHCP)
 	PoolPrefixLen  int      // Subnet prefix length (default 24)
 	PoolDNSServers []string // DNS servers for VM DHCP (auto-detected from host)
+
+	// OperatorEmail is the address collected at install time (TUI, SPINIFEX_EMAIL,
+	// or `spx admin init --email`). Written under [operator] in spinifex.toml so
+	// reset-dev-env.sh can preserve it across wipes. Empty means no operator
+	// identity was supplied.
+	OperatorEmail string
 
 	// Other nodes in the cluster (for config source of truth)
 	RemoteNodes []RemoteNode

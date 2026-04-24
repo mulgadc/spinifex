@@ -648,26 +648,26 @@ func (d *Daemon) Start() error {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []handlers_ec2_vpc.ExternalPoolConfig
-			// Resolve WAN bridge name for DHCP pools
-			wanBridge := ""
+			// Resolve DHCP bind bridge name for DHCP pools (where AF_PACKET binds).
+			dhcpBindBridge := ""
 			if node, ok := d.clusterConfig.Nodes[d.clusterConfig.Node]; ok {
-				wanBridge = node.VPCD.WanBridge
+				dhcpBindBridge = node.VPCD.DhcpBindBridge
 			}
 			for _, p := range d.clusterConfig.Network.ExternalPools {
 				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
-					Name:       p.Name,
-					Source:     p.Source,
-					RangeStart: p.RangeStart,
-					RangeEnd:   p.RangeEnd,
-					Gateway:    p.Gateway,
-					GatewayIP:  p.GatewayIP,
-					PrefixLen:  p.PrefixLen,
-					Region:     p.Region,
-					AZ:         p.AZ,
-					WanBridge:  wanBridge,
+					Name:           p.Name,
+					Source:         p.Source,
+					RangeStart:     p.RangeStart,
+					RangeEnd:       p.RangeEnd,
+					Gateway:        p.Gateway,
+					GatewayIP:      p.GatewayIP,
+					PrefixLen:      p.PrefixLen,
+					Region:         p.Region,
+					AZ:             p.AZ,
+					DhcpBindBridge: dhcpBindBridge,
 				})
 			}
-			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(js, pools)
+			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(d.natsConn, js, pools)
 			if err != nil {
 				slog.Warn("Failed to initialize external IPAM", "err", err)
 			} else {

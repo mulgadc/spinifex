@@ -17,7 +17,7 @@ Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
 
-# Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl, dhcpcd)
+# Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl)
 ProtectSystem=full
 PrivateDevices=no
 DevicePolicy=closed
@@ -41,8 +41,9 @@ ProtectControlGroups=yes
 ProtectProc=invisible
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
-# AF_PACKET is required by dhcpcd (raw L2 BOOTP before the iface has an IP).
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+# DHCP lease acquisition moved to spinifex-vpcd (see dhcp-allocate-error.md);
+# the daemon no longer needs AF_PACKET or the softened kernel protections.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 ProtectHostname=yes
 KeyringMode=private
 RemoveIPC=yes

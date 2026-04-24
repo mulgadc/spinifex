@@ -94,6 +94,14 @@ Next install the load balancer AMI images, which is used as the AMI disk image f
 spx admin images import --name lb-alpine-3.21.6-x86_64
 ```
 
+### Step 2.1 Install Debian AMI
+
+Next, install the Debian 12 AMI which is used in the example to host the `nginx` webservers as an EC2 instance.
+
+```bash
+spx admin images import --name debian-12-x86_64
+```
+
 ### Step 3. Deploy
 
 ```bash

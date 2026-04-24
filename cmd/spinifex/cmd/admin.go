@@ -164,6 +164,17 @@ var accountListCmd = &cobra.Command{
 	Run:   runAccountList,
 }
 
+var adminBannerCmd = &cobra.Command{
+	Use:   "banner",
+	Short: "Write the Spinifex console banner to /etc/issue and /etc/motd",
+	Long: `Writes the node information banner to /etc/issue (shown before login on
+physical/serial console) and /etc/motd (shown after SSH login).
+
+With --boot-check, also detects if the management IP has changed since last
+boot and updates /etc/spinifex/node.conf accordingly.`,
+	Run: runAdminBanner,
+}
+
 var certCmd = &cobra.Command{
 	Use:   "cert",
 	Short: "Manage TLS certificates",
@@ -218,6 +229,9 @@ func init() {
 	accountCmd.AddCommand(accountCreateCmd)
 	accountCmd.AddCommand(accountListCmd)
 
+	adminCmd.AddCommand(adminBannerCmd)
+	adminBannerCmd.Flags().Bool("boot-check", false, "Check for management IP change and update node.conf if needed")
+
 	adminCmd.AddCommand(certCmd)
 	certCmd.AddCommand(certRenewCmd)
 
@@ -248,6 +262,7 @@ func init() {
 	adminInitCmd.Flags().String("token-ttl", "30m", "Join token validity duration (e.g. 30m, 1h, 2h)")
 	adminInitCmd.Flags().String("cluster-name", "spinifex", "NATS cluster name")
 	adminInitCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during init (default: enabled)")
+	adminInitCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
 	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
 
 	// External networking flags
@@ -274,6 +289,7 @@ func init() {
 	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
 	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
 	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
+	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
 	adminJoinCmd.MarkFlagRequired("node")
 	adminJoinCmd.MarkFlagRequired("host")
 	adminJoinCmd.MarkFlagRequired("token")
@@ -622,6 +638,19 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	clusterName, _ := cmd.Flags().GetString("cluster-name")
 	services, _ := cmd.Flags().GetStringSlice("services")
 
+	// Optional operator email — validated up-front so a bad address fails
+	// before we touch any config state. Empty is allowed here; reset / repeat
+	// inits on a box that already has an email in /etc/spinifex/spinifex.toml
+	// should preserve it (see config-preservation below).
+	email, _ := cmd.Flags().GetString("email")
+	email = strings.TrimSpace(email)
+	if email != "" {
+		if err := admin.ValidateEmail(email); err != nil {
+			fmt.Fprintf(os.Stderr, "--email: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// External networking flags
 	externalMode, _ := cmd.Flags().GetString("external-mode")
 	externalIface, _ := cmd.Flags().GetString("external-iface")
@@ -653,6 +682,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				BindIP:       bindIP,
 				Version:      Version,
 				ExternalMode: externalMode,
+				Email:        email,
 			})
 		})
 	}
@@ -823,6 +853,13 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}
 
+	// Preserve the previously-captured operator email across --force re-inits
+	// when --email is omitted (e.g. reset-dev-env.sh workflows). Without this
+	// a reset would silently blank the address.
+	if email == "" && admin.FileExists(spinifexTomlPath) {
+		email = admin.ReadOperatorEmail(spinifexTomlPath)
+	}
+
 	// Create config directory
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
@@ -921,7 +958,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, natsToken, clusterName,
-			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind,
+			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
 			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig)
 		return
 	}
@@ -1017,7 +1054,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		ExternalMode:   externalMode,
 		ExternalIface:  externalIface,
-		WanBridge:      detectedWanBridge(detectedNet),
+		DhcpBindBridge: detectedDhcpBindBridge(detectedNet),
 		ExternalDHCP:   useExternalDHCP,
 		PoolName:       "wan",
 		PoolSource:     externalSource,
@@ -1028,6 +1065,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		PoolPrefixLen:  externalPrefixLen,
 		PoolDNSServers: dnsServers,
 
+		OperatorEmail:       email,
 		BootstrapAccountId:  admin.DefaultAccountID(),
 		BootstrapVpcId:      bootstrapVpcId,
 		BootstrapSubnetId:   bootstrapSubnetId,
@@ -1076,7 +1114,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 // It starts a formation server, registers this node, waits for all nodes to join,
 // then generates configs with complete cluster topology.
 func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, natsToken, clusterName,
-	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind string,
+	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
 	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
@@ -1248,6 +1286,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		Services:         services,
 		RemoteNodes:      buildRemoteNodes(allNodes, node),
 
+		OperatorEmail: email,
+
 		// Init node runs ovn-central locally
 		OVNNBAddr: "tcp:127.0.0.1:6641",
 		OVNSBAddr: "tcp:127.0.0.1:6642",
@@ -1312,6 +1352,17 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	configDir, _ := cmd.Flags().GetString("config-dir")
 	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
 	services, _ := cmd.Flags().GetStringSlice("services")
+
+	email, _ := cmd.Flags().GetString("email")
+	email = strings.TrimSpace(email)
+	if email != "" {
+		if err := admin.ValidateEmail(email); err != nil {
+			fmt.Fprintf(os.Stderr, "--email: %v\n", err)
+			os.Exit(1)
+		}
+	} else if admin.FileExists(filepath.Join(configDir, "spinifex.toml")) {
+		email = admin.ReadOperatorEmail(filepath.Join(configDir, "spinifex.toml"))
+	}
 
 	// Validate required parameters
 	if node == "" {
@@ -1506,6 +1557,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 				Nodes:     statusResp.Expected,
 				BindIP:    bindIP,
 				Version:   Version,
+				Email:     email,
 			})
 		})
 	}
@@ -1641,6 +1693,8 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		PredastoreNodeID: predastoreNodeID,
 		Services:         services,
 		RemoteNodes:      buildRemoteNodes(statusResp.Nodes, node),
+
+		OperatorEmail: email,
 
 		// Joining nodes connect to the init node's OVN NB/SB DB
 		OVNNBAddr: fmt.Sprintf("tcp:%s:6641", leaderIP),
@@ -2007,7 +2061,7 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 		detected, err := admin.DetectNetwork()
 		if err == nil && detected.WAN != nil {
 			settings.ExternalIface = detected.WAN.Name
-			settings.WanBridge = detectedWanBridge(detected)
+			settings.DhcpBindBridge = detectedDhcpBindBridge(detected)
 		}
 	}
 }
@@ -2095,23 +2149,25 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
 }
 
-// detectedWanBridge returns the OVS bridge name that OVN bridge-mappings should
-// use for WAN traffic. If the WAN interface is already an OVS bridge, returns
-// its name directly. If it's a Linux bridge, returns "br-ext" — setup-ovn.sh
-// will create this OVS bridge and link it to the Linux bridge via a veth pair.
-// If it's a physical NIC, returns "br-wan" as the default.
-func detectedWanBridge(detected *admin.DetectedNetwork) string {
+// detectedDhcpBindBridge returns the bridge name where the vpcd DHCP client
+// should bind its AF_PACKET socket — i.e. the interface that physically sees
+// LAN DHCP traffic.
+//
+//   - Default route on a bridge (Linux or OVS, `br-*` prefix): return the
+//     bridge name verbatim. In veth mode this is the Linux bridge holding the
+//     WAN NIC; in direct mode this is the OVS bridge holding the WAN NIC.
+//   - Default route on a bare physical NIC: return "br-wan" as the name the
+//     installer will create.
+//
+// Never returns "br-ext". br-ext is the OVN-side bridge owned by
+// setup-ovn.sh's ovn-bridge-mappings and never sees LAN DHCP frames.
+func detectedDhcpBindBridge(detected *admin.DetectedNetwork) string {
 	if detected == nil || detected.WAN == nil {
 		return ""
 	}
 	name := detected.WAN.Name
 	if strings.HasPrefix(name, "br-") {
-		// Check if it's an OVS bridge (use directly) or Linux bridge (need br-ext)
-		if out, err := exec.Command("sudo", "ovs-vsctl", "br-exists", name).CombinedOutput(); err == nil && len(out) == 0 {
-			return name // OVS bridge — use directly
-		}
-		// Linux bridge — setup-ovn.sh creates br-ext + veth pair
-		return "br-ext"
+		return name
 	}
 	return "br-wan"
 }
@@ -2224,6 +2280,189 @@ func installCACertificate(caPemPath string) {
 	}
 
 	fmt.Printf("✅ CA certificate installed to system trust store\n")
+}
+
+// runAdminBanner writes the Spinifex console banner to /etc/motd.
+// With --boot-check it also detects management IP changes and updates node.conf.
+// All errors are logged as warnings — the command always exits 0 so a banner
+// failure never blocks the boot sequence.
+func runAdminBanner(cmd *cobra.Command, _ []string) {
+	bootCheck, _ := cmd.Flags().GetBool("boot-check")
+
+	const nodeConf = "/etc/spinifex/node.conf"
+
+	// Parse /etc/spinifex/node.conf (KEY=VALUE shell format).
+	conf := parseNodeConf(nodeConf)
+	iface := conf["MANAGEMENT_IFACE"]
+	recordedIP := conf["MANAGEMENT_IP"]
+	hostname := conf["NODE_HOSTNAME"]
+
+	if hostname == "" {
+		if h, err := os.Hostname(); err == nil {
+			hostname = h
+		}
+	}
+
+	// Resolve current IP from the management interface at runtime.
+	currentIP := resolveIfaceIP(iface)
+	if currentIP == "" {
+		currentIP = recordedIP // fall back to value recorded at install time
+	}
+	if currentIP == "" {
+		currentIP = "<unknown>"
+	}
+
+	if bootCheck && iface != "" && recordedIP != "" && currentIP != recordedIP {
+		slog.Info("Management IP changed", "old", recordedIP, "new", currentIP)
+		conf["MANAGEMENT_IP"] = currentIP
+		if err := writeNodeConf(nodeConf, conf); err != nil {
+			slog.Warn("Failed to update node.conf with new IP", "err", err)
+		} else {
+			slog.Info("Updated node.conf with new management IP", "ip", currentIP)
+		}
+		// try-restart is safe even if the target isn't active yet.
+		restartCmd := exec.Command("systemctl", "try-restart", "spinifex.target")
+		restartCmd.Stdout = os.Stdout
+		restartCmd.Stderr = os.Stderr
+		if err := restartCmd.Run(); err != nil {
+			// Services are still bound to the old IP — operator must act.
+			slog.Error("Failed to restart spinifex.target after IP change — services may be unreachable on new IP", "err", err)
+		}
+	}
+
+	banner := fmt.Sprintf(`
+  +----------------------------------------------------+
+  |         Spinifex  —  Mulga Defense Corporation     |
+  +----------------------------------------------------+
+  |  Node:      %-39s|
+  |  Login:     %-39s|
+  |  Dashboard: %-39s|
+  |  API:       %-39s|
+  |  SSH:       %-39s|
+  +----------------------------------------------------+
+  |  AWS credentials:  cat ~/.aws/credentials          |
+  +----------------------------------------------------+
+
+`,
+		hostname,
+		"spinifex",
+		"https://"+currentIP+":3000",
+		"https://"+currentIP+":9999",
+		"spinifex@"+currentIP,
+	)
+
+	// Write to /etc/issue — displayed on the console before the login prompt.
+	// Overwrite entirely; this is a purpose-built appliance so we own this file.
+	if err := os.WriteFile("/etc/issue", []byte(banner), 0o644); err != nil {
+		slog.Warn("Failed to write /etc/issue", "err", err)
+	}
+
+	// Append to /etc/motd — displayed after SSH login, preserving any existing
+	// content (e.g. the Debian disclaimer). A sentinel marks our section so
+	// re-runs replace it cleanly rather than accumulating.
+	if err := appendBannerToMotd(banner); err != nil {
+		slog.Warn("Failed to write /etc/motd", "err", err)
+	}
+}
+
+// appendBannerToMotd appends the Spinifex banner to /etc/motd, preserving any
+// existing content. A sentinel line marks the start of the Spinifex section so
+// repeated runs replace only our section rather than accumulating duplicates.
+func appendBannerToMotd(banner string) error {
+	const (
+		motdPath = "/etc/motd"
+		sentinel = "# --- Spinifex ---\n"
+	)
+	existing, _ := os.ReadFile(motdPath)
+	base := string(existing)
+	// Strip any previous Spinifex section from the sentinel onwards.
+	if idx := strings.Index(base, sentinel); idx >= 0 {
+		base = base[:idx]
+	}
+	// Ensure a blank line separates the existing content from our banner.
+	if len(strings.TrimSpace(base)) > 0 && !strings.HasSuffix(base, "\n\n") {
+		if strings.HasSuffix(base, "\n") {
+			base += "\n"
+		} else {
+			base += "\n\n"
+		}
+	}
+	return os.WriteFile(motdPath, []byte(base+sentinel+banner), 0o644)
+}
+
+// parseNodeConf reads a KEY=VALUE shell-format file and returns a map.
+// Lines starting with # and blank lines are ignored.
+func parseNodeConf(path string) map[string]string {
+	result := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("parseNodeConf: could not read node.conf", "path", path, "err", err)
+		}
+		return result
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		result[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return result
+}
+
+// writeNodeConf serialises a KEY=VALUE map back to the node.conf file.
+// Only writes keys that were present in the original (preserves order via known keys).
+func writeNodeConf(path string, conf map[string]string) error {
+	// Write in a stable order matching what the installer creates.
+	keys := []string{"MANAGEMENT_IP", "MANAGEMENT_IFACE", "NODE_HOSTNAME"}
+	var b strings.Builder
+	written := make(map[string]bool)
+	for _, k := range keys {
+		if v, ok := conf[k]; ok {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+			written[k] = true
+		}
+	}
+	// Append any extra keys not in the known list.
+	for k, v := range conf {
+		if !written[k] {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+// resolveIfaceIP returns the first IPv4 address assigned to iface, or "".
+func resolveIfaceIP(iface string) string {
+	if iface == "" {
+		return ""
+	}
+	netIface, err := net.InterfaceByName(iface)
+	if err != nil {
+		return ""
+	}
+	addrs, err := netIface.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 // printChecksumError writes the failure, the source URL (printed for every

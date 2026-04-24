@@ -23,6 +23,11 @@ type MockOVNClient struct {
 	staticRoutes map[string]*nbdb.LogicalRouterStaticRoute // keyed by UUID
 	portGroups   map[string]*nbdb.PortGroup                // keyed by name
 	acls         map[string]*nbdb.ACL                      // keyed by UUID
+
+	// UpdateLogicalSwitchPortCalls counts UpdateLogicalSwitchPort invocations
+	// so tests can assert idempotent read-before-write paths (e.g.
+	// ensureLocalnetOptions — mulga-998.b Fix 3).
+	UpdateLogicalSwitchPortCalls int
 }
 
 // NewMockOVNClient creates a new MockOVNClient for testing.
@@ -168,6 +173,7 @@ func (m *MockOVNClient) UpdateLogicalSwitchPort(_ context.Context, lsp *nbdb.Log
 	}
 	stored := *lsp
 	m.ports[lsp.Name] = &stored
+	m.UpdateLogicalSwitchPortCalls++
 	return nil
 }
 

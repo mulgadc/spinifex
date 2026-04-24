@@ -679,6 +679,32 @@ var spinifexUIStatusCmd = &cobra.Command{
 	},
 }
 
+// checkLegacyWanBridgeKey fails vpcd startup if the deprecated `wan_bridge`
+// TOML key or `SPINIFEX_VPCD_WAN_BRIDGE` env-var is present. The key was
+// renamed to `dhcp_bind_bridge` (see mulga-998.a) because the old name misled
+// operators into pointing at the OVN-side bridge ("br-ext"), which never sees
+// LAN DHCP traffic. Per D3: no silent alias, no auto-rewrite — operator must
+// rename the key before vpcd will start.
+func checkLegacyWanBridgeKey(node, cfgFile string) error {
+	legacyInTOML := viper.IsSet("nodes." + node + ".vpcd.wan_bridge")
+	legacyInEnv := os.Getenv("SPINIFEX_VPCD_WAN_BRIDGE") != ""
+	if !legacyInTOML && !legacyInEnv {
+		return nil
+	}
+	source := cfgFile
+	if legacyInEnv {
+		source = "env SPINIFEX_VPCD_WAN_BRIDGE"
+	}
+	return fmt.Errorf(
+		"vpcd: deprecated 'wan_bridge' key found in %s. "+
+			"Rename 'wan_bridge' to 'dhcp_bind_bridge'. The value may also be wrong — verify it is "+
+			"the Linux bridge holding your WAN NIC (veth mode) or the OVS bridge holding your WAN NIC (direct mode); "+
+			"never 'br-ext'. Typical value on a consumer-router LAN: 'br-wan'. "+
+			"Then: sudo systemctl restart spinifex-vpcd",
+		source,
+	)
+}
+
 var vpcdStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the vpcd service",
@@ -695,6 +721,11 @@ var vpcdStartCmd = &cobra.Command{
 		if err != nil {
 			fmt.Println("Error loading config file:", err)
 			return
+		}
+
+		if err := checkLegacyWanBridgeKey(clusterConfig.Node, cfgFile); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
 		}
 
 		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
@@ -754,7 +785,7 @@ var vpcdStartCmd = &cobra.Command{
 			ChassisNames:      chassisNames,
 			Bootstrap:         bootstrap,
 			ExternalInterface: nodeConfig.VPCD.ExternalInterface,
-			WanBridge:         nodeConfig.VPCD.WanBridge,
+			DhcpBindBridge:    nodeConfig.VPCD.DhcpBindBridge,
 			BridgeMode:        nodeConfig.VPCD.BridgeMode,
 		})
 		if err != nil {

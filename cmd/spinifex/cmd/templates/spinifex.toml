@@ -2,6 +2,11 @@
 version = "2"
 epoch = 1
 node = "{{.Node}}"
+{{- if .OperatorEmail}}
+
+[operator]
+email = "{{.OperatorEmail}}"
+{{- end}}
 {{- if .ExternalMode}}
 
 [network]
@@ -88,8 +93,14 @@ ovn_sb_addr = "{{.OVNSBAddr}}"
 {{- if .ExternalIface}}
 external_interface = "{{.ExternalIface}}"
 {{- end}}
-{{- if .WanBridge}}
-wan_bridge = "{{.WanBridge}}"
+{{- if .DhcpBindBridge}}
+# dhcp_bind_bridge: the bridge where vpcd's DHCP client binds its AF_PACKET
+# socket. On Linux-bridge-WAN hosts (netplan default with the WAN NIC enslaved),
+# this is the Linux bridge name (e.g. "br-wan"). On direct-OVS hosts, this is
+# the OVS bridge holding the WAN NIC.
+# NEVER set this to "br-ext" — that is the OVN-side bridge and never sees LAN
+# DHCP traffic.
+dhcp_bind_bridge = "{{.DhcpBindBridge}}"
 {{- end}}
 
 [nodes.{{.Node}}.predastore]

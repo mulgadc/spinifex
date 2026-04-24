@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/formation"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -139,6 +140,88 @@ func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
 	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
 	data, _ := os.ReadFile(path)
 	assert.NotContains(t, string(data), "advertise =")
+}
+
+// detectedDhcpBindBridge must return the default-route interface name verbatim
+// when it's a bridge (Linux or OVS, br-* prefix). The old detectedWanBridge()
+// returned hardcoded "br-ext" for Linux bridges — that value broke DHCP on
+// consumer-router LANs because br-ext never sees LAN DHCP traffic (mulga-998).
+func TestDetectedDhcpBindBridge_LinuxBridgeDefaultRoute(t *testing.T) {
+	detected := &admin.DetectedNetwork{WAN: &admin.DetectedInterface{Name: "br-wan"}}
+	assert.Equal(t, "br-wan", detectedDhcpBindBridge(detected),
+		"Linux bridge (WAN NIC enslaved) must return the bridge name, not 'br-ext'")
+}
+
+func TestDetectedDhcpBindBridge_OVSBridgeDefaultRoute(t *testing.T) {
+	detected := &admin.DetectedNetwork{WAN: &admin.DetectedInterface{Name: "br-ext"}}
+	assert.Equal(t, "br-ext", detectedDhcpBindBridge(detected),
+		"OVS bridge (WAN NIC on br-*) returned verbatim")
+}
+
+func TestDetectedDhcpBindBridge_PhysicalNIC(t *testing.T) {
+	detected := &admin.DetectedNetwork{WAN: &admin.DetectedInterface{Name: "enp0s3"}}
+	assert.Equal(t, "br-wan", detectedDhcpBindBridge(detected),
+		"bare NIC defaults to 'br-wan' (the bridge the installer will create)")
+}
+
+func TestDetectedDhcpBindBridge_NilWAN(t *testing.T) {
+	assert.Empty(t, detectedDhcpBindBridge(nil))
+	assert.Empty(t, detectedDhcpBindBridge(&admin.DetectedNetwork{}))
+}
+
+// Legacy `wan_bridge` TOML key must fail-start vpcd with guidance, not silently
+// alias (per mulga-998 D3). Prevents the footgun where operators inherited the
+// old key pointing at 'br-ext' and got broken DHCP on veth-mode hosts.
+func TestCheckLegacyWanBridgeKey_TOMLRejected(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+node = "node1"
+[nodes.node1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+wan_bridge = "br-ext"
+`), 0o644))
+
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetConfigFile(cfgPath)
+	viper.SetConfigType("toml")
+	require.NoError(t, viper.ReadInConfig())
+
+	err := checkLegacyWanBridgeKey("node1", cfgPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dhcp_bind_bridge")
+	assert.Contains(t, err.Error(), "wan_bridge")
+}
+
+func TestCheckLegacyWanBridgeKey_EnvVarRejected(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("SPINIFEX_VPCD_WAN_BRIDGE", "br-ext")
+
+	err := checkLegacyWanBridgeKey("node1", "/tmp/unused.toml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SPINIFEX_VPCD_WAN_BRIDGE")
+	assert.Contains(t, err.Error(), "dhcp_bind_bridge")
+}
+
+func TestCheckLegacyWanBridgeKey_CleanConfigPasses(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+node = "node1"
+[nodes.node1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+dhcp_bind_bridge = "br-wan"
+`), 0o644))
+
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetConfigFile(cfgPath)
+	viper.SetConfigType("toml")
+	require.NoError(t, viper.ReadInConfig())
+
+	assert.NoError(t, checkLegacyWanBridgeKey("node1", cfgPath))
 }
 
 // iam.nats_url must not embed a bare 0.0.0.0 — the predastore process dials

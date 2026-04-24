@@ -3898,7 +3898,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require.NoError(t, err)
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(nc, js, []handlers_ec2_vpc.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)

@@ -1,122 +1,124 @@
 package handlers_ec2_vpc
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
-	"strings"
-	"sync"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
+	"github.com/nats-io/nats.go"
 )
 
-const dhcpcdBin = "/usr/sbin/dhcpcd"
+// dhcpNATSTimeout bounds the request/reply to spinifex-vpcd. Picked to
+// comfortably exceed the DORA handshake (15 s default + server jitter +
+// ~10 s of slack for NAK + fresh DISCOVER fallbacks). A var rather than
+// a const so tests can drive the timeout error path without waiting
+// 20 s per table entry.
+var dhcpNATSTimeout = 20 * time.Second
 
-// bridgeMu serialises dhcpcd invocations per bridge. Concurrent invocations on
-// the same bridge race: the second one sees the first still running and is
-// treated by dhcpcd as a control command rather than a fresh DISCOVER, so we
-// scrape stdout and find no lease. Serialising per bridge costs us nothing
-// (DHCP is inherently slow) and eliminates the race.
-var (
-	bridgeMuMap   = map[string]*sync.Mutex{}
-	bridgeMuGuard sync.Mutex
-)
-
-func bridgeLock(bridge string) *sync.Mutex {
-	bridgeMuGuard.Lock()
-	defer bridgeMuGuard.Unlock()
-	mu, ok := bridgeMuMap[bridge]
-	if !ok {
-		mu = &sync.Mutex{}
-		bridgeMuMap[bridge] = mu
-	}
-	return mu
+// dhcpLeaseResult is the data ExternalIPAM needs from a successful acquire.
+// It maps directly from dhcp.AcquireReplyMsg; kept as a handler-side type
+// so the IPAM ledger records the fields without coupling to the NATS wire
+// struct.
+type dhcpLeaseResult struct {
+	IP          string
+	SubnetMask  string
+	Routers     []string
+	DNS         []string
+	ServerID    string
+	HWAddr      string
+	ExpiresUnix int64
 }
 
-// ObtainDHCPLease requests a DHCP lease from the router on the given OVS bridge
-// using a unique client ID. Returns the leased IP. The lease is obtained with
-// --noconfigure so the IP is NOT added to the bridge interface — OVN handles
-// traffic via its NAT rules.
-func ObtainDHCPLease(bridge, clientID string) (string, error) {
+// ObtainDHCPLease asks spinifex-vpcd to acquire a DHCP lease on the given
+// bridge, identifying us with option 61 (client-id), option 12 (hostname)
+// and option 60 (vendor class). Blocks until vpcd replies or
+// dhcpNATSTimeout expires. The Manager-side handler is idempotent: a
+// second call with the same clientID while a live lease exists returns
+// the same lease without a fresh DORA, so CAS retry loops on the caller
+// are safe.
+func ObtainDHCPLease(nc *nats.Conn, bridge, clientID, hostname, vendorClass, poolName string) (dhcpLeaseResult, error) {
+	if nc == nil {
+		return dhcpLeaseResult{}, fmt.Errorf("DHCP lease: NATS connection is required")
+	}
 	if bridge == "" {
-		return "", fmt.Errorf("DHCP lease: bridge name is required")
+		return dhcpLeaseResult{}, fmt.Errorf("DHCP lease: bridge name is required")
 	}
 	if clientID == "" {
-		return "", fmt.Errorf("DHCP lease: client ID is required")
+		return dhcpLeaseResult{}, fmt.Errorf("DHCP lease: client ID is required")
 	}
 
-	mu := bridgeLock(bridge)
-	mu.Lock()
-	defer mu.Unlock()
+	req := dhcp.AcquireRequestMsg{
+		Bridge:      bridge,
+		ClientID:    clientID,
+		Hostname:    hostname,
+		VendorClass: vendorClass,
+		PoolName:    poolName,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return dhcpLeaseResult{}, fmt.Errorf("marshal dhcp acquire request: %w", err)
+	}
 
-	// Run dhcpcd with:
-	//   --noconfigure   = don't add IP to interface (OVN handles traffic)
-	//   -1              = exit after obtaining a lease (don't daemonize)
-	//   -4              = IPv4 only
-	//   -I clientID     = unique client identifier per ENI
-	//   -t 15           = 15 second timeout
-	cmd := exec.Command("sudo", dhcpcdBin,
-		"--noconfigure",
-		"-1",
-		"-4",
-		"-I", clientID,
-		"-t", "15",
-		bridge,
+	msg, err := nc.Request(dhcp.TopicAcquire, data, dhcpNATSTimeout)
+	if err != nil {
+		return dhcpLeaseResult{}, fmt.Errorf("dhcp acquire NATS request (client %s): %w", clientID, err)
+	}
+
+	var reply dhcp.AcquireReplyMsg
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		return dhcpLeaseResult{}, fmt.Errorf("unmarshal dhcp acquire reply: %w", err)
+	}
+	if reply.Error != "" {
+		return dhcpLeaseResult{}, fmt.Errorf("dhcp acquire (client %s): %s", clientID, reply.Error)
+	}
+
+	slog.Info("DHCP lease obtained",
+		"bridge", bridge,
+		"client_id", clientID,
+		"ip", reply.IP,
+		"server_id", reply.ServerID,
+		"expires_unix", reply.ExpiresUnix,
 	)
-	output, err := cmd.CombinedOutput()
-	slog.Debug("dhcpcd output", "bridge", bridge, "clientID", clientID, "output", string(output), "err", err)
 
-	// Parse the leased IP from dhcpcd output.
-	// dhcpcd prints: "br-ext: leased 192.168.1.75 for 1800 seconds"
-	// Note: dhcpcd may exit non-zero with --noconfigure even after obtaining
-	// a lease (it reports "timed out" waiting for interface configuration).
-	// We check for a lease in the output regardless of exit code.
-	ip := parseDHCPCDLeasedIP(string(output))
-	if ip == "" {
-		if err != nil {
-			return "", fmt.Errorf("dhcpcd failed on %s (client %s): %w\noutput: %s", bridge, clientID, err, string(output))
-		}
-		return "", fmt.Errorf("dhcpcd produced no lease on %s (client %s): %s", bridge, clientID, string(output))
-	}
-
-	slog.Info("DHCP lease obtained", "bridge", bridge, "clientID", clientID, "ip", ip)
-	return ip, nil
+	return dhcpLeaseResult{
+		IP:          reply.IP,
+		SubnetMask:  reply.SubnetMask,
+		Routers:     reply.Routers,
+		DNS:         reply.DNS,
+		ServerID:    reply.ServerID,
+		HWAddr:      reply.HWAddr,
+		ExpiresUnix: reply.ExpiresUnix,
+	}, nil
 }
 
-// ReleaseDHCPLease releases a previously obtained DHCP lease.
-func ReleaseDHCPLease(bridge, clientID string) error {
-	if bridge == "" || clientID == "" {
+// ReleaseDHCPLease asks spinifex-vpcd to release the lease identified by
+// clientID. Returns nil (silently) when nc or clientID is empty so that
+// callers in clean-up paths can invoke it unconditionally.
+func ReleaseDHCPLease(nc *nats.Conn, clientID string) error {
+	if nc == nil || clientID == "" {
 		return nil
 	}
 
-	mu := bridgeLock(bridge)
-	mu.Lock()
-	defer mu.Unlock()
-
-	cmd := exec.Command("sudo", dhcpcdBin,
-		"--release",
-		"-4",
-		"-I", clientID,
-		bridge,
-	)
-	output, err := cmd.CombinedOutput()
+	data, err := json.Marshal(dhcp.ReleaseRequestMsg{ClientID: clientID})
 	if err != nil {
-		slog.Debug("dhcpcd release", "bridge", bridge, "clientID", clientID, "output", string(output), "err", err)
-		// Not fatal — lease will expire naturally
-		return fmt.Errorf("dhcpcd release failed on %s (client %s): %w", bridge, clientID, err)
+		return fmt.Errorf("marshal dhcp release request: %w", err)
 	}
 
-	slog.Info("DHCP lease released", "bridge", bridge, "clientID", clientID)
+	msg, err := nc.Request(dhcp.TopicRelease, data, dhcpNATSTimeout)
+	if err != nil {
+		return fmt.Errorf("dhcp release NATS request (client %s): %w", clientID, err)
+	}
+
+	var reply dhcp.ReleaseReplyMsg
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		return fmt.Errorf("unmarshal dhcp release reply: %w", err)
+	}
+	if reply.Error != "" {
+		return fmt.Errorf("dhcp release (client %s): %s", clientID, reply.Error)
+	}
+
+	slog.Info("DHCP lease released", "client_id", clientID)
 	return nil
-}
-
-// parseDHCPCDLeasedIP extracts the leased IP from dhcpcd stdout.
-// Looks for: "<iface>: leased <IP> for <N> seconds"
-func parseDHCPCDLeasedIP(output string) string {
-	for line := range strings.SplitSeq(output, "\n") {
-		if before, after, found := strings.Cut(line, ": leased "); found && before != "" {
-			if spaceIdx := strings.IndexByte(after, ' '); spaceIdx > 0 {
-				return after[:spaceIdx]
-			}
-		}
-	}
-	return ""
 }

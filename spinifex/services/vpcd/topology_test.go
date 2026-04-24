@@ -3,6 +3,7 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -2321,5 +2322,302 @@ func TestTopologyHandler_AddNAT_CleansStaleRulesFromOtherVPCs(t *testing.T) {
 	newNAT := mock.nats[newRouter.NAT[0]]
 	if newNAT.LogicalIP != "10.200.1.10" {
 		t.Errorf("new NAT logical IP = %q, want 10.200.1.10", newNAT.LogicalIP)
+	}
+}
+
+// ensureLocalnetOptions retrofits options:nat-addresses on a localnet port
+// whose mode no longer matches (e.g. created during a pre-Fix 1 run where
+// detectBridgeMode returned direct because the veth had not been
+// recreated after reboot). mulga-998.b Fix 3.
+
+func TestEnsureLocalnetOptions_AddsNatAddressesInCentralizedMode(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-x"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-x", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-x",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external"},
+	})
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-x"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	port, _ := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-x")
+	if port.Options["nat-addresses"] != "router" {
+		t.Errorf("expected nat-addresses=router after retrofit, got %q", port.Options["nat-addresses"])
+	}
+	if port.Options["network_name"] != "external" {
+		t.Errorf("network_name clobbered: got %q", port.Options["network_name"])
+	}
+}
+
+func TestEnsureLocalnetOptions_RemovesNatAddressesInDirectMode(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-y"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-y", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-y",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external", "nat-addresses": "router"},
+	})
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeDirect))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-y"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	port, _ := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-y")
+	if _, ok := port.Options["nat-addresses"]; ok {
+		t.Errorf("nat-addresses should be removed in direct mode, got %q", port.Options["nat-addresses"])
+	}
+	if port.Options["network_name"] != "external" {
+		t.Errorf("network_name clobbered: got %q", port.Options["network_name"])
+	}
+}
+
+func TestEnsureLocalnetOptions_NoOpWhenAlreadyCorrect(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-z"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-z", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-z",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external", "nat-addresses": "router"},
+	})
+	startUpdates := mock.UpdateLogicalSwitchPortCalls
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-z"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	if mock.UpdateLogicalSwitchPortCalls != startUpdates {
+		t.Errorf("expected no UpdateLogicalSwitchPort call when already correct (idempotent); got %d new calls",
+			mock.UpdateLogicalSwitchPortCalls-startUpdates)
+	}
+}
+
+func TestEnsureLocalnetOptions_NoOpInDirectModeWhenAbsent(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-d"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-d", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-d",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external"},
+	})
+	start := mock.UpdateLogicalSwitchPortCalls
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeDirect))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-d"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	if mock.UpdateLogicalSwitchPortCalls != start {
+		t.Errorf("direct mode + no nat-addresses should be a no-op; got %d new calls",
+			mock.UpdateLogicalSwitchPortCalls-start)
+	}
+}
+
+func TestEnsureLocalnetOptions_HandlesNilOptionsMap(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-n"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-n", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-n",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+	})
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-n"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	port, _ := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-n")
+	if port.Options["nat-addresses"] != "router" {
+		t.Errorf("expected nat-addresses=router after nil-map init, got %q", port.Options["nat-addresses"])
+	}
+}
+
+func TestEnsureLocalnetOptions_RestoresNetworkName(t *testing.T) {
+	// Operator (or test drill) cleared options entirely — retrofit must
+	// restore both network_name=external and nat-addresses=router.
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-r"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-r", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-r",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{},
+	})
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-r"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	port, _ := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-r")
+	if port.Options["network_name"] != "external" {
+		t.Errorf("expected network_name=external after retrofit, got %q", port.Options["network_name"])
+	}
+	if port.Options["nat-addresses"] != "router" {
+		t.Errorf("expected nat-addresses=router after retrofit, got %q", port.Options["nat-addresses"])
+	}
+}
+
+func TestEnsureLocalnetOptions_RestoresNetworkNameDirectMode(t *testing.T) {
+	// Direct mode: network_name still required, nat-addresses still absent.
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ext-vpc-rd"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-rd", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-rd",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{},
+	})
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeDirect))
+	if err := topo.ensureLocalnetOptions(ctx, "ext-port-vpc-rd"); err != nil {
+		t.Fatalf("ensureLocalnetOptions: %v", err)
+	}
+	port, _ := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-rd")
+	if port.Options["network_name"] != "external" {
+		t.Errorf("expected network_name=external after retrofit, got %q", port.Options["network_name"])
+	}
+	if _, ok := port.Options["nat-addresses"]; ok {
+		t.Errorf("direct mode should not set nat-addresses, got %q", port.Options["nat-addresses"])
+	}
+}
+
+func TestRetrofitAllExternalLocalnetOptions_FixesClearedOptions(t *testing.T) {
+	// Walks every ext-* switch in OVN (authoritative) and retrofits options
+	// on its localnet port. Covers VPCs whose IGW KV record is missing or
+	// whose options were cleared manually (mulga-998.b Drill 2).
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	// Two external switches with cleared options, one subnet switch (must be
+	// skipped because role != external), one external switch already correct.
+	for _, vpcID := range []string{"vpc-a", "vpc-b"} {
+		_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+			Name:        "ext-" + vpcID,
+			ExternalIDs: map[string]string{"spinifex:role": "external", "spinifex:vpc_id": vpcID},
+		})
+		_ = mock.CreateLogicalSwitchPort(ctx, "ext-"+vpcID, &nbdb.LogicalSwitchPort{
+			Name:      "ext-port-" + vpcID,
+			Type:      "localnet",
+			Addresses: []string{"unknown"},
+			Options:   map[string]string{},
+		})
+	}
+	// A subnet switch that must NOT be retrofitted.
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+		Name:        "subnet-foo",
+		ExternalIDs: map[string]string{"spinifex:subnet_id": "subnet-foo"},
+	})
+	// An ext switch already correct — must remain a no-op.
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+		Name:        "ext-vpc-ok",
+		ExternalIDs: map[string]string{"spinifex:role": "external", "spinifex:vpc_id": "vpc-ok"},
+	})
+	_ = mock.CreateLogicalSwitchPort(ctx, "ext-vpc-ok", &nbdb.LogicalSwitchPort{
+		Name:      "ext-port-vpc-ok",
+		Type:      "localnet",
+		Addresses: []string{"unknown"},
+		Options:   map[string]string{"network_name": "external", "nat-addresses": "router"},
+	})
+	startUpdates := mock.UpdateLogicalSwitchPortCalls
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	topo.RetrofitAllExternalLocalnetOptions(ctx)
+
+	for _, vpcID := range []string{"vpc-a", "vpc-b"} {
+		port, err := mock.GetLogicalSwitchPort(ctx, "ext-port-"+vpcID)
+		if err != nil {
+			t.Fatalf("get port: %v", err)
+		}
+		if port.Options["network_name"] != "external" {
+			t.Errorf("%s: expected network_name=external, got %q", vpcID, port.Options["network_name"])
+		}
+		if port.Options["nat-addresses"] != "router" {
+			t.Errorf("%s: expected nat-addresses=router, got %q", vpcID, port.Options["nat-addresses"])
+		}
+	}
+	// Expect exactly 2 updates (vpc-a + vpc-b); vpc-ok must be idempotent no-op.
+	if got := mock.UpdateLogicalSwitchPortCalls - startUpdates; got != 2 {
+		t.Errorf("expected 2 UpdateLogicalSwitchPort calls (one per stale ext port); got %d", got)
+	}
+}
+
+func TestEnsureLocalnetOptions_ErrorOnMissingPort(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	err := topo.ensureLocalnetOptions(ctx, "ext-port-missing")
+	if err == nil {
+		t.Fatal("expected error when port missing")
+	}
+	if !strings.Contains(err.Error(), "ext-port-missing") {
+		t.Errorf("error should name the port; got: %v", err)
+	}
+}
+
+// reconcileIGW must surface the CreateLogicalSwitchPort error and roll back
+// the external switch when the localnet port name collides (e.g. a stale
+// pre-existing port from a prior attach that leaked).
+func TestTopologyHandler_ReconcileIGW_LocalnetPortCreateError(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+
+	// Pre-create VPC router.
+	_ = mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        "vpc-vpc-clash",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-clash", "spinifex:cidr": "10.0.0.0/16"},
+	})
+
+	// Pre-seed a logical switch port named "ext-port-vpc-clash" on an
+	// unrelated switch so reconcileIGW's CreateLogicalSwitchPort call
+	// collides with the existing port.
+	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "stale-switch"})
+	_ = mock.CreateLogicalSwitchPort(ctx, "stale-switch", &nbdb.LogicalSwitchPort{
+		Name: "ext-port-vpc-clash",
+		Type: "localnet",
+	})
+
+	err := topo.reconcileIGW(ctx, "vpc-clash", "igw-clash")
+	if err == nil {
+		t.Fatal("expected error from reconcileIGW when localnet port collides")
+	}
+	if !strings.Contains(err.Error(), "create localnet port") {
+		t.Errorf("expected 'create localnet port' in error; got: %v", err)
+	}
+
+	// The external switch must have been rolled back.
+	if _, err := mock.GetLogicalSwitch(ctx, "ext-vpc-clash"); err == nil {
+		t.Error("expected external switch to be rolled back after port-create failure")
 	}
 }

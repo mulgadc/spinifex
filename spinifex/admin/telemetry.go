@@ -30,7 +30,11 @@ type TelemetryPayload struct {
 	Arch         string `json:"arch"`
 	OS           string `json:"os"`
 	ExternalMode string `json:"external_mode,omitempty"`
-	Timestamp    string `json:"timestamp"`
+	// Email is the operator's address from `spx admin init --email`. Used
+	// by install.mulgadc.com to notify of updates/security advisories.
+	// Empty for headless installs that didn't supply SPINIFEX_EMAIL.
+	Email     string `json:"email,omitempty"`
+	Timestamp string `json:"timestamp"`
 
 	// URL overrides the telemetry endpoint (for testing only). Not serialized.
 	URL string `json:"-"`

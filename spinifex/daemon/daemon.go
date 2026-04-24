@@ -2165,3 +2165,52 @@ func probeGPU() gpuProbeResult {
 	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
 	return r
 }
+
+// resolveGPUModel maps a discovered GPU to an instance type model.
+// Overrides take priority, then the production model list, then a g5 default.
+// Any GPU device that reaches the default path is treated as a g5 instance,
+// so consumer GPUs used for testing work without explicit config entries.
+func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) instancetypes.GPUModel {
+	for i := range overrides {
+		o := &overrides[i]
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
+			return instancetypes.GPUModel{
+				VendorID:     o.VendorID,
+				DeviceID:     o.DeviceID,
+				Family:       o.Family,
+				Manufacturer: o.Manufacturer,
+				Name:         o.Name,
+				MemoryMiB:    o.MemoryMiB,
+			}
+		}
+	}
+	if m := instancetypes.GPUModelForVendorDevice(dev.VendorID, dev.DeviceID); m != nil {
+		return *m
+	}
+	// Default: any discovered GPU device maps to g5 using its detected specs.
+	name := dev.Model
+	if name == "" {
+		name = fmt.Sprintf("GPU %s:%s", dev.VendorID, dev.DeviceID)
+	}
+	return instancetypes.GPUModel{
+		VendorID:     dev.VendorID,
+		DeviceID:     dev.DeviceID,
+		Family:       "g5",
+		Manufacturer: gpuVendorDisplayName(dev.Vendor),
+		Name:         name,
+		MemoryMiB:    dev.MemoryMiB,
+	}
+}
+
+func gpuVendorDisplayName(v gpu.Vendor) string {
+	switch v {
+	case gpu.VendorNVIDIA:
+		return "NVIDIA"
+	case gpu.VendorAMD:
+		return "AMD"
+	case gpu.VendorIntel:
+		return "Intel"
+	default:
+		return "Unknown"
+	}
+}

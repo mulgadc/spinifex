@@ -555,6 +555,11 @@ func installBootloader(disk string) error {
 		}
 		return biosErr
 	}
+	// Copy splash image and unicode font from the ISO (mounted at /cdrom) so the
+	// installed GRUB shows the same branded background as the installer GRUB.
+	// The font must be at /boot/grub/fonts/unicode.pf2 so update-grub finds it
+	// there and emits the same loadfont path as the ISO's grub.cfg — GRUB 2.12
+	// (trixie) needs the font in the boot partition, not just /usr/share/grub/.
 	copySplashImage(mountRoot)
 	copyGrubFont(mountRoot)
 
@@ -713,9 +718,46 @@ func partitionPaths(disk string) (efi, root string) {
 	return disk + "2", disk + "3"
 }
 
-// copySplashImage copies the GRUB splash (embedded in the squashfs at build time by
-// inject-bins.sh) into the installed system so the post-install GRUB shows the same
-// branded background as the installer GRUB. Non-fatal — missing source is logged and skipped.
+// copyGrubFont copies the unicode.pf2 GRUB font into the installed system's
+// /boot/grub/fonts/ directory. This ensures update-grub finds the font at
+// /boot/grub/fonts/unicode.pf2 — the same path the ISO's grub.cfg uses —
+// so the generated grub.cfg enables gfxterm and the background image.
+// Without this, grub-mkconfig falls back to /usr/share/grub/unicode.pf2,
+// a path that GRUB 2.12 (trixie) may fail to resolve at boot time.
+// Non-fatal — a missing source is logged and skipped.
+func copyGrubFont(root string) {
+	candidates := []string{
+		"/cdrom/boot/grub/fonts/unicode.pf2", // ISO tree (preferred)
+		"/usr/share/grub/unicode.pf2",        // live system grub-common fallback
+	}
+	for _, src := range candidates {
+		in, err := os.Open(src)
+		if err != nil {
+			continue
+		}
+		defer in.Close()
+		dstDir := filepath.Join(root, "boot/grub/fonts")
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			slog.Warn("copyGrubFont: cannot create fonts dir", "err", err)
+			return
+		}
+		out, err := os.OpenFile(filepath.Join(dstDir, "unicode.pf2"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			slog.Warn("copyGrubFont: cannot open destination", "err", err)
+			return
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, in); err != nil {
+			slog.Warn("copyGrubFont: copy failed", "err", err)
+		}
+		return
+	}
+	slog.Warn("copyGrubFont: no unicode.pf2 found, splash may not display")
+}
+
+// copySplashImage copies the GRUB splash from the live ISO (/cdrom/boot/grub/splash.png)
+// into the installed system so the post-install GRUB shows the same branded background
+// as the installer. Non-fatal — a missing or unreadable source is logged and skipped.
 func copySplashImage(root string) {
 	const src = "/usr/share/spinifex/grub-splash.png"
 	in, err := os.Open(src)

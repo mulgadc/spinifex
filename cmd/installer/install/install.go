@@ -783,34 +783,6 @@ func copySplashImage(root string) {
 	}
 }
 
-// copyGrubFont copies the unicode font into the installed system's
-// /boot/grub/fonts/ so the loadfont path in 05_spinifex resolves at boot.
-// grub-install does not copy fonts; we mirror what build-iso.sh does.
-func copyGrubFont(root string) {
-	const src = "/usr/share/grub/unicode.pf2"
-	in, err := os.Open(src)
-	if err != nil {
-		slog.Warn("copyGrubFont: font not found, graphical GRUB may not work", "path", src)
-		return
-	}
-	defer in.Close()
-
-	dstDir := filepath.Join(root, "boot/grub/fonts")
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		slog.Warn("copyGrubFont: cannot create fonts dir", "err", err)
-		return
-	}
-	out, err := os.OpenFile(filepath.Join(dstDir, "unicode.pf2"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		slog.Warn("copyGrubFont: cannot open destination", "err", err)
-		return
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		slog.Warn("copyGrubFont: copy failed", "err", err)
-	}
-}
-
 // maskSystemdUnit creates a symlink to /dev/null for the given unit, which is
 // the standard way to permanently disable a unit so systemd will never start it.
 func maskSystemdUnit(root, unit string) error {

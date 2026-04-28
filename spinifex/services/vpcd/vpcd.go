@@ -638,7 +638,7 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		}
 		br, err := portToBr("veth-wan-ovs")
 		if err != nil {
-			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs not on OVS — is setup-ovn.sh's veth branch installed and systemd-networkd up? %w", err)
+			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs not on OVS — is spinifex-veth-wan.service running? %w", err)
 		}
 		if br != OvnExternalBridge {
 			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs is on OVS bridge %q, expected %q",
@@ -646,7 +646,7 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		}
 		master, err := readLinkMaster("veth-wan-br")
 		if err != nil {
-			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br missing or has no master — systemd-networkd drop-in not applied? %w", err)
+			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br missing or has no master — is spinifex-veth-wan.service running? %w", err)
 		}
 		if master != dhcpBindBridge {
 			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br master is %q, expected %q (dhcp_bind_bridge)",
@@ -657,6 +657,23 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		return fmt.Errorf("vpcd: unknown bridge_mode %q — supported values: %q, %q",
 			mode, BridgeModeDirect, BridgeModeVeth)
 	}
+}
+
+// setBridgePromiscMode enables or disables promiscuous mode on a Linux bridge.
+// Non-fatal: logs a warning on failure so vpcd keeps running on routers that
+// broadcast DHCP offers (where promisc is not required).
+func setBridgePromiscMode(bridge string, on bool) {
+	mode := "off"
+	if on {
+		mode = "on"
+	}
+	out, err := sudoCommand("ip", "link", "set", bridge, "promisc", mode).CombinedOutput()
+	if err != nil {
+		slog.Warn("vpcd: failed to set promisc on DHCP bridge",
+			"bridge", bridge, "on", on, "err", err, "output", strings.TrimSpace(string(out)))
+		return
+	}
+	slog.Debug("vpcd: DHCP bridge promisc", "bridge", bridge, "on", on)
 }
 
 // setMacvlanMAC sets the MAC address on a macvlan interface. The interface is

@@ -52,16 +52,13 @@ WantedBy=multi-user.target
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return err
 	}
-	wantsDir := filepath.Join(root, "etc/systemd/system/multi-user.target.wants")
-	if err := os.MkdirAll(wantsDir, 0o755); err != nil {
-		return err
+	networkdService := filepath.Join(multiUserWants, "systemd-networkd.service")
+	if err := os.Remove(networkdService); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale symlink %s: %w", networkdService, err)
 	}
-	link := filepath.Join(wantsDir, "spinifex-lan-bridge.service")
-	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale symlink %s: %w", link, err)
+	if err := os.Symlink("/lib/systemd/system/systemd-networkd.service", networkdService); err != nil {
+		return fmt.Errorf("enable systemd-networkd.service: %w", err)
 	}
-	return os.Symlink("/etc/systemd/system/spinifex-lan-bridge.service", link)
-}
 
 // WriteFirstbootUnit writes the spinifex-firstboot.service oneshot unit that
 // runs the firstboot provisioning script on the first real boot after

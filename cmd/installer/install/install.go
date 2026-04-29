@@ -172,6 +172,7 @@ func copyRootfs() error {
 		"--exclude=/etc/openvswitch/",
 		"--exclude=/var/lib/openvswitch/",
 		"--exclude=/var/lib/dhcpcd/",
+		"--exclude=/etc/ssh/ssh_host_*",
 		"--exclude=/lost+found",
 		"--exclude=/boot/efi",
 		"/", mountRoot+"/",

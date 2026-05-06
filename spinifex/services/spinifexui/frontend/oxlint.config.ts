@@ -51,7 +51,6 @@ export default defineConfig({
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
-    "unicorn/number-literal-case": "off",
   },
   overrides: [
     {

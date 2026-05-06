@@ -13,6 +13,11 @@ import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
   Field,
   FieldDescription,
   FieldError,
@@ -381,104 +386,108 @@ function CreateInstance() {
           <FieldError errors={[errors.count]} />
         </Field>
 
-        {/* Storage (root volume) */}
-        <fieldset className="space-y-4 rounded-md border border-border p-4">
-          <legend className="px-1 text-sm font-medium">
-            Storage (root volume)
-          </legend>
+        {/* Block Device Mappings (root volume) — collapsed by default */}
+        <Collapsible>
+          <CollapsibleTrigger
+            className="text-left text-sm font-medium text-muted-foreground hover:text-foreground"
+            render={<button type="button" />}
+          >
+            Block Device Mappings (root volume)
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3 space-y-4 border-l-2 border-muted pl-4">
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootDeviceName">Device Name</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.rootDeviceName}
+                id="rootDeviceName"
+                type="text"
+                {...register("rootDeviceName")}
+              />
+              <FieldError errors={[errors.rootDeviceName]} />
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="rootDeviceName">Device Name</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.rootDeviceName}
-              id="rootDeviceName"
-              type="text"
-              {...register("rootDeviceName")}
-            />
-            <FieldError errors={[errors.rootDeviceName]} />
-          </Field>
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.rootVolumeSize}
+                id="rootVolumeSize"
+                max={MAX_VOLUME_SIZE_GIB}
+                min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
+                placeholder={
+                  selectedRoot.snapshotSize
+                    ? `${selectedRoot.snapshotSize} (AMI default)`
+                    : "use AMI / backend default"
+                }
+                type="number"
+                {...register("rootVolumeSize", {
+                  setValueAs: (value: string) =>
+                    value === "" || value === null || value === undefined
+                      ? undefined
+                      : Number(value),
+                })}
+              />
+              {selectedRoot.snapshotSize !== undefined && (
+                <FieldDescription>
+                  AMI snapshot size: {selectedRoot.snapshotSize} GiB
+                </FieldDescription>
+              )}
+              <FieldError errors={[errors.rootVolumeSize]} />
+            </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.rootVolumeSize}
-              id="rootVolumeSize"
-              max={MAX_VOLUME_SIZE_GIB}
-              min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
-              placeholder={
-                selectedRoot.snapshotSize
-                  ? `${selectedRoot.snapshotSize} (AMI default)`
-                  : "use AMI / backend default"
-              }
-              type="number"
-              {...register("rootVolumeSize", {
-                setValueAs: (value: string) =>
-                  value === "" || value === null || value === undefined
-                    ? undefined
-                    : Number(value),
-              })}
-            />
-            {selectedRoot.snapshotSize !== undefined && (
-              <FieldDescription>
-                AMI snapshot size: {selectedRoot.snapshotSize} GiB
-              </FieldDescription>
-            )}
-            <FieldError errors={[errors.rootVolumeSize]} />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="rootVolumeType">Volume Type</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="rootVolumeType"
-              render={({ field }) => (
-                <Select
-                  onValueChange={(value) => field.onChange(value)}
-                  value={field.value ?? DEFAULT_VOLUME_TYPE}
-                >
-                  <SelectTrigger
-                    aria-invalid={!!errors.rootVolumeType}
-                    className="w-full"
-                    id="rootVolumeType"
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootVolumeType">Volume Type</label>
+              </FieldTitle>
+              <Controller
+                control={control}
+                name="rootVolumeType"
+                render={({ field }) => (
+                  <Select
+                    onValueChange={(value) => field.onChange(value)}
+                    value={field.value ?? DEFAULT_VOLUME_TYPE}
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {VOLUME_TYPES.map((vt) => (
-                      <SelectItem key={vt} value={vt}>
-                        {vt}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <FieldError errors={[errors.rootVolumeType]} />
-          </Field>
+                    <SelectTrigger
+                      aria-invalid={!!errors.rootVolumeType}
+                      className="w-full"
+                      id="rootVolumeType"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VOLUME_TYPES.map((vt) => (
+                        <SelectItem key={vt} value={vt}>
+                          {vt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <FieldError errors={[errors.rootVolumeType]} />
+            </Field>
 
-          <Field>
-            <Controller
-              control={control}
-              name="rootDeleteOnTermination"
-              render={({ field }) => (
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    checked={field.value ?? true}
-                    onChange={(e) => field.onChange(e.target.checked)}
-                    type="checkbox"
-                  />
-                  Delete on termination
-                </label>
-              )}
-            />
-          </Field>
-        </fieldset>
+            <Field>
+              <Controller
+                control={control}
+                name="rootDeleteOnTermination"
+                render={({ field }) => (
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      checked={field.value ?? true}
+                      onChange={(e) => field.onChange(e.target.checked)}
+                      type="checkbox"
+                    />
+                    Delete on termination
+                  </label>
+                )}
+              />
+            </Field>
+          </CollapsibleContent>
+        </Collapsible>
 
         <CliCommandPanel commands={buildRunInstancesCommands(watch)} />
 

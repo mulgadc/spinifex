@@ -195,6 +195,76 @@ describe("useCreateInstance", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(mockSend.mock.calls[0]?.[0].input.Placement).toBeUndefined()
   })
+
+  it("omits BlockDeviceMappings when no storage fields are set", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootDeviceName: "/dev/sda1",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(
+      mockSend.mock.calls[0]?.[0].input.BlockDeviceMappings,
+    ).toBeUndefined()
+  })
+
+  it("includes BlockDeviceMappings when root volume size is set", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootDeviceName: "/dev/sda1",
+      rootVolumeSize: 100,
+      rootVolumeType: "gp3",
+      rootDeleteOnTermination: true,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockSend.mock.calls[0]?.[0].input.BlockDeviceMappings).toEqual([
+      {
+        DeviceName: "/dev/sda1",
+        Ebs: {
+          VolumeSize: 100,
+          VolumeType: "gp3",
+          DeleteOnTermination: true,
+        },
+      },
+    ])
+  })
+
+  it("includes only the storage fields the user set", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootDeviceName: "/dev/sda1",
+      rootDeleteOnTermination: false,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(mockSend.mock.calls[0]?.[0].input.BlockDeviceMappings).toEqual([
+      {
+        DeviceName: "/dev/sda1",
+        Ebs: {
+          DeleteOnTermination: false,
+        },
+      },
+    ])
+  })
 })
 
 describe("useImportKeyPair", () => {

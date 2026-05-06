@@ -145,6 +145,7 @@ export function useCreateInstance() {
         Placement: params.placementGroupName
           ? { GroupName: params.placementGroupName }
           : undefined,
+        BlockDeviceMappings: buildBlockDeviceMappings(params),
       })
       return getEc2Client().send(command)
     },
@@ -152,6 +153,33 @@ export function useCreateInstance() {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
     },
   })
+}
+
+function buildBlockDeviceMappings(params: CreateInstanceParams) {
+  const {
+    rootDeviceName,
+    rootVolumeSize,
+    rootVolumeType,
+    rootDeleteOnTermination,
+  } = params
+  const hasOverride =
+    rootVolumeSize !== undefined ||
+    rootVolumeType !== undefined ||
+    rootDeleteOnTermination !== undefined
+  return hasOverride
+    ? [
+        {
+          DeviceName: rootDeviceName,
+          Ebs: {
+            ...(rootVolumeSize !== undefined && { VolumeSize: rootVolumeSize }),
+            ...(rootVolumeType !== undefined && { VolumeType: rootVolumeType }),
+            ...(rootDeleteOnTermination !== undefined && {
+              DeleteOnTermination: rootDeleteOnTermination,
+            }),
+          },
+        },
+      ]
+    : undefined
 }
 
 export function useCreateKeyPair() {

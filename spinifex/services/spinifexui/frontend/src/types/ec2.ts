@@ -17,6 +17,8 @@ const keyNameField = z
     "Key name contains invalid characters",
   )
 
+export const VOLUME_TYPES = ["gp3"] as const
+
 export const createInstanceSchema = z.object({
   imageId: z.string("Please select an Image"),
   instanceType: z.string("Please select an instance type"),
@@ -26,6 +28,15 @@ export const createInstanceSchema = z.object({
   count: z
     .int("Instance count must be a whole number")
     .min(1, "Instance count must be at least 1"),
+  rootDeviceName: z.string().optional(),
+  rootVolumeSize: z
+    .number()
+    .int("Volume size must be a whole number")
+    .min(1, "Volume size must be at least 1 GiB")
+    .max(16_384, "Volume size must be at most 16384 GiB")
+    .optional(),
+  rootVolumeType: z.enum(VOLUME_TYPES).optional(),
+  rootDeleteOnTermination: z.boolean().optional(),
 })
 
 export type CreateInstanceFormData = z.infer<typeof createInstanceSchema>

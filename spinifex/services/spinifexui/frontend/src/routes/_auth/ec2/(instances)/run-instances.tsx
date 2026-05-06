@@ -1,6 +1,8 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { ChevronDown } from "lucide-react"
+import { useEffect } from "react"
 import { Controller, useForm } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
@@ -11,7 +13,17 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldTitle,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -28,7 +40,16 @@ import {
   ec2PlacementGroupsQueryOptions,
   ec2SubnetsQueryOptions,
 } from "@/queries/ec2"
-import { type CreateInstanceFormData, createInstanceSchema } from "@/types/ec2"
+import {
+  type CreateInstanceFormData,
+  VOLUME_TYPES,
+  createInstanceSchema,
+} from "@/types/ec2"
+
+const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
+const DEFAULT_VOLUME_TYPE = "gp3"
+const MIN_VOLUME_SIZE_GIB = 1
+const MAX_VOLUME_SIZE_GIB = 16_384
 
 export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
   loader: async ({ context }) => {
@@ -80,28 +101,50 @@ function CreateInstance() {
   const defaultInstanceType =
     uniqueInstanceTypes.find((type) => type.endsWith(".nano")) ??
     uniqueInstanceTypes[0]
+  const defaultRoot = getRootMapping(
+    images.find((img) => img.ImageId === defaultImageId),
+  )
 
   const {
     control,
     handleSubmit,
     register,
+    setValue,
     watch,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(
-      createInstanceSchema.refine(
-        (data) => data.count <= (instanceTypeCounts[data.instanceType] ?? 1),
-        {
-          message: "Cannot exceed available capacity",
-          path: ["count"],
-        },
-      ),
+      createInstanceSchema
+        .refine(
+          (data) => data.count <= (instanceTypeCounts[data.instanceType] ?? 1),
+          {
+            message: "Cannot exceed available capacity",
+            path: ["count"],
+          },
+        )
+        .superRefine((data, ctx) => {
+          const minSize = getRootMapping(
+            images.find((img) => img.ImageId === data.imageId),
+          ).snapshotSize
+          if (
+            data.rootVolumeSize !== undefined &&
+            minSize !== undefined &&
+            data.rootVolumeSize < minSize
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              message: `Volume size must be at least ${minSize} GiB (AMI snapshot size)`,
+              path: ["rootVolumeSize"],
+            })
+          }
+        }),
     ),
     defaultValues: {
       count: 1,
       imageId: defaultImageId ?? "",
       keyName: defaultKeyName ?? "",
       instanceType: defaultInstanceType ?? "",
+      rootDeviceName: defaultRoot.deviceName,
     },
   })
 
@@ -109,6 +152,17 @@ function CreateInstance() {
   const maxCount = selectedInstanceType
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
+  const selectedImageId = watch("imageId")
+  const selectedRoot = getRootMapping(
+    images.find((img) => img.ImageId === selectedImageId),
+  )
+
+  // Re-prefill DeviceName when the user picks a different AMI. Size / type /
+  // delete-on-termination stay blank by default so an unchanged form sends
+  // no BlockDeviceMappings (preserves today's backend default).
+  useEffect(() => {
+    setValue("rootDeviceName", selectedRoot.deviceName)
+  }, [selectedImageId, selectedRoot.deviceName, setValue])
 
   const onSubmit = async (data: CreateInstanceFormData) => {
     await createMutation.mutateAsync(data)
@@ -333,6 +387,110 @@ function CreateInstance() {
           <FieldError errors={[errors.count]} />
         </Field>
 
+        {/* Block Device Mappings (root volume) — collapsed by default */}
+        <Collapsible>
+          <CollapsibleTrigger
+            className="group flex h-7 w-full items-center justify-between rounded-md border border-input bg-input/20 px-2 py-0.5 text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 md:text-xs/relaxed dark:bg-input/30 dark:hover:bg-input/50"
+            render={<button type="button" />}
+          >
+            <span>Block Device Mappings (root volume)</span>
+            <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3 space-y-4 rounded-md border border-border p-4">
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootDeviceName">Device Name</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.rootDeviceName}
+                id="rootDeviceName"
+                type="text"
+                {...register("rootDeviceName")}
+              />
+              <FieldError errors={[errors.rootDeviceName]} />
+            </Field>
+
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.rootVolumeSize}
+                id="rootVolumeSize"
+                max={MAX_VOLUME_SIZE_GIB}
+                min={selectedRoot.snapshotSize ?? MIN_VOLUME_SIZE_GIB}
+                placeholder={
+                  selectedRoot.snapshotSize
+                    ? `${selectedRoot.snapshotSize} (AMI default)`
+                    : "use AMI / backend default"
+                }
+                type="number"
+                {...register("rootVolumeSize", {
+                  setValueAs: (value: string) =>
+                    value === "" || value === null || value === undefined
+                      ? undefined
+                      : Number(value),
+                })}
+              />
+              {selectedRoot.snapshotSize !== undefined && (
+                <FieldDescription>
+                  AMI snapshot size: {selectedRoot.snapshotSize} GiB
+                </FieldDescription>
+              )}
+              <FieldError errors={[errors.rootVolumeSize]} />
+            </Field>
+
+            <Field>
+              <FieldTitle>
+                <label htmlFor="rootVolumeType">Volume Type</label>
+              </FieldTitle>
+              <Controller
+                control={control}
+                name="rootVolumeType"
+                render={({ field }) => (
+                  <Select
+                    onValueChange={(value) => field.onChange(value)}
+                    value={field.value ?? DEFAULT_VOLUME_TYPE}
+                  >
+                    <SelectTrigger
+                      aria-invalid={!!errors.rootVolumeType}
+                      className="w-full"
+                      id="rootVolumeType"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VOLUME_TYPES.map((vt) => (
+                        <SelectItem key={vt} value={vt}>
+                          {vt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+              <FieldError errors={[errors.rootVolumeType]} />
+            </Field>
+
+            <Field>
+              <Controller
+                control={control}
+                name="rootDeleteOnTermination"
+                render={({ field }) => (
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      checked={field.value ?? true}
+                      onChange={(e) => field.onChange(e.target.checked)}
+                      type="checkbox"
+                    />
+                    Delete on termination
+                  </label>
+                )}
+              />
+            </Field>
+          </CollapsibleContent>
+        </Collapsible>
+
         <CliCommandPanel commands={buildRunInstancesCommands(watch)} />
 
         {/* Actions */}
@@ -363,6 +521,26 @@ function CreateInstance() {
   )
 }
 
+interface RootMappingDefaults {
+  deviceName: string
+  snapshotSize: number | undefined
+}
+
+interface ImageLike {
+  RootDeviceName?: string
+  BlockDeviceMappings?: { DeviceName?: string; Ebs?: { VolumeSize?: number } }[]
+}
+
+function getRootMapping(image: ImageLike | undefined): RootMappingDefaults {
+  const deviceName = image?.RootDeviceName ?? DEFAULT_ROOT_DEVICE_NAME
+  const mappings = image?.BlockDeviceMappings ?? []
+  const root = mappings.find((m) => m.DeviceName === deviceName) ?? mappings[0]
+  return {
+    deviceName,
+    snapshotSize: root?.Ebs?.VolumeSize,
+  }
+}
+
 function buildRunInstancesCommands(
   watch: (name?: string) => unknown,
 ): CliCommand[] {
@@ -380,6 +558,20 @@ function buildRunInstancesCommands(
     typeof rawPlacementGroupName === "string" ? rawPlacementGroupName : ""
   const rawCount = watch("count")
   const count = typeof rawCount === "number" ? rawCount : 0
+  const rawRootDeviceName = watch("rootDeviceName")
+  const rootDeviceName =
+    typeof rawRootDeviceName === "string" ? rawRootDeviceName : ""
+  const rawRootVolumeSize = watch("rootVolumeSize")
+  const rootVolumeSize =
+    typeof rawRootVolumeSize === "number" ? rawRootVolumeSize : undefined
+  const rawRootVolumeType = watch("rootVolumeType")
+  const rootVolumeType =
+    typeof rawRootVolumeType === "string" ? rawRootVolumeType : ""
+  const rawRootDeleteOnTermination = watch("rootDeleteOnTermination")
+  const rootDeleteOnTermination =
+    typeof rawRootDeleteOnTermination === "boolean"
+      ? rawRootDeleteOnTermination
+      : true
 
   const parts = [
     {
@@ -412,6 +604,33 @@ function buildRunInstancesCommands(
     { type: "flag" as const, value: " \\\n  --count" },
     { type: "value" as const, value: ` ${count || 1}` },
   )
+
+  const hasStorageOverride =
+    rootVolumeSize !== undefined ||
+    rawRootVolumeType !== undefined ||
+    rawRootDeleteOnTermination !== undefined
+  if (hasStorageOverride) {
+    const ebs: Record<string, unknown> = {}
+    if (rootVolumeSize !== undefined) {
+      ebs.VolumeSize = rootVolumeSize
+    }
+    if (rootVolumeType) {
+      ebs.VolumeType = rootVolumeType
+    }
+    if (rawRootDeleteOnTermination !== undefined) {
+      ebs.DeleteOnTermination = rootDeleteOnTermination
+    }
+    const bdm = JSON.stringify([
+      {
+        DeviceName: rootDeviceName || DEFAULT_ROOT_DEVICE_NAME,
+        Ebs: ebs,
+      },
+    ])
+    parts.push(
+      { type: "flag" as const, value: " \\\n  --block-device-mappings" },
+      { type: "value" as const, value: ` '${bdm}'` },
+    )
+  }
 
   return [{ label: "Run Instances", parts }]
 }

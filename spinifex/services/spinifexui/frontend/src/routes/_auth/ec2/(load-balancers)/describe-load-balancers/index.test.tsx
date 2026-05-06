@@ -106,7 +106,7 @@ describe("describe-load-balancers list route", () => {
       screen.queryByText("Load balancer image not imported"),
     ).not.toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     ).not.toBeDisabled()
   })
 
@@ -134,7 +134,7 @@ describe("describe-load-balancers list route", () => {
       screen.getByText(/spx admin images import --name lb-alpine/),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     ).toBeDisabled()
   })
 

@@ -113,7 +113,7 @@ describe("describe-target-groups list route", () => {
     expect(screen.getByText("tg-one")).toBeInTheDocument()
     expect(screen.getByText("tg-two")).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create target group" }),
+      screen.getByRole("button", { name: "Create Target Group" }),
     ).toBeInTheDocument()
 
     await waitFor(() => {

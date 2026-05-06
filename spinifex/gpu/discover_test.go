@@ -209,7 +209,7 @@ func TestDiscover_SkipsIntelGPU(t *testing.T) {
 	}
 }
 
-func TestIsDisplayClass(t *testing.T) {
+func TestIsPassthroughClass(t *testing.T) {
 	cases := []struct {
 		class string
 		want  bool
@@ -217,13 +217,14 @@ func TestIsDisplayClass(t *testing.T) {
 		{"0x030200", true},  // 3D controller
 		{"0x030000", true},  // VGA
 		{"0x038000", true},  // display controller
+		{"0x120000", true},  // processing accelerator (AMD Instinct)
 		{"0x010802", false}, // NVMe
 		{"0x0c0330", false}, // USB
 		{"0x020000", false}, // Ethernet
 	}
 	for _, c := range cases {
-		if got := isDisplayClass(c.class); got != c.want {
-			t.Errorf("isDisplayClass(%q) = %v, want %v", c.class, got, c.want)
+		if got := isPassthroughClass(c.class); got != c.want {
+			t.Errorf("isPassthroughClass(%q) = %v, want %v", c.class, got, c.want)
 		}
 	}
 }

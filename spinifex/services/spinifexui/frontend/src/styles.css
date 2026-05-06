@@ -2,6 +2,8 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/jetbrains-mono";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* MILITARY / TACTICAL LIGHT THEME */
 :root {
   --font-sans: "Geist Variable", sans-serif;

@@ -34,7 +34,6 @@ export default defineConfig({
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
     "eslint/prefer-destructuring": "off",
-    "eslint/sort-imports": "off",
     "eslint/sort-keys": "off",
     "eslint/sort-vars": "off",
     "import/consistent-type-specifier-style": "off",
@@ -51,7 +50,6 @@ export default defineConfig({
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
-    "unicorn/number-literal-case": "off",
   },
   overrides: [
     {

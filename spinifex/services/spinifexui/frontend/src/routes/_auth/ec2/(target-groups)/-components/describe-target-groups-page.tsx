@@ -20,10 +20,10 @@ export function DescribeTargetGroupsPage() {
       <PageHeading
         actions={
           <Link to="/ec2/create-target-group">
-            <Button>Create target group</Button>
+            <Button>Create Target Group</Button>
           </Link>
         }
-        title="Target groups"
+        title="Target Groups"
       />
 
       {targetGroups.length > 0 ? (

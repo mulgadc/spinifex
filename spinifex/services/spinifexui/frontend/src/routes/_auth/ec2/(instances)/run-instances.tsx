@@ -1,6 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { ChevronDown } from "lucide-react"
 import { useEffect } from "react"
 import { Controller, useForm } from "react-hook-form"
 
@@ -389,12 +390,13 @@ function CreateInstance() {
         {/* Block Device Mappings (root volume) — collapsed by default */}
         <Collapsible>
           <CollapsibleTrigger
-            className="text-left text-sm font-medium text-muted-foreground hover:text-foreground"
+            className="group flex h-7 w-full items-center justify-between rounded-md border border-input bg-input/20 px-2 py-0.5 text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 md:text-xs/relaxed dark:bg-input/30 dark:hover:bg-input/50"
             render={<button type="button" />}
           >
-            Block Device Mappings (root volume)
+            <span>Block Device Mappings (root volume)</span>
+            <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
           </CollapsibleTrigger>
-          <CollapsibleContent className="mt-3 space-y-4 border-l-2 border-muted pl-4">
+          <CollapsibleContent className="mt-3 space-y-4 rounded-md border border-border p-4">
             <Field>
               <FieldTitle>
                 <label htmlFor="rootDeviceName">Device Name</label>

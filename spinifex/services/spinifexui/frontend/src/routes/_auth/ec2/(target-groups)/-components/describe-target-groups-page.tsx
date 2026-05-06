@@ -35,7 +35,7 @@ export function DescribeTargetGroupsPage() {
                 <th className="px-4 py-2 font-medium">Protocol</th>
                 <th className="px-4 py-2 font-medium">Port</th>
                 <th className="px-4 py-2 font-medium">VPC</th>
-                <th className="px-4 py-2 font-medium">Target type</th>
+                <th className="px-4 py-2 font-medium">Target Type</th>
                 <th className="px-4 py-2 font-medium">Targets</th>
                 <th className="px-4 py-2 font-medium">Health</th>
               </tr>

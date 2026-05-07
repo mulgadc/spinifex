@@ -99,6 +99,13 @@ type OVNClient interface {
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	DeletePortGroup(ctx context.Context, name string) error
+	// Incremental membership — preferred for SG enforcement because OVSDB
+	// mutate-insert/delete is atomic and idempotent under concurrent change.
+	AddPortToPortGroup(ctx context.Context, name string, lspName string) error
+	RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error
+	// SetPortGroupPorts replaces the full membership in one transaction.
+	// Reserved for full-rewrite paths (reconciler garbage collection); the
+	// incremental primitives are the default for handlers.
 	SetPortGroupPorts(ctx context.Context, name string, ports []string) error
 
 	// ACLs (attached to port groups)
@@ -945,25 +952,185 @@ func (c *LiveOVNClient) DeleteStaticRoute(ctx context.Context, routerName string
 	return nil
 }
 
-// Port Group and ACL methods — stub implementations for LiveOVNClient.
-// Full libovsdb implementation will come in a future phase.
+// Port Groups
 
-func (c *LiveOVNClient) CreatePortGroup(_ context.Context, _ string, _ []string) error {
-	return fmt.Errorf("CreatePortGroup: not yet implemented for live OVN client")
+func (c *LiveOVNClient) CreatePortGroup(ctx context.Context, name string, ports []string) error {
+	pg := &nbdb.PortGroup{
+		UUID:        namedUUID("pg_", name),
+		Name:        name,
+		Ports:       ports,
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.client.Create(pg)
+	if err != nil {
+		return fmt.Errorf("create port group ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("create port group transact: %w", err)
+	}
+	return nil
 }
 
-func (c *LiveOVNClient) DeletePortGroup(_ context.Context, _ string) error {
-	return fmt.Errorf("DeletePortGroup: not yet implemented for live OVN client")
+func (c *LiveOVNClient) DeletePortGroup(ctx context.Context, name string) error {
+	pg, err := c.getPortGroup(ctx, name)
+	if err != nil {
+		return fmt.Errorf("delete port group lookup: %w", err)
+	}
+	ops, err := c.client.Where(pg).Delete()
+	if err != nil {
+		return fmt.Errorf("delete port group ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("delete port group transact: %w", err)
+	}
+	return nil
 }
 
-func (c *LiveOVNClient) SetPortGroupPorts(_ context.Context, _ string, _ []string) error {
-	return fmt.Errorf("SetPortGroupPorts: not yet implemented for live OVN client")
+// AddPortToPortGroup is idempotent: re-inserting an existing member is a
+// no-op in OVSDB.
+func (c *LiveOVNClient) AddPortToPortGroup(ctx context.Context, name string, lspName string) error {
+	return c.mutatePortGroupPorts(ctx, name, lspName, "insert")
 }
 
-func (c *LiveOVNClient) AddACL(_ context.Context, _ string, _ ACLSpec) error {
-	return fmt.Errorf("AddACL: not yet implemented for live OVN client")
+func (c *LiveOVNClient) RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error {
+	return c.mutatePortGroupPorts(ctx, name, lspName, "delete")
 }
 
-func (c *LiveOVNClient) ClearACLs(_ context.Context, _ string) error {
-	return fmt.Errorf("ClearACLs: not yet implemented for live OVN client")
+func (c *LiveOVNClient) mutatePortGroupPorts(ctx context.Context, name, lspName, mutator string) error {
+	pg, err := c.getPortGroup(ctx, name)
+	if err != nil {
+		return fmt.Errorf("port group %s lookup: %w", mutator, err)
+	}
+	lsp, err := c.GetLogicalSwitchPort(ctx, lspName)
+	if err != nil {
+		return fmt.Errorf("port group %s lsp lookup: %w", mutator, err)
+	}
+	ops, err := c.client.Where(pg).Mutate(pg, model.Mutation{
+		Field:   &pg.Ports,
+		Mutator: ovsdb.Mutator(mutator), // "insert" or "delete"
+		Value:   []string{lsp.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate port group ports ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("mutate port group ports transact: %w", err)
+	}
+	return nil
+}
+
+// SetPortGroupPorts replaces the full Ports column in one update. Reserved
+// for the reconciler's full-rewrite path; handlers should use the incremental
+// primitives so concurrent membership changes don't race on a read-modify-write.
+func (c *LiveOVNClient) SetPortGroupPorts(ctx context.Context, name string, ports []string) error {
+	pg, err := c.getPortGroup(ctx, name)
+	if err != nil {
+		return fmt.Errorf("set port group ports lookup: %w", err)
+	}
+	pg.Ports = ports
+	ops, err := c.client.Where(pg).Update(pg, &pg.Ports)
+	if err != nil {
+		return fmt.Errorf("set port group ports ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("set port group ports transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveOVNClient) getPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
+	var pgs []nbdb.PortGroup
+	err := c.client.WhereCache(func(pg *nbdb.PortGroup) bool {
+		return pg.Name == name
+	}).List(ctx, &pgs)
+	if err != nil {
+		return nil, fmt.Errorf("get port group: %w", err)
+	}
+	if len(pgs) == 0 {
+		return nil, fmt.Errorf("port group %q not found", name)
+	}
+	return &pgs[0], nil
+}
+
+// ACLs
+
+func (c *LiveOVNClient) AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error {
+	pg, err := c.getPortGroup(ctx, portGroupName)
+	if err != nil {
+		return fmt.Errorf("add ACL port group lookup: %w", err)
+	}
+
+	acl := &nbdb.ACL{
+		UUID:        namedUUID("acl_", portGroupName+"_"+spec.Direction+"_"+spec.Match),
+		Direction:   spec.Direction,
+		Priority:    spec.Priority,
+		Match:       spec.Match,
+		Action:      spec.Action,
+		Log:         spec.Log,
+		ExternalIDs: map[string]string{},
+	}
+	if spec.Name != "" {
+		name := spec.Name
+		acl.Name = &name
+	}
+	if spec.Severity != "" {
+		severity := spec.Severity
+		acl.Severity = &severity
+	}
+
+	createOps, err := c.client.Create(acl)
+	if err != nil {
+		return fmt.Errorf("create ACL ops: %w", err)
+	}
+
+	mutateOps, err := c.client.Where(pg).Mutate(pg, model.Mutation{
+		Field:   &pg.ACLs,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{acl.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate port group ACLs ops: %w", err)
+	}
+
+	ops := append(createOps, mutateOps...)
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("add ACL transact: %w", err)
+	}
+	return nil
+}
+
+// ClearACLs removes every ACL row referenced by the port group and detaches
+// them from the port group's ACLs set in one transaction.
+func (c *LiveOVNClient) ClearACLs(ctx context.Context, portGroupName string) error {
+	pg, err := c.getPortGroup(ctx, portGroupName)
+	if err != nil {
+		return fmt.Errorf("clear ACLs port group lookup: %w", err)
+	}
+	if len(pg.ACLs) == 0 {
+		return nil
+	}
+
+	mutateOps, err := c.client.Where(pg).Mutate(pg, model.Mutation{
+		Field:   &pg.ACLs,
+		Mutator: ovsdb.MutateOperationDelete,
+		Value:   pg.ACLs,
+	})
+	if err != nil {
+		return fmt.Errorf("mutate port group ACLs (delete) ops: %w", err)
+	}
+
+	ops := mutateOps
+	for _, aclUUID := range pg.ACLs {
+		acl := &nbdb.ACL{UUID: aclUUID}
+		deleteOps, dErr := c.client.Where(acl).Delete()
+		if dErr != nil {
+			return fmt.Errorf("delete ACL ops: %w", dErr)
+		}
+		ops = append(ops, deleteOps...)
+	}
+
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("clear ACLs transact: %w", err)
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package vpcd
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -562,6 +563,46 @@ func (m *MockOVNClient) SetPortGroupPorts(_ context.Context, name string, ports 
 		return fmt.Errorf("port group %q not found", name)
 	}
 	pg.Ports = ports
+	return nil
+}
+
+// AddPortToPortGroup is idempotent — re-adding an existing member is a no-op.
+// Mock parity with LiveOVNClient.AddPortToPortGroup.
+func (m *MockOVNClient) AddPortToPortGroup(_ context.Context, name string, lspName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pg, exists := m.portGroups[name]
+	if !exists {
+		return fmt.Errorf("port group %q not found", name)
+	}
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		return fmt.Errorf("logical switch port %q not found", lspName)
+	}
+	if slices.Contains(pg.Ports, lsp.UUID) {
+		return nil
+	}
+	pg.Ports = append(pg.Ports, lsp.UUID)
+	return nil
+}
+
+func (m *MockOVNClient) RemovePortFromPortGroup(_ context.Context, name string, lspName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pg, exists := m.portGroups[name]
+	if !exists {
+		return fmt.Errorf("port group %q not found", name)
+	}
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		return fmt.Errorf("logical switch port %q not found", lspName)
+	}
+	for i, u := range pg.Ports {
+		if u == lsp.UUID {
+			pg.Ports = append(pg.Ports[:i], pg.Ports[i+1:]...)
+			return nil
+		}
+	}
 	return nil
 }
 

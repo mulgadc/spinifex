@@ -299,3 +299,71 @@ func TestReconcileSGsOnce_ENIWithoutLSPLogs(t *testing.T) {
 	result := ReconcileSGsOnce(context.Background(), nc, topo)
 	assert.Equal(t, 0, result.PortMembershipsSynced, "ENI with no LSP must not count as synced")
 }
+
+// TestReconcileSGsOnce_NilTopologyHandler: defensive guard — a partial vpcd
+// startup that fails before TopologyHandler.ovn is wired must not panic when
+// the leader-elected reconciler tick fires.
+func TestReconcileSGsOnce_NilTopologyHandler(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+
+	assert.Equal(t, SGReconcileResult{}, ReconcileSGsOnce(context.Background(), nc, nil),
+		"nil topo must return zero result, not panic")
+	assert.Equal(t, SGReconcileResult{}, ReconcileSGsOnce(context.Background(), nc, NewTopologyHandler(nil)),
+		"topo with nil ovn must return zero result, not panic")
+}
+
+// TestReconcileSGsOnce_SkipsMalformedSGEntry: a corrupt SG record (non-JSON
+// bytes) must be logged-and-skipped, not crash the reconciler. Otherwise a
+// single bad write to the SG bucket would freeze convergence cluster-wide.
+func TestReconcileSGsOnce_SkipsMalformedSGEntry(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	require.NoError(t, ovn.Connect(context.Background()))
+	topo := NewTopologyHandler(ovn)
+
+	// Seed with one valid + one malformed entry. The malformed entry must not
+	// abort the scan — the valid SG must still get its port group created.
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: handlers_ec2_vpc.KVBucketSecurityGroups, History: 1})
+	require.NoError(t, err)
+	_, err = kv.Put(utils.AccountKey(sgReconcileAccountID, "sg-malformed00000"), []byte("not valid json"))
+	require.NoError(t, err)
+	good, _ := json.Marshal(handlers_ec2_vpc.SecurityGroupRecord{
+		GroupId: "sg-good0000000000", VpcId: "vpc-x", CreatedAt: time.Now(),
+	})
+	_, err = kv.Put(utils.AccountKey(sgReconcileAccountID, "sg-good0000000000"), good)
+	require.NoError(t, err)
+
+	result := ReconcileSGsOnce(context.Background(), nc, topo)
+	assert.Equal(t, 1, result.PortGroupsRecreated, "valid SG must still be processed")
+	_, err = ovn.GetPortGroup(context.Background(), portGroupName("sg-good0000000000"))
+	assert.NoError(t, err)
+	_, err = ovn.GetPortGroup(context.Background(), portGroupName("sg-malformed00000"))
+	assert.Error(t, err, "malformed entry must not produce a port group")
+}
+
+// TestReconcileSGsLoop_ExitsOnContextCancel: the periodic loop must stop when
+// its context is cancelled. Otherwise vpcd shutdown leaks a goroutine that
+// keeps holding the reconcile-leader lock until TTL expiry — blocking other
+// vpcds from converging during the shutdown window.
+func TestReconcileSGsLoop_ExitsOnContextCancel(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	require.NoError(t, ovn.Connect(context.Background()))
+	topo := NewTopologyHandler(ovn)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		ReconcileSGsLoop(ctx, nc, topo)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReconcileSGsLoop did not return within 2s of ctx cancel")
+	}
+}

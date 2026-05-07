@@ -414,6 +414,214 @@ func TestSecurity_CreateSG_WithRules_FailsFastOnAddACLError(t *testing.T) {
 	assert.False(t, asExists, "address set must be torn down when AddACLs fails")
 }
 
+// TestSecurity_HandleCreateSG_OVNNotConnected, ...HandleDeleteSG_..., and
+// ...HandleUpdateSG_... lock the defensive guard at the top of each handler:
+// when vpcd's OVN client failed to connect (or has been Closed), the SG event
+// must surface a clear error to the caller instead of nil-deref'ing.
+func TestSecurity_HandleCreateSG_OVNNotConnected(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(nil)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{GroupId: "sg-noovn", VpcId: "vpc-noovn"})
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "create SG must fail when ovn client is nil")
+}
+
+func TestSecurity_HandleDeleteSG_OVNNotConnected(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(nil)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{GroupId: "sg-noovn", VpcId: "vpc-noovn"})
+	resp, err := nc.Request(TopicDeleteSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete SG must fail when ovn client is nil")
+}
+
+func TestSecurity_HandleUpdateSG_OVNNotConnected(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(nil)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{GroupId: "sg-noovn", VpcId: "vpc-noovn"})
+	resp, err := nc.Request(TopicUpdateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "update SG must fail when ovn client is nil")
+}
+
+// TestSecurity_HandleCreateSG_BadJSON / ..._HandleDeleteSG_BadJSON /
+// ..._HandleUpdateSG_BadJSON: malformed event payloads must surface as
+// failures, not be silently dropped — the handler-side caller relies on the
+// ack to know the request was processed.
+func TestSecurity_HandleCreateSG_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(NewMockOVNClient())
+	_ = topo.ovn.Connect(context.Background())
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	resp, err := nc.Request(TopicCreateSG, []byte("not json"), 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "create SG with malformed payload must fail")
+}
+
+func TestSecurity_HandleDeleteSG_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(NewMockOVNClient())
+	_ = topo.ovn.Connect(context.Background())
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	resp, err := nc.Request(TopicDeleteSG, []byte("not json"), 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete SG with malformed payload must fail")
+}
+
+func TestSecurity_HandleUpdateSG_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(NewMockOVNClient())
+	_ = topo.ovn.Connect(context.Background())
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	resp, err := nc.Request(TopicUpdateSG, []byte("not json"), 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "update SG with malformed payload must fail")
+}
+
+// TestSecurity_HandleDeleteSG_FailsFastOnClearACLsError: handleDeleteSG must
+// surface the ClearACLs error rather than swallow it. We trigger this by
+// requesting a delete for an SG that was never created — the mock's ClearACLs
+// returns "port group not found", which must propagate as a failed response.
+func TestSecurity_HandleDeleteSG_FailsFastOnClearACLsError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{GroupId: "sg-never-created", VpcId: "vpc-x"})
+	resp, err := nc.Request(TopicDeleteSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete must fail when port group does not exist")
+}
+
+// TestSecurity_HandleUpdateSG_FailsFastOnClearACLsError: handleUpdateSG must
+// also surface the ClearACLs error — silently swallowing it would leave the
+// caller thinking the rule update succeeded when in fact the old ACLs are
+// still in place.
+func TestSecurity_HandleUpdateSG_FailsFastOnClearACLsError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{
+		GroupId:      "sg-never-created",
+		VpcId:        "vpc-x",
+		IngressRules: []SGRuleForACL{{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "0.0.0.0/0"}},
+	})
+	resp, err := nc.Request(TopicUpdateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "update must fail when port group does not exist")
+}
+
+// TestSecurity_HandleDeleteSG_Idempotent_AddressSetMissing: if the address set
+// has already been cleaned up out-of-band but the port group still exists, the
+// delete must NOT propagate the AS-not-found error — the goal state is "both
+// gone", and we've already achieved it for the AS. Locks the matching
+// fail-fast invariant in TestSecurity_DeleteSG_FailsFastOnAddressSetError
+// (already covered) by exercising the inverse direction: a fresh delete after
+// a successful create must succeed end-to-end without errors leaking.
+//
+// (kept here to avoid duplicating the create→delete fixture; the existing
+// happy-path test exercises the success branch but does not assert that
+// neither half-state lingers.)
+func TestSecurity_HandleDeleteSG_LeavesNoResidualState(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(SGEvent{GroupId: "sg-residual", VpcId: "vpc-x"})
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG")
+
+	resp, err = nc.Request(TopicDeleteSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "delete SG")
+
+	mock.mu.Lock()
+	_, pgExists := mock.portGroups["sg_residual"]
+	_, asExists := mock.addressSets["sg_residual_ip4"]
+	leftoverACLs := 0
+	for _, a := range mock.acls {
+		if a != nil && (a.Match == "outport == @sg_residual && ip4" || a.Match == "inport == @sg_residual && ip4") {
+			leftoverACLs++
+		}
+	}
+	mock.mu.Unlock()
+	assert.False(t, pgExists, "port group must be gone")
+	assert.False(t, asExists, "address set must be gone")
+	assert.Zero(t, leftoverACLs, "no ACL rows must reference the deleted PG")
+}
+
 // containsAll checks if s contains all substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

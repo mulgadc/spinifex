@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -3654,4 +3655,267 @@ func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testi
 	assert.Contains(t, mock.portGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
 	asName := addressSetName(pgName)
 	assert.Contains(t, mock.addressSets[asName].Addresses, "10.0.6.50", "existing-LSP path must reconcile address-set entries")
+}
+
+// --- handleAddNATGateway / handleDeleteNATGateway ---
+//
+// These handlers are fire-and-forget (no respond()), so tests publish + flush
+// + poll OVN state instead of awaiting a NATS reply.
+
+// natGatewayProcessed waits for the SNAT rule for subnetCidr to (dis)appear on
+// router routerName. Polls because handleAdd/DeleteNATGateway is fire-and-
+// forget; without a wait the test races the dispatch goroutine.
+func natGatewayProcessed(t *testing.T, mock *MockOVNClient, routerName, subnetCidr string, wantPresent bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mock.mu.Lock()
+		lr := mock.routers[routerName]
+		present := false
+		if lr != nil {
+			for _, uuid := range lr.NAT {
+				if n := mock.nats[uuid]; n != nil && n.Type == "snat" && n.LogicalIP == subnetCidr {
+					present = true
+					break
+				}
+			}
+		}
+		mock.mu.Unlock()
+		if present == wantPresent {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("NAT-Gateway SNAT (router=%s, cidr=%s) wantPresent=%v never converged", routerName, subnetCidr, wantPresent)
+}
+
+func TestTopologyHandler_AddNATGateway_AddsSnat(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        "vpc-vpc-natgw",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-natgw"},
+	}))
+
+	evt := NATGatewayEvent{
+		VpcId:        "vpc-natgw",
+		NatGatewayId: "nat-001",
+		PublicIp:     "203.0.113.10",
+		SubnetCidr:   "10.0.50.0/24",
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Flush())
+
+	natGatewayProcessed(t, mock, "vpc-vpc-natgw", "10.0.50.0/24", true)
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	lr := mock.routers["vpc-vpc-natgw"]
+	require.Len(t, lr.NAT, 1)
+	nat := mock.nats[lr.NAT[0]]
+	assert.Equal(t, "snat", nat.Type)
+	assert.Equal(t, "203.0.113.10", nat.ExternalIP)
+	assert.Equal(t, "10.0.50.0/24", nat.LogicalIP)
+	assert.Equal(t, "nat-001", nat.ExternalIDs["spinifex:nat_gateway_id"])
+	_ = ctx
+}
+
+func TestTopologyHandler_AddNATGateway_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-bad"}))
+
+	require.NoError(t, nc.Publish(TopicAddNATGateway, []byte("not json")))
+	require.NoError(t, nc.Flush())
+
+	// Malformed payload must not produce a NAT rule, and must not panic the
+	// subscribed goroutine (the rest of the test suite would also start
+	// failing if it did).
+	time.Sleep(50 * time.Millisecond)
+	mock.mu.Lock()
+	natCount := len(mock.routers["vpc-vpc-bad"].NAT)
+	mock.mu.Unlock()
+	assert.Zero(t, natCount, "malformed payload must not add a NAT rule")
+	_ = ctx
+}
+
+func TestTopologyHandler_DeleteNATGateway_RemovesSnat(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-rm"}))
+
+	evt := NATGatewayEvent{
+		VpcId:        "vpc-rm",
+		NatGatewayId: "nat-rm",
+		PublicIp:     "203.0.113.20",
+		SubnetCidr:   "10.0.51.0/24",
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Flush())
+	natGatewayProcessed(t, mock, "vpc-vpc-rm", "10.0.51.0/24", true)
+
+	require.NoError(t, nc.Publish(TopicDeleteNATGateway, data))
+	require.NoError(t, nc.Flush())
+	natGatewayProcessed(t, mock, "vpc-vpc-rm", "10.0.51.0/24", false)
+
+	mock.mu.Lock()
+	natCount := len(mock.routers["vpc-vpc-rm"].NAT)
+	mock.mu.Unlock()
+	assert.Zero(t, natCount, "delete must remove the SNAT rule")
+	_ = ctx
+}
+
+func TestTopologyHandler_DeleteNATGateway_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, nc.Publish(TopicDeleteNATGateway, []byte("not json")))
+	require.NoError(t, nc.Flush())
+	time.Sleep(50 * time.Millisecond) // give the handler a chance to log-and-return
+}
+
+// --- handleDeleteNAT (1:1 dnat_and_snat removal) ---
+
+func TestTopologyHandler_DeleteNAT_OvnNotConnected(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(nil)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(NATEvent{VpcId: "v", LogicalIP: "10.0.0.1"})
+	resp, err := nc.Request(TopicDeleteNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat must fail when ovn is nil")
+}
+
+func TestTopologyHandler_DeleteNAT_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	resp, err := nc.Request(TopicDeleteNAT, []byte("not json"), 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat with malformed payload must fail")
+}
+
+func TestTopologyHandler_DeleteNAT_Success(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-dnatrm"}))
+
+	addEvt := NATEvent{VpcId: "vpc-dnatrm", ExternalIP: "203.0.113.30", LogicalIP: "10.0.60.5"}
+	addData, _ := json.Marshal(addEvt)
+	resp, err := nc.Request(TopicAddNAT, addData, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "add NAT")
+
+	delEvt := NATEvent{VpcId: "vpc-dnatrm", LogicalIP: "10.0.60.5"}
+	delData, _ := json.Marshal(delEvt)
+	resp, err = nc.Request(TopicDeleteNAT, delData, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "delete NAT")
+
+	lr, _ := mock.GetLogicalRouter(ctx, "vpc-vpc-dnatrm")
+	assert.Empty(t, lr.NAT, "NAT rule must be removed")
+}
+
+// TestTopologyHandler_DeleteNAT_NotFound: an idempotent delete-by-LogicalIP
+// for a NAT that doesn't exist must return a clear error, not silently
+// succeed. Otherwise EIP disassociation can't tell whether it actually
+// disabled the NAT or hit a stale fixture.
+func TestTopologyHandler_DeleteNAT_NotFound(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-empty"}))
+
+	delEvt := NATEvent{VpcId: "vpc-empty", LogicalIP: "10.99.99.99"}
+	data, _ := json.Marshal(delEvt)
+	resp, err := nc.Request(TopicDeleteNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat for non-existent rule must fail")
 }

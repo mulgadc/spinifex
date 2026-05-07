@@ -1612,3 +1612,43 @@ func TestDescribeSubnets_FilterByTag(t *testing.T) {
 	assert.Len(t, desc.Subnets, 1)
 	assert.Equal(t, *out.Subnet.SubnetId, *desc.Subnets[0].SubnetId)
 }
+
+// --- SetExternalIPAM / GetSubnet ---
+
+// TestSetExternalIPAM_StoresRefs: SetExternalIPAM is the wiring hook by which
+// awsgw injects the external IPAM + EIP KV into the VPC service so
+// DeleteNetworkInterface can release auto-assigned public IPs. Locks the
+// trivial setter so a future "moved to constructor" refactor doesn't
+// silently leave the references nil.
+func TestSetExternalIPAM_StoresRefs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	eipKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "spinifex-eips-test", History: 1})
+	require.NoError(t, err)
+	ipam := &ExternalIPAM{}
+
+	svc.SetExternalIPAM(ipam, eipKV)
+	assert.Same(t, ipam, svc.externalIPAM, "externalIPAM ref must be stored")
+	assert.Equal(t, eipKV, svc.eipKV, "eipKV ref must be stored")
+}
+
+func TestGetSubnet_Success(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+
+	rec, err := svc.GetSubnet(testAccountID, subnetID)
+	require.NoError(t, err)
+	assert.Equal(t, subnetID, rec.SubnetId)
+	assert.Equal(t, vpcID, rec.VpcId)
+	assert.Equal(t, "10.0.1.0/24", rec.CidrBlock)
+}
+
+func TestGetSubnet_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	_, err := svc.GetSubnet(testAccountID, "subnet-missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subnet-missing")
+}

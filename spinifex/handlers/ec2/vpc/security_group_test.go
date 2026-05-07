@@ -1279,6 +1279,84 @@ func TestRevokeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "forced-revoke-error")
 }
 
+// TestAuthorizeSecurityGroupEgress_VpcdError_Propagated and the matching
+// Revoke variant lock Phase 7's sync contract on the egress path. Without
+// these, an OVN port-group failure during egress rule provisioning would be
+// silently swallowed — the KV record would gain the rule but OVN would never
+// enforce it.
+func TestAuthorizeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "egress-vpcd-fail")
+
+	failingUpdateResponder(t, nc, "forced-egress-auth-error")
+
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-egress-auth-error")
+}
+
+func TestRevokeSecurityGroupEgress_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "egress-revoke-fail")
+
+	allProto := "-1"
+	rule := &ec2.IpPermission{
+		IpProtocol: &allProto,
+		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+	}
+
+	failingUpdateResponder(t, nc, "forced-egress-revoke-error")
+
+	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{rule},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-egress-revoke-error")
+}
+
+// TestFindDefaultSGForVPC_NoMatch: an account with SGs in vpcA must return ""
+// when asked for the default SG of vpcB. The "" return — not an error —
+// signals "no default exists; create one" to RunInstances' fallback path.
+func TestFindDefaultSGForVPC_NoMatch(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
+	_ = createTestSG(t, svc, vpcA, "non-default-a")
+
+	got, err := svc.FindDefaultSGForVPC(testAccountID, "vpc-other")
+	require.NoError(t, err)
+	assert.Equal(t, "", got, "no default SG → empty string, not error")
+}
+
+// TestFindDefaultSGForVPC_SkipsMalformedRecord: a corrupt SG entry under the
+// account prefix must be skipped, not crash the scan. Without this guard a
+// single bad write to the SG bucket would brick the default-SG lookup
+// cluster-wide.
+func TestFindDefaultSGForVPC_SkipsMalformedRecord(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	_, err := svc.sgKV.Put(testAccountID+".sg-corrupt0000000", []byte("{not json"))
+	require.NoError(t, err)
+
+	// CreateVpc above already provisioned the default SG; FindDefaultSGForVPC
+	// must locate it despite the corrupt sibling entry.
+	got, err := svc.FindDefaultSGForVPC(testAccountID, vpcID)
+	require.NoError(t, err)
+	assert.Regexp(t, `^sg-`, got, "default SG lookup must skip malformed entry and find the real default")
+}
+
 // --- Fix #1: DeleteVpc cascade failure must leave VPC record intact ---
 
 func TestDeleteVpc_VpcdError_VPCNotDeleted(t *testing.T) {

@@ -1043,3 +1043,31 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forced-update-port-sgs-error")
 }
+
+// TestUpdateENIPublicIP_Success: persists PublicIpAddress + PublicIpPool on
+// the ENI record so DescribeNetworkInterfaces shows the auto-assigned public
+// IP after RunInstances and EIP associate-address.
+func TestUpdateENIPublicIP_Success(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	require.NoError(t, svc.UpdateENIPublicIP(testAccountID, eniId, "203.0.113.7", "amazon"))
+
+	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterfaces, 1)
+	require.NotNil(t, out.NetworkInterfaces[0].Association)
+	assert.Equal(t, "203.0.113.7", *out.NetworkInterfaces[0].Association.PublicIp)
+}
+
+func TestUpdateENIPublicIP_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	err := svc.UpdateENIPublicIP(testAccountID, "eni-missing", "203.0.113.8", "amazon")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "eni-missing")
+}

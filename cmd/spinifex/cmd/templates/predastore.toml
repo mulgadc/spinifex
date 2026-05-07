@@ -1,6 +1,6 @@
 # Predastore S3-compatible storage configuration file in TOML format.
 # MULTI NODE used for testing
-version = "3"
+version = "4"
 region = "{{.Region}}"
 
 # Optionally configure port and host, or specify via daemon CLI options
@@ -73,10 +73,12 @@ region = "ap-southeast-2"
 type = "distributed"
 public = false
 encryption = ""
+account_id = "000000000000"
 
 [[auth]]
 access_key_id = "{{.AccessKey}}"
 secret_access_key = "{{.SecretKey}}"
+account_id = "000000000000"
 policy = [
   { bucket = "predastore", actions = ["s3:ListBucket",  "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListAllMyBuckets"] },
 ]

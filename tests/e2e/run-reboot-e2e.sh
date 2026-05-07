@@ -10,7 +10,7 @@
 #   SSH_KEY  — path to ssh key the runner can use to reach tf-user@WAN_IP
 #
 # Sequence:
-#   1. Pre-reboot: VPC + 2 app EC2s + internet-facing ALB; verify round-robin.
+#   1. Pre-reboot: VPC + 2 app EC2s + internal ALB; verify round-robin.
 #   2. Snapshot pre-reboot state (instance IPs, ALB ENI MAC, ovn-nbctl show).
 #   3. systemctl reboot the host; poll TCP/22 from the runner until SSH returns.
 #   4. Wait for spinifex services + AWS gateway to respond.
@@ -27,6 +27,8 @@ REBOOT_WAIT_SECS="${REBOOT_WAIT_SECS:-300}"
 DAEMON_READY_SECS="${DAEMON_READY_SECS:-180}"
 INSTANCE_RUNNING_SECS="${INSTANCE_RUNNING_SECS:-120}"
 LB_RECOVER_SECS="${LB_RECOVER_SECS:-180}"
+LAUNCH_TIME_SECS="${LAUNCH_TIME_SECS:-30}"
+
 NODE_KEY_PATH="\$HOME/reboot-e2e-key"
 NODE_USERDATA_PATH="\$HOME/reboot-e2e-userdata.txt"
 

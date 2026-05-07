@@ -23,8 +23,8 @@ SSH_USER="${SSH_USER:-ec2-user}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-300}"
 REBOOT_TIMEOUT="${REBOOT_TIMEOUT:-300}"
 
-# Fleet composition: array of "type:count" pairs (order matters for display)
-FLEET_SPEC=("g7e.4xlarge:6" "g7e.12xlarge:1")
+# Fleet composition: array of "type:count:disk_gb" tuples (order matters for display)
+FLEET_SPEC=("g7e.4xlarge:6:300" "g7e.12xlarge:1:600")
 FLEET_TOTAL=7
 
 # --- Helpers ---
@@ -179,7 +179,9 @@ declare -A INSTANCE_TYPE_MAP
 slot=0
 for spec in "${FLEET_SPEC[@]}"; do
     itype="${spec%%:*}"
-    count="${spec##*:}"
+    rest="${spec#*:}"
+    count="${rest%%:*}"
+    disk_gb="${rest##*:}"
     for i in $(seq 1 "$count"); do
         slot=$((slot + 1))
         ID=$(aws ec2 run-instances \
@@ -188,7 +190,7 @@ for spec in "${FLEET_SPEC[@]}"; do
             --key-name spinifex-key \
             --subnet-id "$SUBNET_ID" \
             --count 1 \
-            --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+            --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${disk_gb},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
             --query 'Instances[0].InstanceId' --output text)
         if [ -z "$ID" ] || [ "$ID" = "None" ] || [ "$ID" = "null" ]; then
             echo "❌ run-instances returned no InstanceId for ${itype} slot ${i}"

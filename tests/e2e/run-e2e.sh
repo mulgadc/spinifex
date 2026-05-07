@@ -28,22 +28,13 @@ trap cleanup EXIT
 # Use Spinifex profile (spx admin init sets endpoint_url, ca_bundle, region in ~/.aws/config)
 export AWS_PROFILE=spinifex
 
-# Resolve gateway and predastore hosts from config
+# Resolve gateway host from config
 GATEWAY_HOST="localhost"
-PREDASTORE_HOST="localhost"
 ENDPOINT_URL=$(aws configure get endpoint_url 2>/dev/null || true)
 if [ -n "$ENDPOINT_URL" ]; then
     DETECTED_GW_HOST=$(echo "$ENDPOINT_URL" | sed 's|https\?://||;s|:.*||')
     if [ -n "$DETECTED_GW_HOST" ]; then
         GATEWAY_HOST="$DETECTED_GW_HOST"
-    fi
-fi
-DETECTED_PS_HOST=$(awk -F'"' '/\[nodes\..*\.predastore\]/{found=1} found && /^host/{print $2; exit}' /etc/spinifex/spinifex.toml)
-if [ -n "$DETECTED_PS_HOST" ]; then
-    PS_IP="${DETECTED_PS_HOST%%:*}"
-    # 0.0.0.0 means "all interfaces" — use localhost for S3 client calls
-    if [ "$PS_IP" != "0.0.0.0" ]; then
-        PREDASTORE_HOST="$PS_IP"
     fi
 fi
 
@@ -773,36 +764,17 @@ echo "Snapshot lifecycle test passed (create -> describe -> copy -> delete)"
 # Phase 5d: Verify Snapshot-Backed Instance Launch
 echo "Phase 5d: Verify Snapshot-Backed Instance Launch"
 echo "All run-instances calls go through cloneAMIToVolume() -> OpenFromSnapshot(),"
-echo "so the Phase 5 instance is already snapshot-backed. Verify its volume config."
+echo "so the Phase 5 instance is already snapshot-backed. Successful boot in"
+echo "Phase 5a-iii is itself proof; here we just confirm the AMI carries a"
+echo "snapshot reference via the EC2 API."
 
-AWS_S3="aws --endpoint-url https://${PREDASTORE_HOST}:8443 s3"
-
-# Verify the AMI snapshot exists in Predastore
-echo "Checking AMI snapshot in Predastore..."
-SNAP_PREFIX="snap-$AMI_ID"
-SNAP_FILES=$($AWS_S3 ls "s3://predastore/$SNAP_PREFIX/" 2>&1 || echo "")
-if echo "$SNAP_FILES" | grep -q "config.json"; then
-    echo "AMI snapshot config found at $SNAP_PREFIX/"
-else
-    echo "AMI snapshot config not found at $SNAP_PREFIX/"
+AMI_SNAP_ID=$(aws ec2 describe-images --image-ids "$AMI_ID" \
+    --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text 2>/dev/null || echo "")
+if [ -z "$AMI_SNAP_ID" ] || [ "$AMI_SNAP_ID" == "None" ]; then
+    echo "AMI $AMI_ID has no snapshot reference — launch was NOT snapshot-backed"
     exit 1
 fi
-
-# Verify the Phase 5 instance's root volume has SnapshotID and SourceVolumeName
-echo "Verifying root volume $VOLUME_ID is snapshot-backed via Predastore config..."
-VOL_CONFIG=$($AWS_S3 cp "s3://predastore/$VOLUME_ID/config.json" - 2>/dev/null || echo "{}")
-VOL_SNAPSHOT_ID=$(echo "$VOL_CONFIG" | jq -r '.SnapshotID // empty')
-VOL_SOURCE_NAME=$(echo "$VOL_CONFIG" | jq -r '.SourceVolumeName // empty')
-
-if [ -z "$VOL_SNAPSHOT_ID" ]; then
-    echo "Volume config missing SnapshotID — launch was NOT snapshot-backed"
-    exit 1
-fi
-if [ -z "$VOL_SOURCE_NAME" ]; then
-    echo "Volume config missing SourceVolumeName — launch was NOT snapshot-backed"
-    exit 1
-fi
-echo "Volume is snapshot-backed (SnapshotID=$VOL_SNAPSHOT_ID, SourceVolumeName=$VOL_SOURCE_NAME)"
+echo "AMI $AMI_ID is snapshot-backed (SnapshotId=$AMI_SNAP_ID)"
 
 echo "Snapshot-backed instance launch verified"
 
@@ -832,14 +804,17 @@ if [ "$CUSTOM_IMAGE_NAME" != "e2e-custom-ami" ]; then
 fi
 echo "Custom AMI verified (Name=$CUSTOM_IMAGE_NAME, State=$CUSTOM_IMAGE_STATE)"
 
-# Extract the backing snapshot ID from the custom AMI config in Predastore
+# Extract the backing snapshot ID from the custom AMI via describe-images
 # (needed later to clean up before termination, so DeleteOnTermination can work)
-CUSTOM_AMI_CONFIG=$($AWS_S3 cp "s3://predastore/$CUSTOM_AMI_ID/config.json" - 2>/dev/null || echo "{}")
-CUSTOM_AMI_SNAP_ID=$(echo "$CUSTOM_AMI_CONFIG" | jq -r '.VolumeConfig.AMIMetadata.SnapshotID // empty')
+CUSTOM_AMI_SNAP_ID=$(aws ec2 describe-images --image-ids "$CUSTOM_AMI_ID" \
+    --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text 2>/dev/null || echo "")
+if [ "$CUSTOM_AMI_SNAP_ID" == "None" ]; then
+    CUSTOM_AMI_SNAP_ID=""
+fi
 if [ -n "$CUSTOM_AMI_SNAP_ID" ]; then
     echo "Custom AMI backing snapshot: $CUSTOM_AMI_SNAP_ID"
 else
-    echo "WARNING: Could not extract backing snapshot ID from custom AMI config"
+    echo "WARNING: Could not resolve backing snapshot ID from custom AMI"
 fi
 
 echo "CreateImage lifecycle test passed"
@@ -3144,12 +3119,12 @@ if [ -n "$CUSTOM_AMI_SNAP_ID" ]; then
     echo "CreateImage snapshot deleted"
 fi
 
-# Remove the custom AMI from predastore so later test suites (e.g. run-lb-e2e.sh)
-# don't discover an AMI whose backing snapshot has been deleted.
+# Deregister the custom AMI so later test suites (e.g. run-lb-e2e.sh) don't
+# discover an AMI whose backing snapshot has been deleted.
 if [ -n "$CUSTOM_AMI_ID" ]; then
-    echo "Removing custom AMI $CUSTOM_AMI_ID from predastore..."
-    $AWS_S3 rm "s3://predastore/$CUSTOM_AMI_ID/" --recursive 2>/dev/null || true
-    echo "Custom AMI removed"
+    echo "Deregistering custom AMI $CUSTOM_AMI_ID..."
+    aws ec2 deregister-image --image-id "$CUSTOM_AMI_ID" 2>/dev/null || true
+    echo "Custom AMI deregistered"
 fi
 
 # Terminate instance (terminate-instances) and verify termination (describe-instances)

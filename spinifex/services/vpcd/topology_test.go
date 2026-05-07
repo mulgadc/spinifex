@@ -15,6 +15,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // startTestNATS starts an embedded NATS server for testing.
@@ -3601,4 +3603,56 @@ func TestTopologyHandler_CreatePort_PopulatesAddressSet(t *testing.T) {
 			t.Errorf("expected 10.0.5.42 in address set for %s, got %v", sgId, as.Addresses)
 		}
 	}
+}
+
+// handleCreatePort must converge SG memberships even when the LSP already
+// exists from a previous failed attempt — otherwise a port stranded outside
+// its SG port groups would have unrestricted traffic until the next
+// reconciler pass (~30s of zero-ACL exposure on the recovery path).
+func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-recover", "subnet-recover", "10.0.6.0/24", []string{"sg-recover"})
+
+	// Pre-create the LSP without joining any port group, simulating a
+	// previous create that crashed mid-transaction in some hypothetical
+	// non-atomic world.
+	require.NoError(t, mock.CreateLogicalSwitchPort(ctx, "subnet-subnet-recover", &nbdb.LogicalSwitchPort{
+		Name:      "port-eni-recover",
+		Addresses: []string{"02:00:00:00:00:99 10.0.6.50"},
+	}))
+	pgName := portGroupName("sg-recover")
+	require.NotContains(t, mock.portGroups[pgName].Ports, mock.ports["port-eni-recover"].UUID)
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-recover",
+		SubnetId:           "subnet-recover",
+		VpcId:              "vpc-recover",
+		PrivateIpAddress:   "10.0.6.50",
+		MacAddress:         "02:00:00:00:00:99",
+		SecurityGroupIds:   []string{"sg-recover"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create port with pre-existing LSP")
+
+	// The port is now in the SG port group and the IP is in the address set.
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-recover")
+	require.NoError(t, err)
+	assert.Contains(t, mock.portGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
+	asName := addressSetName(pgName)
+	assert.Contains(t, mock.addressSets[asName].Addresses, "10.0.6.50", "existing-LSP path must reconcile address-set entries")
 }

@@ -397,14 +397,17 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		defaultSGId = sg.GroupId
 	}
 
-	if err := s.vpcKV.Delete(key); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
+	// Cascade-delete the default SG before removing the VPC record so a vpcd
+	// failure surfaces to the caller and leaves both records intact for retry.
 	if defaultSGId != "" {
 		if err := s.deleteSecurityGroupInternal(accountID, defaultSGId); err != nil {
-			slog.Error("Failed to cascade-delete default security group on DeleteVpc", "vpcId", vpcID, "groupId", defaultSGId, "err", err)
+			slog.Error("DeleteVpc: cascade-delete of default SG failed", "vpcId", vpcID, "groupId", defaultSGId, "err", err)
+			return nil, err
 		}
+	}
+
+	if err := s.vpcKV.Delete(key); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	slog.Info("DeleteVpc completed", "vpcId", vpcID, "accountID", accountID)

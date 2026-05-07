@@ -114,10 +114,6 @@ type OVNClient interface {
 	// mutate-insert/delete is atomic and idempotent under concurrent change.
 	AddPortToPortGroup(ctx context.Context, name string, lspName string) error
 	RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error
-	// SetPortGroupPorts replaces the full membership in one transaction.
-	// Reserved for full-rewrite paths (reconciler garbage collection); the
-	// incremental primitives are the default for handlers.
-	SetPortGroupPorts(ctx context.Context, name string, ports []string) error
 	// ListPortGroupsForPort returns the names of every port group whose Ports
 	// set contains the given LSP. Used by reconcilePortSGs to discover current
 	// membership before computing the add/remove diff against desired.
@@ -1116,25 +1112,6 @@ func (c *LiveOVNClient) mutatePortGroupPorts(ctx context.Context, name, lspName,
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
 		return fmt.Errorf("mutate port group ports transact: %w", err)
-	}
-	return nil
-}
-
-// SetPortGroupPorts replaces the full Ports column in one update. Reserved
-// for the reconciler's full-rewrite path; handlers should use the incremental
-// primitives so concurrent membership changes don't race on a read-modify-write.
-func (c *LiveOVNClient) SetPortGroupPorts(ctx context.Context, name string, ports []string) error {
-	pg, err := c.getPortGroup(ctx, name)
-	if err != nil {
-		return fmt.Errorf("set port group ports lookup: %w", err)
-	}
-	pg.Ports = ports
-	ops, err := c.client.Where(pg).Update(pg, &pg.Ports)
-	if err != nil {
-		return fmt.Errorf("set port group ports ops: %w", err)
-	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("set port group ports transact: %w", err)
 	}
 	return nil
 }

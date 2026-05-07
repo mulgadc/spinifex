@@ -327,7 +327,8 @@ func accountIDFromKey(key, resourceID string) (string, bool) {
 }
 
 // sgRulesToACLRules converts handler-side SGRules to vpcd-side SGRuleForACL.
-// Identical fields; the conversion is here to keep the package boundary clean.
+// Identical fields; the conversion keeps the package boundary clean (vpcd
+// must not import the handler package).
 func sgRulesToACLRules(rules []handlers_ec2_vpc.SGRule) []SGRuleForACL {
 	out := make([]SGRuleForACL, len(rules))
 	for i, r := range rules {

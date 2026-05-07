@@ -605,17 +605,6 @@ func (m *MockOVNClient) DeletePortGroup(_ context.Context, name string) error {
 	return nil
 }
 
-func (m *MockOVNClient) SetPortGroupPorts(_ context.Context, name string, ports []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pg, exists := m.portGroups[name]
-	if !exists {
-		return fmt.Errorf("port group %q not found", name)
-	}
-	pg.Ports = ports
-	return nil
-}
-
 // AddPortToPortGroup is idempotent — re-adding an existing member is a no-op.
 // Mock parity with LiveOVNClient.AddPortToPortGroup.
 func (m *MockOVNClient) AddPortToPortGroup(_ context.Context, name string, lspName string) error {

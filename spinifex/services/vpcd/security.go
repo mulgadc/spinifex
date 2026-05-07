@@ -117,9 +117,12 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 	pgName := portGroupName(evt.GroupId)
 	asName := addressSetName(pgName)
 
-	// Clear all ACLs before deleting the port group
+	// Clear all ACLs before deleting the port group. Fail-fast — leaving stale
+	// ACLs causes DeletePortGroup to be rejected by libovsdb (dangling ref).
 	if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
-		slog.Warn("vpcd: failed to clear ACLs", "pg", pgName, "err", err)
+		slog.Error("vpcd: failed to clear ACLs", "pg", pgName, "err", err)
+		respond(msg, err)
+		return
 	}
 
 	if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
@@ -128,11 +131,13 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 		return
 	}
 
-	// Best-effort delete of the SG's address set. Other SGs cannot reference
-	// this set (rules carry SourceSG IDs, not address-set names), so a leftover
-	// set has no enforcement consequence — the reconciler will sweep it.
+	// Once the port group is gone the orphan-PG reconciler scan can no longer
+	// anchor cleanup of the matching address set, so a swallowed error here
+	// would leak the AS forever. Fail-fast and let the caller retry.
 	if err := h.ovn.DeleteAddressSet(ctx, asName); err != nil {
-		slog.Warn("vpcd: failed to delete address set", "as", asName, "err", err)
+		slog.Error("vpcd: failed to delete address set", "as", asName, "err", err)
+		respond(msg, err)
+		return
 	}
 
 	slog.Info("vpcd: deleted security group port group",

@@ -17,6 +17,7 @@ import (
 func setupTestServiceWithInstance(t *testing.T, instanceID, instanceIP string) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, string) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)

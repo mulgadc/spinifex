@@ -32,6 +32,20 @@ func setupTestVPCService(t *testing.T) *VPCServiceImpl {
 	return svc
 }
 
+// setupTestVPCServiceWithFailingVpcd creates a VPC service whose vpcd stub
+// always returns success=false. Used by Phase 7 propagation tests to assert
+// vpcd-side errors surface to the API caller. The default-VPC bootstrap is
+// not needed here — these tests CreateVpc themselves once they have working
+// stubs swapped in.
+func setupTestVPCServiceWithFailingVpcd(t *testing.T, errMsg string) (*VPCServiceImpl, *nats.Conn) {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	testutil.StubVpcdSGFailingResponder(t, nc, errMsg)
+	return svc, nc
+}
+
 func createTestVPC(t *testing.T, svc *VPCServiceImpl, cidr string) string {
 	t.Helper()
 	out, err := svc.CreateVpc(&ec2.CreateVpcInput{
@@ -781,6 +795,7 @@ func TestDeleteSubnet_PublishesEvent(t *testing.T) {
 func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
 	// Create a service with custom config that has AZ set
 	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
 
 	cfg := &config.Config{AZ: "us-west-2b"}
 	svc, err := NewVPCServiceImplWithNATS(cfg, nc)

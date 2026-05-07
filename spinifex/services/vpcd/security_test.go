@@ -262,6 +262,41 @@ func TestSecurity_DeleteSG_DeletesAddressSet(t *testing.T) {
 	assert.False(t, exists, "address set sg_as002_ip4 should be deleted")
 }
 
+// handleDeleteSG must fail-fast on DeleteAddressSet errors. Once the port
+// group is gone, the orphan-PG reconciler can no longer anchor cleanup of the
+// matching address set — silently logging the AS error would leak it forever.
+func TestSecurity_DeleteSG_FailsFastOnAddressSetError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	evt := SGEvent{GroupId: "sg-asfail", VpcId: "vpc-asfail"}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG")
+
+	// Delete the address set out-of-band so handleDeleteSG's
+	// DeleteAddressSet step errors. The handler must surface the error
+	// rather than logging-and-continuing.
+	mock.mu.Lock()
+	delete(mock.addressSets, "sg_asfail_ip4")
+	mock.mu.Unlock()
+
+	resp, err = nc.Request(TopicDeleteSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete SG with missing address set must fail")
+}
+
 // containsAll checks if s contains all substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

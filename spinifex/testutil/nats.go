@@ -66,16 +66,30 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, nats.JetStrea
 // would block on the 5s vpcd round-trip enforced by Phase 7.
 func StubVpcdSGResponder(t *testing.T, nc *nats.Conn) {
 	t.Helper()
+	stubVpcdSGTopics(t, nc, `{"success":true}`)
+}
+
+// StubVpcdSGFailingResponder is the negative-path counterpart to
+// StubVpcdSGResponder: every SG topic replies success=false so tests can
+// assert the handler propagates vpcd errors instead of swallowing them.
+func StubVpcdSGFailingResponder(t *testing.T, nc *nats.Conn, errMsg string) {
+	t.Helper()
+	stubVpcdSGTopics(t, nc, `{"success":false,"error":"`+errMsg+`"}`)
+}
+
+func stubVpcdSGTopics(t *testing.T, nc *nats.Conn, payload string) {
+	t.Helper()
 	topics := []string{
 		"vpc.create-sg",
 		"vpc.delete-sg",
 		"vpc.update-sg",
 		"vpc.update-port-sgs",
 	}
+	resp := []byte(payload)
 	for _, topic := range topics {
 		sub, err := nc.Subscribe(topic, func(m *nats.Msg) {
 			if m.Reply != "" {
-				_ = m.Respond([]byte(`{"success":true}`))
+				_ = m.Respond(resp)
 			}
 		})
 		require.NoError(t, err)

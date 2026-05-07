@@ -759,11 +759,18 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 	portName := "port-" + evt.NetworkInterfaceId
 	switchName := "subnet-" + evt.SubnetId
 
-	// Idempotent: skip if port already exists. The reconciler converges any
-	// drifted SG memberships on its next pass, so we don't need to retry the
-	// joins here.
+	// Idempotent: if the port already exists from a previous attempt that
+	// crashed before joining its SG port groups, converge the memberships now
+	// instead of waiting up to a full reconciler interval — that gap would
+	// leave a port with zero ACLs (OVN default = unrestricted), defeating the
+	// atomic-create guarantee on the recovery path.
 	if _, err := h.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
-		slog.Debug("vpcd: logical switch port already exists, skipping", "port", portName)
+		if err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, evt.SecurityGroupIds); err != nil {
+			slog.Error("vpcd: failed to reconcile SGs for existing port", "port", portName, "err", err)
+			respond(msg, err)
+			return
+		}
+		slog.Debug("vpcd: logical switch port already exists, reconciled SG memberships", "port", portName)
 		respond(msg, nil)
 		return
 	}

@@ -670,26 +670,6 @@ func TestMockOVNClient_AddRemovePortToPortGroup_Idempotent(t *testing.T) {
 	}
 }
 
-func TestMockOVNClient_SetPortGroupPorts(t *testing.T) {
-	ctx := context.Background()
-	mock := NewMockOVNClient()
-	if err := mock.CreatePortGroup(ctx, "sg_b", []string{"u1"}); err != nil {
-		t.Fatalf("CreatePortGroup: %v", err)
-	}
-	if err := mock.SetPortGroupPorts(ctx, "sg_b", []string{"u2", "u3"}); err != nil {
-		t.Fatalf("SetPortGroupPorts: %v", err)
-	}
-	mock.mu.Lock()
-	got := mock.portGroups["sg_b"].Ports
-	mock.mu.Unlock()
-	if len(got) != 2 || got[0] != "u2" || got[1] != "u3" {
-		t.Fatalf("expected [u2 u3], got %v", got)
-	}
-	if err := mock.SetPortGroupPorts(ctx, "sg_missing", nil); err == nil {
-		t.Fatal("expected error on missing port group")
-	}
-}
-
 func TestMockOVNClient_AddACL_ClearACLs(t *testing.T) {
 	ctx := context.Background()
 	mock := NewMockOVNClient()

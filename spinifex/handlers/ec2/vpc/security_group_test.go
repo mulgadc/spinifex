@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1143,4 +1144,283 @@ func TestAuthorizeSecurityGroupEgress_SourceSG_CrossVPC(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+}
+
+// --- Egress dependency check (mirror of ingress coverage) ---
+
+func TestDeleteSecurityGroup_RejectsReferencedFromOtherSGEgress(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	srcSG := createTestSG(t, svc, vpcID, "egress-src-sg")
+	dstSG := createTestSG(t, svc, vpcID, "egress-dst-sg")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(srcSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(dstSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(dstSG),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DependencyViolation")
+}
+
+// --- Egress rule-count limit (mirror of ingress) ---
+
+func TestAuthorizeSecurityGroupEgress_RuleLimit(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "egress-rule-limit-sg")
+
+	proto := "tcp"
+	// Default egress allow-all already counts as 1 rule, so the cap is hit
+	// after maxRulesPerSGSide-1 additions.
+	for port := range maxRulesPerSGSide - 1 {
+		_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+			GroupId: aws.String(sgID),
+			IpPermissions: []*ec2.IpPermission{{
+				IpProtocol: &proto,
+				FromPort:   aws.Int64(int64(port)),
+				ToPort:     aws.Int64(int64(port)),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+			}},
+		}, testAccountID)
+		require.NoError(t, err, "rule %d should fit under the cap", port)
+	}
+
+	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(int64(maxRulesPerSGSide)),
+			ToPort:     aws.Int64(int64(maxRulesPerSGSide)),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RulesPerSecurityGroupLimitExceeded")
+}
+
+// --- Reserved-name guard bypass invariant ---
+
+// CreateDefaultSecurityGroupKV is the only path that should be able to create
+// a record with GroupName == "default"; the public API guard rejects it. This
+// test pins that invariant from both directions.
+func TestCreateDefaultSecurityGroupKV_BypassesReservedNameGuard(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	// Public API rejects GroupName == "default".
+	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName: aws.String(defaultSecurityGroupName),
+		VpcId:     aws.String(vpcID),
+	}, testAccountID)
+	require.Error(t, err)
+
+	// Internal helper accepts it (used by CreateVpc + reconciler).
+	groupId, err := CreateDefaultSecurityGroupKV(svc.sgKV, nc, testAccountID, "vpc-fresh000000000")
+	require.NoError(t, err)
+	require.NotEmpty(t, groupId)
+}
+
+// --- Phase 7: vpcd error propagation across the SG surface ---
+
+// CreateSecurityGroup writes to KV before requesting vpcd, so the record
+// persists on vpcd error — the orphan-PG reconciler is the safety net. This
+// asserts both the error is surfaced AND the KV-first contract is held.
+func TestCreateSecurityGroup_VpcdError_RecordPersists(t *testing.T) {
+	svc, _ := setupTestVPCServiceWithFailingVpcd(t, "forced-create-sg-error")
+
+	// Bootstrap a VPC with a working stub by swapping in a success responder
+	// for vpc.create-sg only during VPC creation. We do that by short-circuit:
+	// CreateVpc here will fail because it also publishes vpc.create-sg.
+	// Instead seed a VPC record directly so we can isolate the SG path.
+	seedAvailableVPC(t, svc, "vpc-fail000000000")
+
+	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("user-sg"),
+		Description: aws.String("d"),
+		VpcId:       aws.String("vpc-fail000000000"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-create-sg-error")
+
+	// KV write happens before the request, so the record IS in KV — vpcd's
+	// orphan-PG reconciler is the safety net. Verify the user can DescribeSGs
+	// and see exactly the one failed-to-provision SG so they can retry/delete.
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: []*string{aws.String("vpc-fail000000000")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1, "KV record should persist after vpcd error so reconciler can converge")
+}
+
+func TestDeleteSecurityGroup_VpcdError_Propagated(t *testing.T) {
+	// Build the SG using a temporary success stub, then swap to failing for
+	// the delete call.
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "to-delete")
+
+	// Replace the success stub with a failing one for the delete-sg path.
+	failingDeleteResponder(t, nc, "forced-delete-sg-error")
+
+	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(sgID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-delete-sg-error")
+
+	// KV record is removed even on vpcd error — reconciler's orphan-PG scan
+	// converges OVN. Asserts the documented "KV-first, no rollback" contract.
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.Error(t, err, "SG record should be gone post-DeleteSG even when vpcd errors")
+	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+	_ = desc
+}
+
+func TestAuthorizeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "to-authorize")
+
+	failingUpdateResponder(t, nc, "forced-update-sg-error")
+
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(80),
+			ToPort:     aws.Int64(80),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-update-sg-error")
+
+	// Rule must remain in KV so the reconciler can converge OVN.
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
+	require.Len(t, desc.SecurityGroups[0].IpPermissions, 1, "ingress rule must persist after vpcd error")
+}
+
+func TestRevokeSecurityGroupIngress_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "to-revoke")
+
+	proto := "tcp"
+	rule := &ec2.IpPermission{
+		IpProtocol: &proto,
+		FromPort:   aws.Int64(443),
+		ToPort:     aws.Int64(443),
+		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+	}
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{rule},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	failingUpdateResponder(t, nc, "forced-revoke-error")
+
+	_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{rule},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-revoke-error")
+}
+
+// --- Fix #1: DeleteVpc cascade failure must leave VPC record intact ---
+
+func TestDeleteVpc_VpcdError_VPCNotDeleted(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	// Cascade fires vpc.delete-sg through the internal helper.
+	failingDeleteResponder(t, nc, "forced-cascade-error")
+
+	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-cascade-error")
+
+	// VPC record must still exist so the user can retry.
+	desc, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
+		VpcIds: []*string{aws.String(vpcID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1, "VPC must persist when cascade-delete of default SG fails")
+}
+
+// --- Fix #3: checkSGDependencies fails closed on KV read error ---
+
+func TestDeleteSecurityGroup_FailsClosedOnCorruptENI(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "to-delete-corrupt")
+
+	// Inject a malformed ENI record into the bucket; checkSGDependencies must
+	// reject the delete rather than silently treating it as "no dependent ENI".
+	_, err := svc.eniKV.Put(testAccountID+".eni-corrupt", []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(sgID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ServerInternal")
+}
+
+// --- Helpers ---
+
+// seedAvailableVPC writes a VPC record directly to KV in "available" state,
+// bypassing CreateVpc (which itself depends on a working vpcd stub). Used to
+// isolate non-CreateVpc paths in failing-vpcd tests.
+func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
+	t.Helper()
+	rec := VPCRecord{VpcId: vpcID, CidrBlock: "10.0.0.0/16", State: "available"}
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = svc.vpcKV.Put(utils.AccountKey(testAccountID, vpcID), data)
+	require.NoError(t, err)
+}
+
+// failingDeleteResponder layers a failing handler for vpc.delete-sg on top of
+// the default success stubs (NATS picks the responder that subscribes to the
+// queue group; here neither uses a queue, so we drain the success sub first).
+func failingDeleteResponder(t *testing.T, nc *nats.Conn, msg string) {
+	t.Helper()
+	resp := []byte(`{"success":false,"error":"` + msg + `"}`)
+	sub, err := nc.Subscribe("vpc.delete-sg", func(m *nats.Msg) {
+		if m.Reply != "" {
+			_ = m.Respond(resp)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+func failingUpdateResponder(t *testing.T, nc *nats.Conn, msg string) {
+	t.Helper()
+	resp := []byte(`{"success":false,"error":"` + msg + `"}`)
+	sub, err := nc.Subscribe("vpc.update-sg", func(m *nats.Msg) {
+		if m.Reply != "" {
+			_ = m.Respond(resp)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }

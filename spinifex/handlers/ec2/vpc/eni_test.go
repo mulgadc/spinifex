@@ -1041,3 +1041,32 @@ func TestValidateSGAttachment_CrossVPC(t *testing.T) {
 	err := svc.validateSGAttachment(testAccountID, []string{sgInA}, vpcB)
 	assert.ErrorContains(t, err, "InvalidParameterValue")
 }
+
+// Phase 7: ModifyNetworkInterfaceAttribute must propagate vpcd errors so the
+// caller knows OVN port-group reconciliation didn't happen. The KV record
+// already changed by this point — that's intentional (reconciler converges).
+func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-mod-fail-1")
+
+	// Layer a failing responder on top of the default success stub so the
+	// vpc.update-port-sgs request returns an error.
+	resp := []byte(`{"success":false,"error":"forced-update-port-sgs-error"}`)
+	failSub, err := nc.Subscribe("vpc.update-port-sgs", func(m *nats.Msg) {
+		if m.Reply != "" {
+			_ = m.Respond(resp)
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = failSub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Groups:             []*string{aws.String(sg1)},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-update-port-sgs-error")
+}

@@ -285,11 +285,15 @@ func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
 		}
 		entry, err := s.eniKV.Get(k)
 		if err != nil {
-			continue
+			// Fail closed — a transient read error must not let us delete an
+			// SG that's actually still attached.
+			slog.Warn("checkSGDependencies: ENI read failed", "key", k, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		var eni ENIRecord
 		if err := json.Unmarshal(entry.Value(), &eni); err != nil {
-			continue
+			slog.Warn("checkSGDependencies: ENI unmarshal failed", "key", k, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if slices.Contains(eni.SecurityGroupIds, groupId) {
 			return errors.New(awserrors.ErrorDependencyViolation)
@@ -306,11 +310,13 @@ func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
 		}
 		entry, err := s.sgKV.Get(k)
 		if err != nil {
-			continue
+			slog.Warn("checkSGDependencies: SG read failed", "key", k, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		var other SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &other); err != nil {
-			continue
+			slog.Warn("checkSGDependencies: SG unmarshal failed", "key", k, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if other.GroupId == groupId {
 			continue
@@ -835,13 +841,6 @@ func sgRuleKey(r SGRule) string {
 // reconciler is the safety net that converges any drift afterwards.
 const vpcdSGEventTimeout = 5 * time.Second
 
-// publishSGEvent publishes a security group lifecycle event to NATS
-// fire-and-forget. Used by the DeleteVpc cascade path, where the surrounding
-// VPC-delete topology event is itself fire-and-forget.
-func (s *VPCServiceImpl) publishSGEvent(topic string, evt SGEvent) {
-	utils.PublishEvent(s.natsConn, topic, evt)
-}
-
 // requestSGEvent sends a security group lifecycle event to vpcd via
 // request-reply and waits for vpcd's success/error response. Used by the
 // public SG API surface so vpcd-side ACL/port-group failures are visible to
@@ -859,10 +858,12 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 }
 
 // CreateDefaultSecurityGroupKV writes the per-VPC default SG record to sgKV and
-// publishes the vpc.create-sg event. Free-function form so the vpcd reconciler
-// can call it without holding a *VPCServiceImpl. Bypasses the reserved-name
-// guard — callers are responsible for ensuring no default SG already exists in
-// the target VPC (use FindDefaultSGForVPCKV first).
+// dispatches vpc.create-sg synchronously so vpcd OVN provisioning failures
+// surface to the caller (CreateVpc keeps the VPC in pending; reconciler
+// retries). Free-function form so the vpcd reconciler can call it without
+// holding a *VPCServiceImpl. Bypasses the reserved-name guard — callers are
+// responsible for ensuring no default SG already exists in the target VPC
+// (use FindDefaultSGForVPCKV first).
 func CreateDefaultSecurityGroupKV(sgKV nats.KeyValue, nc *nats.Conn, accountID, vpcId string) (string, error) {
 	groupId := utils.GenerateResourceID("sg")
 	record := SecurityGroupRecord{
@@ -891,18 +892,21 @@ func CreateDefaultSecurityGroupKV(sgKV nats.KeyValue, nc *nats.Conn, accountID, 
 
 	slog.Info("Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
 
-	utils.PublishEvent(nc, "vpc.create-sg", SGEvent{
+	if err := utils.RequestEvent(nc, "vpc.create-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        vpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}, vpcdSGEventTimeout); err != nil {
+		return "", fmt.Errorf("vpcd vpc.create-sg: %w", err)
+	}
 	return groupId, nil
 }
 
 // deleteSecurityGroupInternal removes an SG record without the public-API
 // CannotDelete guard for default SGs. Used by DeleteVpc to cascade-delete the
-// per-VPC default SG.
+// per-VPC default SG. Honors the Phase 7 sync contract so vpcd tear-down
+// failures propagate.
 func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) error {
 	key := utils.AccountKey(accountID, groupId)
 	entry, err := s.sgKV.Get(key)
@@ -916,11 +920,10 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) 
 	if err := s.sgKV.Delete(key); err != nil {
 		return fmt.Errorf("delete default security group: %w", err)
 	}
-	s.publishSGEvent("vpc.delete-sg", SGEvent{
+	return s.requestSGEvent("vpc.delete-sg", SGEvent{
 		GroupId: groupId,
 		VpcId:   record.VpcId,
 	})
-	return nil
 }
 
 // FindDefaultSGForVPC scans the account's SG bucket for the SG with

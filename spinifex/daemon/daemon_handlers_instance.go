@@ -182,39 +182,9 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 			}
 		}
 
-		// Resolve the per-VPC default SG when the caller omits SecurityGroupIds.
-		// Mirrors AWS RunInstances semantics so the request carries the SG
-		// assignment explicitly (and surfaces InvalidVpcID.State if the VPC
-		// is still pending and has no default SG yet).
-		if runInstancesInput.SubnetId != nil && *runInstancesInput.SubnetId != "" &&
-			len(runInstancesInput.SecurityGroupIds) == 0 && d.vpcService != nil {
-			subnet, subErr := d.vpcService.GetSubnet(accountID, *runInstancesInput.SubnetId)
-			if subErr != nil {
-				slog.Error("handleEC2RunInstances: failed to look up subnet for default SG fallback", "instanceId", instance.ID, "subnetId", *runInstancesInput.SubnetId, "err", subErr)
-				lastRunErr = subErr
-				d.resourceMgr.deallocate(instanceType)
-				continue
-			}
-			defaultSGId, sgErr := d.vpcService.FindDefaultSGForVPC(accountID, subnet.VpcId)
-			if sgErr != nil {
-				slog.Error("handleEC2RunInstances: default SG lookup failed", "instanceId", instance.ID, "vpcId", subnet.VpcId, "err", sgErr)
-				lastRunErr = sgErr
-				d.resourceMgr.deallocate(instanceType)
-				continue
-			}
-			if defaultSGId == "" {
-				slog.Error("handleEC2RunInstances: no default SG for VPC (still pending?)", "instanceId", instance.ID, "vpcId", subnet.VpcId)
-				lastRunErr = errors.New(awserrors.ErrorInvalidVpcIDState)
-				d.resourceMgr.deallocate(instanceType)
-				continue
-			}
-			runInstancesInput.SecurityGroupIds = []*string{aws.String(defaultSGId)}
-		}
-
 		// Auto-create ENI when SubnetId is provided (matches AWS behavior).
-		// Pass SecurityGroupIds through so the ENI lands with the caller's
-		// requested SGs — without this the Groups field is silently dropped
-		// and every instance launches with no SG enforcement.
+		// CreateNetworkInterface handles default-SG fallback when Groups is
+		// empty (returns InvalidVpcID.State if the VPC has no default SG yet).
 		if runInstancesInput.SubnetId != nil && *runInstancesInput.SubnetId != "" && d.vpcService != nil {
 			eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 				SubnetId:    runInstancesInput.SubnetId,

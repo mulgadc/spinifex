@@ -667,17 +667,8 @@ func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, 
 		return errors.New(awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded)
 	}
 
-	// VPC must exist and be in the available state.
-	vpcEntry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId))
-	if err != nil {
-		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
-	}
-	var vpc VPCRecord
-	if err := json.Unmarshal(vpcEntry.Value(), &vpc); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if vpc.State != "" && vpc.State != "available" {
-		return errors.New(awserrors.ErrorInvalidVpcIDState)
+	if err := s.requireVPCAvailable(accountID, vpcId); err != nil {
+		return err
 	}
 
 	// Each SG must exist in the caller's account and belong to the same VPC.

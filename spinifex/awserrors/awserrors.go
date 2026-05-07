@@ -292,6 +292,7 @@ var (
 	ErrorInvalidVpcEndpointType                                = "InvalidVpcEndpointType"
 	ErrorInvalidVpcIDMalformed                                 = "InvalidVpcID.Malformed"
 	ErrorInvalidVpcIDNotFound                                  = "InvalidVpcID.NotFound"
+	ErrorInvalidVpcIDState                                     = "InvalidVpcID.State"
 	ErrorInvalidVpcPeeringConnectionIDNotFound                 = "InvalidVpcPeeringConnectionID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIdMalformed                = "InvalidVpcPeeringConnectionId.Malformed"
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled  = "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled"
@@ -757,6 +758,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled:  {HTTPCode: 400, Message: "To enable DNS hostname resolution for the VPC peering connection, DNS hostname support must be enabled for the VPCs."},
 	ErrorInvalidVpcRange:                                       {HTTPCode: 400, Message: "The specified CIDR block range is not valid. The block range must be between a /28 netmask and /16 netmask. For more information, see VPC CIDR blocks."},
 	ErrorInvalidVpcState:                                       {HTTPCode: 400, Message: "The specified VPC already has a virtual private gateway attached to it."},
+	ErrorInvalidVpcIDState:                                     {HTTPCode: 400, Message: "The specified VPC is not in the 'available' state and cannot accept new resources."},
 	ErrorInvalidVpnConnectionInvalidState:                      {HTTPCode: 400, Message: "The VPN connection must be in the available state to complete the request."},
 	ErrorInvalidVpnConnectionInvalidType:                       {HTTPCode: 400, Message: "The specified VPN connection does not support static routes."},
 	ErrorInvalidVpnConnectionID:                                {HTTPCode: 400, Message: "The specified VPN connection ID cannot be found."},

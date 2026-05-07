@@ -60,6 +60,18 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	var sgIdsIn []string
+	for _, id := range input.Groups {
+		if id != nil {
+			sgIdsIn = append(sgIdsIn, *id)
+		}
+	}
+	if len(sgIdsIn) > 0 {
+		if err := s.validateSGAttachment(accountID, sgIdsIn, subnet.VpcId); err != nil {
+			return nil, err
+		}
+	}
+
 	// Allocate IP from subnet
 	var privateIP string
 	if input.PrivateIpAddress != nil && *input.PrivateIpAddress != "" {
@@ -83,13 +95,6 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		description = *input.Description
 	}
 
-	var sgIds []string
-	for _, id := range input.Groups {
-		if id != nil {
-			sgIds = append(sgIds, *id)
-		}
-	}
-
 	record := ENIRecord{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
@@ -99,7 +104,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		MacAddress:         macAddr,
 		Description:        description,
 		Status:             "available",
-		SecurityGroupIds:   sgIds,
+		SecurityGroupIds:   sgIdsIn,
 		Tags:               utils.ExtractTags(input.TagSpecifications, "network-interface"),
 		CreatedAt:          time.Now(),
 	}
@@ -212,6 +217,9 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 			if id != nil {
 				sgIds = append(sgIds, *id)
 			}
+		}
+		if err := s.validateSGAttachment(accountID, sgIds, record.VpcId); err != nil {
+			return nil, err
 		}
 		record.SecurityGroupIds = sgIds
 	}
@@ -587,6 +595,62 @@ func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, po
 	utils.PublishEvent(s.natsConn, topic, NATEvent{
 		VpcId: vpcId, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac,
 	})
+}
+
+// validateSGAttachment is the boundary validator shared by RunInstances (via
+// CreateNetworkInterface), CreateNetworkInterface itself, and
+// ModifyNetworkInterfaceAttribute. It runs *before* any KV write so failures
+// don't leave half-state.
+//
+// AWS contract reproduced here:
+//   - InvalidGroup.NotFound when an SG ID is unknown to the account.
+//   - InvalidParameterValue ("Security group X and subnet Y belong to
+//     different networks") when an SG's VPC differs from the resolved VPC.
+//   - SecurityGroupsPerInterfaceLimitExceeded when the request asks for >5
+//     SGs (AWS default).
+//   - MissingParameter when the list is empty (every ENI must have ≥1 SG;
+//     callers without explicit SGs go through the default-SG fallback first).
+//   - InvalidVpcID.State (mulga-specific) when the resolved VPC isn't
+//     "available" yet — the on-prem reconciler can leave a VPC pending
+//     across calls.
+const sgPerInterfaceLimit = 5
+
+func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, vpcId string) error {
+	if len(sgIds) == 0 {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(sgIds) > sgPerInterfaceLimit {
+		return errors.New(awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded)
+	}
+
+	// VPC must exist and be in the available state.
+	vpcEntry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId))
+	if err != nil {
+		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+	}
+	var vpc VPCRecord
+	if err := json.Unmarshal(vpcEntry.Value(), &vpc); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if vpc.State != "" && vpc.State != "available" {
+		return errors.New(awserrors.ErrorInvalidVpcIDState)
+	}
+
+	// Each SG must exist in the caller's account and belong to the same VPC.
+	for _, sgId := range sgIds {
+		sgEntry, err := s.sgKV.Get(utils.AccountKey(accountID, sgId))
+		if err != nil {
+			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+		}
+		var sg SecurityGroupRecord
+		if err := json.Unmarshal(sgEntry.Value(), &sg); err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		if sg.VpcId != vpcId {
+			return errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+	return nil
 }
 
 // isEIPOwned checks whether the given ENI's public IP is owned by an Elastic IP.

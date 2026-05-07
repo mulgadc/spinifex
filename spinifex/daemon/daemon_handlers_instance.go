@@ -182,11 +182,15 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 			}
 		}
 
-		// Auto-create ENI when SubnetId is provided (matches AWS behavior)
+		// Auto-create ENI when SubnetId is provided (matches AWS behavior).
+		// Pass SecurityGroupIds through so the ENI lands with the caller's
+		// requested SGs — without this the Groups field is silently dropped
+		// and every instance launches with no SG enforcement.
 		if runInstancesInput.SubnetId != nil && *runInstancesInput.SubnetId != "" && d.vpcService != nil {
 			eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 				SubnetId:    runInstancesInput.SubnetId,
 				Description: aws.String("Primary network interface for " + instance.ID),
+				Groups:      runInstancesInput.SecurityGroupIds,
 			}, accountID)
 			if eniErr != nil {
 				slog.Error("handleEC2RunInstances auto-create ENI failed", "instanceId", instance.ID, "subnetId", *runInstancesInput.SubnetId, "err", eniErr)

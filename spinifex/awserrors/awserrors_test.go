@@ -294,6 +294,7 @@ func TestErrorLookup(t *testing.T) {
 		{code: "InvalidVpcEndpointType", http: 400, message: "The specified VPC endpoint type is not valid."},
 		{code: "InvalidVpcID.Malformed", http: 400, message: "The specified VPC ID is malformed. Ensure that you've specified the ID in the form vpc-xxxxxxxxxxxxxxxxx."},
 		{code: "InvalidVpcID.NotFound", http: 404, message: "The specified VPC does not exist."},
+		{code: "InvalidVpcID.State", http: 400, message: "The specified VPC is not in the 'available' state and cannot accept new resources."},
 		{code: "InvalidVpcPeeringConnectionID.NotFound", http: 404, message: "The specified VPC peering connection ID does not exist."},
 		{code: "InvalidVpcPeeringConnectionId.Malformed", http: 400, message: "The specified VPC peering connection ID is malformed. Ensure that you provide the ID in the form pcx-xxxxxxxxxxxxxxxxx."},
 		{code: "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled", http: 400, message: "To enable DNS hostname resolution for the VPC peering connection, DNS hostname support must be enabled for the VPCs."},

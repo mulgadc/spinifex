@@ -2,6 +2,7 @@ package handlers_ec2_vpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -447,10 +448,12 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-one")
+	sg2 := createTestSG(t, svc, vpcId, "sg-two")
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
-		Groups:             []*string{aws.String("sg-111"), aws.String("sg-222")},
+		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
 	}, testAccountID)
 	require.NoError(t, err)
 
@@ -460,8 +463,8 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.NetworkInterfaces, 1)
 	require.Len(t, desc.NetworkInterfaces[0].Groups, 2)
-	assert.Equal(t, "sg-111", *desc.NetworkInterfaces[0].Groups[0].GroupId)
-	assert.Equal(t, "sg-222", *desc.NetworkInterfaces[0].Groups[1].GroupId)
+	assert.Equal(t, sg1, *desc.NetworkInterfaces[0].Groups[0].GroupId)
+	assert.Equal(t, sg2, *desc.NetworkInterfaces[0].Groups[1].GroupId)
 }
 
 func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
@@ -519,15 +522,17 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
+	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
 	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
-		Groups:   []*string{aws.String("sg-aaa"), aws.String("sg-bbb")},
+		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.NetworkInterface.Groups, 2)
-	assert.Equal(t, "sg-aaa", *out.NetworkInterface.Groups[0].GroupId)
-	assert.Equal(t, "sg-bbb", *out.NetworkInterface.Groups[1].GroupId)
+	assert.Equal(t, sgA, *out.NetworkInterface.Groups[0].GroupId)
+	assert.Equal(t, sgB, *out.NetworkInterface.Groups[1].GroupId)
 }
 
 func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
@@ -657,11 +662,13 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
+	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
 	// Create ENI with security groups
 	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
-		Groups:   []*string{aws.String("sg-aaa"), aws.String("sg-bbb")},
+		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
 	require.NoError(t, err)
 	eniId := *out.NetworkInterface.NetworkInterfaceId
@@ -671,7 +678,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	// Match one of the SGs
 	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
-			{Name: aws.String("group-id"), Values: []*string{aws.String("sg-bbb")}},
+			{Name: aws.String("group-id"), Values: []*string{aws.String(sgB)}},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -858,4 +865,80 @@ func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
 	owned, err := svc.isEIPOwned("eni-target", testAccountID)
 	assert.NoError(t, err)
 	assert.True(t, owned)
+}
+
+// --- validateSGAttachment (Phase 2.2) ---
+
+func TestValidateSGAttachment_OK(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sg := createTestSG(t, svc, vpcID, "ok")
+
+	err := svc.validateSGAttachment(testAccountID, []string{sg}, vpcID)
+	assert.NoError(t, err)
+}
+
+func TestValidateSGAttachment_EmptyList(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	err := svc.validateSGAttachment(testAccountID, nil, vpcID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestValidateSGAttachment_TooMany(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgs := make([]string, 6)
+	for i := range sgs {
+		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("sg-%d", i))
+	}
+
+	err := svc.validateSGAttachment(testAccountID, sgs, vpcID)
+	assert.ErrorContains(t, err, "SecurityGroupsPerInterfaceLimitExceeded")
+}
+
+func TestValidateSGAttachment_UnknownVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	err := svc.validateSGAttachment(testAccountID, []string{"sg-aaa"}, "vpc-missing")
+	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
+}
+
+func TestValidateSGAttachment_VPCPending(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sg := createTestSG(t, svc, vpcID, "ok")
+
+	// Force VPC into pending state.
+	key := testAccountID + "." + vpcID
+	entry, err := svc.vpcKV.Get(key)
+	require.NoError(t, err)
+	var rec VPCRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	rec.State = "pending"
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = svc.vpcKV.Update(key, data, entry.Revision())
+	require.NoError(t, err)
+
+	err = svc.validateSGAttachment(testAccountID, []string{sg}, vpcID)
+	assert.ErrorContains(t, err, "InvalidVpcID.State")
+}
+
+func TestValidateSGAttachment_SGNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	err := svc.validateSGAttachment(testAccountID, []string{"sg-doesntexist"}, vpcID)
+	assert.ErrorContains(t, err, "InvalidGroup.NotFound")
+}
+
+func TestValidateSGAttachment_CrossVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
+	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
+	sgInA := createTestSG(t, svc, vpcA, "in-a")
+
+	err := svc.validateSGAttachment(testAccountID, []string{sgInA}, vpcB)
+	assert.ErrorContains(t, err, "InvalidParameterValue")
 }

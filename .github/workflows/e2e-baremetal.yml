@@ -41,6 +41,12 @@ jobs:
             scripts/baremetal
           path: mulga
 
+      - name: Install SSH Key
+        run: |
+          install -m 0700 -d ~/.ssh
+          echo "${{ secrets.BM_SSH_PRIVATE_KEY }}" > ~/.ssh/bm-ci
+          chmod 0600 ~/.ssh/bm-ci
+
       - name: Build Artifacts
         run: |
           mulga/scripts/baremetal/bm-build-artifacts.sh \

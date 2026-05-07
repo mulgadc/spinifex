@@ -253,16 +253,16 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})
 
-	if instance.GPUPCIAddress != "" {
+	for i, addr := range instance.GPUPCIAddresses {
 		xvga := "off"
 		if instance.GPUXVGAEnabled {
 			xvga = "on"
 		}
 		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu0,x-vga=%s", instance.GPUPCIAddress, xvga),
+			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu%d,x-vga=%s", addr, i, xvga),
 		})
 		slog.Info("GPU passthrough device configured",
-			"pci", instance.GPUPCIAddress, "instanceId", instance.ID, "xvga", xvga)
+			"pci", addr, "index", i, "instanceId", instance.ID, "xvga", xvga)
 	}
 
 	qmpSocket, err := utils.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))

@@ -199,12 +199,27 @@ var gr6Sizes = []instanceSize{
 	{"8xlarge", 32, 256},
 }
 
-// g7eSizes are the single-GPU G7e instance sizes (1x AMD Instinct MI350X each).
-// G7e 12xlarge and larger carry multiple GPUs and are excluded.
+// g7eSizes are the G7e instance sizes (AMD Instinct MI350X).
+// 12xlarge carries 2 GPUs; sizes above that are excluded (require 4+ GPUs).
 var g7eSizes = []instanceSize{
 	{"2xlarge", 8, 64},
 	{"4xlarge", 16, 128},
 	{"8xlarge", 32, 256},
+	{"12xlarge", 48, 512},
+}
+
+// gpuCountPerType overrides the default of 1 GPU for multi-GPU instance sizes.
+var gpuCountPerType = map[string]int{
+	"g7e.12xlarge": 2,
+}
+
+// GPUCountForType returns the number of GPUs required by the given instance type.
+// Returns 1 for all single-GPU and non-GPU types.
+func GPUCountForType(instanceType string) int {
+	if n, ok := gpuCountPerType[instanceType]; ok {
+		return n
+	}
+	return 1
 }
 
 // g6eSizes are the single-GPU G6e instance sizes (1x NVIDIA L40S each).

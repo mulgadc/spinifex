@@ -120,6 +120,7 @@ func generateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTy
 			}
 			for _, size := range def.sizes {
 				name := fmt.Sprintf("%s.%s", def.name, size.suffix)
+				gpuCount := int64(GPUCountForType(name))
 				types[name] = &ec2.InstanceTypeInfo{
 					InstanceType: aws.String(name),
 					VCpuInfo: &ec2.VCpuInfo{
@@ -133,14 +134,14 @@ func generateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTy
 					},
 					GpuInfo: &ec2.GpuInfo{
 						Gpus: []*ec2.GpuDeviceInfo{{
-							Count:        aws.Int64(1),
+							Count:        aws.Int64(gpuCount),
 							Manufacturer: aws.String(model.Manufacturer),
 							Name:         aws.String(model.Name),
 							MemoryInfo: &ec2.GpuDeviceMemoryInfo{
 								SizeInMiB: aws.Int64(model.MemoryMiB),
 							},
 						}},
-						TotalGpuMemoryInMiB: aws.Int64(model.MemoryMiB),
+						TotalGpuMemoryInMiB: aws.Int64(model.MemoryMiB * gpuCount),
 					},
 					CurrentGeneration:             aws.Bool(def.currentGen),
 					BurstablePerformanceSupported: aws.Bool(false),

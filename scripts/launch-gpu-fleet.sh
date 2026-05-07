@@ -1,59 +1,95 @@
 #!/bin/bash
-# launch-gpu-fleet.sh — Terminate all running instances, then launch 8 g7e instances
-# with GPU passthrough and verify GPU visibility inside each guest.
+# launch-gpu-fleet.sh — Terminate all running instances, launch a GPU fleet, provision
+# MI350X drivers and ROCm tooling in each guest, and verify compute readiness.
+#
+# Fleet composition (fixed):
+#   6 × g7e.4xlarge  (single MI350X each)
+#   1 × g7e.12xlarge (two MI350X GPUs)
 #
 # Usage:
 #   scripts/launch-gpu-fleet.sh
 #
 # Env overrides:
-#   GPU_FAMILY         Instance family prefix (default: g7e)
-#   INSTANCE_SIZE      Instance size suffix   (default: 2xlarge)
-#   FLEET_SIZE         Number of instances    (default: 8)
 #   SSH_KEY            Path to SSH private key (default: ~/.ssh/spinifex-key)
 #   SSH_USER           SSH user inside guest  (default: ec2-user)
-#   SSH_TIMEOUT        Seconds to wait for SSH per instance (default: 300)
+#   SSH_TIMEOUT        Seconds to wait for initial SSH per instance (default: 300)
+#   REBOOT_TIMEOUT     Seconds to wait for SSH after each reboot    (default: 300)
 set -euo pipefail
 
 export AWS_PROFILE=spinifex
 
-GPU_FAMILY="${GPU_FAMILY:-g7e}"
-INSTANCE_SIZE="${INSTANCE_SIZE:-2xlarge}"
-FLEET_SIZE="${FLEET_SIZE:-8}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/spinifex-key}"
 SSH_USER="${SSH_USER:-ec2-user}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-300}"
-INSTANCE_TYPE="${GPU_FAMILY}.${INSTANCE_SIZE}"
+REBOOT_TIMEOUT="${REBOOT_TIMEOUT:-300}"
 
-# --- Helper: wait for SSH and verify GPU in guest ---
-# Writes result to a temp file: "PASS <id> <ip>" or "FAIL <id> <ip> <reason>"
-verify_instance() {
-    local id="$1"
-    local ip="$2"
-    local result_file="$3"
+# Fleet composition: array of "type:count" pairs (order matters for display)
+FLEET_SPEC=("g7e.4xlarge:6" "g7e.12xlarge:1")
+FLEET_TOTAL=7
 
-    local ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes"
+# --- Helpers ---
 
-    # Wait for SSH
-    local elapsed=0
-    while [ "$elapsed" -lt "$SSH_TIMEOUT" ]; do
-        if ssh $ssh_opts -i "$SSH_KEY" "${SSH_USER}@${ip}" 'echo ready' >/dev/null 2>&1; then
-            break
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
+_ssh() {
+    local ip="$1"; shift
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -o BatchMode=yes \
+        -i "$SSH_KEY" "${SSH_USER}@${ip}" "$@"
+}
+
+wait_ssh() {
+    local ip="$1" timeout="$2" elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        _ssh "$ip" 'echo ready' >/dev/null 2>&1 && return 0
+        sleep 5; elapsed=$((elapsed + 5))
     done
-    if [ "$elapsed" -ge "$SSH_TIMEOUT" ]; then
-        echo "FAIL $id $ip SSH_TIMEOUT" > "$result_file"
-        return
+    return 1
+}
+
+# provision_instance installs MI350X firmware and ROCm tooling, rebooting twice,
+# then verifies compute readiness. Writes "PASS/FAIL <id> <ip> [reason]" to result_file.
+provision_instance() {
+    local id="$1" ip="$2" result_file="$3"
+
+    # Wait for initial boot
+    if ! wait_ssh "$ip" "$SSH_TIMEOUT"; then
+        echo "FAIL $id $ip SSH_TIMEOUT_INITIAL" > "$result_file"; return
     fi
 
-    # Verify GPU visible in guest
-    if ssh $ssh_opts -i "$SSH_KEY" "${SSH_USER}@${ip}" \
-        'lspci 2>/dev/null | grep -i -E "amd|nvidia|display|3d|vga"' >/dev/null 2>&1; then
-        echo "PASS $id $ip" > "$result_file"
-    else
-        echo "FAIL $id $ip NO_GPU_IN_GUEST" > "$result_file"
+    # Phase 1: firmware + initramfs rebuild → reboot
+    if ! _ssh "$ip" '
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq &&
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y linux-firmware &&
+        sudo update-initramfs -u -k all
+    '; then
+        echo "FAIL $id $ip FIRMWARE_INSTALL" > "$result_file"; return
     fi
+    _ssh "$ip" 'sudo reboot' || true
+    sleep 20
+    if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
+        echo "FAIL $id $ip REBOOT1_TIMEOUT" > "$result_file"; return
+    fi
+
+    # Phase 2: ROCm userland + group membership → reboot
+    if ! _ssh "$ip" '
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y rocminfo rocm-smi &&
+        sudo usermod -aG render,video ec2-user
+    '; then
+        echo "FAIL $id $ip ROCM_INSTALL" > "$result_file"; return
+    fi
+    _ssh "$ip" 'sudo reboot' || true
+    sleep 20
+    if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
+        echo "FAIL $id $ip REBOOT2_TIMEOUT" > "$result_file"; return
+    fi
+
+    # Phase 3: amd-smi (best-effort) + verify compute readiness
+    _ssh "$ip" 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y amd-smi' || true
+
+    if ! _ssh "$ip" 'rocminfo 2>/dev/null | grep -q "Device Type"'; then
+        echo "FAIL $id $ip ROCM_NOT_READY" > "$result_file"; return
+    fi
+
+    echo "PASS $id $ip" > "$result_file"
 }
 
 # --- Step 1: Terminate all running instances ---
@@ -67,7 +103,6 @@ if [ -n "$RUNNING_IDS" ] && [ "$RUNNING_IDS" != "None" ]; then
     # shellcheck disable=SC2086
     aws ec2 terminate-instances --instance-ids $RUNNING_IDS --output text >/dev/null
     echo "   Waiting for termination..."
-    # shellcheck disable=SC2086
     for id in $RUNNING_IDS; do
         COUNT=0
         while [ $COUNT -lt 60 ]; do
@@ -111,19 +146,22 @@ if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
 fi
 echo "   Subnet: $SUBNET_ID"
 
-# --- Step 4: Confirm GPU instance type is advertised ---
-echo "==> Checking ${INSTANCE_TYPE} is available"
-TYPE_INFO=$(aws ec2 describe-instance-types \
-    --query "InstanceTypes[?InstanceType=='${INSTANCE_TYPE}'].InstanceType | [0]" \
-    --output text 2>/dev/null || true)
-if [ -z "$TYPE_INFO" ] || [ "$TYPE_INFO" = "None" ]; then
-    echo "❌ Instance type '${INSTANCE_TYPE}' not advertised by this node"
-    echo "   Available GPU types:"
-    aws ec2 describe-instance-types \
-        --query "InstanceTypes[?GpuInfo!=null].InstanceType" --output text 2>/dev/null || true
-    exit 1
-fi
-echo "   ${INSTANCE_TYPE} available"
+# --- Step 4: Confirm all fleet instance types are advertised ---
+echo "==> Checking fleet instance types are available"
+for spec in "${FLEET_SPEC[@]}"; do
+    itype="${spec%%:*}"
+    TYPE_INFO=$(aws ec2 describe-instance-types \
+        --query "InstanceTypes[?InstanceType=='${itype}'].InstanceType | [0]" \
+        --output text 2>/dev/null || true)
+    if [ -z "$TYPE_INFO" ] || [ "$TYPE_INFO" = "None" ]; then
+        echo "❌ Instance type '${itype}' not advertised by this node"
+        echo "   Available GPU types:"
+        aws ec2 describe-instance-types \
+            --query "InstanceTypes[?GpuInfo!=null].InstanceType" --output text 2>/dev/null || true
+        exit 1
+    fi
+    echo "   ${itype} available"
+done
 
 # --- Step 5: Ensure SSH key exists ---
 if [ ! -f "$SSH_KEY" ]; then
@@ -135,23 +173,31 @@ fi
     --public-key-material "fileb://${SSH_KEY}.pub" >/dev/null 2>&1 || true
 
 # --- Step 6: Launch fleet ---
-echo "==> Launching ${FLEET_SIZE}x ${INSTANCE_TYPE} instances"
+echo "==> Launching fleet: 6× g7e.4xlarge + 1× g7e.12xlarge"
 INSTANCE_IDS=()
-for i in $(seq 1 "$FLEET_SIZE"); do
-    ID=$(aws ec2 run-instances \
-        --image-id "$AMI_ID" \
-        --instance-type "$INSTANCE_TYPE" \
-        --key-name spinifex-key \
-        --subnet-id "$SUBNET_ID" \
-        --count 1 \
-        --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
-        --query 'Instances[0].InstanceId' --output text)
-    if [ -z "$ID" ] || [ "$ID" = "None" ] || [ "$ID" = "null" ]; then
-        echo "❌ run-instances returned no InstanceId for slot $i"
-        exit 1
-    fi
-    echo "   [$i/$FLEET_SIZE] $ID launched"
-    INSTANCE_IDS+=("$ID")
+declare -A INSTANCE_TYPE_MAP
+slot=0
+for spec in "${FLEET_SPEC[@]}"; do
+    itype="${spec%%:*}"
+    count="${spec##*:}"
+    for i in $(seq 1 "$count"); do
+        slot=$((slot + 1))
+        ID=$(aws ec2 run-instances \
+            --image-id "$AMI_ID" \
+            --instance-type "$itype" \
+            --key-name spinifex-key \
+            --subnet-id "$SUBNET_ID" \
+            --count 1 \
+            --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+            --query 'Instances[0].InstanceId' --output text)
+        if [ -z "$ID" ] || [ "$ID" = "None" ] || [ "$ID" = "null" ]; then
+            echo "❌ run-instances returned no InstanceId for ${itype} slot ${i}"
+            exit 1
+        fi
+        echo "   [$slot/$FLEET_TOTAL] $ID ($itype) launched"
+        INSTANCE_IDS+=("$ID")
+        INSTANCE_TYPE_MAP["$ID"]="$itype"
+    done
 done
 
 # --- Step 7: Wait for all to reach running state ---
@@ -173,7 +219,7 @@ for id in "${INSTANCE_IDS[@]}"; do
         echo "❌ Instance $id failed to reach running state (last: $STATE)"
         exit 1
     fi
-    echo "   $id running"
+    echo "   $id (${INSTANCE_TYPE_MAP[$id]}) running"
 done
 
 # --- Step 8: Wait for public IPs ---
@@ -192,17 +238,17 @@ for id in "${INSTANCE_IDS[@]}"; do
         exit 1
     fi
     INSTANCE_IPS["$id"]="$IP"
-    echo "   $id → $IP"
+    echo "   $id (${INSTANCE_TYPE_MAP[$id]}) → $IP"
 done
 
-# --- Step 9: Verify SSH and GPU in parallel ---
-echo "==> Verifying SSH and GPU visibility in all instances (parallel)"
+# --- Step 9: Provision all instances in parallel ---
+echo "==> Provisioning GPU drivers and ROCm in all instances (parallel, 2 reboots each)"
 TMPDIR_RESULTS=$(mktemp -d)
 PIDS=()
 for id in "${INSTANCE_IDS[@]}"; do
     ip="${INSTANCE_IPS[$id]}"
     result_file="${TMPDIR_RESULTS}/${id}"
-    verify_instance "$id" "$ip" "$result_file" &
+    provision_instance "$id" "$ip" "$result_file" &
     PIDS+=($!)
 done
 
@@ -218,29 +264,30 @@ PASS=0
 FAIL=0
 for id in "${INSTANCE_IDS[@]}"; do
     result_file="${TMPDIR_RESULTS}/${id}"
+    itype="${INSTANCE_TYPE_MAP[$id]}"
+    ip="${INSTANCE_IPS[$id]}"
     if [ -f "$result_file" ]; then
         result=$(cat "$result_file")
         status=$(echo "$result" | awk '{print $1}')
-        ip="${INSTANCE_IPS[$id]}"
         if [ "$status" = "PASS" ]; then
-            echo "   ✅ $id ($ip) — SSH ready, GPU visible"
+            echo "   ✅ $id ($itype, $ip) — GPU drivers installed, ROCm ready"
             PASS=$((PASS + 1))
         else
             reason=$(echo "$result" | awk '{print $4}')
-            echo "   ❌ $id ($ip) — FAILED: $reason"
+            echo "   ❌ $id ($itype, $ip) — FAILED: $reason"
             FAIL=$((FAIL + 1))
         fi
     else
-        echo "   ❌ $id — no result (verify job lost)"
+        echo "   ❌ $id ($itype) — no result (provision job lost)"
         FAIL=$((FAIL + 1))
     fi
 done
 rm -rf "$TMPDIR_RESULTS"
 
 echo ""
-echo "   ${PASS}/${FLEET_SIZE} instances passed"
+echo "   ${PASS}/${FLEET_TOTAL} instances passed"
 if [ "$FAIL" -gt 0 ]; then
-    echo "❌ Fleet launch FAILED — $FAIL instance(s) did not pass verification"
+    echo "❌ Fleet launch FAILED — $FAIL instance(s) did not complete provisioning"
     exit 1
 fi
-echo "✅ Fleet launch PASSED — all ${FLEET_SIZE} ${INSTANCE_TYPE} instances running with GPU visible"
+echo "✅ Fleet ready — 6× g7e.4xlarge + 1× g7e.12xlarge provisioned with MI350X drivers and ROCm"

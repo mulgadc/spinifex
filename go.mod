@@ -12,7 +12,7 @@ require (
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/cpuid/v2 v2.3.0
-	github.com/mulgadc/predastore v1.2.0
+	github.com/mulgadc/predastore v1.2.1
 	github.com/mulgadc/viperblock v1.2.1
 	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.51.0
@@ -79,7 +79,7 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/klauspost/reedsolomon v1.13.3 // indirect
+	github.com/klauspost/reedsolomon v1.14.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect

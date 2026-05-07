@@ -1,10 +1,12 @@
 package handlers_ec2_vpc
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -973,6 +975,82 @@ func TestAuthorizeSecurityGroupIngress_RuleLimit(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "RulesPerSecurityGroupLimitExceeded")
+}
+
+// stallVPCInPending forces the given VPC into pending state by overwriting
+// its KV record. Simulates a CreateVpc that crashed mid-flow (default SG
+// creation failed, reconciler hasn't run yet).
+func stallVPCInPending(t *testing.T, svc *VPCServiceImpl, vpcID string) {
+	t.Helper()
+	key := utils.AccountKey(testAccountID, vpcID)
+	entry, err := svc.vpcKV.Get(key)
+	require.NoError(t, err)
+	var rec VPCRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	rec.State = "pending"
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = svc.vpcKV.Update(key, data, entry.Revision())
+	require.NoError(t, err)
+}
+
+func TestCreateSecurityGroup_RejectsPendingVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	stallVPCInPending(t, svc, vpcID)
+
+	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("user-sg"),
+		Description: aws.String("d"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidVpcID.State")
+}
+
+func TestAuthorizeSecurityGroup_RejectsPendingVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-sg")
+	stallVPCInPending(t, svc, vpcID)
+
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(80),
+			ToPort:     aws.Int64(80),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidVpcID.State")
+
+	_, err = svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(443),
+			ToPort:     aws.Int64(443),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidVpcID.State")
+}
+
+func TestCreateSubnet_RejectsPendingVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	stallVPCInPending(t, svc, vpcID)
+
+	_, err := svc.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.0.1.0/24"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidVpcID.State")
 }
 
 func TestEnsureDefaultVPC_CreatesDefaultSG(t *testing.T) {

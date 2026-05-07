@@ -274,6 +274,25 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 	}, nil
 }
 
+// requireVPCAvailable returns InvalidVpcID.NotFound if the VPC doesn't exist
+// for this account, or InvalidVpcID.State if the VPC is not yet "available"
+// (a default SG creation failure can leave a VPC pending until the
+// reconciler converges it).
+func (s *VPCServiceImpl) requireVPCAvailable(accountID, vpcId string) error {
+	entry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId))
+	if err != nil {
+		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+	}
+	var vpc VPCRecord
+	if err := json.Unmarshal(entry.Value(), &vpc); err != nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if vpc.State != "" && vpc.State != "available" {
+		return errors.New(awserrors.ErrorInvalidVpcIDState)
+	}
+	return nil
+}
+
 // transitionVPCState rewrites the VPC record's State field and persists with
 // CAS, updating the in-memory record on success so callers can return it.
 func (s *VPCServiceImpl) transitionVPCState(accountID, vpcID string, record *VPCRecord, state string) error {
@@ -488,6 +507,9 @@ func (s *VPCServiceImpl) CreateSubnet(input *ec2.CreateSubnetInput, accountID st
 	var vpcRecord VPCRecord
 	if err := json.Unmarshal(vpcEntry.Value(), &vpcRecord); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if vpcRecord.State != "" && vpcRecord.State != "available" {
+		return nil, errors.New(awserrors.ErrorInvalidVpcIDState)
 	}
 
 	// Validate subnet CIDR

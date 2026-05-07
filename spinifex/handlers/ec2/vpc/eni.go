@@ -68,7 +68,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 	}
 	if len(sgIdsIn) == 0 {
 		// AWS attaches the per-VPC default SG when the caller omits Groups.
-		defaultSGId, err := s.findDefaultSGForVPC(accountID, subnet.VpcId)
+		defaultSGId, err := s.FindDefaultSGForVPC(accountID, subnet.VpcId)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}

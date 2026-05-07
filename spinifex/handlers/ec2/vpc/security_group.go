@@ -113,9 +113,8 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
 	}
 
-	// Verify VPC exists
-	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId)); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+	if err := s.requireVPCAvailable(accountID, vpcId); err != nil {
+		return nil, err
 	}
 
 	// Check for duplicate group name in the same VPC and enforce the per-VPC
@@ -451,6 +450,10 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if err := s.requireVPCAvailable(accountID, record.VpcId); err != nil {
+		return nil, err
+	}
+
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions)
 	if err != nil {
 		slog.Warn("AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
@@ -506,6 +509,10 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 	var record SecurityGroupRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := s.requireVPCAvailable(accountID, record.VpcId); err != nil {
+		return nil, err
 	}
 
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions)
@@ -845,10 +852,10 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) 
 	return nil
 }
 
-// findDefaultSGForVPC scans the account's SG bucket for the SG with
+// FindDefaultSGForVPC scans the account's SG bucket for the SG with
 // IsDefault=true and the given VPC. Returns "" if none found (e.g., VPC still
 // in pending state because default SG creation failed).
-func (s *VPCServiceImpl) findDefaultSGForVPC(accountID, vpcId string) (string, error) {
+func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, error) {
 	prefix := accountID + "."
 	keys, err := s.sgKV.Keys()
 	if err != nil {

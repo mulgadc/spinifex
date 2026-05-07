@@ -7,7 +7,7 @@ Builds a Proxmox VM template with all Spinifex dependencies pre-installed. Cloni
 | Component | Details |
 |---|---|
 | System packages | QEMU, nbdkit, libvirt, gcc, jq, curl, etc. (`make install-system`) |
-| Go | 1.26.2 (`make install-go`) |
+| Go | 1.26.3 (`make install-go`) |
 | AWS CLI | v2 (`make install-aws`) |
 | Repositories | spinifex, viperblock, predastore (with `go.work` configured) |
 | Module cache | `go mod download` completed for all repos |

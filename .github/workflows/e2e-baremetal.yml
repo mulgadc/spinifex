@@ -55,6 +55,8 @@ jobs:
             CACHE="${BM_ISO_CACHE}" \
             SPINIFEX_BIN="${RUNNER_TEMP}/bm-bins/spx" \
             INSTALLER_BIN="${RUNNER_TEMP}/bm-bins/spinifex-installer" \
+            SPINIFEX_SRC="${GITHUB_WORKSPACE}" \
+            VIPERBLOCK_SRC="${RUNNER_TEMP}/bm-bins/viperblock" \
             VERSION="$(cd "$GITHUB_WORKSPACE" && git describe --tags --always 2>/dev/null || echo dev)"
 
       - name: Run Bare-Metal E2E

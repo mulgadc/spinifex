@@ -30,6 +30,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -2649,6 +2650,8 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
+
+	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(daemon.config, nc)
 	require.NoError(t, err)

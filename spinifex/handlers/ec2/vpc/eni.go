@@ -257,7 +257,10 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 	slog.Info("ModifyNetworkInterfaceAttribute completed", "eniId", eniId, "accountID", accountID)
 
 	if sgsChanged {
-		s.publishUpdatePortSGsEvent(eniId, record.PrivateIpAddress, record.SecurityGroupIds)
+		if err := s.requestUpdatePortSGsEvent(eniId, record.PrivateIpAddress, record.SecurityGroupIds); err != nil {
+			slog.Error("ModifyNetworkInterfaceAttribute: vpcd request failed", "eniId", eniId, "err", err)
+			return nil, err
+		}
 	}
 
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
@@ -606,13 +609,12 @@ func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, private
 	})
 }
 
-// publishUpdatePortSGsEvent publishes a vpc.update-port-sgs event so vpcd
-// reconciles OVN port-group membership against the desired SG list. The
-// payload is declarative — vpcd reads its libovsdb cache to compute the diff.
-// Phase 7 will switch this site to RequestEvent to surface vpcd errors
-// synchronously to the caller.
-func (s *VPCServiceImpl) publishUpdatePortSGsEvent(eniId, privateIP string, sgIds []string) {
-	utils.PublishEvent(s.natsConn, "vpc.update-port-sgs", struct {
+// requestUpdatePortSGsEvent sends a vpc.update-port-sgs event to vpcd via
+// request-reply so OVN port-group reconciliation errors surface to the caller
+// instead of being swallowed. The payload is declarative — vpcd reads its
+// libovsdb cache to compute the diff.
+func (s *VPCServiceImpl) requestUpdatePortSGsEvent(eniId, privateIP string, sgIds []string) error {
+	return utils.RequestEvent(s.natsConn, "vpc.update-port-sgs", struct {
 		NetworkInterfaceId string   `json:"network_interface_id"`
 		PrivateIpAddress   string   `json:"private_ip_address"`
 		SecurityGroupIds   []string `json:"security_group_ids"`
@@ -620,7 +622,7 @@ func (s *VPCServiceImpl) publishUpdatePortSGsEvent(eniId, privateIP string, sgId
 		NetworkInterfaceId: eniId,
 		PrivateIpAddress:   privateIP,
 		SecurityGroupIds:   sgIds,
-	})
+	}, vpcdSGEventTimeout)
 }
 
 // NATEvent represents a NAT lifecycle event published to NATS.

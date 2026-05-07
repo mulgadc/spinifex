@@ -22,6 +22,7 @@ func setupTestVPCServiceWithNC(t *testing.T) (*VPCServiceImpl, *nats.Conn) {
 
 	svc, err := NewVPCServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)
+	testutil.StubVpcdSGResponder(t, nc)
 	return svc, nc
 }
 

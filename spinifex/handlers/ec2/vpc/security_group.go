@@ -185,13 +185,15 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 
 	slog.Info("CreateSecurityGroup completed", "groupId", groupId, "groupName", groupName, "vpcId", vpcId, "accountID", accountID)
 
-	// Publish vpc.create-sg event for vpcd
-	s.publishSGEvent("vpc.create-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        vpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}); err != nil {
+		slog.Error("CreateSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.CreateSecurityGroupOutput{
 		GroupId: aws.String(groupId),
@@ -231,11 +233,13 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 
 	slog.Info("DeleteSecurityGroup completed", "groupId", groupId, "accountID", accountID)
 
-	// Publish vpc.delete-sg event for vpcd
-	s.publishSGEvent("vpc.delete-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.delete-sg", SGEvent{
 		GroupId: groupId,
 		VpcId:   record.VpcId,
-	})
+	}); err != nil {
+		slog.Error("DeleteSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.DeleteSecurityGroupOutput{}, nil
 }
@@ -507,13 +511,15 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 
 	slog.Info("AuthorizeSecurityGroupIngress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
-	// Publish vpc.update-sg event for vpcd
-	s.publishSGEvent("vpc.update-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        record.VpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}); err != nil {
+		slog.Error("AuthorizeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.AuthorizeSecurityGroupIngressOutput{
 		Return: aws.Bool(true),
@@ -571,12 +577,15 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 
 	slog.Info("AuthorizeSecurityGroupEgress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
-	s.publishSGEvent("vpc.update-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        record.VpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}); err != nil {
+		slog.Error("AuthorizeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.AuthorizeSecurityGroupEgressOutput{
 		Return: aws.Bool(true),
@@ -619,12 +628,15 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 
 	slog.Info("RevokeSecurityGroupIngress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
-	s.publishSGEvent("vpc.update-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        record.VpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}); err != nil {
+		slog.Error("RevokeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.RevokeSecurityGroupIngressOutput{
 		Return: aws.Bool(true),
@@ -667,12 +679,15 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 
 	slog.Info("RevokeSecurityGroupEgress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
-	s.publishSGEvent("vpc.update-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        record.VpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	})
+	}); err != nil {
+		slog.Error("RevokeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.RevokeSecurityGroupEgressOutput{
 		Return: aws.Bool(true),
@@ -814,9 +829,25 @@ func sgRuleKey(r SGRule) string {
 	return fmt.Sprintf("%s:%d:%d:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.SourceSG)
 }
 
-// publishSGEvent publishes a security group lifecycle event to NATS for vpcd consumption.
+// vpcdSGEventTimeout bounds the synchronous handler↔vpcd round-trip for SG
+// events (vpc.create-sg, vpc.delete-sg, vpc.update-sg, vpc.update-port-sgs).
+// On timeout the caller surfaces the error to the API client; the periodic
+// reconciler is the safety net that converges any drift afterwards.
+const vpcdSGEventTimeout = 5 * time.Second
+
+// publishSGEvent publishes a security group lifecycle event to NATS
+// fire-and-forget. Used by the DeleteVpc cascade path, where the surrounding
+// VPC-delete topology event is itself fire-and-forget.
 func (s *VPCServiceImpl) publishSGEvent(topic string, evt SGEvent) {
 	utils.PublishEvent(s.natsConn, topic, evt)
+}
+
+// requestSGEvent sends a security group lifecycle event to vpcd via
+// request-reply and waits for vpcd's success/error response. Used by the
+// public SG API surface so vpcd-side ACL/port-group failures are visible to
+// the caller instead of swallowed.
+func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
+	return utils.RequestEvent(s.natsConn, topic, evt, vpcdSGEventTimeout)
 }
 
 // createDefaultSecurityGroupInternal provisions the per-VPC default SG with

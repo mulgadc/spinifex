@@ -296,8 +296,19 @@ func (s *VPCServiceImpl) requireVPCAvailable(accountID, vpcId string) error {
 // transitionVPCState rewrites the VPC record's State field and persists with
 // CAS, updating the in-memory record on success so callers can return it.
 func (s *VPCServiceImpl) transitionVPCState(accountID, vpcID string, record *VPCRecord, state string) error {
+	if err := SetVPCStateKV(s.vpcKV, accountID, vpcID, state); err != nil {
+		return err
+	}
+	record.State = state
+	return nil
+}
+
+// SetVPCStateKV CAS-updates the VPC record's State field. Free-function form
+// so the vpcd reconciler can flip a "pending" VPC to "available" without
+// holding a *VPCServiceImpl.
+func SetVPCStateKV(vpcKV nats.KeyValue, accountID, vpcID, state string) error {
 	key := utils.AccountKey(accountID, vpcID)
-	entry, err := s.vpcKV.Get(key)
+	entry, err := vpcKV.Get(key)
 	if err != nil {
 		return fmt.Errorf("read VPC for state transition: %w", err)
 	}
@@ -305,15 +316,17 @@ func (s *VPCServiceImpl) transitionVPCState(accountID, vpcID string, record *VPC
 	if err := json.Unmarshal(entry.Value(), &current); err != nil {
 		return fmt.Errorf("unmarshal VPC for state transition: %w", err)
 	}
+	if current.State == state {
+		return nil
+	}
 	current.State = state
 	data, err := json.Marshal(current)
 	if err != nil {
 		return fmt.Errorf("marshal VPC for state transition: %w", err)
 	}
-	if _, err := s.vpcKV.Update(key, data, entry.Revision()); err != nil {
+	if _, err := vpcKV.Update(key, data, entry.Revision()); err != nil {
 		return fmt.Errorf("update VPC for state transition: %w", err)
 	}
-	record.State = state
 	return nil
 }
 

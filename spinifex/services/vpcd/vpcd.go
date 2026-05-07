@@ -464,6 +464,17 @@ func launchService(cfg *Config) error {
 		releaseLeader()
 	}
 
+	// Periodic SG/VPC convergence loop (Phase 6 of security-groups-enforcement).
+	// Re-acquires the reconcile-leader bucket each cycle so only one vpcd in the
+	// cluster runs the scans at a time. Cancelled when the parent ctx is.
+	loopCtx, loopCancel := context.WithCancel(ctx)
+	defer loopCancel()
+	loopDone := make(chan struct{})
+	go func() {
+		ReconcileSGsLoop(loopCtx, nc, topo)
+		close(loopDone)
+	}()
+
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs), "dhcp_subscriptions", len(dhcpSubs))
 
@@ -473,6 +484,8 @@ func launchService(cfg *Config) error {
 	<-sigChan
 
 	slog.Info("vpcd service shutting down")
+	loopCancel()
+	<-loopDone
 	return nil
 }
 

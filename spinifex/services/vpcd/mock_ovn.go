@@ -676,6 +676,29 @@ func (m *MockOVNClient) ListPortGroupsForPort(_ context.Context, lspName string)
 	return names, nil
 }
 
+// GetPortGroup returns the port group with the given name, or an error if it
+// doesn't exist. Mirrors the live client.
+func (m *MockOVNClient) GetPortGroup(_ context.Context, name string) (*nbdb.PortGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pg, exists := m.portGroups[name]
+	if !exists {
+		return nil, fmt.Errorf("port group %q not found", name)
+	}
+	return pg, nil
+}
+
+// ListPortGroups returns every port group. Mirrors the live client.
+func (m *MockOVNClient) ListPortGroups(_ context.Context) ([]nbdb.PortGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pgs := make([]nbdb.PortGroup, 0, len(m.portGroups))
+	for _, pg := range m.portGroups {
+		pgs = append(pgs, *pg)
+	}
+	return pgs, nil
+}
+
 // ACLs
 
 func (m *MockOVNClient) AddACL(_ context.Context, portGroupName string, spec ACLSpec) error {

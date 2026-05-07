@@ -122,6 +122,13 @@ type OVNClient interface {
 	// set contains the given LSP. Used by reconcilePortSGs to discover current
 	// membership before computing the add/remove diff against desired.
 	ListPortGroupsForPort(ctx context.Context, lspName string) ([]string, error)
+	// GetPortGroup returns the port group with the given name, or an error if
+	// it doesn't exist. Used by the reconciler to detect SGs whose port group
+	// has gone missing in OVN NB.
+	GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error)
+	// ListPortGroups returns every port group in OVN NB. Used by the reconciler
+	// to detect orphan port groups (no matching SG record in KV).
+	ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, error)
 
 	// ACLs (attached to port groups)
 	AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error
@@ -1144,6 +1151,23 @@ func (c *LiveOVNClient) getPortGroup(ctx context.Context, name string) (*nbdb.Po
 		return nil, fmt.Errorf("port group %q not found", name)
 	}
 	return &pgs[0], nil
+}
+
+// GetPortGroup is the exported wrapper around getPortGroup. Returns an error
+// when the named port group is not present in the cache.
+func (c *LiveOVNClient) GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
+	return c.getPortGroup(ctx, name)
+}
+
+// ListPortGroups returns every port group from the libovsdb cache. Used by the
+// reconciler's orphan-cleanup scan to find OVN port groups that have no
+// matching SG record in KV.
+func (c *LiveOVNClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, error) {
+	var pgs []nbdb.PortGroup
+	if err := c.client.List(ctx, &pgs); err != nil {
+		return nil, fmt.Errorf("list port groups: %w", err)
+	}
+	return pgs, nil
 }
 
 // ListPortGroupsForPort scans the cache for port groups whose Ports set

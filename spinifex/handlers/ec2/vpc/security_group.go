@@ -824,6 +824,15 @@ func (s *VPCServiceImpl) publishSGEvent(topic string, evt SGEvent) {
 // 0.0.0.0/0. Bypasses the public-API "default" reserved-name guard. Used by
 // CreateVpc and EnsureDefaultVPC.
 func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId string) (string, error) {
+	return CreateDefaultSecurityGroupKV(s.sgKV, s.natsConn, accountID, vpcId)
+}
+
+// CreateDefaultSecurityGroupKV writes the per-VPC default SG record to sgKV and
+// publishes the vpc.create-sg event. Free-function form so the vpcd reconciler
+// can call it without holding a *VPCServiceImpl. Bypasses the reserved-name
+// guard — callers are responsible for ensuring no default SG already exists in
+// the target VPC (use FindDefaultSGForVPCKV first).
+func CreateDefaultSecurityGroupKV(sgKV nats.KeyValue, nc *nats.Conn, accountID, vpcId string) (string, error) {
 	groupId := utils.GenerateResourceID("sg")
 	record := SecurityGroupRecord{
 		GroupId:     groupId,
@@ -845,13 +854,13 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 	if err != nil {
 		return "", fmt.Errorf("marshal default security group: %w", err)
 	}
-	if _, err := s.sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
 		return "", fmt.Errorf("store default security group: %w", err)
 	}
 
 	slog.Info("Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
 
-	s.publishSGEvent("vpc.create-sg", SGEvent{
+	utils.PublishEvent(nc, "vpc.create-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        vpcId,
 		IngressRules: record.IngressRules,
@@ -887,8 +896,14 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) 
 // IsDefault=true and the given VPC. Returns "" if none found (e.g., VPC still
 // in pending state because default SG creation failed).
 func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, error) {
+	return FindDefaultSGForVPCKV(s.sgKV, accountID, vpcId)
+}
+
+// FindDefaultSGForVPCKV is the free-function form of FindDefaultSGForVPC for
+// callers (e.g. the vpcd reconciler) that don't hold a *VPCServiceImpl.
+func FindDefaultSGForVPCKV(sgKV nats.KeyValue, accountID, vpcId string) (string, error) {
 	prefix := accountID + "."
-	keys, err := s.sgKV.Keys()
+	keys, err := sgKV.Keys()
 	if err != nil {
 		if errors.Is(err, nats.ErrNoKeysFound) {
 			return "", nil
@@ -899,7 +914,7 @@ func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, e
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := s.sgKV.Get(k)
+		entry, err := sgKV.Get(k)
 		if err != nil {
 			continue
 		}

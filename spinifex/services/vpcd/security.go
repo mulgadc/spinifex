@@ -45,56 +45,58 @@ func (h *TopologyHandler) handleCreateSG(msg *nats.Msg) {
 	}
 
 	ctx := context.Background()
-	pgName := portGroupName(evt.GroupId)
-	asName := addressSetName(pgName)
-
-	// Create port group (initially empty — ports are added when ENIs are assigned to the SG)
-	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
-		slog.Error("vpcd: failed to create port group", "pg", pgName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	// Create the per-SG address set. ACLs whose match expression references
-	// this SG as a SourceSG (e.g. "ip4.src == $<asName>") need the set to
-	// resolve, otherwise libovsdb errors at ACL evaluation time. Empty until
-	// ports join via reconcilePortSGs. Fail-fast: a missing address set leaves
-	// SG-to-SG rules unmatchable, so propagate the error to the caller.
-	if err := h.ovn.CreateAddressSet(ctx, asName, nil); err != nil {
-		slog.Error("vpcd: failed to create address set", "as", asName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	// Add default deny ACLs (priority 900) — drop all traffic not explicitly
-	// allowed. Logging is enabled so boundary communications are observable via
-	// syslog (CMMC SC.L1-3.13.1). Fail-fast: a partial ACL set leaves the port
-	// group with the default-allow OVN behavior for any port that joins it.
-	if err := h.ovn.AddACL(ctx, pgName, denyIngressACL(pgName)); err != nil {
-		slog.Error("vpcd: failed to add default deny ingress ACL", "pg", pgName, "err", err)
-		respond(msg, err)
-		return
-	}
-	if err := h.ovn.AddACL(ctx, pgName, denyEgressACL(pgName)); err != nil {
-		slog.Error("vpcd: failed to add default deny egress ACL", "pg", pgName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	// Add ACLs for initial rules (priority 1000 — higher than deny)
-	if err := h.addRuleACLs(ctx, pgName, evt.IngressRules, evt.EgressRules); err != nil {
+	if err := h.provisionSG(ctx, evt.GroupId, evt.IngressRules, evt.EgressRules); err != nil {
+		slog.Error("vpcd: failed to provision security group", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return
 	}
 
 	slog.Info("vpcd: created security group port group",
-		"pg", pgName,
+		"pg", portGroupName(evt.GroupId),
 		"group_id", evt.GroupId,
 		"vpc_id", evt.VpcId,
 		"ingress_rules", len(evt.IngressRules),
 		"egress_rules", len(evt.EgressRules),
 	)
 	respond(msg, nil)
+}
+
+// provisionSG creates the OVN port group, address set, default-deny ACLs, and
+// allow ACLs for the given SG. Used by handleCreateSG (CreateSecurityGroup
+// path) and the reconciler's scan-2 (SG record without OVN port group).
+//
+// Fail-fast: a partial ACL set leaves the port group with the OVN default
+// (unrestricted) for any port that joins it, which is the opposite of the
+// enforcement guarantee. Errors propagate so callers retry or the next
+// reconciler pass converges.
+func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingress, egress []SGRuleForACL) error {
+	pgName := portGroupName(groupId)
+	asName := addressSetName(pgName)
+
+	// Create port group (initially empty — ports are added when ENIs are assigned to the SG)
+	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
+		return fmt.Errorf("create port group %s: %w", pgName, err)
+	}
+
+	// Create the per-SG address set. ACLs whose match expression references
+	// this SG as a SourceSG (e.g. "ip4.src == $<asName>") need the set to
+	// resolve, otherwise libovsdb errors at ACL evaluation time. Empty until
+	// ports join via reconcilePortSGs.
+	if err := h.ovn.CreateAddressSet(ctx, asName, nil); err != nil {
+		return fmt.Errorf("create address set %s: %w", asName, err)
+	}
+
+	// Add default deny ACLs (priority 900) with logging enabled (CMMC SC.L1-3.13.1
+	// boundary monitoring).
+	if err := h.ovn.AddACL(ctx, pgName, denyIngressACL(pgName)); err != nil {
+		return fmt.Errorf("add default deny ingress ACL on %s: %w", pgName, err)
+	}
+	if err := h.ovn.AddACL(ctx, pgName, denyEgressACL(pgName)); err != nil {
+		return fmt.Errorf("add default deny egress ACL on %s: %w", pgName, err)
+	}
+
+	// Add ACLs for current rules (priority 1000 — higher than deny)
+	return h.addRuleACLs(ctx, pgName, ingress, egress)
 }
 
 // handleDeleteSG deletes the OVN Port Group and all associated ACLs.

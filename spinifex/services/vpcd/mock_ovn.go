@@ -626,71 +626,51 @@ func (m *MockOVNClient) DeletePortGroup(_ context.Context, name string) error {
 	return nil
 }
 
-// AddPortToPortGroup is idempotent — re-adding an existing member is a no-op.
-// Mock parity with LiveOVNClient.AddPortToPortGroup.
-func (m *MockOVNClient) AddPortToPortGroup(_ context.Context, name string, lspName string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pg, exists := m.portGroups[name]
-	if !exists {
-		return fmt.Errorf("port group %q not found", name)
-	}
-	lsp, exists := m.ports[lspName]
-	if !exists {
-		return fmt.Errorf("logical switch port %q not found", lspName)
-	}
-	if slices.Contains(pg.Ports, lsp.UUID) {
-		return nil
-	}
-	pg.Ports = append(pg.Ports, lsp.UUID)
-	return nil
-}
-
-func (m *MockOVNClient) RemovePortFromPortGroup(_ context.Context, name string, lspName string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pg, exists := m.portGroups[name]
-	if !exists {
-		return fmt.Errorf("port group %q not found", name)
-	}
-	lsp, exists := m.ports[lspName]
-	if !exists {
-		return fmt.Errorf("logical switch port %q not found", lspName)
-	}
-	for i, u := range pg.Ports {
-		if u == lsp.UUID {
-			pg.Ports = append(pg.Ports[:i], pg.Ports[i+1:]...)
-			return nil
-		}
-	}
-	return nil
-}
-
 // UpdatePortGroupMemberships applies all add/remove port-group joins and
-// the matching address-set entry inserts/removes for one LSP. The mock has
-// no real concurrency to worry about, so it just calls the existing
-// methods sequentially under lock — but the API surface matches the live
-// client so callers can rely on the single-method shape regardless of
-// backend.
+// the matching address-set entry inserts/removes for one LSP.
 func (m *MockOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
+	m.mu.Lock()
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		m.mu.Unlock()
+		return fmt.Errorf("logical switch port %q not found", lspName)
+	}
 	for _, pgName := range addPGs {
-		if err := m.AddPortToPortGroup(ctx, pgName, lspName); err != nil {
-			return err
+		pg, exists := m.portGroups[pgName]
+		if !exists {
+			m.mu.Unlock()
+			return fmt.Errorf("port group %q not found", pgName)
 		}
-		if privateIP != "" {
-			if err := m.AddAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
-				return err
-			}
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			pg.Ports = append(pg.Ports, lsp.UUID)
 		}
 	}
 	for _, pgName := range removePGs {
-		if err := m.RemovePortFromPortGroup(ctx, pgName, lspName); err != nil {
+		pg, exists := m.portGroups[pgName]
+		if !exists {
+			m.mu.Unlock()
+			return fmt.Errorf("port group %q not found", pgName)
+		}
+		for i, u := range pg.Ports {
+			if u == lsp.UUID {
+				pg.Ports = append(pg.Ports[:i], pg.Ports[i+1:]...)
+				break
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	if privateIP == "" {
+		return nil
+	}
+	for _, pgName := range addPGs {
+		if err := m.AddAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
 			return err
 		}
-		if privateIP != "" {
-			if err := m.RemoveAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
-				return err
-			}
+	}
+	for _, pgName := range removePGs {
+		if err := m.RemoveAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -730,35 +710,37 @@ func (m *MockOVNClient) GetPortGroup(_ context.Context, name string) (*nbdb.Port
 
 // ACLs
 
-func (m *MockOVNClient) AddACL(_ context.Context, portGroupName string, spec ACLSpec) error {
+func (m *MockOVNClient) AddACLs(_ context.Context, portGroupName string, specs []ACLSpec) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.addACLCalls++
 	if m.AddACLErrAfter > 0 && m.addACLCalls == m.AddACLErrAfter {
-		return fmt.Errorf("injected AddACL failure on call %d", m.addACLCalls)
+		return fmt.Errorf("injected AddACLs failure on call %d", m.addACLCalls)
 	}
 	pg, exists := m.portGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
 	}
-	acl := &nbdb.ACL{
-		UUID:      utils.GenerateResourceID("acl"),
-		Direction: spec.Direction,
-		Priority:  spec.Priority,
-		Match:     spec.Match,
-		Action:    spec.Action,
-		Log:       spec.Log,
+	for _, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:      utils.GenerateResourceID("acl"),
+			Direction: spec.Direction,
+			Priority:  spec.Priority,
+			Match:     spec.Match,
+			Action:    spec.Action,
+			Log:       spec.Log,
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		m.acls[acl.UUID] = acl
+		pg.ACLs = append(pg.ACLs, acl.UUID)
 	}
-	if spec.Name != "" {
-		name := spec.Name
-		acl.Name = &name
-	}
-	if spec.Severity != "" {
-		severity := spec.Severity
-		acl.Severity = &severity
-	}
-	m.acls[acl.UUID] = acl
-	pg.ACLs = append(pg.ACLs, acl.UUID)
 	return nil
 }
 

@@ -796,17 +796,29 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 // --- Phase 3: default SG lifecycle, dependency checks, quotas ---
 
 // findDefaultSGInVPC returns the default-SG ID a CreateVpc call provisions.
+// Walks the SG KV bucket and filters by IsDefault=true so a regression in
+// the discriminator field (rather than the GroupName="default" convention)
+// is caught — production code (FindDefaultSGForVPC, DeleteVpc cascade,
+// DeleteSecurityGroup default guard) keys off IsDefault, not GroupName.
 func findDefaultSGInVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) string {
 	t.Helper()
-	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
-			{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
-		},
-	}, testAccountID)
+	keys, err := svc.sgKV.Keys()
 	require.NoError(t, err)
-	require.Len(t, desc.SecurityGroups, 1, "expected exactly one default SG in vpc %s", vpcID)
-	return *desc.SecurityGroups[0].GroupId
+	var matches []string
+	for _, k := range keys {
+		if k == utils.VersionKey {
+			continue
+		}
+		entry, err := svc.sgKV.Get(k)
+		require.NoError(t, err)
+		var rec SecurityGroupRecord
+		require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+		if rec.IsDefault && rec.VpcId == vpcID {
+			matches = append(matches, rec.GroupId)
+		}
+	}
+	require.Len(t, matches, 1, "expected exactly one IsDefault=true SG in vpc %s", vpcID)
+	return matches[0]
 }
 
 func TestCreateVpc_ProvisionsDefaultSG(t *testing.T) {

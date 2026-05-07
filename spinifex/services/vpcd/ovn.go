@@ -110,10 +110,6 @@ type OVNClient interface {
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	DeletePortGroup(ctx context.Context, name string) error
-	// Incremental membership — preferred for SG enforcement because OVSDB
-	// mutate-insert/delete is atomic and idempotent under concurrent change.
-	AddPortToPortGroup(ctx context.Context, name string, lspName string) error
-	RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error
 	// UpdatePortGroupMemberships applies all port-group joins, port-group
 	// leaves, and the matching address-set entry inserts/removes for a single
 	// LSP in one atomic OVSDB transaction. Required by reconcilePortSGs so a
@@ -130,8 +126,10 @@ type OVNClient interface {
 	// has gone missing in OVN NB.
 	GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error)
 
-	// ACLs (attached to port groups)
-	AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error
+	// ACLs (attached to port groups). AddACLs creates all rows and links
+	// them to the port group in one OVSDB transaction — important when a
+	// single SG can carry up to 60 ingress + 60 egress rules.
+	AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
 
 	// Address Sets (referenced by ACL match expressions for SG-to-SG rules)
@@ -148,16 +146,28 @@ type OVNClient interface {
 }
 
 // namedUUID generates a valid OVSDB named-uuid from a prefix and name.
-// OVSDB named-uuids must match [_a-zA-Z][_a-zA-Z0-9]* — hyphens and dots
-// are replaced with underscores.
+// OVSDB named-uuids must match [_a-zA-Z][_a-zA-Z0-9]* — anything outside
+// that class (spaces, '@', '=', '&', '-', '.', '/', etc.) is replaced with
+// an underscore. Callers always supply a prefix that begins with a letter,
+// so the leading-character constraint is satisfied implicitly.
+//
+// Without exhaustive sanitisation, ACL named-uuids that embed a Match
+// expression like "outport == @pg-sg-XYZ && ip4" produce strings with
+// spaces and '@' that OVSDB rejects with "Type mismatch for member
+// 'uuid-name'", which silently breaks every default-SG ACL transaction.
 func namedUUID(prefix, name string) string {
 	s := prefix + name
 	result := make([]byte, len(s))
 	for i := range s {
-		if s[i] == '-' || s[i] == '.' || s[i] == '/' {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_':
+			result[i] = c
+		default:
 			result[i] = '_'
-		} else {
-			result[i] = s[i]
 		}
 	}
 	return string(result)
@@ -1087,39 +1097,6 @@ func (c *LiveOVNClient) DeletePortGroup(ctx context.Context, name string) error 
 	return nil
 }
 
-// AddPortToPortGroup is idempotent: re-inserting an existing member is a
-// no-op in OVSDB.
-func (c *LiveOVNClient) AddPortToPortGroup(ctx context.Context, name string, lspName string) error {
-	return c.mutatePortGroupPorts(ctx, name, lspName, "insert")
-}
-
-func (c *LiveOVNClient) RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error {
-	return c.mutatePortGroupPorts(ctx, name, lspName, "delete")
-}
-
-func (c *LiveOVNClient) mutatePortGroupPorts(ctx context.Context, name, lspName, mutator string) error {
-	pg, err := c.getPortGroup(ctx, name)
-	if err != nil {
-		return fmt.Errorf("port group %s lookup: %w", mutator, err)
-	}
-	lsp, err := c.GetLogicalSwitchPort(ctx, lspName)
-	if err != nil {
-		return fmt.Errorf("port group %s lsp lookup: %w", mutator, err)
-	}
-	ops, err := c.client.Where(pg).Mutate(pg, model.Mutation{
-		Field:   &pg.Ports,
-		Mutator: ovsdb.Mutator(mutator), // "insert" or "delete"
-		Value:   []string{lsp.UUID},
-	})
-	if err != nil {
-		return fmt.Errorf("mutate port group ports ops: %w", err)
-	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("mutate port group ports transact: %w", err)
-	}
-	return nil
-}
-
 func (c *LiveOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
 	if len(addPGs) == 0 && len(removePGs) == 0 {
 		return nil
@@ -1226,47 +1203,55 @@ func (c *LiveOVNClient) ListPortGroupsForPort(ctx context.Context, lspName strin
 
 // ACLs
 
-func (c *LiveOVNClient) AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error {
+func (c *LiveOVNClient) AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
+	if len(specs) == 0 {
+		return nil
+	}
 	pg, err := c.getPortGroup(ctx, portGroupName)
 	if err != nil {
-		return fmt.Errorf("add ACL port group lookup: %w", err)
+		return fmt.Errorf("add ACLs port group lookup: %w", err)
 	}
 
-	acl := &nbdb.ACL{
-		UUID:        namedUUID("acl_", portGroupName+"_"+spec.Direction+"_"+spec.Match),
-		Direction:   spec.Direction,
-		Priority:    spec.Priority,
-		Match:       spec.Match,
-		Action:      spec.Action,
-		Log:         spec.Log,
-		ExternalIDs: map[string]string{},
-	}
-	if spec.Name != "" {
-		name := spec.Name
-		acl.Name = &name
-	}
-	if spec.Severity != "" {
-		severity := spec.Severity
-		acl.Severity = &severity
-	}
-
-	createOps, err := c.client.Create(acl)
-	if err != nil {
-		return fmt.Errorf("create ACL ops: %w", err)
+	var ops []ovsdb.Operation
+	uuids := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:        namedUUID("acl_", portGroupName+"_"+spec.Direction+"_"+spec.Match),
+			Direction:   spec.Direction,
+			Priority:    spec.Priority,
+			Match:       spec.Match,
+			Action:      spec.Action,
+			Log:         spec.Log,
+			ExternalIDs: map[string]string{},
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		createOps, err := c.client.Create(acl)
+		if err != nil {
+			return fmt.Errorf("create ACL ops: %w", err)
+		}
+		ops = append(ops, createOps...)
+		uuids = append(uuids, acl.UUID)
 	}
 
 	mutateOps, err := c.client.Where(pg).Mutate(pg, model.Mutation{
 		Field:   &pg.ACLs,
 		Mutator: ovsdb.MutateOperationInsert,
-		Value:   []string{acl.UUID},
+		Value:   uuids,
 	})
 	if err != nil {
 		return fmt.Errorf("mutate port group ACLs ops: %w", err)
 	}
+	ops = append(ops, mutateOps...)
 
-	ops := append(createOps, mutateOps...)
 	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("add ACL transact: %w", err)
+		return fmt.Errorf("add ACLs transact: %w", err)
 	}
 	return nil
 }

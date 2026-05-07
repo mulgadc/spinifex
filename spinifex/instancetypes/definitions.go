@@ -29,6 +29,7 @@ var (
 
 	// AMD GPU models
 	AMDradeonV520 = GPUModel{"1002", "7362", "g4ad", "AMD", "Radeon Pro V520", 8192}
+	AMDmi350x     = GPUModel{"1002", "75a0", "g7e", "AMD", "Instinct MI350X", 294896}
 )
 
 var knownGPUModels = []GPUModel{
@@ -45,6 +46,7 @@ var knownGPUModels = []GPUModel{
 	NVIDIAh100pcie,
 	NVIDIAh200sxm,
 	AMDradeonV520,
+	AMDmi350x,
 }
 
 // GPUModelForVendorDevice returns the GPUModel for a PCI vendor/device ID pair,
@@ -197,6 +199,14 @@ var gr6Sizes = []instanceSize{
 	{"8xlarge", 32, 256},
 }
 
+// g7eSizes are the single-GPU G7e instance sizes (1x AMD Instinct MI350X each).
+// G7e 12xlarge and larger carry multiple GPUs and are excluded.
+var g7eSizes = []instanceSize{
+	{"2xlarge", 8, 64},
+	{"4xlarge", 16, 128},
+	{"8xlarge", 32, 256},
+}
+
 // g6eSizes are the single-GPU G6e instance sizes (1x NVIDIA L40S each).
 var g6eSizes = []instanceSize{
 	{"xlarge", 4, 32},
@@ -313,6 +323,7 @@ var instanceFamilyDefs = []instanceFamilyDef{
 	{name: "g6", sizes: g6Sizes, currentGen: true},
 	{name: "gr6", sizes: gr6Sizes, currentGen: true}, // same L4 GPU as g6; requires operator config (PCI ID indistinguishable)
 	{name: "g6e", sizes: g6eSizes, currentGen: true},
+	{name: "g7e", sizes: g7eSizes, currentGen: true},
 	{name: "p3", sizes: p3Sizes, currentGen: false},
 	{name: "p3dn", sizes: p3dnSizes, currentGen: false},
 	{name: "p4d", sizes: p4dSizes, currentGen: true},

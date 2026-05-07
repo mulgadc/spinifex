@@ -1214,9 +1214,13 @@ func (c *LiveOVNClient) AddACLs(ctx context.Context, portGroupName string, specs
 
 	var ops []ovsdb.Operation
 	uuids := make([]string, 0, len(specs))
-	for _, spec := range specs {
+	for i, spec := range specs {
+		// Index disambiguates ACLs that collapse to the same (direction,match)
+		// after sanitisation — e.g. a default-deny egress and a 0.0.0.0/0
+		// allow egress both produce "inport == @pg && ip4". Without the
+		// index, OVSDB rejects the second insert with "duplicate uuid-name".
 		acl := &nbdb.ACL{
-			UUID:        namedUUID("acl_", portGroupName+"_"+spec.Direction+"_"+spec.Match),
+			UUID:        namedUUID("acl_", fmt.Sprintf("%s_%d_%s", portGroupName, i, spec.Direction)),
 			Direction:   spec.Direction,
 			Priority:    spec.Priority,
 			Match:       spec.Match,

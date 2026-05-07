@@ -111,6 +111,16 @@ func (m *Manager) launch(instance *VM) error {
 	qmpClient, err := newQMPClientWithHandshake(instance)
 	if err != nil {
 		slog.Error("Failed to create QMP client", "err", err)
+		// QEMU started but QMP handshake failed. Kill it synchronously so the
+		// VFIO device is released before the caller frees the GPU pool entry;
+		// otherwise the next Claim gets the same PCI address while QEMU still
+		// holds /dev/vfio/<group>, causing "device or resource busy".
+		if pid, pidErr := utils.ReadPidFile(instance.ID); pidErr == nil && pid > 0 {
+			if proc, procErr := os.FindProcess(pid); procErr == nil {
+				_ = proc.Signal(syscall.SIGKILL)
+			}
+			_ = utils.WaitForProcessExit(pid, 10*time.Second)
+		}
 		return err
 	}
 	instance.QMPClient = qmpClient

@@ -129,7 +129,8 @@ func TestDescribeSecurityGroups_All(t *testing.T) {
 
 	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, desc.SecurityGroups, 2)
+	// 2 user-created + 1 auto-created default SG (CreateVpc provisions one).
+	assert.Len(t, desc.SecurityGroups, 3)
 }
 
 func TestDescribeSecurityGroups_ByGroupId(t *testing.T) {
@@ -669,8 +670,11 @@ func TestDescribeSecurityGroups_FilterByVpcId(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, out.SecurityGroups, 1)
-	assert.Equal(t, vpc1, *out.SecurityGroups[0].VpcId)
+	// 1 user-created + 1 auto-created default SG in vpc1.
+	assert.Len(t, out.SecurityGroups, 2)
+	for _, sg := range out.SecurityGroups {
+		assert.Equal(t, vpc1, *sg.VpcId)
+	}
 }
 
 func TestDescribeSecurityGroups_FilterByIpPermissionCidr(t *testing.T) {
@@ -807,4 +811,182 @@ func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.SecurityGroups)
+}
+
+// --- Phase 3: default SG lifecycle, dependency checks, quotas ---
+
+// findDefaultSGInVPC returns the default-SG ID a CreateVpc call provisions.
+func findDefaultSGInVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) string {
+	t.Helper()
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
+			{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1, "expected exactly one default SG in vpc %s", vpcID)
+	return *desc.SecurityGroups[0].GroupId
+}
+
+func TestCreateVpc_ProvisionsDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	sgID := findDefaultSGInVPC(t, svc, vpcID)
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
+	sg := desc.SecurityGroups[0]
+	assert.Equal(t, "default", *sg.GroupName)
+	assert.Equal(t, "default VPC security group", *sg.Description)
+	require.Len(t, sg.IpPermissions, 1)
+	require.Len(t, sg.IpPermissions[0].UserIdGroupPairs, 1)
+	assert.Equal(t, sgID, *sg.IpPermissions[0].UserIdGroupPairs[0].GroupId)
+	require.Len(t, sg.IpPermissionsEgress, 1)
+	require.Len(t, sg.IpPermissionsEgress[0].IpRanges, 1)
+	assert.Equal(t, "0.0.0.0/0", *sg.IpPermissionsEgress[0].IpRanges[0].CidrIp)
+}
+
+func TestCreateSecurityGroup_RejectsReservedDefaultName(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	_, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("default"),
+		Description: aws.String("user-supplied"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidGroup.Reserved")
+}
+
+func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := findDefaultSGInVPC(t, svc, vpcID)
+
+	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(sgID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CannotDelete")
+}
+
+func TestDeleteSecurityGroup_RejectsAttachedToENI(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+	sgID := createTestSG(t, svc, vpcID, "in-use-sg")
+
+	_, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetID),
+		Groups:   []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(sgID),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DependencyViolation")
+}
+
+func TestDeleteSecurityGroup_RejectsReferencedFromOtherSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	srcSG := createTestSG(t, svc, vpcID, "src-sg")
+	dstSG := createTestSG(t, svc, vpcID, "dst-sg")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(dstSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(srcSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String(srcSG),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DependencyViolation")
+}
+
+func TestDeleteVpc_BlocksOnNonDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	createTestSG(t, svc, vpcID, "user-sg")
+
+	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DependencyViolation")
+}
+
+func TestDeleteVpc_CascadesDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	defaultSG := findDefaultSGInVPC(t, svc, vpcID)
+
+	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err)
+
+	// Default SG must be gone too.
+	_, err = svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(defaultSG)},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+}
+
+func TestAuthorizeSecurityGroupIngress_RuleLimit(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-limit-sg")
+
+	proto := "tcp"
+	for port := range maxRulesPerSGSide {
+		_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: aws.String(sgID),
+			IpPermissions: []*ec2.IpPermission{{
+				IpProtocol: &proto,
+				FromPort:   aws.Int64(int64(port)),
+				ToPort:     aws.Int64(int64(port)),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+			}},
+		}, testAccountID)
+		require.NoError(t, err, "rule %d should fit under the cap", port)
+	}
+
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(int64(maxRulesPerSGSide)),
+			ToPort:     aws.Int64(int64(maxRulesPerSGSide)),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RulesPerSecurityGroupLimitExceeded")
+}
+
+func TestEnsureDefaultVPC_CreatesDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	info, err := svc.EnsureDefaultVPC(testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+
+	desc, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(info.VpcId)}},
+			{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
 }

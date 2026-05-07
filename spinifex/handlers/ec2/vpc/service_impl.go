@@ -228,7 +228,7 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 	record := VPCRecord{
 		VpcId:              vpcID,
 		CidrBlock:          ipNet.String(), // Normalize CIDR
-		State:              "available",
+		State:              "pending",
 		IsDefault:          false,
 		VNI:                vni,
 		EnableDnsSupport:   true,  // AWS default
@@ -257,9 +257,45 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 		}
 	}
 
+	// Provision the per-VPC default SG synchronously. On failure the VPC stays
+	// pending and the reconciler retries on its next pass (Phase 6).
+	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
+		slog.Error("Failed to create default security group for VPC; VPC remains pending", "vpcId", vpcID, "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := s.transitionVPCState(accountID, vpcID, &record, "available"); err != nil {
+		slog.Error("Failed to flip VPC to available; VPC remains pending", "vpcId", vpcID, "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	return &ec2.CreateVpcOutput{
 		Vpc: s.vpcRecordToEC2(&record, accountID),
 	}, nil
+}
+
+// transitionVPCState rewrites the VPC record's State field and persists with
+// CAS, updating the in-memory record on success so callers can return it.
+func (s *VPCServiceImpl) transitionVPCState(accountID, vpcID string, record *VPCRecord, state string) error {
+	key := utils.AccountKey(accountID, vpcID)
+	entry, err := s.vpcKV.Get(key)
+	if err != nil {
+		return fmt.Errorf("read VPC for state transition: %w", err)
+	}
+	var current VPCRecord
+	if err := json.Unmarshal(entry.Value(), &current); err != nil {
+		return fmt.Errorf("unmarshal VPC for state transition: %w", err)
+	}
+	current.State = state
+	data, err := json.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("marshal VPC for state transition: %w", err)
+	}
+	if _, err := s.vpcKV.Update(key, data, entry.Revision()); err != nil {
+		return fmt.Errorf("update VPC for state transition: %w", err)
+	}
+	record.State = state
+	return nil
 }
 
 // DeleteVpc deletes a VPC
@@ -301,8 +337,42 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		}
 	}
 
+	// Reject if any non-default SG remains in this VPC; the cascade only
+	// auto-deletes the default SG (matches AWS DeleteVpc semantics).
+	defaultSGId := ""
+	sgKeys, err := s.sgKV.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range sgKeys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var sg SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &sg); err != nil {
+			continue
+		}
+		if sg.VpcId != vpcID {
+			continue
+		}
+		if !sg.IsDefault {
+			return nil, errors.New(awserrors.ErrorDependencyViolation)
+		}
+		defaultSGId = sg.GroupId
+	}
+
 	if err := s.vpcKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if defaultSGId != "" {
+		if err := s.deleteSecurityGroupInternal(accountID, defaultSGId); err != nil {
+			slog.Error("Failed to cascade-delete default security group on DeleteVpc", "vpcId", vpcID, "groupId", defaultSGId, "err", err)
+		}
 	}
 
 	slog.Info("DeleteVpc completed", "vpcId", vpcID, "accountID", accountID)
@@ -953,7 +1023,7 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 	vpcRecord := VPCRecord{
 		VpcId:              vpcID,
 		CidrBlock:          DefaultVPCCidr,
-		State:              "available",
+		State:              "pending",
 		IsDefault:          true,
 		VNI:                vni,
 		EnableDnsSupport:   true, // AWS default
@@ -971,6 +1041,13 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 	}
 
 	s.publishVPCEvent("vpc.create", vpcID, DefaultVPCCidr, vni)
+
+	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
+		return nil, fmt.Errorf("create default security group for default VPC: %w", err)
+	}
+	if err := s.transitionVPCState(accountID, vpcID, &vpcRecord, "available"); err != nil {
+		return nil, fmt.Errorf("flip default VPC to available: %w", err)
+	}
 
 	// Determine AZ
 	az := "us-east-1a"

@@ -66,10 +66,19 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 			sgIdsIn = append(sgIdsIn, *id)
 		}
 	}
-	if len(sgIdsIn) > 0 {
-		if err := s.validateSGAttachment(accountID, sgIdsIn, subnet.VpcId); err != nil {
-			return nil, err
+	if len(sgIdsIn) == 0 {
+		// AWS attaches the per-VPC default SG when the caller omits Groups.
+		defaultSGId, err := s.findDefaultSGForVPC(accountID, subnet.VpcId)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		if defaultSGId == "" {
+			return nil, errors.New(awserrors.ErrorInvalidVpcIDState)
+		}
+		sgIdsIn = []string{defaultSGId}
+	}
+	if err := s.validateSGAttachment(accountID, sgIdsIn, subnet.VpcId); err != nil {
+		return nil, err
 	}
 
 	// Allocate IP from subnet

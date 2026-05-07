@@ -53,6 +53,16 @@ func validateSGRule(r SGRule) error {
 const (
 	KVBucketSecurityGroups        = "spinifex-vpc-security-groups"
 	KVBucketSecurityGroupsVersion = 1
+
+	// AWS defaults: 2,500 SGs per VPC, 60 inbound + 60 outbound rules per SG.
+	maxSGsPerVPC      = 2500
+	maxRulesPerSGSide = 60
+
+	// defaultSecurityGroupName is the reserved name AWS uses for the per-VPC
+	// default SG. Public CreateSecurityGroup rejects it; the internal helper
+	// invoked from CreateVpc/EnsureDefaultVPC bypasses the guard.
+	defaultSecurityGroupName        = "default"
+	defaultSecurityGroupDescription = "default VPC security group"
 )
 
 // SGRule represents a single ingress or egress rule in a security group.
@@ -73,6 +83,7 @@ type SecurityGroupRecord struct {
 	IngressRules []SGRule          `json:"ingress_rules"`
 	EgressRules  []SGRule          `json:"egress_rules"`
 	Tags         map[string]string `json:"tags"`
+	IsDefault    bool              `json:"is_default,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
@@ -96,17 +107,25 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 	vpcId := *input.VpcId
 	groupName := *input.GroupName
 
+	// "default" is reserved for the per-VPC default SG that CreateVpc
+	// provisions internally. Matches AWS behavior.
+	if groupName == defaultSecurityGroupName {
+		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
+	}
+
 	// Verify VPC exists
 	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId)); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 	}
 
-	// Check for duplicate group name in the same VPC
+	// Check for duplicate group name in the same VPC and enforce the per-VPC
+	// SG quota in the same bucket walk.
 	prefix := accountID + "."
 	sgKeys, err := s.sgKV.Keys()
 	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	sgsInVPC := 0
 	for _, k := range sgKeys {
 		if k == utils.VersionKey {
 			continue
@@ -122,9 +141,16 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		if err := json.Unmarshal(entry.Value(), &existing); err != nil {
 			continue
 		}
-		if existing.VpcId == vpcId && existing.GroupName == groupName {
+		if existing.VpcId != vpcId {
+			continue
+		}
+		sgsInVPC++
+		if existing.GroupName == groupName {
 			return nil, errors.New(awserrors.ErrorInvalidGroupDuplicate)
 		}
+	}
+	if sgsInVPC >= maxSGsPerVPC {
+		return nil, errors.New(awserrors.ErrorResourceLimitExceeded)
 	}
 
 	groupId := utils.GenerateResourceID("sg")
@@ -192,6 +218,14 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if record.IsDefault {
+		return nil, errors.New(awserrors.ErrorCannotDelete)
+	}
+
+	if err := s.checkSGDependencies(accountID, groupId); err != nil {
+		return nil, err
+	}
+
 	if err := s.sgKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -205,6 +239,66 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 	})
 
 	return &ec2.DeleteSecurityGroupOutput{}, nil
+}
+
+// checkSGDependencies returns DependencyViolation if the given SG is still
+// attached to any ENI in the account or referenced as SourceSG by any other
+// SG's rules in the account.
+func (s *VPCServiceImpl) checkSGDependencies(accountID, groupId string) error {
+	prefix := accountID + "."
+
+	eniKeys, err := s.eniKV.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range eniKeys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.eniKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var eni ENIRecord
+		if err := json.Unmarshal(entry.Value(), &eni); err != nil {
+			continue
+		}
+		if slices.Contains(eni.SecurityGroupIds, groupId) {
+			return errors.New(awserrors.ErrorDependencyViolation)
+		}
+	}
+
+	sgKeys, err := s.sgKV.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range sgKeys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var other SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &other); err != nil {
+			continue
+		}
+		if other.GroupId == groupId {
+			continue
+		}
+		for _, r := range other.IngressRules {
+			if r.SourceSG == groupId {
+				return errors.New(awserrors.ErrorDependencyViolation)
+			}
+		}
+		for _, r := range other.EgressRules {
+			if r.SourceSG == groupId {
+				return errors.New(awserrors.ErrorDependencyViolation)
+			}
+		}
+	}
+	return nil
 }
 
 // describeSecurityGroupsValidFilters defines the set of filter names accepted by DescribeSecurityGroups.
@@ -367,6 +461,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 		}
 	}
+	if len(record.IngressRules)+len(newRules) > maxRulesPerSGSide {
+		return nil, errors.New(awserrors.ErrorRulesPerSecurityGroupLimitExceeded)
+	}
 	record.IngressRules = append(record.IngressRules, newRules...)
 
 	data, err := json.Marshal(record)
@@ -420,6 +517,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		if slices.Contains(record.EgressRules, nr) {
 			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 		}
+	}
+	if len(record.EgressRules)+len(newRules) > maxRulesPerSGSide {
+		return nil, errors.New(awserrors.ErrorRulesPerSecurityGroupLimitExceeded)
 	}
 	record.EgressRules = append(record.EgressRules, newRules...)
 
@@ -679,4 +779,99 @@ func sgRuleKey(r SGRule) string {
 // publishSGEvent publishes a security group lifecycle event to NATS for vpcd consumption.
 func (s *VPCServiceImpl) publishSGEvent(topic string, evt SGEvent) {
 	utils.PublishEvent(s.natsConn, topic, evt)
+}
+
+// createDefaultSecurityGroupInternal provisions the per-VPC default SG with
+// AWS-equivalent rules: allow all inbound from self, allow all outbound to
+// 0.0.0.0/0. Bypasses the public-API "default" reserved-name guard. Used by
+// CreateVpc and EnsureDefaultVPC.
+func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId string) (string, error) {
+	groupId := utils.GenerateResourceID("sg")
+	record := SecurityGroupRecord{
+		GroupId:     groupId,
+		GroupName:   defaultSecurityGroupName,
+		Description: defaultSecurityGroupDescription,
+		VpcId:       vpcId,
+		IngressRules: []SGRule{
+			{IpProtocol: "-1", FromPort: 0, ToPort: 0, SourceSG: groupId},
+		},
+		EgressRules: []SGRule{
+			{IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
+		},
+		Tags:      map[string]string{},
+		IsDefault: true,
+		CreatedAt: time.Now(),
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", fmt.Errorf("marshal default security group: %w", err)
+	}
+	if _, err := s.sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
+		return "", fmt.Errorf("store default security group: %w", err)
+	}
+
+	slog.Info("Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
+
+	s.publishSGEvent("vpc.create-sg", SGEvent{
+		GroupId:      groupId,
+		VpcId:        vpcId,
+		IngressRules: record.IngressRules,
+		EgressRules:  record.EgressRules,
+	})
+	return groupId, nil
+}
+
+// deleteSecurityGroupInternal removes an SG record without the public-API
+// CannotDelete guard for default SGs. Used by DeleteVpc to cascade-delete the
+// per-VPC default SG.
+func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) error {
+	key := utils.AccountKey(accountID, groupId)
+	entry, err := s.sgKV.Get(key)
+	if err != nil {
+		return fmt.Errorf("read default security group: %w", err)
+	}
+	var record SecurityGroupRecord
+	if err := json.Unmarshal(entry.Value(), &record); err != nil {
+		return fmt.Errorf("unmarshal default security group: %w", err)
+	}
+	if err := s.sgKV.Delete(key); err != nil {
+		return fmt.Errorf("delete default security group: %w", err)
+	}
+	s.publishSGEvent("vpc.delete-sg", SGEvent{
+		GroupId: groupId,
+		VpcId:   record.VpcId,
+	})
+	return nil
+}
+
+// findDefaultSGForVPC scans the account's SG bucket for the SG with
+// IsDefault=true and the given VPC. Returns "" if none found (e.g., VPC still
+// in pending state because default SG creation failed).
+func (s *VPCServiceImpl) findDefaultSGForVPC(accountID, vpcId string) (string, error) {
+	prefix := accountID + "."
+	keys, err := s.sgKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	for _, k := range keys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var rec SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			continue
+		}
+		if rec.IsDefault && rec.VpcId == vpcId {
+			return rec.GroupId, nil
+		}
+	}
+	return "", nil
 }

@@ -82,9 +82,9 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) {
 	d.ensureDefaultVPCInfrastructure()
 }
 
-// ensureDefaultVPCInfrastructure creates an IGW and default security group for
-// each default VPC that doesn't already have them. Matches AWS behavior where
-// the default VPC comes with an attached IGW and a default security group.
+// ensureDefaultVPCInfrastructure attaches an IGW and a default 0.0.0.0/0 route
+// to each account's default VPC. The default SG is provisioned by
+// EnsureDefaultVPC / CreateVpc itself, so this routine is IGW-only.
 func (d *Daemon) ensureDefaultVPCInfrastructure() {
 	if d.igwService == nil || d.vpcService == nil {
 		return
@@ -149,59 +149,6 @@ func (d *Daemon) ensureDefaultVPCInfrastructure() {
 		// Add 0.0.0.0/0 → IGW route to the main route table (if not already present)
 		if d.routeTableService != nil {
 			d.ensureDefaultIGWRoute(accountID, defaultVpcId)
-		}
-
-		// Check if default security group exists for this VPC
-		sgOut, err := d.vpcService.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{}, accountID)
-		if err != nil {
-			continue
-		}
-		hasDefaultSG := false
-		for _, sg := range sgOut.SecurityGroups {
-			if sg.VpcId != nil && *sg.VpcId == defaultVpcId && sg.GroupName != nil && *sg.GroupName == "default" {
-				hasDefaultSG = true
-				break
-			}
-		}
-		if !hasDefaultSG {
-			desc := "default VPC security group"
-			groupName := "default"
-			createSGOut, err := d.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-				GroupName:   &groupName,
-				Description: &desc,
-				VpcId:       &defaultVpcId,
-			}, accountID)
-			if err != nil {
-				slog.Error("Failed to create default security group", "vpcId", defaultVpcId, "err", err)
-				continue
-			}
-			sgId := *createSGOut.GroupId
-
-			// Default SG rules (AWS behavior):
-			// - Allow all inbound from same SG (self-referencing)
-			// - Allow all outbound to 0.0.0.0/0
-			allProto := "-1"
-			allCidr := "0.0.0.0/0"
-			_, _ = d.vpcService.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-				GroupId: &sgId,
-				IpPermissions: []*ec2.IpPermission{
-					{
-						IpProtocol:       &allProto,
-						UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: &sgId}},
-					},
-				},
-			}, accountID)
-			_, _ = d.vpcService.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
-				GroupId: &sgId,
-				IpPermissions: []*ec2.IpPermission{
-					{
-						IpProtocol: &allProto,
-						IpRanges:   []*ec2.IpRange{{CidrIp: &allCidr}},
-					},
-				},
-			}, accountID)
-			slog.Info("Created default security group for default VPC",
-				"groupId", sgId, "vpcId", defaultVpcId, "accountID", accountID)
 		}
 	}
 }

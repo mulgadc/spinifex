@@ -535,6 +535,20 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	assert.Equal(t, sgB, *out.NetworkInterface.Groups[1].GroupId)
 }
 
+func TestCreateNetworkInterface_FallsBackToDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	defaultSG := findDefaultSGInVPC(t, svc, vpcId)
+
+	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterface.Groups, 1)
+	assert.Equal(t, defaultSG, *out.NetworkInterface.Groups[0].GroupId)
+}
+
 func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

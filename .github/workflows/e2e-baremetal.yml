@@ -70,7 +70,7 @@ jobs:
           BM_CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
           BM_SSH_KEY: /home/tf-user/.ssh/bm-ci
           BM_SKIP_EPDU: "1"
-          BM_SSH_TIMEOUT_SECS: "2700"
+          BM_SSH_TIMEOUT_SECS: "1800"
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
         run: |
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \

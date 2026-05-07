@@ -144,6 +144,7 @@ for i in $(seq 1 "$FLEET_SIZE"); do
         --key-name spinifex-key \
         --subnet-id "$SUBNET_ID" \
         --count 1 \
+        --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
         --query 'Instances[0].InstanceId' --output text)
     if [ -z "$ID" ] || [ "$ID" = "None" ] || [ "$ID" = "null" ]; then
         echo "❌ run-instances returned no InstanceId for slot $i"

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -20,8 +21,9 @@ const reconcileSGsLoopInterval = 30 * time.Second
 
 // SGReconcileResult tracks what each periodic pass converged.
 type SGReconcileResult struct {
-	PortGroupsRecreated   int
-	PortMembershipsSynced int
+	PortGroupsRecreated     int
+	PortMembershipsSynced   int
+	OrphanPortGroupsRemoved int
 }
 
 // ReconcileSGsLoop runs the SG/ENI convergence scans every 30s, gated on
@@ -36,10 +38,11 @@ func ReconcileSGsLoop(ctx context.Context, nc *nats.Conn, topo *TopologyHandler)
 		release, elected := AcquireReconcileLeader(nc, holder)
 		if elected {
 			result := ReconcileSGsOnce(ctx, nc, topo)
-			if result.PortGroupsRecreated+result.PortMembershipsSynced > 0 {
+			if result.PortGroupsRecreated+result.PortMembershipsSynced+result.OrphanPortGroupsRemoved > 0 {
 				slog.Info("vpcd reconcile-sgs: converged drift",
 					"port_groups_recreated", result.PortGroupsRecreated,
 					"port_memberships_synced", result.PortMembershipsSynced,
+					"orphan_port_groups_removed", result.OrphanPortGroupsRemoved,
 				)
 			}
 			release()
@@ -78,10 +81,18 @@ func ReconcileSGsOnce(ctx context.Context, nc *nats.Conn, topo *TopologyHandler)
 		eniKV = nil
 	}
 
+	var sgs []handlers_ec2_vpc.SecurityGroupRecord
+	if sgKV != nil {
+		sgs = listSGRecords(sgKV)
+	}
+
 	// SG records without an OVN port group → recreate.
 	if sgKV != nil {
-		result.PortGroupsRecreated = scanMissingPortGroups(ctx, topo, listSGRecords(sgKV))
+		result.PortGroupsRecreated = scanMissingPortGroups(ctx, topo, sgs)
 	}
+
+	// OVN port groups with no matching SG record → tear down.
+	result.OrphanPortGroupsRemoved = scanOrphanPortGroups(ctx, topo, sgs)
 
 	// ENIs with SecurityGroupIds → reconcile membership.
 	if eniKV != nil {
@@ -139,7 +150,9 @@ func scanMissingPortGroups(ctx context.Context, topo *TopologyHandler, sgs []han
 }
 
 // scanENIPortMembership runs reconcilePortSGs for every ENI with a non-empty
-// SecurityGroupIds list. Idempotent.
+// SecurityGroupIds list. Idempotent. Counts only ENIs whose membership
+// actually changed — a converged ENI scanned with no drift is a no-op and
+// must not appear in the converged-drift log line.
 func scanENIPortMembership(ctx context.Context, topo *TopologyHandler, eniKV nats.KeyValue) int {
 	keys, err := eniKV.Keys()
 	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
@@ -165,14 +178,61 @@ func scanENIPortMembership(ctx context.Context, topo *TopologyHandler, eniKV nat
 			continue
 		}
 		portName := "port-" + rec.NetworkInterfaceId
-		if err := topo.reconcilePortSGs(ctx, portName, rec.PrivateIpAddress, rec.SecurityGroupIds); err != nil {
+		changed, err := topo.reconcilePortSGs(ctx, portName, rec.PrivateIpAddress, rec.SecurityGroupIds)
+		if err != nil {
 			// Most often: the LSP itself doesn't exist yet. Warn-and-continue.
 			slog.Warn("vpcd reconcile-sgs: port SG reconcile failed", "eni", rec.NetworkInterfaceId, "err", err)
 			continue
 		}
-		synced++
+		if changed {
+			synced++
+		}
 	}
 	return synced
+}
+
+// scanOrphanPortGroups removes any spinifex-managed port group (`sg_*`) in OVN
+// that has no matching SG record in KV. Mirrors handleDeleteSG's teardown
+// (ClearACLs → DeletePortGroup → DeleteAddressSet) so the matching `<pg>_ip4`
+// address set never leaks. Non-`sg_*` port groups (e.g. third-party usage) are
+// left alone. Returns the count removed.
+func scanOrphanPortGroups(ctx context.Context, topo *TopologyHandler, sgs []handlers_ec2_vpc.SecurityGroupRecord) int {
+	pgs, err := topo.ovn.ListPortGroups(ctx)
+	if err != nil {
+		slog.Warn("vpcd reconcile-sgs: list port groups failed", "err", err)
+		return 0
+	}
+
+	expected := make(map[string]struct{}, len(sgs))
+	for _, sg := range sgs {
+		expected[portGroupName(sg.GroupId)] = struct{}{}
+	}
+
+	removed := 0
+	for _, pg := range pgs {
+		if !strings.HasPrefix(pg.Name, "sg_") {
+			continue
+		}
+		if _, ok := expected[pg.Name]; ok {
+			continue
+		}
+		if err := topo.ovn.ClearACLs(ctx, pg.Name); err != nil {
+			slog.Warn("vpcd reconcile-sgs: orphan ClearACLs failed", "pg", pg.Name, "err", err)
+			continue
+		}
+		if err := topo.ovn.DeletePortGroup(ctx, pg.Name); err != nil {
+			slog.Warn("vpcd reconcile-sgs: orphan DeletePortGroup failed", "pg", pg.Name, "err", err)
+			continue
+		}
+		asName := addressSetName(pg.Name)
+		if err := topo.ovn.DeleteAddressSet(ctx, asName); err != nil {
+			// AS may already be gone — log and keep going; do not roll back the PG delete.
+			slog.Warn("vpcd reconcile-sgs: orphan DeleteAddressSet failed", "as", asName, "err", err)
+		}
+		slog.Info("vpcd reconcile-sgs: removed orphan port group", "pg", pg.Name)
+		removed++
+	}
+	return removed
 }
 
 // sgRulesToACLRules converts handler-side SGRules to vpcd-side SGRuleForACL.

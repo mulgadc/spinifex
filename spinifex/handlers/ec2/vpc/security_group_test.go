@@ -293,6 +293,29 @@ func TestRevokeSecurityGroupIngress_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestRevokeSecurityGroupIngress_RuleNotFound: revoking a rule that doesn't
+// exist in the SG must return InvalidPermission.NotFound, matching AWS.
+// Terraform / SDK consumers branch on this code to distinguish "already
+// revoked, idempotent" from "operator typo".
+func TestRevokeSecurityGroupIngress_RuleNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-notfound-ingress")
+
+	proto := "tcp"
+	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(9999),
+			ToPort:     aws.Int64(9999),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("1.2.3.4/32")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidPermission.NotFound")
+}
+
 // --- RevokeSecurityGroupEgress ---
 
 func TestRevokeSecurityGroupEgress_Success(t *testing.T) {
@@ -321,6 +344,27 @@ func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 		GroupId: aws.String("sg-nonexistent"),
 	}, testAccountID)
 	assert.Error(t, err)
+}
+
+// TestRevokeSecurityGroupEgress_RuleNotFound: egress counterpart — revoking a
+// non-existent egress rule returns InvalidPermission.NotFound.
+func TestRevokeSecurityGroupEgress_RuleNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "rule-notfound-egress")
+
+	proto := "tcp"
+	_, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(9999),
+			ToPort:     aws.Int64(9999),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("1.2.3.4/32")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidPermission.NotFound")
 }
 
 // --- Helper function tests ---

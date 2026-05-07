@@ -708,6 +708,18 @@ func (m *MockOVNClient) GetPortGroup(_ context.Context, name string) (*nbdb.Port
 	return pg, nil
 }
 
+// ListPortGroups returns a snapshot of every port group currently in the mock
+// store. The slice is freshly allocated; mutating it does not affect the mock.
+func (m *MockOVNClient) ListPortGroups(_ context.Context) ([]nbdb.PortGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]nbdb.PortGroup, 0, len(m.portGroups))
+	for _, pg := range m.portGroups {
+		out = append(out, *pg)
+	}
+	return out, nil
+}
+
 // ACLs
 
 func (m *MockOVNClient) AddACLs(_ context.Context, portGroupName string, specs []ACLSpec) error {

@@ -613,6 +613,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 		slog.Warn("RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := assertRulesPresent(record.IngressRules, revokeRules); err != nil {
+		return nil, err
+	}
 	record.IngressRules = removeSGRules(record.IngressRules, revokeRules)
 
 	data, err := json.Marshal(record)
@@ -663,6 +666,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 	if err != nil {
 		slog.Warn("RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if err := assertRulesPresent(record.EgressRules, revokeRules); err != nil {
+		return nil, err
 	}
 	record.EgressRules = removeSGRules(record.EgressRules, revokeRules)
 
@@ -803,6 +809,27 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 		result = append(result, perm)
 	}
 	return result
+}
+
+// assertRulesPresent returns InvalidPermission.NotFound on the first revoke
+// rule that does not match an existing rule. AWS rejects revoke of a
+// non-existent rule rather than treating it as a no-op; matching that
+// behaviour lets Terraform / SDK consumers distinguish "already gone" from
+// "operator typo".
+func assertRulesPresent(existing, toRevoke []SGRule) error {
+	if len(toRevoke) == 0 {
+		return nil
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, r := range existing {
+		have[sgRuleKey(r)] = struct{}{}
+	}
+	for _, r := range toRevoke {
+		if _, ok := have[sgRuleKey(r)]; !ok {
+			return errors.New(awserrors.ErrorInvalidPermissionNotFound)
+		}
+	}
+	return nil
 }
 
 // removeSGRules removes matching rules from the existing set.

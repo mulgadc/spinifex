@@ -169,6 +169,117 @@ func TestReconcileSGsOnce_NoBucketsHandledGracefully(t *testing.T) {
 	assert.Equal(t, SGReconcileResult{}, result)
 }
 
+// TestReconcileSGsOnce_NoDriftZeroSync: a fully converged ENI (LSP already in
+// the right port group, IP already in the address set) must not be counted as
+// synced. Otherwise the steady-state cluster logs phantom drift every cycle
+// (Plan I.8 — "Constant churn means the reconciler is misclassifying steady
+// state as drift").
+func TestReconcileSGsOnce_NoDriftZeroSync(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	require.NoError(t, ovn.Connect(context.Background()))
+	topo := NewTopologyHandler(ovn)
+	ctx := context.Background()
+
+	require.NoError(t, ovn.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "subnet-c"}))
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	sgEvt := SGEvent{GroupId: "sg-converged000000", VpcId: "vpc-x"}
+	sgData, _ := json.Marshal(sgEvt)
+	resp, err := nc.Request(TopicCreateSG, sgData, 2*time.Second)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG")
+
+	// LSP already joined the port group with its IP in the address set —
+	// matches what handleCreateLSP / handleUpdatePortSGs leave behind on the
+	// happy path.
+	pgName := portGroupName("sg-converged000000")
+	require.NoError(t, ovn.CreateLogicalSwitchPortInGroups(ctx, "subnet-c",
+		&nbdb.LogicalSwitchPort{Name: "port-eni-converged", Addresses: []string{"02:00:00:aa:bb:02 10.0.0.6"}},
+		[]string{pgName}, "10.0.0.6"))
+
+	seedSGBucket(t, nc, []handlers_ec2_vpc.SecurityGroupRecord{{
+		GroupId: "sg-converged000000", VpcId: "vpc-x", CreatedAt: time.Now(),
+	}})
+	seedENIBucket(t, nc, []handlers_ec2_vpc.ENIRecord{{
+		NetworkInterfaceId: "eni-converged",
+		PrivateIpAddress:   "10.0.0.6",
+		MacAddress:         "02:00:00:aa:bb:02",
+		SecurityGroupIds:   []string{"sg-converged000000"},
+		CreatedAt:          time.Now(),
+	}})
+
+	result := ReconcileSGsOnce(ctx, nc, topo)
+
+	assert.Equal(t, 0, result.PortMembershipsSynced, "fully converged ENI must not count as synced")
+	assert.Equal(t, 0, result.PortGroupsRecreated, "existing PG must not be recreated")
+	assert.Equal(t, 0, result.OrphanPortGroupsRemoved, "PG with matching SG record must not be torn down")
+}
+
+// TestReconcileSGsOnce_DeletesOrphanPortGroup: an `sg_*` port group with no
+// matching SG record must be torn down (PG, ACLs, address set) within one
+// pass. Section G2 of the manual test plan.
+func TestReconcileSGsOnce_DeletesOrphanPortGroup(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	require.NoError(t, ovn.Connect(context.Background()))
+	topo := NewTopologyHandler(ovn)
+	ctx := context.Background()
+
+	const orphanPG = "sg_orphan0000000000"
+	const orphanAS = "sg_orphan0000000000_ip4"
+	require.NoError(t, ovn.CreatePortGroup(ctx, orphanPG, nil))
+	require.NoError(t, ovn.CreateAddressSet(ctx, orphanAS, nil))
+
+	// Pre-existing ACL on the orphan PG to confirm the scan clears it before
+	// deleting (matches handleDeleteSG's order).
+	require.NoError(t, ovn.AddACLs(ctx, orphanPG, []ACLSpec{{
+		Direction: "to-lport", Priority: 900,
+		Match: "outport == @" + orphanPG + " && ip4", Action: "drop",
+	}}))
+
+	seedSGBucket(t, nc, nil)
+	seedENIBucket(t, nc, nil)
+
+	result := ReconcileSGsOnce(ctx, nc, topo)
+
+	assert.Equal(t, 1, result.OrphanPortGroupsRemoved)
+	_, err := ovn.GetPortGroup(ctx, orphanPG)
+	assert.Error(t, err, "orphan port group must be gone")
+	pgs, err := ovn.ListPortGroups(ctx)
+	require.NoError(t, err)
+	for _, pg := range pgs {
+		assert.NotEqual(t, orphanPG, pg.Name)
+	}
+}
+
+// TestReconcileSGsOnce_LeavesNonSpinifexPortGroupsAlone: only `sg_*` port
+// groups are spinifex-managed. A PG named differently (e.g. one a third
+// party put in OVN) must not be touched.
+func TestReconcileSGsOnce_LeavesNonSpinifexPortGroupsAlone(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	require.NoError(t, ovn.Connect(context.Background()))
+	topo := NewTopologyHandler(ovn)
+	ctx := context.Background()
+
+	require.NoError(t, ovn.CreatePortGroup(ctx, "third-party-pg", nil))
+
+	seedSGBucket(t, nc, nil)
+	seedENIBucket(t, nc, nil)
+
+	result := ReconcileSGsOnce(ctx, nc, topo)
+	assert.Equal(t, 0, result.OrphanPortGroupsRemoved)
+	_, err := ovn.GetPortGroup(ctx, "third-party-pg")
+	assert.NoError(t, err, "non-`sg_*` port group must be left untouched")
+}
+
 // TestReconcileSGsOnce_ENIWithoutLSPLogs: an ENI's KV record references SGs
 // but no OVN LSP exists yet. The scan should not count this ENI as synced.
 func TestReconcileSGsOnce_ENIWithoutLSPLogs(t *testing.T) {

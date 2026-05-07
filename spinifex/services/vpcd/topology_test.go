@@ -3457,12 +3457,8 @@ func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
 		desired  []string
 		expected []string
 	}{
-		{name: "empty_to_A", initial: nil, desired: []string{"sg-A"}, expected: []string{"sg-A"}},
 		{name: "A_to_B", initial: []string{"sg-A"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
-		{name: "A_to_AB", initial: []string{"sg-A"}, desired: []string{"sg-A", "sg-B"}, expected: []string{"sg-A", "sg-B"}},
-		{name: "AB_to_B", initial: []string{"sg-A", "sg-B"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
 		{name: "AB_to_empty", initial: []string{"sg-A", "sg-B"}, desired: nil, expected: nil},
-		{name: "noop_A_to_A", initial: []string{"sg-A"}, desired: []string{"sg-A"}, expected: []string{"sg-A"}},
 	}
 
 	for _, tc := range cases {

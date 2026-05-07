@@ -228,7 +228,7 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 	record := VPCRecord{
 		VpcId:              vpcID,
 		CidrBlock:          ipNet.String(), // Normalize CIDR
-		State:              "pending",
+		State:              "available",
 		IsDefault:          false,
 		VNI:                vni,
 		EnableDnsSupport:   true,  // AWS default
@@ -257,15 +257,10 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 		}
 	}
 
-	// Provision the per-VPC default SG synchronously. On failure the VPC stays
-	// pending and the reconciler retries on its next pass (Phase 6).
+	// Provision the per-VPC default SG synchronously. On failure the VPC
+	// record persists; user must DeleteVpc and retry.
 	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
-		slog.Error("Failed to create default security group for VPC; VPC remains pending", "vpcId", vpcID, "accountID", accountID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	if err := s.transitionVPCState(accountID, vpcID, &record, "available"); err != nil {
-		slog.Error("Failed to flip VPC to available; VPC remains pending", "vpcId", vpcID, "accountID", accountID, "err", err)
+		slog.Error("Failed to create default security group for VPC", "vpcId", vpcID, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -274,58 +269,11 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 	}, nil
 }
 
-// requireVPCAvailable returns InvalidVpcID.NotFound if the VPC doesn't exist
-// for this account, or InvalidVpcID.State if the VPC is not yet "available"
-// (a default SG creation failure can leave a VPC pending until the
-// reconciler converges it).
-func (s *VPCServiceImpl) requireVPCAvailable(accountID, vpcId string) error {
-	entry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId))
-	if err != nil {
+// requireVPCExists returns InvalidVpcID.NotFound if the VPC doesn't exist for
+// this account.
+func (s *VPCServiceImpl) requireVPCExists(accountID, vpcId string) error {
+	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId)); err != nil {
 		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
-	}
-	var vpc VPCRecord
-	if err := json.Unmarshal(entry.Value(), &vpc); err != nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if vpc.State != "" && vpc.State != "available" {
-		return errors.New(awserrors.ErrorInvalidVpcIDState)
-	}
-	return nil
-}
-
-// transitionVPCState rewrites the VPC record's State field and persists with
-// CAS, updating the in-memory record on success so callers can return it.
-func (s *VPCServiceImpl) transitionVPCState(accountID, vpcID string, record *VPCRecord, state string) error {
-	if err := SetVPCStateKV(s.vpcKV, accountID, vpcID, state); err != nil {
-		return err
-	}
-	record.State = state
-	return nil
-}
-
-// SetVPCStateKV CAS-updates the VPC record's State field. Free-function form
-// so the vpcd reconciler can flip a "pending" VPC to "available" without
-// holding a *VPCServiceImpl.
-func SetVPCStateKV(vpcKV nats.KeyValue, accountID, vpcID, state string) error {
-	key := utils.AccountKey(accountID, vpcID)
-	entry, err := vpcKV.Get(key)
-	if err != nil {
-		return fmt.Errorf("read VPC for state transition: %w", err)
-	}
-	var current VPCRecord
-	if err := json.Unmarshal(entry.Value(), &current); err != nil {
-		return fmt.Errorf("unmarshal VPC for state transition: %w", err)
-	}
-	if current.State == state {
-		return nil
-	}
-	current.State = state
-	data, err := json.Marshal(current)
-	if err != nil {
-		return fmt.Errorf("marshal VPC for state transition: %w", err)
-	}
-	if _, err := vpcKV.Update(key, data, entry.Revision()); err != nil {
-		return fmt.Errorf("update VPC for state transition: %w", err)
 	}
 	return nil
 }
@@ -524,10 +472,6 @@ func (s *VPCServiceImpl) CreateSubnet(input *ec2.CreateSubnetInput, accountID st
 	if err := json.Unmarshal(vpcEntry.Value(), &vpcRecord); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if vpcRecord.State != "" && vpcRecord.State != "available" {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDState)
-	}
-
 	// Validate subnet CIDR
 	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
 	if err != nil {
@@ -1061,7 +1005,7 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 	vpcRecord := VPCRecord{
 		VpcId:              vpcID,
 		CidrBlock:          DefaultVPCCidr,
-		State:              "pending",
+		State:              "available",
 		IsDefault:          true,
 		VNI:                vni,
 		EnableDnsSupport:   true, // AWS default
@@ -1082,9 +1026,6 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 
 	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
 		return nil, fmt.Errorf("create default security group for default VPC: %w", err)
-	}
-	if err := s.transitionVPCState(accountID, vpcID, &vpcRecord, "available"); err != nil {
-		return nil, fmt.Errorf("flip default VPC to available: %w", err)
 	}
 
 	// Determine AZ

@@ -1003,27 +1003,6 @@ func TestValidateSGAttachment_UnknownVPC(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
 }
 
-func TestValidateSGAttachment_VPCPending(t *testing.T) {
-	svc := setupTestVPCService(t)
-	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sg := createTestSG(t, svc, vpcID, "ok")
-
-	// Force VPC into pending state.
-	key := testAccountID + "." + vpcID
-	entry, err := svc.vpcKV.Get(key)
-	require.NoError(t, err)
-	var rec VPCRecord
-	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
-	rec.State = "pending"
-	data, err := json.Marshal(rec)
-	require.NoError(t, err)
-	_, err = svc.vpcKV.Update(key, data, entry.Revision())
-	require.NoError(t, err)
-
-	err = svc.validateSGAttachment(testAccountID, []string{sg}, vpcID)
-	assert.ErrorContains(t, err, "InvalidVpcID.State")
-}
-
 func TestValidateSGAttachment_SGNotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

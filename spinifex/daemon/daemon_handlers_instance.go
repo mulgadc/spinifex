@@ -183,8 +183,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 		}
 
 		// Auto-create ENI when SubnetId is provided (matches AWS behavior).
-		// CreateNetworkInterface handles default-SG fallback when Groups is
-		// empty (returns InvalidVpcID.State if the VPC has no default SG yet).
+		// CreateNetworkInterface handles default-SG fallback when Groups is empty.
 		if runInstancesInput.SubnetId != nil && *runInstancesInput.SubnetId != "" && d.vpcService != nil {
 			eniOut, eniErr := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 				SubnetId:    runInstancesInput.SubnetId,

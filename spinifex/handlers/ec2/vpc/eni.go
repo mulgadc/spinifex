@@ -69,11 +69,8 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 	if len(sgIdsIn) == 0 {
 		// AWS attaches the per-VPC default SG when the caller omits Groups.
 		defaultSGId, err := s.FindDefaultSGForVPC(accountID, subnet.VpcId)
-		if err != nil {
+		if err != nil || defaultSGId == "" {
 			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		if defaultSGId == "" {
-			return nil, errors.New(awserrors.ErrorInvalidVpcIDState)
 		}
 		sgIdsIn = []string{defaultSGId}
 	}
@@ -648,15 +645,9 @@ func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, po
 //
 // AWS contract reproduced here:
 //   - InvalidGroup.NotFound when an SG ID is unknown to the account.
-//   - InvalidParameterValue ("Security group X and subnet Y belong to
-//     different networks") when an SG's VPC differs from the resolved VPC.
-//   - SecurityGroupsPerInterfaceLimitExceeded when the request asks for >5
-//     SGs (AWS default).
-//   - MissingParameter when the list is empty (every ENI must have ≥1 SG;
-//     callers without explicit SGs go through the default-SG fallback first).
-//   - InvalidVpcID.State (mulga-specific) when the resolved VPC isn't
-//     "available" yet — the on-prem reconciler can leave a VPC pending
-//     across calls.
+//   - InvalidParameterValue when an SG's VPC differs from the resolved VPC.
+//   - SecurityGroupsPerInterfaceLimitExceeded when >5 SGs (AWS default).
+//   - MissingParameter when the list is empty (every ENI must have ≥1 SG).
 const sgPerInterfaceLimit = 5
 
 func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, vpcId string) error {
@@ -667,7 +658,7 @@ func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, 
 		return errors.New(awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded)
 	}
 
-	if err := s.requireVPCAvailable(accountID, vpcId); err != nil {
+	if err := s.requireVPCExists(accountID, vpcId); err != nil {
 		return err
 	}
 

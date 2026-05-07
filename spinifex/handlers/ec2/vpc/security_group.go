@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -19,15 +18,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
-var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
-
-// validateSGRule rejects values that could break out of an OVN ACL match-expression token.
-// CidrIp must be IPv4 and round-trip to canonical form (so "10.0.0.5/8" with host bits set is
-// rejected, as is anything containing operators/whitespace that net.ParseCIDR would not accept).
-// IPv6 is rejected because the ACL builder in vpcd/acl.go is IPv4-only — accepting an IPv6 CIDR
-// would persist a rule that OVN can never program.
-// SourceSG must match the spinifex SG-ID format. At least one source must be specified.
+// validateSGRule rejects CidrIp values that would break out of an OVN ACL
+// match-expression token. CidrIp must be IPv4 and round-trip to canonical
+// form. SourceSG values are validated downstream by validateSGRuleReferences,
+// which does a KV lookup that catches malformed IDs.
 func validateSGRule(r SGRule) error {
 	if r.CidrIp == "" && r.SourceSG == "" {
 		return errors.New("rule must specify CidrIp or SourceSG")
@@ -43,9 +37,6 @@ func validateSGRule(r SGRule) error {
 		if ipnet.String() != r.CidrIp {
 			return fmt.Errorf("invalid CidrIp %q: not canonical (expected %q)", r.CidrIp, ipnet.String())
 		}
-	}
-	if r.SourceSG != "" && !sgIDRegex.MatchString(r.SourceSG) {
-		return fmt.Errorf("invalid SourceSG %q: must match sg-<17 hex chars>", r.SourceSG)
 	}
 	return nil
 }
@@ -113,7 +104,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
 	}
 
-	if err := s.requireVPCAvailable(accountID, vpcId); err != nil {
+	if err := s.requireVPCExists(accountID, vpcId); err != nil {
 		return nil, err
 	}
 
@@ -485,7 +476,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.requireVPCAvailable(accountID, record.VpcId); err != nil {
+	if err := s.requireVPCExists(accountID, record.VpcId); err != nil {
 		return nil, err
 	}
 
@@ -551,7 +542,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if err := s.requireVPCAvailable(accountID, record.VpcId); err != nil {
+	if err := s.requireVPCExists(accountID, record.VpcId); err != nil {
 		return nil, err
 	}
 
@@ -854,17 +845,6 @@ func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
 // 0.0.0.0/0. Bypasses the public-API "default" reserved-name guard. Used by
 // CreateVpc and EnsureDefaultVPC.
 func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId string) (string, error) {
-	return CreateDefaultSecurityGroupKV(s.sgKV, s.natsConn, accountID, vpcId)
-}
-
-// CreateDefaultSecurityGroupKV writes the per-VPC default SG record to sgKV and
-// dispatches vpc.create-sg synchronously so vpcd OVN provisioning failures
-// surface to the caller (CreateVpc keeps the VPC in pending; reconciler
-// retries). Free-function form so the vpcd reconciler can call it without
-// holding a *VPCServiceImpl. Bypasses the reserved-name guard — callers are
-// responsible for ensuring no default SG already exists in the target VPC
-// (use FindDefaultSGForVPCKV first).
-func CreateDefaultSecurityGroupKV(sgKV nats.KeyValue, nc *nats.Conn, accountID, vpcId string) (string, error) {
 	groupId := utils.GenerateResourceID("sg")
 	record := SecurityGroupRecord{
 		GroupId:     groupId,
@@ -886,18 +866,18 @@ func CreateDefaultSecurityGroupKV(sgKV nats.KeyValue, nc *nats.Conn, accountID, 
 	if err != nil {
 		return "", fmt.Errorf("marshal default security group: %w", err)
 	}
-	if _, err := sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := s.sgKV.Put(utils.AccountKey(accountID, groupId), data); err != nil {
 		return "", fmt.Errorf("store default security group: %w", err)
 	}
 
 	slog.Info("Created default security group", "groupId", groupId, "vpcId", vpcId, "accountID", accountID)
 
-	if err := utils.RequestEvent(nc, "vpc.create-sg", SGEvent{
+	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
 		GroupId:      groupId,
 		VpcId:        vpcId,
 		IngressRules: record.IngressRules,
 		EgressRules:  record.EgressRules,
-	}, vpcdSGEventTimeout); err != nil {
+	}); err != nil {
 		return "", fmt.Errorf("vpcd vpc.create-sg: %w", err)
 	}
 	return groupId, nil
@@ -927,17 +907,11 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) 
 }
 
 // FindDefaultSGForVPC scans the account's SG bucket for the SG with
-// IsDefault=true and the given VPC. Returns "" if none found (e.g., VPC still
-// in pending state because default SG creation failed).
+// IsDefault=true and the given VPC. Returns "" if none found (only happens
+// when CreateVpc failed mid-flow and left the VPC without a default SG).
 func (s *VPCServiceImpl) FindDefaultSGForVPC(accountID, vpcId string) (string, error) {
-	return FindDefaultSGForVPCKV(s.sgKV, accountID, vpcId)
-}
-
-// FindDefaultSGForVPCKV is the free-function form of FindDefaultSGForVPC for
-// callers (e.g. the vpcd reconciler) that don't hold a *VPCServiceImpl.
-func FindDefaultSGForVPCKV(sgKV nats.KeyValue, accountID, vpcId string) (string, error) {
 	prefix := accountID + "."
-	keys, err := sgKV.Keys()
+	keys, err := s.sgKV.Keys()
 	if err != nil {
 		if errors.Is(err, nats.ErrNoKeysFound) {
 			return "", nil
@@ -948,7 +922,7 @@ func FindDefaultSGForVPCKV(sgKV nats.KeyValue, accountID, vpcId string) (string,
 		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		entry, err := sgKV.Get(k)
+		entry, err := s.sgKV.Get(k)
 		if err != nil {
 			continue
 		}

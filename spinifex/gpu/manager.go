@@ -156,6 +156,23 @@ func (m *Manager) Release(instanceID string) error {
 	return firstErr
 }
 
+// MarkFailed marks a GPU as permanently unavailable after a VFIO/QEMU launch
+// error. The entry is skipped by Claim until the daemon restarts. Call this
+// after releasing a GPU whose QEMU crashed during startup so the same broken
+// device is not immediately re-assigned to the next instance.
+func (m *Manager) MarkFailed(pciAddress string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.pool {
+		if m.pool[i].Device.PCIAddress == pciAddress && m.pool[i].InstanceID == "" {
+			m.pool[i].Available = false
+			slog.Warn("GPU marked unavailable after launch failure — restart daemon to retry",
+				"pci", pciAddress)
+			return
+		}
+	}
+}
+
 // Available returns the count of GPUs that can be claimed right now.
 func (m *Manager) Available() int {
 	m.mu.Lock()

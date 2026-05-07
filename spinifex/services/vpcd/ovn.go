@@ -64,12 +64,15 @@ type OVNClient interface {
 	// Logical Switch Port (VM/ENI)
 	CreateLogicalSwitchPort(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort) error
 	// CreateLogicalSwitchPortInGroups creates an LSP, adds it to its switch,
-	// and joins it to the named port groups in a single OVSDB transaction.
-	// Required for SG enforcement: a non-atomic create-then-join leaves a
-	// window where the LSP exists outside any port group, and OVN's default
-	// for ports outside port groups is unrestricted traffic. Empty
-	// portGroupNames is allowed (e.g. router/localnet ports).
-	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error
+	// joins it to the named port groups, and inserts privateIP into each
+	// port group's address set — all in a single OVSDB transaction. Required
+	// for SG enforcement: a non-atomic create-then-join leaves a window where
+	// the LSP exists outside any port group (OVN default = unrestricted) or
+	// where ports are members but their IPs aren't in the SG-to-SG address
+	// set (peer SGs treat the port as nonexistent and reject its traffic).
+	// privateIP may be "" and portGroupNames may be empty (e.g. router/
+	// localnet ports), in which case the address-set inserts are skipped.
+	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error
 	DeleteLogicalSwitchPort(ctx context.Context, switchName string, portName string) error
 	GetLogicalSwitchPort(ctx context.Context, name string) (*nbdb.LogicalSwitchPort, error)
 	UpdateLogicalSwitchPort(ctx context.Context, lsp *nbdb.LogicalSwitchPort) error
@@ -292,11 +295,13 @@ func (c *LiveOVNClient) CreateLogicalSwitchPort(ctx context.Context, switchName 
 }
 
 // CreateLogicalSwitchPortInGroups bundles LSP create + switch ports mutate +
-// per-port-group ports mutates into one transaction. Within the transaction
-// the LSP's named UUID resolves consistently across all ops, so the port
-// group mutates can reference the not-yet-committed LSP without a cache
-// lookup.
-func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
+// per-port-group ports mutates + per-address-set entry mutates into one
+// transaction. Within the transaction the LSP's named UUID resolves
+// consistently across all ops, so the port group mutates can reference the
+// not-yet-committed LSP without a cache lookup. privateIP is added to each
+// port group's address set so SG-to-SG match expressions resolve from the
+// moment the LSP becomes live.
+func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error {
 	if lsp.UUID == "" {
 		lsp.UUID = namedUUID("lsp_", lsp.Name)
 	}
@@ -336,6 +341,24 @@ func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, swi
 			return fmt.Errorf("mutate port group %s ops: %w", pgName, err)
 		}
 		ops = append(ops, pgMutateOps...)
+
+		if privateIP == "" {
+			continue
+		}
+		asName := addressSetName(pgName)
+		as, err := c.getAddressSet(ctx, asName)
+		if err != nil {
+			return fmt.Errorf("get address set %s for port add: %w", asName, err)
+		}
+		asMutateOps, err := c.client.Where(as).Mutate(as, model.Mutation{
+			Field:   &as.Addresses,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   []string{privateIP},
+		})
+		if err != nil {
+			return fmt.Errorf("mutate address set %s ops: %w", asName, err)
+		}
+		ops = append(ops, asMutateOps...)
 	}
 
 	if err := c.transactOps(ctx, ops); err != nil {

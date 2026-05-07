@@ -789,16 +789,16 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 		lsp.DHCPv4Options = &dhcpOpts.UUID
 	}
 
-	// LSP create + switch-port mutate + SG port-group joins MUST be a single
-	// OVSDB transaction. A two-step (create LSP, then add to port groups) leaves
-	// a window where the port exists outside any port group — and OVN's default
-	// for a port outside its SG port groups is unrestricted traffic, the
-	// opposite of what enforcement should guarantee.
+	// LSP create + switch-port mutate + SG port-group joins + per-SG address-set
+	// inserts MUST be one OVSDB transaction. A two-step shape leaves a window
+	// where the port exists outside any port group (OVN default = unrestricted)
+	// or where peer SGs see the port as nonexistent because its IP isn't in the
+	// `<pg>_ip4` address set yet — both opposite of the enforcement guarantee.
 	pgNames := make([]string, 0, len(evt.SecurityGroupIds))
 	for _, sgId := range evt.SecurityGroupIds {
 		pgNames = append(pgNames, portGroupName(sgId))
 	}
-	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames); err != nil {
+	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames, evt.PrivateIpAddress); err != nil {
 		slog.Error("vpcd: failed to create logical switch port", "port", portName, "switch", switchName, "err", err)
 		respond(msg, err)
 		return
@@ -895,11 +895,13 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 // converges on the next call. desiredSGs may be nil (delete-port path) to
 // remove the port from every group.
 //
-// privateIP is currently unused; Phase 5 wires it into the SG-to-SG address
-// sets so SourceSG match expressions (`ip4.src == $<pg>_ip4`) resolve.
+// For each port-group join, the port's privateIP is also inserted into the
+// matching address set (<pg>_ip4) so SG-to-SG rule matches like
+// "ip4.src == $<pg>_ip4" resolve to this port. Removes mirror the inserts.
+// privateIP captures the ENI's primary IP today; the helper is phrased as
+// "all private IPs" so future secondary-IP support can extend without changing
+// the call shape.
 func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, privateIP string, desiredSGs []string) error {
-	_ = privateIP
-
 	desired := make(map[string]struct{}, len(desiredSGs))
 	for _, sgId := range desiredSGs {
 		desired[portGroupName(sgId)] = struct{}{}
@@ -922,6 +924,11 @@ func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, private
 		if err := h.ovn.AddPortToPortGroup(ctx, name, lspName); err != nil {
 			return fmt.Errorf("add %s to %s: %w", lspName, name, err)
 		}
+		if privateIP != "" {
+			if err := h.ovn.AddAddressSetEntry(ctx, addressSetName(name), privateIP); err != nil {
+				return fmt.Errorf("add %s to address set %s: %w", privateIP, addressSetName(name), err)
+			}
+		}
 	}
 
 	// Remove: in current \ desired.
@@ -931,6 +938,11 @@ func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, private
 		}
 		if err := h.ovn.RemovePortFromPortGroup(ctx, name, lspName); err != nil {
 			return fmt.Errorf("remove %s from %s: %w", lspName, name, err)
+		}
+		if privateIP != "" {
+			if err := h.ovn.RemoveAddressSetEntry(ctx, addressSetName(name), privateIP); err != nil {
+				return fmt.Errorf("remove %s from address set %s: %w", privateIP, addressSetName(name), err)
+			}
 		}
 	}
 

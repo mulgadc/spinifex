@@ -199,6 +199,69 @@ func TestSecurity_UpdateSGAddRules(t *testing.T) {
 	assert.True(t, foundHTTPS, "should have HTTPS ACL")
 }
 
+// TestSecurity_CreateSG_CreatesAddressSet locks the Phase 5.1 invariant:
+// handleCreateSG must provision the SG's `<pg>_ip4` address set alongside
+// the port group, otherwise SG-to-SG ACL match expressions reference a
+// nonexistent set and OVN rejects them.
+func TestSecurity_CreateSG_CreatesAddressSet(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	evt := SGEvent{GroupId: "sg-as001", VpcId: "vpc-as"}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG")
+
+	mock.mu.Lock()
+	as, exists := mock.addressSets["sg_as001_ip4"]
+	mock.mu.Unlock()
+	assert.True(t, exists, "address set sg_as001_ip4 should exist after create")
+	assert.NotNil(t, as)
+	assert.Empty(t, as.Addresses, "newly created address set must be empty")
+}
+
+// TestSecurity_DeleteSG_DeletesAddressSet locks the Phase 5.2 invariant.
+func TestSecurity_DeleteSG_DeletesAddressSet(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	evt := SGEvent{GroupId: "sg-as002", VpcId: "vpc-as"}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG")
+
+	resp, err = nc.Request(TopicDeleteSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "delete SG")
+
+	mock.mu.Lock()
+	_, exists := mock.addressSets["sg_as002_ip4"]
+	mock.mu.Unlock()
+	assert.False(t, exists, "address set sg_as002_ip4 should be deleted")
+}
+
 // containsAll checks if s contains all substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

@@ -1068,3 +1068,79 @@ func TestEnsureDefaultVPC_CreatesDefaultSG(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.SecurityGroups, 1)
 }
+
+// --- Phase 5.3: SourceSG existence + same-VPC validation on Authorize ---
+
+func TestAuthorizeSecurityGroupIngress_SourceSG_SameVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	ownerSG := createTestSG(t, svc, vpcID, "owner-sg")
+	srcSG := createTestSG(t, svc, vpcID, "source-sg")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(ownerSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(srcSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestAuthorizeSecurityGroupIngress_SourceSG_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	ownerSG := createTestSG(t, svc, vpcID, "owner-sg-nf")
+
+	allProto := "-1"
+	// Well-formed sg-id that does not exist in KV — must fail with InvalidGroup.NotFound.
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(ownerSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String("sg-0123456789abcdef0")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+}
+
+func TestAuthorizeSecurityGroupIngress_SourceSG_CrossVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
+	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
+	ownerSG := createTestSG(t, svc, vpcA, "owner-sg-cross")
+	srcSG := createTestSG(t, svc, vpcB, "source-sg-cross")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(ownerSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(srcSG)}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	// AWS uses InvalidGroup.NotFound for both "missing" and "different VPC".
+	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+}
+
+func TestAuthorizeSecurityGroupEgress_SourceSG_CrossVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
+	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
+	ownerSG := createTestSG(t, svc, vpcA, "owner-sg-cross-egr")
+	dstSG := createTestSG(t, svc, vpcB, "dst-sg-cross-egr")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(ownerSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &allProto,
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(dstSG)}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+}

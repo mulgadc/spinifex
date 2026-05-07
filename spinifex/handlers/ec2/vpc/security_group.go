@@ -240,6 +240,31 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 	return &ec2.DeleteSecurityGroupOutput{}, nil
 }
 
+// validateSGRuleReferences ensures every SourceSG named in `rules` resolves to
+// an SG in the caller's account that lives in the same VPC as the rule-owning
+// SG. Cross-VPC and missing references both return InvalidGroup.NotFound,
+// matching AWS (peering not supported; AWS uses the same code for "doesn't
+// exist" and "exists in another VPC").
+func (s *VPCServiceImpl) validateSGRuleReferences(accountID, ownerVpcId string, rules []SGRule) error {
+	for _, r := range rules {
+		if r.SourceSG == "" {
+			continue
+		}
+		entry, err := s.sgKV.Get(utils.AccountKey(accountID, r.SourceSG))
+		if err != nil {
+			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+		}
+		var rec SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		if rec.VpcId != ownerVpcId {
+			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+		}
+	}
+	return nil
+}
+
 // checkSGDependencies returns DependencyViolation if the given SG is still
 // attached to any ENI in the account or referenced as SourceSG by any other
 // SG's rules in the account.
@@ -459,6 +484,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		slog.Warn("AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
+		return nil, err
+	}
 	for _, nr := range newRules {
 		if slices.Contains(record.IngressRules, nr) {
 			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
@@ -519,6 +547,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 	if err != nil {
 		slog.Warn("AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
+		return nil, err
 	}
 	for _, nr := range newRules {
 		if slices.Contains(record.EgressRules, nr) {

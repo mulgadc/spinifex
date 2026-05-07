@@ -21,6 +21,15 @@ func portGroupName(groupId string) string {
 	return strings.ReplaceAll(groupId, "-", "_")
 }
 
+// addressSetName is the OVN address set holding the IPv4 addresses of every
+// port that belongs to the given port group. SG-to-SG ACL match expressions
+// reference it via "ip4.src == $<name>" / "ip4.dst == $<name>". Lifecycle is
+// tied to the port group (created in handleCreateSG, deleted in handleDeleteSG);
+// reconcilePortSGs maintains its membership in step with port-group joins.
+func addressSetName(pgName string) string {
+	return pgName + "_ip4"
+}
+
 // BuildIngressACLMatch generates an OVN ACL match expression for an ingress rule.
 // Ingress rules use "outport == @{pgName}" because OVN ACLs with direction "to-lport"
 // match on the destination port (outport from the pipeline's perspective).
@@ -39,8 +48,7 @@ func BuildIngressACLMatch(pgName string, rule SGRuleForACL) string {
 		parts = append(parts, fmt.Sprintf("ip4.src == %s", rule.CidrIp))
 	}
 	if rule.SourceSG != "" {
-		sgPG := portGroupName(rule.SourceSG)
-		parts = append(parts, fmt.Sprintf("ip4.src == $%s_ip4", sgPG))
+		parts = append(parts, fmt.Sprintf("ip4.src == $%s", addressSetName(portGroupName(rule.SourceSG))))
 	}
 
 	return strings.Join(parts, " && ")
@@ -60,8 +68,7 @@ func BuildEgressACLMatch(pgName string, rule SGRuleForACL) string {
 		parts = append(parts, fmt.Sprintf("ip4.dst == %s", rule.CidrIp))
 	}
 	if rule.SourceSG != "" {
-		sgPG := portGroupName(rule.SourceSG)
-		parts = append(parts, fmt.Sprintf("ip4.dst == $%s_ip4", sgPG))
+		parts = append(parts, fmt.Sprintf("ip4.dst == $%s", addressSetName(portGroupName(rule.SourceSG))))
 	}
 
 	return strings.Join(parts, " && ")

@@ -46,10 +46,22 @@ func (h *TopologyHandler) handleCreateSG(msg *nats.Msg) {
 
 	ctx := context.Background()
 	pgName := portGroupName(evt.GroupId)
+	asName := addressSetName(pgName)
 
 	// Create port group (initially empty — ports are added when ENIs are assigned to the SG)
 	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
 		slog.Error("vpcd: failed to create port group", "pg", pgName, "err", err)
+		respond(msg, err)
+		return
+	}
+
+	// Create the per-SG address set. ACLs whose match expression references
+	// this SG as a SourceSG (e.g. "ip4.src == $<asName>") need the set to
+	// resolve, otherwise libovsdb errors at ACL evaluation time. Empty until
+	// ports join via reconcilePortSGs. Fail-fast: a missing address set leaves
+	// SG-to-SG rules unmatchable, so propagate the error to the caller.
+	if err := h.ovn.CreateAddressSet(ctx, asName, nil); err != nil {
+		slog.Error("vpcd: failed to create address set", "as", asName, "err", err)
 		respond(msg, err)
 		return
 	}
@@ -101,6 +113,7 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 
 	ctx := context.Background()
 	pgName := portGroupName(evt.GroupId)
+	asName := addressSetName(pgName)
 
 	// Clear all ACLs before deleting the port group
 	if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
@@ -111,6 +124,13 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 		slog.Error("vpcd: failed to delete port group", "pg", pgName, "err", err)
 		respond(msg, err)
 		return
+	}
+
+	// Best-effort delete of the SG's address set. Other SGs cannot reference
+	// this set (rules carry SourceSG IDs, not address-set names), so a leftover
+	// set has no enforcement consequence — the reconciler will sweep it.
+	if err := h.ovn.DeleteAddressSet(ctx, asName); err != nil {
+		slog.Warn("vpcd: failed to delete address set", "as", asName, "err", err)
 	}
 
 	slog.Info("vpcd: deleted security group port group",

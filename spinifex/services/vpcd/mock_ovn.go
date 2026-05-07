@@ -153,10 +153,11 @@ func (m *MockOVNClient) CreateLogicalSwitchPort(_ context.Context, switchName st
 }
 
 // CreateLogicalSwitchPortInGroups mirrors the live client's atomic create +
-// port-group join path. The mock is not transactional, but every step still
-// has to succeed; on a port-group lookup failure we leave no LSP behind so
-// tests observe the same all-or-nothing semantics as production.
-func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
+// port-group join + address-set insert path. The mock is not transactional,
+// but every step still has to succeed up front; on a port-group or address-set
+// lookup failure we leave no LSP behind so tests observe the same
+// all-or-nothing semantics as production.
+func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ls, exists := m.switches[switchName]
@@ -170,6 +171,12 @@ func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switc
 		if _, ok := m.portGroups[pgName]; !ok {
 			return fmt.Errorf("port group %q not found", pgName)
 		}
+		if privateIP == "" {
+			continue
+		}
+		if _, ok := m.addressSets[addressSetName(pgName)]; !ok {
+			return fmt.Errorf("address set %q not found", addressSetName(pgName))
+		}
 	}
 	if lsp.UUID == "" {
 		lsp.UUID = utils.GenerateResourceID("ovn")
@@ -181,6 +188,13 @@ func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switc
 		pg := m.portGroups[pgName]
 		if !slices.Contains(pg.Ports, lsp.UUID) {
 			pg.Ports = append(pg.Ports, lsp.UUID)
+		}
+		if privateIP == "" {
+			continue
+		}
+		as := m.addressSets[addressSetName(pgName)]
+		if !slices.Contains(as.Addresses, privateIP) {
+			as.Addresses = append(as.Addresses, privateIP)
 		}
 	}
 	return nil

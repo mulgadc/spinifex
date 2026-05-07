@@ -46,6 +46,12 @@ type Config struct {
 	// GPUPassthrough enables VFIO GPU passthrough by passing --gpu-passthrough
 	// to `spx admin init`, which writes gpu_passthrough = true in the daemon config.
 	GPUPassthrough bool
+	// InstallCallback, when non-empty, is curled once at the end of firstboot
+	// after the success marker is written. Generic phone-home hook for
+	// provisioning controllers (PXE/MAAS-style flows). Best-effort: non-2xx
+	// and network failures are swallowed so the install is not gated on
+	// controller reachability.
+	InstallCallback string
 }
 
 // Write drops the firstboot script and systemd unit into root, which should be
@@ -79,6 +85,14 @@ func writeScript(root string, cfg Config) error {
 	setupOVN := "/usr/local/bin/setup-ovn.sh --management"
 	if cfg.EncapIP != "" {
 		setupOVN += fmt.Sprintf(" --encap-ip=%s", cfg.EncapIP)
+	}
+
+	callbackBlock := ""
+	if cfg.InstallCallback != "" {
+		callbackBlock = fmt.Sprintf(
+			"\ncurl -fsS --max-time 10 --retry 2 --retry-delay 2 -o /dev/null %s || true\n",
+			shellEscapeSingle(cfg.InstallCallback),
+		)
 	}
 
 	script := fmt.Sprintf(`#!/bin/bash
@@ -191,7 +205,7 @@ systemctl enable spinifex.target spinifex-banner.service
 # firstboot from the top.
 mkdir -p "$(dirname "$DONE_MARKER")"
 touch "$DONE_MARKER"
-
+%s
 systemctl start spinifex.target
 
 # Wait for the daemon to bring up external networking. When external_mode=pool
@@ -211,7 +225,7 @@ if grep -q 'external_mode.*pool' /etc/spinifex/spinifex.toml 2>/dev/null; then
         echo "[firstboot] warning: br-ext not up after 30s — external networking may be delayed"
     fi
 fi
-`, cfg.Hostname, setupOVN, clusterCmd)
+`, cfg.Hostname, setupOVN, clusterCmd, callbackBlock)
 
 	path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
 	return os.WriteFile(path, []byte(script), 0o755)

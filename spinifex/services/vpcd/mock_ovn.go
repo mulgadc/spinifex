@@ -544,6 +544,17 @@ func (m *MockOVNClient) DeleteAllNATsByExternalIP(_ context.Context, natType, ex
 	return len(foundUUIDs), nil
 }
 
+func (m *MockOVNClient) FindNATByExternalIP(_ context.Context, natType, externalIP string) (*nbdb.NAT, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, n := range m.nats {
+		if n.Type == natType && n.ExternalIP == externalIP {
+			return n, nil
+		}
+	}
+	return nil, nil
+}
+
 // Static Routes
 
 func (m *MockOVNClient) AddStaticRoute(_ context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {

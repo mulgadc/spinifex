@@ -102,6 +102,7 @@ type OVNClient interface {
 	DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error
 	DeleteNATByExternalIP(ctx context.Context, routerName string, natType, externalIP string) error
 	DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error)
+	FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error)
 
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error
@@ -991,6 +992,22 @@ func (c *LiveOVNClient) DeleteAllNATsByExternalIP(ctx context.Context, natType, 
 		return 0, fmt.Errorf("delete all NATs by external IP: %w", err)
 	}
 	return len(nats), nil
+}
+
+// FindNATByExternalIP returns the first NAT rule matching the given type and
+// external IP, or nil if none exists. Used by the startup reconcile to check
+// whether an EIP already has a dnat_and_snat rule before (re-)creating one.
+func (c *LiveOVNClient) FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error) {
+	var nats []nbdb.NAT
+	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
+		return n.Type == natType && n.ExternalIP == externalIP
+	}).List(ctx, &nats); err != nil {
+		return nil, fmt.Errorf("find NAT by external IP: %w", err)
+	}
+	if len(nats) == 0 {
+		return nil, nil
+	}
+	return &nats[0], nil
 }
 
 func (c *LiveOVNClient) AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error {

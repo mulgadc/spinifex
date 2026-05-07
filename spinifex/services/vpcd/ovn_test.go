@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -799,5 +800,86 @@ func TestMockOVNClient_AddressSet_CRUD(t *testing.T) {
 	}
 	if err := mock.RemoveAddressSetEntry(ctx, "sg_missing", "10.0.0.1"); err == nil {
 		t.Fatal("expected error on missing set")
+	}
+}
+
+func TestMockOVNClient_CreateLogicalSwitchPortInGroups(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+
+	if err := mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "subnet-x"}); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	if err := mock.CreatePortGroup(ctx, "sg_a", nil); err != nil {
+		t.Fatalf("CreatePortGroup sg_a: %v", err)
+	}
+	if err := mock.CreatePortGroup(ctx, "sg_b", nil); err != nil {
+		t.Fatalf("CreatePortGroup sg_b: %v", err)
+	}
+
+	lsp := &nbdb.LogicalSwitchPort{Name: "lsp-1"}
+	if err := mock.CreateLogicalSwitchPortInGroups(ctx, "subnet-x", lsp, []string{"sg_a", "sg_b"}); err != nil {
+		t.Fatalf("CreateLogicalSwitchPortInGroups: %v", err)
+	}
+
+	stored, err := mock.GetLogicalSwitchPort(ctx, "lsp-1")
+	if err != nil {
+		t.Fatalf("GetLogicalSwitchPort: %v", err)
+	}
+	for _, pgName := range []string{"sg_a", "sg_b"} {
+		mock.mu.Lock()
+		pg := mock.portGroups[pgName]
+		mock.mu.Unlock()
+		if !slices.Contains(pg.Ports, stored.UUID) {
+			t.Errorf("LSP not joined to %s", pgName)
+		}
+	}
+
+	// Missing port group: no LSP should be created (all-or-nothing).
+	lsp2 := &nbdb.LogicalSwitchPort{Name: "lsp-2"}
+	if err := mock.CreateLogicalSwitchPortInGroups(ctx, "subnet-x", lsp2, []string{"sg_missing"}); err == nil {
+		t.Fatal("expected error when port group missing")
+	}
+	if _, err := mock.GetLogicalSwitchPort(ctx, "lsp-2"); err == nil {
+		t.Error("expected lsp-2 not to be created on failure")
+	}
+}
+
+func TestMockOVNClient_ListPortGroupsForPort(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+
+	if err := mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "subnet-y"}); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	for _, pg := range []string{"sg_a", "sg_b", "sg_c"} {
+		if err := mock.CreatePortGroup(ctx, pg, nil); err != nil {
+			t.Fatalf("CreatePortGroup %s: %v", pg, err)
+		}
+	}
+	if err := mock.CreateLogicalSwitchPort(ctx, "subnet-y", &nbdb.LogicalSwitchPort{Name: "lsp-y"}); err != nil {
+		t.Fatalf("CreateLogicalSwitchPort: %v", err)
+	}
+	if err := mock.AddPortToPortGroup(ctx, "sg_a", "lsp-y"); err != nil {
+		t.Fatalf("AddPortToPortGroup sg_a: %v", err)
+	}
+	if err := mock.AddPortToPortGroup(ctx, "sg_c", "lsp-y"); err != nil {
+		t.Fatalf("AddPortToPortGroup sg_c: %v", err)
+	}
+
+	names, err := mock.ListPortGroupsForPort(ctx, "lsp-y")
+	if err != nil {
+		t.Fatalf("ListPortGroupsForPort: %v", err)
+	}
+	got := map[string]bool{}
+	for _, n := range names {
+		got[n] = true
+	}
+	if !got["sg_a"] || !got["sg_c"] || got["sg_b"] {
+		t.Errorf("expected [sg_a, sg_c], got %v", names)
+	}
+
+	if _, err := mock.ListPortGroupsForPort(ctx, "lsp-missing"); err == nil {
+		t.Fatal("expected error for unknown LSP")
 	}
 }

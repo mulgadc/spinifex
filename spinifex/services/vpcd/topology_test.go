@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1750,7 +1751,7 @@ func TestTopologyHandler_BadJSON(t *testing.T) {
 	topics := []string{
 		TopicVPCCreate, TopicVPCDelete,
 		TopicSubnetCreate, TopicSubnetDelete,
-		TopicCreatePort, TopicDeletePort,
+		TopicCreatePort, TopicDeletePort, TopicUpdatePortSGs,
 		TopicIGWAttach, TopicIGWDetach,
 	}
 	for _, topic := range topics {
@@ -3278,6 +3279,260 @@ func TestGwLrpRange(t *testing.T) {
 			}
 			if pfx != tc.wantPfx {
 				t.Errorf("prefix=%d, want %d", pfx, tc.wantPfx)
+			}
+		})
+	}
+}
+
+// --- Phase 4: SG enforcement port-group membership ---
+
+// setupPortSGFixture stands up a switch + DHCP options + the port groups for
+// the named SGs so a vpc.create-port event can join them.
+func setupPortSGFixture(t *testing.T, mock *MockOVNClient, ctx context.Context, vpcId, subnetId, cidr string, sgIds []string) {
+	t.Helper()
+	if err := mock.CreateLogicalRouter(ctx, nbdbLogicalRouter("vpc-"+vpcId, vpcId)); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := mock.CreateLogicalSwitch(ctx, nbdbLogicalSwitch("subnet-"+subnetId, subnetId, vpcId)); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	if _, err := mock.CreateDHCPOptions(ctx, nbdbDHCPOptions(cidr, subnetId, vpcId)); err != nil {
+		t.Fatalf("CreateDHCPOptions: %v", err)
+	}
+	for _, sgId := range sgIds {
+		if err := mock.CreatePortGroup(ctx, portGroupName(sgId), nil); err != nil {
+			t.Fatalf("CreatePortGroup %s: %v", sgId, err)
+		}
+	}
+}
+
+func TestTopologyHandler_CreatePort_JoinsPortGroups(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-sg1", "subnet-sg1", "10.0.1.0/24", []string{"sg-1111", "sg-2222"})
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-sg1",
+		SubnetId:           "subnet-sg1",
+		VpcId:              "vpc-sg1",
+		PrivateIpAddress:   "10.0.1.10",
+		MacAddress:         "02:00:00:00:00:01",
+		SecurityGroupIds:   []string{"sg-1111", "sg-2222"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	assertSuccess(t, resp, "create port with SGs")
+
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-sg1")
+	if err != nil {
+		t.Fatalf("GetLogicalSwitchPort: %v", err)
+	}
+
+	for _, sgId := range []string{"sg-1111", "sg-2222"} {
+		pg := mock.portGroups[portGroupName(sgId)]
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			t.Errorf("expected %s membership in port group %s, got %v", lsp.UUID, sgId, pg.Ports)
+		}
+	}
+}
+
+func TestTopologyHandler_CreatePort_MissingPortGroup_NoLSPCreated(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	// Switch + DHCP, but the SG's port group is intentionally absent.
+	setupPortSGFixture(t, mock, ctx, "vpc-sg2", "subnet-sg2", "10.0.2.0/24", nil)
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-sg2",
+		SubnetId:           "subnet-sg2",
+		VpcId:              "vpc-sg2",
+		PrivateIpAddress:   "10.0.2.10",
+		MacAddress:         "02:00:00:00:00:02",
+		SecurityGroupIds:   []string{"sg-missing"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	assertFailure(t, resp, "create port with missing SG port group")
+
+	if _, err := mock.GetLogicalSwitchPort(ctx, "port-eni-sg2"); err == nil {
+		t.Error("expected LSP not to be created when atomic transaction fails")
+	}
+}
+
+func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-del", "subnet-del", "10.0.3.0/24", []string{"sg-del"})
+
+	createEvt := PortEvent{
+		NetworkInterfaceId: "eni-del",
+		SubnetId:           "subnet-del",
+		VpcId:              "vpc-del",
+		PrivateIpAddress:   "10.0.3.10",
+		MacAddress:         "02:00:00:00:00:03",
+		SecurityGroupIds:   []string{"sg-del"},
+	}
+	data, _ := json.Marshal(createEvt)
+	resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	assertSuccess(t, resp, "create port")
+
+	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 1 {
+		t.Fatalf("setup: expected 1 member in port group, got %d", got)
+	}
+
+	delEvt := PortEvent{
+		NetworkInterfaceId: "eni-del",
+		SubnetId:           "subnet-del",
+		VpcId:              "vpc-del",
+		PrivateIpAddress:   "10.0.3.10",
+		MacAddress:         "02:00:00:00:00:03",
+	}
+	data, _ = json.Marshal(delEvt)
+	resp, _ = nc.Request(TopicDeletePort, data, 5_000_000_000)
+	assertSuccess(t, resp, "delete port")
+
+	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 0 {
+		t.Errorf("expected 0 members after delete-port, got %d", got)
+	}
+}
+
+func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
+	cases := []struct {
+		name     string
+		initial  []string
+		desired  []string
+		expected []string
+	}{
+		{name: "empty_to_A", initial: nil, desired: []string{"sg-A"}, expected: []string{"sg-A"}},
+		{name: "A_to_B", initial: []string{"sg-A"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
+		{name: "A_to_AB", initial: []string{"sg-A"}, desired: []string{"sg-A", "sg-B"}, expected: []string{"sg-A", "sg-B"}},
+		{name: "AB_to_B", initial: []string{"sg-A", "sg-B"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
+		{name: "AB_to_empty", initial: []string{"sg-A", "sg-B"}, desired: nil, expected: nil},
+		{name: "noop_A_to_A", initial: []string{"sg-A"}, desired: []string{"sg-A"}, expected: []string{"sg-A"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := startTestNATS(t)
+			mock := NewMockOVNClient()
+			_ = mock.Connect(context.Background())
+			ctx := context.Background()
+
+			topo := NewTopologyHandler(mock)
+			subs, err := topo.Subscribe(nc)
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			defer func() {
+				for _, s := range subs {
+					_ = s.Unsubscribe()
+				}
+			}()
+
+			// All possible SGs need their port groups in place — desired \ initial
+			// has to find them on the way in.
+			allSGs := make(map[string]struct{})
+			for _, s := range tc.initial {
+				allSGs[s] = struct{}{}
+			}
+			for _, s := range tc.desired {
+				allSGs[s] = struct{}{}
+			}
+			sgList := make([]string, 0, len(allSGs))
+			for s := range allSGs {
+				sgList = append(sgList, s)
+			}
+			setupPortSGFixture(t, mock, ctx, "vpc-tr", "subnet-tr", "10.0.4.0/24", sgList)
+
+			createEvt := PortEvent{
+				NetworkInterfaceId: "eni-tr",
+				SubnetId:           "subnet-tr",
+				VpcId:              "vpc-tr",
+				PrivateIpAddress:   "10.0.4.10",
+				MacAddress:         "02:00:00:00:00:04",
+				SecurityGroupIds:   tc.initial,
+			}
+			data, _ := json.Marshal(createEvt)
+			resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
+			assertSuccess(t, resp, "create port")
+
+			updEvt := UpdatePortSGsEvent{
+				NetworkInterfaceId: "eni-tr",
+				PrivateIpAddress:   "10.0.4.10",
+				SecurityGroupIds:   tc.desired,
+			}
+			data, _ = json.Marshal(updEvt)
+			resp, err = nc.Request(TopicUpdatePortSGs, data, 5_000_000_000)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			assertSuccess(t, resp, "update port SGs")
+
+			lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-tr")
+			if err != nil {
+				t.Fatalf("GetLogicalSwitchPort: %v", err)
+			}
+			expected := make(map[string]struct{}, len(tc.expected))
+			for _, s := range tc.expected {
+				expected[portGroupName(s)] = struct{}{}
+			}
+			for name, pg := range mock.portGroups {
+				inGroup := slices.Contains(pg.Ports, lsp.UUID)
+				_, want := expected[name]
+				if inGroup && !want {
+					t.Errorf("port unexpectedly in %s", name)
+				}
+				if !inGroup && want {
+					t.Errorf("port missing from expected %s", name)
+				}
 			}
 		})
 	}

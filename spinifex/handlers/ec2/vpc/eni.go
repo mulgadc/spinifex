@@ -128,8 +128,11 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 
 	slog.Info("CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
 
-	// Publish vpc.create-port event for vpcd topology translation
-	s.publishENIEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr)
+	// Publish vpc.create-port event for vpcd topology translation. The SG
+	// list flows through the event so vpcd joins the LSP to its port groups
+	// in the same OVSDB transaction as the LSP create — Phase 4.4 of the SG
+	// enforcement plan.
+	s.publishPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn)
 
 	return &ec2.CreateNetworkInterfaceOutput{
 		NetworkInterface: s.eniRecordToEC2(&record, accountID),
@@ -191,8 +194,10 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 
 	slog.Info("DeleteNetworkInterface completed", "eniId", eniId, "accountID", accountID)
 
-	// Publish vpc.delete-port event for vpcd topology cleanup
-	s.publishENIEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress)
+	// Publish vpc.delete-port event for vpcd topology cleanup. SG IDs are
+	// included for consistency with create-port; vpcd's delete handler reads
+	// current memberships from the libovsdb cache rather than the event.
+	s.publishPortEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds)
 
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
@@ -220,6 +225,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	sgsChanged := false
 	if len(input.Groups) > 0 {
 		sgIds := make([]string, 0, len(input.Groups))
 		for _, id := range input.Groups {
@@ -231,6 +237,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 			return nil, err
 		}
 		record.SecurityGroupIds = sgIds
+		sgsChanged = true
 	}
 
 	if input.Description != nil && input.Description.Value != nil {
@@ -248,6 +255,10 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetwor
 	}
 
 	slog.Info("ModifyNetworkInterfaceAttribute completed", "eniId", eniId, "accountID", accountID)
+
+	if sgsChanged {
+		s.publishUpdatePortSGsEvent(eniId, record.PrivateIpAddress, record.SecurityGroupIds)
+	}
 
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
 }
@@ -573,20 +584,42 @@ func generateENIMac(eniId string) string {
 	return utils.HashMAC(eniId)
 }
 
-// publishENIEvent publishes an ENI lifecycle event to NATS for vpcd consumption.
-func (s *VPCServiceImpl) publishENIEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string) {
+// publishPortEvent publishes a port lifecycle event (vpc.create-port /
+// vpc.delete-port) to NATS for vpcd's TopologyHandler. sgIds carries the SG
+// membership the LSP should join atomically with the create, or the
+// (informational) membership at delete.
+func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) {
 	utils.PublishEvent(s.natsConn, topic, struct {
-		NetworkInterfaceId string `json:"network_interface_id"`
-		SubnetId           string `json:"subnet_id"`
-		VpcId              string `json:"vpc_id"`
-		PrivateIpAddress   string `json:"private_ip_address"`
-		MacAddress         string `json:"mac_address"`
+		NetworkInterfaceId string   `json:"network_interface_id"`
+		SubnetId           string   `json:"subnet_id"`
+		VpcId              string   `json:"vpc_id"`
+		PrivateIpAddress   string   `json:"private_ip_address"`
+		MacAddress         string   `json:"mac_address"`
+		SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 	}{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
 		VpcId:              vpcId,
 		PrivateIpAddress:   privateIP,
 		MacAddress:         macAddr,
+		SecurityGroupIds:   sgIds,
+	})
+}
+
+// publishUpdatePortSGsEvent publishes a vpc.update-port-sgs event so vpcd
+// reconciles OVN port-group membership against the desired SG list. The
+// payload is declarative — vpcd reads its libovsdb cache to compute the diff.
+// Phase 7 will switch this site to RequestEvent to surface vpcd errors
+// synchronously to the caller.
+func (s *VPCServiceImpl) publishUpdatePortSGsEvent(eniId, privateIP string, sgIds []string) {
+	utils.PublishEvent(s.natsConn, "vpc.update-port-sgs", struct {
+		NetworkInterfaceId string   `json:"network_interface_id"`
+		PrivateIpAddress   string   `json:"private_ip_address"`
+		SecurityGroupIds   []string `json:"security_group_ids"`
+	}{
+		NetworkInterfaceId: eniId,
+		PrivateIpAddress:   privateIP,
+		SecurityGroupIds:   sgIds,
 	})
 }
 

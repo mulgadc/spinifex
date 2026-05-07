@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
@@ -62,6 +63,13 @@ type OVNClient interface {
 
 	// Logical Switch Port (VM/ENI)
 	CreateLogicalSwitchPort(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort) error
+	// CreateLogicalSwitchPortInGroups creates an LSP, adds it to its switch,
+	// and joins it to the named port groups in a single OVSDB transaction.
+	// Required for SG enforcement: a non-atomic create-then-join leaves a
+	// window where the LSP exists outside any port group, and OVN's default
+	// for ports outside port groups is unrestricted traffic. Empty
+	// portGroupNames is allowed (e.g. router/localnet ports).
+	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error
 	DeleteLogicalSwitchPort(ctx context.Context, switchName string, portName string) error
 	GetLogicalSwitchPort(ctx context.Context, name string) (*nbdb.LogicalSwitchPort, error)
 	UpdateLogicalSwitchPort(ctx context.Context, lsp *nbdb.LogicalSwitchPort) error
@@ -107,6 +115,10 @@ type OVNClient interface {
 	// Reserved for full-rewrite paths (reconciler garbage collection); the
 	// incremental primitives are the default for handlers.
 	SetPortGroupPorts(ctx context.Context, name string, ports []string) error
+	// ListPortGroupsForPort returns the names of every port group whose Ports
+	// set contains the given LSP. Used by reconcilePortSGs to discover current
+	// membership before computing the add/remove diff against desired.
+	ListPortGroupsForPort(ctx context.Context, lspName string) ([]string, error)
 
 	// ACLs (attached to port groups)
 	AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error
@@ -275,6 +287,59 @@ func (c *LiveOVNClient) CreateLogicalSwitchPort(ctx context.Context, switchName 
 	err = c.transactOps(ctx, ops)
 	if err != nil {
 		return fmt.Errorf("create logical switch port transact: %w", err)
+	}
+	return nil
+}
+
+// CreateLogicalSwitchPortInGroups bundles LSP create + switch ports mutate +
+// per-port-group ports mutates into one transaction. Within the transaction
+// the LSP's named UUID resolves consistently across all ops, so the port
+// group mutates can reference the not-yet-committed LSP without a cache
+// lookup.
+func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
+	if lsp.UUID == "" {
+		lsp.UUID = namedUUID("lsp_", lsp.Name)
+	}
+
+	createOps, err := c.client.Create(lsp)
+	if err != nil {
+		return fmt.Errorf("create logical switch port ops: %w", err)
+	}
+
+	ls, err := c.GetLogicalSwitch(ctx, switchName)
+	if err != nil {
+		return fmt.Errorf("get logical switch for port add: %w", err)
+	}
+
+	switchMutateOps, err := c.client.Where(ls).Mutate(ls, model.Mutation{
+		Field:   &ls.Ports,
+		Mutator: "insert",
+		Value:   []string{lsp.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate logical switch ports ops: %w", err)
+	}
+
+	ops := append(createOps, switchMutateOps...)
+
+	for _, pgName := range portGroupNames {
+		pg, err := c.getPortGroup(ctx, pgName)
+		if err != nil {
+			return fmt.Errorf("get port group %s for port add: %w", pgName, err)
+		}
+		pgMutateOps, err := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.Ports,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   []string{lsp.UUID},
+		})
+		if err != nil {
+			return fmt.Errorf("mutate port group %s ops: %w", pgName, err)
+		}
+		ops = append(ops, pgMutateOps...)
+	}
+
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("create logical switch port in groups transact: %w", err)
 	}
 	return nil
 }
@@ -1056,6 +1121,28 @@ func (c *LiveOVNClient) getPortGroup(ctx context.Context, name string) (*nbdb.Po
 		return nil, fmt.Errorf("port group %q not found", name)
 	}
 	return &pgs[0], nil
+}
+
+// ListPortGroupsForPort scans the cache for port groups whose Ports set
+// contains the given LSP's UUID. Returns the names. Returns an empty slice
+// (not an error) when the LSP has no memberships, so reconcilePortSGs handles
+// the "not currently in any group" case naturally.
+func (c *LiveOVNClient) ListPortGroupsForPort(ctx context.Context, lspName string) ([]string, error) {
+	lsp, err := c.GetLogicalSwitchPort(ctx, lspName)
+	if err != nil {
+		return nil, fmt.Errorf("list port groups for port lookup: %w", err)
+	}
+	var pgs []nbdb.PortGroup
+	if err := c.client.List(ctx, &pgs); err != nil {
+		return nil, fmt.Errorf("list port groups: %w", err)
+	}
+	names := make([]string, 0)
+	for i := range pgs {
+		if slices.Contains(pgs[i].Ports, lsp.UUID) {
+			names = append(names, pgs[i].Name)
+		}
+	}
+	return names, nil
 }
 
 // ACLs

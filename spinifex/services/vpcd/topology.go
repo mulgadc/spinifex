@@ -24,6 +24,7 @@ const (
 	TopicSubnetDelete     = "vpc.delete-subnet"
 	TopicCreatePort       = "vpc.create-port"
 	TopicDeletePort       = "vpc.delete-port"
+	TopicUpdatePortSGs    = "vpc.update-port-sgs"
 	TopicPortStatus       = "vpc.port-status"
 	TopicIGWAttach        = "vpc.igw-attach"
 	TopicIGWDetach        = "vpc.igw-detach"
@@ -65,12 +66,28 @@ type SubnetEvent struct {
 }
 
 // PortEvent is published on vpc.create-port / vpc.delete-port.
+//
+// SecurityGroupIds carries the SG membership the port should join at create
+// time so vpcd can wire OVN port-group membership atomically with the LSP
+// create. Empty on delete-port (handleDeletePort discovers current
+// memberships from the libovsdb cache).
 type PortEvent struct {
-	NetworkInterfaceId string `json:"network_interface_id"`
-	SubnetId           string `json:"subnet_id"`
-	VpcId              string `json:"vpc_id"`
-	PrivateIpAddress   string `json:"private_ip_address"`
-	MacAddress         string `json:"mac_address"`
+	NetworkInterfaceId string   `json:"network_interface_id"`
+	SubnetId           string   `json:"subnet_id"`
+	VpcId              string   `json:"vpc_id"`
+	PrivateIpAddress   string   `json:"private_ip_address"`
+	MacAddress         string   `json:"mac_address"`
+	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
+}
+
+// UpdatePortSGsEvent is published on vpc.update-port-sgs after
+// ModifyNetworkInterfaceAttribute changes an ENI's SG membership. The payload
+// is declarative — vpcd reads its libovsdb cache to discover current
+// memberships and computes the diff against SecurityGroupIds.
+type UpdatePortSGsEvent struct {
+	NetworkInterfaceId string   `json:"network_interface_id"`
+	PrivateIpAddress   string   `json:"private_ip_address"`
+	SecurityGroupIds   []string `json:"security_group_ids"`
 }
 
 // NATEvent is published on vpc.add-nat / vpc.delete-nat for 1:1 public IP NAT.
@@ -417,6 +434,7 @@ func (h *TopologyHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 		{TopicSubnetDelete, h.handleSubnetDelete, true},
 		{TopicCreatePort, h.handleCreatePort, true},
 		{TopicDeletePort, h.handleDeletePort, true},
+		{TopicUpdatePortSGs, h.handleUpdatePortSGs, true},
 		{TopicIGWAttach, h.handleIGWAttach, true},
 		{TopicIGWDetach, h.handleIGWDetach, true},
 		{TopicAddNAT, h.handleAddNAT, true},
@@ -741,7 +759,9 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 	portName := "port-" + evt.NetworkInterfaceId
 	switchName := "subnet-" + evt.SubnetId
 
-	// Idempotent: skip if port already exists
+	// Idempotent: skip if port already exists. The reconciler converges any
+	// drifted SG memberships on its next pass, so we don't need to retry the
+	// joins here.
 	if _, err := h.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
 		slog.Debug("vpcd: logical switch port already exists, skipping", "port", portName)
 		respond(msg, nil)
@@ -769,7 +789,16 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 		lsp.DHCPv4Options = &dhcpOpts.UUID
 	}
 
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, switchName, lsp); err != nil {
+	// LSP create + switch-port mutate + SG port-group joins MUST be a single
+	// OVSDB transaction. A two-step (create LSP, then add to port groups) leaves
+	// a window where the port exists outside any port group — and OVN's default
+	// for a port outside its SG port groups is unrestricted traffic, the
+	// opposite of what enforcement should guarantee.
+	pgNames := make([]string, 0, len(evt.SecurityGroupIds))
+	for _, sgId := range evt.SecurityGroupIds {
+		pgNames = append(pgNames, portGroupName(sgId))
+	}
+	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames); err != nil {
 		slog.Error("vpcd: failed to create logical switch port", "port", portName, "switch", switchName, "err", err)
 		respond(msg, err)
 		return
@@ -780,6 +809,7 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 		"switch", switchName,
 		"eni_id", evt.NetworkInterfaceId,
 		"ip", evt.PrivateIpAddress,
+		"sgs", evt.SecurityGroupIds,
 	)
 	respond(msg, nil)
 }
@@ -801,6 +831,14 @@ func (h *TopologyHandler) handleDeletePort(msg *nats.Msg) {
 	portName := "port-" + evt.NetworkInterfaceId
 	switchName := "subnet-" + evt.SubnetId
 
+	// Remove the LSP from every port group before deleting it. OVSDB rejects
+	// deletes of a row still referenced by another row's set column (the port
+	// group's ports set), and a dangling reference would also leak ACL
+	// evaluation against a stale UUID.
+	if err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, nil); err != nil {
+		slog.Warn("vpcd: failed to clear port group memberships before delete", "port", portName, "err", err)
+	}
+
 	if err := h.ovn.DeleteLogicalSwitchPort(ctx, switchName, portName); err != nil {
 		slog.Error("vpcd: failed to delete logical switch port", "port", portName, "switch", switchName, "err", err)
 		respond(msg, err)
@@ -813,6 +851,90 @@ func (h *TopologyHandler) handleDeletePort(msg *nats.Msg) {
 		"eni_id", evt.NetworkInterfaceId,
 	)
 	respond(msg, nil)
+}
+
+// handleUpdatePortSGs reconciles the port group membership for an ENI's LSP
+// against the desired SG list in the event. The payload is declarative — vpcd
+// computes the add/remove diff from the current libovsdb cache state. Same
+// helper is used by the reconciler.
+func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
+	if h.ovn == nil {
+		respond(msg, fmt.Errorf("OVN client not connected"))
+		return
+	}
+
+	var evt UpdatePortSGsEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("vpcd: failed to unmarshal vpc.update-port-sgs event", "err", err)
+		respond(msg, err)
+		return
+	}
+
+	ctx := context.Background()
+	portName := "port-" + evt.NetworkInterfaceId
+
+	if err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, evt.SecurityGroupIds); err != nil {
+		slog.Error("vpcd: failed to reconcile port SGs",
+			"port", portName, "eni_id", evt.NetworkInterfaceId, "sgs", evt.SecurityGroupIds, "err", err)
+		respond(msg, err)
+		return
+	}
+
+	slog.Info("vpcd: updated port group memberships",
+		"port", portName,
+		"eni_id", evt.NetworkInterfaceId,
+		"sgs", evt.SecurityGroupIds,
+	)
+	respond(msg, nil)
+}
+
+// reconcilePortSGs converges the OVN port-group membership of lspName against
+// desiredSGs. Reads current membership from the libovsdb cache, computes
+// add/remove sets, and applies each side incrementally. Idempotent — replaying
+// the same desired state is a no-op. Self-healing — a previous partial failure
+// converges on the next call. desiredSGs may be nil (delete-port path) to
+// remove the port from every group.
+//
+// privateIP is currently unused; Phase 5 wires it into the SG-to-SG address
+// sets so SourceSG match expressions (`ip4.src == $<pg>_ip4`) resolve.
+func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, privateIP string, desiredSGs []string) error {
+	_ = privateIP
+
+	desired := make(map[string]struct{}, len(desiredSGs))
+	for _, sgId := range desiredSGs {
+		desired[portGroupName(sgId)] = struct{}{}
+	}
+
+	currentNames, err := h.ovn.ListPortGroupsForPort(ctx, lspName)
+	if err != nil {
+		return fmt.Errorf("list current port groups for %s: %w", lspName, err)
+	}
+	current := make(map[string]struct{}, len(currentNames))
+	for _, name := range currentNames {
+		current[name] = struct{}{}
+	}
+
+	// Add: in desired \ current.
+	for name := range desired {
+		if _, ok := current[name]; ok {
+			continue
+		}
+		if err := h.ovn.AddPortToPortGroup(ctx, name, lspName); err != nil {
+			return fmt.Errorf("add %s to %s: %w", lspName, name, err)
+		}
+	}
+
+	// Remove: in current \ desired.
+	for name := range current {
+		if _, ok := desired[name]; ok {
+			continue
+		}
+		if err := h.ovn.RemovePortFromPortGroup(ctx, name, lspName); err != nil {
+			return fmt.Errorf("remove %s from %s: %w", lspName, name, err)
+		}
+	}
+
+	return nil
 }
 
 // --- Internet Gateway (external connectivity + NAT) ---

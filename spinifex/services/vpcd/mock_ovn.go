@@ -152,6 +152,40 @@ func (m *MockOVNClient) CreateLogicalSwitchPort(_ context.Context, switchName st
 	return nil
 }
 
+// CreateLogicalSwitchPortInGroups mirrors the live client's atomic create +
+// port-group join path. The mock is not transactional, but every step still
+// has to succeed; on a port-group lookup failure we leave no LSP behind so
+// tests observe the same all-or-nothing semantics as production.
+func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ls, exists := m.switches[switchName]
+	if !exists {
+		return fmt.Errorf("logical switch %q not found", switchName)
+	}
+	if _, exists := m.ports[lsp.Name]; exists {
+		return fmt.Errorf("logical switch port %q already exists", lsp.Name)
+	}
+	for _, pgName := range portGroupNames {
+		if _, ok := m.portGroups[pgName]; !ok {
+			return fmt.Errorf("port group %q not found", pgName)
+		}
+	}
+	if lsp.UUID == "" {
+		lsp.UUID = utils.GenerateResourceID("ovn")
+	}
+	stored := *lsp
+	m.ports[lsp.Name] = &stored
+	ls.Ports = append(ls.Ports, lsp.UUID)
+	for _, pgName := range portGroupNames {
+		pg := m.portGroups[pgName]
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			pg.Ports = append(pg.Ports, lsp.UUID)
+		}
+	}
+	return nil
+}
+
 func (m *MockOVNClient) DeleteLogicalSwitchPort(_ context.Context, switchName string, portName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -606,6 +640,26 @@ func (m *MockOVNClient) RemovePortFromPortGroup(_ context.Context, name string, 
 		}
 	}
 	return nil
+}
+
+// ListPortGroupsForPort returns names of port groups whose Ports contains the
+// given LSP's UUID. Mirrors the live client; the mock returns an empty slice
+// (not an error) when the LSP exists but has no memberships, and an error
+// only when the LSP itself is unknown.
+func (m *MockOVNClient) ListPortGroupsForPort(_ context.Context, lspName string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		return nil, fmt.Errorf("logical switch port %q not found", lspName)
+	}
+	names := make([]string, 0)
+	for name, pg := range m.portGroups {
+		if slices.Contains(pg.Ports, lsp.UUID) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // ACLs

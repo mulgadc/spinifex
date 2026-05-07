@@ -467,6 +467,91 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	assert.Equal(t, sg2, *desc.NetworkInterfaces[0].Groups[1].GroupId)
 }
 
+func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-mod-1")
+	sg2 := createTestSG(t, svc, vpcId, "sg-mod-2")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), eniId)
+		assert.Contains(t, string(msg.Data), sg1)
+		assert.Contains(t, string(msg.Data), sg2)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.update-port-sgs event")
+	}
+}
+
+func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Description:        &ec2.AttributeValue{Value: aws.String("only desc")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case <-eventCh:
+		t.Fatal("unexpected vpc.update-port-sgs event for description-only modify")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-evt-A")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+		Groups:   []*string{aws.String(sgA)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), sgA)
+		assert.Contains(t, string(msg.Data), `"security_group_ids"`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.create-port event")
+	}
+}
+
 func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

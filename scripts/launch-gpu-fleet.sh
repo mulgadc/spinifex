@@ -74,8 +74,12 @@ provision_instance() {
     echo "$tag SSH ready"
 
     # Phase 1: firmware + initramfs rebuild → reboot
-    echo "$tag Phase 1/3: installing linux-firmware + rebuilding initramfs..."
+    echo "$tag Phase 1/3: configuring apt mirror + installing linux-firmware + rebuilding initramfs..."
     if ! _ssh "$ip" '
+        sudo sed -i \
+            -e "s|http://archive.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
+            -e "s|http://security.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
+            /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true &&
         sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 | grep -E "^(E:|W:|Err:)" >&2 || true &&
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             -o Acquire::Retries=1 --no-install-recommends linux-firmware &&
@@ -317,15 +321,18 @@ if [ -f "$KNOWN_HOSTS" ]; then
     done
 fi
 
-# --- Step 9: Provision all instances in parallel ---
-echo "==> Provisioning GPU drivers and ROCm in all instances (parallel, 2 reboots each)"
+# --- Step 9: Provision all instances (staggered starts to avoid mirror throttling) ---
+echo "==> Provisioning GPU drivers and ROCm in all instances (staggered start, 2 reboots each)"
+PROVISION_STAGGER="${PROVISION_STAGGER:-30}"
 TMPDIR_RESULTS=$(mktemp -d)
 PIDS=()
+_stagger=0
 for id in "${INSTANCE_IDS[@]}"; do
     ip="${INSTANCE_IPS[$id]}"
     result_file="${TMPDIR_RESULTS}/${id}"
-    provision_instance "$id" "$ip" "$result_file" &
+    ( [ "$_stagger" -gt 0 ] && sleep "$_stagger"; provision_instance "$id" "$ip" "$result_file" ) &
     PIDS+=($!)
+    _stagger=$((_stagger + PROVISION_STAGGER))
 done
 
 # Wait for all background jobs

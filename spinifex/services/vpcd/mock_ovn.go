@@ -24,6 +24,7 @@ type MockOVNClient struct {
 	staticRoutes   map[string]*nbdb.LogicalRouterStaticRoute // keyed by UUID
 	portGroups     map[string]*nbdb.PortGroup                // keyed by name
 	acls           map[string]*nbdb.ACL                      // keyed by UUID
+	addressSets    map[string]*nbdb.AddressSet               // keyed by name
 	gatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
 
 	// UpdateLogicalSwitchPortCalls counts UpdateLogicalSwitchPort invocations
@@ -59,6 +60,7 @@ func NewMockOVNClient() *MockOVNClient {
 		staticRoutes:   make(map[string]*nbdb.LogicalRouterStaticRoute),
 		portGroups:     make(map[string]*nbdb.PortGroup),
 		acls:           make(map[string]*nbdb.ACL),
+		addressSets:    make(map[string]*nbdb.AddressSet),
 		gatewayChassis: make(map[string]*nbdb.GatewayChassis),
 	}
 }
@@ -647,6 +649,65 @@ func (m *MockOVNClient) ClearACLs(_ context.Context, portGroupName string) error
 		delete(m.acls, aclUUID)
 	}
 	pg.ACLs = nil
+	return nil
+}
+
+// Address Sets
+
+func (m *MockOVNClient) CreateAddressSet(_ context.Context, name string, addresses []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.addressSets[name]; exists {
+		return fmt.Errorf("address set %q already exists", name)
+	}
+	as := &nbdb.AddressSet{
+		UUID:        utils.GenerateResourceID("as"),
+		Name:        name,
+		Addresses:   addresses,
+		ExternalIDs: map[string]string{},
+	}
+	m.addressSets[name] = as
+	return nil
+}
+
+func (m *MockOVNClient) DeleteAddressSet(_ context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.addressSets[name]; !exists {
+		return fmt.Errorf("address set %q not found", name)
+	}
+	delete(m.addressSets, name)
+	return nil
+}
+
+// AddAddressSetEntry is idempotent — re-adding an existing address is a no-op.
+func (m *MockOVNClient) AddAddressSetEntry(_ context.Context, name string, address string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	as, exists := m.addressSets[name]
+	if !exists {
+		return fmt.Errorf("address set %q not found", name)
+	}
+	if slices.Contains(as.Addresses, address) {
+		return nil
+	}
+	as.Addresses = append(as.Addresses, address)
+	return nil
+}
+
+func (m *MockOVNClient) RemoveAddressSetEntry(_ context.Context, name string, address string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	as, exists := m.addressSets[name]
+	if !exists {
+		return fmt.Errorf("address set %q not found", name)
+	}
+	for i, a := range as.Addresses {
+		if a == address {
+			as.Addresses = append(as.Addresses[:i], as.Addresses[i+1:]...)
+			return nil
+		}
+	}
 	return nil
 }
 

@@ -112,6 +112,12 @@ type OVNClient interface {
 	AddACL(ctx context.Context, portGroupName string, spec ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
 
+	// Address Sets (referenced by ACL match expressions for SG-to-SG rules)
+	CreateAddressSet(ctx context.Context, name string, addresses []string) error
+	DeleteAddressSet(ctx context.Context, name string) error
+	AddAddressSetEntry(ctx context.Context, name string, address string) error
+	RemoveAddressSetEntry(ctx context.Context, name string, address string) error
+
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error
 	GetGatewayChassisByName(ctx context.Context, name string) (*nbdb.GatewayChassis, error)
@@ -1133,4 +1139,81 @@ func (c *LiveOVNClient) ClearACLs(ctx context.Context, portGroupName string) err
 		return fmt.Errorf("clear ACLs transact: %w", err)
 	}
 	return nil
+}
+
+// Address Sets
+
+func (c *LiveOVNClient) CreateAddressSet(ctx context.Context, name string, addresses []string) error {
+	as := &nbdb.AddressSet{
+		UUID:        namedUUID("as_", name),
+		Name:        name,
+		Addresses:   addresses,
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.client.Create(as)
+	if err != nil {
+		return fmt.Errorf("create address set ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("create address set transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveOVNClient) DeleteAddressSet(ctx context.Context, name string) error {
+	as, err := c.getAddressSet(ctx, name)
+	if err != nil {
+		return fmt.Errorf("delete address set lookup: %w", err)
+	}
+	ops, err := c.client.Where(as).Delete()
+	if err != nil {
+		return fmt.Errorf("delete address set ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("delete address set transact: %w", err)
+	}
+	return nil
+}
+
+// AddAddressSetEntry is idempotent: re-inserting an existing address is a
+// no-op in OVSDB.
+func (c *LiveOVNClient) AddAddressSetEntry(ctx context.Context, name string, address string) error {
+	return c.mutateAddressSetEntries(ctx, name, address, "insert")
+}
+
+func (c *LiveOVNClient) RemoveAddressSetEntry(ctx context.Context, name string, address string) error {
+	return c.mutateAddressSetEntries(ctx, name, address, "delete")
+}
+
+func (c *LiveOVNClient) mutateAddressSetEntries(ctx context.Context, name, address, mutator string) error {
+	as, err := c.getAddressSet(ctx, name)
+	if err != nil {
+		return fmt.Errorf("address set %s lookup: %w", mutator, err)
+	}
+	ops, err := c.client.Where(as).Mutate(as, model.Mutation{
+		Field:   &as.Addresses,
+		Mutator: ovsdb.Mutator(mutator),
+		Value:   []string{address},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate address set entries ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("mutate address set entries transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveOVNClient) getAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
+	var sets []nbdb.AddressSet
+	err := c.client.WhereCache(func(as *nbdb.AddressSet) bool {
+		return as.Name == name
+	}).List(ctx, &sets)
+	if err != nil {
+		return nil, fmt.Errorf("get address set: %w", err)
+	}
+	if len(sets) == 0 {
+		return nil, fmt.Errorf("address set %q not found", name)
+	}
+	return &sets[0], nil
 }

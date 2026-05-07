@@ -587,3 +587,217 @@ func TestSetGatewayChassis_UpdatesPriority(t *testing.T) {
 		t.Errorf("expected 1 priority update, got %d", mock.UpdateGatewayChassisPriorityCalls)
 	}
 }
+
+// --- Port group + ACL incremental membership (SG enforcement Phase 1.1) ---
+
+func TestMockOVNClient_PortGroup_CRUD(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+
+	if err := mock.CreatePortGroup(ctx, "sg_abc", nil); err != nil {
+		t.Fatalf("CreatePortGroup: %v", err)
+	}
+	if err := mock.CreatePortGroup(ctx, "sg_abc", nil); err == nil {
+		t.Fatal("expected duplicate CreatePortGroup to fail")
+	}
+	if err := mock.DeletePortGroup(ctx, "sg_abc"); err != nil {
+		t.Fatalf("DeletePortGroup: %v", err)
+	}
+	if err := mock.DeletePortGroup(ctx, "sg_abc"); err == nil {
+		t.Fatal("expected DeletePortGroup of missing group to fail")
+	}
+}
+
+func TestMockOVNClient_AddRemovePortToPortGroup_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+
+	if err := mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "subnet-x"}); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	lsp := &nbdb.LogicalSwitchPort{Name: "lsp-1"}
+	if err := mock.CreateLogicalSwitchPort(ctx, "subnet-x", lsp); err != nil {
+		t.Fatalf("CreateLogicalSwitchPort: %v", err)
+	}
+	if err := mock.CreatePortGroup(ctx, "sg_a", nil); err != nil {
+		t.Fatalf("CreatePortGroup: %v", err)
+	}
+
+	// First insert adds.
+	if err := mock.AddPortToPortGroup(ctx, "sg_a", "lsp-1"); err != nil {
+		t.Fatalf("AddPortToPortGroup: %v", err)
+	}
+	// Re-insert is a no-op (idempotent).
+	if err := mock.AddPortToPortGroup(ctx, "sg_a", "lsp-1"); err != nil {
+		t.Fatalf("AddPortToPortGroup (idempotent): %v", err)
+	}
+	mock.mu.Lock()
+	pg := mock.portGroups["sg_a"]
+	count := len(pg.Ports)
+	mock.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected 1 member after idempotent add, got %d", count)
+	}
+
+	// Remove deletes.
+	if err := mock.RemovePortFromPortGroup(ctx, "sg_a", "lsp-1"); err != nil {
+		t.Fatalf("RemovePortFromPortGroup: %v", err)
+	}
+	// Re-remove is a no-op.
+	if err := mock.RemovePortFromPortGroup(ctx, "sg_a", "lsp-1"); err != nil {
+		t.Fatalf("RemovePortFromPortGroup (idempotent): %v", err)
+	}
+	mock.mu.Lock()
+	count = len(mock.portGroups["sg_a"].Ports)
+	mock.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected 0 members after remove, got %d", count)
+	}
+
+	// Operations on missing port group / lsp surface errors.
+	if err := mock.AddPortToPortGroup(ctx, "sg_missing", "lsp-1"); err == nil {
+		t.Fatal("expected error on missing port group")
+	}
+	if err := mock.AddPortToPortGroup(ctx, "sg_a", "lsp-missing"); err == nil {
+		t.Fatal("expected error on missing lsp")
+	}
+	if err := mock.RemovePortFromPortGroup(ctx, "sg_missing", "lsp-1"); err == nil {
+		t.Fatal("expected error on missing port group")
+	}
+	if err := mock.RemovePortFromPortGroup(ctx, "sg_a", "lsp-missing"); err == nil {
+		t.Fatal("expected error on missing lsp")
+	}
+}
+
+func TestMockOVNClient_SetPortGroupPorts(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+	if err := mock.CreatePortGroup(ctx, "sg_b", []string{"u1"}); err != nil {
+		t.Fatalf("CreatePortGroup: %v", err)
+	}
+	if err := mock.SetPortGroupPorts(ctx, "sg_b", []string{"u2", "u3"}); err != nil {
+		t.Fatalf("SetPortGroupPorts: %v", err)
+	}
+	mock.mu.Lock()
+	got := mock.portGroups["sg_b"].Ports
+	mock.mu.Unlock()
+	if len(got) != 2 || got[0] != "u2" || got[1] != "u3" {
+		t.Fatalf("expected [u2 u3], got %v", got)
+	}
+	if err := mock.SetPortGroupPorts(ctx, "sg_missing", nil); err == nil {
+		t.Fatal("expected error on missing port group")
+	}
+}
+
+func TestMockOVNClient_AddACL_ClearACLs(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+	if err := mock.CreatePortGroup(ctx, "sg_c", nil); err != nil {
+		t.Fatalf("CreatePortGroup: %v", err)
+	}
+	allow := ACLSpec{Direction: "to-lport", Priority: 1000, Match: "ip4", Action: "allow-related"}
+	deny := ACLSpec{Direction: "to-lport", Priority: 900, Match: "ip4", Action: "drop", Name: "deny", Log: true, Severity: "info"}
+	if err := mock.AddACL(ctx, "sg_c", allow); err != nil {
+		t.Fatalf("AddACL allow: %v", err)
+	}
+	if err := mock.AddACL(ctx, "sg_c", deny); err != nil {
+		t.Fatalf("AddACL deny: %v", err)
+	}
+	mock.mu.Lock()
+	pg := mock.portGroups["sg_c"]
+	aclRefs := len(pg.ACLs)
+	totalACLs := len(mock.acls)
+	mock.mu.Unlock()
+	if aclRefs != 2 || totalACLs != 2 {
+		t.Fatalf("expected 2 ACLs (refs=%d, total=%d)", aclRefs, totalACLs)
+	}
+
+	if err := mock.ClearACLs(ctx, "sg_c"); err != nil {
+		t.Fatalf("ClearACLs: %v", err)
+	}
+	mock.mu.Lock()
+	aclRefs = len(mock.portGroups["sg_c"].ACLs)
+	totalACLs = len(mock.acls)
+	mock.mu.Unlock()
+	if aclRefs != 0 || totalACLs != 0 {
+		t.Fatalf("expected ACLs cleared (refs=%d, total=%d)", aclRefs, totalACLs)
+	}
+
+	// DeletePortGroup also cascades-deletes any remaining ACLs.
+	if err := mock.AddACL(ctx, "sg_c", allow); err != nil {
+		t.Fatalf("AddACL: %v", err)
+	}
+	if err := mock.DeletePortGroup(ctx, "sg_c"); err != nil {
+		t.Fatalf("DeletePortGroup: %v", err)
+	}
+	mock.mu.Lock()
+	totalACLs = len(mock.acls)
+	mock.mu.Unlock()
+	if totalACLs != 0 {
+		t.Fatalf("expected 0 ACLs after DeletePortGroup cascade, got %d", totalACLs)
+	}
+
+	if err := mock.AddACL(ctx, "sg_missing", allow); err == nil {
+		t.Fatal("expected error on missing port group")
+	}
+	if err := mock.ClearACLs(ctx, "sg_missing"); err == nil {
+		t.Fatal("expected error on missing port group")
+	}
+}
+
+// --- Address sets (SG enforcement Phase 1.2) ---
+
+func TestMockOVNClient_AddressSet_CRUD(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockOVNClient()
+
+	if err := mock.CreateAddressSet(ctx, "sg_a_ip4", []string{"10.0.0.1"}); err != nil {
+		t.Fatalf("CreateAddressSet: %v", err)
+	}
+	if err := mock.CreateAddressSet(ctx, "sg_a_ip4", nil); err == nil {
+		t.Fatal("expected duplicate CreateAddressSet to fail")
+	}
+
+	// Re-add existing entry is a no-op.
+	if err := mock.AddAddressSetEntry(ctx, "sg_a_ip4", "10.0.0.1"); err != nil {
+		t.Fatalf("AddAddressSetEntry (idempotent): %v", err)
+	}
+	if err := mock.AddAddressSetEntry(ctx, "sg_a_ip4", "10.0.0.2"); err != nil {
+		t.Fatalf("AddAddressSetEntry: %v", err)
+	}
+	mock.mu.Lock()
+	got := append([]string{}, mock.addressSets["sg_a_ip4"].Addresses...)
+	mock.mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 addresses, got %v", got)
+	}
+
+	// Remove is idempotent.
+	if err := mock.RemoveAddressSetEntry(ctx, "sg_a_ip4", "10.0.0.1"); err != nil {
+		t.Fatalf("RemoveAddressSetEntry: %v", err)
+	}
+	if err := mock.RemoveAddressSetEntry(ctx, "sg_a_ip4", "10.0.0.1"); err != nil {
+		t.Fatalf("RemoveAddressSetEntry (idempotent): %v", err)
+	}
+	mock.mu.Lock()
+	count := len(mock.addressSets["sg_a_ip4"].Addresses)
+	mock.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected 1 address, got %d", count)
+	}
+
+	if err := mock.DeleteAddressSet(ctx, "sg_a_ip4"); err != nil {
+		t.Fatalf("DeleteAddressSet: %v", err)
+	}
+	if err := mock.DeleteAddressSet(ctx, "sg_a_ip4"); err == nil {
+		t.Fatal("expected DeleteAddressSet of missing set to fail")
+	}
+
+	// Errors on missing set.
+	if err := mock.AddAddressSetEntry(ctx, "sg_missing", "10.0.0.1"); err == nil {
+		t.Fatal("expected error on missing set")
+	}
+	if err := mock.RemoveAddressSetEntry(ctx, "sg_missing", "10.0.0.1"); err == nil {
+		t.Fatal("expected error on missing set")
+	}
+}

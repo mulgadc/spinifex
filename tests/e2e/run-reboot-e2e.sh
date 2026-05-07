@@ -10,7 +10,7 @@
 #   SSH_KEY  — path to ssh key the runner can use to reach tf-user@WAN_IP
 #
 # Sequence:
-#   1. Pre-reboot: VPC + 2 app EC2s + internal ALB; verify round-robin.
+#   1. Pre-reboot: VPC + 2 app EC2s + internet-facing ALB; verify round-robin.
 #   2. Snapshot pre-reboot state (instance IPs, ALB ENI MAC, ovn-nbctl show).
 #   3. systemctl reboot the host; poll TCP/22 from the runner until SSH returns.
 #   4. Wait for spinifex services + AWS gateway to respond.
@@ -27,8 +27,6 @@ REBOOT_WAIT_SECS="${REBOOT_WAIT_SECS:-300}"
 DAEMON_READY_SECS="${DAEMON_READY_SECS:-180}"
 INSTANCE_RUNNING_SECS="${INSTANCE_RUNNING_SECS:-120}"
 LB_RECOVER_SECS="${LB_RECOVER_SECS:-180}"
-LAUNCH_TIME_SECS="${LAUNCH_TIME_SECS:-30}"
-
 NODE_KEY_PATH="\$HOME/reboot-e2e-key"
 NODE_USERDATA_PATH="\$HOME/reboot-e2e-userdata.txt"
 
@@ -311,7 +309,7 @@ done
 pass "all instances have private IPs"
 
 # ==========================================================================
-# Phase 3: ALB (internal)
+# Phase 3: ALB (internet-facing)
 # ==========================================================================
 log "Creating HTTP target group..."
 ALB_TG_ARN=$(node_aws_elbv2 "create-target-group \
@@ -331,10 +329,10 @@ node_aws_elbv2 "register-targets --target-group-arn $ALB_TG_ARN \
     || { fail "register-targets"; exit 1; }
 pass "registered 2 targets"
 
-log "Creating internal ALB..."
+log "Creating internet-facing ALB..."
 ALB_LB_ARN=$(node_aws_elbv2 "create-load-balancer \
     --name reboot-e2e-alb \
-    --scheme internal \
+    --scheme internet-facing \
     --subnets $SUBNET_ID \
     --output json" | jq -r '.LoadBalancers[0].LoadBalancerArn')
 if [ -z "$ALB_LB_ARN" ] || [ "$ALB_LB_ARN" = "null" ]; then fail "create-load-balancer"; exit 1; fi
@@ -355,14 +353,11 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB" || { dump_diagnostics; exit 1; }
 ENI_OUT=$(node_aws_ec2 "describe-network-interfaces \
     --filters Name=description,Values='ELB app/reboot-e2e-alb/${ALB_LB_ID}' \
     --output json" 2>/dev/null)
+ALB_PUBLIC_IP=$(echo "$ENI_OUT" | jq -r '.NetworkInterfaces[0].Association.PublicIp // empty')
 ALB_ENI_ID=$(echo "$ENI_OUT" | jq -r '.NetworkInterfaces[0].NetworkInterfaceId // empty')
 ALB_ENI_MAC=$(echo "$ENI_OUT" | jq -r '.NetworkInterfaces[0].MacAddress // empty')
-ALB_PRIVATE_IP=$(echo "$ENI_OUT" | jq -r '.NetworkInterfaces[0].PrivateIpAddress // empty')
-if [ -z "$ALB_ENI_ID" ] || [ "$ALB_ENI_ID" = "null" ]; then fail "ALB ENI not found"; exit 1; fi
-# Internal ALB: no public IP expected; traffic uses mgmt IP reachable via br-mgmt
-ALB_MGMT_IP=$(node_ssh "ip -4 neigh show dev br-mgmt 2>/dev/null | awk '/'"$ALB_ENI_MAC"'/{print \$1}'" || echo "")
-if [ -z "$ALB_MGMT_IP" ]; then fail "ALB mgmt IP not found in br-mgmt neighbours (MAC $ALB_ENI_MAC)"; exit 1; fi
-pass "ALB ENI $ALB_ENI_ID private IP: $ALB_PRIVATE_IP mgmt IP: $ALB_MGMT_IP"
+if [ -z "$ALB_PUBLIC_IP" ] || [ "$ALB_PUBLIC_IP" = "null" ]; then fail "ALB has no public IP"; exit 1; fi
+pass "ALB ENI $ALB_ENI_ID public IP: $ALB_PUBLIC_IP"
 
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB" || { dump_diagnostics; exit 1; }
 
@@ -371,7 +366,7 @@ wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB" || { dump_diagnostics; exit 1; }
 # ==========================================================================
 echo ""
 echo "=== Phase 4: Pre-reboot traffic ==="
-run_http_burst "http://${ALB_MGMT_IP}:80" "ALB pre-reboot"
+run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB pre-reboot"
 
 # ==========================================================================
 # Phase 5: Snapshot pre-reboot state
@@ -520,7 +515,7 @@ wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" ||
 # 8.6: re-run the traffic burst
 echo ""
 log "Re-running traffic burst against same ALB..."
-run_http_burst "http://${ALB_MGMT_IP}:80" "ALB post-reboot"
+run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"
 
 # 8.7: ovn-nbctl diff (this is where the known persistence bug lands)
 log "Diffing ovn-nbctl show against pre-reboot snapshot..."

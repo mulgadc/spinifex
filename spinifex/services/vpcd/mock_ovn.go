@@ -44,6 +44,14 @@ type MockOVNClient struct {
 	SetGatewayChassisCalls            int
 	DeleteGatewayChassisCalls         int
 	UpdateGatewayChassisPriorityCalls int
+
+	// AddACLErrAfter, when > 0, makes AddACL return an error on the Nth
+	// call (1-indexed). Lets fail-fast tests inject a transient OVN error
+	// at a specific point in the create/update flow without rewiring the
+	// whole client. Counter persists across calls until the mock is
+	// recreated.
+	AddACLErrAfter int
+	addACLCalls    int
 }
 
 var _ OVNClient = (*MockOVNClient)(nil)
@@ -210,6 +218,16 @@ func (m *MockOVNClient) DeleteLogicalSwitchPort(_ context.Context, switchName st
 	ls, exists := m.switches[switchName]
 	if !exists {
 		return fmt.Errorf("logical switch %q not found", switchName)
+	}
+	// Mirror libovsdb's reference-integrity rejection: an LSP still in any
+	// port group's Ports set cannot be deleted. Forces every delete-port
+	// path to clear membership first — handleDeletePort already does this
+	// via reconcilePortSGs, but locking the invariant in the mock catches
+	// any reordering that would only break against real OVN.
+	for pgName, pg := range m.portGroups {
+		if slices.Contains(pg.Ports, port.UUID) {
+			return fmt.Errorf("logical switch port %q still in port group %q", portName, pgName)
+		}
 	}
 	// Remove port UUID from switch's ports list
 	for i, uuid := range ls.Ports {
@@ -593,13 +611,16 @@ func (m *MockOVNClient) CreatePortGroup(_ context.Context, name string, ports []
 func (m *MockOVNClient) DeletePortGroup(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.portGroups[name]; !exists {
+	pg, exists := m.portGroups[name]
+	if !exists {
 		return fmt.Errorf("port group %q not found", name)
 	}
-	// Remove ACLs associated with this port group
-	pg := m.portGroups[name]
-	for _, aclUUID := range pg.ACLs {
-		delete(m.acls, aclUUID)
+	// Mirror libovsdb's reference-integrity rejection: a port group with
+	// referenced ACL rows cannot be deleted directly. Live OVN's
+	// `Where(pg).Delete()` only removes the PG row and would leak the ACLs;
+	// forcing every caller through ClearACLs first matches that contract.
+	if len(pg.ACLs) > 0 {
+		return fmt.Errorf("port group %q has %d ACLs still attached; clear ACLs before delete", name, len(pg.ACLs))
 	}
 	delete(m.portGroups, name)
 	return nil
@@ -645,6 +666,36 @@ func (m *MockOVNClient) RemovePortFromPortGroup(_ context.Context, name string, 
 	return nil
 }
 
+// UpdatePortGroupMemberships applies all add/remove port-group joins and
+// the matching address-set entry inserts/removes for one LSP. The mock has
+// no real concurrency to worry about, so it just calls the existing
+// methods sequentially under lock — but the API surface matches the live
+// client so callers can rely on the single-method shape regardless of
+// backend.
+func (m *MockOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
+	for _, pgName := range addPGs {
+		if err := m.AddPortToPortGroup(ctx, pgName, lspName); err != nil {
+			return err
+		}
+		if privateIP != "" {
+			if err := m.AddAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
+				return err
+			}
+		}
+	}
+	for _, pgName := range removePGs {
+		if err := m.RemovePortFromPortGroup(ctx, pgName, lspName); err != nil {
+			return err
+		}
+		if privateIP != "" {
+			if err := m.RemoveAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ListPortGroupsForPort returns names of port groups whose Ports contains the
 // given LSP's UUID. Mirrors the live client; the mock returns an empty slice
 // (not an error) when the LSP exists but has no memberships, and an error
@@ -682,6 +733,10 @@ func (m *MockOVNClient) GetPortGroup(_ context.Context, name string) (*nbdb.Port
 func (m *MockOVNClient) AddACL(_ context.Context, portGroupName string, spec ACLSpec) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.addACLCalls++
+	if m.AddACLErrAfter > 0 && m.addACLCalls == m.AddACLErrAfter {
+		return fmt.Errorf("injected AddACL failure on call %d", m.addACLCalls)
+	}
 	pg, exists := m.portGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)

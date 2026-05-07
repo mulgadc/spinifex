@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -1281,24 +1282,16 @@ func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
 // queue group; here neither uses a queue, so we drain the success sub first).
 func failingDeleteResponder(t *testing.T, nc *nats.Conn, msg string) {
 	t.Helper()
-	resp := []byte(`{"success":false,"error":"` + msg + `"}`)
-	sub, err := nc.Subscribe("vpc.delete-sg", func(m *nats.Msg) {
-		if m.Reply != "" {
-			_ = m.Respond(resp)
-		}
+	testutil.OverrideVpcdStubResponse(nc, "vpc.delete-sg", []byte(`{"success":false,"error":"`+msg+`"}`))
+	t.Cleanup(func() {
+		testutil.OverrideVpcdStubResponse(nc, "vpc.delete-sg", []byte(`{"success":true}`))
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
 func failingUpdateResponder(t *testing.T, nc *nats.Conn, msg string) {
 	t.Helper()
-	resp := []byte(`{"success":false,"error":"` + msg + `"}`)
-	sub, err := nc.Subscribe("vpc.update-sg", func(m *nats.Msg) {
-		if m.Reply != "" {
-			_ = m.Respond(resp)
-		}
+	testutil.OverrideVpcdStubResponse(nc, "vpc.update-sg", []byte(`{"success":false,"error":"`+msg+`"}`))
+	t.Cleanup(func() {
+		testutil.OverrideVpcdStubResponse(nc, "vpc.update-sg", []byte(`{"success":true}`))
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }

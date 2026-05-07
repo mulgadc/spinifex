@@ -1031,18 +1031,12 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 	eniId := createTestENI(t, svc, subnetId)
 	sg1 := createTestSG(t, svc, vpcId, "sg-mod-fail-1")
 
-	// Layer a failing responder on top of the default success stub so the
-	// vpc.update-port-sgs request returns an error.
-	resp := []byte(`{"success":false,"error":"forced-update-port-sgs-error"}`)
-	failSub, err := nc.Subscribe("vpc.update-port-sgs", func(m *nats.Msg) {
-		if m.Reply != "" {
-			_ = m.Respond(resp)
-		}
-	})
-	require.NoError(t, err)
-	defer func() { _ = failSub.Unsubscribe() }()
+	// Swap the stub's vpc.update-port-sgs reply to an error in-place so
+	// there's exactly one responder (no race with a layered subscriber).
+	testutil.OverrideVpcdStubResponse(nc, "vpc.update-port-sgs",
+		[]byte(`{"success":false,"error":"forced-update-port-sgs-error"}`))
 
-	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
 		Groups:             []*string{aws.String(sg1)},
 	}, testAccountID)

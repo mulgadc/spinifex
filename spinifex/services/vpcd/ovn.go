@@ -114,6 +114,13 @@ type OVNClient interface {
 	// mutate-insert/delete is atomic and idempotent under concurrent change.
 	AddPortToPortGroup(ctx context.Context, name string, lspName string) error
 	RemovePortFromPortGroup(ctx context.Context, name string, lspName string) error
+	// UpdatePortGroupMemberships applies all port-group joins, port-group
+	// leaves, and the matching address-set entry inserts/removes for a single
+	// LSP in one atomic OVSDB transaction. Required by reconcilePortSGs so a
+	// 5-SG → different-5-SG modify never exposes an intermediate state with
+	// fewer port groups (which would let the OVN default = unrestricted apply
+	// for the gap). privateIP may be "" to skip address-set updates.
+	UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error
 	// ListPortGroupsForPort returns the names of every port group whose Ports
 	// set contains the given LSP. Used by reconcilePortSGs to discover current
 	// membership before computing the add/remove diff against desired.
@@ -1109,6 +1116,68 @@ func (c *LiveOVNClient) mutatePortGroupPorts(ctx context.Context, name, lspName,
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
 		return fmt.Errorf("mutate port group ports transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
+	if len(addPGs) == 0 && len(removePGs) == 0 {
+		return nil
+	}
+	lsp, err := c.GetLogicalSwitchPort(ctx, lspName)
+	if err != nil {
+		return fmt.Errorf("update port group memberships lsp lookup: %w", err)
+	}
+
+	var ops []ovsdb.Operation
+	appendPGOps := func(pgName, mutator string) error {
+		pg, err := c.getPortGroup(ctx, pgName)
+		if err != nil {
+			return fmt.Errorf("port group %s lookup: %w", pgName, err)
+		}
+		pgOps, err := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.Ports,
+			Mutator: ovsdb.Mutator(mutator),
+			Value:   []string{lsp.UUID},
+		})
+		if err != nil {
+			return fmt.Errorf("mutate port group %s ops: %w", pgName, err)
+		}
+		ops = append(ops, pgOps...)
+
+		if privateIP == "" {
+			return nil
+		}
+		asName := addressSetName(pgName)
+		as, err := c.getAddressSet(ctx, asName)
+		if err != nil {
+			return fmt.Errorf("address set %s lookup: %w", asName, err)
+		}
+		asOps, err := c.client.Where(as).Mutate(as, model.Mutation{
+			Field:   &as.Addresses,
+			Mutator: ovsdb.Mutator(mutator),
+			Value:   []string{privateIP},
+		})
+		if err != nil {
+			return fmt.Errorf("mutate address set %s ops: %w", asName, err)
+		}
+		ops = append(ops, asOps...)
+		return nil
+	}
+
+	for _, pgName := range addPGs {
+		if err := appendPGOps(pgName, "insert"); err != nil {
+			return err
+		}
+	}
+	for _, pgName := range removePGs {
+		if err := appendPGOps(pgName, "delete"); err != nil {
+			return err
+		}
+	}
+
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update port group memberships transact: %w", err)
 	}
 	return nil
 }

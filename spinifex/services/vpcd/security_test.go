@@ -297,6 +297,129 @@ func TestSecurity_DeleteSG_FailsFastOnAddressSetError(t *testing.T) {
 	assertFailure(t, resp, "delete SG with missing address set must fail")
 }
 
+// TestSecurity_CreateSG_FailsFastOnAddACLError locks the Phase 1.1 invariant
+// that handleCreateSG returns the first AddACL error to the caller and tears
+// down the half-built SG (Fix #3 in the SG-enforcement bug list). The mock
+// fails AddACL on the second call (the egress deny ACL), and the test asserts
+// the handler responds with failure AND that the port group + address set are
+// gone — so the next reconciler scan recreates from scratch instead of
+// observing a half-built PG with default-deny only.
+func TestSecurity_CreateSG_FailsFastOnAddACLError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	mock.AddACLErrAfter = 2 // fail on the egress deny ACL
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	evt := SGEvent{GroupId: "sg-failacl", VpcId: "vpc-failacl"}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "create SG must fail when AddACL fails")
+
+	mock.mu.Lock()
+	_, pgExists := mock.portGroups["sg_failacl"]
+	_, asExists := mock.addressSets["sg_failacl_ip4"]
+	mock.mu.Unlock()
+	assert.False(t, pgExists, "port group must be torn down on failed provisionSG")
+	assert.False(t, asExists, "address set must be torn down on failed provisionSG")
+}
+
+// TestSecurity_UpdateSG_FailsFastOnAddACLError locks the same fail-fast policy
+// in handleUpdateSG: clear ACLs, re-add deny ACLs, then add allow ACLs — any
+// failure must propagate to the caller instead of being slog.Warn-ed away.
+func TestSecurity_UpdateSG_FailsFastOnAddACLError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	createEvt := SGEvent{GroupId: "sg-updfail", VpcId: "vpc-updfail"}
+	data, _ := json.Marshal(createEvt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create SG before update")
+
+	// First two ACLs in update path are the re-added deny ACLs; fail the
+	// fourth call so the failure lands on an allow ACL after both denies
+	// have already been re-installed (the worst case for partial state).
+	mock.mu.Lock()
+	mock.addACLCalls = 0
+	mock.AddACLErrAfter = 4
+	mock.mu.Unlock()
+
+	updateEvt := SGEvent{
+		GroupId: "sg-updfail",
+		VpcId:   "vpc-updfail",
+		IngressRules: []SGRuleForACL{
+			{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "10.0.0.0/8"},
+			{IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
+		},
+	}
+	data, _ = json.Marshal(updateEvt)
+	resp, err = nc.Request(TopicUpdateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "update SG must fail when AddACL fails mid-batch")
+}
+
+// TestSecurity_AddRuleACLs_FailsFastOnFirstError locks the Phase 1.1
+// fail-fast policy at the addRuleACLs site reached during initial SG
+// creation with rules. Same teardown invariant as the create path:
+// failure leaves no PG/AS for the reconciler to mistake as healthy.
+func TestSecurity_AddRuleACLs_FailsFastOnFirstError(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	// Two deny ACLs run first, then the allow rules. Fail on the third
+	// call so addRuleACLs returns mid-batch.
+	mock.AddACLErrAfter = 3
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	evt := SGEvent{
+		GroupId: "sg-rulefail",
+		VpcId:   "vpc-rulefail",
+		IngressRules: []SGRuleForACL{
+			{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "10.0.0.0/8"},
+			{IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
+		},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "create SG with rules must fail on first AddACL error")
+
+	mock.mu.Lock()
+	_, pgExists := mock.portGroups["sg_rulefail"]
+	_, asExists := mock.addressSets["sg_rulefail_ip4"]
+	mock.mu.Unlock()
+	assert.False(t, pgExists, "port group must be torn down when addRuleACLs fails")
+	assert.False(t, asExists, "address set must be torn down when addRuleACLs fails")
+}
+
 // containsAll checks if s contains all substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

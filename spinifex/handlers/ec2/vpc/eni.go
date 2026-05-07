@@ -125,11 +125,14 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 
 	slog.Info("CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
 
-	// Publish vpc.create-port event for vpcd topology translation. The SG
-	// list flows through the event so vpcd joins the LSP to its port groups
-	// in the same OVSDB transaction as the LSP create — Phase 4.4 of the SG
-	// enforcement plan.
-	s.publishPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn)
+	// Send vpc.create-port synchronously so vpcd OVSDB errors surface to the
+	// caller. Fire-and-forget would let CreateNetworkInterface return success
+	// while the LSP joins zero port groups (NATS hiccup or vpcd OVSDB error),
+	// leaving the port unrestricted until the 30s reconciler heals it.
+	if err := s.requestPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn); err != nil {
+		slog.Error("CreateNetworkInterface: vpcd create-port failed", "eniId", eniId, "err", err)
+		return nil, err
+	}
 
 	return &ec2.CreateNetworkInterfaceOutput{
 		NetworkInterface: s.eniRecordToEC2(&record, accountID),
@@ -584,19 +587,23 @@ func generateENIMac(eniId string) string {
 	return utils.HashMAC(eniId)
 }
 
-// publishPortEvent publishes a port lifecycle event (vpc.create-port /
-// vpc.delete-port) to NATS for vpcd's TopologyHandler. sgIds carries the SG
-// membership the LSP should join atomically with the create, or the
-// (informational) membership at delete.
+// portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.
+// Mirrors vpcd.PortEvent — duplicated here to avoid a vpcd → handlers import
+// cycle.
+type portEventPayload struct {
+	NetworkInterfaceId string   `json:"network_interface_id"`
+	SubnetId           string   `json:"subnet_id"`
+	VpcId              string   `json:"vpc_id"`
+	PrivateIpAddress   string   `json:"private_ip_address"`
+	MacAddress         string   `json:"mac_address"`
+	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
+}
+
+// publishPortEvent publishes a port lifecycle event fire-and-forget. Used for
+// vpc.delete-port — failure on delete is harmless (the port is going away
+// anyway and the reconciler converges any leftover OVN state).
 func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) {
-	utils.PublishEvent(s.natsConn, topic, struct {
-		NetworkInterfaceId string   `json:"network_interface_id"`
-		SubnetId           string   `json:"subnet_id"`
-		VpcId              string   `json:"vpc_id"`
-		PrivateIpAddress   string   `json:"private_ip_address"`
-		MacAddress         string   `json:"mac_address"`
-		SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
-	}{
+	utils.PublishEvent(s.natsConn, topic, portEventPayload{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
 		VpcId:              vpcId,
@@ -604,6 +611,21 @@ func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, private
 		MacAddress:         macAddr,
 		SecurityGroupIds:   sgIds,
 	})
+}
+
+// requestPortEvent sends a port lifecycle event via request-reply with the
+// shared SG-event timeout. Used for vpc.create-port so vpcd OVSDB failures
+// (which leave the LSP outside any SG port group) surface to the caller
+// instead of being swallowed.
+func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) error {
+	return utils.RequestEvent(s.natsConn, topic, portEventPayload{
+		NetworkInterfaceId: eniId,
+		SubnetId:           subnetId,
+		VpcId:              vpcId,
+		PrivateIpAddress:   privateIP,
+		MacAddress:         macAddr,
+		SecurityGroupIds:   sgIds,
+	}, vpcdSGEventTimeout)
 }
 
 // requestUpdatePortSGsEvent sends a vpc.update-port-sgs event to vpcd via

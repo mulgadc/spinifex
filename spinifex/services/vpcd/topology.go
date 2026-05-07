@@ -840,10 +840,13 @@ func (h *TopologyHandler) handleDeletePort(msg *nats.Msg) {
 
 	// Remove the LSP from every port group before deleting it. OVSDB rejects
 	// deletes of a row still referenced by another row's set column (the port
-	// group's ports set), and a dangling reference would also leak ACL
-	// evaluation against a stale UUID.
+	// group's ports set), so swallowing this error guarantees the next
+	// DeleteLogicalSwitchPort fails with a misleading reference-integrity
+	// error and hides the real first-step cause.
 	if err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, nil); err != nil {
-		slog.Warn("vpcd: failed to clear port group memberships before delete", "port", portName, "err", err)
+		slog.Error("vpcd: failed to clear port group memberships before delete", "port", portName, "err", err)
+		respond(msg, err)
+		return
 	}
 
 	if err := h.ovn.DeleteLogicalSwitchPort(ctx, switchName, portName); err != nil {
@@ -923,37 +926,23 @@ func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, private
 		current[name] = struct{}{}
 	}
 
-	// Add: in desired \ current.
+	addPGs := make([]string, 0)
 	for name := range desired {
-		if _, ok := current[name]; ok {
-			continue
-		}
-		if err := h.ovn.AddPortToPortGroup(ctx, name, lspName); err != nil {
-			return fmt.Errorf("add %s to %s: %w", lspName, name, err)
-		}
-		if privateIP != "" {
-			if err := h.ovn.AddAddressSetEntry(ctx, addressSetName(name), privateIP); err != nil {
-				return fmt.Errorf("add %s to address set %s: %w", privateIP, addressSetName(name), err)
-			}
+		if _, ok := current[name]; !ok {
+			addPGs = append(addPGs, name)
 		}
 	}
-
-	// Remove: in current \ desired.
+	removePGs := make([]string, 0)
 	for name := range current {
-		if _, ok := desired[name]; ok {
-			continue
-		}
-		if err := h.ovn.RemovePortFromPortGroup(ctx, name, lspName); err != nil {
-			return fmt.Errorf("remove %s from %s: %w", lspName, name, err)
-		}
-		if privateIP != "" {
-			if err := h.ovn.RemoveAddressSetEntry(ctx, addressSetName(name), privateIP); err != nil {
-				return fmt.Errorf("remove %s from address set %s: %w", privateIP, addressSetName(name), err)
-			}
+		if _, ok := desired[name]; !ok {
+			removePGs = append(removePGs, name)
 		}
 	}
 
-	return nil
+	// Single OVSDB transaction so a 5-SG → different-5-SG modify never
+	// exposes an intermediate state with fewer port groups (which would
+	// let the OVN default = unrestricted apply for the gap).
+	return h.ovn.UpdatePortGroupMemberships(ctx, lspName, privateIP, addPGs, removePGs)
 }
 
 // --- Internet Gateway (external connectivity + NAT) ---

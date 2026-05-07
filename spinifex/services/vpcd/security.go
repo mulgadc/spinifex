@@ -65,10 +65,11 @@ func (h *TopologyHandler) handleCreateSG(msg *nats.Msg) {
 // allow ACLs for the given SG. Used by handleCreateSG (CreateSecurityGroup
 // path) and the reconciler's scan-2 (SG record without OVN port group).
 //
-// Fail-fast: a partial ACL set leaves the port group with the OVN default
-// (unrestricted) for any port that joins it, which is the opposite of the
-// enforcement guarantee. Errors propagate so callers retry or the next
-// reconciler pass converges.
+// All-or-nothing: on any failure after the port group exists, the port group,
+// address set, and any partial ACLs are torn down so the reconciler's scan-2
+// can recreate the SG from scratch on its next pass. A partial state would
+// otherwise look healthy to scanMissingPortGroups (port group exists) while
+// silently dropping legitimate traffic via the default-deny ACL.
 func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingress, egress []SGRuleForACL) error {
 	pgName := portGroupName(groupId)
 	asName := addressSetName(pgName)
@@ -77,6 +78,25 @@ func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingre
 	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
 		return fmt.Errorf("create port group %s: %w", pgName, err)
 	}
+
+	done := false
+	defer func() {
+		if done {
+			return
+		}
+		// Best-effort rollback of the half-built SG. Each step logs but does
+		// not propagate — we already have the original error to return, and
+		// the reconciler's orphan-PG scan is the safety net for any leftover.
+		if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
+			slog.Warn("vpcd: provisionSG cleanup ClearACLs failed", "pg", pgName, "err", err)
+		}
+		if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
+			slog.Warn("vpcd: provisionSG cleanup DeletePortGroup failed", "pg", pgName, "err", err)
+		}
+		if err := h.ovn.DeleteAddressSet(ctx, asName); err != nil {
+			slog.Warn("vpcd: provisionSG cleanup DeleteAddressSet failed", "as", asName, "err", err)
+		}
+	}()
 
 	// Create the per-SG address set. ACLs whose match expression references
 	// this SG as a SourceSG (e.g. "ip4.src == $<asName>") need the set to
@@ -96,7 +116,11 @@ func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingre
 	}
 
 	// Add ACLs for current rules (priority 1000 — higher than deny)
-	return h.addRuleACLs(ctx, pgName, ingress, egress)
+	if err := h.addRuleACLs(ctx, pgName, ingress, egress); err != nil {
+		return err
+	}
+	done = true
+	return nil
 }
 
 // handleDeleteSG deletes the OVN Port Group and all associated ACLs.

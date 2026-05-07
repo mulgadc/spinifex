@@ -1,0 +1,70 @@
+name: E2E Bare-Metal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  statuses: write
+
+env:
+  GIT_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  e2e_baremetal:
+    name: Bare-Metal Single-Node E2E
+    runs-on: [ self-hosted, ci-baremetal ]
+    timeout-minutes: 60
+    concurrency:
+      group: e2e-baremetal-cluster
+      cancel-in-progress: false
+    env:
+      BM_ISO_CACHE: /var/cache/spinifex-iso-builder
+    steps:
+      - name: Clean Workspace
+        run: rm -rf "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/checkout@v6
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: |
+            scripts/iso-builder
+            scripts/baremetal
+          path: mulga
+
+      - name: Build Artifacts
+        run: |
+          mulga/scripts/baremetal/bm-build-artifacts.sh \
+            "$GITHUB_WORKSPACE" \
+            "${RUNNER_TEMP}/spinifex-tests.tar" \
+            "${RUNNER_TEMP}/bm-bins"
+
+      - name: Build PXE Artifacts
+        run: |
+          sudo make -C mulga/scripts/iso-builder \
+            build-rootfs build-squashfs build-initramfs \
+            CACHE="${BM_ISO_CACHE}" \
+            SPINIFEX_BIN="${RUNNER_TEMP}/bm-bins/spx" \
+            INSTALLER_BIN="${RUNNER_TEMP}/bm-bins/spinifex-installer" \
+            VERSION="$(cd "$GITHUB_WORKSPACE" && git describe --tags --always 2>/dev/null || echo dev)"
+
+      - name: Run Bare-Metal E2E
+        env:
+          BM_CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
+          BM_SSH_KEY: /home/tf-user/.ssh/bm-ci
+          SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
+        run: |
+          sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \
+            --vmlinuz   "${BM_ISO_CACHE}/vmlinuz" \
+            --initrd    "${BM_ISO_CACHE}/initrd.img" \
+            --squashfs  "${BM_ISO_CACHE}/spinifex.squashfs" \
+            --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar"

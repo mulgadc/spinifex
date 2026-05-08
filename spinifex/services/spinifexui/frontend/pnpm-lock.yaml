@@ -142,8 +142,8 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       ultracite:
-        specifier: 7.6.3
-        version: 7.6.3(oxfmt@0.48.0)(oxlint@1.63.0(oxlint-tsgolint@0.22.1))
+        specifier: 7.6.4
+        version: 7.6.4(oxfmt@0.48.0)(oxlint@1.63.0(oxlint-tsgolint@0.22.1))
       vite:
         specifier: ^8.0.10
         version: 8.0.10(@types/node@24.12.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.4)
@@ -2809,8 +2809,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  ultracite@7.6.3:
-    resolution: {integrity: sha512-QhIg4qLaWaugLCMdHsxO+nzRljgOQVdCFs2kgJad3uXpl1IeKu2sT6puNcNpOAr9yHOWcT5smZ0l4F1WU1N7YA==}
+  ultracite@7.6.4:
+    resolution: {integrity: sha512-RDkZoCpMDLrtoyscFMa4wQA6TnHTXHwPyrbHDjqptND45iCTWVR46PfeROHQY5BWYnEgyx1kYasrURVYkknvNg==}
     hasBin: true
     peerDependencies:
       oxfmt: '>=0.1.0'
@@ -3006,6 +3006,9 @@ packages:
 
   zod@4.4.2:
     resolution: {integrity: sha512-IynmDyxsEsb9RKzO3J9+4SxXnl2FTFSzNBaKKaMV6tsSk0rw9gYw9gs+JFCq/qk2LCZ78KDwyj+Z289TijSkUw==}
+
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
 
@@ -6002,7 +6005,7 @@ snapshots:
 
   typescript@6.0.3: {}
 
-  ultracite@7.6.3(oxfmt@0.48.0)(oxlint@1.63.0(oxlint-tsgolint@0.22.1)):
+  ultracite@7.6.4(oxfmt@0.48.0)(oxlint@1.63.0(oxlint-tsgolint@0.22.1)):
     dependencies:
       '@clack/prompts': 1.3.0
       commander: 14.0.3
@@ -6012,7 +6015,7 @@ snapshots:
       jsonc-parser: 3.3.1
       nypm: 0.6.6
       yaml: 2.8.4
-      zod: 4.4.2
+      zod: 4.4.3
     optionalDependencies:
       oxfmt: 0.48.0
       oxlint: 1.63.0(oxlint-tsgolint@0.22.1)
@@ -6141,3 +6144,5 @@ snapshots:
   zod@3.25.76: {}
 
   zod@4.4.2: {}
+
+  zod@4.4.3: {}

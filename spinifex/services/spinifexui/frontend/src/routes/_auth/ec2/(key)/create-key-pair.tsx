@@ -91,7 +91,9 @@ function CreateKeyPair() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-key-pairs" })}
+          onCancel={async () =>
+            await navigate({ to: "/ec2/describe-key-pairs" })
+          }
           pendingLabel="Creating…"
           submitLabel="Create Key Pair"
         />

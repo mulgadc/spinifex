@@ -32,7 +32,7 @@ export interface CreateLoadBalancerParams {
 export function useCreateLoadBalancer() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateLoadBalancerParams) => {
+    mutationFn: async (params: CreateLoadBalancerParams) => {
       const tags: Tag[] = params.tags
         .filter((t) => t.key.length > 0)
         .map((t) => ({ Key: t.key, Value: t.value }))
@@ -48,7 +48,7 @@ export function useCreateLoadBalancer() {
             : undefined,
         Tags: tags.length > 0 ? tags : undefined,
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["elbv2", "loadBalancers"] })
@@ -59,11 +59,11 @@ export function useCreateLoadBalancer() {
 export function useDeleteLoadBalancer() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (loadBalancerArn: string) => {
+    mutationFn: async (loadBalancerArn: string) => {
       const command = new DeleteLoadBalancerCommand({
         LoadBalancerArn: loadBalancerArn,
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["elbv2", "loadBalancers"] })
@@ -79,7 +79,7 @@ export interface ModifyLoadBalancerAttributesParams {
 export function useModifyLoadBalancerAttributes() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: ModifyLoadBalancerAttributesParams) => {
+    mutationFn: async (params: ModifyLoadBalancerAttributesParams) => {
       const command = new ModifyLoadBalancerAttributesCommand({
         LoadBalancerArn: params.loadBalancerArn,
         Attributes: params.attributes.map((a) => ({
@@ -87,7 +87,7 @@ export function useModifyLoadBalancerAttributes() {
           Value: a.value,
         })),
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
@@ -105,7 +105,7 @@ export function useModifyLoadBalancerAttributes() {
 export function useCreateTargetGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateTargetGroupFormData) => {
+    mutationFn: async (params: CreateTargetGroupFormData) => {
       const tags: Tag[] = params.tags
         .filter((t) => t.key.length > 0)
         .map((t) => ({ Key: t.key, Value: t.value }))
@@ -125,7 +125,7 @@ export function useCreateTargetGroup() {
         Matcher: { HttpCode: params.healthCheck.matcher },
         Tags: tags.length > 0 ? tags : undefined,
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["elbv2", "targetGroups"] })
@@ -136,11 +136,11 @@ export function useCreateTargetGroup() {
 export function useDeleteTargetGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (targetGroupArn: string) => {
+    mutationFn: async (targetGroupArn: string) => {
       const command = new DeleteTargetGroupCommand({
         TargetGroupArn: targetGroupArn,
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["elbv2", "targetGroups"] })
@@ -156,7 +156,7 @@ export interface ModifyTargetGroupAttributesParams {
 export function useModifyTargetGroupAttributes() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: ModifyTargetGroupAttributesParams) => {
+    mutationFn: async (params: ModifyTargetGroupAttributesParams) => {
       const command = new ModifyTargetGroupAttributesCommand({
         TargetGroupArn: params.targetGroupArn,
         Attributes: params.attributes.map((a) => ({
@@ -164,7 +164,7 @@ export function useModifyTargetGroupAttributes() {
           Value: a.value,
         })),
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
@@ -189,7 +189,7 @@ export interface CreateListenerParams {
 export function useCreateListener() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateListenerParams) => {
+    mutationFn: async (params: CreateListenerParams) => {
       const defaultActions: Action[] = [
         {
           Type: "forward",
@@ -202,7 +202,7 @@ export function useCreateListener() {
         Port: params.port,
         DefaultActions: defaultActions,
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
@@ -215,9 +215,9 @@ export function useCreateListener() {
 export function useDeleteListener() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (listenerArn: string) => {
+    mutationFn: async (listenerArn: string) => {
       const command = new DeleteListenerCommand({ ListenerArn: listenerArn })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] })
@@ -380,12 +380,12 @@ function toTargetDescriptions(targets: TargetInput[]): TargetDescription[] {
 export function useRegisterTargets() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: RegisterTargetsParams) => {
+    mutationFn: async (params: RegisterTargetsParams) => {
       const command = new RegisterTargetsCommand({
         TargetGroupArn: params.targetGroupArn,
         Targets: toTargetDescriptions(params.targets),
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
@@ -398,12 +398,12 @@ export function useRegisterTargets() {
 export function useDeregisterTargets() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: RegisterTargetsParams) => {
+    mutationFn: async (params: RegisterTargetsParams) => {
       const command = new DeregisterTargetsCommand({
         TargetGroupArn: params.targetGroupArn,
         Targets: toTargetDescriptions(params.targets),
       })
-      return getElbv2Client().send(command)
+      return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({

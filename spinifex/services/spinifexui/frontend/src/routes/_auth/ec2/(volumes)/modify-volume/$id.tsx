@@ -110,8 +110,8 @@ function ModifyVolume() {
         <FormActions
           isPending={modifyMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() =>
-            navigate({
+          onCancel={async () =>
+            await navigate({
               to: "/ec2/describe-volumes/$id",
               params: { id: volumeId },
             })

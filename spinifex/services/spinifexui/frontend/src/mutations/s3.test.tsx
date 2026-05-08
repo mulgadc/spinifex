@@ -15,8 +15,8 @@ vi.mock("@aws-sdk/lib-storage", () => ({
     constructor({ params }: { params: { Key: string } }) {
       this.key = params.Key
     }
-    done() {
-      return Promise.resolve({ Key: this.key })
+    async done() {
+      return { Key: this.key }
     }
   },
 }))

@@ -342,7 +342,7 @@ function CreateVpc() {
           <FormActions
             isPending={isPending}
             isSubmitting={isSubmitting}
-            onCancel={() => navigate({ to: "/ec2/describe-vpcs" })}
+            onCancel={async () => await navigate({ to: "/ec2/describe-vpcs" })}
             pendingLabel="Creating…"
             submitLabel="Create VPC"
           />

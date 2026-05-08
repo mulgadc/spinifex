@@ -68,7 +68,7 @@ export function PrivateKeyModal({
           <div className="flex gap-2">
             <Button
               className="flex-1"
-              onClick={() => copy(keyMaterial)}
+              onClick={async () => await copy(keyMaterial)}
               type="button"
               variant="outline"
             >

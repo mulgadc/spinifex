@@ -50,8 +50,8 @@ export function DescribeTargetGroupsPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={arn}
-                    onClick={() =>
-                      navigate({
+                    onClick={async () =>
+                      await navigate({
                         to: "/ec2/describe-target-groups/$id",
                         params: { id: encodeURIComponent(arn) },
                       })

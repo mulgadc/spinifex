@@ -256,6 +256,30 @@ aws ec2 describe-images --image-ids "$AMI_ID" | jq -e ".Images[0] | select(.Imag
 
 # Phase 5: Instance Lifecycle
 echo "Phase 5: Instance Lifecycle"
+
+# Authorize SSH on the default VPC's default SG before any run-instances. AWS
+# default SGs allow ingress only from members of the same SG; subsequent SSH
+# probes (Phase 5a-ii, 5a-iv, 7, 8c, 8d) come from the test runner's IP and
+# would be dropped by the OVN port-group ACL otherwise.
+DEFAULT_VPC_PHASE5=$(aws ec2 describe-vpcs \
+    --query 'Vpcs[?IsDefault==`true`].VpcId | [0]' --output text)
+DEFAULT_SG_PHASE5=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$DEFAULT_VPC_PHASE5" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+echo "Default VPC: $DEFAULT_VPC_PHASE5; default SG: $DEFAULT_SG_PHASE5"
+# Tolerate InvalidPermission.Duplicate on re-runs (idempotent).
+set +e
+AUTH_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE5" \
+    --protocol tcp --port 22 --cidr 0.0.0.0/0 2>&1)
+AUTH_EXIT=$?
+set -e
+if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize SSH ingress on default SG: $AUTH_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
+
 # Launch a VM (run-instances)
 echo "Running: aws ec2 run-instances --image-id $AMI_ID --instance-type $INSTANCE_TYPE --key-name test-key-1"
 # Capture full output for debugging

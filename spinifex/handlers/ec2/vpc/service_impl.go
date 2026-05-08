@@ -1024,10 +1024,6 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 
 	s.publishVPCEvent("vpc.create", vpcID, DefaultVPCCidr, vni)
 
-	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
-		return nil, fmt.Errorf("create default security group for default VPC: %w", err)
-	}
-
 	// Determine AZ
 	az := "us-east-1a"
 	if s.config != nil && s.config.AZ != "" {
@@ -1066,6 +1062,15 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 		if err := s.createMainRouteTable(accountID, vpcID, DefaultVPCCidr); err != nil {
 			slog.Error("Failed to create main route table for VPC", "vpcId", vpcID, "err", err)
 		}
+	}
+
+	// Best-effort default SG provisioning. Bootstrap runs during daemon Start()
+	// before vpcd has subscribed to vpc.create-sg, so the synchronous round-trip
+	// will time out on first boot. The SG record is already in KV; vpcd's
+	// reconcile-sgs loop creates the OVN port group on its first scan.
+	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
+		slog.Warn("Default security group bootstrap deferred to vpcd reconciler",
+			"vpcId", vpcID, "accountID", accountID, "err", err)
 	}
 
 	slog.Info("Created default VPC and subnet",

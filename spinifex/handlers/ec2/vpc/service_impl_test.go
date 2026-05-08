@@ -596,6 +596,64 @@ func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
 	assert.Equal(t, 1, defaultCount)
 }
 
+// TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where
+// EnsureDefaultVPC runs before vpcd has subscribed to vpc.create-sg. Without
+// the fix, the synchronous SG round-trip errors out and EnsureDefaultVPC
+// returns early, leaving the VPC without a default subnet or main route table.
+// After the fix the SG step is best-effort, so subnet + RTB still land in KV
+// and vpcd's reconcile-sgs loop converges the OVN port group asynchronously.
+func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	// Intentionally NOT calling StubVpcdSGResponder — vpc.create-sg has no
+	// responder, mirroring the bootstrap race.
+
+	info, err := svc.EnsureDefaultVPC(testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+
+	// Default VPC, subnet, and main RTB must all be present in KV.
+	desc, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1)
+	assert.True(t, *desc.Vpcs[0].IsDefault)
+
+	subDesc, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, subDesc.Subnets, 1)
+	assert.Equal(t, info.VpcId, *subDesc.Subnets[0].VpcId)
+
+	require.NotNil(t, svc.rtbKV)
+	rtbKeys, err := svc.rtbKV.Keys()
+	require.NoError(t, err)
+	foundMainRTB := false
+	for _, k := range rtbKeys {
+		entry, err := svc.rtbKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			VpcId  string `json:"vpc_id"`
+			IsMain bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			continue
+		}
+		if rec.VpcId == info.VpcId && rec.IsMain {
+			foundMainRTB = true
+			break
+		}
+	}
+	assert.True(t, foundMainRTB, "main route table must exist for default VPC even when vpcd is unavailable")
+
+	// Default SG record is best-effort; KV write happens before the synchronous
+	// vpcd round-trip, so the record should still be present.
+	sgKeys, err := svc.sgKV.Keys()
+	require.NoError(t, err)
+	assert.NotEmpty(t, sgKeys, "default SG record must persist in KV for vpcd reconciler to converge")
+}
+
 func TestGetDefaultSubnet(t *testing.T) {
 	svc := setupTestVPCService(t)
 

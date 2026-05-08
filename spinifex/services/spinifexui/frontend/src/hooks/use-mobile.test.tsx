@@ -8,6 +8,7 @@ function mockMatchMedia(matches: boolean) {
     writable: true,
     value: vi.fn().mockReturnValue({
       matches,
+      // oxlint-disable-next-line promise/prefer-await-to-callbacks -- mocking matchMedia DOM API
       addEventListener: (_event: string, cb: () => void) => {
         changeListener = cb
       },
@@ -45,6 +46,7 @@ describe("useIsMobile", () => {
   it("updates when viewport changes", async () => {
     const mqlMock = {
       matches: false,
+      // oxlint-disable-next-line promise/prefer-await-to-callbacks -- mocking matchMedia DOM API
       addEventListener: (_event: string, cb: () => void) => {
         changeListener = cb
       },

@@ -36,13 +36,22 @@ export default defineConfig({
     "eslint/prefer-destructuring": "off",
     "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
-    "eslint/sort-vars": "off",
     "import/consistent-type-specifier-style": "off",
-    "promise/prefer-await-to-callbacks": "off",
     "typescript/no-confusing-void-expression": "off",
     "typescript/no-floating-promises": "off",
     "typescript/no-misused-promises": "off",
-    "typescript/only-throw-error": "off",
+    "typescript/only-throw-error": [
+      "error",
+      {
+        allow: [
+          {
+            from: "package",
+            name: "Redirect",
+            package: "@tanstack/router-core",
+          },
+        ],
+      },
+    ],
     "typescript/strict-boolean-expressions": "off",
     "typescript/strict-void-return": "off",
     "unicorn/filename-case": [

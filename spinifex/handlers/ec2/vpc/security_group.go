@@ -125,11 +125,18 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 		}
 		entry, err := s.sgKV.Get(k)
 		if err != nil {
-			continue
+			// Fail closed — a transient read error must not let a duplicate
+			// SG name slip past, nor undercount the per-VPC quota.
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("CreateSecurityGroup: SG read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var existing SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &existing); err != nil {
-			continue
+			slog.Warn("CreateSecurityGroup: SG unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if existing.VpcId != vpcId {
 			continue

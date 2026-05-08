@@ -278,7 +278,7 @@ func PublishEvent(nc *nats.Conn, topic string, event any) {
 // reports an error.
 func RequestEvent(nc *nats.Conn, topic string, event any, timeout time.Duration) error {
 	if nc == nil {
-		return nil
+		return fmt.Errorf("%s: nats connection not initialized", topic)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {

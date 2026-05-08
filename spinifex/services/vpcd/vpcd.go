@@ -464,9 +464,9 @@ func launchService(cfg *Config) error {
 		releaseLeader()
 	}
 
-	// Periodic SG/VPC convergence loop (Phase 6 of security-groups-enforcement).
-	// Re-acquires the reconcile-leader bucket each cycle so only one vpcd in the
-	// cluster runs the scans at a time. Cancelled when the parent ctx is.
+	// Periodic SG/port-group/address-set drift convergence. Leader-gated on the
+	// shared reconcile bucket so only one vpcd in the cluster runs the scans at
+	// a time; cancelled when the parent ctx is.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	loopDone := make(chan struct{})

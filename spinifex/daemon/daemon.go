@@ -867,6 +867,7 @@ func (d *Daemon) Start() error {
 	// Ensure default VPC exists for system and admin accounts
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {
+		failedDefaultVPCs := map[string]struct{}{}
 		for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
@@ -879,10 +880,12 @@ func (d *Daemon) Start() error {
 			}
 			if _, err := d.vpcService.EnsureDefaultVPC(accountID, opts...); err != nil {
 				slog.Error("Failed to ensure default VPC", "accountID", accountID, "error", err)
+				failedDefaultVPCs[accountID] = struct{}{}
 			}
 		}
-		// Ensure default VPC has an IGW and default security group
-		d.ensureDefaultVPCInfrastructure()
+		// Skip IGW/route setup for accounts whose default VPC failed; otherwise
+		// we'd attach infrastructure to a half-built VPC (no default SG yet).
+		d.ensureDefaultVPCInfrastructure(failedDefaultVPCs)
 	}
 
 	// Initialize network plumber for VPC tap device management

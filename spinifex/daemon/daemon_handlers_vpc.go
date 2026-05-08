@@ -78,19 +78,27 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) {
 	if _, err := d.vpcService.EnsureDefaultVPC(evt.AccountID); err != nil {
 		slog.Error("Failed to create default VPC for new account",
 			"accountID", evt.AccountID, "error", err)
+		// Skip IGW setup — the VPC is missing or half-built. The next daemon
+		// startup or handleAccountCreated event will retry.
+		return
 	}
-	d.ensureDefaultVPCInfrastructure()
+	d.ensureDefaultVPCInfrastructure(nil)
 }
 
 // ensureDefaultVPCInfrastructure attaches an IGW and a default 0.0.0.0/0 route
 // to each account's default VPC. The default SG is provisioned by
-// EnsureDefaultVPC / CreateVpc itself, so this routine is IGW-only.
-func (d *Daemon) ensureDefaultVPCInfrastructure() {
+// EnsureDefaultVPC / CreateVpc itself, so this routine is IGW-only. Accounts
+// in skipAccounts are not touched — used to avoid attaching infrastructure to
+// a half-built VPC when EnsureDefaultVPC failed earlier in startup.
+func (d *Daemon) ensureDefaultVPCInfrastructure(skipAccounts map[string]struct{}) {
 	if d.igwService == nil || d.vpcService == nil {
 		return
 	}
 
 	for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
+		if _, skip := skipAccounts[accountID]; skip {
+			continue
+		}
 		// Find the default VPC for this account
 		descOut, err := d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{}, accountID)
 		if err != nil {

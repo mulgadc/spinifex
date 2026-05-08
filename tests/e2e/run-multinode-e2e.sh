@@ -543,6 +543,29 @@ if [ -z "$AMI_ID" ] || [ "$AMI_ID" == "None" ]; then
 fi
 echo "Using AMI: $AMI_ID"
 
+# Authorize SSH on the default VPC's default SG before any run-instances. AWS
+# default SGs allow ingress only from members of the same SG; the Phase 4 SSH
+# probe comes from the test runner's IP and would be dropped by the OVN
+# port-group ACL otherwise.
+DEFAULT_VPC_PHASE3=$($AWS_EC2 describe-vpcs \
+    --query 'Vpcs[?IsDefault==`true`].VpcId | [0]' --output text)
+DEFAULT_SG_PHASE3=$($AWS_EC2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$DEFAULT_VPC_PHASE3" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+echo "Default VPC: $DEFAULT_VPC_PHASE3; default SG: $DEFAULT_SG_PHASE3"
+# Tolerate InvalidPermission.Duplicate on re-runs (idempotent).
+set +e
+AUTH_OUTPUT=$($AWS_EC2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE3" \
+    --protocol tcp --port 22 --cidr 0.0.0.0/0 2>&1)
+AUTH_EXIT=$?
+set -e
+if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize SSH ingress on default SG: $AUTH_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
+
 # Launch 3 instances with stagger to encourage distribution
 echo "Launching 3 instances..."
 for i in 1 2 3; do
@@ -649,11 +672,13 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         echo "  SSH endpoint: $SSH_HOST:$SSH_PORT"
     fi
 
-    # Wait for SSH to be ready (VM boot + cloud-init)
+    # Wait for SSH to be ready (VM boot + cloud-init).
+    # 120 attempts × ~3s = 360s — cold AMI demand-paging from predastore can
+    # stretch first-boot well past the previous 180s budget on a loaded runner.
     echo "  Waiting for SSH to be ready..."
     ATTEMPT=0
     SSH_READY=false
-    while [ $ATTEMPT -lt 60 ]; do
+    while [ $ATTEMPT -lt 120 ]; do
         if ssh -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=2 \
@@ -666,12 +691,12 @@ for idx in "${!INSTANCE_IDS[@]}"; do
             break
         fi
         ATTEMPT=$((ATTEMPT + 1))
-        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/60)"
+        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/120)"
         sleep 1
     done
 
     if [ "$SSH_READY" = false ]; then
-        echo "  ERROR: SSH not ready after 60 attempts"
+        echo "  ERROR: SSH not ready after 120 attempts"
         dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" "$SSH_PORT"
         fail_test "Guest SSH ($instance_id)"
         continue

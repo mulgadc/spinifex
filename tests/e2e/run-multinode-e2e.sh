@@ -146,9 +146,27 @@ dump_guest_ssh_diagnostics() {
     fi
 
     if [ -n "$mac" ] && [ "$mac" != "None" ]; then
+        # ovn-sbctl find parses 'mac~=...' as a column name. mac is a set
+        # column on Port_Binding so list+grep is the simplest correct form.
         echo "  --- OVN port binding for MAC ${mac} (from primary) ---"
-        peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --columns=logical_port,chassis,mac find port_binding mac~='${mac}' 2>&1 || true" 2>&1 || true
+        peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,mac list Port_Binding 2>&1 | grep -F '${mac}' || echo '(no Port_Binding matched MAC ${mac})'" 2>&1 || true
     fi
+
+    # NB-side state — the SSH bug surfaces as Port_Binding rows missing in
+    # SB despite Logical_Switch_Port rows present in NB. Capture both sides
+    # so we can localise the chain break (NB write vs NB→SB translation
+    # vs chassis claim). See docs/development/bugs/sg-enforcement-e2e-ssh.md.
+    echo "  --- NB Logical_Switch_Port (from primary, head 120) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,addresses,port_security,up list Logical_Switch_Port 2>&1 | head -120 || true" 2>&1 || true
+
+    echo "  --- NB Logical_Switch ports (from primary) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true" 2>&1 || true
+
+    echo "  --- NB Port_Group ports + ACLs (from primary, head 120) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 | head -120 || true" 2>&1 || true
+
+    echo "  --- NB Address_Set (from primary, head 60) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,addresses list Address_Set 2>&1 | head -60 || true" 2>&1 || true
 
     # ----- Cross-chassis dataplane diagnostics (mulga-siv-27 follow-up) -----
     echo "  --- OVN SB chassis registrations (from primary) ---"
@@ -163,6 +181,11 @@ dump_guest_ssh_diagnostics() {
     if [ -n "$host_ip" ] && [ "$host_ip" != "unknown" ]; then
         echo "  --- on hosting node ${host_ip}: ovs-vsctl show (taps + geneve) ---"
         peer_ssh "$host_ip" "sudo ovs-vsctl show 2>&1 | grep -E 'Bridge|Port|Interface|tap-|geneve|external_ids|iface-id|attached-mac|remote_ip' | head -80 || true" 2>&1 || true
+
+        # ovs-vsctl show does not print external_ids; dump them explicitly so
+        # we can confirm the tap iface-id matches the LSP name vpcd created.
+        echo "  --- on hosting node ${host_ip}: OVS Interface external_ids (head 120) ---"
+        peer_ssh "$host_ip" "sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state list Interface 2>&1 | head -120 || true" 2>&1 || true
 
         echo "  --- on hosting node ${host_ip}: ovn-controller status + system-id ---"
         peer_ssh "$host_ip" "sudo ovs-vsctl get open_vswitch . external_ids:system-id 2>&1; \

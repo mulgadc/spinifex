@@ -431,7 +431,57 @@ wait_for_ssh() {
     done
 
     echo "  ERROR: SSH not ready after $max_attempts attempts"
+    dump_local_ovn_diagnostics
     return 1
+}
+
+# Local OVN/OVS state dump for SSH-failure diagnostics on single-node and
+# pseudo-multinode runners (where the primary == hosting node == local).
+# Multi-node has dump_guest_ssh_diagnostics with peer_ssh; this is the
+# local-only sibling. See docs/development/bugs/sg-enforcement-e2e-ssh.md.
+dump_local_ovn_diagnostics() {
+    if ! command -v ovn-nbctl >/dev/null 2>&1; then
+        echo "  --- ovn-nbctl not installed; skipping OVN dump ---"
+        return 0
+    fi
+
+    echo ""
+    echo "  === Local OVN/OVS state dump ==="
+
+    echo "  --- NB Logical_Switch_Port (head 120) ---"
+    sudo ovn-nbctl --bare --columns=name,addresses,port_security,up \
+        list Logical_Switch_Port 2>&1 | head -120 || true
+
+    echo "  --- NB Logical_Switch ports ---"
+    sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true
+
+    echo "  --- NB Port_Group ports + ACLs (head 120) ---"
+    sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 \
+        | head -120 || true
+
+    echo "  --- NB Address_Set (head 60) ---"
+    sudo ovn-nbctl --bare --columns=name,addresses list Address_Set 2>&1 \
+        | head -60 || true
+
+    echo "  --- SB Port_Binding (head 120) ---"
+    sudo ovn-sbctl --bare --columns=logical_port,chassis,up,mac \
+        list Port_Binding 2>&1 | head -120 || true
+
+    echo "  --- SB Chassis ---"
+    sudo ovn-sbctl --bare --columns=name,hostname list Chassis 2>&1 || true
+
+    echo "  --- OVS Interface external_ids (br-int taps, head 120) ---"
+    sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state \
+        list Interface 2>&1 | head -120 || true
+
+    echo "  --- ovn-controller journal (last 60 lines) ---"
+    sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
+
+    echo "  --- ovn-northd journal (last 40 lines) ---"
+    sudo journalctl -u ovn-northd --no-pager -n 40 2>&1 || true
+
+    echo "  === end local OVN/OVS state dump ==="
+    echo ""
 }
 
 # Test SSH connectivity by running 'id' command and verifying ec2-user in output

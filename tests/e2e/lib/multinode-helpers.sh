@@ -509,17 +509,22 @@ dump_local_ovn_diagnostics() {
     sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
 
     # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
-    # vlog, not journal. Journal only sees systemd start/stop. The
-    # `OVNSB commit failed, force recompute next time` loop we observed is
-    # logged here at INFO without the underlying cause; the cause is in the
-    # SB ovsdb-server log below.
-    echo "  --- /var/log/ovn/ovn-northd.log (last 200 lines) ---"
-    sudo tail -200 /var/log/ovn/ovn-northd.log 2>&1 || true
+    # vlog, not journal. setup-ovn.sh sets vlog ANY:file:dbg so the cause of
+    # the `OVNSB commit failed` retry loop names itself here. We grep out
+    # poll_loop / inc_proc_engine recompute-fallback noise to keep the
+    # filtered view readable, and dump the full tail too in case debug-rate
+    # output evicts the first failure.
+    echo "  --- /var/log/ovn/ovn-northd.log filtered (WARN/ERR/EMER + non-poll lines) ---"
+    sudo grep -aE '\|(WARN|ERR|EMER)\||transaction|commit|ovsdb_idl|inc_proc_eng|recompute' /var/log/ovn/ovn-northd.log 2>/dev/null \
+        | grep -av 'poll_loop' | tail -300 || true
+    echo "  --- /var/log/ovn/ovn-northd.log (last 1000 lines, raw) ---"
+    sudo tail -1000 /var/log/ovn/ovn-northd.log 2>&1 || true
 
-    # OVSDB server logs — when northd's `OVNSB commit failed` retries, the
-    # rejection reason (constraint violation, schema mismatch, ref-integrity
-    # error) is logged by the ovsdb-server side, not by northd.
-    echo "  --- /var/log/ovn/ovsdb-server-sb.log (last 200 lines) ---"
+    # OVSDB server logs — silent at info level last run, so we also dump
+    # filtered + raw to confirm.
+    echo "  --- /var/log/ovn/ovsdb-server-sb.log filtered (WARN/ERR/non-poll) ---"
+    sudo grep -avE 'poll_loop|memory\|INFO' /var/log/ovn/ovsdb-server-sb.log 2>/dev/null | tail -100 || true
+    echo "  --- /var/log/ovn/ovsdb-server-sb.log (last 200 lines, raw) ---"
     sudo tail -200 /var/log/ovn/ovsdb-server-sb.log 2>&1 || true
 
     echo "  --- /var/log/ovn/ovsdb-server-nb.log (last 100 lines) ---"

@@ -278,6 +278,12 @@ if [ "$MANAGEMENT" = true ]; then
     sudo ovn-sbctl set-connection ptcp:6642
     echo "  OVN NB DB listening on tcp:6641"
     echo "  OVN SB DB listening on tcp:6642"
+
+    # TEMP: max northd verbosity to file so SB-commit failures name their
+    # reason (table/column/row) instead of just looping `OVNSB commit
+    # failed`. Remove once feat/sg-enforcement SSH bug is fixed.
+    sudo ovn-appctl -t ovn-northd vlog/set ANY:file:dbg 2>&1 || true
+    echo "  ovn-northd: vlog ANY:file:dbg"
 fi
 
 # --- Step 3: Create and configure br-int ---

@@ -582,7 +582,9 @@ export function CreateLoadBalancerPage() {
         <FormActions
           isPending={wizardMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-load-balancers" })}
+          onCancel={async () =>
+            await navigate({ to: "/ec2/describe-load-balancers" })
+          }
           pendingLabel="Creating…"
           submitLabel="Create load balancer"
         />

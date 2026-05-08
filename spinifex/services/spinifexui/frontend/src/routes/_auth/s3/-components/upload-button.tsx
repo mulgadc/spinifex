@@ -30,9 +30,9 @@ export function UploadButton({
 
     try {
       await Promise.all(
-        [...files].map((file) => {
+        [...files].map(async (file) => {
           const key = `${prefix}${file.name}`
-          return onUpload({ bucket, key, file })
+          return await onUpload({ bucket, key, file })
         }),
       )
     } finally {

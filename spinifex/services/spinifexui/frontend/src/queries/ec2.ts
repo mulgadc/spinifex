@@ -20,18 +20,18 @@ import { getEc2Client } from "@/lib/awsClient"
 
 export const ec2AvailabilityZonesQueryOptions = queryOptions({
   queryKey: ["ec2", "availabilityZones"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeAvailabilityZonesCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   staleTime: 300_000,
 })
 
 export const ec2InstancesQueryOptions = queryOptions({
   queryKey: ["ec2", "instances"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeInstancesCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   refetchInterval: 5000,
 })
@@ -39,18 +39,18 @@ export const ec2InstancesQueryOptions = queryOptions({
 export const ec2InstanceQueryOptions = (instanceId: string) =>
   queryOptions({
     queryKey: ["ec2", "instances", instanceId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeInstancesCommand({
         InstanceIds: [instanceId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     refetchInterval: 5000,
   })
 
 export const ec2InstanceTypesQueryOptions = queryOptions({
   queryKey: ["ec2", "instances", "types"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeInstanceTypesCommand({
       Filters: [
         {
@@ -59,85 +59,85 @@ export const ec2InstanceTypesQueryOptions = queryOptions({
         },
       ],
     })
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   refetchInterval: 5000,
 })
 
 export const ec2ImagesQueryOptions = queryOptions({
   queryKey: ["ec2", "images"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeImagesCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2ImageQueryOptions = (imageId: string | undefined) =>
   queryOptions({
     queryKey: ["ec2", "images", imageId ?? "none"],
-    queryFn: () => {
+    queryFn: async () => {
       if (!imageId) {
         return { Images: [], $metadata: {} }
       }
       const command = new DescribeImagesCommand({
         ImageIds: [imageId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2KeyPairsQueryOptions = queryOptions({
   queryKey: ["ec2", "keypairs"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeKeyPairsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2KeyPairQueryOptions = (keyPairId: string) =>
   queryOptions({
     queryKey: ["ec2", "keypairs", keyPairId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeKeyPairsCommand({
         KeyPairIds: [keyPairId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2RegionsQueryOptions = queryOptions({
   queryKey: ["ec2", "regions"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeRegionsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   staleTime: 300_000,
 })
 
 export const ec2SubnetsQueryOptions = queryOptions({
   queryKey: ["ec2", "subnets"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeSubnetsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2SubnetQueryOptions = (subnetId: string) =>
   queryOptions({
     queryKey: ["ec2", "subnets", subnetId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeSubnetsCommand({
         SubnetIds: [subnetId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2SnapshotsQueryOptions = queryOptions({
   queryKey: ["ec2", "snapshots"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeSnapshotsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   refetchInterval: 5000,
 })
@@ -145,93 +145,93 @@ export const ec2SnapshotsQueryOptions = queryOptions({
 export const ec2SnapshotQueryOptions = (snapshotId: string) =>
   queryOptions({
     queryKey: ["ec2", "snapshots", snapshotId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeSnapshotsCommand({
         SnapshotIds: [snapshotId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     refetchInterval: 5000,
   })
 
 export const ec2InternetGatewaysQueryOptions = queryOptions({
   queryKey: ["ec2", "internetGateways"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeInternetGatewaysCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2RouteTablesQueryOptions = queryOptions({
   queryKey: ["ec2", "routeTables"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeRouteTablesCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2VpcsQueryOptions = queryOptions({
   queryKey: ["ec2", "vpcs"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeVpcsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2VpcQueryOptions = (vpcId: string) =>
   queryOptions({
     queryKey: ["ec2", "vpcs", vpcId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeVpcsCommand({
         VpcIds: [vpcId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2PlacementGroupsQueryOptions = queryOptions({
   queryKey: ["ec2", "placementGroups"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribePlacementGroupsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2PlacementGroupQueryOptions = (groupId: string) =>
   queryOptions({
     queryKey: ["ec2", "placementGroups", groupId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribePlacementGroupsCommand({
         GroupIds: [groupId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2SecurityGroupsQueryOptions = queryOptions({
   queryKey: ["ec2", "securityGroups"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeSecurityGroupsCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
 })
 
 export const ec2SecurityGroupQueryOptions = (groupId: string) =>
   queryOptions({
     queryKey: ["ec2", "securityGroups", groupId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeSecurityGroupsCommand({
         GroupIds: [groupId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 
 export const ec2VolumesQueryOptions = queryOptions({
   queryKey: ["ec2", "volumes"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new DescribeVolumesCommand({})
-    return getEc2Client().send(command)
+    return await getEc2Client().send(command)
   },
   refetchInterval: 5000,
 })
@@ -239,11 +239,11 @@ export const ec2VolumesQueryOptions = queryOptions({
 export const ec2VolumeQueryOptions = (volumeId: string) =>
   queryOptions({
     queryKey: ["ec2", "volumes", volumeId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new DescribeVolumesCommand({
         VolumeIds: [volumeId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     refetchInterval: 5000,
   })

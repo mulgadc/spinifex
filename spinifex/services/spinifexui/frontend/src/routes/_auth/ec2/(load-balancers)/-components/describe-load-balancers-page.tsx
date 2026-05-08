@@ -31,7 +31,9 @@ export function DescribeLoadBalancersPage() {
         actions={
           <Button
             disabled={!lbImageImported}
-            onClick={() => navigate({ to: "/ec2/create-load-balancer" })}
+            onClick={async () =>
+              await navigate({ to: "/ec2/create-load-balancer" })
+            }
           >
             Create Load Balancer
           </Button>
@@ -65,8 +67,8 @@ export function DescribeLoadBalancersPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={arn}
-                    onClick={() =>
-                      navigate({
+                    onClick={async () =>
+                      await navigate({
                         to: "/ec2/describe-load-balancers/$id",
                         params: { id: encodeURIComponent(arn) },
                       })

@@ -72,11 +72,11 @@ const WHITESPACE_REGEX = /\s+/
 export function useStartInstance() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (instanceId: string) => {
+    mutationFn: async (instanceId: string) => {
       const command = new StartInstancesCommand({
         InstanceIds: [instanceId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -87,11 +87,11 @@ export function useStartInstance() {
 export function useStopInstance() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (instanceId: string) => {
+    mutationFn: async (instanceId: string) => {
       const command = new StopInstancesCommand({
         InstanceIds: [instanceId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -102,11 +102,11 @@ export function useStopInstance() {
 export function useTerminateInstance() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (instanceId: string) => {
+    mutationFn: async (instanceId: string) => {
       const command = new TerminateInstancesCommand({
         InstanceIds: [instanceId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -117,11 +117,11 @@ export function useTerminateInstance() {
 export function useRebootInstance() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (instanceId: string) => {
+    mutationFn: async (instanceId: string) => {
       const command = new RebootInstancesCommand({
         InstanceIds: [instanceId],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -132,7 +132,7 @@ export function useRebootInstance() {
 export function useCreateInstance() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateInstanceParams) => {
+    mutationFn: async (params: CreateInstanceParams) => {
       const command = new RunInstancesCommand({
         ImageId: params.imageId,
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
@@ -147,7 +147,7 @@ export function useCreateInstance() {
           : undefined,
         BlockDeviceMappings: buildBlockDeviceMappings(params),
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -185,12 +185,12 @@ function buildBlockDeviceMappings(params: CreateInstanceParams) {
 export function useCreateKeyPair() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateKeyPairData) => {
+    mutationFn: async (params: CreateKeyPairData) => {
       const command = new CreateKeyPairCommand({
         KeyName: params.keyName,
         KeyType: "rsa",
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
@@ -201,7 +201,7 @@ export function useCreateKeyPair() {
 export function useImportKeyPair() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: ImportKeyPairData) => {
+    mutationFn: async (params: ImportKeyPairData) => {
       // remove optional comment from ssh key as it breaks the import
       const keyParts = params.publicKeyMaterial.trim().split(WHITESPACE_REGEX)
       const cleanedKey = keyParts.slice(0, 2).join(" ")
@@ -210,7 +210,7 @@ export function useImportKeyPair() {
         KeyName: params.keyName,
         PublicKeyMaterial: new TextEncoder().encode(cleanedKey),
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
@@ -221,11 +221,11 @@ export function useImportKeyPair() {
 export function useDeleteKeyPair() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (keyPairId: string) => {
+    mutationFn: async (keyPairId: string) => {
       const command = new DeleteKeyPairCommand({
         KeyPairId: keyPairId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
@@ -236,13 +236,13 @@ export function useDeleteKeyPair() {
 export function useCreateVolume() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateVolumeFormData) => {
+    mutationFn: async (params: CreateVolumeFormData) => {
       const command = new CreateVolumeCommand({
         Size: params.size,
         AvailabilityZone: params.availabilityZone,
         VolumeType: "gp3",
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
@@ -253,12 +253,12 @@ export function useCreateVolume() {
 export function useModifyVolume() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: ModifyVolumeParams) => {
+    mutationFn: async (params: ModifyVolumeParams) => {
       const command = new ModifyVolumeCommand({
         VolumeId: params.volumeId,
         Size: params.size,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
@@ -269,11 +269,11 @@ export function useModifyVolume() {
 export function useDeleteVolume() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (volumeId: string) => {
+    mutationFn: async (volumeId: string) => {
       const command = new DeleteVolumeCommand({
         VolumeId: volumeId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
@@ -284,13 +284,13 @@ export function useDeleteVolume() {
 export function useCreateSnapshot() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateSnapshotFormData) => {
+    mutationFn: async (params: CreateSnapshotFormData) => {
       const command = new CreateSnapshotCommand({
         VolumeId: params.volumeId,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
@@ -301,11 +301,11 @@ export function useCreateSnapshot() {
 export function useDeleteSnapshot() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (snapshotId: string) => {
+    mutationFn: async (snapshotId: string) => {
       const command = new DeleteSnapshotCommand({
         SnapshotId: snapshotId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
@@ -316,14 +316,14 @@ export function useDeleteSnapshot() {
 export function useCopySnapshot() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CopySnapshotFormData) => {
+    mutationFn: async (params: CopySnapshotFormData) => {
       const command = new CopySnapshotCommand({
         SourceSnapshotId: params.sourceSnapshotId,
         SourceRegion: params.sourceRegion,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
@@ -334,14 +334,14 @@ export function useCopySnapshot() {
 export function useAttachVolume() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: AttachVolumeFormData) => {
+    mutationFn: async (params: AttachVolumeFormData) => {
       const command = new AttachVolumeCommand({
         VolumeId: params.volumeId,
         InstanceId: params.instanceId,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Device: params.device || undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
@@ -353,14 +353,14 @@ export function useAttachVolume() {
 export function useDetachVolume() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: DetachVolumeFormData) => {
+    mutationFn: async (params: DetachVolumeFormData) => {
       const command = new DetachVolumeCommand({
         VolumeId: params.volumeId,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         InstanceId: params.instanceId || undefined,
         Force: params.force,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
@@ -372,7 +372,7 @@ export function useDetachVolume() {
 export function useModifyInstanceAttribute() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       instanceId,
       ...params
     }: ModifyInstanceTypeFormData & { instanceId: string }) => {
@@ -380,7 +380,7 @@ export function useModifyInstanceAttribute() {
         InstanceId: instanceId,
         InstanceType: { Value: params.instanceType },
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
@@ -390,11 +390,11 @@ export function useModifyInstanceAttribute() {
 
 export function useGetConsoleOutput() {
   return useMutation({
-    mutationFn: (instanceId: string) => {
+    mutationFn: async (instanceId: string) => {
       const command = new GetConsoleOutputCommand({
         InstanceId: instanceId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
   })
 }
@@ -402,14 +402,14 @@ export function useGetConsoleOutput() {
 export function useCreateImage() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateImageParams) => {
+    mutationFn: async (params: CreateImageParams) => {
       const command = new CreateImageCommand({
         InstanceId: params.instanceId,
         Name: params.name,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         Description: params.description || undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "images"] })
@@ -420,7 +420,7 @@ export function useCreateImage() {
 export function useCreateVpc() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateVpcFormData) => {
+    mutationFn: async (params: CreateVpcFormData) => {
       const command = new CreateVpcCommand({
         CidrBlock: params.cidrBlock,
         TagSpecifications: params.name
@@ -432,7 +432,7 @@ export function useCreateVpc() {
             ]
           : undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] })
@@ -443,11 +443,11 @@ export function useCreateVpc() {
 export function useDeleteVpc() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (vpcId: string) => {
+    mutationFn: async (vpcId: string) => {
       const command = new DeleteVpcCommand({
         VpcId: vpcId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] })
@@ -458,14 +458,14 @@ export function useDeleteVpc() {
 export function useCreateSubnet() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateSubnetFormData) => {
+    mutationFn: async (params: CreateSubnetFormData) => {
       const command = new CreateSubnetCommand({
         VpcId: params.vpcId,
         CidrBlock: params.cidrBlock,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         AvailabilityZone: params.availabilityZone || undefined,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
@@ -476,11 +476,11 @@ export function useCreateSubnet() {
 export function useDeleteSubnet() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (subnetId: string) => {
+    mutationFn: async (subnetId: string) => {
       const command = new DeleteSubnetCommand({
         SubnetId: subnetId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
@@ -491,13 +491,13 @@ export function useDeleteSubnet() {
 export function useCreatePlacementGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreatePlacementGroupFormData) => {
+    mutationFn: async (params: CreatePlacementGroupFormData) => {
       const command = new CreatePlacementGroupCommand({
         GroupName: params.groupName,
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects PlacementStrategy enum
         Strategy: params.strategy as PlacementStrategy,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "placementGroups"] })
@@ -508,11 +508,11 @@ export function useCreatePlacementGroup() {
 export function useDeletePlacementGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (groupName: string) => {
+    mutationFn: async (groupName: string) => {
       const command = new DeletePlacementGroupCommand({
         GroupName: groupName,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "placementGroups"] })
@@ -523,13 +523,13 @@ export function useDeletePlacementGroup() {
 export function useCreateSecurityGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: CreateSecurityGroupFormData) => {
+    mutationFn: async (params: CreateSecurityGroupFormData) => {
       const command = new CreateSecurityGroupCommand({
         GroupName: params.groupName,
         Description: params.description,
         VpcId: params.vpcId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })
@@ -540,11 +540,11 @@ export function useCreateSecurityGroup() {
 export function useDeleteSecurityGroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (groupId: string) => {
+    mutationFn: async (groupId: string) => {
       const command = new DeleteSecurityGroupCommand({
         GroupId: groupId,
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })
@@ -555,7 +555,9 @@ export function useDeleteSecurityGroup() {
 export function useAuthorizeSecurityGroupIngress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: SecurityGroupRuleFormData & { groupId: string }) => {
+    mutationFn: async (
+      params: SecurityGroupRuleFormData & { groupId: string },
+    ) => {
       const command = new AuthorizeSecurityGroupIngressCommand({
         GroupId: params.groupId,
         IpPermissions: [
@@ -567,7 +569,7 @@ export function useAuthorizeSecurityGroupIngress() {
           },
         ],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: (_data, params) => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })
@@ -581,7 +583,9 @@ export function useAuthorizeSecurityGroupIngress() {
 export function useAuthorizeSecurityGroupEgress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: SecurityGroupRuleFormData & { groupId: string }) => {
+    mutationFn: async (
+      params: SecurityGroupRuleFormData & { groupId: string },
+    ) => {
       const command = new AuthorizeSecurityGroupEgressCommand({
         GroupId: params.groupId,
         IpPermissions: [
@@ -593,7 +597,7 @@ export function useAuthorizeSecurityGroupEgress() {
           },
         ],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: (_data, params) => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })
@@ -607,7 +611,9 @@ export function useAuthorizeSecurityGroupEgress() {
 export function useRevokeSecurityGroupIngress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: SecurityGroupRuleFormData & { groupId: string }) => {
+    mutationFn: async (
+      params: SecurityGroupRuleFormData & { groupId: string },
+    ) => {
       const command = new RevokeSecurityGroupIngressCommand({
         GroupId: params.groupId,
         IpPermissions: [
@@ -619,7 +625,7 @@ export function useRevokeSecurityGroupIngress() {
           },
         ],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: (_data, params) => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })
@@ -633,7 +639,9 @@ export function useRevokeSecurityGroupIngress() {
 export function useRevokeSecurityGroupEgress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (params: SecurityGroupRuleFormData & { groupId: string }) => {
+    mutationFn: async (
+      params: SecurityGroupRuleFormData & { groupId: string },
+    ) => {
       const command = new RevokeSecurityGroupEgressCommand({
         GroupId: params.groupId,
         IpPermissions: [
@@ -645,7 +653,7 @@ export function useRevokeSecurityGroupEgress() {
           },
         ],
       })
-      return getEc2Client().send(command)
+      return await getEc2Client().send(command)
     },
     onSuccess: (_data, params) => {
       queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] })

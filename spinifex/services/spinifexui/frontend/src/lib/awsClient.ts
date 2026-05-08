@@ -35,13 +35,13 @@ export function getEc2Client(): EC2Client {
       },
     })
     ec2Client.middlewareStack.add(
-      (next) => (args) => {
+      (next) => async (args) => {
         if (HttpRequest.isInstance(args.request)) {
           args.request.hostname = window.location.hostname
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
-        return next(args)
+        return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
@@ -64,13 +64,13 @@ export function getElbv2Client(): ElasticLoadBalancingV2Client {
       },
     })
     elbv2Client.middlewareStack.add(
-      (next) => (args) => {
+      (next) => async (args) => {
         if (HttpRequest.isInstance(args.request)) {
           args.request.hostname = window.location.hostname
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
-        return next(args)
+        return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
@@ -93,13 +93,13 @@ export function getIamClient(): IAMClient {
       },
     })
     iamClient.middlewareStack.add(
-      (next) => (args) => {
+      (next) => async (args) => {
         if (HttpRequest.isInstance(args.request)) {
           args.request.hostname = window.location.hostname
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
-        return next(args)
+        return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
@@ -126,7 +126,7 @@ export function getS3Client(): S3Client {
     // path-style S3 endpoints where a trailing slash causes the request to
     // be interpreted as GetObject instead of ListObjects
     s3Client.middlewareStack.add(
-      (next) => (args) => {
+      (next) => async (args) => {
         if (
           HttpRequest.isInstance(args.request) &&
           args.request.path.endsWith("/") &&
@@ -134,18 +134,18 @@ export function getS3Client(): S3Client {
         ) {
           args.request.path = args.request.path.slice(0, -1)
         }
-        return next(args)
+        return await next(args)
       },
       { step: "build", name: "removeTrailingSlash" },
     )
     s3Client.middlewareStack.add(
-      (next) => (args) => {
+      (next) => async (args) => {
         if (HttpRequest.isInstance(args.request)) {
           args.request.hostname = window.location.hostname
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/s3${args.request.path}`
         }
-        return next(args)
+        return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )

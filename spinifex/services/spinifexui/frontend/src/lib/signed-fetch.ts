@@ -72,5 +72,5 @@ export async function signedFetch<T>({
   }
 
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
-  return response.json() as Promise<T>
+  return await (response.json() as Promise<T>)
 }

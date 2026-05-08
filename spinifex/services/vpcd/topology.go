@@ -1440,8 +1440,11 @@ func (h *TopologyHandler) reconcileSubnet(ctx context.Context, subnetId, vpcId, 
 	return nil
 }
 
-// reconcileIGW creates the OVN external switch, gateway router port, SNAT rule,
-// default route, and gateway chassis for a VPC's internet gateway.
+// reconcileIGW ensures the OVN external switch, localnet port, gateway router
+// port, router-bridging LSP, default route, and gateway chassis bindings exist
+// for a VPC's internet gateway. Every step is Get-then-Create idempotent, with
+// no cascade rollback on failure: partial topology is safe — the next
+// reconcile pass heals whatever is missing.
 func (h *TopologyHandler) reconcileIGW(ctx context.Context, vpcId, igwId string) error {
 	routerName := "vpc-" + vpcId
 	extSwitchName := "ext-" + vpcId
@@ -1449,15 +1452,62 @@ func (h *TopologyHandler) reconcileIGW(ctx context.Context, vpcId, igwId string)
 	gwPortName := "gw-" + vpcId
 	switchGWPortName := "gw-port-" + vpcId
 
-	// Direct mode: link-local LRP. Centralized mode: allocate from
-	// pool.GwLrpRange so the LRP can ARP on the WAN subnet (mulga-siv-36).
 	pool := h.findExternalPool("", "")
-	gatewayNetwork := gatewayPortNetwork
 	wanGateway := "169.254.0.2"
-	gwLrpIP := ""
 	if pool != nil {
 		wanGateway = pool.Gateway
+	}
+
+	// 1. External logical switch
+	if _, err := h.ovn.GetLogicalSwitch(ctx, extSwitchName); err != nil {
+		extIDs := map[string]string{
+			"spinifex:vpc_id": vpcId,
+			"spinifex:role":   "external",
+		}
+		if igwId != "" {
+			extIDs["spinifex:igw_id"] = igwId
+		}
+		if err := h.ovn.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+			Name:        extSwitchName,
+			ExternalIDs: extIDs,
+		}); err != nil {
+			return fmt.Errorf("create external switch %s: %w", extSwitchName, err)
+		}
+	}
+
+	// 2. Localnet port. ensureLocalnetOptions runs unconditionally — it is a
+	// read-before-write no-op when the options are already correct, and the
+	// recovery path (port exists with stale/missing options) needs it.
+	if _, err := h.ovn.GetLogicalSwitchPort(ctx, extPortName); err != nil {
+		portExtIDs := map[string]string{"spinifex:vpc_id": vpcId}
+		if igwId != "" {
+			portExtIDs["spinifex:igw_id"] = igwId
+		}
+		opts := map[string]string{"network_name": "external"}
 		if h.useCentralizedNAT() {
+			opts["nat-addresses"] = "router"
+		}
+		if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
+			Name:        extPortName,
+			Type:        "localnet",
+			Addresses:   []string{"unknown"},
+			Options:     opts,
+			ExternalIDs: portExtIDs,
+		}); err != nil {
+			return fmt.Errorf("create localnet port %s: %w", extPortName, err)
+		}
+	}
+	if err := h.ensureLocalnetOptions(ctx, extPortName); err != nil {
+		return fmt.Errorf("retrofit localnet options %s: %w", extPortName, err)
+	}
+
+	// 3. Gateway router port. expectedGatewayPortNetwork is only consulted
+	// when we actually create the LRP — RetrofitAllGatewayPortNetworks
+	// handles drift on pre-existing ports separately.
+	if _, err := h.ovn.GetLogicalRouterPort(ctx, gwPortName); err != nil {
+		gatewayNetwork := gatewayPortNetwork
+		gwLrpIP := ""
+		if pool != nil && h.useCentralizedNAT() {
 			network, ip, allocErr := h.expectedGatewayPortNetwork(ctx, vpcId)
 			if allocErr != nil {
 				return fmt.Errorf("allocate gw LRP IP for %s: %w", vpcId, allocErr)
@@ -1465,113 +1515,71 @@ func (h *TopologyHandler) reconcileIGW(ctx context.Context, vpcId, igwId string)
 			gwLrpIP = ip
 			gatewayNetwork = network
 		}
-	}
-
-	// Build external IDs with optional IGW ID
-	extIDs := map[string]string{
-		"spinifex:vpc_id": vpcId,
-		"spinifex:role":   "external",
-	}
-	if igwId != "" {
-		extIDs["spinifex:igw_id"] = igwId
-	}
-
-	// 1. Create external logical switch
-	extSwitch := &nbdb.LogicalSwitch{
-		Name:        extSwitchName,
-		ExternalIDs: extIDs,
-	}
-	if err := h.ovn.CreateLogicalSwitch(ctx, extSwitch); err != nil {
-		return fmt.Errorf("create external switch %s: %w", extSwitchName, err)
-	}
-
-	// 2. Create localnet port
-	portExtIDs := map[string]string{"spinifex:vpc_id": vpcId}
-	if igwId != "" {
-		portExtIDs["spinifex:igw_id"] = igwId
-	}
-	reconcileLocalnetOpts := map[string]string{
-		"network_name": "external",
-	}
-	if h.useCentralizedNAT() {
-		reconcileLocalnetOpts["nat-addresses"] = "router"
-	}
-	localnetPort := &nbdb.LogicalSwitchPort{
-		Name:        extPortName,
-		Type:        "localnet",
-		Addresses:   []string{"unknown"},
-		Options:     reconcileLocalnetOpts,
-		ExternalIDs: portExtIDs,
-	}
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, localnetPort); err != nil {
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		return fmt.Errorf("create localnet port %s: %w", extPortName, err)
-	}
-	// Retrofit options on pre-existing ports whose mode no longer matches
-	// (create above is a no-op when the port exists — seeds options only
-	// on first creation; see ensureLocalnetOptions).
-	if err := h.ensureLocalnetOptions(ctx, extPortName); err != nil {
-		return fmt.Errorf("retrofit localnet options %s: %w", extPortName, err)
-	}
-
-	// 3. Create gateway router port
-	gwMAC := generateMAC("gw-" + vpcId)
-	reconcileLrpExtIDs := map[string]string{
-		"spinifex:vpc_id": vpcId,
-		"spinifex:role":   "gateway",
-	}
-	if gwLrpIP != "" {
-		reconcileLrpExtIDs[gatewayIPExtID] = gwLrpIP
-	}
-	lrp := &nbdb.LogicalRouterPort{
-		Name:        gwPortName,
-		MAC:         gwMAC,
-		Networks:    []string{gatewayNetwork},
-		ExternalIDs: reconcileLrpExtIDs,
-	}
-	if err := h.ovn.CreateLogicalRouterPort(ctx, routerName, lrp); err != nil {
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		return fmt.Errorf("create gateway router port %s: %w", gwPortName, err)
-	}
-	// Stale-Networks self-heal lives in RetrofitAllGatewayPortNetworks at
-	// startup — Reconcile gates this whole function on "ext switch missing",
-	// so by the time we reach this line the LRP we just created cannot be
-	// stale (mulga-siv-26 D8).
-
-	// 4. Create switch port connecting external switch to router
-	switchGWPort := &nbdb.LogicalSwitchPort{
-		Name:      switchGWPortName,
-		Type:      "router",
-		Addresses: []string{"router"},
-		Options:   map[string]string{"router-port": gwPortName},
-		ExternalIDs: map[string]string{
+		lrpExtIDs := map[string]string{
 			"spinifex:vpc_id": vpcId,
-		},
+			"spinifex:role":   "gateway",
+		}
+		if gwLrpIP != "" {
+			lrpExtIDs[gatewayIPExtID] = gwLrpIP
+		}
+		if err := h.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
+			Name:        gwPortName,
+			MAC:         generateMAC("gw-" + vpcId),
+			Networks:    []string{gatewayNetwork},
+			ExternalIDs: lrpExtIDs,
+		}); err != nil {
+			return fmt.Errorf("create gateway router port %s: %w", gwPortName, err)
+		}
 	}
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, switchGWPort); err != nil {
-		_ = h.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName)
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		return fmt.Errorf("create switch gateway port %s: %w", switchGWPortName, err)
+
+	// 4. Switch port connecting external switch to router
+	if _, err := h.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err != nil {
+		if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
+			Name:        switchGWPortName,
+			Type:        "router",
+			Addresses:   []string{"router"},
+			Options:     map[string]string{"router-port": gwPortName},
+			ExternalIDs: map[string]string{"spinifex:vpc_id": vpcId},
+		}); err != nil {
+			return fmt.Errorf("create switch gateway port %s: %w", switchGWPortName, err)
+		}
 	}
 
 	// 5. No blanket SNAT — per-VM dnat_and_snat rules handle public instances.
 	// See handleIGWAttach comment for rationale (AWS parity).
 
-	// 6. Add default route (OutputPort required because the LRP uses link-local
-	// 169.254.0.1/30, off-subnet from the WAN nexthop)
-	defaultRoute := &nbdb.LogicalRouterStaticRoute{
-		IPPrefix:   "0.0.0.0/0",
-		Nexthop:    wanGateway,
-		OutputPort: &gwPortName,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": vpcId,
-		},
+	// 6. Default route. AddStaticRoute is non-idempotent (every retry leaves
+	// a fresh duplicate row), so look up first via FindStaticRoute. An
+	// existing row with mismatched nexthop/output is treated as an operator
+	// override and left alone.
+	existing, err := h.ovn.FindStaticRoute(ctx, routerName, "0.0.0.0/0")
+	if err != nil {
+		slog.Warn("vpcd reconcile: failed to query default route", "router", routerName, "err", err)
 	}
-	if err := h.ovn.AddStaticRoute(ctx, routerName, defaultRoute); err != nil {
-		slog.Warn("vpcd reconcile: failed to add default route", "err", err)
+	switch {
+	case existing == nil && err == nil:
+		if addErr := h.ovn.AddStaticRoute(ctx, routerName, &nbdb.LogicalRouterStaticRoute{
+			IPPrefix:    "0.0.0.0/0",
+			Nexthop:     wanGateway,
+			OutputPort:  &gwPortName,
+			ExternalIDs: map[string]string{"spinifex:vpc_id": vpcId},
+		}); addErr != nil {
+			slog.Warn("vpcd reconcile: failed to add default route", "err", addErr)
+		}
+	case existing != nil:
+		existingPort := ""
+		if existing.OutputPort != nil {
+			existingPort = *existing.OutputPort
+		}
+		if existing.Nexthop != wanGateway || existingPort != gwPortName {
+			slog.Warn("vpcd reconcile: default route differs from expected, leaving existing entry in place",
+				"router", routerName,
+				"existing_nexthop", existing.Nexthop, "want_nexthop", wanGateway,
+				"existing_output_port", existingPort, "want_output_port", gwPortName)
+		}
 	}
 
-	// 7. Schedule gateway chassis
+	// 7. Schedule gateway chassis (already idempotent via SetGatewayChassis).
 	for i, chassis := range h.chassisNames {
 		priority := max(20-(i*5), 1)
 		if err := h.ovn.SetGatewayChassis(ctx, gwPortName, chassis, priority); err != nil {
@@ -1579,9 +1587,8 @@ func (h *TopologyHandler) reconcileIGW(ctx context.Context, vpcId, igwId string)
 		}
 	}
 
-	slog.Info("vpcd reconcile: created IGW topology",
-		"ext_switch", extSwitchName, "gw_port", gwPortName,
-		"lrp_network", gatewayNetwork, "wan_gateway", wanGateway)
+	slog.Info("vpcd reconcile: ensured IGW topology",
+		"ext_switch", extSwitchName, "gw_port", gwPortName, "wan_gateway", wanGateway)
 	return nil
 }
 

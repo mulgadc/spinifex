@@ -71,7 +71,7 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
               type="button"
               variant="ghost"
               size="xs"
-              onClick={() => copy(partsToText(commands))}
+              onClick={async () => await copy(partsToText(commands))}
             >
               {copied ? (
                 <Check className="size-2.5" />

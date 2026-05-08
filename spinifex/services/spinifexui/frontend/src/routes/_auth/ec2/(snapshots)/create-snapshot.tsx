@@ -138,7 +138,9 @@ function CreateSnapshot() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-snapshots" })}
+          onCancel={async () =>
+            await navigate({ to: "/ec2/describe-snapshots" })
+          }
           pendingLabel="Creating…"
           submitLabel="Create Snapshot"
         />

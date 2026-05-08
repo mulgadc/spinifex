@@ -100,8 +100,8 @@ describe("elbv2 query keys", () => {
 
 type QueryFnWithSignal = (ctx: { signal: AbortSignal }) => Promise<unknown>
 
-function callQueryFn(queryFn: unknown): Promise<unknown> {
-  return (queryFn as QueryFnWithSignal)({
+async function callQueryFn(queryFn: unknown): Promise<unknown> {
+  return await (queryFn as QueryFnWithSignal)({
     signal: new AbortController().signal,
   })
 }

@@ -178,14 +178,14 @@ const { sdk } = vi.hoisted(() => {
     ],
   ])
 
-  const send = vi.fn((command: Command): Promise<unknown> => {
+  const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
-      return Promise.reject(
-        new Error(`No E2E handler for SDK command ${command.constructor.name}`),
+      throw new Error(
+        `No E2E handler for SDK command ${command.constructor.name}`,
       )
     }
-    return Promise.resolve(handler(command.input))
+    return handler(command.input)
   })
 
   return {

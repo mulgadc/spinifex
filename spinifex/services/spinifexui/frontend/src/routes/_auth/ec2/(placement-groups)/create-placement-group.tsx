@@ -127,7 +127,9 @@ function CreatePlacementGroup() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-placement-groups" })}
+          onCancel={async () =>
+            await navigate({ to: "/ec2/describe-placement-groups" })
+          }
           pendingLabel="Creating…"
           submitLabel="Create Placement Group"
         />

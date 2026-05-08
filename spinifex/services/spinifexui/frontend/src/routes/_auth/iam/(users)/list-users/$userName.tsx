@@ -256,7 +256,7 @@ function UserDetail() {
                       <StateBadge state={key.Status} />
                       <Button
                         disabled={pendingKeyAction === key.AccessKeyId}
-                        onClick={() => handleToggleAccessKey(key)}
+                        onClick={async () => await handleToggleAccessKey(key)}
                         size="sm"
                         variant="outline"
                       >
@@ -264,10 +264,11 @@ function UserDetail() {
                       </Button>
                       <Button
                         disabled={pendingKeyAction === key.AccessKeyId}
-                        onClick={() =>
-                          key.AccessKeyId &&
-                          handleDeleteAccessKey(key.AccessKeyId)
-                        }
+                        onClick={() => {
+                          if (key.AccessKeyId) {
+                            handleDeleteAccessKey(key.AccessKeyId)
+                          }
+                        }}
                         size="sm"
                         variant="destructive"
                       >
@@ -310,9 +311,11 @@ function UserDetail() {
                       className="flex w-full items-center justify-between rounded-md p-2 text-left text-sm hover:bg-accent"
                       disabled={attachPolicyMutation.isPending}
                       key={policy.Arn}
-                      onClick={() =>
-                        policy.Arn && handleAttachPolicy(policy.Arn)
-                      }
+                      onClick={() => {
+                        if (policy.Arn) {
+                          handleAttachPolicy(policy.Arn)
+                        }
+                      }}
                       type="button"
                     >
                       <span>{policy.PolicyName}</span>
@@ -344,9 +347,11 @@ function UserDetail() {
                     </div>
                     <Button
                       disabled={pendingPolicyAction === policy.PolicyArn}
-                      onClick={() =>
-                        policy.PolicyArn && handleDetachPolicy(policy.PolicyArn)
-                      }
+                      onClick={() => {
+                        if (policy.PolicyArn) {
+                          handleDetachPolicy(policy.PolicyArn)
+                        }
+                      }}
                       size="sm"
                       variant="outline"
                     >

@@ -3090,42 +3090,246 @@ func TestEnsureLocalnetOptions_ErrorOnMissingPort(t *testing.T) {
 	}
 }
 
-// reconcileIGW must surface the CreateLogicalSwitchPort error and roll back
-// the external switch when the localnet port name collides (e.g. a stale
-// pre-existing port from a prior attach that leaked).
-func TestTopologyHandler_ReconcileIGW_LocalnetPortCreateError(t *testing.T) {
+// reconcileIGW is now ensure-then-skip per child with no rollback paths, so
+// running against an empty NB DB must produce a fully-formed IGW topology in
+// one pass.
+func TestReconcileIGW_FullCreate(t *testing.T) {
 	mock := NewMockOVNClient()
 	_ = mock.Connect(context.Background())
 	ctx := context.Background()
-
-	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
-
-	// Pre-create VPC router.
-	_ = mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
-		Name:        "vpc-vpc-clash",
-		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-clash", "spinifex:cidr": "10.0.0.0/16"},
-	})
-
-	// Pre-seed a logical switch port named "ext-port-vpc-clash" on an
-	// unrelated switch so reconcileIGW's CreateLogicalSwitchPort call
-	// collides with the existing port.
-	_ = mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "stale-switch"})
-	_ = mock.CreateLogicalSwitchPort(ctx, "stale-switch", &nbdb.LogicalSwitchPort{
-		Name: "ext-port-vpc-clash",
-		Type: "localnet",
-	})
-
-	err := topo.reconcileIGW(ctx, "vpc-clash", "igw-clash")
-	if err == nil {
-		t.Fatal("expected error from reconcileIGW when localnet port collides")
-	}
-	if !strings.Contains(err.Error(), "create localnet port") {
-		t.Errorf("expected 'create localnet port' in error; got: %v", err)
+	topo := NewTopologyHandler(mock,
+		WithBridgeMode(BridgeModeDirect),
+		WithChassisNames([]string{"chassis-A"}),
+	)
+	if err := mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-fc"}); err != nil {
+		t.Fatalf("seed router: %v", err)
 	}
 
-	// The external switch must have been rolled back.
-	if _, err := mock.GetLogicalSwitch(ctx, "ext-vpc-clash"); err == nil {
-		t.Error("expected external switch to be rolled back after port-create failure")
+	if err := topo.reconcileIGW(ctx, "vpc-fc", "igw-fc"); err != nil {
+		t.Fatalf("reconcileIGW: %v", err)
+	}
+
+	if _, err := mock.GetLogicalSwitch(ctx, "ext-vpc-fc"); err != nil {
+		t.Errorf("ext switch missing: %v", err)
+	}
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-fc")
+	if err != nil {
+		t.Fatalf("localnet port missing: %v", err)
+	}
+	if lsp.Type != "localnet" || lsp.Options["network_name"] != "external" {
+		t.Errorf("localnet port misconfigured: type=%q options=%v", lsp.Type, lsp.Options)
+	}
+	if _, err := mock.GetLogicalRouterPort(ctx, "gw-vpc-fc"); err != nil {
+		t.Errorf("gateway LRP missing: %v", err)
+	}
+	if _, err := mock.GetLogicalSwitchPort(ctx, "gw-port-vpc-fc"); err != nil {
+		t.Errorf("router-LSP missing: %v", err)
+	}
+	route, err := mock.FindStaticRoute(ctx, "vpc-vpc-fc", "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("FindStaticRoute: %v", err)
+	}
+	if route == nil {
+		t.Errorf("default route missing")
+	}
+	gc, err := mock.GetGatewayChassisByName(ctx, "gw-vpc-fc-chassis-A")
+	if err != nil {
+		t.Fatalf("GetGatewayChassisByName: %v", err)
+	}
+	if gc == nil {
+		t.Errorf("gateway chassis binding missing")
+	}
+}
+
+// Partial state: switch + LRP + router-LSP exist but localnet LSP is missing
+// (the cell-10 nightly's bootstrap topology shape). reconcileIGW must add the
+// missing localnet without touching the rest.
+func TestReconcileIGW_PartialState_MissingLocalnet(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+	topo := NewTopologyHandler(mock,
+		WithBridgeMode(BridgeModeDirect),
+		WithChassisNames([]string{"chassis-A"}),
+	)
+
+	if err := mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-pml"}); err != nil {
+		t.Fatalf("seed router: %v", err)
+	}
+	if err := mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+		Name: "ext-vpc-pml",
+		ExternalIDs: map[string]string{
+			"spinifex:vpc_id": "vpc-pml",
+			"spinifex:role":   "external",
+		},
+	}); err != nil {
+		t.Fatalf("seed ext switch: %v", err)
+	}
+	if err := mock.CreateLogicalRouterPort(ctx, "vpc-vpc-pml", &nbdb.LogicalRouterPort{
+		Name:        "gw-vpc-pml",
+		MAC:         "02:00:00:aa:bb:01",
+		Networks:    []string{"169.254.0.1/30"},
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-pml", "spinifex:role": "gateway"},
+	}); err != nil {
+		t.Fatalf("seed LRP: %v", err)
+	}
+	if err := mock.CreateLogicalSwitchPort(ctx, "ext-vpc-pml", &nbdb.LogicalSwitchPort{
+		Name:        "gw-port-vpc-pml",
+		Type:        "router",
+		Addresses:   []string{"router"},
+		Options:     map[string]string{"router-port": "gw-vpc-pml"},
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-pml"},
+	}); err != nil {
+		t.Fatalf("seed router-LSP: %v", err)
+	}
+
+	if err := topo.reconcileIGW(ctx, "vpc-pml", "igw-pml"); err != nil {
+		t.Fatalf("reconcileIGW: %v", err)
+	}
+
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "ext-port-vpc-pml")
+	if err != nil {
+		t.Fatalf("localnet port still missing after self-heal: %v", err)
+	}
+	if lsp.Type != "localnet" {
+		t.Errorf("expected type=localnet, got %q", lsp.Type)
+	}
+	if lsp.Options["network_name"] != "external" {
+		t.Errorf("expected network_name=external, got %q", lsp.Options["network_name"])
+	}
+}
+
+// Partial state: switch + localnet exist but the gateway LRP and router-LSP
+// are missing. reconcileIGW must finish what a previously-failed pass started.
+func TestReconcileIGW_PartialState_MissingLRP(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+	topo := NewTopologyHandler(mock,
+		WithBridgeMode(BridgeModeDirect),
+		WithChassisNames([]string{"chassis-A"}),
+	)
+
+	if err := mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-pmr"}); err != nil {
+		t.Fatalf("seed router: %v", err)
+	}
+	if err := mock.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+		Name:        "ext-vpc-pmr",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-pmr", "spinifex:role": "external"},
+	}); err != nil {
+		t.Fatalf("seed ext switch: %v", err)
+	}
+	if err := mock.CreateLogicalSwitchPort(ctx, "ext-vpc-pmr", &nbdb.LogicalSwitchPort{
+		Name:        "ext-port-vpc-pmr",
+		Type:        "localnet",
+		Addresses:   []string{"unknown"},
+		Options:     map[string]string{"network_name": "external"},
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-pmr"},
+	}); err != nil {
+		t.Fatalf("seed localnet: %v", err)
+	}
+
+	if err := topo.reconcileIGW(ctx, "vpc-pmr", "igw-pmr"); err != nil {
+		t.Fatalf("reconcileIGW: %v", err)
+	}
+
+	if _, err := mock.GetLogicalRouterPort(ctx, "gw-vpc-pmr"); err != nil {
+		t.Errorf("gateway LRP not created: %v", err)
+	}
+	if _, err := mock.GetLogicalSwitchPort(ctx, "gw-port-vpc-pmr"); err != nil {
+		t.Errorf("router-LSP not created: %v", err)
+	}
+	gc, err := mock.GetGatewayChassisByName(ctx, "gw-vpc-pmr-chassis-A")
+	if err != nil {
+		t.Fatalf("GetGatewayChassisByName: %v", err)
+	}
+	if gc == nil {
+		t.Errorf("gateway chassis binding missing after heal")
+	}
+}
+
+// Full pre-existing topology: reconcileIGW must be a no-op (no errors, no new
+// entities, no duplicate default route). This is the steady-state self-heal
+// path that runs on every vpcd start.
+func TestReconcileIGW_FullExisting(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+	topo := NewTopologyHandler(mock,
+		WithBridgeMode(BridgeModeDirect),
+		WithChassisNames([]string{"chassis-A"}),
+	)
+	if err := mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-fe"}); err != nil {
+		t.Fatalf("seed router: %v", err)
+	}
+
+	// First pass creates the topology end-to-end.
+	if err := topo.reconcileIGW(ctx, "vpc-fe", "igw-fe"); err != nil {
+		t.Fatalf("first reconcileIGW: %v", err)
+	}
+	extBefore, err := mock.GetLogicalSwitch(ctx, "ext-vpc-fe")
+	if err != nil {
+		t.Fatalf("ext switch missing after first pass: %v", err)
+	}
+	lrBefore, err := mock.GetLogicalRouter(ctx, "vpc-vpc-fe")
+	if err != nil {
+		t.Fatalf("router fetch: %v", err)
+	}
+	if got := len(lrBefore.StaticRoutes); got != 1 {
+		t.Fatalf("first pass: expected 1 default route, got %d", got)
+	}
+
+	// Second pass against the now-complete topology.
+	if err := topo.reconcileIGW(ctx, "vpc-fe", "igw-fe"); err != nil {
+		t.Fatalf("second reconcileIGW: %v", err)
+	}
+	extAfter, err := mock.GetLogicalSwitch(ctx, "ext-vpc-fe")
+	if err != nil {
+		t.Fatalf("ext switch fetch: %v", err)
+	}
+	if extAfter.UUID != extBefore.UUID {
+		t.Errorf("ext switch UUID changed (was %q, now %q) — second pass must not recreate", extBefore.UUID, extAfter.UUID)
+	}
+	lrAfter, err := mock.GetLogicalRouter(ctx, "vpc-vpc-fe")
+	if err != nil {
+		t.Fatalf("router fetch: %v", err)
+	}
+	if got := len(lrAfter.StaticRoutes); got != 1 {
+		t.Errorf("second pass: expected 1 default route, got %d", got)
+	}
+}
+
+// AddStaticRoute is non-idempotent on its own — without FindStaticRoute, every
+// retry leaves a fresh duplicate 0.0.0.0/0 row. Pre-seed a complete topology
+// (exercising the path where reconcileIGW finds an existing route) and verify
+// no duplicate is added.
+func TestReconcileIGW_DuplicateRoute(t *testing.T) {
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+	topo := NewTopologyHandler(mock,
+		WithBridgeMode(BridgeModeDirect),
+		WithChassisNames([]string{"chassis-A"}),
+	)
+	if err := mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-dr"}); err != nil {
+		t.Fatalf("seed router: %v", err)
+	}
+	if err := topo.reconcileIGW(ctx, "vpc-dr", "igw-dr"); err != nil {
+		t.Fatalf("first reconcileIGW: %v", err)
+	}
+
+	// Multiple subsequent passes must keep the route count at exactly 1.
+	for i := range 3 {
+		if err := topo.reconcileIGW(ctx, "vpc-dr", "igw-dr"); err != nil {
+			t.Fatalf("reconcileIGW pass %d: %v", i+2, err)
+		}
+		lr, err := mock.GetLogicalRouter(ctx, "vpc-vpc-dr")
+		if err != nil {
+			t.Fatalf("router fetch pass %d: %v", i+2, err)
+		}
+		if got := len(lr.StaticRoutes); got != 1 {
+			t.Fatalf("pass %d: expected 1 default route, got %d", i+2, got)
+		}
 	}
 }
 

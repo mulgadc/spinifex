@@ -497,7 +497,9 @@ function CreateInstance() {
         <div className="flex gap-2">
           <Button
             disabled={isSubmitting || createMutation.isPending}
-            onClick={() => navigate({ to: "/ec2/describe-instances" })}
+            onClick={async () =>
+              await navigate({ to: "/ec2/describe-instances" })
+            }
             type="button"
             variant="outline"
           >

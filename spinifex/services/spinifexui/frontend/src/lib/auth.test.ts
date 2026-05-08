@@ -11,35 +11,40 @@ let getCredentials: typeof import("./auth").getCredentials
 let setCredentials: typeof import("./auth").setCredentials
 let clearCredentials: typeof import("./auth").clearCredentials
 
-beforeEach(async () => {
-  // Reset module to get a fresh in-memory cache for each test
+async function loadAuth() {
   vi.resetModules()
   const auth = await import("./auth")
   getCredentials = auth.getCredentials
   setCredentials = auth.setCredentials
   clearCredentials = auth.clearCredentials
-})
-
-afterEach(() => {
-  localStorage.clear()
-})
+}
 
 describe("setCredentials", () => {
+  beforeEach(loadAuth)
+  afterEach(() => {
+    localStorage.clear()
+  })
+
   it("stores credentials in localStorage", () => {
     setCredentials(validCreds)
     const stored = localStorage.getItem("spinifex:v1:aws-credentials")
-    expect(JSON.parse(stored ?? "")).toEqual(validCreds)
+    expect(JSON.parse(stored ?? "")).toStrictEqual(validCreds)
   })
 
   it("caches credentials in memory", () => {
     setCredentials(validCreds)
     // Clear localStorage to prove it reads from cache
     localStorage.clear()
-    expect(getCredentials()).toEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(validCreds)
   })
 })
 
 describe("getCredentials", () => {
+  beforeEach(loadAuth)
+  afterEach(() => {
+    localStorage.clear()
+  })
+
   it("returns null when nothing is stored", () => {
     expect(getCredentials()).toBeNull()
   })
@@ -49,15 +54,15 @@ describe("getCredentials", () => {
       "spinifex:v1:aws-credentials",
       JSON.stringify(validCreds),
     )
-    expect(getCredentials()).toEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(validCreds)
   })
 
   it("returns cached value on subsequent calls", () => {
     setCredentials(validCreds)
     localStorage.clear()
     // Should still return from cache
-    expect(getCredentials()).toEqual(validCreds)
-    expect(getCredentials()).toEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(validCreds)
+    expect(getCredentials()).toStrictEqual(validCreds)
   })
 
   it("returns null for invalid JSON in localStorage", () => {
@@ -83,6 +88,11 @@ describe("getCredentials", () => {
 })
 
 describe("clearCredentials", () => {
+  beforeEach(loadAuth)
+  afterEach(() => {
+    localStorage.clear()
+  })
+
   it("removes credentials from localStorage", () => {
     setCredentials(validCreds)
     clearCredentials()

@@ -26,7 +26,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 1,
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("requires count to be at least 1", () => {
@@ -36,7 +36,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 0,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("requires count to be an integer", () => {
@@ -46,7 +46,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 1.5,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("allows optional subnetId", () => {
@@ -57,7 +57,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       subnetId: "subnet-abc",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("allows optional placementGroupName", () => {
@@ -68,7 +68,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       placementGroupName: "my-group",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("supports capacity refine", () => {
@@ -82,12 +82,12 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 5,
     })
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues[0]?.message).toBe(
-        "Cannot exceed available capacity",
-      )
+    if (result.success) {
+      throw new Error("expected validation to fail")
     }
+    expect(result.error.issues[0]?.message).toBe(
+      "Cannot exceed available capacity",
+    )
   })
 
   it("accepts optional root volume fields", () => {
@@ -101,7 +101,7 @@ describe("createInstanceSchema", () => {
       rootVolumeType: "gp3",
       rootDeleteOnTermination: true,
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects rootVolumeSize below 1 GiB", () => {
@@ -112,7 +112,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 0,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects rootVolumeSize above 16384 GiB", () => {
@@ -123,7 +123,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 16_385,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects non-integer rootVolumeSize", () => {
@@ -134,7 +134,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 50.5,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects unsupported rootVolumeType", () => {
@@ -145,24 +145,24 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeType: "io2",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
 describe("createKeyPairSchema", () => {
   it("accepts a valid key name", () => {
     const result = createKeyPairSchema.safeParse({ keyName: "my-key" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty key name", () => {
     const result = createKeyPairSchema.safeParse({ keyName: "" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects key name over 255 chars", () => {
     const result = createKeyPairSchema.safeParse({ keyName: "a".repeat(256) })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -172,7 +172,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "ssh-rsa AAAAB3Nza...",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty public key", () => {
@@ -180,7 +180,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects whitespace-only public key", () => {
@@ -188,7 +188,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "   ",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -198,7 +198,7 @@ describe("createVolumeSchema", () => {
       size: 10,
       availabilityZone: "us-east-1a",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects size below 1", () => {
@@ -206,7 +206,7 @@ describe("createVolumeSchema", () => {
       size: 0,
       availabilityZone: "us-east-1a",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects size above 16384", () => {
@@ -214,7 +214,7 @@ describe("createVolumeSchema", () => {
       size: 16_385,
       availabilityZone: "us-east-1a",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects fractional size", () => {
@@ -222,26 +222,26 @@ describe("createVolumeSchema", () => {
       size: 10.5,
       availabilityZone: "us-east-1a",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
 describe("modifyVolumeSchema", () => {
   it("accepts valid size", () => {
     const result = modifyVolumeSchema.safeParse({ size: 20 })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects size below 1", () => {
     const result = modifyVolumeSchema.safeParse({ size: 0 })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
 describe("createVpcSchema", () => {
   it("accepts valid CIDR block", () => {
     const result = createVpcSchema.safeParse({ cidrBlock: "10.0.0.0/16" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts CIDR block with optional name", () => {
@@ -249,17 +249,17 @@ describe("createVpcSchema", () => {
       cidrBlock: "10.0.0.0/16",
       name: "my-vpc",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects invalid CIDR format", () => {
     const result = createVpcSchema.safeParse({ cidrBlock: "not-a-cidr" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty CIDR block", () => {
     const result = createVpcSchema.safeParse({ cidrBlock: "" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -269,7 +269,7 @@ describe("createSubnetSchema", () => {
       vpcId: "vpc-123",
       cidrBlock: "10.0.1.0/24",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects invalid CIDR block", () => {
@@ -277,7 +277,7 @@ describe("createSubnetSchema", () => {
       vpcId: "vpc-123",
       cidrBlock: "invalid",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("allows optional availability zone", () => {
@@ -286,19 +286,19 @@ describe("createSubnetSchema", () => {
       cidrBlock: "10.0.1.0/24",
       availabilityZone: "us-east-1a",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 })
 
 describe("createSnapshotSchema", () => {
   it("accepts valid snapshot params", () => {
     const result = createSnapshotSchema.safeParse({ volumeId: "vol-123" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty volumeId", () => {
     const result = createSnapshotSchema.safeParse({ volumeId: "" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -308,7 +308,7 @@ describe("copySnapshotSchema", () => {
       sourceSnapshotId: "snap-123",
       sourceRegion: "us-east-1",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 })
 
@@ -318,7 +318,7 @@ describe("attachVolumeSchema", () => {
       volumeId: "vol-123",
       instanceId: "i-123",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty instanceId", () => {
@@ -326,7 +326,7 @@ describe("attachVolumeSchema", () => {
       volumeId: "vol-123",
       instanceId: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -336,7 +336,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "my-group",
       strategy: "spread",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty group name", () => {
@@ -344,7 +344,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "",
       strategy: "spread",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects group name over 255 chars", () => {
@@ -352,7 +352,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "a".repeat(256),
       strategy: "cluster",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("accepts group name at 255 chars", () => {
@@ -360,7 +360,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "a".repeat(255),
       strategy: "spread",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty strategy", () => {
@@ -368,38 +368,38 @@ describe("createPlacementGroupSchema", () => {
       groupName: "my-group",
       strategy: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects missing strategy", () => {
     const result = createPlacementGroupSchema.safeParse({
       groupName: "my-group",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects missing group name", () => {
     const result = createPlacementGroupSchema.safeParse({
       strategy: "spread",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
 describe("formTagSchema", () => {
   it("accepts valid tag with key and value", () => {
     const result = formTagSchema.safeParse({ key: "Env", value: "prod" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts tag with empty value", () => {
     const result = formTagSchema.safeParse({ key: "Env", value: "" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects tag with empty key", () => {
     const result = formTagSchema.safeParse({ key: "", value: "prod" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -410,7 +410,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty group name", () => {
@@ -419,7 +419,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects group name over 255 chars", () => {
@@ -428,7 +428,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("accepts group name at 255 chars", () => {
@@ -437,7 +437,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty description", () => {
@@ -446,7 +446,7 @@ describe("createSecurityGroupSchema", () => {
       description: "",
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects description over 255 chars", () => {
@@ -455,7 +455,7 @@ describe("createSecurityGroupSchema", () => {
       description: "a".repeat(256),
       vpcId: "vpc-123",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty vpcId", () => {
@@ -464,7 +464,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -476,7 +476,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts all-traffic protocol with port -1", () => {
@@ -486,7 +486,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: -1,
       cidrIp: "10.0.0.0/16",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts port 65535 (upper boundary)", () => {
@@ -496,7 +496,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 65_535,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects port 65536 (above boundary)", () => {
@@ -506,7 +506,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects port -2 (below boundary)", () => {
@@ -516,7 +516,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects fractional port", () => {
@@ -526,7 +526,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects invalid CIDR format", () => {
@@ -536,7 +536,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "not-a-cidr",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty CIDR", () => {
@@ -546,7 +546,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty protocol", () => {
@@ -556,7 +556,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "0.0.0.0/0",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })
 
@@ -576,7 +576,7 @@ describe("createVpcWizardSchema", () => {
 
   it("accepts valid vpc-only mode with minimal fields", () => {
     const result = createVpcWizardSchema.safeParse(validBase)
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts valid vpc-and-more mode", () => {
@@ -586,7 +586,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       privateSubnetCount: 1,
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects invalid mode", () => {
@@ -594,7 +594,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       mode: "invalid",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty CIDR block", () => {
@@ -602,7 +602,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects invalid CIDR format", () => {
@@ -610,7 +610,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "not-a-cidr",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects CIDR with out-of-range octets", () => {
@@ -618,7 +618,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "999.0.0.0/16",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects CIDR with prefix out of /16-/28 range", () => {
@@ -626,7 +626,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "10.0.0.0/8",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects invalid tenancy", () => {
@@ -634,7 +634,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tenancy: "shared",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects publicSubnetCount above 4", () => {
@@ -642,7 +642,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       publicSubnetCount: 5,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects negative privateSubnetCount", () => {
@@ -650,7 +650,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       privateSubnetCount: -1,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects fractional subnet count", () => {
@@ -658,7 +658,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       publicSubnetCount: 1.5,
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects invalid custom subnet CIDR in vpc-and-more mode", () => {
@@ -668,7 +668,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       publicSubnetCidrs: ["not-a-cidr"],
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects subnet CIDR outside VPC range", () => {
@@ -678,13 +678,13 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       publicSubnetCidrs: ["192.168.0.0/20"],
     })
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      const issue = result.error.issues.find(
-        (i) => i.path[0] === "publicSubnetCidrs",
-      )
-      expect(issue?.message).toContain("within the VPC CIDR")
+    if (result.success) {
+      throw new Error("expected validation to fail")
     }
+    const issue = result.error.issues.find(
+      (i) => i.path[0] === "publicSubnetCidrs",
+    )
+    expect(issue?.message).toContain("within the VPC CIDR")
   })
 
   it("rejects overlapping subnet CIDRs", () => {
@@ -696,13 +696,11 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCidrs: ["10.0.0.0/20"],
       privateSubnetCidrs: ["10.0.0.0/20"],
     })
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      const issue = result.error.issues.find((i) =>
-        i.message.includes("overlap"),
-      )
-      expect(issue).toBeDefined()
+    if (result.success) {
+      throw new Error("expected validation to fail")
     }
+    const issue = result.error.issues.find((i) => i.message.includes("overlap"))
+    expect(issue).toBeDefined()
   })
 
   it("accepts valid custom subnet CIDRs within VPC range", () => {
@@ -714,7 +712,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCidrs: ["10.0.0.0/20"],
       privateSubnetCidrs: ["10.0.128.0/20"],
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("skips subnet CIDR validation in vpc-only mode", () => {
@@ -723,7 +721,7 @@ describe("createVpcWizardSchema", () => {
       mode: "vpc-only",
       publicSubnetCidrs: ["not-a-cidr"],
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("accepts valid tags", () => {
@@ -731,7 +729,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tags: [{ key: "Env", value: "prod" }],
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects tags with empty key", () => {
@@ -739,6 +737,6 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tags: [{ key: "", value: "prod" }],
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 })

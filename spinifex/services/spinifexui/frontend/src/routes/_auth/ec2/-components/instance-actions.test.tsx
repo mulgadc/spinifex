@@ -1,6 +1,6 @@
 import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { renderWithProviders } from "@/test/utils"
 
@@ -20,10 +20,6 @@ vi.mock("@/mutations/ec2", () => ({
   useRebootInstance: () => ({ ...defaultMutation }),
   useTerminateInstance: () => ({ ...defaultMutation }),
 }))
-
-beforeEach(() => {
-  mockMutate.mockReset()
-})
 
 describe("InstanceActions", () => {
   describe("running instance", () => {

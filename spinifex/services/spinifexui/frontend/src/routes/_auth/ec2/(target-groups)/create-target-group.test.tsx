@@ -86,14 +86,14 @@ describe("create-target-group route", () => {
 
     setup()
 
-    expect(await screen.findByLabelText("Name")).toBeInTheDocument()
+    await expect(screen.findByLabelText("Name")).resolves.toBeInTheDocument()
     await user.type(screen.getByLabelText("Name"), "my-tg")
     await user.click(
       screen.getByRole("button", { name: "Create target group" }),
     )
 
     await waitFor(() => {
-      expect(sdk.send).toHaveBeenCalledTimes(1)
+      expect(sdk.send).toHaveBeenCalledOnce()
     })
     const input = sdk.send.mock.calls[0]?.[0].input as {
       Name: string
@@ -122,7 +122,9 @@ describe("create-target-group route", () => {
       screen.getByRole("button", { name: "Create target group" }),
     )
 
-    expect(await screen.findByText("Name is required")).toBeInTheDocument()
+    await expect(
+      screen.findByText("Name is required"),
+    ).resolves.toBeInTheDocument()
     expect(sdk.send).not.toHaveBeenCalled()
     expect(routerState.navigate).not.toHaveBeenCalled()
   })
@@ -140,9 +142,9 @@ describe("create-target-group route", () => {
       screen.getByRole("button", { name: "Create target group" }),
     )
 
-    expect(
-      await screen.findByText(/Failed to create target group/i),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/Failed to create target group/i),
+    ).resolves.toBeInTheDocument()
     expect(routerState.navigate).not.toHaveBeenCalled()
   })
 })

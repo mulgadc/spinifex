@@ -237,11 +237,11 @@ function mustString(value: string | undefined, label: string): string {
   return value
 }
 
-beforeEach(() => {
-  sdk.reset()
-})
-
 describe("ELBv2 cross-slice flow (mocked SDK)", () => {
+  beforeEach(() => {
+    sdk.reset()
+  })
+
   it("creates TG → LB → listener → registers targets → observes healthy state", async () => {
     const qc = createQueryClient()
 

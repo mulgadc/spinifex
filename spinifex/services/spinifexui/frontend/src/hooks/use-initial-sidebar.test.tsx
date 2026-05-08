@@ -26,10 +26,10 @@ describe("useInitialSidebar", () => {
       ({ isOpen }: { isOpen: boolean }) => useInitialSidebar(isOpen),
       { initialProps: { isOpen: true } },
     )
-    expect(mockSetOpen).toHaveBeenCalledTimes(1)
+    expect(mockSetOpen).toHaveBeenCalledOnce()
 
     rerender({ isOpen: false })
     // Should still only have been called once (the initial mount)
-    expect(mockSetOpen).toHaveBeenCalledTimes(1)
+    expect(mockSetOpen).toHaveBeenCalledOnce()
   })
 })

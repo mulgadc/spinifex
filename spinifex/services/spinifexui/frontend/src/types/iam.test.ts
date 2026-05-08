@@ -5,27 +5,27 @@ import { createPolicySchema, createUserSchema } from "./iam"
 describe("createUserSchema", () => {
   it("accepts a valid user name", () => {
     const result = createUserSchema.safeParse({ userName: "admin" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty user name", () => {
     const result = createUserSchema.safeParse({ userName: "" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects user name over 64 chars", () => {
     const result = createUserSchema.safeParse({ userName: "a".repeat(65) })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects user name with invalid characters", () => {
     const result = createUserSchema.safeParse({ userName: "user name!" })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("accepts user name with allowed special characters", () => {
     const result = createUserSchema.safeParse({ userName: "user+=,.@-test" })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("allows optional path", () => {
@@ -33,7 +33,7 @@ describe("createUserSchema", () => {
       userName: "admin",
       path: "/engineering/",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 })
 
@@ -43,7 +43,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: '{"Version":"2012-10-17","Statement":[]}',
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 
   it("rejects empty policy name", () => {
@@ -51,7 +51,7 @@ describe("createPolicySchema", () => {
       policyName: "",
       policyDocument: "{}",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects policy name over 128 chars", () => {
@@ -59,7 +59,7 @@ describe("createPolicySchema", () => {
       policyName: "a".repeat(129),
       policyDocument: "{}",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects invalid JSON in policy document", () => {
@@ -67,7 +67,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: "not json",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("rejects empty policy document", () => {
@@ -75,7 +75,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: "",
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBeFalsy()
   })
 
   it("allows optional description", () => {
@@ -84,6 +84,6 @@ describe("createPolicySchema", () => {
       description: "Read-only access",
       policyDocument: "{}",
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBeTruthy()
   })
 })

@@ -672,13 +672,11 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         echo "  SSH endpoint: $SSH_HOST:$SSH_PORT"
     fi
 
-    # Wait for SSH to be ready (VM boot + cloud-init).
-    # 120 attempts × ~3s = 360s — cold AMI demand-paging from predastore can
-    # stretch first-boot well past the previous 180s budget on a loaded runner.
+    # Wait for SSH to be ready (VM boot + cloud-init)
     echo "  Waiting for SSH to be ready..."
     ATTEMPT=0
     SSH_READY=false
-    while [ $ATTEMPT -lt 120 ]; do
+    while [ $ATTEMPT -lt 60 ]; do
         if ssh -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=2 \
@@ -691,12 +689,12 @@ for idx in "${!INSTANCE_IDS[@]}"; do
             break
         fi
         ATTEMPT=$((ATTEMPT + 1))
-        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/120)"
+        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/60)"
         sleep 1
     done
 
     if [ "$SSH_READY" = false ]; then
-        echo "  ERROR: SSH not ready after 120 attempts"
+        echo "  ERROR: SSH not ready after 60 attempts"
         dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" "$SSH_PORT"
         fail_test "Guest SSH ($instance_id)"
         continue

@@ -405,10 +405,8 @@ else
     echo "SSH endpoint: $SSH_HOST:$SSH_PORT"
 fi
 
-# Wait for SSH to become ready (VM boot + cloud-init).
-# 120 attempts × 3s = 360s — cold AMI demand-paging from predastore can
-# stretch first-boot well past the 180s budget on a loaded CI runner.
-wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 120
+# Wait for SSH to become ready (VM boot + cloud-init)
+wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 60
 
 # Test basic SSH connectivity
 test_ssh_connectivity "$SSH_HOST" "$SSH_PORT" "test-key-1.pem"
@@ -1052,7 +1050,7 @@ fi
 echo "SSH endpoint: $SSH_HOST:$SSH_PORT"
 
 # Wait for SSH to become ready
-wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 120
+wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 60
 
 # Verify vCPU count matches the new instance type (nproc reports online CPUs)
 echo "Verifying vCPU count inside the VM..."
@@ -1131,7 +1129,7 @@ else
     fi
     SSH_HOST=$(get_ssh_host "$INSTANCE_ID")
 fi
-wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 120
+wait_for_ssh "$SSH_HOST" "$SSH_PORT" "test-key-1.pem" 60
 
 # Verify guest actually rebooted (uptime < 120 seconds)
 UPTIME_SECS=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \

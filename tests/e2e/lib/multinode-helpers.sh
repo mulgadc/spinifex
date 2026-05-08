@@ -550,7 +550,7 @@ dump_all_node_logs() {
             echo "--- $logs_dir contents ---"
             sudo ls -la "$logs_dir/" 2>/dev/null || true
 
-            for log in nats predastore viperblock spinifex awsgw; do
+            for log in nats predastore viperblock spinifex awsgw vpcd; do
                 if sudo test -f "$logs_dir/$log.log"; then
                     echo ""
                     echo "--- $log.log (last 50 lines) ---"

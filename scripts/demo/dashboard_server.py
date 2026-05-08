@@ -10,6 +10,7 @@ Environment variables:
   PORT          Server port                       (default: 8000)
 """
 
+import asyncio
 import json
 import os
 
@@ -37,30 +38,30 @@ async def index():
 @app.get("/proxy/video")
 async def proxy_video():
     async def stream():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{YOLO_HOST}/video") as resp:
-                async for chunk in resp.aiter_bytes(8192):
-                    yield chunk
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("GET", f"{YOLO_HOST}/video") as resp:
+                        async for chunk in resp.aiter_bytes(8192):
+                            yield chunk
+            except Exception:
+                await asyncio.sleep(5)
 
-    # Peek at the content-type from upstream
-    ct = "multipart/x-mixed-replace; boundary=frame"
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{YOLO_HOST}/video", timeout=5)
-            ct = r.headers.get("content-type", ct)
-    except Exception:
-        pass
-
-    return StreamingResponse(stream(), media_type=ct)
+    return StreamingResponse(stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.get("/proxy/descriptions")
 async def proxy_descriptions():
     async def stream():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{YOLO_HOST}/descriptions") as resp:
-                async for line in resp.aiter_lines():
-                    yield line + "\n"
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    async with client.stream("GET", f"{YOLO_HOST}/descriptions") as resp:
+                        async for line in resp.aiter_lines():
+                            yield line + "\n"
+            except Exception:
+                yield 'data: {"type":"error","text":"YOLO stream offline, retrying..."}\n\n'
+                await asyncio.sleep(5)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

@@ -3,6 +3,8 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,15 +38,89 @@ func TestAcquireReconcileLeader_OnlyOneWinner(t *testing.T) {
 	releaseC()
 }
 
-func TestAcquireReconcileLeader_NoJetStreamFallsThrough(t *testing.T) {
-	// No JetStream on this server — caller must fall through (elected=true)
-	// rather than deadlock the cluster on first boot.
-	_, nc := testutil.StartTestNATS(t)
+// withReconcileLeaderRetry shrinks the bounded-retry window for tests so they
+// run sub-second instead of waiting the production 60s deadline.
+func withReconcileLeaderRetry(t *testing.T, retryFor, retryStep time.Duration) {
+	t.Helper()
+	prevFor, prevStep := reconcileLeaderRetryFor, reconcileLeaderRetryStep
+	reconcileLeaderRetryFor = retryFor
+	reconcileLeaderRetryStep = retryStep
+	t.Cleanup(func() {
+		reconcileLeaderRetryFor = prevFor
+		reconcileLeaderRetryStep = prevStep
+	})
+}
 
+func TestAcquireReconcileLeader_WaitsForJetStream(t *testing.T) {
+	// Cold-start scenario: NATS is up but JetStream is not yet enabled.
+	// AcquireReconcileLeader must retry until JetStream comes online and
+	// then win the election, instead of failing immediately.
+	ns, nc := testutil.StartTestNATS(t)
+	withReconcileLeaderRetry(t, 3*time.Second, 50*time.Millisecond)
+
+	enableAt := time.Now().Add(300 * time.Millisecond)
+	go func() {
+		time.Sleep(time.Until(enableAt))
+		_ = ns.EnableJetStream(nil)
+	}()
+
+	start := time.Now()
 	release, elected := AcquireReconcileLeader(nc, "node-a")
-	assert.True(t, elected, "must fall through when KV unavailable")
-	assert.NotNil(t, release)
-	release() // no-op release on fallthrough path must not panic
+	elapsed := time.Since(start)
+
+	require.True(t, elected, "must win election after JetStream comes up")
+	require.NotNil(t, release)
+	defer release()
+	assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
+		"must not return before JetStream is enabled")
+	assert.Less(t, elapsed, 3*time.Second, "must return within retry deadline")
+}
+
+func TestAcquireReconcileLeader_TimeoutReturnsNotElected(t *testing.T) {
+	// JetStream never enabled on this server — bounded retry must exhaust
+	// and return elected=false rather than fall through and run unguarded
+	// (mulga-js-72: concurrent reconciles produce silent OVN NB damage).
+	_, nc := testutil.StartTestNATS(t)
+	withReconcileLeaderRetry(t, 200*time.Millisecond, 20*time.Millisecond)
+
+	start := time.Now()
+	release, elected := AcquireReconcileLeader(nc, "node-a")
+	elapsed := time.Since(start)
+
+	assert.False(t, elected, "must skip reconcile when JetStream KV unreachable")
+	assert.Nil(t, release, "no release closure when not elected")
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "must wait full deadline")
+}
+
+func TestAcquireReconcileLeader_ConcurrentExactlyOneElected(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	const goroutines = 5
+	var (
+		wg        sync.WaitGroup
+		electedCt atomic.Int32
+		releases  = make(chan func(), goroutines)
+	)
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(id int) {
+			defer wg.Done()
+			release, elected := AcquireReconcileLeader(nc, "node-"+string(rune('a'+id)))
+			if elected {
+				electedCt.Add(1)
+				releases <- release
+			} else {
+				assert.Nil(t, release, "non-leader must return nil release")
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(releases)
+
+	assert.Equal(t, int32(1), electedCt.Load(), "exactly one caller must win")
+	for r := range releases {
+		r()
+	}
 }
 
 func TestReconcile_NoBootstrap(t *testing.T) {

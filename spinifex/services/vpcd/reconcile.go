@@ -23,24 +23,52 @@ const (
 	reconcileLeaderTTL    = 60 * time.Second
 )
 
+// Bounded wait for JetStream to come up at vpcd startup. On a cold multi-node
+// start NATS clustering takes a few seconds and js.CreateKeyValue returns
+// "context deadline exceeded" until quorum forms. Retrying makes the election
+// deterministic; without it every vpcd falls through and races the same OVN
+// NB transactions (mulga-js-72). Vars (not consts) so tests can shrink them.
+var (
+	reconcileLeaderRetryFor  = 60 * time.Second
+	reconcileLeaderRetryStep = 1 * time.Second
+)
+
 // AcquireReconcileLeader returns release+true exactly once across all vpcds in
 // a cluster, gating the startup Reconcile/ReconcileFromKV passes. Other vpcds
 // get release=nil, elected=false and skip reconcile (runtime VPC events use the
 // vpcd-workers queue group, so they remain handled cluster-wide).
 //
-// Returns elected=true on KV-bucket failure: first-boot has at most one vpcd
-// up, so falling through is safe and avoids deadlocking the cluster if NATS
-// KV isn't ready.
+// Bounded-retry contract: when JetStream KV is not yet reachable (cold
+// multi-node start, NATS quorum still forming) we retry for
+// reconcileLeaderRetryFor before giving up. On exhaustion we return
+// elected=false rather than running unguarded — concurrent reconciles produce
+// silent OVN NB damage (mulga-js-72). Operators can restart vpcd to retry
+// reconcile once NATS recovers.
 func AcquireReconcileLeader(nc *nats.Conn, holder string) (func(), bool) {
 	js, _ := nc.JetStream()
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:  reconcileLeaderBucket,
-		History: 1,
-		TTL:     reconcileLeaderTTL,
-	})
-	if err != nil {
-		slog.Warn("vpcd reconcile-leader: KV bucket unavailable, running reconcile unguarded", "err", err)
-		return func() {}, true
+
+	var (
+		kv  nats.KeyValue
+		err error
+	)
+	deadline := time.Now().Add(reconcileLeaderRetryFor)
+	for {
+		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
+			Bucket:  reconcileLeaderBucket,
+			History: 1,
+			TTL:     reconcileLeaderTTL,
+		})
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			slog.Error("vpcd reconcile-leader: JetStream KV unreachable after retry, skipping reconcile",
+				"holder", holder, "waited", reconcileLeaderRetryFor, "err", err)
+			return nil, false
+		}
+		slog.Debug("vpcd reconcile-leader: JetStream KV not ready, retrying",
+			"holder", holder, "err", err)
+		time.Sleep(reconcileLeaderRetryStep)
 	}
 
 	if _, err := kv.Create(reconcileLeaderKey, []byte(holder)); err != nil {

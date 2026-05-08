@@ -503,16 +503,27 @@ dump_local_ovn_diagnostics() {
     echo "  --- ovn-northd connection + status ---"
     sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true
     sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true
-    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true
+    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd list-commands 2>&1 | head -40 || true
 
     echo "  --- ovn-controller journal (last 60 lines) ---"
     sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
 
     # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
-    # vlog, not journal. Journal only sees systemd start/stop. This is where
-    # any OVSDB transaction errors or "skipped LSP" messages would appear.
+    # vlog, not journal. Journal only sees systemd start/stop. The
+    # `OVNSB commit failed, force recompute next time` loop we observed is
+    # logged here at INFO without the underlying cause; the cause is in the
+    # SB ovsdb-server log below.
     echo "  --- /var/log/ovn/ovn-northd.log (last 200 lines) ---"
     sudo tail -200 /var/log/ovn/ovn-northd.log 2>&1 || true
+
+    # OVSDB server logs — when northd's `OVNSB commit failed` retries, the
+    # rejection reason (constraint violation, schema mismatch, ref-integrity
+    # error) is logged by the ovsdb-server side, not by northd.
+    echo "  --- /var/log/ovn/ovsdb-server-sb.log (last 200 lines) ---"
+    sudo tail -200 /var/log/ovn/ovsdb-server-sb.log 2>&1 || true
+
+    echo "  --- /var/log/ovn/ovsdb-server-nb.log (last 100 lines) ---"
+    sudo tail -100 /var/log/ovn/ovsdb-server-nb.log 2>&1 || true
 
     echo "  --- ovn-northd journal (full since boot) ---"
     sudo journalctl -u ovn-northd --no-pager 2>&1 || true

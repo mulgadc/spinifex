@@ -99,9 +99,10 @@ type VM struct {
 	DevMAC string `json:"dev_mac,omitempty"`
 
 	// Management NIC for system instance control plane (reaches host via br-mgmt).
+	// Tap name derived via MgmtTapName(ID); not persisted so terminate-during-launch
+	// can still clean up.
 	MgmtMAC string `json:"mgmt_mac,omitempty"` // MAC address (02:a0:00 prefix)
 	MgmtIP  string `json:"mgmt_ip,omitempty"`  // Static IP on management subnet
-	MgmtTap string `json:"mgmt_tap,omitempty"` // TAP device name on host
 
 	// Placement group tracking (set during RunInstances when a placement group is specified)
 	PlacementGroupName string `json:"placement_group_name,omitempty"`

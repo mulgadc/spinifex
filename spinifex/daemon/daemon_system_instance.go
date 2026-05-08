@@ -276,7 +276,8 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			instance.MgmtMAC = generateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
 
-			tapName, tapErr := SetupMgmtTapDevice(instance.ID, instance.MgmtMAC, mgmtBridge)
+			tapName := vm.MgmtTapName(instance.ID)
+			tapErr := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
 			if tapErr != nil {
 				d.mgmtIPAllocator.Release(instance.ID)
 				instance.MgmtMAC = ""
@@ -287,7 +288,6 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				}
 				slog.Error("LaunchSystemInstance: failed to setup mgmt tap", "instanceId", instance.ID, "err", tapErr)
 			} else {
-				instance.MgmtTap = tapName
 				slog.Info("LaunchSystemInstance: mgmt NIC configured",
 					"instanceId", instance.ID, "mgmtIP", mgmtIP, "mgmtMAC", instance.MgmtMAC, "mgmtTap", tapName)
 			}

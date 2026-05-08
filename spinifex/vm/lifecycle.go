@@ -194,12 +194,13 @@ func (m *Manager) startQEMU(instance *VM) error {
 	instance.Config.Devices = append(instance.Config.Devices, devices...)
 
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		if err := m.deps.NetworkPlumber.SetupTapDevice(instance.ENIId, instance.ENIMac); err != nil {
+		spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 			slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
 			return fmt.Errorf("setup tap device: %w", err)
 		}
+		tapName := spec.Name
 
-		tapName := TapDeviceName(instance.ENIId)
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		})
@@ -239,14 +240,15 @@ func (m *Manager) startQEMU(instance *VM) error {
 		})
 	}
 
-	if instance.MgmtMAC != "" && instance.MgmtTap != "" {
+	if instance.MgmtMAC != "" {
+		mgmtTap := MgmtTapName(instance.ID)
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", instance.MgmtTap),
+			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 		})
 		instance.Config.Devices = append(instance.Config.Devices, Device{
 			Value: fmt.Sprintf("virtio-net-pci,netdev=mgmt0,mac=%s", instance.MgmtMAC),
 		})
-		slog.Info("Management NIC configured", "tap", instance.MgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
+		slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 	}
 
 	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})

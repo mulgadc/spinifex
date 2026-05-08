@@ -8,6 +8,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
+// TapSpec parameterises a single tap-on-OVS-bridge plumbing operation.
+// VPC taps populate ExternalIDs (iface-id, attached-mac) for OVN binding;
+// management taps leave it nil since br-mgmt is a plain L2 standalone bridge.
+type TapSpec struct {
+	Name        string
+	Bridge      string
+	ExternalIDs map[string]string
+}
+
 // TapDeviceName returns the Linux tap device name for an ENI.
 // Linux IFNAMSIZ limits interface names to 15 characters; long ENI IDs are
 // truncated to fit.
@@ -18,6 +27,36 @@ func TapDeviceName(eniID string) string {
 		name = name[:15]
 	}
 	return name
+}
+
+// MgmtTapName returns the Linux TAP device name for a management NIC.
+// Uses "mg" prefix + truncated instance ID to stay within 15-char IFNAMSIZ.
+func MgmtTapName(instanceID string) string {
+	id := strings.TrimPrefix(instanceID, "i-")
+	name := "mg" + id
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
+}
+
+// OVSIfaceID returns the OVS external_ids:iface-id value for an ENI.
+// This must match the OVN LogicalSwitchPort name for ovn-controller binding.
+func OVSIfaceID(eniID string) string {
+	return "port-" + eniID
+}
+
+// VPCTapSpec returns the TapSpec for a VPC ENI's tap on br-int. The
+// external_ids carry the OVN binding (iface-id) and the kernel-attached MAC.
+func VPCTapSpec(eniID, mac string) TapSpec {
+	return TapSpec{
+		Name:   TapDeviceName(eniID),
+		Bridge: "br-int",
+		ExternalIDs: map[string]string{
+			"iface-id":     OVSIfaceID(eniID),
+			"attached-mac": mac,
+		},
+	}
 }
 
 // GenerateDevMAC returns the locally-administered unicast MAC for the
@@ -37,11 +76,12 @@ func (m *Manager) setupExtraENINICs(instance *VM) error {
 		return nil
 	}
 	for idx, extra := range instance.ExtraENIs {
-		if err := m.deps.NetworkPlumber.SetupTapDevice(extra.ENIID, extra.ENIMac); err != nil {
+		spec := VPCTapSpec(extra.ENIID, extra.ENIMac)
+		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 			slog.Error("Failed to set up tap device for extra ENI", "eni", extra.ENIID, "err", err)
 			return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
 		}
-		extraTapName := TapDeviceName(extra.ENIID)
+		extraTapName := spec.Name
 		netID := fmt.Sprintf("net%d", idx+1)
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, extraTapName),

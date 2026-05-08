@@ -541,8 +541,8 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
 // instance.ID so unsetup instances are tolerated) and releases the
 // management IP allocation if the daemon has one.
 func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
-	mgmtTap := MgmtTapName(instance.ID)
-	if err := CleanupMgmtTapDevice(mgmtTap); err != nil {
+	mgmtTap := vm.MgmtTapName(instance.ID)
+	if err := a.d.networkPlumber.CleanupTap(mgmtTap); err != nil {
 		slog.Warn("Failed to clean up mgmt tap device",
 			"tap", mgmtTap, "instanceId", instance.ID, "err", err)
 	}

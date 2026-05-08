@@ -2,34 +2,85 @@ package vm
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// fakeNetworkPlumber records calls so tests can assert per-ENI behaviour.
+// fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
-	setupCalls   []fakeSetupCall
+	setupCalls   []TapSpec
 	cleanupCalls []string
 	setupErr     error
 	cleanupErr   error
 }
 
-type fakeSetupCall struct {
-	ENIID string
-	MAC   string
-}
-
-func (p *fakeNetworkPlumber) SetupTapDevice(eniID, mac string) error {
-	p.setupCalls = append(p.setupCalls, fakeSetupCall{ENIID: eniID, MAC: mac})
+func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
+	p.setupCalls = append(p.setupCalls, spec)
 	return p.setupErr
 }
 
-func (p *fakeNetworkPlumber) CleanupTapDevice(eniID string) error {
-	p.cleanupCalls = append(p.cleanupCalls, eniID)
+func (p *fakeNetworkPlumber) CleanupTap(name string) error {
+	p.cleanupCalls = append(p.cleanupCalls, name)
 	return p.cleanupErr
 }
 
 var _ NetworkPlumber = (*fakeNetworkPlumber)(nil)
+
+func TestMgmtTapName(t *testing.T) {
+	tests := []struct {
+		instanceID string
+		want       string
+	}{
+		{"i-abc123", "mgabc123"},
+		{"i-abc123def456789", "mgabc123def4567"}, // truncated to 15 chars
+		{"i-a", "mga"},
+		{"abc123", "mgabc123"}, // no i- prefix
+	}
+	for _, tt := range tests {
+		t.Run(tt.instanceID, func(t *testing.T) {
+			got := MgmtTapName(tt.instanceID)
+			if got != tt.want {
+				t.Errorf("MgmtTapName(%q) = %q, want %q", tt.instanceID, got, tt.want)
+			}
+			if len(got) > 15 {
+				t.Errorf("MgmtTapName(%q) = %q (len %d), exceeds IFNAMSIZ", tt.instanceID, got, len(got))
+			}
+		})
+	}
+}
+
+func TestOVSIfaceID(t *testing.T) {
+	tests := []struct {
+		eniID string
+		want  string
+	}{
+		{"eni-abc123", "port-eni-abc123"},
+		{"eni-", "port-eni-"},
+		{"", "port-"},
+	}
+	for _, tt := range tests {
+		got := OVSIfaceID(tt.eniID)
+		if got != tt.want {
+			t.Errorf("OVSIfaceID(%q) = %q, want %q", tt.eniID, got, tt.want)
+		}
+	}
+}
+
+func TestVPCTapSpec(t *testing.T) {
+	got := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc")
+	want := TapSpec{
+		Name:   "tapabc123",
+		Bridge: "br-int",
+		ExternalIDs: map[string]string{
+			"iface-id":     "port-eni-abc123",
+			"attached-mac": "02:00:00:aa:bb:cc",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VPCTapSpec = %+v, want %+v", got, want)
+	}
+}
 
 func TestSetupExtraENINICs_AppendsOnePerExtra(t *testing.T) {
 	plumber := &fakeNetworkPlumber{}
@@ -47,13 +98,15 @@ func TestSetupExtraENINICs_AppendsOnePerExtra(t *testing.T) {
 	}
 
 	if len(plumber.setupCalls) != 2 {
-		t.Fatalf("expected 2 SetupTapDevice calls, got %d", len(plumber.setupCalls))
+		t.Fatalf("expected 2 SetupTap calls, got %d", len(plumber.setupCalls))
 	}
-	if plumber.setupCalls[0].ENIID != "eni-aaa" || plumber.setupCalls[0].MAC != "02:00:00:aa:aa:aa" {
-		t.Errorf("first setup call = %+v, want eni-aaa/02:00:00:aa:aa:aa", plumber.setupCalls[0])
+	want0 := VPCTapSpec("eni-aaa", "02:00:00:aa:aa:aa")
+	if !reflect.DeepEqual(plumber.setupCalls[0], want0) {
+		t.Errorf("first setup call = %+v, want %+v", plumber.setupCalls[0], want0)
 	}
-	if plumber.setupCalls[1].ENIID != "eni-bbb" || plumber.setupCalls[1].MAC != "02:00:00:bb:bb:bb" {
-		t.Errorf("second setup call = %+v, want eni-bbb/02:00:00:bb:bb:bb", plumber.setupCalls[1])
+	want1 := VPCTapSpec("eni-bbb", "02:00:00:bb:bb:bb")
+	if !reflect.DeepEqual(plumber.setupCalls[1], want1) {
+		t.Errorf("second setup call = %+v, want %+v", plumber.setupCalls[1], want1)
 	}
 
 	if len(instance.Config.NetDevs) != 2 || len(instance.Config.Devices) != 2 {
@@ -150,7 +203,8 @@ func TestCleanupExtraENITaps_CallsCleanupPerExtra(t *testing.T) {
 	if len(plumber.cleanupCalls) != 3 {
 		t.Fatalf("expected 3 cleanup calls, got %d", len(plumber.cleanupCalls))
 	}
-	for i, want := range []string{"eni-111", "eni-222", "eni-333"} {
+	for i, eniID := range []string{"eni-111", "eni-222", "eni-333"} {
+		want := TapDeviceName(eniID)
 		if plumber.cleanupCalls[i] != want {
 			t.Errorf("cleanup[%d] = %q, want %q", i, plumber.cleanupCalls[i], want)
 		}

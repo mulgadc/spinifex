@@ -156,8 +156,16 @@ dump_guest_ssh_diagnostics() {
     # SB despite Logical_Switch_Port rows present in NB. Capture both sides
     # so we can localise the chain break (NB write vs NB→SB translation
     # vs chassis claim). See docs/development/bugs/sg-enforcement-e2e-ssh.md.
-    echo "  --- NB Logical_Switch_Port (from primary, head 120) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,addresses,port_security,up list Logical_Switch_Port 2>&1 | head -120 || true" 2>&1 || true
+    echo "  --- ovn-nbctl show (from primary) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl show 2>&1 | head -200 || true" 2>&1 || true
+
+    # type / dhcpv4_options / enabled / options are the fields most likely
+    # to make northd silently skip translation; capture them in full.
+    echo "  --- NB Logical_Switch_Port (from primary, full, head 200) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,type,addresses,port_security,dhcpv4_options,enabled,up,options,external_ids list Logical_Switch_Port 2>&1 | head -200 || true" 2>&1 || true
+
+    echo "  --- NB DHCP_Options (from primary, verify dhcpv4_options refs are live) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=_uuid,cidr,external_ids list DHCP_Options 2>&1 | head -60 || true" 2>&1 || true
 
     echo "  --- NB Logical_Switch ports (from primary) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true" 2>&1 || true
@@ -169,8 +177,18 @@ dump_guest_ssh_diagnostics() {
     peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,addresses list Address_Set 2>&1 | head -60 || true" 2>&1 || true
 
     # ----- Cross-chassis dataplane diagnostics (mulga-siv-27 follow-up) -----
-    echo "  --- OVN SB chassis registrations (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 || true" 2>&1 || true
+    echo "  --- OVN SB chassis registrations (from primary, ovn-sbctl show) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 | head -120 || true" 2>&1 || true
+
+    # Northd connection health — silent ovn-northd journal + missing SB
+    # Port_Binding rows could mean a wedged NB or SB OVSDB connection.
+    echo "  --- ovn-northd connection + status (from primary) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true; \
+        sudo ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true; \
+        sudo ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true" 2>&1 || true
+
+    echo "  --- ovn-northd journal (from primary, last 80 lines) ---"
+    peer_ssh "$LOCAL_IP" "sudo journalctl -u ovn-northd --no-pager -n 80 2>&1 || true" 2>&1 || true
 
     echo "  --- OVN SB port_binding chassis claims (from primary) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,up list Port_Binding 2>&1 | head -80 || true" 2>&1 || true
@@ -690,7 +708,9 @@ for idx in "${!INSTANCE_IDS[@]}"; do
             echo "  ERROR: Failed to get SSH port for $instance_id on $host_ip"
             dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" ""
             fail_test "Guest SSH ($instance_id)"
-            continue
+            # TEMP fail-fast — see SSH-not-ready branch below.
+            echo "  TEMP: aborting multi-node run on first SSH-port detection failure"
+            exit 1
         fi
         echo "  SSH endpoint: $SSH_HOST:$SSH_PORT"
     fi
@@ -720,7 +740,11 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         echo "  ERROR: SSH not ready after 60 attempts"
         dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" "$SSH_PORT"
         fail_test "Guest SSH ($instance_id)"
-        continue
+        # TEMP fail-fast: abort the run on the first SSH timeout so we don't
+        # wait through 2 more identical failures while debugging the missing
+        # SB Port_Binding bug. Restore `continue` once SSH is green again.
+        echo "  TEMP: aborting multi-node run on first SSH failure"
+        exit 1
     fi
 
     # Test SSH connectivity

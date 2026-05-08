@@ -448,9 +448,22 @@ dump_local_ovn_diagnostics() {
     echo ""
     echo "  === Local OVN/OVS state dump ==="
 
-    echo "  --- NB Logical_Switch_Port (head 120) ---"
-    sudo ovn-nbctl --bare --columns=name,addresses,port_security,up \
-        list Logical_Switch_Port 2>&1 | head -120 || true
+    # Readable summary first — easier to eyeball than column dumps.
+    echo "  --- ovn-nbctl show ---"
+    sudo ovn-nbctl show 2>&1 | head -200 || true
+
+    echo "  --- ovn-sbctl show ---"
+    sudo ovn-sbctl show 2>&1 | head -120 || true
+
+    # Full LSP row content. type / dhcpv4_options / enabled / options are
+    # the fields most likely to make northd silently skip translation; the
+    # earlier 4-column dump didn't include them.
+    echo "  --- NB Logical_Switch_Port (full, head 200) ---"
+    sudo ovn-nbctl --bare --columns=name,type,addresses,port_security,dhcpv4_options,enabled,up,options,external_ids \
+        list Logical_Switch_Port 2>&1 | head -200 || true
+
+    echo "  --- NB DHCP_Options (verify dhcpv4_options refs are live) ---"
+    sudo ovn-nbctl --bare --columns=_uuid,cidr,external_ids list DHCP_Options 2>&1 | head -60 || true
 
     echo "  --- NB Logical_Switch ports ---"
     sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true
@@ -474,11 +487,19 @@ dump_local_ovn_diagnostics() {
     sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state \
         list Interface 2>&1 | head -120 || true
 
+    # Northd connection health — silent journal + missing Port_Binding could
+    # mean wedged NB or SB OVSDB connection. ovs-appctl exposes the live
+    # status without restarting the daemon.
+    echo "  --- ovn-northd connection + status ---"
+    sudo ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true
+    sudo ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true
+    sudo ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true
+
     echo "  --- ovn-controller journal (last 60 lines) ---"
     sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
 
-    echo "  --- ovn-northd journal (last 40 lines) ---"
-    sudo journalctl -u ovn-northd --no-pager -n 40 2>&1 || true
+    echo "  --- ovn-northd journal (last 80 lines) ---"
+    sudo journalctl -u ovn-northd --no-pager -n 80 2>&1 || true
 
     echo "  === end local OVN/OVS state dump ==="
     echo ""

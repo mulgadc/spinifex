@@ -43,6 +43,15 @@ type Config struct {
 	// the headless path. Passed to `spx admin init --email=<value>` when set;
 	// omitted entirely when empty.
 	Email string
+	// GPUPassthrough enables VFIO GPU passthrough by passing --gpu-passthrough
+	// to `spx admin init`, which writes gpu_passthrough = true in the daemon config.
+	GPUPassthrough bool
+	// InstallCallback, when non-empty, is curled once at the end of firstboot
+	// after the success marker is written. Generic phone-home hook for
+	// provisioning controllers (PXE/MAAS-style flows). Best-effort: non-2xx
+	// and network failures are swallowed so the install is not gated on
+	// controller reachability.
+	InstallCallback string
 }
 
 // Write drops the firstboot script and systemd unit into root, which should be
@@ -76,6 +85,14 @@ func writeScript(root string, cfg Config) error {
 	setupOVN := "/usr/local/bin/setup-ovn.sh --management"
 	if cfg.EncapIP != "" {
 		setupOVN += fmt.Sprintf(" --encap-ip=%s", cfg.EncapIP)
+	}
+
+	callbackBlock := ""
+	if cfg.InstallCallback != "" {
+		callbackBlock = fmt.Sprintf(
+			"\ncurl -fsS --max-time 10 --retry 2 --retry-delay 2 -o /dev/null %s || true\n",
+			shellEscapeSingle(cfg.InstallCallback),
+		)
 	}
 
 	script := fmt.Sprintf(`#!/bin/bash
@@ -146,6 +163,18 @@ SETUP_STAGES=fixown /usr/local/share/spinifex/setup.sh
 # setup.sh's create_directories — it resolves to /etc/spinifex, so
 # {BaseDir}/config/master.key automatically points at /etc/spinifex/master.key.
 
+# Bootstrap the spinifex user's SSH directory with a generated key pair so
+# ~/.ssh exists and the operator can immediately use ssh-keygen / ssh-copy-id
+# without hitting "No such file or directory" errors documented in the setup guide.
+if [ ! -f /home/spinifex/.ssh/id_ed25519 ]; then
+    mkdir -p /home/spinifex/.ssh
+    chmod 700 /home/spinifex/.ssh
+    ssh-keygen -t ed25519 -f /home/spinifex/.ssh/id_ed25519 -N "" -C "spinifex@$(hostname)"
+    chown -R spinifex:spinifex /home/spinifex/.ssh
+    chmod 600 /home/spinifex/.ssh/id_ed25519
+    chmod 644 /home/spinifex/.ssh/id_ed25519.pub
+fi
+
 # Copy AWS credentials to the spinifex user's home directory.
 # spx admin init runs with HOME=/root (set by the systemd unit), so credentials
 # land in /root/.aws/. Copy them to the spinifex user's home so the operator
@@ -176,7 +205,7 @@ systemctl enable spinifex.target spinifex-banner.service
 # firstboot from the top.
 mkdir -p "$(dirname "$DONE_MARKER")"
 touch "$DONE_MARKER"
-
+%s
 systemctl start spinifex.target
 
 # Wait for the daemon to bring up external networking. When external_mode=pool
@@ -196,7 +225,7 @@ if grep -q 'external_mode.*pool' /etc/spinifex/spinifex.toml 2>/dev/null; then
         echo "[firstboot] warning: br-ext not up after 30s — external networking may be delayed"
     fi
 fi
-`, cfg.Hostname, setupOVN, clusterCmd)
+`, cfg.Hostname, setupOVN, clusterCmd, callbackBlock)
 
 	path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
 	return os.WriteFile(path, []byte(script), 0o755)
@@ -210,11 +239,15 @@ func buildClusterCmd(cfg Config) string {
 		// validator already rejects whitespace and @-chains.
 		emailFlag = " --email=" + shellEscapeSingle(cfg.Email)
 	}
+	gpuFlag := ""
+	if cfg.GPUPassthrough {
+		gpuFlag = " --gpu-passthrough"
+	}
 	switch cfg.ClusterRole {
 	case "join":
 		return fmt.Sprintf("spx admin join --node %s --host %s%s", cfg.Hostname, cfg.JoinAddr, emailFlag)
 	default:
-		return fmt.Sprintf("spx admin init --node %s --nodes 1%s", cfg.Hostname, emailFlag)
+		return fmt.Sprintf("spx admin init --node %s --nodes 1%s%s", cfg.Hostname, emailFlag, gpuFlag)
 	}
 }
 

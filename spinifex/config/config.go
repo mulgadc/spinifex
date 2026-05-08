@@ -123,13 +123,30 @@ type PredastoreConfig struct {
 	NodeID    int    `json:"NodeID" mapstructure:"node_id"`
 }
 
+// GPUModelOverride maps a PCI vendor/device ID to a GPU instance family for
+// dev or test nodes that carry consumer GPUs not in the production model list.
+// Add entries under [[nodes.<node>.daemon.gpu_model_overrides]] in spinifex.toml.
+type GPUModelOverride struct {
+	VendorID     string `json:"VendorID" mapstructure:"vendor_id"`
+	DeviceID     string `json:"DeviceID" mapstructure:"device_id"`
+	Family       string `json:"Family" mapstructure:"family"`
+	Manufacturer string `json:"Manufacturer" mapstructure:"manufacturer"`
+	Name         string `json:"Name" mapstructure:"name"`
+	MemoryMiB    int64  `json:"MemoryMiB" mapstructure:"memory_mib"`
+	// XVGAOff forces x-vga=off for this GPU in QEMU passthrough, overriding the
+	// default (on for consumer GPUs, off for known datacenter cards).
+	XVGAOff bool `json:"XVGAOff" mapstructure:"xvga_off"`
+}
+
 // DaemonConfig holds the daemon configuration
 type DaemonConfig struct {
-	Host          string `json:"Host" mapstructure:"host"`
-	TLSKey        string `json:"TLSKey" mapstructure:"tlskey"`
-	TLSCert       string `json:"TLSCert" mapstructure:"tlscert"`
-	DevNetworking bool   `json:"DevNetworking" mapstructure:"dev_networking"` // VPC instances get both TAP + hostfwd for SSH dev access
-	MgmtBridge    string `json:"MgmtBridge" mapstructure:"mgmt_bridge"`       // Linux bridge for system instance control plane (default "br-mgmt")
+	Host              string             `json:"Host" mapstructure:"host"`
+	TLSKey            string             `json:"TLSKey" mapstructure:"tlskey"`
+	TLSCert           string             `json:"TLSCert" mapstructure:"tlscert"`
+	DevNetworking     bool               `json:"DevNetworking" mapstructure:"dev_networking"`          // VPC instances get both TAP + hostfwd for SSH dev access
+	MgmtBridge        string             `json:"MgmtBridge" mapstructure:"mgmt_bridge"`                // Linux bridge for system instance control plane (default "br-mgmt")
+	GPUPassthrough    bool               `json:"GPUPassthrough" mapstructure:"gpu_passthrough"`        // Enable VFIO GPU passthrough for g5.* instance types
+	GPUModelOverrides []GPUModelOverride `json:"GPUModelOverrides" mapstructure:"gpu_model_overrides"` // Dev/test GPU mappings not in the production model list
 }
 
 // NATSConfig holds the NATS configuration

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn()
 
@@ -18,20 +18,16 @@ import {
   elbv2TargetHealthQueryOptions,
 } from "./elbv2"
 
-afterEach(() => {
-  mockSend.mockReset()
-})
-
 describe("elbv2 query keys", () => {
   it("elbv2LoadBalancersQueryOptions has correct key", () => {
-    expect(elbv2LoadBalancersQueryOptions.queryKey).toEqual([
+    expect(elbv2LoadBalancersQueryOptions.queryKey).toStrictEqual([
       "elbv2",
       "loadBalancers",
     ])
   })
 
   it("elbv2LoadBalancerQueryOptions includes arn", () => {
-    expect(elbv2LoadBalancerQueryOptions("arn:lb").queryKey).toEqual([
+    expect(elbv2LoadBalancerQueryOptions("arn:lb").queryKey).toStrictEqual([
       "elbv2",
       "loadBalancers",
       "arn:lb",
@@ -39,23 +35,20 @@ describe("elbv2 query keys", () => {
   })
 
   it("elbv2LoadBalancerAttributesQueryOptions includes arn + attributes", () => {
-    expect(elbv2LoadBalancerAttributesQueryOptions("arn:lb").queryKey).toEqual([
-      "elbv2",
-      "loadBalancers",
-      "arn:lb",
-      "attributes",
-    ])
+    expect(
+      elbv2LoadBalancerAttributesQueryOptions("arn:lb").queryKey,
+    ).toStrictEqual(["elbv2", "loadBalancers", "arn:lb", "attributes"])
   })
 
   it("elbv2TargetGroupsQueryOptions has correct key", () => {
-    expect(elbv2TargetGroupsQueryOptions.queryKey).toEqual([
+    expect(elbv2TargetGroupsQueryOptions.queryKey).toStrictEqual([
       "elbv2",
       "targetGroups",
     ])
   })
 
   it("elbv2TargetGroupQueryOptions includes arn", () => {
-    expect(elbv2TargetGroupQueryOptions("arn:tg").queryKey).toEqual([
+    expect(elbv2TargetGroupQueryOptions("arn:tg").queryKey).toStrictEqual([
       "elbv2",
       "targetGroups",
       "arn:tg",
@@ -63,16 +56,13 @@ describe("elbv2 query keys", () => {
   })
 
   it("elbv2TargetGroupAttributesQueryOptions includes arn + attributes", () => {
-    expect(elbv2TargetGroupAttributesQueryOptions("arn:tg").queryKey).toEqual([
-      "elbv2",
-      "targetGroups",
-      "arn:tg",
-      "attributes",
-    ])
+    expect(
+      elbv2TargetGroupAttributesQueryOptions("arn:tg").queryKey,
+    ).toStrictEqual(["elbv2", "targetGroups", "arn:tg", "attributes"])
   })
 
   it("elbv2ListenersQueryOptions includes lb arn", () => {
-    expect(elbv2ListenersQueryOptions("arn:lb").queryKey).toEqual([
+    expect(elbv2ListenersQueryOptions("arn:lb").queryKey).toStrictEqual([
       "elbv2",
       "listeners",
       "arn:lb",
@@ -80,7 +70,7 @@ describe("elbv2 query keys", () => {
   })
 
   it("elbv2TargetHealthQueryOptions includes tg arn + health", () => {
-    expect(elbv2TargetHealthQueryOptions("arn:tg").queryKey).toEqual([
+    expect(elbv2TargetHealthQueryOptions("arn:tg").queryKey).toStrictEqual([
       "elbv2",
       "targetGroups",
       "arn:tg",
@@ -89,7 +79,7 @@ describe("elbv2 query keys", () => {
   })
 
   it("elbv2TagsQueryOptions spreads resource arns into key", () => {
-    expect(elbv2TagsQueryOptions(["arn:lb", "arn:tg"]).queryKey).toEqual([
+    expect(elbv2TagsQueryOptions(["arn:lb", "arn:tg"]).queryKey).toStrictEqual([
       "elbv2",
       "tags",
       "arn:lb",
@@ -100,8 +90,8 @@ describe("elbv2 query keys", () => {
 
 type QueryFnWithSignal = (ctx: { signal: AbortSignal }) => Promise<unknown>
 
-function callQueryFn(queryFn: unknown): Promise<unknown> {
-  return (queryFn as QueryFnWithSignal)({
+async function callQueryFn(queryFn: unknown): Promise<unknown> {
+  return await (queryFn as QueryFnWithSignal)({
     signal: new AbortController().signal,
   })
 }
@@ -111,13 +101,13 @@ describe("elbv2 implemented queries send the right command", () => {
     mockSend.mockResolvedValueOnce({ LoadBalancers: [] })
     await callQueryFn(elbv2LoadBalancersQueryOptions.queryFn)
     expect(mockSend).toHaveBeenCalledOnce()
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("loadBalancer detail filters by ARN", async () => {
     mockSend.mockResolvedValueOnce({ LoadBalancers: [] })
     await callQueryFn(elbv2LoadBalancerQueryOptions("arn:lb").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArns: ["arn:lb"],
     })
   })
@@ -125,7 +115,7 @@ describe("elbv2 implemented queries send the right command", () => {
   it("loadBalancer attributes sends arn", async () => {
     mockSend.mockResolvedValueOnce({ Attributes: [] })
     await callQueryFn(elbv2LoadBalancerAttributesQueryOptions("arn:lb").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb",
     })
   })
@@ -133,7 +123,7 @@ describe("elbv2 implemented queries send the right command", () => {
   it("listeners filters by load balancer arn", async () => {
     mockSend.mockResolvedValueOnce({ Listeners: [] })
     await callQueryFn(elbv2ListenersQueryOptions("arn:lb").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb",
     })
   })
@@ -141,7 +131,7 @@ describe("elbv2 implemented queries send the right command", () => {
   it("tags sends resource arns", async () => {
     mockSend.mockResolvedValueOnce({ TagDescriptions: [] })
     await callQueryFn(elbv2TagsQueryOptions(["arn:lb"]).queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ResourceArns: ["arn:lb"],
     })
   })
@@ -149,13 +139,13 @@ describe("elbv2 implemented queries send the right command", () => {
   it("targetGroups list sends DescribeTargetGroupsCommand", async () => {
     mockSend.mockResolvedValueOnce({ TargetGroups: [] })
     await callQueryFn(elbv2TargetGroupsQueryOptions.queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({})
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
   it("targetGroup detail filters by ARN", async () => {
     mockSend.mockResolvedValueOnce({ TargetGroups: [] })
     await callQueryFn(elbv2TargetGroupQueryOptions("arn:tg").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArns: ["arn:tg"],
     })
   })
@@ -163,7 +153,7 @@ describe("elbv2 implemented queries send the right command", () => {
   it("targetGroup attributes sends arn", async () => {
     mockSend.mockResolvedValueOnce({ Attributes: [] })
     await callQueryFn(elbv2TargetGroupAttributesQueryOptions("arn:tg").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: "arn:tg",
     })
   })
@@ -171,7 +161,7 @@ describe("elbv2 implemented queries send the right command", () => {
   it("targetHealth sends target group arn", async () => {
     mockSend.mockResolvedValueOnce({ TargetHealthDescriptions: [] })
     await callQueryFn(elbv2TargetHealthQueryOptions("arn:tg").queryFn)
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: "arn:tg",
     })
   })
@@ -201,6 +191,6 @@ describe("elbv2 load balancer list poll cadence", () => {
         data: { LoadBalancers: [{ State: { Code: "active" } }] },
       },
     } as never)
-    expect(result).toBe(false)
+    expect(result).toBeFalsy()
   })
 })

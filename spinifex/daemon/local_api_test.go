@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,8 +19,11 @@ import (
 // newLocalAPITestDaemon returns a Daemon with just enough wiring to exercise
 // the read-only /local/* handlers: a vm.Manager, a node name, and a Config so
 // any path-resolving code (revision bump via WriteState) has a temp DataDir.
+// XDG_RUNTIME_DIR is pinned to a temp dir so utils.WritePidFile / ReadPidFile
+// (used by vmToLocalInstance to surface PIDs) stay scoped to the test.
 func newLocalAPITestDaemon(t *testing.T) *Daemon {
 	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	d := &Daemon{
 		node:   "node-1",
 		vmMgr:  vm.NewManager(),
@@ -55,8 +59,9 @@ func TestLocalAPI_Instances_Empty(t *testing.T) {
 
 func TestLocalAPI_Instances_ListsVMs(t *testing.T) {
 	d := newLocalAPITestDaemon(t)
-	d.vmMgr.Insert(&vm.VM{ID: "i-b", Status: vm.StateRunning, PID: 4242})
+	d.vmMgr.Insert(&vm.VM{ID: "i-b", Status: vm.StateRunning})
 	d.vmMgr.Insert(&vm.VM{ID: "i-a", Status: vm.StateStopped})
+	require.NoError(t, utils.WritePidFile("i-b", 4242))
 
 	rec := doGET(t, newLocalAPIRouter(d), "/local/instances")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -75,7 +80,8 @@ func TestLocalAPI_Instances_ListsVMs(t *testing.T) {
 
 func TestLocalAPI_Instance_Found(t *testing.T) {
 	d := newLocalAPITestDaemon(t)
-	d.vmMgr.Insert(&vm.VM{ID: "i-find", Status: vm.StateRunning, PID: 7})
+	d.vmMgr.Insert(&vm.VM{ID: "i-find", Status: vm.StateRunning})
+	require.NoError(t, utils.WritePidFile("i-find", 7))
 
 	rec := doGET(t, newLocalAPIRouter(d), "/local/instances/i-find")
 	require.Equal(t, http.StatusOK, rec.Code)

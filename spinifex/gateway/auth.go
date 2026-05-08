@@ -87,6 +87,15 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
+			// Enforce that host and x-amz-date are signed. AWS SDKs always sign
+			// both; omitting either lets a captured Authorization header replay
+			// against a different vhost or outside the X-Amz-Date skew window.
+			// Mirrors predastore/auth.RequireSignedHeaders.
+			if !signedHeadersIncludeHostAndDate(signedHeaders) {
+				gw.writeSigV4Error(w, r, awserrors.ErrorIncompleteSignature)
+				return
+			}
+
 			// Parse Signature
 			var providedSignature string
 			if after, ok := strings.CutPrefix(parts[2], "Signature="); ok {
@@ -329,6 +338,21 @@ func buildCanonicalQueryString(queryString string) string {
 	}
 
 	return strings.Join(result, "&")
+}
+
+// signedHeadersIncludeHostAndDate reports whether the SigV4 SignedHeaders
+// list (";"-separated) includes both "host" and "x-amz-date".
+func signedHeadersIncludeHostAndDate(signedHeaders string) bool {
+	var hasHost, hasDate bool
+	for h := range strings.SplitSeq(signedHeaders, ";") {
+		switch strings.ToLower(strings.TrimSpace(h)) {
+		case "host":
+			hasHost = true
+		case "x-amz-date":
+			hasDate = true
+		}
+	}
+	return hasHost && hasDate
 }
 
 // canonicalHeaderName converts a lowercase header name to the canonical form for lookup.

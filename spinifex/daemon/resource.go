@@ -61,8 +61,17 @@ func applyHostReserve(host hostReserve, totalVCPU int, totalMemGB float64) (vcpu
 // slog.Error when remaining capacity is negative — that condition would
 // otherwise be silently clamped to zero, hiding a misconfigured reserve
 // or allocation accounting drift.
+//
+// availGPU is the number of free GPUs in the pool; requiresGPU indicates
+// that this instance type needs one. When requiresGPU is true and availGPU
+// is zero, the result is always 0.
 func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
-	vCPUs int64, memMiB int64, maxCount int) int {
+	vCPUs int64, memMiB int64, maxCount int,
+	availGPU int, requiresGPU bool) int {
+	if requiresGPU && availGPU == 0 {
+		return 0
+	}
+
 	remainingVCPU := availVCPU - allocVCPU
 	remainingMem := availMem - allocMem
 	if remainingVCPU < 0 || remainingMem < 0 {
@@ -83,6 +92,9 @@ func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	}
 
 	result := min(countByMem, countByCPU)
+	if requiresGPU {
+		result = min(result, availGPU)
+	}
 	result = min(result, maxCount)
 	return max(result, 0)
 }

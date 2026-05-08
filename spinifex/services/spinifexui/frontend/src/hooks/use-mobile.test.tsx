@@ -8,6 +8,7 @@ function mockMatchMedia(matches: boolean) {
     writable: true,
     value: vi.fn().mockReturnValue({
       matches,
+      // oxlint-disable-next-line promise/prefer-await-to-callbacks -- mocking matchMedia DOM API
       addEventListener: (_event: string, cb: () => void) => {
         changeListener = cb
       },
@@ -18,33 +19,34 @@ function mockMatchMedia(matches: boolean) {
   })
 }
 
-beforeEach(() => {
-  vi.resetModules()
-  changeListener = null
-})
-
-afterEach(() => {
-  changeListener = null
-})
-
 describe("useIsMobile", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    changeListener = null
+  })
+
+  afterEach(() => {
+    changeListener = null
+  })
+
   it("returns false on desktop viewport", async () => {
     mockMatchMedia(false)
     const { useIsMobile } = await import("./use-mobile")
     const { result } = renderHook(() => useIsMobile())
-    expect(result.current).toBe(false)
+    expect(result.current).toBeFalsy()
   })
 
   it("returns true on mobile viewport", async () => {
     mockMatchMedia(true)
     const { useIsMobile } = await import("./use-mobile")
     const { result } = renderHook(() => useIsMobile())
-    expect(result.current).toBe(true)
+    expect(result.current).toBeTruthy()
   })
 
   it("updates when viewport changes", async () => {
     const mqlMock = {
       matches: false,
+      // oxlint-disable-next-line promise/prefer-await-to-callbacks -- mocking matchMedia DOM API
       addEventListener: (_event: string, cb: () => void) => {
         changeListener = cb
       },
@@ -60,14 +62,14 @@ describe("useIsMobile", () => {
 
     const { useIsMobile } = await import("./use-mobile")
     const { result } = renderHook(() => useIsMobile())
-    expect(result.current).toBe(false)
+    expect(result.current).toBeFalsy()
 
     // Simulate viewport shrink
     mqlMock.matches = true
     act(() => {
       changeListener?.()
     })
-    expect(result.current).toBe(true)
+    expect(result.current).toBeTruthy()
   })
 
   it("cleans up listener on unmount", async () => {

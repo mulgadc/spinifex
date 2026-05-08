@@ -134,6 +134,10 @@ func buildConfig() (*install.Config, error) {
 		}
 	}
 
+	if os.Getenv("SPINIFEX_GPU_PASSTHROUGH") == "1" {
+		cfg.GPUPassthrough = true
+	}
+
 	role := strings.ToLower(os.Getenv("SPINIFEX_ROLE"))
 	if role == "" {
 		role = "init"

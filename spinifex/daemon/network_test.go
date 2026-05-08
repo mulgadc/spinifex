@@ -1,14 +1,15 @@
 package daemon
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTapDeviceName(t *testing.T) {
@@ -33,133 +34,6 @@ func TestTapDeviceName(t *testing.T) {
 				t.Errorf("vm.TapDeviceName(%q) = %q (len %d), exceeds IFNAMSIZ limit of 15", tt.eniId, got, len(got))
 			}
 		})
-	}
-}
-
-// MockNetworkPlumber records calls for testing.
-type MockNetworkPlumber struct {
-	SetupCalls   []mockSetupCall
-	CleanupCalls []string
-	SetupErr     error
-	CleanupErr   error
-}
-
-var _ NetworkPlumber = (*MockNetworkPlumber)(nil)
-
-type mockSetupCall struct {
-	ENIId string
-	MAC   string
-}
-
-func (m *MockNetworkPlumber) SetupTapDevice(eniId, mac string) error {
-	m.SetupCalls = append(m.SetupCalls, mockSetupCall{ENIId: eniId, MAC: mac})
-	return m.SetupErr
-}
-
-func (m *MockNetworkPlumber) CleanupTapDevice(eniId string) error {
-	m.CleanupCalls = append(m.CleanupCalls, eniId)
-	return m.CleanupErr
-}
-
-func TestStartInstance_VPCNetworking(t *testing.T) {
-	instance := &vm.VM{
-		ID:           "i-test123",
-		InstanceType: "t3.micro",
-		ENIId:        "eni-abc123def456789",
-		ENIMac:       "02:00:00:11:22:33",
-	}
-
-	// When ENI is set, config should use tap networking with MAC
-	instance.Config = vm.Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-	}
-
-	// Simulate what StartInstance does for VPC mode
-	tapName := vm.TapDeviceName(instance.ENIId)
-	instance.Config.NetDevs = append(instance.Config.NetDevs, vm.NetDev{
-		Value: "tap,id=net0,ifname=" + tapName + ",script=no,downscript=no",
-	})
-	instance.Config.Devices = append(instance.Config.Devices, vm.Device{
-		Value: "virtio-net-pci,netdev=net0,mac=" + instance.ENIMac,
-	})
-
-	// Verify QEMU args
-	if len(instance.Config.NetDevs) != 1 {
-		t.Fatalf("expected 1 netdev, got %d", len(instance.Config.NetDevs))
-	}
-
-	expected := "tap,id=net0,ifname=tapabc123def456,script=no,downscript=no"
-	if instance.Config.NetDevs[0].Value != expected {
-		t.Errorf("netdev = %q, want %q", instance.Config.NetDevs[0].Value, expected)
-	}
-
-	expectedDev := "virtio-net-pci,netdev=net0,mac=02:00:00:11:22:33"
-	if instance.Config.Devices[0].Value != expectedDev {
-		t.Errorf("device = %q, want %q", instance.Config.Devices[0].Value, expectedDev)
-	}
-}
-
-func TestStartInstance_FallbackNetworking(t *testing.T) {
-	instance := &vm.VM{
-		ID:           "i-test456",
-		InstanceType: "t3.micro",
-		// No ENI — should use user-mode networking
-	}
-
-	instance.Config = vm.Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-	}
-
-	// Simulate what StartInstance does for non-VPC mode
-	instance.Config.NetDevs = append(instance.Config.NetDevs, vm.NetDev{
-		Value: "user,id=net0,hostfwd=tcp:127.0.0.1:22222-:22",
-	})
-	instance.Config.Devices = append(instance.Config.Devices, vm.Device{
-		Value: "virtio-net-pci,netdev=net0",
-	})
-
-	// Verify no MAC is specified (QEMU auto-assigns)
-	if len(instance.Config.Devices) != 1 {
-		t.Fatalf("expected 1 device, got %d", len(instance.Config.Devices))
-	}
-
-	// User-mode networking should not include MAC
-	dev := instance.Config.Devices[0].Value
-	if dev != "virtio-net-pci,netdev=net0" {
-		t.Errorf("device = %q, want 'virtio-net-pci,netdev=net0'", dev)
-	}
-}
-
-func TestMockNetworkPlumber_SetupAndCleanup(t *testing.T) {
-	mock := &MockNetworkPlumber{}
-
-	err := mock.SetupTapDevice("eni-abc123", "02:00:00:aa:bb:cc")
-	if err != nil {
-		t.Fatalf("SetupTapDevice: %v", err)
-	}
-	if len(mock.SetupCalls) != 1 {
-		t.Fatalf("expected 1 setup call, got %d", len(mock.SetupCalls))
-	}
-	if mock.SetupCalls[0].ENIId != "eni-abc123" {
-		t.Errorf("setup eniId = %q, want 'eni-abc123'", mock.SetupCalls[0].ENIId)
-	}
-	if mock.SetupCalls[0].MAC != "02:00:00:aa:bb:cc" {
-		t.Errorf("setup mac = %q, want '02:00:00:aa:bb:cc'", mock.SetupCalls[0].MAC)
-	}
-
-	err = mock.CleanupTapDevice("eni-abc123")
-	if err != nil {
-		t.Fatalf("CleanupTapDevice: %v", err)
-	}
-	if len(mock.CleanupCalls) != 1 {
-		t.Fatalf("expected 1 cleanup call, got %d", len(mock.CleanupCalls))
-	}
-	if mock.CleanupCalls[0] != "eni-abc123" {
-		t.Errorf("cleanup eniId = %q, want 'eni-abc123'", mock.CleanupCalls[0])
 	}
 }
 
@@ -260,26 +134,256 @@ func TestFindInterfaceByIP_NotFound(t *testing.T) {
 	}
 }
 
-// TestCleanupMgmtTapDevice_MissingKernelTap verifies the nil-safe branch
-// added to support finalizeTermination: a terminate that races mid-launch
-// (or an instance that never created a mgmt tap) must not log a misleading
-// "Device does not exist" error from `ip tuntap del`.
-func TestCleanupMgmtTapDevice_MissingKernelTap(t *testing.T) {
+// TestOVSNetworkPlumber_SetupTap_AddPortArgs captures the ovs-vsctl invocations
+// for both VPC-style (populated ExternalIDs → `set Interface external_ids:k=v`)
+// and management-style (empty ExternalIDs → bare `add-port`) calls. This is the
+// functional difference that previously lived in two diverged setup functions.
+func TestOVSNetworkPlumber_SetupTap_AddPortArgs(t *testing.T) {
+	cases := []struct {
+		name        string
+		spec        vm.TapSpec
+		wantAddPort []string // expected tail of ovs-vsctl args (after add-port <bridge> <name>)
+	}{
+		{
+			name: "vpc style with external_ids",
+			spec: vm.TapSpec{
+				Name:   "tapeni-test",
+				Bridge: "br-int",
+				ExternalIDs: map[string]string{
+					"iface-id":     "port-eni-test",
+					"attached-mac": "02:00:00:aa:bb:cc",
+				},
+			},
+			wantAddPort: []string{
+				"add-port", "br-int", "tapeni-test",
+				"--", "set", "Interface", "tapeni-test",
+				"external_ids:attached-mac=02:00:00:aa:bb:cc",
+				"external_ids:iface-id=port-eni-test",
+			},
+		},
+		{
+			name: "mgmt style without external_ids",
+			spec: vm.TapSpec{
+				Name:   "mg-test",
+				Bridge: "br-mgmt",
+			},
+			wantAddPort: []string{"add-port", "br-mgmt", "mg-test"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := sudoCommand
+			t.Cleanup(func() { sudoCommand = orig })
+
+			var calls [][]string
+			sudoCommand = func(name string, args ...string) *exec.Cmd {
+				call := append([]string{name}, args...)
+				calls = append(calls, call)
+				return exec.Command("/bin/true")
+			}
+
+			p := &OVSNetworkPlumber{}
+			if err := p.SetupTap(tc.spec); err != nil {
+				t.Fatalf("SetupTap: %v", err)
+			}
+
+			// Find the add-port invocation (last ovs-vsctl call).
+			var addPort []string
+			for _, c := range calls {
+				if len(c) >= 2 && c[0] == "ovs-vsctl" && c[1] != "--if-exists" {
+					addPort = c[1:]
+				}
+			}
+			if addPort == nil {
+				t.Fatalf("no add-port invocation captured; calls=%v", calls)
+			}
+			if !slices.Equal(addPort, tc.wantAddPort) {
+				t.Errorf("add-port args = %v, want %v", addPort, tc.wantAddPort)
+			}
+		})
+	}
+}
+
+// TestOVSNetworkPlumber_SetupTap_PreExistingKernelTap exercises the
+// pre-create kernel-side cleanup branch (lines guarded by /sys/class/net/<name>
+// stat). Uses "lo" as a name that's always present so os.Stat returns success.
+func TestOVSNetworkPlumber_SetupTap_PreExistingKernelTap(t *testing.T) {
+	orig := sudoCommand
+	t.Cleanup(func() { sudoCommand = orig })
+
+	failTuntapDel := false
+	sudoCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" && failTuntapDel {
+			failTuntapDel = false
+			return exec.Command("/bin/false")
+		}
+		return exec.Command("/bin/true")
+	}
+
+	failTuntapDel = true
+	p := &OVSNetworkPlumber{}
+	if err := p.SetupTap(vm.TapSpec{Name: "lo", Bridge: "br-int"}); err != nil {
+		t.Fatalf("SetupTap with stubs should succeed: %v", err)
+	}
+}
+
+// TestOVSNetworkPlumber_SetupTap_ErrorBranches stubs sudoCommand to fail at
+// each step in turn and asserts the corresponding error is returned. Covers
+// the cleanup-on-failure paths that the success-path tests miss.
+func TestOVSNetworkPlumber_SetupTap_ErrorBranches(t *testing.T) {
+	cases := []struct {
+		name      string
+		failMatch func(name string, args []string) bool
+		wantErr   string
+	}{
+		{
+			name: "ovs del-port failure is logged-warn (continues)",
+			failMatch: func(name string, args []string) bool {
+				return name == "ovs-vsctl" && len(args) >= 1 && args[0] == "--if-exists"
+			},
+			wantErr: "", // pre-clear failure is swallowed; SetupTap returns nil
+		},
+		{
+			name: "tuntap add failure surfaces",
+			failMatch: func(name string, args []string) bool {
+				return name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "add"
+			},
+			wantErr: "create tap",
+		},
+		{
+			name: "ip link set up failure surfaces and triggers tap cleanup",
+			failMatch: func(name string, args []string) bool {
+				return name == "ip" && len(args) >= 1 && args[0] == "link"
+			},
+			wantErr: "bring up tap",
+		},
+		{
+			name: "ovs add-port failure surfaces and triggers tap cleanup",
+			failMatch: func(name string, args []string) bool {
+				return name == "ovs-vsctl" && len(args) >= 1 && args[0] == "add-port"
+			},
+			wantErr: "add tap",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := sudoCommand
+			t.Cleanup(func() { sudoCommand = orig })
+
+			sudoCommand = func(name string, args ...string) *exec.Cmd {
+				if tc.failMatch(name, args) {
+					return exec.Command("/bin/false")
+				}
+				return exec.Command("/bin/true")
+			}
+
+			p := &OVSNetworkPlumber{}
+			err := p.SetupTap(vm.TapSpec{Name: "tap-test-noexist", Bridge: "br-int"})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestOVSNetworkPlumber_CleanupTap_PresentKernelTap exercises the success
+// path where the kernel device is present (uses "lo" so /sys/class/net/lo
+// stat succeeds). Asserts no error and that ip tuntap del was attempted.
+func TestOVSNetworkPlumber_CleanupTap_PresentKernelTap(t *testing.T) {
+	orig := sudoCommand
+	t.Cleanup(func() { sudoCommand = orig })
+
+	var sawTuntapDel bool
+	sudoCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" {
+			sawTuntapDel = true
+		}
+		return exec.Command("/bin/true")
+	}
+
+	p := &OVSNetworkPlumber{}
+	if err := p.CleanupTap("lo"); err != nil {
+		t.Fatalf("CleanupTap: %v", err)
+	}
+	if !sawTuntapDel {
+		t.Errorf("expected ip tuntap del to be invoked, got no call")
+	}
+}
+
+// TestOVSNetworkPlumber_CleanupTap_DelPortLoggedWarn covers the OVS del-port
+// failure branch (logged warn, continues to kernel-side cleanup).
+func TestOVSNetworkPlumber_CleanupTap_DelPortLoggedWarn(t *testing.T) {
+	orig := sudoCommand
+	t.Cleanup(func() { sudoCommand = orig })
+
+	sudoCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "ovs-vsctl" {
+			return exec.Command("/bin/false")
+		}
+		return exec.Command("/bin/true")
+	}
+
+	p := &OVSNetworkPlumber{}
+	// Tap doesn't exist on this test system → kernel-presence gate short-circuits
+	// after the OVS warn, so CleanupTap returns nil.
+	if err := p.CleanupTap("tap-test-noexist"); err != nil {
+		t.Fatalf("CleanupTap: %v", err)
+	}
+}
+
+// TestOVSNetworkPlumber_CleanupTap_TuntapDelFailure exercises the kernel-side
+// failure branch (real kernel device present + ip tuntap del returns nonzero).
+func TestOVSNetworkPlumber_CleanupTap_TuntapDelFailure(t *testing.T) {
+	orig := sudoCommand
+	t.Cleanup(func() { sudoCommand = orig })
+
+	sudoCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "del" {
+			return exec.Command("/bin/false")
+		}
+		return exec.Command("/bin/true")
+	}
+
+	p := &OVSNetworkPlumber{}
+	err := p.CleanupTap("lo") // /sys/class/net/lo is present, so we reach tuntap del
+	if err == nil || !strings.Contains(err.Error(), "delete tap") {
+		t.Fatalf("expected 'delete tap' error, got %v", err)
+	}
+}
+
+// TestOVSNetworkPlumber_CleanupTap_MissingKernelTap verifies the nil-safe branch:
+// callers may invoke CleanupTap on a name that has neither an OVS port nor a
+// kernel tap (e.g. a terminate that races mid-launch, or an instance that
+// never reached SetupTap) without producing a misleading "Device does not
+// exist" error from `ip tuntap del`.
+func TestOVSNetworkPlumber_CleanupTap_MissingKernelTap(t *testing.T) {
 	// 15-char IFNAMSIZ-compliant name that does not exist in /sys/class/net.
 	// The OVS del-port call may fail on CI without ovs-vsctl, but is
 	// best-effort + logged-warn; the kernel-presence gate short-circuits
 	// before `ip tuntap del` runs.
-	if err := CleanupMgmtTapDevice("mg-test-noexist"); err != nil {
+	p := &OVSNetworkPlumber{}
+	if err := p.CleanupTap("mg-test-noexist"); err != nil {
 		t.Fatalf("expected nil for missing kernel tap, got: %v", err)
 	}
 }
 
-func TestEnsureDataRoute_NoOVS(t *testing.T) {
-	// EnsureDataRoute requires ip commands which may not work in CI.
-	// On loopback, there's no kernel subnet route, so it should return an error.
+func TestEnsureDataRoute_NoKernelRoute(t *testing.T) {
+	// 127.0.0.1 resolves to "lo", which has no kernel/scope-link subnet route.
+	// EnsureDataRoute must surface this as an error rather than silently
+	// succeed against a non-existent route — a regression that drops the
+	// error would leave Geneve traffic egressing the wrong NIC.
 	err := EnsureDataRoute("127.0.0.1")
-	// We expect an error (no kernel route for lo), but no panic.
-	_ = err
+	require.Error(t, err, "expected error for IP without a kernel subnet route")
+	require.ErrorContains(t, err, "no kernel route found",
+		"error must identify the missing-route condition, not a generic interface lookup failure")
 }
 
 func TestSetupComputeNode_ValidatesArgs(t *testing.T) {
@@ -295,39 +399,6 @@ func TestSetupComputeNode_ValidatesArgs(t *testing.T) {
 
 	if err := SetupComputeNode("chassis-test", "tcp:127.0.0.1:6642", "10.0.0.1"); err == nil {
 		t.Fatal("expected error from stubbed sudoCommand, got nil")
-	}
-}
-
-func TestMockNetworkPlumber_SetupError(t *testing.T) {
-	mock := &MockNetworkPlumber{
-		SetupErr: fmt.Errorf("simulated setup failure"),
-	}
-	err := mock.SetupTapDevice("eni-abc123", "02:00:00:aa:bb:cc")
-	if err == nil {
-		t.Fatal("expected error from SetupTapDevice")
-	}
-	if err.Error() != "simulated setup failure" {
-		t.Errorf("unexpected error: %v", err)
-	}
-	// Call should still be recorded
-	if len(mock.SetupCalls) != 1 {
-		t.Fatalf("expected 1 setup call, got %d", len(mock.SetupCalls))
-	}
-}
-
-func TestMockNetworkPlumber_CleanupError(t *testing.T) {
-	mock := &MockNetworkPlumber{
-		CleanupErr: fmt.Errorf("simulated cleanup failure"),
-	}
-	err := mock.CleanupTapDevice("eni-abc123")
-	if err == nil {
-		t.Fatal("expected error from CleanupTapDevice")
-	}
-	if err.Error() != "simulated cleanup failure" {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if len(mock.CleanupCalls) != 1 {
-		t.Fatalf("expected 1 cleanup call, got %d", len(mock.CleanupCalls))
 	}
 }
 
@@ -374,9 +445,9 @@ func TestOVSIfaceID_Format(t *testing.T) {
 		{"", "port-"},
 	}
 	for _, tt := range tests {
-		got := OVSIfaceID(tt.eniId)
+		got := vm.OVSIfaceID(tt.eniId)
 		if got != tt.expected {
-			t.Errorf("OVSIfaceID(%q) = %q, want %q", tt.eniId, got, tt.expected)
+			t.Errorf("vm.OVSIfaceID(%q) = %q, want %q", tt.eniId, got, tt.expected)
 		}
 	}
 }
@@ -434,12 +505,12 @@ func TestMgmtTapName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.instanceID, func(t *testing.T) {
-			got := MgmtTapName(tt.instanceID)
+			got := vm.MgmtTapName(tt.instanceID)
 			if got != tt.expected {
-				t.Errorf("MgmtTapName(%q) = %q, want %q", tt.instanceID, got, tt.expected)
+				t.Errorf("vm.MgmtTapName(%q) = %q, want %q", tt.instanceID, got, tt.expected)
 			}
 			if len(got) > 15 {
-				t.Errorf("MgmtTapName(%q) = %q (len %d), exceeds IFNAMSIZ limit of 15", tt.instanceID, got, len(got))
+				t.Errorf("vm.MgmtTapName(%q) = %q (len %d), exceeds IFNAMSIZ limit of 15", tt.instanceID, got, len(got))
 			}
 		})
 	}

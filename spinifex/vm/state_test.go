@@ -3,6 +3,7 @@ package vm
 import (
 	"testing"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -20,40 +21,58 @@ func TestIsValidTransition(t *testing.T) {
 	assert.False(t, IsValidTransition(StateStopped, StateStopping))
 }
 
-func TestEC2StateCodes_AllStatesHaveMapping(t *testing.T) {
-	allStates := []InstanceState{
-		StateProvisioning,
-		StatePending,
-		StateRunning,
-		StateStopping,
-		StateStopped,
-		StateShuttingDown,
-		StateTerminated,
-		StateError,
-	}
+// awsEC2StateCodes is the AWS-documented EC2 InstanceState code/name
+// contract (see API_InstanceState). Names come from the SDK's enum
+// constants; codes are fixed by the AWS API and have no SDK constant.
+// Verifying our production map against an independent literal protects
+// against a typo replicated identically in test and production.
+var awsEC2StateCodes = map[string]int64{
+	ec2.InstanceStateNamePending:      0,
+	ec2.InstanceStateNameRunning:      16,
+	ec2.InstanceStateNameShuttingDown: 32,
+	ec2.InstanceStateNameTerminated:   48,
+	ec2.InstanceStateNameStopping:     64,
+	ec2.InstanceStateNameStopped:      80,
+}
 
-	for _, s := range allStates {
+func TestEC2StateCodes_AllInstanceStatesMapped(t *testing.T) {
+	for _, s := range []InstanceState{
+		StateProvisioning, StatePending, StateRunning, StateStopping,
+		StateStopped, StateShuttingDown, StateTerminated, StateError,
+	} {
 		info, ok := EC2StateCodes[s]
-		assert.True(t, ok, "State %s should have an EC2 mapping", s)
-		assert.NotEmpty(t, info.Name, "State %s EC2 name should not be empty", s)
+		assert.True(t, ok, "InstanceState %s missing from EC2StateCodes", s)
+		assert.NotEmpty(t, info.Name, "InstanceState %s mapped to empty EC2 name", s)
 	}
 }
 
-func TestEC2StateCodes_CorrectValues(t *testing.T) {
-	expected := map[InstanceState]EC2StateInfo{
-		StateProvisioning: {Code: 0, Name: "pending"},
-		StatePending:      {Code: 0, Name: "pending"},
-		StateRunning:      {Code: 16, Name: "running"},
-		StateStopping:     {Code: 64, Name: "stopping"},
-		StateStopped:      {Code: 80, Name: "stopped"},
-		StateShuttingDown: {Code: 32, Name: "shutting-down"},
-		StateTerminated:   {Code: 48, Name: "terminated"},
-		StateError:        {Code: 0, Name: "error"},
+func TestEC2StateCodes_MatchAWSContract(t *testing.T) {
+	// Production states with a direct AWS equivalent must match the AWS
+	// (code, name) tuple exactly. State{Provisioning,Error} are
+	// Spinifex-only and verified separately below.
+	awsBacked := map[InstanceState]string{
+		StatePending:      ec2.InstanceStateNamePending,
+		StateRunning:      ec2.InstanceStateNameRunning,
+		StateStopping:     ec2.InstanceStateNameStopping,
+		StateStopped:      ec2.InstanceStateNameStopped,
+		StateShuttingDown: ec2.InstanceStateNameShuttingDown,
+		StateTerminated:   ec2.InstanceStateNameTerminated,
 	}
+	for state, awsName := range awsBacked {
+		got := EC2StateCodes[state]
+		assert.Equal(t, awsName, got.Name,
+			"InstanceState %s name diverges from AWS contract", state)
+		assert.Equal(t, awsEC2StateCodes[awsName], got.Code,
+			"InstanceState %s code diverges from AWS contract", state)
+	}
+}
 
-	for state, exp := range expected {
-		actual := EC2StateCodes[state]
-		assert.Equal(t, exp.Code, actual.Code, "State %s code mismatch", state)
-		assert.Equal(t, exp.Name, actual.Name, "State %s name mismatch", state)
-	}
+func TestEC2StateCodes_SpinifexOnlyStatesPresentAsPending(t *testing.T) {
+	// Provisioning is a pre-launch internal state; it surfaces to AWS
+	// callers as "pending" so DescribeInstances returns a code AWS clients
+	// understand. Error is a terminal-ish failure state with no AWS
+	// equivalent — code 0 is the safest fallback ("pending" code).
+	assert.Equal(t, "pending", EC2StateCodes[StateProvisioning].Name)
+	assert.Equal(t, int64(0), EC2StateCodes[StateProvisioning].Code)
+	assert.Equal(t, int64(0), EC2StateCodes[StateError].Code)
 }

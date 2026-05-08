@@ -30,19 +30,26 @@ func (m *Manager) StartPendingWatchdog(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				stuck := m.Filter(func(v *VM) bool {
-					return (v.Status == StatePending || v.Status == StateProvisioning) &&
-						v.Instance != nil && v.Instance.LaunchTime != nil &&
-						time.Since(*v.Instance.LaunchTime) > PendingWatchdogTimeout
-				})
-
-				for _, instance := range stuck {
-					slog.Warn("Instance stuck in pending, marking failed",
-						"instanceId", instance.ID, "status", instance.Status,
-						"elapsed", time.Since(*instance.Instance.LaunchTime))
-					m.MarkFailed(instance, "launch_timeout")
-				}
+				m.scanAndMarkStuckPending(time.Now())
 			}
 		}
 	}()
+}
+
+// scanAndMarkStuckPending runs one pass of the watchdog body with a
+// caller-supplied "now". Extracted so tests can drive the body
+// deterministically without waiting for the production tick interval.
+func (m *Manager) scanAndMarkStuckPending(now time.Time) {
+	stuck := m.Filter(func(v *VM) bool {
+		return (v.Status == StatePending || v.Status == StateProvisioning) &&
+			v.Instance != nil && v.Instance.LaunchTime != nil &&
+			now.Sub(*v.Instance.LaunchTime) > PendingWatchdogTimeout
+	})
+
+	for _, instance := range stuck {
+		slog.Warn("Instance stuck in pending, marking failed",
+			"instanceId", instance.ID, "status", instance.Status,
+			"elapsed", now.Sub(*instance.Instance.LaunchTime))
+		m.MarkFailed(instance, "launch_timeout")
+	}
 }

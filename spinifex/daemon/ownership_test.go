@@ -26,13 +26,13 @@ func TestIsInstanceVisible(t *testing.T) {
 			expected:        false,
 		},
 		{
-			name:            "pre-Phase4 instance visible to root",
+			name:            "untenanted instance visible to root",
 			callerAccountID: utils.GlobalAccountID,
 			ownerAccountID:  "",
 			expected:        true,
 		},
 		{
-			name:            "pre-Phase4 instance hidden from non-root",
+			name:            "untenanted instance hidden from non-root",
 			callerAccountID: "123456789012",
 			ownerAccountID:  "",
 			expected:        false,
@@ -82,19 +82,19 @@ func TestVolumeVisibleTo(t *testing.T) {
 			expected:        false,
 		},
 		{
-			name:            "pre-Phase4 volume visible to root",
+			name:            "untenanted volume visible to root",
 			tenantID:        "",
 			callerAccountID: utils.GlobalAccountID,
 			expected:        true,
 		},
 		{
-			name:            "pre-Phase4 volume hidden from non-root tenant",
+			name:            "untenanted volume hidden from non-root tenant",
 			tenantID:        "",
 			callerAccountID: "123456789012",
 			expected:        false,
 		},
 		{
-			name:            "pre-Phase4 volume denied to empty caller",
+			name:            "untenanted volume denied to empty caller",
 			tenantID:        "",
 			callerAccountID: "",
 			expected:        false,

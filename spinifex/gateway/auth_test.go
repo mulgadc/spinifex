@@ -1954,6 +1954,83 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 	}
 }
 
+// TestSigV4Auth_RequireSignedHeaders verifies that requests whose SigV4
+// SignedHeaders list omits "host" or "x-amz-date" are rejected with
+// IncompleteSignature, before signature comparison runs. AWS SDKs always
+// sign both; omitting either lets a captured Authorization header replay
+// against a different vhost or outside the X-Amz-Date skew window.
+func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
+	handler := setupTestApp(testAccessKey, testSecretKey)
+
+	rewriteSignedHeaders := func(authHeader, list string) string {
+		parts := strings.Split(authHeader, ", ")
+		if len(parts) != 3 {
+			t.Fatalf("expected 3-part auth header, got %d", len(parts))
+		}
+		parts[1] = "SignedHeaders=" + list
+		return strings.Join(parts, ", ")
+	}
+
+	cases := []struct {
+		name       string
+		signedList string
+	}{
+		{"missing host", "x-amz-date"},
+		{"missing x-amz-date", "host"},
+		{"neither present", "content-type"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			authHeader, timestamp := generateTestAuthHeader(
+				"GET", "/", "", "",
+				testAccessKey, testSecretKey, testRegion, testService,
+			)
+			authHeader = rewriteSignedHeaders(authHeader, tc.signedList)
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = "localhost:9999"
+			req.Header.Set("Authorization", authHeader)
+			req.Header.Set("X-Amz-Date", timestamp)
+
+			resp := doRequest(handler, req)
+
+			if resp.StatusCode != http.StatusBadRequest {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Expected status 400, got %d, body: %s", resp.StatusCode, string(body))
+			}
+			body, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(body), "IncompleteSignature") {
+				t.Errorf("Expected IncompleteSignature error, got: %s", string(body))
+			}
+		})
+	}
+}
+
+func TestSignedHeadersIncludeHostAndDate(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"host;x-amz-date", true},
+		{"content-type;host;x-amz-date", true},
+		{"Host;X-Amz-Date", true},
+		{" host ; x-amz-date ", true},
+		{"x-amz-date", false},
+		{"host", false},
+		{"content-type", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got := signedHeadersIncludeHostAndDate(tc.in)
+			if got != tc.want {
+				t.Errorf("signedHeadersIncludeHostAndDate(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSigV4Auth_NATSDisconnectedShortCircuit verifies that the SigV4 middleware
 // returns the cluster-unavailable 503 promised by 1c without ever reaching the
 // IAM lookup when the NATS connection is disconnected. With IAMService nil the
@@ -1977,7 +2054,7 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	authHeader, timestamp := generateTestAuthHeader(

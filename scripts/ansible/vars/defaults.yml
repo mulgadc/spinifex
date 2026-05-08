@@ -32,34 +32,34 @@ spinifex_nat_gateway_ip: ""
 
 # Preflight checks.
 spinifex_ports:
-  - { port: 4222, service: NATS }
-  - { port: 8443, service: Predastore }
-  - { port: 9999, service: "Spinifex Gateway" }
+    - { port: 4222, service: NATS }
+    - { port: 8443, service: Predastore }
+    - { port: 9999, service: "Spinifex Gateway" }
 
 spinifex_required_commands:
-  - go
-  - make
-  - nbdkit
+    - go
+    - make
+    - nbdkit
 spinifex_optional_commands:
-  - air
+    - air
 spinifex_ovn_commands:
-  - ovs-vsctl
-  - ovn-controller
-  - ovn-nbctl
+    - ovs-vsctl
+    - ovn-controller
+    - ovn-nbctl
 
 spinifex_components:
-  - viperblock
-  - predastore
+    - viperblock
+    - predastore
 
 # Process patterns for teardown.
 # Bracket trick ([b]in/spx etc.) prevents the pattern literal from matching
 # our own pgrep/shell cmdline. Exclude filter drops benign log followers and
 # ansible's own wrappers that also mention these service names.
-spinifex_process_pattern: '([b]in/spx|spinifex-[u]i|nats-[s]erver|[p]redastore|[v]iperblock|[v]pcd)'
-spinifex_process_exclude: '(journalctl|ansible|/bin/sh|pgrep|pkill|tail -[fF])'
+spinifex_process_pattern: "([b]in/spx|spinifex-[u]i|nats-[s]erver|[p]redastore|[v]iperblock|[v]pcd)"
+spinifex_process_exclude: "(journalctl|ansible|/bin/sh|pgrep|pkill|tail -[fF])"
 spinifex_qemu_processes:
-  - qemu-system-x86_64
-  - qemu-system-aarch64
+    - qemu-system-x86_64
+    - qemu-system-aarch64
 
 # Invoking user (when run under sudo).
 spinifex_invoking_user: "{{ lookup('env','SUDO_USER') | default(ansible_facts['user_id'], true) }}"
@@ -85,6 +85,6 @@ spinifex_lb_image_conf: "{{ spinifex_root }}/scripts/images/lb.conf"
 
 # Smoketest image — parameterised so tofu examples can share the same base.
 spinifex_smoketest_distro: debian
-spinifex_smoketest_version: "12"
+spinifex_smoketest_version: "13"
 # Local image file path (if present, imported directly; otherwise fall back to --name).
 spinifex_smoketest_local_image: "~/images/{{ spinifex_smoketest_distro }}-{{ spinifex_smoketest_version }}.img"

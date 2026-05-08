@@ -110,8 +110,6 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 		if v.Health.FirstCrashTime.IsZero() {
 			v.Health.FirstCrashTime = now
 		}
-		v.Running = false
-		v.PID = 0
 	})
 
 	if m.deps.Resources != nil && instance.InstanceType != "" {

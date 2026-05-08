@@ -1,5 +1,7 @@
 import { Pause, Play, RotateCw, Trash2 } from "lucide-react"
+import { useState } from "react"
 
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,8 +28,15 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
   const stopMutation = useStopInstance()
   const rebootMutation = useRebootInstance()
   const terminateMutation = useTerminateInstance()
+  const [showTerminateDialog, setShowTerminateDialog] = useState(false)
 
   const isTransitioning = TRANSITIONING_STATES.has(state ?? "")
+
+  const handleTerminate = () => {
+    terminateMutation.mutate(instanceId, {
+      onSettled: () => setShowTerminateDialog(false),
+    })
+  }
 
   if (isTransitioning && state !== "terminated") {
     return (
@@ -111,7 +120,7 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
         {(state === "stopped" || state === "running") && (
           <Button
             disabled={terminateMutation.isPending}
-            onClick={() => terminateMutation.mutate(instanceId)}
+            onClick={() => setShowTerminateDialog(true)}
             size="sm"
             variant="destructive"
           >
@@ -120,6 +129,16 @@ export function InstanceActions({ instanceId, state }: InstanceActionsProps) {
           </Button>
         )}
       </div>
+      <DeleteConfirmationDialog
+        confirmLabel="Terminate"
+        description={`Are you sure you want to terminate the instance "${instanceId}"? This action cannot be undone.`}
+        isPending={terminateMutation.isPending}
+        onConfirm={handleTerminate}
+        onOpenChange={setShowTerminateDialog}
+        open={showTerminateDialog}
+        pendingLabel="Terminating…"
+        title="Terminate Instance"
+      />
     </div>
   )
 }

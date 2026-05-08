@@ -25,12 +25,18 @@ Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
 
-# Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl)
+# Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl, dhcpcd)
+# CAP_SYS_ADMIN: required for GPU passthrough sysfs operations (vfio group management).
+# CAP_DAC_OVERRIDE: sysfs driver bind/unbind paths (/sys/bus/pci/drivers/vfio-pci/bind,
+# unbind) are root:root 0200; non-root processes need CAP_DAC_OVERRIDE to open them.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 ProtectSystem=full
 PrivateDevices=no
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
+DeviceAllow=char-vfio rw
+DeviceAllow=/dev/vfio/vfio rw
 ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/server.pem /etc/spinifex/server.key /etc/spinifex/ca.pem
 ReadWritePaths=/var/lib/spinifex/spinifex /var/log/spinifex /run/spinifex /run/spinifex/nbd
 
@@ -58,6 +64,9 @@ RemoveIPC=yes
 LimitCORE=0
 LimitNOFILE=65536
 LimitNPROC=4096
+# VFIO GPU passthrough requires locking all guest RAM into physical memory.
+# Without this, QEMU fails with RLIMIT_MEMLOCK exceeded when pinning guest pages.
+LimitMEMLOCK=infinity
 
 [Install]
 WantedBy=spinifex.target

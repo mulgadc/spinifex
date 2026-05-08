@@ -112,10 +112,42 @@ func TestCanAllocateCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := canAllocateCount(tc.availVCPU, tc.allocVCPU, tc.availMem, tc.allocMem, tc.vCPUs, tc.memMiB, tc.maxCount)
+			got := canAllocateCount(tc.availVCPU, tc.allocVCPU, tc.availMem, tc.allocMem, tc.vCPUs, tc.memMiB, tc.maxCount, 0, false)
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestCanAllocateCount_GPU(t *testing.T) {
+	// Base resource params: plenty of CPU and memory, 1 GPU available.
+	const (
+		avCPU  = 32
+		alCPU  = 0
+		avMem  = 256.0
+		alMem  = 0.0
+		vCPUs  = 4 // g5.xlarge
+		memMiB = 16384
+	)
+
+	// GPU available: normal CPU/mem-constrained allocation with GPU cap.
+	got := canAllocateCount(avCPU, alCPU, avMem, alMem, vCPUs, memMiB, 10, 1, true)
+	assert.Equal(t, 1, got, "with 1 GPU available, max 1 instance despite spare CPU/mem")
+
+	// 3 GPUs available: cap is 3.
+	got = canAllocateCount(avCPU, alCPU, avMem, alMem, vCPUs, memMiB, 10, 3, true)
+	assert.Equal(t, 3, got, "with 3 GPUs, GPU pool caps the count")
+
+	// 0 GPUs: must return 0 regardless of CPU/mem headroom.
+	got = canAllocateCount(avCPU, alCPU, avMem, alMem, vCPUs, memMiB, 10, 0, true)
+	assert.Equal(t, 0, got, "no GPUs available must return 0")
+
+	// Non-GPU type is unaffected by availGPU=0.
+	got = canAllocateCount(avCPU, alCPU, avMem, alMem, vCPUs, memMiB, 10, 0, false)
+	assert.Equal(t, 8, got, "non-GPU type: CPU 32/4=8; memory and GPU not limiting")
+
+	// maxCount caps GPU result.
+	got = canAllocateCount(avCPU, alCPU, avMem, alMem, vCPUs, memMiB, 2, 5, true)
+	assert.Equal(t, 2, got, "maxCount=2 caps GPU result")
 }
 
 func TestResourceStatsForType(t *testing.T) {

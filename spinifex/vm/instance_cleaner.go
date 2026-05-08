@@ -32,4 +32,9 @@ type InstanceCleaner interface {
 	// RemoveFromPlacementGroup removes the instance from its placement
 	// group, if one is set. Called only on Terminate.
 	RemoveFromPlacementGroup(v *VM)
+
+	// ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to
+	// its original host driver. Called on both Stop and Terminate. No-op
+	// when the instance has no GPU allocation.
+	ReleaseGPU(v *VM)
 }

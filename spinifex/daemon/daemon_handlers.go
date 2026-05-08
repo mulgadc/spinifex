@@ -162,22 +162,38 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		}
 	})
 
+	totalGPUs, allocGPUs := 0, 0
+	if d.gpuManager != nil {
+		totalGPUs = d.gpuManager.TotalCount()
+		allocGPUs = d.gpuManager.AllocatedCount()
+	}
+
+	var gpuModelNames []string
+	for _, dev := range d.gpuProbe.Devices {
+		gpuModelNames = append(gpuModelNames, dev.Model)
+	}
+
 	resp := types.NodeStatusResponse{
-		Node:          d.node,
-		Status:        "Ready",
-		Host:          d.daemonIP(),
-		Region:        d.config.Region,
-		AZ:            d.config.AZ,
-		Uptime:        int64(time.Since(d.startTime).Seconds()),
-		Services:      d.config.GetServices(),
-		TotalVCPU:     totalVCPU,
-		TotalMemGB:    totalMemGB,
-		ReservedVCPU:  reservedVCPU,
-		ReservedMemGB: reservedMemGB,
-		AllocVCPU:     allocVCPU,
-		AllocMemGB:    allocMemGB,
-		VMCount:       vmCount,
-		InstanceTypes: caps,
+		Node:           d.node,
+		Status:         "Ready",
+		Host:           d.daemonIP(),
+		Region:         d.config.Region,
+		AZ:             d.config.AZ,
+		Uptime:         int64(time.Since(d.startTime).Seconds()),
+		Services:       d.config.GetServices(),
+		TotalVCPU:      totalVCPU,
+		TotalMemGB:     totalMemGB,
+		ReservedVCPU:   reservedVCPU,
+		ReservedMemGB:  reservedMemGB,
+		AllocVCPU:      allocVCPU,
+		AllocMemGB:     allocMemGB,
+		TotalGPUs:      totalGPUs,
+		AllocGPUs:      allocGPUs,
+		GPUCapable:     d.gpuProbe.Capable,
+		GPUPassthrough: d.gpuManager != nil,
+		GPUModels:      gpuModelNames,
+		VMCount:        vmCount,
+		InstanceTypes:  caps,
 	}
 
 	// Query service roles concurrently to halve worst-case latency (500ms vs 1s).

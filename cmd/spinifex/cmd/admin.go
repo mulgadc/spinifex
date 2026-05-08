@@ -45,6 +45,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/formation"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -274,6 +275,7 @@ func init() {
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("no-external", false, "Disable external networking (overlay-only, no internet for VMs)")
+	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -660,6 +662,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
 	noExternal, _ := cmd.Flags().GetBool("no-external")
+	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
 
 	// Fire telemetry in background (completes during init work, waited at end)
 	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
@@ -1072,6 +1075,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		BootstrapIgwId:      bootstrapIgwId,
 		BootstrapCidr:       handlers_ec2_vpc.DefaultVPCCidr,
 		BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
+
+		GPUPassthrough: gpuPassthrough,
 	}
 
 	// Print external networking summary
@@ -2331,17 +2336,17 @@ func runAdminBanner(cmd *cobra.Command, _ []string) {
 	}
 
 	banner := fmt.Sprintf(`
-  +----------------------------------------------------+
-  |         Spinifex  —  Mulga Defense Corporation     |
-  +----------------------------------------------------+
-  |  Node:      %-39s|
-  |  Login:     %-39s|
-  |  Dashboard: %-39s|
-  |  API:       %-39s|
-  |  SSH:       %-39s|
-  +----------------------------------------------------+
-  |  AWS credentials:  cat ~/.aws/credentials          |
-  +----------------------------------------------------+
+  +--------------------------------------------------------------+
+  |          Spinifex  —  Mulga Defense Corporation              |
+  +--------------------------------------------------------------+
+  |  Node:      %-49s|
+  |  Login:     %-49s|
+  |  Dashboard: %-49s|
+  |  API:       %-49s|
+  |  SSH:       %-49s|
+  +--------------------------------------------------------------+
+  |  AWS credentials:  cat ~/.aws/credentials                    |
+  +--------------------------------------------------------------+
 
 `,
 		hostname,
@@ -2350,6 +2355,8 @@ func runAdminBanner(cmd *cobra.Command, _ []string) {
 		"https://"+currentIP+":9999",
 		"spinifex@"+currentIP,
 	)
+
+	banner += gpuBannerSection()
 
 	// Write to /etc/issue — displayed on the console before the login prompt.
 	// Overwrite entirely; this is a purpose-built appliance so we own this file.
@@ -2388,6 +2395,81 @@ func appendBannerToMotd(banner string) error {
 		}
 	}
 	return os.WriteFile(motdPath, []byte(base+sentinel+banner), 0o644)
+}
+
+// gpuBannerSection returns an optional banner box section describing GPU state.
+// Returns "" when no GPU hardware is detected. Safe to call at boot before the
+// daemon starts — all checks are sysfs/file reads, no NATS required.
+func gpuBannerSection() string {
+	devices, err := gpu.Discover()
+	if err != nil || len(devices) == 0 {
+		return ""
+	}
+
+	iommuEntries, _ := os.ReadDir("/sys/kernel/iommu_groups/")
+	iommuActive := len(iommuEntries) > 0
+
+	_, vfioErr := os.Stat("/sys/module/vfio_pci")
+	vfioPresent := vfioErr == nil
+
+	passthroughEnabled := false
+	cfgPath := DefaultConfigFile()
+	if cfg, err := config.LoadConfig(cfgPath); err == nil {
+		if nodeCfg, ok := cfg.Nodes[cfg.Node]; ok {
+			passthroughEnabled = nodeCfg.Daemon.GPUPassthrough
+		}
+	}
+
+	models := gpuModelSummary(devices)
+
+	var statusLine, hintLine string
+	switch {
+	case passthroughEnabled:
+		statusLine = "Passthrough enabled"
+	case iommuActive && vfioPresent:
+		statusLine = "Ready to enable"
+		hintLine = "sudo spx admin gpu enable"
+	default:
+		statusLine = "Setup required"
+		hintLine = "sudo spx admin gpu setup"
+	}
+
+	const (
+		sep    = "  +--------------------------------------------------------------+\n"
+		maxVal = 55
+	)
+	if len([]rune(models)) > maxVal {
+		models = string([]rune(models)[:maxVal-3]) + "..."
+	}
+
+	section := sep +
+		fmt.Sprintf("  |  GPU: %-55s|\n", models) +
+		fmt.Sprintf("  |       %-55s|\n", statusLine)
+	if hintLine != "" {
+		section += fmt.Sprintf("  |       %-55s|\n", hintLine)
+	}
+	section += sep + "\n"
+	return section
+}
+
+func gpuModelSummary(devices []gpu.GPUDevice) string {
+	counts := make(map[string]int)
+	var order []string
+	for _, d := range devices {
+		if counts[d.Model] == 0 {
+			order = append(order, d.Model)
+		}
+		counts[d.Model]++
+	}
+	var parts []string
+	for _, m := range order {
+		if n := counts[m]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%dx %s", n, m))
+		} else {
+			parts = append(parts, m)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // parseNodeConf reads a KEY=VALUE shell-format file and returns a map.

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -99,6 +100,10 @@ type ConfigSettings struct {
 	BootstrapIgwId      string
 	BootstrapCidr       string
 	BootstrapSubnetCidr string
+
+	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
+	// Sets gpu_passthrough = true under [nodes.<node>.daemon].
+	GPUPassthrough bool
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
@@ -930,4 +935,59 @@ func ParsePredastoreNodeIDFromConfig(tomlContent string, ip string) int {
 		return 0
 	}
 	return FindNodeIDByIP(cfg.DB, ip)
+}
+
+// SetGPUPassthrough idempotently writes gpu_passthrough = <enabled> for the
+// given node into spinifex.toml, preserving all other content and comments.
+// Returns nil without touching the file if the setting is already correct.
+func SetGPUPassthrough(tomlPath, node string, enabled bool) error {
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", tomlPath, err)
+	}
+	text := string(raw)
+	value := "false"
+	if enabled {
+		value = "true"
+	}
+
+	sectionHeader := "[nodes." + node + ".daemon]"
+
+	sectionStart := strings.Index(text, sectionHeader)
+	if sectionStart < 0 {
+		// No daemon section — append one.
+		text = strings.TrimRight(text, "\n") +
+			"\n\n[nodes." + node + ".daemon]\ngpu_passthrough = " + value + "\n"
+		return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640 so the daemon can read it
+	}
+
+	// Extract body of just this section (stops at the next section header).
+	bodyStart := sectionStart + len(sectionHeader)
+	rest := text[bodyStart:]
+	nextSection := strings.Index(rest, "\n[")
+	var body, suffix string
+	if nextSection < 0 {
+		body = rest
+	} else {
+		body = rest[:nextSection]
+		suffix = rest[nextSection:]
+	}
+
+	// Already correct — no-op.
+	if regexp.MustCompile(`gpu_passthrough\s*=\s*` + value).MatchString(body) {
+		return nil
+	}
+
+	// Key exists with wrong value — flip within this section only.
+	flipRe := regexp.MustCompile(`gpu_passthrough\s*=\s*(?:true|false)`)
+	var newBody string
+	if flipRe.MatchString(body) {
+		newBody = flipRe.ReplaceAllString(body, "gpu_passthrough = "+value)
+	} else {
+		// Key absent — insert right after section header.
+		newBody = "\ngpu_passthrough = " + value + body
+	}
+
+	text = text[:bodyStart] + newBody + suffix
+	return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640 so the daemon can read it
 }

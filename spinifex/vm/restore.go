@@ -103,7 +103,14 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		}
 
 		if instance.Status == StateStopped {
-			m.MigrateStoppedToSharedKV(instance)
+			if !m.MigrateStoppedToSharedKV(instance) {
+				// KV write failed — keep in local state so the next restart
+				// retries the migration. Deleting here would create a "void":
+				// the instance disappears from both local state and the
+				// stopped KV, making it invisible to DescribeStoppedInstances.
+				slog.Warn("Stopped instance KV migration failed, will retry on next restart",
+					"instance", instance.ID)
+			}
 			continue
 		}
 
@@ -142,7 +149,9 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			} else {
 				slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
 				if err := m.reconnectInstance(instance); err != nil {
-					slog.Error("Failed to reconnect to running instance", "instanceId", instance.ID, "err", err)
+					slog.Error("Failed to reconnect to running instance, marking failed to tear down orphaned QEMU",
+						"instanceId", instance.ID, "err", err)
+					m.MarkFailed(instance, "reconnect_failed")
 				}
 				continue
 			}
@@ -245,11 +254,11 @@ func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
 	return true
 }
 
-// relaunchAll kicks the recovery launch loop. Per pre-2e behaviour, we
-// announce each instance via OnInstanceRecovering before launching so the
-// daemon can early-subscribe ec2.cmd.<id>; that lets a concurrent terminate
-// reach this node while the relaunch is still pending. The OnInstanceUp
-// hook fired after a successful launch reinstalls both per-instance subs
+// relaunchAll kicks the recovery launch loop. Each instance is announced
+// via OnInstanceRecovering before launching so the daemon can
+// early-subscribe ec2.cmd.<id>; that lets a concurrent terminate reach
+// this node while the relaunch is still pending. The OnInstanceUp hook
+// fired after a successful launch reinstalls both per-instance subs
 // idempotently.
 func (m *Manager) relaunchAll(toLaunch []*VM) {
 	if m.deps.Hooks.OnInstanceRecovering != nil {

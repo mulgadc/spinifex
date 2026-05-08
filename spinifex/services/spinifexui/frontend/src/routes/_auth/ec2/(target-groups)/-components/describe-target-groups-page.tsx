@@ -20,10 +20,10 @@ export function DescribeTargetGroupsPage() {
       <PageHeading
         actions={
           <Link to="/ec2/create-target-group">
-            <Button>Create target group</Button>
+            <Button>Create Target Group</Button>
           </Link>
         }
-        title="Target groups"
+        title="Target Groups"
       />
 
       {targetGroups.length > 0 ? (
@@ -35,7 +35,7 @@ export function DescribeTargetGroupsPage() {
                 <th className="px-4 py-2 font-medium">Protocol</th>
                 <th className="px-4 py-2 font-medium">Port</th>
                 <th className="px-4 py-2 font-medium">VPC</th>
-                <th className="px-4 py-2 font-medium">Target type</th>
+                <th className="px-4 py-2 font-medium">Target Type</th>
                 <th className="px-4 py-2 font-medium">Targets</th>
                 <th className="px-4 py-2 font-medium">Health</th>
               </tr>
@@ -50,8 +50,8 @@ export function DescribeTargetGroupsPage() {
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
                     key={arn}
-                    onClick={() =>
-                      navigate({
+                    onClick={async () =>
+                      await navigate({
                         to: "/ec2/describe-target-groups/$id",
                         params: { id: encodeURIComponent(arn) },
                       })

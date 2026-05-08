@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# build-system-image.sh — Build a minimal Alpine AMI from a manifest
+# build-system-image.sh — Build a minimal system AMI from a manifest
 #
-# Creates a pre-baked Alpine Linux image with custom packages, binaries,
-# and setup scripts installed, ready for import as a Spinifex AMI.
+# Supports Alpine Linux and Ubuntu 24.04 as base distros.
+# Creates a pre-baked image with custom packages, binaries, and setup scripts
+# installed, ready for import as a Spinifex AMI.
 #
 # Requirements: qemu-nbd, qemu-img, sudo (for mount/chroot), curl
 # Usage: ./scripts/build-system-image.sh <manifest.conf> [--import]
@@ -46,8 +47,11 @@ done
 # shellcheck source=/dev/null
 source "$MANIFEST"
 
+# Default distro is alpine for backward compatibility
+DISTRO="${DISTRO:-alpine}"
+
 # Validate required manifest fields
-for field in IMAGE_NAME ALPINE_VERSION IMAGE_SIZE; do
+for field in IMAGE_NAME IMAGE_SIZE; do
     if [[ -z "${!field:-}" ]]; then
         echo "ERROR: Manifest missing required field: $field"
         exit 1
@@ -56,16 +60,48 @@ done
 
 # Derived paths
 BUILD_DIR="/tmp/${IMAGE_NAME}-image-build"
-ALPINE_IMAGE="generic_alpine-${ALPINE_VERSION}-x86_64-bios-cloudinit-r0.qcow2"
-ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/${ALPINE_IMAGE}"
-OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-alpine.qcow2"
-OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-alpine.raw"
 NBD_DEV="/dev/nbd0"
 MOUNT_DIR="${BUILD_DIR}/mnt"
 
+case "$DISTRO" in
+    alpine)
+        if [[ -z "${ALPINE_VERSION:-}" ]]; then
+            echo "ERROR: Manifest missing required field: ALPINE_VERSION"
+            exit 1
+        fi
+        SOURCE_IMAGE="generic_alpine-${ALPINE_VERSION}-x86_64-bios-cloudinit-r0.qcow2"
+        SOURCE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/${SOURCE_IMAGE}"
+        OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-alpine.qcow2"
+        OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-alpine.raw"
+        DISTRO_VERSION="${ALPINE_VERSION}"
+        ROOT_PART="${NBD_DEV}"
+        ;;
+    ubuntu)
+        if [[ -z "${UBUNTU_VERSION:-}" ]]; then
+            echo "ERROR: Manifest missing required field: UBUNTU_VERSION"
+            exit 1
+        fi
+        SOURCE_IMAGE="ubuntu-${UBUNTU_VERSION}-minimal-cloudimg-amd64.img"
+        SOURCE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/${SOURCE_IMAGE}"
+        OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.qcow2"
+        OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.raw"
+        DISTRO_VERSION="${UBUNTU_VERSION}"
+        ROOT_PART="${NBD_DEV}p1"
+        ;;
+    *)
+        echo "ERROR: Unknown DISTRO: $DISTRO (supported: alpine, ubuntu)"
+        exit 1
+        ;;
+esac
+
 cleanup() {
     echo "Cleaning up..."
-    sudo umount "${MOUNT_DIR}" 2>/dev/null || true
+    # Ubuntu chroot has bind mounts that must be released first
+    sudo umount "${MOUNT_DIR}/dev/pts" 2>/dev/null || true
+    sudo umount "${MOUNT_DIR}/dev"     2>/dev/null || true
+    sudo umount "${MOUNT_DIR}/sys"     2>/dev/null || true
+    sudo umount "${MOUNT_DIR}/proc"    2>/dev/null || true
+    sudo umount "${MOUNT_DIR}"         2>/dev/null || true
     sudo qemu-nbd --disconnect "${NBD_DEV}" 2>/dev/null || true
     exec 9>&- 2>/dev/null || true  # release nbd lock if held
     echo "Done."
@@ -80,7 +116,7 @@ fi
 
 echo "=== System Image Builder ==="
 echo "Image:   ${IMAGE_NAME} — ${IMAGE_DESCRIPTION:-}"
-echo "Alpine:  ${ALPINE_VERSION}"
+echo "Distro:  ${DISTRO} ${DISTRO_VERSION}"
 echo "Size:    ${IMAGE_SIZE}"
 echo "Build:   ${BUILD_DIR}"
 echo ""
@@ -96,6 +132,11 @@ if ! command -v qemu-img &>/dev/null; then
     exit 1
 fi
 
+if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null; then
+    echo "ERROR: parted not found. Install parted."
+    exit 1
+fi
+
 # Build binaries if BUILD_COMMANDS is set
 if [[ -n "${BUILD_COMMANDS:-}" ]]; then
     echo "Building binaries: ${BUILD_COMMANDS}"
@@ -105,7 +146,7 @@ if [[ -n "${BUILD_COMMANDS:-}" ]]; then
     fi
 fi
 
-# Verify binaries exist and are statically linked
+# Verify binaries exist; Alpine also requires static linking (uses musl)
 if [[ -n "${INSTALL_BINARIES:-}" ]]; then
     IFS=' ' read -ra BINARY_PAIRS <<< "$INSTALL_BINARIES"
     for pair in "${BINARY_PAIRS[@]}"; do
@@ -115,7 +156,7 @@ if [[ -n "${INSTALL_BINARIES:-}" ]]; then
             echo "ERROR: Binary not found: $src_path"
             exit 1
         fi
-        if ! file "$src_path" | grep -q "statically linked"; then
+        if [[ "$DISTRO" == "alpine" ]] && ! file "$src_path" | grep -q "statically linked"; then
             echo "ERROR: $src_path is not statically linked (Alpine uses musl — dynamic glibc binaries will fail)"
             echo "  Rebuild with: CGO_ENABLED=0 go build ..."
             exit 1
@@ -147,7 +188,7 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
 
     if [[ "$DO_IMPORT" == true ]]; then
         echo "Importing as AMI..."
-        IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro alpine --version "${ALPINE_VERSION}" --arch x86_64)
+        IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
         if [[ -n "${SYSTEM_TAG:-}" ]]; then
             IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
         fi
@@ -158,20 +199,20 @@ fi
 
 mkdir -p "$BUILD_DIR" "$MOUNT_DIR"
 
-# Step 1: Download Alpine cloud image
-if [[ -f "${BUILD_DIR}/${ALPINE_IMAGE}" ]]; then
-    echo "Alpine image already downloaded."
+# Step 1: Download base cloud image
+if [[ -f "${BUILD_DIR}/${SOURCE_IMAGE}" ]]; then
+    echo "Base image already downloaded."
 else
-    echo "Downloading Alpine ${ALPINE_VERSION} cloud image..."
-    if ! curl --fail -L -o "${BUILD_DIR}/${ALPINE_IMAGE}" "$ALPINE_URL"; then
-        rm -f "${BUILD_DIR}/${ALPINE_IMAGE}"
-        echo "ERROR: Failed to download Alpine image from $ALPINE_URL"
+    echo "Downloading ${DISTRO} ${DISTRO_VERSION} cloud image..."
+    if ! curl --fail -L -o "${BUILD_DIR}/${SOURCE_IMAGE}" "$SOURCE_URL"; then
+        rm -f "${BUILD_DIR}/${SOURCE_IMAGE}"
+        echo "ERROR: Failed to download image from $SOURCE_URL"
         exit 1
     fi
-    # Verify the download is a valid qcow2 image
-    if ! qemu-img info "${BUILD_DIR}/${ALPINE_IMAGE}" &>/dev/null; then
-        rm -f "${BUILD_DIR}/${ALPINE_IMAGE}"
-        echo "ERROR: Downloaded file is not a valid qcow2 image"
+    # Verify the download is a valid qcow2/img
+    if ! qemu-img info "${BUILD_DIR}/${SOURCE_IMAGE}" &>/dev/null; then
+        rm -f "${BUILD_DIR}/${SOURCE_IMAGE}"
+        echo "ERROR: Downloaded file is not a valid disk image"
         exit 1
     fi
 fi
@@ -179,9 +220,9 @@ fi
 # Step 2: Copy image for customization
 rm -f "$OUTPUT_IMAGE"
 echo "Copying image for customization..."
-cp "${BUILD_DIR}/${ALPINE_IMAGE}" "$OUTPUT_IMAGE"
+cp "${BUILD_DIR}/${SOURCE_IMAGE}" "$OUTPUT_IMAGE"
 
-# Resize the image (Alpine cloud images are ~200MB, need room for packages)
+# Resize the image to provide room for packages
 qemu-img resize "$OUTPUT_IMAGE" "$IMAGE_SIZE"
 
 # Step 3: Connect via qemu-nbd
@@ -194,7 +235,7 @@ fi
 sudo qemu-nbd --disconnect "${NBD_DEV}" 2>/dev/null || true
 sudo qemu-nbd --connect="${NBD_DEV}" "$OUTPUT_IMAGE"
 
-# Wait for the nbd device to be ready (kernel needs time to scan the block device)
+# Wait for the nbd device to be ready
 for i in $(seq 1 10); do
     if sudo blockdev --getsize64 "${NBD_DEV}" &>/dev/null; then
         break
@@ -203,32 +244,57 @@ for i in $(seq 1 10); do
 done
 sleep 1
 
+# Ubuntu images have a partition table; wait for partition devices then resize
+# the partition to fill the expanded image before resizing the filesystem.
+if [[ "$DISTRO" == "ubuntu" ]]; then
+    for i in $(seq 1 10); do
+        if [[ -e "${ROOT_PART}" ]]; then break; fi
+        sleep 1
+    done
+    echo "Resizing partition..."
+    # After qemu-img resize the GPT backup header sits at the old end of disk.
+    # Move it to the new end before parted tries to resize, otherwise parted
+    # refuses with "Unable to satisfy all constraints on the partition."
+    sudo sgdisk --move-second-header "${NBD_DEV}" 2>/dev/null || true
+    sudo parted --script "${NBD_DEV}" resizepart 1 100%
+fi
+
 # Alpine cloud images have ext4 directly on the block device (no partition table).
-# Resize the filesystem to fill the resized image.
 echo "Checking filesystem..."
-sudo e2fsck -f -y "${NBD_DEV}" || {
+sudo e2fsck -f -y "${ROOT_PART}" || {
     ec=$?
     if [[ $ec -gt 1 ]]; then
-        echo "ERROR: e2fsck failed with exit code $ec on ${NBD_DEV}"
+        echo "ERROR: e2fsck failed with exit code $ec on ${ROOT_PART}"
         exit 1
     fi
 }
 
 echo "Resizing filesystem..."
-if ! sudo resize2fs "${NBD_DEV}"; then
-    echo "ERROR: resize2fs failed on ${NBD_DEV}"
+if ! sudo resize2fs "${ROOT_PART}"; then
+    echo "ERROR: resize2fs failed on ${ROOT_PART}"
     exit 1
 fi
 
 # Step 4: Mount and customize
 echo "Mounting root filesystem..."
-sudo mount "${NBD_DEV}" "$MOUNT_DIR"
+sudo mount "${ROOT_PART}" "$MOUNT_DIR"
 
-# Set up resolv.conf for DNS inside chroot
+# Set up resolv.conf for DNS inside chroot.
+# Ubuntu cloud images symlink /etc/resolv.conf → /run/systemd/resolve/stub-resolv.conf
+# which doesn't exist yet. Remove the symlink and write a real file.
+sudo rm -f "${MOUNT_DIR}/etc/resolv.conf"
 sudo cp /etc/resolv.conf "${MOUNT_DIR}/etc/resolv.conf"
 
+# Ubuntu chroot requires /proc /sys /dev bind mounts for systemd and DKMS
+if [[ "$DISTRO" == "ubuntu" ]]; then
+    sudo mount --bind /proc       "${MOUNT_DIR}/proc"
+    sudo mount --bind /sys        "${MOUNT_DIR}/sys"
+    sudo mount --bind /dev        "${MOUNT_DIR}/dev"
+    sudo mount --bind /dev/pts    "${MOUNT_DIR}/dev/pts"
+fi
+
 # Install packages
-if [[ -n "${APK_PACKAGES:-}" ]]; then
+if [[ "$DISTRO" == "alpine" ]] && [[ -n "${APK_PACKAGES:-}" ]]; then
     echo "Installing packages: ${APK_PACKAGES}..."
     sudo chroot "$MOUNT_DIR" /bin/sh -c "
 set -e
@@ -244,16 +310,30 @@ fi
 apk update
 apk add ${APK_PACKAGES}
 "
+elif [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${APT_PACKAGES:-}" ]]; then
+    echo "Installing packages: ${APT_PACKAGES}..."
+    sudo chroot "$MOUNT_DIR" /bin/bash -c "
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends ${APT_PACKAGES}
+"
 fi
 
-# Enable OpenRC services
+# Enable services
 if [[ -n "${ENABLE_SERVICES:-}" ]]; then
     echo "Enabling services: ${ENABLE_SERVICES}..."
     IFS=' ' read -ra SERVICES <<< "$ENABLE_SERVICES"
     for svc in "${SERVICES[@]}"; do
-        if ! sudo chroot "$MOUNT_DIR" /bin/sh -c "rc-update add ${svc} default"; then
-            echo "ERROR: Failed to enable service '${svc}' — does it exist in the image?"
-            exit 1
+        if [[ "$DISTRO" == "alpine" ]]; then
+            if ! sudo chroot "$MOUNT_DIR" /bin/sh -c "rc-update add ${svc} default"; then
+                echo "ERROR: Failed to enable service '${svc}' — does it exist in the image?"
+                exit 1
+            fi
+        else
+            if ! sudo chroot "$MOUNT_DIR" /bin/bash -c "systemctl enable ${svc}"; then
+                echo "ERROR: Failed to enable service '${svc}'"
+                exit 1
+            fi
         fi
     done
 fi
@@ -282,21 +362,40 @@ if [[ -n "${SETUP_SCRIPT:-}" ]]; then
     echo "Running setup script: ${SETUP_SCRIPT}..."
     sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
     sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
-    sudo chroot "$MOUNT_DIR" /tmp/setup.sh
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        sudo chroot "$MOUNT_DIR" /bin/bash /tmp/setup.sh
+    else
+        sudo chroot "$MOUNT_DIR" /tmp/setup.sh
+    fi
     sudo rm -f "${MOUNT_DIR}/tmp/setup.sh"
 fi
 
 # Step 6: Clean up and unmount
 echo "Cleaning up image..."
-sudo chroot "$MOUNT_DIR" /bin/sh -c '
+if [[ "$DISTRO" == "alpine" ]]; then
+    sudo chroot "$MOUNT_DIR" /bin/sh -c '
 apk cache clean 2>/dev/null || true
 rm -rf /var/cache/apk/* /tmp/*
 '
+else
+    sudo chroot "$MOUNT_DIR" /bin/bash -c '
+export DEBIAN_FRONTEND=noninteractive
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/*
+'
+fi
 
-# Restore original resolv.conf (cloud-init will set it on boot)
+# Restore the systemd-resolved symlink (Ubuntu default); cloud-init sets DNS on boot.
 sudo rm -f "${MOUNT_DIR}/etc/resolv.conf"
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf "${MOUNT_DIR}/etc/resolv.conf"
 
 echo "Unmounting..."
+if [[ "$DISTRO" == "ubuntu" ]]; then
+    sudo umount "${MOUNT_DIR}/dev/pts"
+    sudo umount "${MOUNT_DIR}/dev"
+    sudo umount "${MOUNT_DIR}/sys"
+    sudo umount "${MOUNT_DIR}/proc"
+fi
 sudo umount "$MOUNT_DIR"
 sudo qemu-nbd --disconnect "${NBD_DEV}"
 
@@ -318,7 +417,7 @@ echo ""
 
 if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
-    IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro alpine --version "${ALPINE_VERSION}" --arch x86_64)
+    IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
@@ -328,9 +427,9 @@ else
     echo "  cd $PROJECT_DIR && ./bin/spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        echo "    --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \\"
+        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 \\"
         echo "    --tag ${SYSTEM_TAG}"
     else
-        echo "    --distro alpine --version ${ALPINE_VERSION} --arch x86_64"
+        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64"
     fi
 fi

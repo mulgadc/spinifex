@@ -88,7 +88,7 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 	sort.Strings(nodeNames)
 
 	nodeTable := pterm.TableData{
-		{"NAME", "CPU (used/total)", "MEM (used/total)", "VMs"},
+		{"NAME", "CPU (used/total)", "MEM (used/total)", "GPU (used/total)", "VMs"},
 	}
 
 	// Aggregate instance type capacity across all nodes
@@ -96,10 +96,17 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 
 	for _, name := range nodeNames {
 		if resp, ok := respondedNodes[name]; ok {
+			gpuCol := "-"
+			if resp.GPUPassthrough {
+				gpuCol = fmt.Sprintf("%d/%d", resp.AllocGPUs, resp.TotalGPUs)
+			} else if resp.GPUCapable {
+				gpuCol = fmt.Sprintf("0/%d*", len(resp.GPUModels))
+			}
 			nodeTable = append(nodeTable, []string{
 				resp.Node,
 				fmt.Sprintf("%d/%d", resp.AllocVCPU, resp.TotalVCPU),
 				fmt.Sprintf("%s/%s", formatMemGB(resp.AllocMemGB), formatMemGB(resp.TotalMemGB)),
+				gpuCol,
 				strconv.Itoa(resp.VMCount),
 			})
 
@@ -117,6 +124,7 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 		} else {
 			nodeTable = append(nodeTable, []string{
 				name,
+				"-",
 				"-",
 				"-",
 				"-",

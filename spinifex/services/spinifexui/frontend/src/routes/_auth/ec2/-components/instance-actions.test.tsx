@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react"
+import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -8,6 +8,7 @@ import { InstanceActions } from "./instance-actions"
 
 const TRANSITIONING_RE = /Actions will be available/
 const TERMINATED_RE = /terminated and cannot be managed/
+const TERMINATE_CONFIRM_RE = /Are you sure you want to terminate the instance/
 
 // Mock mutation hooks
 const mockMutate = vi.fn()
@@ -74,6 +75,54 @@ describe("InstanceActions", () => {
         <InstanceActions instanceId="i-123" state="terminated" />,
       )
       expect(screen.getByText(TERMINATED_RE)).toBeInTheDocument()
+    })
+  })
+
+  describe("terminate confirmation", () => {
+    it("does not call mutation when Terminate button is clicked", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <InstanceActions instanceId="i-123" state="running" />,
+      )
+      await user.click(screen.getByText("Terminate"))
+      expect(mockMutate).not.toHaveBeenCalled()
+    })
+
+    it("opens confirmation dialog showing instance ID on Terminate click", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <InstanceActions instanceId="i-123" state="running" />,
+      )
+      await user.click(screen.getByText("Terminate"))
+      expect(screen.getByText(TERMINATE_CONFIRM_RE)).toBeInTheDocument()
+      expect(screen.getByText(/i-123/)).toBeInTheDocument()
+    })
+
+    it("calls terminate mutation only after confirming", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <InstanceActions instanceId="i-123" state="running" />,
+      )
+      await user.click(screen.getByText("Terminate"))
+      const dialog = screen.getByRole("alertdialog")
+      await user.click(
+        within(dialog).getByRole("button", { name: "Terminate" }),
+      )
+      expect(mockMutate).toHaveBeenCalledWith(
+        "i-123",
+        expect.objectContaining({ onSettled: expect.any(Function) }),
+      )
+    })
+
+    it("closes dialog without calling mutation when Cancel clicked", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <InstanceActions instanceId="i-123" state="running" />,
+      )
+      await user.click(screen.getByText("Terminate"))
+      await user.click(screen.getByText("Cancel"))
+      expect(mockMutate).not.toHaveBeenCalled()
+      expect(screen.queryByText(TERMINATE_CONFIRM_RE)).not.toBeInTheDocument()
     })
   })
 })

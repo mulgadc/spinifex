@@ -72,8 +72,7 @@ func (m *Manager) launchStillValid(instance *VM) bool {
 }
 
 // launch is the orchestrator: pid check, mount volumes, exec QEMU, attach
-// QMP, fire OnInstanceUp, transition to Running. Mirrors the pre-2b
-// Daemon.LaunchInstance flow.
+// QMP, fire OnInstanceUp, transition to Running.
 func (m *Manager) launch(instance *VM) error {
 	if !m.launchStillValid(instance) {
 		return nil
@@ -109,7 +108,7 @@ func (m *Manager) launch(instance *VM) error {
 		return err
 	}
 
-	qmpClient, err := m.deps.QMPClientFactory.Create(instance)
+	qmpClient, err := newQMPClientWithHandshake(instance)
 	if err != nil {
 		slog.Error("Failed to create QMP client", "err", err)
 		return err
@@ -149,8 +148,7 @@ func (m *Manager) launch(instance *VM) error {
 
 	if m.deps.Hooks.OnInstanceUp != nil {
 		// Launch path: per-instance subscribe failures are logged and the
-		// launch still succeeds, mirroring the pre-2e early-subscribe block
-		// in handleEC2RunInstances. The instance is reachable via cluster
+		// launch still succeeds. The instance is reachable via cluster
 		// fan-out (DescribeInstances) and the next OnInstanceUp on a
 		// state-touching event will reinstall the subs idempotently.
 		if err := m.deps.Hooks.OnInstanceUp(instance); err != nil {
@@ -163,7 +161,7 @@ func (m *Manager) launch(instance *VM) error {
 }
 
 // startQEMU launches the QEMU process for instance and waits for startup to
-// confirm. Mirrors the pre-2b Daemon.StartInstance flow.
+// confirm.
 func (m *Manager) startQEMU(instance *VM) error {
 	pidFile, err := utils.GeneratePidFile(instance.ID)
 	if err != nil {
@@ -196,12 +194,13 @@ func (m *Manager) startQEMU(instance *VM) error {
 	instance.Config.Devices = append(instance.Config.Devices, devices...)
 
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		if err := m.deps.NetworkPlumber.SetupTapDevice(instance.ENIId, instance.ENIMac); err != nil {
+		spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
 			slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
 			return fmt.Errorf("setup tap device: %w", err)
 		}
+		tapName := spec.Name
 
-		tapName := TapDeviceName(instance.ENIId)
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		})
@@ -241,17 +240,30 @@ func (m *Manager) startQEMU(instance *VM) error {
 		})
 	}
 
-	if instance.MgmtMAC != "" && instance.MgmtTap != "" {
+	if instance.MgmtMAC != "" {
+		mgmtTap := MgmtTapName(instance.ID)
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", instance.MgmtTap),
+			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 		})
 		instance.Config.Devices = append(instance.Config.Devices, Device{
 			Value: fmt.Sprintf("virtio-net-pci,netdev=mgmt0,mac=%s", instance.MgmtMAC),
 		})
-		slog.Info("Management NIC configured", "tap", instance.MgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
+		slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 	}
 
 	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})
+
+	if instance.GPUPCIAddress != "" {
+		xvga := "off"
+		if instance.GPUXVGAEnabled {
+			xvga = "on"
+		}
+		instance.Config.Devices = append(instance.Config.Devices, Device{
+			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu0,x-vga=%s", instance.GPUPCIAddress, xvga),
+		})
+		slog.Info("GPU passthrough device configured",
+			"pci", instance.GPUPCIAddress, "instanceId", instance.ID, "xvga", xvga)
+	}
 
 	qmpSocket, err := utils.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))
 	if err != nil {
@@ -269,7 +281,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	startupConfirmed := make(chan bool, 1)
 
 	go func() {
-		cmd, err := m.deps.ProcessLauncher.Launch(&instance.Config)
+		cmd, err := instance.Config.Execute()
 		if err != nil {
 			slog.Error("Failed to execute VM", "err", err)
 			processChan <- 0
@@ -372,7 +384,6 @@ func (m *Manager) startQEMU(instance *VM) error {
 }
 
 // appendDevHostfwdNIC adds a user-mode NIC with SSH hostfwd for dev access.
-// Mirrors the pre-2b inline DEV_NETWORKING block in StartInstance.
 func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 	sshDebugAddr, err := viperblock.FindFreePort()
 	if err != nil {
@@ -424,16 +435,32 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 
 // AttachQMP connects a QMP client to a QEMU process that already exists
 // (e.g. a daemon restart finding a still-running QEMU) and starts the
-// heartbeat goroutine. The launch path uses QMPClientFactory + qmpHeartbeat
-// directly; AttachQMP is the matching seam for reconnect callers.
+// heartbeat goroutine. AttachQMP is the matching seam for reconnect
+// callers; the launch path calls the same helper inline.
 func (m *Manager) AttachQMP(instance *VM) error {
-	client, err := m.deps.QMPClientFactory.Create(instance)
+	client, err := newQMPClientWithHandshake(instance)
 	if err != nil {
 		return err
 	}
 	instance.QMPClient = client
 	go m.qmpHeartbeat(instance)
 	return nil
+}
+
+// newQMPClientWithHandshake dials the instance's QMP socket and runs the
+// qmp_capabilities handshake. The caller owns starting the heartbeat
+// goroutine on the returned client.
+func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
+	client, err := qmp.NewQMPClient(v.Config.QMPSocket)
+	if err != nil {
+		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
+	}
+	if _, err := sendQMPCommand(client, qmp.QMPCommand{Execute: "qmp_capabilities"}, v.ID); err != nil {
+		_ = client.Conn.Close()
+		return nil, err
+	}
+	slog.Debug("QMP handshake complete", "instance", v.ID)
+	return client, nil
 }
 
 // qmpHeartbeat sends a query-status QMP command every 30s to confirm the
@@ -467,9 +494,7 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 }
 
 // sendQMPCommand encodes cmd onto client and decodes the matching response,
-// skipping informational events. Mirrors the pre-2b Daemon.SendQMPCommand
-// helper but without the daemon receiver — used by manager-internal callers
-// (heartbeat).
+// skipping informational events.
 func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
 	if q == nil || q.Encoder == nil || q.Decoder == nil {
 		return nil, fmt.Errorf("QMP client is not initialized")

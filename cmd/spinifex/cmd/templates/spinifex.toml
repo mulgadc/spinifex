@@ -67,6 +67,9 @@ dev_networking = false
 {{- else}}
 dev_networking = true
 {{- end}}
+{{- if .GPUPassthrough}}
+gpu_passthrough = true
+{{- end}}
 
 [nodes.{{.Node}}.awsgw]
 host = "{{.BindIP}}:9999"

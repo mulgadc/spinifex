@@ -180,7 +180,7 @@ function CreateSubnet() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-subnets" })}
+          onCancel={async () => await navigate({ to: "/ec2/describe-subnets" })}
           pendingLabel="Creating…"
           submitLabel="Create Subnet"
         />

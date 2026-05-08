@@ -31,7 +31,7 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 	volumeID := command.AttachVolumeData.VolumeID
 
 	// Surface IncorrectInstanceState before any volume-side lookups so the
-	// AWS-SDK error matches the pre-2d ordering.
+	// caller sees the instance-state error first when both apply.
 	status := d.vmMgr.Status(instance)
 	if status != vm.StateRunning {
 		slog.Error("AttachVolume: instance not running",

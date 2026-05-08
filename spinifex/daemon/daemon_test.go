@@ -25,7 +25,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
@@ -110,13 +112,12 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 
 	// Wire the minimum vm.Deps that handler tests rely on. Lifecycle (Run/Start/
 	// Stop/Terminate) tests still set up their own deps; this gives the
-	// post-2d AttachVolume / DetachVolume manager methods enough plumbing to
-	// drive ebs.mount/unmount over NATS using the test's connection.
-	volState := newVolumeStateUpdaterAdapter(daemon.volumeService)
+	// AttachVolume / DetachVolume manager methods enough plumbing to drive
+	// ebs.mount/unmount over NATS using the test's connection.
 	daemon.vmMgr.SetDeps(vm.Deps{
 		NodeID:             daemon.node,
-		VolumeMounter:      newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState),
-		VolumeStateUpdater: volState,
+		VolumeMounter:      newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
+		VolumeStateUpdater: daemon.volumeService,
 		DetachDelay:        daemon.detachDelay,
 	})
 
@@ -132,7 +133,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 // getTestInstanceType returns a valid instance type for testing based on the system's CPU
 func getTestInstanceType(t *testing.T) string {
 	t.Helper()
-	rm, err := NewResourceManager()
+	rm, err := NewResourceManager(nil, nil)
 	require.NoError(t, err)
 	// Find any .micro instance type
 	for key := range rm.instanceTypes {
@@ -416,7 +417,7 @@ func TestDaemon_Initialization(t *testing.T) {
 
 // TestResourceManager tests resource manager functionality
 func TestResourceManager(t *testing.T) {
-	rm, err := NewResourceManager()
+	rm, err := NewResourceManager(nil, nil)
 	require.NoError(t, err)
 
 	require.NotNil(t, rm)
@@ -466,7 +467,7 @@ func TestResourceManager(t *testing.T) {
 	// Test canAllocate with count parameter
 	t.Run("canAllocate_with_count", func(t *testing.T) {
 		// Fresh resource manager for predictable testing
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		// Find a .micro instance type
@@ -503,7 +504,7 @@ func TestResourceManager(t *testing.T) {
 
 // TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method
 func TestGetInstanceTypeInfos(t *testing.T) {
-	rm, err := NewResourceManager()
+	rm, err := NewResourceManager(nil, nil)
 	require.NoError(t, err)
 
 	infos := rm.GetInstanceTypeInfos()
@@ -531,7 +532,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 
 // TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources
 func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
-	rm, err := NewResourceManager()
+	rm, err := NewResourceManager(nil, nil)
 	require.NoError(t, err)
 
 	// Get initial count of all available types
@@ -1040,7 +1041,7 @@ func createValidRunInstancesInput(t *testing.T) *ec2.RunInstancesInput {
 // TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -1059,7 +1060,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Request_exceeds_capacity", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		// Find the largest instance type to exhaust resources faster
@@ -1082,7 +1083,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Capacity_decreases_after_allocation", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -1132,7 +1133,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Mixed_instance_types", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		var microType, mediumType *ec2.InstanceTypeInfo
@@ -1165,7 +1166,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Zero_and_negative_counts", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -1407,12 +1408,13 @@ func TestRunInstances_CountValidation(t *testing.T) {
 		resp, err := natsRequest(daemon.natsConn, topic, inputJSON, 5*time.Second)
 		require.NoError(t, err)
 
-		// Should return validation error
+		// MinCount=5 / MaxCount=3 — handleEC2RunInstances reaches the
+		// allocatableCount<minCount branch and returns
+		// InsufficientInstanceCapacity.
 		var errResp map[string]any
 		err = json.Unmarshal(resp.Data, &errResp)
 		require.NoError(t, err)
-		assert.Contains(t, errResp, "Code", "Should return error response")
-		t.Logf("Error response: %v", errResp)
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, errResp["Code"])
 	})
 
 	t.Run("MaxCount_zero", func(t *testing.T) {
@@ -1427,10 +1429,12 @@ func TestRunInstances_CountValidation(t *testing.T) {
 		resp, err := natsRequest(daemon.natsConn, topic, inputJSON, 5*time.Second)
 		require.NoError(t, err)
 
+		// MaxCount=0 → canAllocate(0)=0 → 0<MinCount=1 →
+		// InsufficientInstanceCapacity.
 		var errResp map[string]any
 		err = json.Unmarshal(resp.Data, &errResp)
 		require.NoError(t, err)
-		assert.Contains(t, errResp, "Code")
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, errResp["Code"])
 	})
 
 	t.Run("InsufficientCapacity_for_MinCount", func(t *testing.T) {
@@ -1449,7 +1453,7 @@ func TestRunInstances_CountValidation(t *testing.T) {
 		var errResp map[string]any
 		err = json.Unmarshal(resp.Data, &errResp)
 		require.NoError(t, err)
-		assert.Equal(t, "InsufficientInstanceCapacity", errResp["Code"])
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, errResp["Code"])
 		t.Logf("Got expected error: %v", errResp["Code"])
 	})
 }
@@ -1461,7 +1465,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 	t.Run("InitialSubscriptions", func(t *testing.T) {
 		// A fresh ResourceManager should subscribe to all instance types that fit
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1495,7 +1499,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("UnsubscribesWhenFull", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1520,7 +1524,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("ResubscribesWhenFreed", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1551,7 +1555,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("PartialCapacity", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1580,7 +1584,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("AllocateTriggersSubs", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1624,7 +1628,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("NoRespondersWhenFull", func(t *testing.T) {
-		rm, err := NewResourceManager()
+		rm, err := NewResourceManager(nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1653,7 +1657,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 // TestResourceManager_ConcurrentAccess tests thread safety of resource manager
 func TestResourceManager_ConcurrentAccess(t *testing.T) {
-	rm, err := NewResourceManager()
+	rm, err := NewResourceManager(nil, nil)
 	require.NoError(t, err)
 
 	var microType *ec2.InstanceTypeInfo
@@ -1816,17 +1820,22 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
+	const expectedDeletes = 2 // EFI + cloud-init; vol-root has no S3 backend
+	allDeletes := make(chan struct{})
 
-	// Mock ebs.delete subscriber
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
 		var req types.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
+		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
 		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
+		if done {
+			close(allDeletes)
+		}
 	})
 	require.NoError(t, err)
 	defer deleteSub.Unsubscribe()
@@ -1846,8 +1855,11 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	cleaner := newInstanceCleanerAdapter(daemon)
 	cleaner.DeleteVolumes(instance)
 
-	// Allow NATS messages to propagate
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-allDeletes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ebs.delete fan-out")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1867,16 +1879,22 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 
 	var mu sync.Mutex
 	ebsDeletedVolumes := make(map[string]bool)
+	const expectedDeletes = 2 // only the two internal volumes; vol-keep is skipped
+	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
 		var req types.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
+		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
 		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
+		if done {
+			close(allDeletes)
+		}
 	})
 	require.NoError(t, err)
 	defer deleteSub.Unsubscribe()
@@ -1896,7 +1914,11 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	cleaner := newInstanceCleanerAdapter(daemon)
 	cleaner.DeleteVolumes(instance)
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-allDeletes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ebs.delete fan-out")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -2274,8 +2296,8 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	})
 
 	t.Run("QMPDeviceDelFails_NoForce", func(t *testing.T) {
-		// With nil QMPClient encoder/decoder, SendQMPCommand returns error.
-		// Without force=true, this should return ServerInternal.
+		// With nil QMPClient encoder/decoder, the QMP device_del returns
+		// error. Without force=true, this should return ServerInternal.
 		command := types.EC2InstanceCommand{
 			ID: instanceID,
 			Attributes: types.EC2CommandAttributes{
@@ -3149,61 +3171,10 @@ func TestNewDaemon_WalDirPreservedIfSet(t *testing.T) {
 	assert.Equal(t, "/fast-ssd/wal", d.config.WalDir)
 }
 
-// TestMarkInstanceFailed verifies that MarkFailed sets the StateReason and
-// transitions the instance to ShuttingDown synchronously, then completes
-// the cleanup chain to Terminated in a goroutine.
-func TestMarkInstanceFailed(t *testing.T) {
-	daemon := createDaemonWithJetStream(t)
-
-	instanceID := "i-test-mark-failed"
-	ec2Instance := &ec2.Instance{}
-	ec2Instance.SetInstanceId(instanceID)
-
-	instance := &vm.VM{
-		ID:        instanceID,
-		Status:    vm.StatePending,
-		AccountID: testAccountID,
-		Instance:  ec2Instance,
-	}
-	daemon.vmMgr.Insert(instance)
-
-	daemon.vmMgr.MarkFailed(instance, "volume_preparation_failed")
-
-	// Synchronous: state reason set, transition to shutting-down done.
-	require.NotNil(t, instance.Instance.StateReason)
-	assert.Equal(t, "Server.InternalError", *instance.Instance.StateReason.Code)
-	assert.Equal(t, "volume_preparation_failed", *instance.Instance.StateReason.Message)
-	require.Eventually(t, func() bool {
-		return daemon.vmMgr.Status(instance) == vm.StateTerminated
-	}, 5*time.Second, 10*time.Millisecond, "cleanup goroutine should reach terminated")
-}
-
-// TestMarkInstanceFailed_NilInstance verifies that MarkFailed handles
-// a VM with no ec2.Instance (Instance == nil) gracefully.
-func TestMarkInstanceFailed_NilInstance(t *testing.T) {
-	daemon := createDaemonWithJetStream(t)
-
-	instanceID := "i-test-mark-failed-nil"
-	instance := &vm.VM{
-		ID:        instanceID,
-		Status:    vm.StatePending,
-		AccountID: testAccountID,
-		Instance:  nil, // no ec2.Instance
-	}
-	daemon.vmMgr.Insert(instance)
-
-	// Should not panic
-	daemon.vmMgr.MarkFailed(instance, "test_failure")
-
-	require.Eventually(t, func() bool {
-		return daemon.vmMgr.Status(instance) == vm.StateTerminated
-	}, 5*time.Second, 10*time.Millisecond, "cleanup goroutine should reach terminated")
-}
-
 // TestVolumeMounterAdapter_UnmountOne_Success verifies that the adapter's
 // UnmountOne sends an ebs.unmount NATS request and handles a successful
-// response. UnmountOne is the post-2d successor to Daemon.rollbackEBSMount;
-// it is the AttachVolume rollback path and DetachVolume Phase 3.
+// response. UnmountOne is shared by the AttachVolume rollback path and the
+// DetachVolume ebs.unmount step.
 func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 	natsURL := sharedNATSURL
 
@@ -3283,6 +3254,150 @@ func TestVolumeMounterAdapter_UnmountOne_NATSTimeout(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	adapter.UnmountOne(types.EBSRequest{Name: "vol-timeout"})
+}
+
+// TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when
+// any of Mount's per-volume failure paths fires mid-fan-out, the adapter
+// unmounts the volumes already successfully mounted in the same Mount()
+// call. Each subtest exercises a distinct rollback trigger so a regression
+// that drops rollback() from one branch (mount-response error, malformed
+// response, NATS layer failure) is caught individually. Without rollback,
+// a launch failure on the second of three volumes would leave the first
+// volume's viperblockd attached and the NBD socket live, leaking
+// resources every retry.
+func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
+	tests := []struct {
+		name        string
+		respondVol2 func(msg *nats.Msg)
+		wantErrSub  string
+	}{
+		{
+			name: "MountResponseError",
+			respondVol2: func(msg *nats.Msg) {
+				resp := types.EBSMountResponse{Error: "simulated mount failure"}
+				data, _ := json.Marshal(resp)
+				msg.Respond(data)
+			},
+			wantErrSub: "simulated mount failure",
+		},
+		{
+			name: "MalformedResponse",
+			respondVol2: func(msg *nats.Msg) {
+				msg.Respond([]byte("not-valid-json"))
+			},
+			wantErrSub: "invalid character",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := createTestDaemon(t, sharedNATSURL)
+			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+
+			mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
+				var req types.EBSRequest
+				require.NoError(t, json.Unmarshal(msg.Data, &req))
+				if req.Name == "vol-2" {
+					tt.respondVol2(msg)
+					return
+				}
+				resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+				data, _ := json.Marshal(resp)
+				msg.Respond(data)
+			})
+			require.NoError(t, err)
+			defer mountSub.Unsubscribe()
+
+			unmounted := make(chan string, 3)
+			unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+				var req types.EBSRequest
+				require.NoError(t, json.Unmarshal(msg.Data, &req))
+				unmounted <- req.Name
+				resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+				data, _ := json.Marshal(resp)
+				msg.Respond(data)
+			})
+			require.NoError(t, err)
+			defer unmountSub.Unsubscribe()
+
+			instance := &vm.VM{
+				ID:        "i-mount-rollback",
+				AccountID: testAccountID,
+				EBSRequests: types.EBSRequests{
+					Requests: []types.EBSRequest{
+						{Name: "vol-1"},
+						{Name: "vol-2"},
+						{Name: "vol-3"},
+					},
+				},
+			}
+
+			err = adapter.Mount(instance)
+			require.Error(t, err, "Mount should propagate the vol-2 failure")
+			assert.Contains(t, err.Error(), tt.wantErrSub)
+
+			// Mount returns only after rollback completes (the unmount NATS
+			// round-trip is synchronous), and the unmount subscriber sends on
+			// the buffered channel before responding — so by the time Mount
+			// returns, every rollback unmount is observable in `unmounted`.
+			require.Len(t, unmounted, 1,
+				"exactly one volume (vol-1, the previously mounted one) should be rolled back")
+			assert.Equal(t, "vol-1", <-unmounted)
+		})
+	}
+}
+
+// TestVolumeMounterAdapter_Mount_RollbackFailurePropagates verifies that
+// when the rollback unmount itself fails, Mount surfaces the failure
+// instead of swallowing it. A silent rollback failure leaves the volume
+// attached without surfacing the leak to the caller.
+func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+
+	mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
+		var req types.EBSRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &req))
+		if req.Name == "vol-2" {
+			resp := types.EBSMountResponse{Error: "primary mount failure"}
+			data, _ := json.Marshal(resp)
+			msg.Respond(data)
+			return
+		}
+		resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer mountSub.Unsubscribe()
+
+	unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+		resp := types.EBSUnMountResponse{Error: "rollback unmount failed"}
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer unmountSub.Unsubscribe()
+
+	instance := &vm.VM{
+		ID:        "i-rollback-failure",
+		AccountID: testAccountID,
+		EBSRequests: types.EBSRequests{
+			Requests: []types.EBSRequest{
+				{Name: "vol-1"},
+				{Name: "vol-2"},
+			},
+		},
+	}
+
+	err = adapter.Mount(instance)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "primary mount failure",
+		"original mount error must be preserved")
+	assert.Contains(t, err.Error(), "rollback also failed",
+		"rollback failure must be surfaced, not silently logged")
+	assert.Contains(t, err.Error(), "rollback unmount failed",
+		"underlying unmount error must be wrapped in")
 }
 
 // TestDescribeInstances_InvalidInstanceIDMalformed verifies that DescribeInstances
@@ -3743,4 +3858,59 @@ func generateTestCert(t *testing.T) (certPEM, keyPEM []byte) {
 	require.NoError(t, pem.Encode(keyBuf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 
 	return certBuf.Bytes(), keyBuf.Bytes()
+}
+
+func TestResolveGPUModel_ProductionModel(t *testing.T) {
+	dev := gpu.GPUDevice{VendorID: "10de", DeviceID: "2236", Vendor: gpu.VendorNVIDIA}
+	m := resolveGPUModel(dev, nil)
+	assert.Equal(t, "g5", m.Family)
+	assert.Equal(t, "A10G", m.Name)
+}
+
+func TestResolveGPUModel_ConsumerGPUDefaultsToG5(t *testing.T) {
+	// Unknown PCI ID auto-maps to g5 using discovered specs — no config needed.
+	dev := gpu.GPUDevice{
+		VendorID:  "10de",
+		DeviceID:  "2487",
+		Vendor:    gpu.VendorNVIDIA,
+		Model:     "NVIDIA GeForce RTX 3060",
+		MemoryMiB: 12288,
+	}
+	m := resolveGPUModel(dev, nil)
+	assert.Equal(t, "g5", m.Family)
+	assert.Equal(t, "NVIDIA GeForce RTX 3060", m.Name)
+	assert.Equal(t, int64(12288), m.MemoryMiB)
+	assert.Equal(t, "NVIDIA", m.Manufacturer)
+}
+
+func TestResolveGPUModel_ConsumerGPUFallbackName(t *testing.T) {
+	// No Model field: name falls back to "GPU <vendor>:<device>".
+	dev := gpu.GPUDevice{VendorID: "dead", DeviceID: "beef", Vendor: gpu.VendorUnknown}
+	m := resolveGPUModel(dev, nil)
+	assert.Equal(t, "g5", m.Family)
+	assert.Equal(t, "GPU dead:beef", m.Name)
+	assert.Equal(t, "Unknown", m.Manufacturer)
+}
+
+func TestResolveGPUModel_OverrideShadowsProduction(t *testing.T) {
+	// An override for a known production PCI ID shadows the built-in entry.
+	overrides := []config.GPUModelOverride{
+		{VendorID: "10de", DeviceID: "2236", Family: "g6", Manufacturer: "NVIDIA", Name: "Custom", MemoryMiB: 999},
+	}
+	dev := gpu.GPUDevice{VendorID: "10de", DeviceID: "2236", Vendor: gpu.VendorNVIDIA}
+	m := resolveGPUModel(dev, overrides)
+	assert.Equal(t, "g6", m.Family)
+	assert.Equal(t, "Custom", m.Name)
+}
+
+func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
+	// Override can pin specific name/memory for a consumer GPU that would
+	// otherwise be auto-mapped with nvidia-smi-discovered or zero values.
+	overrides := []config.GPUModelOverride{
+		{VendorID: "10de", DeviceID: "2487", Family: "g5", Manufacturer: "NVIDIA", Name: "RTX 3060", MemoryMiB: 12288},
+	}
+	dev := gpu.GPUDevice{VendorID: "10de", DeviceID: "2487", Vendor: gpu.VendorNVIDIA}
+	m := resolveGPUModel(dev, overrides)
+	assert.Equal(t, "RTX 3060", m.Name)
+	assert.Equal(t, int64(12288), m.MemoryMiB)
 }

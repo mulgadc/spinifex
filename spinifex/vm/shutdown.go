@@ -129,7 +129,7 @@ func (m *Manager) Terminate(id string) error {
 // launch errors mid-way: callers (NATS RunInstances handler, recovery
 // worker, pending watchdog, system-instance launcher) get back control
 // immediately and do not block on volume unmount, ENI delete, or KV
-// writes. Mirrors the pre-2c `go d.finalizeTermination(instance)` pattern.
+// writes.
 //
 // Tolerates instances already in a cleanup state (no-op) and instances
 // that may or may not be present in the running-VM map.
@@ -222,6 +222,9 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 func (m *Manager) stopCleanup(instance *VM) {
 	m.shutdownAndUnmount(instance)
 	m.cleanupTapDevices(instance)
+	if m.deps.InstanceCleaner != nil {
+		m.deps.InstanceCleaner.ReleaseGPU(instance)
+	}
 	m.deallocateResources(instance)
 }
 
@@ -238,6 +241,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	m.cleanupTapDevices(instance)
 
 	if m.deps.InstanceCleaner != nil {
+		m.deps.InstanceCleaner.ReleaseGPU(instance)
 		m.deps.InstanceCleaner.ReleasePublicIP(instance)
 		m.deps.InstanceCleaner.DetachAndDeleteENI(instance)
 		m.deps.InstanceCleaner.RemoveFromPlacementGroup(instance)
@@ -281,7 +285,7 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 // the management TAP/IP allocation. Errors are logged and tolerated.
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		if err := m.deps.NetworkPlumber.CleanupTapDevice(instance.ENIId); err != nil {
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}
 		m.cleanupExtraENITaps(instance)
@@ -299,7 +303,7 @@ func (m *Manager) cleanupExtraENITaps(instance *VM) {
 		return
 	}
 	for _, extra := range instance.ExtraENIs {
-		if err := m.deps.NetworkPlumber.CleanupTapDevice(extra.ENIID); err != nil {
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(extra.ENIID)); err != nil {
 			slog.Warn("Failed to clean up extra ENI tap device", "eni", extra.ENIID, "err", err)
 		}
 	}
@@ -346,9 +350,8 @@ func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) err
 }
 
 // writeRunningState persists the current running-VM map via the StateStore.
-// The View callback holds the manager lock across the marshal+put — same
-// constraint as the daemon's pre-2c WriteState. Splitting marshal from put
-// is a 2f cleanup item.
+// The View callback holds the manager lock across the marshal+put so VM
+// fields can't change mid-encode; splitting marshal from put is deferred.
 func (m *Manager) writeRunningState() error {
 	if m.deps.StateStore == nil {
 		return nil

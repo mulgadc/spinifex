@@ -2,9 +2,10 @@ import { defineConfig } from "oxlint"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
 import remix from "ultracite/oxlint/remix"
+import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, remix],
+  extends: [core, react, remix, vitest],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -31,27 +32,34 @@ export default defineConfig({
         allowArrowFunctions: true,
       },
     ],
+    "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
     "eslint/prefer-destructuring": "off",
-    "eslint/sort-imports": "off",
+    "eslint/require-unicode-regexp": "off",
     "eslint/sort-keys": "off",
-    "eslint/sort-vars": "off",
     "import/consistent-type-specifier-style": "off",
-    "promise/prefer-await-to-callbacks": "off",
     "typescript/no-confusing-void-expression": "off",
     "typescript/no-floating-promises": "off",
     "typescript/no-misused-promises": "off",
-    "typescript/only-throw-error": "off",
-    "typescript/promise-function-async": "off",
-    "typescript/return-await": "off",
+    "typescript/only-throw-error": [
+      "error",
+      {
+        allow: [
+          {
+            from: "package",
+            name: "Redirect",
+            package: "@tanstack/router-core",
+          },
+        ],
+      },
+    ],
     "typescript/strict-boolean-expressions": "off",
     "typescript/strict-void-return": "off",
     "unicorn/filename-case": [
       "error",
       { cases: { kebabCase: true, camelCase: true } },
     ],
-    "unicorn/number-literal-case": "off",
   },
   overrides: [
     {
@@ -59,7 +67,9 @@ export default defineConfig({
         "**/*.{test,spec}.{ts,tsx,js,jsx}",
         "**/__tests__/**/*.{ts,tsx,js,jsx}",
       ],
+      plugins: ["vitest"],
       rules: {
+        "eslint/require-await": "off",
         "import/first": "off",
         "typescript/consistent-type-imports": "off",
         "typescript/no-unsafe-argument": "off",
@@ -67,6 +77,11 @@ export default defineConfig({
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-type-assertion": "off",
         "unicorn/no-useless-undefined": "off",
+        "vitest/max-expects": "off",
+        "vitest/prefer-called-with": "off",
+        "vitest/prefer-describe-function-title": "off",
+        "vitest/prefer-import-in-mock": "off",
+        "vitest/require-mock-type-parameters": "off",
       },
     },
   ],

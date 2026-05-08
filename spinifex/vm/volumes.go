@@ -16,7 +16,7 @@ import (
 
 // blockdevDelMaxAttempts caps the bounded retry on "node is in use" while
 // QEMU drains pending I/O after device_del. 20 × DetachDelay (default 1s)
-// gives a 20s budget that matches the pre-2d daemon-side helper.
+// gives a 20s budget.
 const blockdevDelMaxAttempts = 20
 
 // AttachVolumeResult carries the device names produced by AttachVolume:
@@ -270,10 +270,9 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 	nodeName := fmt.Sprintf("nbd-%s", volumeID)
 	iothreadID := fmt.Sprintf("ioth-%s", volumeID)
 
-	// Phase 1: device_del. Idempotent on DeviceNotFound so the second
-	// AWS-CLI retry can drive blockdev-del to completion when a prior
-	// detach left the guest device gone but the block node intact
-	// (mulga-siv-41).
+	// device_del is idempotent on DeviceNotFound so a second AWS-CLI
+	// retry can drive blockdev-del to completion when a prior detach left
+	// the guest device gone but the block node intact.
 	_, err := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
 		Execute:   "device_del",
 		Arguments: map[string]any{"id": deviceID},
@@ -295,14 +294,14 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 		time.Sleep(m.deps.DetachDelay)
 	}
 
-	// Phase 2: blockdev-del with bounded retry on "node is in use".
+	// blockdev-del with bounded retry on "node is in use".
 	if blockdevErr := m.tryBlockdevDel(instance, nodeName); blockdevErr != nil {
 		slog.Error("DetachVolume: QMP blockdev-del failed, leaving volume state intact",
 			"volumeId", volumeID, "err", blockdevErr)
 		return "", fmt.Errorf("QMP blockdev-del: %w", blockdevErr)
 	}
 
-	// Phase 2b: object-del (best-effort).
+	// object-del (best-effort).
 	if _, iothreadErr := sendQMPCommand(instance.QMPClient, qmp.QMPCommand{
 		Execute:   "object-del",
 		Arguments: map[string]any{"id": iothreadID},
@@ -311,7 +310,7 @@ func (m *Manager) DetachVolume(id, volumeID, device string, force bool) (string,
 			"volumeId", volumeID, "err", iothreadErr)
 	}
 
-	// Phase 3: ebs.unmount (best-effort).
+	// ebs.unmount (best-effort).
 	if m.deps.VolumeMounter != nil {
 		m.deps.VolumeMounter.UnmountOne(ebsReq)
 	}
@@ -392,7 +391,7 @@ func (m *Manager) tryBlockdevDel(instance *VM, nodeName string) error {
 
 // isQMPDeviceNotFound returns true when err is a QMP DeviceNotFound class
 // error from device_del. Used to make device_del idempotent across detach
-// retries (mulga-siv-41).
+// retries.
 func isQMPDeviceNotFound(err error) bool {
 	if err == nil {
 		return false

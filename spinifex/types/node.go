@@ -12,21 +12,26 @@ type NodeDiscoverResponse struct {
 // TotalVCPU - ReservedVCPU - AllocVCPU (and the equivalent for memory);
 // per-type counts in InstanceTypes already account for the reserve.
 type NodeStatusResponse struct {
-	Node          string            `json:"node"`
-	Status        string            `json:"status"`
-	Host          string            `json:"host"`
-	Region        string            `json:"region"`
-	AZ            string            `json:"az"`
-	Uptime        int64             `json:"uptime"`
-	Services      []string          `json:"services"`
-	TotalVCPU     int               `json:"total_vcpu"`
-	TotalMemGB    float64           `json:"total_mem_gb"`
-	ReservedVCPU  int               `json:"reserved_vcpu"`
-	ReservedMemGB float64           `json:"reserved_mem_gb"`
-	AllocVCPU     int               `json:"alloc_vcpu"`
-	AllocMemGB    float64           `json:"alloc_mem_gb"`
-	VMCount       int               `json:"vm_count"`
-	InstanceTypes []InstanceTypeCap `json:"instance_types"`
+	Node           string            `json:"node"`
+	Status         string            `json:"status"`
+	Host           string            `json:"host"`
+	Region         string            `json:"region"`
+	AZ             string            `json:"az"`
+	Uptime         int64             `json:"uptime"`
+	Services       []string          `json:"services"`
+	TotalVCPU      int               `json:"total_vcpu"`
+	TotalMemGB     float64           `json:"total_mem_gb"`
+	ReservedVCPU   int               `json:"reserved_vcpu"`
+	ReservedMemGB  float64           `json:"reserved_mem_gb"`
+	AllocVCPU      int               `json:"alloc_vcpu"`
+	AllocMemGB     float64           `json:"alloc_mem_gb"`
+	TotalGPUs      int               `json:"total_gpus"`
+	AllocGPUs      int               `json:"alloc_gpus"`
+	GPUCapable     bool              `json:"gpu_capable,omitempty"`
+	GPUPassthrough bool              `json:"gpu_passthrough,omitempty"`
+	GPUModels      []string          `json:"gpu_models,omitempty"`
+	VMCount        int               `json:"vm_count"`
+	InstanceTypes  []InstanceTypeCap `json:"instance_types"`
 
 	// Leader roles for clustered services (empty string = service not running or not clustered)
 	NATSRole       string `json:"nats_role,omitempty"`       // "leader" or "follower"

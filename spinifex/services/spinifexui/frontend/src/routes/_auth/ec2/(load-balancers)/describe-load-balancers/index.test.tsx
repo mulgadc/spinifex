@@ -14,16 +14,14 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly input: unknown
   }
   const handlers = new Map<string, (input: unknown) => unknown>()
-  const send = vi.fn((command: Command): Promise<unknown> => {
+  const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
-      return Promise.reject(
-        new Error(
-          `No handler registered for SDK command ${command.constructor.name}`,
-        ),
+      throw new Error(
+        `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
-    return Promise.resolve(handler(command.input))
+    return handler(command.input)
   })
   return {
     routerState: { navigate: vi.fn() },
@@ -106,7 +104,7 @@ describe("describe-load-balancers list route", () => {
       screen.queryByText("Load balancer image not imported"),
     ).not.toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     ).not.toBeDisabled()
   })
 
@@ -134,7 +132,7 @@ describe("describe-load-balancers list route", () => {
       screen.getByText(/spx admin images import --name lb-alpine/),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     ).toBeDisabled()
   })
 

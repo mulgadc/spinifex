@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -30,6 +31,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -47,7 +49,6 @@ import (
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -92,6 +93,7 @@ type ResourceManager struct {
 	allocatedVCPU int
 	allocatedMem  float64
 	instanceTypes map[string]*ec2.InstanceTypeInfo
+	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
 	// Dynamic instance-type subscription management
 	subsMu       sync.Mutex
@@ -146,6 +148,11 @@ type Daemon struct {
 	// JetStream manager for KV state storage (nil if JetStream disabled)
 	jsManager *JetStreamManager
 
+	// stateStore is the vm.StateStore-shaped view over jsManager. Both the
+	// vm.Manager and daemon-side handlers route VM-instance state I/O
+	// through it. Initialized after initJetStream succeeds.
+	stateStore vm.StateStore
+
 	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests)
 	detachDelay time.Duration
 
@@ -163,8 +170,8 @@ type Daemon struct {
 	// tests override to observe the abort without killing the test process.
 	exitFunc func(int)
 
-	// NetworkPlumber handles tap device lifecycle for VPC networking
-	networkPlumber NetworkPlumber
+	// networkPlumber handles tap device lifecycle for VPC and management networking
+	networkPlumber vm.NetworkPlumber
 
 	// Management NIC infrastructure: bridge IP + IP allocator for system instances.
 	// Populated at startup when br-mgmt is detected; nil/empty otherwise.
@@ -173,6 +180,14 @@ type Daemon struct {
 	// mgmtRouteVia is the AWSGW bind IP that system instances must route via the
 	// management NIC. Set when AWSGW binds to a specific IP (multi-node).
 	mgmtRouteVia string
+
+	// gpuProbe holds the result of the always-on startup GPU hardware probe.
+	// Populated regardless of whether gpu_passthrough is enabled in config.
+	gpuProbe gpuProbeResult
+
+	// gpuManager handles VFIO bind/unbind lifecycle for GPU passthrough.
+	// Nil when GPUPassthrough is disabled in config or no recognised GPUs are found.
+	gpuManager *gpu.Manager
 
 	// shuttingDown is set to true during coordinated cluster shutdown (GATE phase)
 	// or during SIGTERM-based shutdown. When true, the daemon rejects new work,
@@ -364,7 +379,9 @@ func getSystemMemory() (float64, error) {
 // Also returns an error if the host is too small to satisfy the daemon's
 // reserve — clamping silently would defeat the reserve and look like a
 // runtime bug.
-func NewResourceManager() (*ResourceManager, error) {
+// gpuModels is the list of recognised GPU models present on the host; pass nil if
+// GPU passthrough is disabled or no GPUs were found.
+func NewResourceManager(gpuModels []instancetypes.GPUModel, gpuMgr *gpu.Manager) (*ResourceManager, error) {
 	// Get system CPU cores
 	numCPU := runtime.NumCPU()
 
@@ -388,8 +405,9 @@ func NewResourceManager() (*ResourceManager, error) {
 		arch = "arm64"
 	}
 
-	// Detect CPU generation and generate matching instance types
-	instanceTypes := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, arch)
+	// Detect CPU generation and generate matching instance types (including GPU
+	// families when gpuModels is non-nil).
+	instanceTypes := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, arch, gpuModels)
 
 	slog.Info("System resources detected",
 		"hostVCPU", numCPU, "hostMemGB", totalMemGB,
@@ -403,6 +421,7 @@ func NewResourceManager() (*ResourceManager, error) {
 		reservedVCPU:  reservedVCPU,
 		reservedMem:   reservedMem,
 		instanceTypes: instanceTypes,
+		gpuManager:    gpuMgr,
 	}, nil
 }
 
@@ -458,11 +477,17 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 			continue
 		}
 
+		requiresGPU := instancetypes.IsGPUType(it)
+		availGPU := 0
+		if rm.gpuManager != nil && requiresGPU {
+			availGPU = rm.gpuManager.Available()
+		}
 		count := canAllocateCount(
 			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 			vCPUs, memMiB,
 			1<<30, // effectively unlimited — let resources be the constraint
+			availGPU, requiresGPU,
 		)
 
 		if showCapacity {
@@ -529,14 +554,36 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// If WalDir is not set, use BaseDir
-	config := cfg.Nodes[cfg.Node]
+	nodeCfg := cfg.Nodes[cfg.Node]
 	if cfg.Nodes[cfg.Node].WalDir == "" {
-		config.WalDir = config.BaseDir
-
-		cfg.Nodes[cfg.Node] = config
+		nodeCfg.WalDir = nodeCfg.BaseDir
+		cfg.Nodes[cfg.Node] = nodeCfg
 	}
 
-	rm, err := NewResourceManager()
+	// Phase 1: always probe GPU hardware (no side effects, no config required).
+	gpuProbe := probeGPU()
+
+	// Phase 2: activate GPU passthrough only when the operator has opted in.
+	var gpuModels []instancetypes.GPUModel
+	var gpuMgr *gpu.Manager
+	if nodeCfg.Daemon.GPUPassthrough {
+		if !gpuProbe.Capable {
+			slog.Warn("GPU passthrough enabled in config but prerequisites not met",
+				"iommu", gpuProbe.IOMMUActive, "vfio", gpuProbe.VFIOPresent,
+				"gpus", len(gpuProbe.Devices))
+		} else {
+			for _, dev := range gpuProbe.Devices {
+				gpuModels = append(gpuModels, resolveGPUModel(dev, nodeCfg.Daemon.GPUModelOverrides))
+			}
+			gpuMgr = gpu.NewManager(gpuProbe.Devices)
+			slog.Info("GPU passthrough enabled", "gpus", len(gpuProbe.Devices), "knownModels", len(gpuModels))
+		}
+	} else if gpuProbe.Capable {
+		slog.Info("GPU hardware detected, passthrough not enabled",
+			"gpus", len(gpuProbe.Devices), "hint", "run 'spx admin gpu enable' to activate")
+	}
+
+	rm, err := NewResourceManager(gpuModels, gpuMgr)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("initialize resource manager: %w", err)
@@ -545,8 +592,10 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 	d := &Daemon{
 		node:               cfg.Node,
 		clusterConfig:      cfg,
-		config:             &config,
+		config:             &nodeCfg,
 		resourceMgr:        rm,
+		gpuProbe:           gpuProbe,
+		gpuManager:         gpuMgr,
 		ctx:                ctx,
 		cancel:             cancel,
 		vmMgr:              vm.NewManager(),
@@ -1129,6 +1178,13 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("restore instances: %w", err)
 	}
 
+	// Rebuild mgmt IP allocator from restored VMs so we don't re-allocate IPs
+	// that are already in use by running system instances.
+	if d.mgmtIPAllocator != nil {
+		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
+		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+	}
+
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
@@ -1141,7 +1197,13 @@ func (d *Daemon) startCluster() error {
 	d.startHeartbeat()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
-	slog.Info("Daemon cluster integration complete", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
+	d.ready.Store(true)
+	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
+
+	d.setupReload()
+	d.setupShutdown()
+	d.awaitShutdown()
+
 	return nil
 }
 
@@ -1213,6 +1275,8 @@ func (d *Daemon) initJetStream() error {
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
+
+	d.stateStore = newStateStoreAdapter(d.jsManager)
 
 	// Replica upgrade is deferred to after all services have created their
 	// KV buckets and the cluster is ready (see upgradeJetStreamReplicas).
@@ -1326,6 +1390,30 @@ func (d *Daemon) checkPredastoreReady() bool {
 	return true
 }
 
+// LoadState loads the instance state from the local file. Missing file is the
+// fresh-install signal (start with empty map). Corrupt or unknown-schema files
+// are fatal — caller refuses start rather than silently losing data. There is
+// no KV fallback: a fresh node has empty KV anyway, so silent KV-fallback on
+// file loss would just mask bugs.
+func (d *Daemon) LoadState() error {
+	path := d.localStatePath()
+	state, err := ReadLocalState(path)
+	if err != nil {
+		slog.Error("Local state load failed", "path", path, "error", err)
+		return fmt.Errorf("read local state: %w", err)
+	}
+
+	if state == nil {
+		d.vmMgr.Replace(map[string]*vm.VM{})
+		slog.Info("No local state file, starting with empty instance map", "path", path)
+		return nil
+	}
+
+	d.vmMgr.Replace(state.VMS)
+	slog.Info("Loaded local state", "path", path, "instances", len(state.VMS))
+	return nil
+}
+
 // restoreInstances delegates to vm.Manager.Restore. vm.Manager only
 // persists to the cluster StateStore (JetStream); the daemon's local
 // crash-recovery file is owned by daemon.WriteState, so we sync it here
@@ -1337,12 +1425,6 @@ func (d *Daemon) restoreInstances() error {
 		slog.Error("Failed to persist local state after restore", "error", err)
 	}
 	return nil
-}
-
-// areVolumeSocketsValid is a daemon-side shim around vm.AreVolumeSocketsValid
-// kept so the existing TestAreVolumeSocketsValid_* cases call the same name.
-func (d *Daemon) areVolumeSocketsValid(instance *vm.VM) bool {
-	return vm.AreVolumeSocketsValid(instance)
 }
 
 // awaitShutdown blocks until the daemon's shutdown wait group completes.
@@ -1441,7 +1523,7 @@ func (d *Daemon) ClusterManager() error {
 
 	d.registerLocalRoutes(r)
 
-	// Load TLS certificate (C-5: serve over HTTPS instead of plaintext HTTP)
+	// Load TLS certificate.
 	// Resolve relative cert paths against config directory (cert lives alongside spinifex.toml).
 	// For binary installs, systemd sets absolute paths via env vars; for dev, the config
 	// stores relative paths like "config/server.pem" which need resolution.
@@ -1542,88 +1624,86 @@ func (d *Daemon) WriteState() error {
 	return nil
 }
 
-// LoadState loads the instance state from the local file. Missing file is the
-// fresh-install signal (start with empty map). Corrupt or unknown-schema files
-// are fatal — caller refuses start rather than silently losing data. There is
-// no KV fallback: a fresh node has empty KV anyway, so silent KV-fallback on
-// file loss would just mask bugs.
-func (d *Daemon) LoadState() error {
-	path := d.localStatePath()
-	state, err := ReadLocalState(path)
-	if err != nil {
-		slog.Error("Local state load failed", "path", path, "error", err)
-		return fmt.Errorf("read local state: %w", err)
-	}
-
-	if state == nil {
-		d.vmMgr.Replace(map[string]*vm.VM{})
-		slog.Info("No local state file, starting with empty instance map", "path", path)
-		return nil
-	}
-
-	d.vmMgr.Replace(state.VMS)
-	slog.Info("Loaded local state", "path", path, "instances", len(state.VMS))
-	return nil
+// setupReload registers a SIGHUP handler that reloads GPU config without restarting.
+func (d *Daemon) setupReload() {
+	d.shutdownWg.Go(func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGHUP)
+		defer signal.Stop(sigChan)
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-sigChan:
+				slog.Info("SIGHUP received — reloading GPU config")
+				d.reloadConfig()
+			}
+		}
+	})
 }
 
-func (d *Daemon) SendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceId string) (*qmp.QMPResponse, error) {
-	// Confirm QMP client is initialized
-	if q == nil || q.Encoder == nil || q.Decoder == nil {
-		return nil, fmt.Errorf("QMP client is not initialized")
+// reloadConfig re-reads spinifex.toml and applies any GPU passthrough changes.
+func (d *Daemon) reloadConfig() {
+	if d.configPath == "" {
+		slog.Warn("SIGHUP: no config path set, cannot reload")
+		return
+	}
+	newCfg, err := config.LoadConfig(d.configPath)
+	if err != nil {
+		slog.Error("SIGHUP: config reload failed", "err", err)
+		return
+	}
+	newNodeCfg := newCfg.Nodes[d.node]
+	d.applyGPUConfig(newNodeCfg.Daemon.GPUPassthrough)
+}
+
+// applyGPUConfig activates or deactivates GPU passthrough at runtime.
+// Transition false→true: re-probes hardware, initialises gpuManager, adds g5 types.
+// Transition true→false: refused when GPU instances are running; otherwise tears down.
+func (d *Daemon) applyGPUConfig(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	wasEnabled := d.gpuManager != nil
+	if enabled == wasEnabled {
+		slog.Debug("GPU passthrough state unchanged on reload", "passthrough", enabled)
+		return
 	}
 
-	// Lock the QMP client
-	q.Mu.Lock()
-	defer q.Mu.Unlock()
-
-	// Set a read deadline so we don't block forever on a hung QEMU process
-	if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		return nil, fmt.Errorf("set read deadline: %w", err)
+	if enabled {
+		probe := probeGPU()
+		d.gpuProbe = probe
+		if !probe.Capable {
+			slog.Warn("GPU passthrough enable failed: prerequisites not met",
+				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
+			return
+		}
+		var models []instancetypes.GPUModel
+		for _, dev := range probe.Devices {
+			models = append(models, resolveGPUModel(dev, d.config.Daemon.GPUModelOverrides))
+		}
+		mgr := gpu.NewManager(probe.Devices)
+		d.gpuManager = mgr
+		d.resourceMgr.reloadGPUTypes(models, mgr)
+		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
+		return
 	}
-	defer func() { _ = q.Conn.SetReadDeadline(time.Time{}) }() // clear deadline after command
 
-	if err := q.Encoder.Encode(cmd); err != nil {
-		return nil, fmt.Errorf("encode error: %w", err)
+	// true → false: refuse if instances are running
+	if d.gpuManager.AllocatedCount() > 0 {
+		slog.Warn("GPU passthrough disable refused: GPU instances are running",
+			"allocated", d.gpuManager.AllocatedCount())
+		return
 	}
-
-	for {
-		var msg map[string]any
-		if err := q.Decoder.Decode(&msg); err != nil {
-			return nil, fmt.Errorf("decode error: %w", err)
-		}
-
-		if _, ok := msg["event"]; ok {
-			// QMP events are informational only — state transitions are driven
-			// by the command handlers that initiate the action, avoiding races
-			// between event-driven and command-driven transitions.
-			slog.Info("QMP event", "event", msg["event"], "instanceId", instanceId)
-			// Extend deadline after receiving an event (QEMU is alive, just chatty)
-			if err := q.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-				return nil, fmt.Errorf("set read deadline: %w", err)
-			}
-			continue
-		}
-		if errObj, ok := msg["error"].(map[string]any); ok {
-			return nil, fmt.Errorf("QMP error: %s: %s", errObj["class"], errObj["desc"])
-		}
-		if _, ok := msg["return"]; ok {
-			respBytes, err := json.Marshal(msg)
-			if err != nil {
-				return nil, fmt.Errorf("marshal QMP response: %w", err)
-			}
-			var resp qmp.QMPResponse
-			if err := json.Unmarshal(respBytes, &resp); err != nil {
-				return nil, fmt.Errorf("unmarshal error: %w", err)
-			}
-			return &resp, nil
-		}
-	}
+	d.gpuManager = nil
+	d.resourceMgr.reloadGPUTypes(nil, nil)
+	slog.Info("GPU passthrough disabled via config reload")
 }
 
 func (d *Daemon) setupShutdown() {
 	d.shutdownWg.Go(func() {
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 		<-sigChan
 		slog.Info("Received shutdown signal, cleaning up...")
@@ -1685,13 +1765,6 @@ func (d *Daemon) setupShutdown() {
 	})
 }
 
-// pendingWatchdogTimeout aliases the manager's exported watchdog timeout so
-// daemon-side tests (currently asserting LaunchTime is within the watchdog
-// window after restore) keep working without reaching into the vm package.
-//
-// Phase 2f cleanup: migrate the assertion into vm/ and delete the alias.
-const pendingWatchdogTimeout = vm.PendingWatchdogTimeout
-
 // respondWithVolumeAttachment builds an ec2.VolumeAttachment, marshals it to JSON, and
 // responds on the NATS message. Used by both AttachVolume and DetachVolume handlers.
 func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID, device, state string) {
@@ -1722,12 +1795,19 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
+	requiresGPU := instancetypes.IsGPUType(instanceType)
+	availGPU := 0
+	if rm.gpuManager != nil && requiresGPU {
+		availGPU = rm.gpuManager.Available()
+	}
+
 	return canAllocateCount(
 		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
 		instanceTypeMemoryMiB(instanceType),
 		count,
+		availGPU, requiresGPU,
 	)
 }
 
@@ -1766,6 +1846,30 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 
 // initSubscriptions sets up dynamic per-instance-type NATS subscriptions.
 // Called once during daemon startup after NATS is connected.
+// reloadGPUTypes replaces GPU instance types in-place and updates NATS subscriptions.
+// Called on SIGHUP when gpu_passthrough is toggled. Mutates the existing map so that
+// all holders of the map reference (e.g. instanceService) see the updated types.
+func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, mgr *gpu.Manager) {
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+
+	rm.mu.Lock()
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsGPUType(it) {
+			delete(rm.instanceTypes, name)
+		}
+	}
+	if len(models) > 0 {
+		maps.Copy(rm.instanceTypes, instancetypes.GenerateGPUTypes(models, arch))
+	}
+	rm.gpuManager = mgr
+	rm.mu.Unlock()
+
+	rm.updateInstanceSubscriptions()
+}
+
 func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, nodeID string) {
 	rm.natsConn = nc
 	rm.handler = handler
@@ -1939,4 +2043,97 @@ func (d *Daemon) wireLBAgentConfig() {
 	// provisioning forever.
 	d.elbv2Service.MgmtBridgeIP = d.mgmtBridgeIP
 	d.elbv2Service.AdvertiseIP = advertiseIP
+}
+
+// resolveGPUModel maps a discovered GPU to an instance type model.
+// Overrides take priority, then the production model list, then a g5 default.
+// Any GPU device that reaches the default path is treated as a g5 instance,
+// so consumer GPUs used for testing work without explicit config entries.
+func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) instancetypes.GPUModel {
+	for i := range overrides {
+		o := &overrides[i]
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
+			return instancetypes.GPUModel{
+				VendorID:     o.VendorID,
+				DeviceID:     o.DeviceID,
+				Family:       o.Family,
+				Manufacturer: o.Manufacturer,
+				Name:         o.Name,
+				MemoryMiB:    o.MemoryMiB,
+			}
+		}
+	}
+	if m := instancetypes.GPUModelForVendorDevice(dev.VendorID, dev.DeviceID); m != nil {
+		return *m
+	}
+	// Default: any discovered GPU device maps to g5 using its detected specs.
+	name := dev.Model
+	if name == "" {
+		name = fmt.Sprintf("GPU %s:%s", dev.VendorID, dev.DeviceID)
+	}
+	return instancetypes.GPUModel{
+		VendorID:     dev.VendorID,
+		DeviceID:     dev.DeviceID,
+		Family:       "g5",
+		Manufacturer: gpuVendorDisplayName(dev.Vendor),
+		Name:         name,
+		MemoryMiB:    dev.MemoryMiB,
+	}
+}
+
+// gpuXVGAEnabled returns true when the QEMU device should include x-vga=on.
+// Consumer GPUs default to true; known datacenter/compute cards default to false.
+// A GPUModelOverride with XVGAOff=true forces false regardless of the model table.
+func gpuXVGAEnabled(dev *gpu.GPUDevice, overrides []config.GPUModelOverride) bool {
+	for _, o := range overrides {
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
+			return !o.XVGAOff
+		}
+	}
+	return !gpu.IsComputeGPU(dev.VendorID, dev.DeviceID)
+}
+
+func gpuVendorDisplayName(v gpu.Vendor) string {
+	switch v {
+	case gpu.VendorNVIDIA:
+		return "NVIDIA"
+	case gpu.VendorAMD:
+		return "AMD"
+	case gpu.VendorIntel:
+		return "Intel"
+	default:
+		return "Unknown"
+	}
+}
+
+// gpuProbeResult holds the outcome of the always-on startup hardware probe.
+// Populated before any config-gated activation logic runs.
+type gpuProbeResult struct {
+	Capable     bool // true when Devices, IOMMUActive, and VFIOPresent are all satisfied
+	IOMMUActive bool
+	VFIOPresent bool
+	Devices     []gpu.GPUDevice
+}
+
+// probeGPU discovers GPU hardware and checks passthrough prerequisites.
+// It is read-only and has no side effects.
+func probeGPU() gpuProbeResult {
+	var r gpuProbeResult
+
+	devices, err := gpu.Discover()
+	if err != nil {
+		slog.Debug("GPU probe: discover failed", "err", err)
+	}
+	r.Devices = devices
+
+	// IOMMU is active when the kernel has populated iommu_groups in sysfs.
+	groups, err := os.ReadDir("/sys/kernel/iommu_groups")
+	r.IOMMUActive = err == nil && len(groups) > 0
+
+	// vfio_pci module is present when its sysfs module directory exists.
+	_, err = os.Stat("/sys/module/vfio_pci")
+	r.VFIOPresent = err == nil
+
+	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
+	return r
 }

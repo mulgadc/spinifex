@@ -1,0 +1,5 @@
+# Allow spinifex group to access VFIO devices for GPU passthrough.
+# QEMU (launched by spinifex-daemon, group spinifex) must open /dev/vfio/N
+# to use vfio-pci passthrough devices. The kernel creates these nodes as
+# root:root 0600 by default; this rule grants group-level read-write access.
+SUBSYSTEM=="vfio", GROUP="spinifex", MODE="0660"

@@ -6,7 +6,22 @@
 #
 # Assumes services are running and AWS_PROFILE=spinifex is configured
 # by a prior 'spx admin init'.
+#
+# GPU passthrough test (opt-in):
+#   TEST_GPU=1 scripts/smoke-test.sh
+#   TEST_GPU=1 GPU_VENDOR_ID=10de GPU_DEVICE_ID=2236 scripts/smoke-test.sh
+#
+# GPU env vars:
+#   TEST_GPU=1            enable GPU passthrough checks
+#   GPU_VENDOR_ID         PCI vendor ID (default: auto-detect first NVIDIA VGA/3D device)
+#   GPU_DEVICE_ID         PCI device ID (default: auto-detect)
+#   GPU_FAMILY            instance family to test (default: g5)
 set -euo pipefail
+
+TEST_GPU="${TEST_GPU:-0}"
+GPU_VENDOR_ID="${GPU_VENDOR_ID:-}"
+GPU_DEVICE_ID="${GPU_DEVICE_ID:-}"
+GPU_FAMILY="${GPU_FAMILY:-g5}"
 
 export AWS_PROFILE=spinifex
 
@@ -41,6 +56,41 @@ echo "==> Importing SSH key"
 ! aws ec2 import-key-pair --key-name spinifex-key \
     --public-key-material "fileb://$SSH_KEY.pub"
 aws ec2 describe-key-pairs
+
+# --- GPU pre-flight (TEST_GPU=1 only) ---
+if [[ "$TEST_GPU" == "1" ]]; then
+    echo "==> [GPU] Checking IOMMU"
+    if ! dmesg | grep -qi "DMAR.*IOMMU enabled\|iommu.*Translated\|Adding to iommu group\|AMD-Vi.*enabled"; then
+        echo "❌ IOMMU not detected — add intel_iommu=on (or amd_iommu=on) and iommu=pt to kernel cmdline, then reboot"
+        exit 1
+    fi
+    echo "   IOMMU active"
+
+    echo "==> [GPU] Detecting NVIDIA GPU"
+    if [[ -z "$GPU_VENDOR_ID" || -z "$GPU_DEVICE_ID" ]]; then
+        GPU_LINE=$(lspci -nn | grep -i nvidia | grep -iE "VGA|3D" | head -1)
+        if [[ -z "$GPU_LINE" ]]; then
+            echo "❌ No NVIDIA GPU found via lspci — is the card seated and detectable?"
+            lspci | grep -i nvidia >&2 || true
+            exit 1
+        fi
+        echo "   Detected: $GPU_LINE"
+        PCI_IDS=$(echo "$GPU_LINE" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])')
+        GPU_VENDOR_ID=$(echo "$PCI_IDS" | cut -d: -f1)
+        GPU_DEVICE_ID=$(echo "$PCI_IDS" | cut -d: -f2)
+    fi
+    echo "   GPU PCI ID: ${GPU_VENDOR_ID}:${GPU_DEVICE_ID}"
+
+    echo "==> [GPU] Verifying ${GPU_FAMILY} instance types advertised"
+    G5_TYPES=$(aws ec2 describe-instance-types \
+        --query "InstanceTypes[?starts_with(InstanceType, \`${GPU_FAMILY}\`)].InstanceType" \
+        --output text 2>/dev/null || true)
+    if [[ -z "$G5_TYPES" ]]; then
+        echo "❌ No ${GPU_FAMILY}.* instance types returned by describe-instance-types"
+        exit 1
+    fi
+    echo "   ${GPU_FAMILY} types available: $G5_TYPES"
+fi
 
 # --- Import AMI ---
 # --- Import AMI ---
@@ -79,7 +129,9 @@ fi
 
 # --- Launch smoke-test instance ---
 echo "==> Launching smoke-test instance"
-if grep -q 'AuthenticAMD' /proc/cpuinfo; then
+if [[ "$TEST_GPU" == "1" ]]; then
+    INSTANCE_TYPE="${GPU_FAMILY}.xlarge"
+elif grep -q 'AuthenticAMD' /proc/cpuinfo; then
     INSTANCE_TYPE="t3a.small"
 else
     INSTANCE_TYPE="t3.small"
@@ -195,4 +247,27 @@ if ! echo "$SSH_OUT" | grep -q "ec2-user"; then
     exit 1
 fi
 
-echo "✅ Smoke test passed — instance $INSTANCE_ID launched, running, and SSH-verified"
+# --- GPU guest verification (TEST_GPU=1 only) ---
+if [[ "$TEST_GPU" == "1" ]]; then
+    echo "==> [GPU] Verifying GPU visible inside guest"
+    GPU_VISIBLE=0
+    for _i in $(seq 1 12); do
+        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=5 -o BatchMode=yes \
+               -p "$SSH_INST_PORT" -i "$SSH_KEY" \
+               ec2-user@"$SSH_INST_HOST" \
+               'lspci 2>/dev/null | grep -i nvidia' 2>/dev/null; then
+            GPU_VISIBLE=1
+            break
+        fi
+        sleep 5
+    done
+    if [[ $GPU_VISIBLE -eq 0 ]]; then
+        echo "❌ NVIDIA GPU not visible in guest via lspci"
+        exit 1
+    fi
+    echo "   GPU visible in guest"
+    echo "✅ Smoke test passed (GPU passthrough) — instance $INSTANCE_ID launched with GPU and verified"
+else
+    echo "✅ Smoke test passed — instance $INSTANCE_ID launched, running, and SSH-verified"
+fi

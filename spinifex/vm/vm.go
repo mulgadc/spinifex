@@ -35,8 +35,6 @@ type ExtraENI struct {
 
 type VM struct {
 	ID           string        `json:"id"`
-	PID          int           `json:"pid"`
-	Running      bool          `json:"running"`
 	Status       InstanceState `json:"status"`
 	InstanceType string        `json:"instance_type"`
 	Config       Config        `json:"config"`
@@ -70,7 +68,8 @@ type VM struct {
 	Health InstanceHealthState `json:"health"`
 
 	// AccountID is the AWS account that owns this instance.
-	// Empty for pre-Phase4 resources (treated as visible to all accounts).
+	// Empty AccountID identifies legacy/migration resources that are only
+	// visible to the root account.
 	AccountID string `json:"account_id,omitempty"`
 
 	// VPC networking: ENI attached to this instance (set by RunInstances when VPC mode is active)
@@ -100,9 +99,10 @@ type VM struct {
 	DevMAC string `json:"dev_mac,omitempty"`
 
 	// Management NIC for system instance control plane (reaches host via br-mgmt).
+	// Tap name derived via MgmtTapName(ID); not persisted so terminate-during-launch
+	// can still clean up.
 	MgmtMAC string `json:"mgmt_mac,omitempty"` // MAC address (02:a0:00 prefix)
 	MgmtIP  string `json:"mgmt_ip,omitempty"`  // Static IP on management subnet
-	MgmtTap string `json:"mgmt_tap,omitempty"` // TAP device name on host
 
 	// Placement group tracking (set during RunInstances when a placement group is specified)
 	PlacementGroupName string `json:"placement_group_name,omitempty"`
@@ -117,14 +117,19 @@ type VM struct {
 	// VM (e.g. "elbv2"). Empty for customer-launched instances. The UI
 	// filters out tagged VMs from customer-facing listings.
 	ManagedBy string `json:"managed_by,omitempty"`
+
+	// GPUPCIAddress is the PCI address of the GPU bound to this instance via VFIO
+	// (e.g. "0000:03:00.0"). Empty for non-GPU instances.
+	GPUPCIAddress string `json:"gpu_pci_address,omitempty"`
+	// GPUXVGAEnabled controls whether x-vga=on is passed to QEMU for this instance's
+	// GPU device. True for consumer GPUs; false for headless datacenter cards.
+	GPUXVGAEnabled bool `json:"gpu_xvga_enabled,omitempty"`
 }
 
 // ResetNodeLocalState zeroes out fields that are specific to the daemon node
 // that last ran this instance. Must be called after deserializing a VM from
 // shared KV before launching it on a new node.
 func (v *VM) ResetNodeLocalState() {
-	v.PID = 0
-	v.Running = false
 	v.MetadataServerAddress = ""
 	v.QMPClient = &qmp.QMPClient{}
 	v.EBSRequests.Mu = sync.Mutex{}
@@ -173,6 +178,10 @@ type Config struct {
 	// InstanceType is a friendly name (e.g., t3.micro, t4g.micro)
 	InstanceType string `json:"instance_type"`
 	Architecture string `json:"architecture"`
+
+	// UseUEFI requests OVMF firmware instead of the default SeaBIOS for x86_64 VMs.
+	// Falls back silently to SeaBIOS if OVMF is not installed on the host.
+	UseUEFI bool `json:"use_uefi,omitempty"`
 }
 
 func (cfg *Config) Execute() (*exec.Cmd, error) {
@@ -304,6 +313,14 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		}
 	} else if cfg.MachineType != "" {
 		args = append(args, "-M", cfg.MachineType)
+		if cfg.Architecture == "x86_64" && cfg.UseUEFI {
+			uefiPath := "/usr/share/ovmf/OVMF.fd"
+			if _, err := os.Stat(uefiPath); err == nil {
+				args = append(args, "-bios", uefiPath)
+			} else {
+				slog.Warn("OVMF firmware not found, falling back to SeaBIOS", "path", uefiPath)
+			}
+		}
 	}
 
 	slog.Info("Executing QEMU command:", "cmd", qemuArchitecture, "args", args)

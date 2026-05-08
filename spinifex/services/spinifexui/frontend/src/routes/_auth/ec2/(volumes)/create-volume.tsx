@@ -131,7 +131,7 @@ function CreateVolume() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-volumes" })}
+          onCancel={async () => await navigate({ to: "/ec2/describe-volumes" })}
           pendingLabel="Creating…"
           submitLabel="Create Volume"
         />

@@ -94,7 +94,9 @@ export function CreateTargetGroupPage() {
         <FormActions
           isPending={createMutation.isPending}
           isSubmitting={isSubmitting}
-          onCancel={() => navigate({ to: "/ec2/describe-target-groups" })}
+          onCancel={async () =>
+            await navigate({ to: "/ec2/describe-target-groups" })
+          }
           pendingLabel="Creating…"
           submitLabel="Create target group"
         />

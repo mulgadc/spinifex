@@ -13,9 +13,9 @@ import { getIamClient } from "@/lib/awsClient"
 
 export const iamUsersQueryOptions = queryOptions({
   queryKey: ["iam", "users"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new ListUsersCommand({})
-    return getIamClient().send(command)
+    return await getIamClient().send(command)
   },
   staleTime: 300_000,
 })
@@ -23,9 +23,9 @@ export const iamUsersQueryOptions = queryOptions({
 export const iamUserQueryOptions = (userName: string) =>
   queryOptions({
     queryKey: ["iam", "users", userName],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new GetUserCommand({ UserName: userName })
-      return getIamClient().send(command)
+      return await getIamClient().send(command)
     },
     staleTime: 300_000,
   })
@@ -33,18 +33,18 @@ export const iamUserQueryOptions = (userName: string) =>
 export const iamAccessKeysQueryOptions = (userName: string) =>
   queryOptions({
     queryKey: ["iam", "access-keys", userName],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new ListAccessKeysCommand({ UserName: userName })
-      return getIamClient().send(command)
+      return await getIamClient().send(command)
     },
     staleTime: 300_000,
   })
 
 export const iamPoliciesQueryOptions = queryOptions({
   queryKey: ["iam", "policies"],
-  queryFn: () => {
+  queryFn: async () => {
     const command = new ListPoliciesCommand({ Scope: "Local" })
-    return getIamClient().send(command)
+    return await getIamClient().send(command)
   },
   staleTime: 300_000,
 })
@@ -52,9 +52,9 @@ export const iamPoliciesQueryOptions = queryOptions({
 export const iamPolicyQueryOptions = (policyArn: string) =>
   queryOptions({
     queryKey: ["iam", "policies", policyArn],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new GetPolicyCommand({ PolicyArn: policyArn })
-      return getIamClient().send(command)
+      return await getIamClient().send(command)
     },
     staleTime: 300_000,
   })
@@ -65,12 +65,12 @@ export const iamPolicyVersionQueryOptions = (
 ) =>
   queryOptions({
     queryKey: ["iam", "policy-versions", policyArn, versionId],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new GetPolicyVersionCommand({
         PolicyArn: policyArn,
         VersionId: versionId,
       })
-      return getIamClient().send(command)
+      return await getIamClient().send(command)
     },
     staleTime: 300_000,
   })
@@ -78,11 +78,11 @@ export const iamPolicyVersionQueryOptions = (
 export const iamAttachedUserPoliciesQueryOptions = (userName: string) =>
   queryOptions({
     queryKey: ["iam", "attached-user-policies", userName],
-    queryFn: () => {
+    queryFn: async () => {
       const command = new ListAttachedUserPoliciesCommand({
         UserName: userName,
       })
-      return getIamClient().send(command)
+      return await getIamClient().send(command)
     },
     staleTime: 300_000,
   })

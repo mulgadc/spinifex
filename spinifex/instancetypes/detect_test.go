@@ -219,14 +219,14 @@ func TestDetectARMGeneration(t *testing.T) {
 
 func TestDetectAndGenerate_Intel(t *testing.T) {
 	cpu := &mockCPU{vendorID: cpuid.Intel, family: 6, model: 143}
-	types := DetectAndGenerate(cpu, "x86_64")
+	types := DetectAndGenerate(cpu, "x86_64", nil)
 	assert.NotEmpty(t, types)
 	assert.True(t, hasFamily(types, "c7i."), "Sapphire Rapids should include c7i")
 }
 
 func TestDetectAndGenerate_NormalizesAmd64(t *testing.T) {
 	cpu := &mockCPU{vendorID: cpuid.Intel, family: 6, model: 106}
-	types := DetectAndGenerate(cpu, "amd64")
+	types := DetectAndGenerate(cpu, "amd64", nil)
 	assert.NotEmpty(t, types)
 	assert.True(t, hasFamily(types, "c6i."), "amd64 should normalize to x86_64 and produce Ice Lake types")
 }

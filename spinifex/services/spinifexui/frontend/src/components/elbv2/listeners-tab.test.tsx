@@ -49,11 +49,11 @@ function seedClient(opts: {
   return queryClient
 }
 
-afterEach(() => {
-  mockSend.mockReset()
-})
-
 describe("ListenersTab", () => {
+  afterEach(() => {
+    mockSend.mockReset()
+  })
+
   it("renders empty state and delete-note when no listeners", () => {
     const queryClient = seedClient({})
     render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
@@ -128,7 +128,7 @@ describe("ListenersTab", () => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(before),
     )
     const call = mockSend.mock.calls[before]?.[0]
-    expect(call.input).toEqual({ ListenerArn: "arn:listener/1" })
+    expect(call.input).toStrictEqual({ ListenerArn: "arn:listener/1" })
   })
 
   it("filters target groups by vpcId in the add-listener dialog", async () => {
@@ -158,7 +158,7 @@ describe("ListenersTab", () => {
     })
     await user.click(screen.getByRole("button", { name: "Add listener" }))
     await user.click(screen.getByLabelText("Default target group"))
-    expect(await screen.findByText(/tg-in-vpc/)).toBeInTheDocument()
+    await expect(screen.findByText(/tg-in-vpc/)).resolves.toBeInTheDocument()
     expect(screen.queryByText(/tg-other-vpc/)).not.toBeInTheDocument()
   })
 
@@ -190,7 +190,7 @@ describe("ListenersTab", () => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(before),
     )
     const call = mockSend.mock.calls[before]?.[0]
-    expect(call.input).toEqual({
+    expect(call.input).toStrictEqual({
       LoadBalancerArn: LB_ARN,
       Protocol: "HTTP",
       Port: 80,

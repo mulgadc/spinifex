@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({})
 
@@ -15,8 +15,8 @@ vi.mock("@aws-sdk/lib-storage", () => ({
     constructor({ params }: { params: { Key: string } }) {
       this.key = params.Key
     }
-    done() {
-      return Promise.resolve({ Key: this.key })
+    async done() {
+      return { Key: this.key }
     }
   },
 }))
@@ -41,10 +41,6 @@ function createQueryClient() {
   return queryClient
 }
 
-afterEach(() => {
-  mockSend.mockClear()
-})
-
 describe("useCreateBucket", () => {
   it("sends CreateBucketCommand with bucket name", async () => {
     createQueryClient()
@@ -52,8 +48,10 @@ describe("useCreateBucket", () => {
 
     result.current.mutate({ bucketName: "my-bucket" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({ Bucket: "my-bucket" })
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      Bucket: "my-bucket",
+    })
   })
 
   it("invalidates buckets query on success", async () => {
@@ -63,7 +61,7 @@ describe("useCreateBucket", () => {
 
     result.current.mutate({ bucketName: "my-bucket" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(spy).toHaveBeenCalledWith({ queryKey: ["s3", "buckets"] })
   })
 })
@@ -75,8 +73,8 @@ describe("useDeleteObject", () => {
 
     result.current.mutate({ bucket: "my-bucket", key: "photos/cat.jpg" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
       Key: "photos/cat.jpg",
     })
@@ -89,7 +87,7 @@ describe("useDeleteObject", () => {
 
     result.current.mutate({ bucket: "my-bucket", key: "file.txt" })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["s3", "buckets", "my-bucket", "objects"],
     })
@@ -105,7 +103,7 @@ describe("useUploadObject", () => {
     const file = new File(["hello"], "test.txt", { type: "text/plain" })
     result.current.mutate({ bucket: "my-bucket", key: "test.txt", file })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["s3", "buckets", "my-bucket", "objects"],
     })

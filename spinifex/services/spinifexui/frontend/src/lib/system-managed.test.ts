@@ -15,7 +15,7 @@ describe("isSystemManagedImage", () => {
       ImageId: "ami-1",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: "elbv2" }],
     }
-    expect(isSystemManagedImage(image)).toBe(true)
+    expect(isSystemManagedImage(image)).toBeTruthy()
   })
 
   it("returns false for customer images with unrelated tags", () => {
@@ -23,11 +23,11 @@ describe("isSystemManagedImage", () => {
       ImageId: "ami-2",
       Tags: [{ Key: "Name", Value: "my-ami" }],
     }
-    expect(isSystemManagedImage(image)).toBe(false)
+    expect(isSystemManagedImage(image)).toBeFalsy()
   })
 
   it("returns false for images with no tags", () => {
-    expect(isSystemManagedImage({ ImageId: "ami-3" })).toBe(false)
+    expect(isSystemManagedImage({ ImageId: "ami-3" })).toBeFalsy()
   })
 })
 
@@ -37,7 +37,7 @@ describe("isLbImage", () => {
       ImageId: "ami-lb",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: LB_MANAGED_BY_VALUE }],
     }
-    expect(isLbImage(image)).toBe(true)
+    expect(isLbImage(image)).toBeTruthy()
   })
 
   it("returns false for system-managed images owned by other components", () => {
@@ -45,11 +45,11 @@ describe("isLbImage", () => {
       ImageId: "ami-other",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: "other-service" }],
     }
-    expect(isLbImage(image)).toBe(false)
+    expect(isLbImage(image)).toBeFalsy()
   })
 
   it("returns false for customer images", () => {
-    expect(isLbImage({ ImageId: "ami-cust" })).toBe(false)
+    expect(isLbImage({ ImageId: "ami-cust" })).toBeFalsy()
   })
 })
 
@@ -62,17 +62,17 @@ describe("hasLbImage", () => {
         Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: LB_MANAGED_BY_VALUE }],
       },
     ]
-    expect(hasLbImage(images)).toBe(true)
+    expect(hasLbImage(images)).toBeTruthy()
   })
 
   it("returns false for an empty list", () => {
-    expect(hasLbImage([])).toBe(false)
+    expect(hasLbImage([])).toBeFalsy()
   })
 
   it("returns false when no image carries the elbv2 tag", () => {
     const images: Image[] = [
       { ImageId: "ami-cust", Tags: [{ Key: "Name", Value: "ubuntu" }] },
     ]
-    expect(hasLbImage(images)).toBe(false)
+    expect(hasLbImage(images)).toBeFalsy()
   })
 })

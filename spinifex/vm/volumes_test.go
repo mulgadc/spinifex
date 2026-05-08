@@ -411,12 +411,10 @@ func attachVolumeRunningInstance(t *testing.T, qmpClient *qmp.QMPClient, mounter
 	return m, v
 }
 
-// TestAttachVolume_MountAmbiguous_TriggersUnmountOne covers the regression
-// from issue #1: pre-2d the daemon called rollbackEBSMount when the backend
-// acknowledged the mount with an empty URI. 2d collapsed the empty-URI case
-// into an opaque MountOne error and dropped the rollback. The fix introduces
-// ErrMountAmbiguous so AttachVolume can detect this specific case and call
-// UnmountOne defensively.
+// TestAttachVolume_MountAmbiguous_TriggersUnmountOne asserts that an
+// ebs.mount response with an empty URI is treated as ambiguous: AttachVolume
+// returns ErrMountAmbiguous and invokes UnmountOne so a half-started
+// backend mount cannot be orphaned.
 func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: ErrMountAmbiguous}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
@@ -430,8 +428,7 @@ func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 
 // TestAttachVolume_GenericMountError_DoesNotUnmount confirms that other
 // MountOne failures (NATS timeout, backend explicit Error, marshal errors)
-// do NOT trigger UnmountOne — matches pre-2d behaviour where the daemon
-// only rolled back on the empty-URI case, not on mountResp.Error != "".
+// do NOT trigger UnmountOne — only the empty-URI ambiguous case rolls back.
 func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
 	mounter := &fakeVolumeMounter{mountOneErr: errors.New("ebs.mount NATS request: timeout")}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
@@ -440,7 +437,7 @@ func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrMountAmbiguous)
 	assert.Empty(t, mounter.unmountedOne,
-		"non-ambiguous MountOne errors must not trigger UnmountOne (matches pre-2d)")
+		"non-ambiguous MountOne errors must not trigger UnmountOne")
 }
 
 // TestAttachVolume_NBDURIParseFailure_TriggersUnmountOne covers the rollback

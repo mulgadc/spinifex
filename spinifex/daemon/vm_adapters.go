@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -94,11 +92,28 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
+	mounted := make([]int, 0, len(instance.EBSRequests.Requests))
+	rollback := func(origErr error) error {
+		var rbErrs []error
+		for _, idx := range mounted {
+			req := instance.EBSRequests.Requests[idx]
+			if err := a.unmountOne(req); err != nil {
+				slog.Error("Mount rollback: unmount failed",
+					"volume", req.Name, "err", err)
+				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
+			}
+		}
+		if len(rbErrs) > 0 {
+			return fmt.Errorf("%w; rollback also failed: %w", origErr, errors.Join(rbErrs...))
+		}
+		return origErr
+	}
+
 	for k, v := range instance.EBSRequests.Requests {
 		ebsMountRequest, err := json.Marshal(v)
 		if err != nil {
 			slog.Error("Failed to marshal volume payload", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		reply, err := a.nc.Request(a.topic("mount"), ebsMountRequest, 30*time.Second)
@@ -107,22 +122,23 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 
 		if err != nil {
 			slog.Error("Failed to request EBS mount", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		var ebsMountResponse types.EBSMountResponse
 		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
 			slog.Error("Failed to unmarshal volume response:", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		if ebsMountResponse.Error != "" {
 			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error)
-			return fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error)
+			return rollback(fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error))
 		}
 
 		slog.Debug("Mounted volume successfully", "response", ebsMountResponse.URI)
 		instance.EBSRequests.Requests[k].NBDURI = ebsMountResponse.URI
+		mounted = append(mounted, k)
 	}
 
 	return nil
@@ -188,117 +204,40 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 }
 
 // UnmountOne sends ebs.unmount for a single request. Best-effort: errors
-// are logged. Mirrors the pre-2d Daemon.rollbackEBSMount semantics so
-// AttachVolume rollback and DetachVolume Phase 3 share one code path.
+// are logged and tolerated. Shared by AttachVolume rollback and the
+// DetachVolume ebs.unmount step where the caller cannot meaningfully act
+// on a failed unmount. Internal callers that need to surface rollback
+// failures use unmountOne directly.
 func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		slog.Error("UnmountOne: failed to marshal unmount request",
-			"volume", req.Name, "err", err)
-		return
-	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
-	if err != nil {
-		slog.Error("UnmountOne: ebs.unmount NATS request failed",
-			"volume", req.Name, "err", err)
-		return
-	}
-	var resp types.EBSUnMountResponse
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		slog.Error("UnmountOne: failed to unmarshal response",
-			"volume", req.Name, "err", err)
-		return
-	}
-	if resp.Error != "" {
-		slog.Error("UnmountOne: ebs.unmount returned error",
-			"volume", req.Name, "err", resp.Error)
-		return
-	}
-	if resp.Mounted {
-		slog.Error("UnmountOne: volume still mounted after unmount", "volume", req.Name)
+	if err := a.unmountOne(req); err != nil {
+		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
 }
 
-// qmpClientFactoryAdapter satisfies vm.QMPClientFactory. It performs only
-// the connect + qmp_capabilities handshake; the manager owns starting the
-// heartbeat goroutine on the returned client.
-type qmpClientFactoryAdapter struct{}
-
-var _ vm.QMPClientFactory = (*qmpClientFactoryAdapter)(nil)
-
-func newQMPClientFactoryAdapter() *qmpClientFactoryAdapter { return &qmpClientFactoryAdapter{} }
-
-func (a *qmpClientFactoryAdapter) Create(v *vm.VM) (*qmp.QMPClient, error) {
-	client, err := qmp.NewQMPClient(v.Config.QMPSocket)
+// unmountOne sends ebs.unmount and returns any error so callers (e.g. the
+// Mount partial-failure rollback) can wrap it into a richer failure.
+func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
+	payload, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
+		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-
-	if _, err := sendQMPHandshake(client, v.ID); err != nil {
-		_ = client.Conn.Close()
-		return nil, err
+	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
-
-	return client, nil
-}
-
-// sendQMPHandshake issues qmp_capabilities under the QMPClient's mutex. Mirrors
-// the slim version of Daemon.SendQMPCommand for the handshake; the daemon's
-// full helper still owns long-running command dispatch.
-func sendQMPHandshake(client *qmp.QMPClient, instanceID string) (*qmp.QMPResponse, error) {
-	if client == nil || client.Encoder == nil || client.Decoder == nil {
-		return nil, errors.New("QMP client is not initialized")
+	var resp types.EBSUnMountResponse
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return fmt.Errorf("unmarshal unmount response: %w", err)
 	}
-
-	client.Mu.Lock()
-	defer client.Mu.Unlock()
-
-	if err := client.Conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		return nil, fmt.Errorf("set read deadline: %w", err)
+	if resp.Error != "" {
+		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)
 	}
-	defer func() { _ = client.Conn.SetReadDeadline(time.Time{}) }()
-
-	if err := client.Encoder.Encode(qmp.QMPCommand{Execute: "qmp_capabilities"}); err != nil {
-		return nil, fmt.Errorf("encode qmp_capabilities: %w", err)
+	if resp.Mounted {
+		return fmt.Errorf("volume still mounted after unmount")
 	}
-
-	for {
-		var msg map[string]any
-		if err := client.Decoder.Decode(&msg); err != nil {
-			return nil, fmt.Errorf("decode qmp_capabilities response: %w", err)
-		}
-		if _, ok := msg["event"]; ok {
-			continue
-		}
-		raw, err := json.Marshal(msg)
-		if err != nil {
-			return nil, fmt.Errorf("marshal qmp response: %w", err)
-		}
-		var resp qmp.QMPResponse
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return nil, fmt.Errorf("unmarshal qmp response: %w", err)
-		}
-		if resp.Error != nil {
-			return nil, fmt.Errorf("qmp_capabilities failed: %s", resp.Error.Desc)
-		}
-		slog.Debug("QMP handshake complete", "instance", instanceID)
-		return &resp, nil
-	}
-}
-
-// processLauncherAdapter satisfies vm.ProcessLauncher. The real
-// implementation is a 1:1 wrapper over Config.Execute; the seam exists so
-// tests can substitute scripted commands.
-type processLauncherAdapter struct{}
-
-var _ vm.ProcessLauncher = (*processLauncherAdapter)(nil)
-
-func newProcessLauncherAdapter() *processLauncherAdapter { return &processLauncherAdapter{} }
-
-func (a *processLauncherAdapter) Launch(cfg *vm.Config) (*exec.Cmd, error) {
-	return cfg.Execute()
+	return nil
 }
 
 // instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver. It looks up
@@ -368,37 +307,13 @@ func (a *resourceControllerAdapter) CanAllocate(instanceType string, count int) 
 	return a.rm.canAllocate(it, count)
 }
 
-// volumeStateUpdaterAdapter satisfies vm.VolumeStateUpdater by delegating to
-// the daemon's volume service.
-type volumeStateUpdaterAdapter struct {
-	svc volumeStateUpdater
-}
-
-// volumeStateUpdater is the narrow slice of handlers_ec2_volume.VolumeServiceImpl
-// that the manager touches. Defining it locally avoids dragging the full
-// volume-service surface into the adapter.
-type volumeStateUpdater interface {
-	UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error
-}
-
-var _ vm.VolumeStateUpdater = (*volumeStateUpdaterAdapter)(nil)
-
-func newVolumeStateUpdaterAdapter(svc volumeStateUpdater) *volumeStateUpdaterAdapter {
-	return &volumeStateUpdaterAdapter{svc: svc}
-}
-
-func (a *volumeStateUpdaterAdapter) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
-	return a.svc.UpdateVolumeState(volumeID, state, instanceID, attachmentDevice)
-}
-
 // onInstanceRecoveringHook returns the daemon's OnInstanceRecovering
 // callback. Restore fires it once per instance about to be relaunched so
 // concurrent terminate commands can land on this node before launch
 // completes — without it, ec2.cmd.<id> would only be subscribed by
 // onInstanceUpHook after launch success, leaving a window where the
 // instance is reachable by DescribeInstances (in StatePending) but not
-// by EC2 commands. Mirrors the pre-2e early-subscribe block in
-// daemon.restoreInstances.
+// by EC2 commands.
 func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
 	return func(instance *vm.VM) {
 		d.mu.Lock()
@@ -468,11 +383,32 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			d.handleEC2GetConsoleOutput,
 		)
 		if err != nil {
+			// Roll back the first sub so the instance doesn't end up Running with
+			// one of two per-instance topics live — leaving GetConsoleOutput
+			// unreachable while Stop / Terminate continue to work.
+			if unsubErr := sub.Unsubscribe(); unsubErr != nil {
+				slog.Warn("OnInstanceUp: failed to unsubscribe command topic during rollback",
+					"instanceId", instance.ID, "err", unsubErr)
+			}
+			delete(d.natsSubscriptions, instance.ID)
 			slog.Error("OnInstanceUp: failed to subscribe to console output topic",
 				"instanceId", instance.ID, "err", err)
 			return fmt.Errorf("subscribe ec2.%s.GetConsoleOutput: %w", instance.ID, err)
 		}
 		d.natsSubscriptions[consoleSubKey] = consoleSub
+
+		// Re-claim GPU after a daemon restart with a still-running QEMU
+		// process: the manager's reconnect path fires OnInstanceUp without
+		// going through the handler-side Claim, so the GPU pool would
+		// otherwise treat the slot as free. ReclaimByAddress is a no-op
+		// when the same instance already owns the slot, so the launch and
+		// start-stopped paths (which Claim before Run) are unaffected.
+		if d.gpuManager != nil && instance.GPUPCIAddress != "" {
+			if err := d.gpuManager.ReclaimByAddress(instance.GPUPCIAddress, instance.ID); err != nil {
+				slog.Warn("Failed to re-claim GPU on instance up",
+					"gpu", instance.GPUPCIAddress, "instanceId", instance.ID, "err", err)
+			}
+		}
 		return nil
 	}
 }
@@ -507,17 +443,14 @@ func (d *Daemon) onInstanceDownHook() func(string) {
 // All collaborators must already be initialized; callers are expected to
 // invoke this from Daemon.Start after services and JetStream are ready.
 func (d *Daemon) buildVMManagerDeps() vm.Deps {
-	volState := newVolumeStateUpdaterAdapter(d.volumeService)
 	return vm.Deps{
 		NodeID:             d.node,
-		StateStore:         newStateStoreAdapter(d.jsManager),
-		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, volState),
-		QMPClientFactory:   newQMPClientFactoryAdapter(),
-		ProcessLauncher:    newProcessLauncherAdapter(),
+		StateStore:         d.stateStore,
+		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, d.volumeService),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),
-		VolumeStateUpdater: volState,
+		VolumeStateUpdater: d.volumeService,
 		InstanceCleaner:    newInstanceCleanerAdapter(d),
 		Hooks: vm.ManagerHooks{
 			OnInstanceUp:         d.onInstanceUpHook(),
@@ -525,7 +458,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 			OnInstanceRecovering: d.onInstanceRecoveringHook(),
 		},
 		ShutdownSignal:             d.shuttingDown.Load,
-		CrashHandler:               d.handleInstanceCrash,
+		CrashHandler:               d.vmMgr.HandleCrash,
 		TransitionState:            d.TransitionState,
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
@@ -550,8 +483,7 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 
 // DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
 // and user volumes flagged DeleteOnTermination via the volume service.
-// Errors are logged per volume; partial failure is tolerated to match
-// pre-2c stopInstance behaviour.
+// Errors are logged per volume; partial failure is tolerated.
 func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
@@ -609,8 +541,8 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
 // instance.ID so unsetup instances are tolerated) and releases the
 // management IP allocation if the daemon has one.
 func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
-	mgmtTap := MgmtTapName(instance.ID)
-	if err := CleanupMgmtTapDevice(mgmtTap); err != nil {
+	mgmtTap := vm.MgmtTapName(instance.ID)
+	if err := a.d.networkPlumber.CleanupTap(mgmtTap); err != nil {
 		slog.Warn("Failed to clean up mgmt tap device",
 			"tap", mgmtTap, "instanceId", instance.ID, "err", err)
 	}
@@ -691,4 +623,19 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) {
 		slog.Error("Failed to remove instance from placement group",
 			"instanceId", instance.ID, "groupName", instance.PlacementGroupName, "err", err)
 	}
+}
+
+// ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to its
+// original host driver. No-op for instances without a GPU allocation or
+// when GPU passthrough is disabled.
+func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) {
+	if a.d.gpuManager == nil || instance.GPUPCIAddress == "" {
+		return
+	}
+	if err := a.d.gpuManager.Release(instance.ID); err != nil {
+		slog.Error("Failed to release GPU on stop, device may need manual rebind",
+			"gpu", instance.GPUPCIAddress, "instanceId", instance.ID, "err", err)
+		return
+	}
+	slog.Info("GPU released", "gpu", instance.GPUPCIAddress, "instanceId", instance.ID)
 }

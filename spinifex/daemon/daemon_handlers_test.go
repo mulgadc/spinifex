@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
@@ -86,6 +87,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 	require.NoError(t, err)
 	err = daemon.jsManager.InitTerminatedInstanceBucket()
 	require.NoError(t, err)
+	daemon.stateStore = newStateStoreAdapter(daemon.jsManager)
 
 	// Re-bind the instance service so describe-stopped/terminated handlers see
 	// the KV that was just initialised.
@@ -184,7 +186,7 @@ func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code", "Should contain error code")
+	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
 func TestHandleNATSRequest_ServiceError(t *testing.T) {
@@ -208,10 +210,12 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	reply, err := nc.Request("test.err", reqData, 5*time.Second)
 	require.NoError(t, err)
 
+	// "something went wrong" is not in awserrors.ErrorLookup, so
+	// ValidErrorCode falls back to ServerInternal.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code", "Should contain error code")
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
 // --- Handler wrapper tests (representative set via NATS round-trip) ---
@@ -669,12 +673,13 @@ func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	// With nil QMPClient encoder/decoder, SendQMPCommand returns error,
-	// so we expect an error response (ServerInternal).
+	// vm.Reboot returns a generic "QMP system_reset" error when the
+	// QMPClient encoder/decoder is nil, which handleRebootInstance maps
+	// to ServerInternal via its default branch.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 
 	// Instance should remain in running state (reboot doesn't change state)
 	var status vm.InstanceState
@@ -718,11 +723,12 @@ func TestHandleEC2Events_RebootStoppedInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	// Should get IncorrectInstanceState error
+	// vm.Reboot wraps ErrInvalidTransition for non-Running instances;
+	// handleRebootInstance maps that to IncorrectInstanceState.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 }
 
 func TestHandleEC2Events_RebootTerminatedInstance(t *testing.T) {
@@ -761,11 +767,12 @@ func TestHandleEC2Events_RebootTerminatedInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reply)
 
-	// Should get IncorrectInstanceState error
+	// vm.Reboot wraps ErrInvalidTransition for terminated instances;
+	// handleRebootInstance maps that to IncorrectInstanceState.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 }
 
 func TestHandleEC2Events_InstanceNotFound(t *testing.T) {
@@ -789,7 +796,7 @@ func TestHandleEC2Events_InstanceNotFound(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2Events_MalformedJSON(t *testing.T) {
@@ -804,10 +811,12 @@ func TestHandleEC2Events_MalformedJSON(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.cmd.test", []byte(`{bad json}`), 5*time.Second)
 	require.NoError(t, err)
 
+	// handleEC2Events uses json.Unmarshal directly (not UnmarshalJsonPayload),
+	// so a parse failure surfaces as ServerInternal rather than ValidationError.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
 // --- respondWithVolumeAttachment tests ---
@@ -852,10 +861,11 @@ func TestHandleEC2ModifyVolume_MalformedInput(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.ModifyVolume", []byte(`{bad}`), 5*time.Second)
 	require.NoError(t, err)
 
+	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
 func TestHandleEC2ModifyVolume_VolumeNotFound(t *testing.T) {
@@ -875,11 +885,10 @@ func TestHandleEC2ModifyVolume_VolumeNotFound(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.ModifyVolume", reqData, 5*time.Second)
 	require.NoError(t, err)
 
-	// Should return an error since the volume doesn't exist
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, errResp["Code"])
 }
 
 // --- Account settings handler tests ---
@@ -1030,7 +1039,7 @@ func TestHandleEC2CreateImage_InstanceNotFound(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2CreateImage_MissingInstanceId(t *testing.T) {
@@ -1052,7 +1061,7 @@ func TestHandleEC2CreateImage_MissingInstanceId(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
 }
 
 func TestHandleEC2CreateImage_InvalidState(t *testing.T) {
@@ -1091,7 +1100,7 @@ func TestHandleEC2CreateImage_InvalidState(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 }
 
 func TestHandleEC2CreateImage_NoRootVolume(t *testing.T) {
@@ -1122,10 +1131,12 @@ func TestHandleEC2CreateImage_NoRootVolume(t *testing.T) {
 	reply, err := natsRequest(daemon.natsConn, "ec2.CreateImage", reqData, 5*time.Second)
 	require.NoError(t, err)
 
+	// No root volume on the instance — handleEC2CreateImage logs an
+	// error and returns ServerInternal (data-integrity guard).
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
 func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
@@ -1140,10 +1151,11 @@ func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.CreateImage", []byte(`{bad json}`), 5*time.Second)
 	require.NoError(t, err)
 
+	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
 // --- SetConfigPath test ---
@@ -1180,7 +1192,7 @@ func TestHandleEC2StartStoppedInstance_MissingInstance(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2StartStoppedInstance_MissingInstanceID(t *testing.T) {
@@ -1200,7 +1212,7 @@ func TestHandleEC2StartStoppedInstance_MissingInstanceID(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
 }
 
 func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
@@ -1229,7 +1241,7 @@ func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 
 	// Cleanup
 	_ = daemon.jsManager.DeleteStoppedInstance(runningVM.ID)
@@ -1369,7 +1381,7 @@ func TestHandleEC2TerminateStoppedInstance_MissingInstanceID(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
 }
 
 func TestHandleEC2TerminateStoppedInstance_MissingInstance(t *testing.T) {
@@ -1388,7 +1400,7 @@ func TestHandleEC2TerminateStoppedInstance_MissingInstance(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2TerminateStoppedInstance_NotStoppedState(t *testing.T) {
@@ -1417,7 +1429,7 @@ func TestHandleEC2TerminateStoppedInstance_NotStoppedState(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 
 	// Cleanup
 	_ = daemon.jsManager.DeleteStoppedInstance(runningVM.ID)
@@ -1772,7 +1784,7 @@ func TestHandleEC2ModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "InvalidInstanceID.NotFound", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2ModifyInstanceAttribute_NotStopped(t *testing.T) {
@@ -1806,7 +1818,7 @@ func TestHandleEC2ModifyInstanceAttribute_NotStopped(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "IncorrectInstanceState", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
 }
 
 func TestHandleEC2ModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
@@ -1916,7 +1928,7 @@ func TestHandleEC2ModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "MissingParameter", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
 }
 
 func TestHandleEC2ModifyInstanceAttribute_InvalidJSON(t *testing.T) {
@@ -1934,7 +1946,7 @@ func TestHandleEC2ModifyInstanceAttribute_InvalidJSON(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "ServerInternal", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
 // --- DescribeInstanceAttribute daemon tests ---
@@ -2239,7 +2251,7 @@ func TestHandleEC2DescribeInstanceAttribute_InstanceNotFound(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "InvalidInstanceID.NotFound", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
 }
 
 func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
@@ -2275,7 +2287,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, "InvalidParameterValue", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, errResp["Code"])
 }
 
 func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
@@ -2293,9 +2305,7 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	// handleNATSRequest reports unmarshal failures as ValidationError, matching
-	// the rest of the Pattern A handlers.
-	assert.Equal(t, "ValidationError", errResp["Code"])
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
 }
 
 // --- Delegate handler round-trip tests (table-driven) ---
@@ -2307,87 +2317,87 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string // "" means a success response is expected
+		allowEmpty   bool   // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"DeleteKeyPair",
-			"ec2.test.DeleteKeyPair",
-			daemon.handleEC2DeleteKeyPair,
-			&ec2.DeleteKeyPairInput{KeyName: aws.String("nonexistent-key")},
+			name:    "DeleteKeyPair",
+			topic:   "ec2.test.DeleteKeyPair",
+			handler: daemon.handleEC2DeleteKeyPair,
+			input:   &ec2.DeleteKeyPairInput{KeyName: aws.String("nonexistent-key")},
+			// Idempotent delete: missing key returns a success response.
 		},
 		{
-			"ImportKeyPair",
-			"ec2.test.ImportKeyPair",
-			daemon.handleEC2ImportKeyPair,
-			&ec2.ImportKeyPairInput{
-				KeyName:           aws.String("imported-key"),
-				PublicKeyMaterial: []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test"),
-			},
+			name:         "ImportKeyPair",
+			topic:        "ec2.test.ImportKeyPair",
+			handler:      daemon.handleEC2ImportKeyPair,
+			input:        &ec2.ImportKeyPairInput{KeyName: aws.String("imported-key"), PublicKeyMaterial: []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@test")},
+			expectedCode: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
-			"CreateVolume",
-			"ec2.test.CreateVolume",
-			daemon.handleEC2CreateVolume,
-			&ec2.CreateVolumeInput{
-				AvailabilityZone: aws.String("us-east-1a"),
-				Size:             aws.Int64(10),
-			},
+			name:         "CreateVolume",
+			topic:        "ec2.test.CreateVolume",
+			handler:      daemon.handleEC2CreateVolume,
+			input:        &ec2.CreateVolumeInput{AvailabilityZone: aws.String("us-east-1a"), Size: aws.Int64(10)},
+			expectedCode: awserrors.ErrorInvalidAvailabilityZone,
 		},
 		{
-			"DescribeVolumeStatus",
-			"ec2.test.DescribeVolumeStatus",
-			daemon.handleEC2DescribeVolumeStatus,
-			&ec2.DescribeVolumeStatusInput{},
+			name:    "DescribeVolumeStatus",
+			topic:   "ec2.test.DescribeVolumeStatus",
+			handler: daemon.handleEC2DescribeVolumeStatus,
+			input:   &ec2.DescribeVolumeStatusInput{},
 		},
 		{
-			"DeleteVolume",
-			"ec2.test.DeleteVolume",
-			daemon.handleEC2DeleteVolume,
-			&ec2.DeleteVolumeInput{VolumeId: aws.String("vol-nonexistent")},
+			name:         "DeleteVolume",
+			topic:        "ec2.test.DeleteVolume",
+			handler:      daemon.handleEC2DeleteVolume,
+			input:        &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVolumeNotFound,
 		},
 		{
-			"CreateSnapshot",
-			"ec2.test.CreateSnapshot",
-			daemon.handleEC2CreateSnapshot,
-			&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-nonexistent")},
+			name:         "CreateSnapshot",
+			topic:        "ec2.test.CreateSnapshot",
+			handler:      daemon.handleEC2CreateSnapshot,
+			input:        &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVolumeNotFound,
 		},
 		{
-			"DescribeSnapshots",
-			"ec2.test.DescribeSnapshots",
-			daemon.handleEC2DescribeSnapshots,
-			&ec2.DescribeSnapshotsInput{},
+			name:    "DescribeSnapshots",
+			topic:   "ec2.test.DescribeSnapshots",
+			handler: daemon.handleEC2DescribeSnapshots,
+			input:   &ec2.DescribeSnapshotsInput{},
 		},
 		{
-			"DeleteSnapshot",
-			"ec2.test.DeleteSnapshot",
-			daemon.handleEC2DeleteSnapshot,
-			&ec2.DeleteSnapshotInput{SnapshotId: aws.String("snap-nonexistent")},
+			name:         "DeleteSnapshot",
+			topic:        "ec2.test.DeleteSnapshot",
+			handler:      daemon.handleEC2DeleteSnapshot,
+			input:        &ec2.DeleteSnapshotInput{SnapshotId: aws.String("snap-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSnapshotNotFound,
 		},
 		{
-			"CopySnapshot",
-			"ec2.test.CopySnapshot",
-			daemon.handleEC2CopySnapshot,
-			&ec2.CopySnapshotInput{
-				SourceRegion:     aws.String("us-east-1"),
-				SourceSnapshotId: aws.String("snap-nonexistent"),
-			},
+			name:         "CopySnapshot",
+			topic:        "ec2.test.CopySnapshot",
+			handler:      daemon.handleEC2CopySnapshot,
+			input:        &ec2.CopySnapshotInput{SourceRegion: aws.String("us-east-1"), SourceSnapshotId: aws.String("snap-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSnapshotNotFound,
 		},
 		{
-			"DeleteTags",
-			"ec2.test.DeleteTags",
-			daemon.handleEC2DeleteTags,
-			&ec2.DeleteTagsInput{
-				Resources: []*string{aws.String("i-12345678")},
-			},
+			name:    "DeleteTags",
+			topic:   "ec2.test.DeleteTags",
+			handler: daemon.handleEC2DeleteTags,
+			input:   &ec2.DeleteTagsInput{Resources: []*string{aws.String("i-12345678")}},
+			// DeleteTags returns `{}` on success.
+			allowEmpty: true,
 		},
 		{
-			"DescribeTags",
-			"ec2.test.DescribeTags",
-			daemon.handleEC2DescribeTags,
-			&ec2.DescribeTagsInput{},
+			name:    "DescribeTags",
+			topic:   "ec2.test.DescribeTags",
+			handler: daemon.handleEC2DescribeTags,
+			input:   &ec2.DescribeTagsInput{},
 		},
 	}
 
@@ -2404,12 +2414,38 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			// Verify response is valid JSON (either success output or error response)
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
+}
+
+// assertExpectedResponse decodes a NATS reply payload and asserts either
+// the specified AWS error Code (when expectedCode is non-empty) or a
+// non-empty success object. Rejects `null` unconditionally and rejects
+// `{}` unless allowEmpty is true (some void no-op handlers legitimately
+// reply `{}`). Catches the silent regression where a handler swallows an
+// error and replies with `null` / `{}`.
+func assertExpectedResponse(t *testing.T, data []byte, expectedCode string, allowEmpty bool) {
+	t.Helper()
+	require.NotEmpty(t, data, "handler must respond with a body, not an empty payload")
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(data, &resp),
+		"response must be a JSON object: %s", string(data))
+	require.NotNil(t, resp, "response must not be JSON null: %s", string(data))
+
+	if expectedCode != "" {
+		assert.Equal(t, expectedCode, resp["Code"],
+			"response should carry the expected AWS error Code: %s", string(data))
+		return
+	}
+	if !allowEmpty {
+		require.NotEmpty(t, resp,
+			"success response must not be an empty object `{}`: %s", string(data))
+	}
+	_, hasCode := resp["Code"]
+	assert.False(t, hasCode,
+		"success response should not carry a Code field: %s", string(data))
 }
 
 // --- daemonIP tests ---
@@ -2638,67 +2674,74 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string // "" → success expected
+		allowEmpty   bool   // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreateVpc",
-			"ec2.test.CreateVpc",
-			daemon.handleEC2CreateVpc,
-			&ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")},
+			name:    "CreateVpc",
+			topic:   "ec2.test.CreateVpc",
+			handler: daemon.handleEC2CreateVpc,
+			input:   &ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")},
 		},
 		{
-			"DeleteVpc",
-			"ec2.test.DeleteVpc",
-			daemon.handleEC2DeleteVpc,
-			&ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")},
+			name:         "DeleteVpc",
+			topic:        "ec2.test.DeleteVpc",
+			handler:      daemon.handleEC2DeleteVpc,
+			input:        &ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			"DescribeVpcs",
-			"ec2.test.DescribeVpcs",
-			daemon.handleEC2DescribeVpcs,
-			&ec2.DescribeVpcsInput{},
+			name:    "DescribeVpcs",
+			topic:   "ec2.test.DescribeVpcs",
+			handler: daemon.handleEC2DescribeVpcs,
+			input:   &ec2.DescribeVpcsInput{},
 		},
 		{
-			"CreateSubnet",
-			"ec2.test.CreateSubnet",
-			daemon.handleEC2CreateSubnet,
-			&ec2.CreateSubnetInput{
+			name:    "CreateSubnet",
+			topic:   "ec2.test.CreateSubnet",
+			handler: daemon.handleEC2CreateSubnet,
+			input: &ec2.CreateSubnetInput{
 				VpcId:     aws.String("vpc-nonexistent"),
 				CidrBlock: aws.String("10.0.1.0/24"),
 			},
+			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			"DeleteSubnet",
-			"ec2.test.DeleteSubnet",
-			daemon.handleEC2DeleteSubnet,
-			&ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-nonexistent")},
+			name:         "DeleteSubnet",
+			topic:        "ec2.test.DeleteSubnet",
+			handler:      daemon.handleEC2DeleteSubnet,
+			input:        &ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
-			"DescribeSubnets",
-			"ec2.test.DescribeSubnets",
-			daemon.handleEC2DescribeSubnets,
-			&ec2.DescribeSubnetsInput{},
+			name:    "DescribeSubnets",
+			topic:   "ec2.test.DescribeSubnets",
+			handler: daemon.handleEC2DescribeSubnets,
+			input:   &ec2.DescribeSubnetsInput{},
 		},
 		{
-			"CreateNetworkInterface",
-			"ec2.test.CreateNetworkInterface",
-			daemon.handleEC2CreateNetworkInterface,
-			&ec2.CreateNetworkInterfaceInput{SubnetId: aws.String("subnet-nonexistent")},
+			name:         "CreateNetworkInterface",
+			topic:        "ec2.test.CreateNetworkInterface",
+			handler:      daemon.handleEC2CreateNetworkInterface,
+			input:        &ec2.CreateNetworkInterfaceInput{SubnetId: aws.String("subnet-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
-			"DeleteNetworkInterface",
-			"ec2.test.DeleteNetworkInterface",
-			daemon.handleEC2DeleteNetworkInterface,
-			&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
+			name:         "DeleteNetworkInterface",
+			topic:        "ec2.test.DeleteNetworkInterface",
+			handler:      daemon.handleEC2DeleteNetworkInterface,
+			input:        &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidNetworkInterfaceIDNotFound,
 		},
 		{
-			"DescribeNetworkInterfaces",
-			"ec2.test.DescribeNetworkInterfaces",
-			daemon.handleEC2DescribeNetworkInterfaces,
-			&ec2.DescribeNetworkInterfacesInput{},
+			name:    "DescribeNetworkInterfaces",
+			topic:   "ec2.test.DescribeNetworkInterfaces",
+			handler: daemon.handleEC2DescribeNetworkInterfaces,
+			input:   &ec2.DescribeNetworkInterfacesInput{},
 		},
 	}
 
@@ -2715,9 +2758,7 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "VPC response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -2726,46 +2767,51 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 	daemon := createVPCTestDaemon(t)
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreateInternetGateway",
-			"ec2.test.CreateInternetGateway",
-			daemon.handleEC2CreateInternetGateway,
-			&ec2.CreateInternetGatewayInput{},
+			name:    "CreateInternetGateway",
+			topic:   "ec2.test.CreateInternetGateway",
+			handler: daemon.handleEC2CreateInternetGateway,
+			input:   &ec2.CreateInternetGatewayInput{},
 		},
 		{
-			"DeleteInternetGateway",
-			"ec2.test.DeleteInternetGateway",
-			daemon.handleEC2DeleteInternetGateway,
-			&ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String("igw-nonexistent")},
+			name:         "DeleteInternetGateway",
+			topic:        "ec2.test.DeleteInternetGateway",
+			handler:      daemon.handleEC2DeleteInternetGateway,
+			input:        &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String("igw-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidInternetGatewayIDNotFound,
 		},
 		{
-			"DescribeInternetGateways",
-			"ec2.test.DescribeInternetGateways",
-			daemon.handleEC2DescribeInternetGateways,
-			&ec2.DescribeInternetGatewaysInput{},
+			name:    "DescribeInternetGateways",
+			topic:   "ec2.test.DescribeInternetGateways",
+			handler: daemon.handleEC2DescribeInternetGateways,
+			input:   &ec2.DescribeInternetGatewaysInput{},
 		},
 		{
-			"AttachInternetGateway",
-			"ec2.test.AttachInternetGateway",
-			daemon.handleEC2AttachInternetGateway,
-			&ec2.AttachInternetGatewayInput{
+			name:    "AttachInternetGateway",
+			topic:   "ec2.test.AttachInternetGateway",
+			handler: daemon.handleEC2AttachInternetGateway,
+			input: &ec2.AttachInternetGatewayInput{
 				InternetGatewayId: aws.String("igw-nonexistent"),
 				VpcId:             aws.String("vpc-nonexistent"),
 			},
+			expectedCode: awserrors.ErrorInvalidInternetGatewayIDNotFound,
 		},
 		{
-			"DetachInternetGateway",
-			"ec2.test.DetachInternetGateway",
-			daemon.handleEC2DetachInternetGateway,
-			&ec2.DetachInternetGatewayInput{
+			name:    "DetachInternetGateway",
+			topic:   "ec2.test.DetachInternetGateway",
+			handler: daemon.handleEC2DetachInternetGateway,
+			input: &ec2.DetachInternetGatewayInput{
 				InternetGatewayId: aws.String("igw-nonexistent"),
 				VpcId:             aws.String("vpc-nonexistent"),
 			},
+			expectedCode: awserrors.ErrorInvalidInternetGatewayIDNotFound,
 		},
 	}
 
@@ -2782,9 +2828,7 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "IGW response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -2936,28 +2980,32 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	daemon.eigwService = eigwSvc
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreateEgressOnlyInternetGateway",
-			"ec2.test.CreateEgressOnlyIGW",
-			daemon.handleEC2CreateEgressOnlyInternetGateway,
-			&ec2.CreateEgressOnlyInternetGatewayInput{VpcId: aws.String("vpc-123")},
+			name:         "CreateEgressOnlyInternetGateway",
+			topic:        "ec2.test.CreateEgressOnlyIGW",
+			handler:      daemon.handleEC2CreateEgressOnlyInternetGateway,
+			input:        &ec2.CreateEgressOnlyInternetGatewayInput{VpcId: aws.String("vpc-123")},
+			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			"DeleteEgressOnlyInternetGateway",
-			"ec2.test.DeleteEgressOnlyIGW",
-			daemon.handleEC2DeleteEgressOnlyInternetGateway,
-			&ec2.DeleteEgressOnlyInternetGatewayInput{EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent")},
+			name:         "DeleteEgressOnlyInternetGateway",
+			topic:        "ec2.test.DeleteEgressOnlyIGW",
+			handler:      daemon.handleEC2DeleteEgressOnlyInternetGateway,
+			input:        &ec2.DeleteEgressOnlyInternetGatewayInput{EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound,
 		},
 		{
-			"DescribeEgressOnlyInternetGateways",
-			"ec2.test.DescribeEgressOnlyIGWs",
-			daemon.handleEC2DescribeEgressOnlyInternetGateways,
-			&ec2.DescribeEgressOnlyInternetGatewaysInput{},
+			name:    "DescribeEgressOnlyInternetGateways",
+			topic:   "ec2.test.DescribeEgressOnlyIGWs",
+			handler: daemon.handleEC2DescribeEgressOnlyInternetGateways,
+			input:   &ec2.DescribeEgressOnlyInternetGatewaysInput{},
 		},
 	}
 
@@ -2974,9 +3022,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -3171,7 +3217,7 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeNotAvailable(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, errResp["Code"])
 }
 
 // --- handleEC2CreateImage: running instance with valid root volume ---
@@ -3646,7 +3692,8 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 // --- handleEC2RunInstances: insufficient capacity ---
 
 func TestHandleEC2RunInstances_InsufficientCapacity(t *testing.T) {
-	daemon := createFullTestDaemon(t, sharedNATSURL)
+	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
+	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-test")
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", daemon.handleEC2RunInstances)
 	require.NoError(t, err)
@@ -3666,7 +3713,7 @@ func TestHandleEC2RunInstances_InsufficientCapacity(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, errResp["Code"])
 }
 
 func TestHandleEC2RunInstances_UnsupportedInstanceType(t *testing.T) {
@@ -3683,13 +3730,13 @@ func TestHandleEC2RunInstances_UnsupportedInstanceType(t *testing.T) {
 		MaxCount:     aws.Int64(1),
 	}
 	reqData, _ := json.Marshal(input)
-	reply, err := daemon.natsConn.Request("ec2.RunInstances.badtype", reqData, 5*time.Second)
+	reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances.badtype", reqData, 5*time.Second)
 	require.NoError(t, err)
 
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorInvalidInstanceType, errResp["Code"])
 }
 
 func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
@@ -3699,13 +3746,14 @@ func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	reply, err := daemon.natsConn.Request("ec2.RunInstances.bad", []byte(`{not valid}`), 5*time.Second)
+	reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances.bad", []byte(`{not valid}`), 5*time.Second)
 	require.NoError(t, err)
 
+	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Contains(t, errResp, "Code")
+	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
 // --- handleEC2DescribeInstances: malformed instance ID ---
@@ -3892,40 +3940,45 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	daemon.eipService = eipSvc
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"AllocateAddress",
-			"ec2.test.AllocateAddress",
-			daemon.handleEC2AllocateAddress,
-			&ec2.AllocateAddressInput{},
+			name:    "AllocateAddress",
+			topic:   "ec2.test.AllocateAddress",
+			handler: daemon.handleEC2AllocateAddress,
+			input:   &ec2.AllocateAddressInput{},
 		},
 		{
-			"ReleaseAddress",
-			"ec2.test.ReleaseAddress",
-			daemon.handleEC2ReleaseAddress,
-			&ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
+			name:         "ReleaseAddress",
+			topic:        "ec2.test.ReleaseAddress",
+			handler:      daemon.handleEC2ReleaseAddress,
+			input:        &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidAllocationIDNotFound,
 		},
 		{
-			"AssociateAddress",
-			"ec2.test.AssociateAddress",
-			daemon.handleEC2AssociateAddress,
-			&ec2.AssociateAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
+			name:         "AssociateAddress",
+			topic:        "ec2.test.AssociateAddress",
+			handler:      daemon.handleEC2AssociateAddress,
+			input:        &ec2.AssociateAddressInput{AllocationId: aws.String("eipalloc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidAllocationIDNotFound,
 		},
 		{
-			"DisassociateAddress",
-			"ec2.test.DisassociateAddress",
-			daemon.handleEC2DisassociateAddress,
-			&ec2.DisassociateAddressInput{AssociationId: aws.String("eipassoc-nonexistent")},
+			name:         "DisassociateAddress",
+			topic:        "ec2.test.DisassociateAddress",
+			handler:      daemon.handleEC2DisassociateAddress,
+			input:        &ec2.DisassociateAddressInput{AssociationId: aws.String("eipassoc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidAssociationIDNotFound,
 		},
 		{
-			"DescribeAddresses",
-			"ec2.test.DescribeAddresses",
-			daemon.handleEC2DescribeAddresses,
-			&ec2.DescribeAddressesInput{},
+			name:    "DescribeAddresses",
+			topic:   "ec2.test.DescribeAddresses",
+			handler: daemon.handleEC2DescribeAddresses,
+			input:   &ec2.DescribeAddressesInput{},
 		},
 	}
 
@@ -3942,9 +3995,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "EIP response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -3969,56 +4020,63 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 	vpcID := *vpcOut.Vpc.VpcId
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreateSecurityGroup",
-			"ec2.test.CreateSecurityGroup",
-			daemon.handleEC2CreateSecurityGroup,
-			&ec2.CreateSecurityGroupInput{
+			name:    "CreateSecurityGroup",
+			topic:   "ec2.test.CreateSecurityGroup",
+			handler: daemon.handleEC2CreateSecurityGroup,
+			input: &ec2.CreateSecurityGroupInput{
 				GroupName:   aws.String("test-sg"),
 				Description: aws.String("test security group"),
 				VpcId:       aws.String(vpcID),
 			},
 		},
 		{
-			"DescribeSecurityGroups",
-			"ec2.test.DescribeSecurityGroups",
-			daemon.handleEC2DescribeSecurityGroups,
-			&ec2.DescribeSecurityGroupsInput{},
+			name:    "DescribeSecurityGroups",
+			topic:   "ec2.test.DescribeSecurityGroups",
+			handler: daemon.handleEC2DescribeSecurityGroups,
+			input:   &ec2.DescribeSecurityGroupsInput{},
 		},
 		{
-			"AuthorizeSecurityGroupIngress",
-			"ec2.test.AuthorizeSecurityGroupIngress",
-			daemon.handleEC2AuthorizeSecurityGroupIngress,
-			&ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
+			name:         "AuthorizeSecurityGroupIngress",
+			topic:        "ec2.test.AuthorizeSecurityGroupIngress",
+			handler:      daemon.handleEC2AuthorizeSecurityGroupIngress,
+			input:        &ec2.AuthorizeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
-			"AuthorizeSecurityGroupEgress",
-			"ec2.test.AuthorizeSecurityGroupEgress",
-			daemon.handleEC2AuthorizeSecurityGroupEgress,
-			&ec2.AuthorizeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
+			name:         "AuthorizeSecurityGroupEgress",
+			topic:        "ec2.test.AuthorizeSecurityGroupEgress",
+			handler:      daemon.handleEC2AuthorizeSecurityGroupEgress,
+			input:        &ec2.AuthorizeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
-			"RevokeSecurityGroupIngress",
-			"ec2.test.RevokeSecurityGroupIngress",
-			daemon.handleEC2RevokeSecurityGroupIngress,
-			&ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
+			name:         "RevokeSecurityGroupIngress",
+			topic:        "ec2.test.RevokeSecurityGroupIngress",
+			handler:      daemon.handleEC2RevokeSecurityGroupIngress,
+			input:        &ec2.RevokeSecurityGroupIngressInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
-			"RevokeSecurityGroupEgress",
-			"ec2.test.RevokeSecurityGroupEgress",
-			daemon.handleEC2RevokeSecurityGroupEgress,
-			&ec2.RevokeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
+			name:         "RevokeSecurityGroupEgress",
+			topic:        "ec2.test.RevokeSecurityGroupEgress",
+			handler:      daemon.handleEC2RevokeSecurityGroupEgress,
+			input:        &ec2.RevokeSecurityGroupEgressInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
-			"DeleteSecurityGroup",
-			"ec2.test.DeleteSecurityGroup",
-			daemon.handleEC2DeleteSecurityGroup,
-			&ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-nonexistent")},
+			name:         "DeleteSecurityGroup",
+			topic:        "ec2.test.DeleteSecurityGroup",
+			handler:      daemon.handleEC2DeleteSecurityGroup,
+			input:        &ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 	}
 
@@ -4035,9 +4093,7 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "SG response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -4070,67 +4126,91 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	daemon.routeTableService = rtbSvc
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreateRouteTable",
-			"ec2.test.CreateRouteTable",
-			daemon.handleEC2CreateRouteTable,
-			&ec2.CreateRouteTableInput{VpcId: aws.String("vpc-nonexistent")},
+			name:         "CreateRouteTable",
+			topic:        "ec2.test.CreateRouteTable",
+			handler:      daemon.handleEC2CreateRouteTable,
+			input:        &ec2.CreateRouteTableInput{VpcId: aws.String("vpc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			"DeleteRouteTable",
-			"ec2.test.DeleteRouteTable",
-			daemon.handleEC2DeleteRouteTable,
-			&ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
+			name:         "DeleteRouteTable",
+			topic:        "ec2.test.DeleteRouteTable",
+			handler:      daemon.handleEC2DeleteRouteTable,
+			input:        &ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
-			"DescribeRouteTables",
-			"ec2.test.DescribeRouteTables",
-			daemon.handleEC2DescribeRouteTables,
-			&ec2.DescribeRouteTablesInput{},
+			name:    "DescribeRouteTables",
+			topic:   "ec2.test.DescribeRouteTables",
+			handler: daemon.handleEC2DescribeRouteTables,
+			input:   &ec2.DescribeRouteTablesInput{},
 		},
 		{
-			"CreateRoute",
-			"ec2.test.CreateRoute",
-			daemon.handleEC2CreateRoute,
-			&ec2.CreateRouteInput{RouteTableId: aws.String("rtb-nonexistent")},
+			name:    "CreateRoute",
+			topic:   "ec2.test.CreateRoute",
+			handler: daemon.handleEC2CreateRoute,
+			input: &ec2.CreateRouteInput{
+				RouteTableId:         aws.String("rtb-nonexistent"),
+				DestinationCidrBlock: aws.String("0.0.0.0/0"),
+				GatewayId:            aws.String("igw-nonexistent"),
+			},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
-			"DeleteRoute",
-			"ec2.test.DeleteRoute",
-			daemon.handleEC2DeleteRoute,
-			&ec2.DeleteRouteInput{RouteTableId: aws.String("rtb-nonexistent")},
+			name:    "DeleteRoute",
+			topic:   "ec2.test.DeleteRoute",
+			handler: daemon.handleEC2DeleteRoute,
+			input: &ec2.DeleteRouteInput{
+				RouteTableId:         aws.String("rtb-nonexistent"),
+				DestinationCidrBlock: aws.String("0.0.0.0/0"),
+			},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
-			"ReplaceRoute",
-			"ec2.test.ReplaceRoute",
-			daemon.handleEC2ReplaceRoute,
-			&ec2.ReplaceRouteInput{RouteTableId: aws.String("rtb-nonexistent")},
+			name:    "ReplaceRoute",
+			topic:   "ec2.test.ReplaceRoute",
+			handler: daemon.handleEC2ReplaceRoute,
+			input: &ec2.ReplaceRouteInput{
+				RouteTableId:         aws.String("rtb-nonexistent"),
+				DestinationCidrBlock: aws.String("0.0.0.0/0"),
+				GatewayId:            aws.String("igw-nonexistent"),
+			},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
-			"AssociateRouteTable",
-			"ec2.test.AssociateRouteTable",
-			daemon.handleEC2AssociateRouteTable,
-			&ec2.AssociateRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
+			name:    "AssociateRouteTable",
+			topic:   "ec2.test.AssociateRouteTable",
+			handler: daemon.handleEC2AssociateRouteTable,
+			input: &ec2.AssociateRouteTableInput{
+				RouteTableId: aws.String("rtb-nonexistent"),
+				SubnetId:     aws.String("subnet-nonexistent"),
+			},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
-			"DisassociateRouteTable",
-			"ec2.test.DisassociateRouteTable",
-			daemon.handleEC2DisassociateRouteTable,
-			&ec2.DisassociateRouteTableInput{AssociationId: aws.String("rtbassoc-nonexistent")},
+			name:         "DisassociateRouteTable",
+			topic:        "ec2.test.DisassociateRouteTable",
+			handler:      daemon.handleEC2DisassociateRouteTable,
+			input:        &ec2.DisassociateRouteTableInput{AssociationId: aws.String("rtbassoc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidAssociationIDNotFound,
 		},
 		{
-			"ReplaceRouteTableAssociation",
-			"ec2.test.ReplaceRouteTableAssociation",
-			daemon.handleEC2ReplaceRouteTableAssociation,
-			&ec2.ReplaceRouteTableAssociationInput{
+			name:    "ReplaceRouteTableAssociation",
+			topic:   "ec2.test.ReplaceRouteTableAssociation",
+			handler: daemon.handleEC2ReplaceRouteTableAssociation,
+			input: &ec2.ReplaceRouteTableAssociationInput{
 				AssociationId: aws.String("rtbassoc-nonexistent"),
 				RouteTableId:  aws.String("rtb-nonexistent"),
 			},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 	}
 
@@ -4147,9 +4227,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "RouteTable response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -4181,88 +4259,99 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 	daemon.placementGroupService = pgSvc
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"CreatePlacementGroup",
-			"ec2.test.CreatePlacementGroup",
-			daemon.handleEC2CreatePlacementGroup,
-			&ec2.CreatePlacementGroupInput{
+			name:    "CreatePlacementGroup",
+			topic:   "ec2.test.CreatePlacementGroup",
+			handler: daemon.handleEC2CreatePlacementGroup,
+			input: &ec2.CreatePlacementGroupInput{
 				GroupName: aws.String("test-pg"),
 				Strategy:  aws.String("spread"),
 			},
 		},
 		{
-			"DescribePlacementGroups",
-			"ec2.test.DescribePlacementGroups",
-			daemon.handleEC2DescribePlacementGroups,
-			&ec2.DescribePlacementGroupsInput{},
+			name:    "DescribePlacementGroups",
+			topic:   "ec2.test.DescribePlacementGroups",
+			handler: daemon.handleEC2DescribePlacementGroups,
+			input:   &ec2.DescribePlacementGroupsInput{},
 		},
 		{
-			"DeletePlacementGroup",
-			"ec2.test.DeletePlacementGroup",
-			daemon.handleEC2DeletePlacementGroup,
-			&ec2.DeletePlacementGroupInput{GroupName: aws.String("pg-nonexistent")},
+			name:         "DeletePlacementGroup",
+			topic:        "ec2.test.DeletePlacementGroup",
+			handler:      daemon.handleEC2DeletePlacementGroup,
+			input:        &ec2.DeletePlacementGroupInput{GroupName: aws.String("pg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
-			"ReserveSpreadNodes",
-			"ec2.test.ReserveSpreadNodes",
-			daemon.handleEC2ReserveSpreadNodes,
-			&handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+			name:    "ReserveSpreadNodes",
+			topic:   "ec2.test.ReserveSpreadNodes",
+			handler: daemon.handleEC2ReserveSpreadNodes,
+			input: &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
 				MinCount:      1,
 				MaxCount:      1,
 			},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
-			"FinalizeSpreadInstances",
-			"ec2.test.FinalizeSpreadInstances",
-			daemon.handleEC2FinalizeSpreadInstances,
-			&handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+			name:    "FinalizeSpreadInstances",
+			topic:   "ec2.test.FinalizeSpreadInstances",
+			handler: daemon.handleEC2FinalizeSpreadInstances,
+			input: &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
 			},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
-			"ReleaseSpreadNodes",
-			"ec2.test.ReleaseSpreadNodes",
-			daemon.handleEC2ReleaseSpreadNodes,
-			&handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+			name:    "ReleaseSpreadNodes",
+			topic:   "ec2.test.ReleaseSpreadNodes",
+			handler: daemon.handleEC2ReleaseSpreadNodes,
+			input: &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
 				GroupName: "pg-nonexistent",
 				Nodes:     []string{"node-1"},
 			},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
-			"RemoveInstanceFromPlacementGroup",
-			"ec2.test.RemoveInstanceFromPlacementGroup",
-			daemon.handleEC2RemoveInstanceFromPlacementGroup,
-			&handlers_ec2_placementgroup.RemoveInstanceInput{
+			name:    "RemoveInstanceFromPlacementGroup",
+			topic:   "ec2.test.RemoveInstanceFromPlacementGroup",
+			handler: daemon.handleEC2RemoveInstanceFromPlacementGroup,
+			input: &handlers_ec2_placementgroup.RemoveInstanceInput{
 				GroupName:  "pg-nonexistent",
 				NodeName:   "node-1",
 				InstanceID: "i-123",
 			},
+			// RemoveInstance is best-effort: removing a nonexistent instance
+			// is a silent no-op that legitimately returns `{}`.
+			allowEmpty: true,
 		},
 		{
-			"ReserveClusterNode",
-			"ec2.test.ReserveClusterNode",
-			daemon.handleEC2ReserveClusterNode,
-			&handlers_ec2_placementgroup.ReserveClusterNodeInput{
+			name:    "ReserveClusterNode",
+			topic:   "ec2.test.ReserveClusterNode",
+			handler: daemon.handleEC2ReserveClusterNode,
+			input: &handlers_ec2_placementgroup.ReserveClusterNodeInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
 			},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 		{
-			"FinalizeClusterInstances",
-			"ec2.test.FinalizeClusterInstances",
-			daemon.handleEC2FinalizeClusterInstances,
-			&handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
+			name:    "FinalizeClusterInstances",
+			topic:   "ec2.test.FinalizeClusterInstances",
+			handler: daemon.handleEC2FinalizeClusterInstances,
+			input: &handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
 			},
+			expectedCode: awserrors.ErrorInvalidPlacementGroupUnknown,
 		},
 	}
 
@@ -4279,9 +4368,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "PlacementGroup response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }
@@ -4306,37 +4393,47 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 	vpcID := *vpcOut.Vpc.VpcId
 
 	tests := []struct {
-		name    string
-		topic   string
-		handler func(*nats.Msg)
-		input   any
+		name         string
+		topic        string
+		handler      func(*nats.Msg)
+		input        any
+		expectedCode string
+		allowEmpty   bool // true → success may be `{}` (void no-op handler)
 	}{
 		{
-			"ModifySubnetAttribute",
-			"ec2.test.ModifySubnetAttribute",
-			daemon.handleEC2ModifySubnetAttribute,
-			&ec2.ModifySubnetAttributeInput{SubnetId: aws.String("subnet-nonexistent")},
+			name:         "ModifySubnetAttribute",
+			topic:        "ec2.test.ModifySubnetAttribute",
+			handler:      daemon.handleEC2ModifySubnetAttribute,
+			input:        &ec2.ModifySubnetAttributeInput{SubnetId: aws.String("subnet-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
-			"ModifyVpcAttribute",
-			"ec2.test.ModifyVpcAttribute",
-			daemon.handleEC2ModifyVpcAttribute,
-			&ec2.ModifyVpcAttributeInput{VpcId: aws.String(vpcID)},
+			// ModifyVpcAttribute requires exactly one of EnableDnsSupport /
+			// EnableDnsHostnames; asserting on InvalidParameterValue pins
+			// the validation contract.
+			name:         "ModifyVpcAttribute",
+			topic:        "ec2.test.ModifyVpcAttribute",
+			handler:      daemon.handleEC2ModifyVpcAttribute,
+			input:        &ec2.ModifyVpcAttributeInput{VpcId: aws.String(vpcID)},
+			expectedCode: awserrors.ErrorInvalidParameterValue,
 		},
 		{
-			"DescribeVpcAttribute",
-			"ec2.test.DescribeVpcAttribute",
-			daemon.handleEC2DescribeVpcAttribute,
-			&ec2.DescribeVpcAttributeInput{
+			name:    "DescribeVpcAttribute",
+			topic:   "ec2.test.DescribeVpcAttribute",
+			handler: daemon.handleEC2DescribeVpcAttribute,
+			input: &ec2.DescribeVpcAttributeInput{
 				VpcId:     aws.String(vpcID),
 				Attribute: aws.String("enableDnsSupport"),
 			},
 		},
 		{
-			"ModifyNetworkInterfaceAttribute",
-			"ec2.test.ModifyNetworkInterfaceAttribute",
-			daemon.handleEC2ModifyNetworkInterfaceAttribute,
-			&ec2.ModifyNetworkInterfaceAttributeInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
+			// ModifyNetworkInterfaceAttribute with no attribute set fails the
+			// "exactly one attribute" guard before the ENI lookup runs.
+			name:         "ModifyNetworkInterfaceAttribute",
+			topic:        "ec2.test.ModifyNetworkInterfaceAttribute",
+			handler:      daemon.handleEC2ModifyNetworkInterfaceAttribute,
+			input:        &ec2.ModifyNetworkInterfaceAttributeInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidParameterValue,
 		},
 	}
 
@@ -4353,9 +4450,7 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, reply)
 
-			var resp json.RawMessage
-			err = json.Unmarshal(reply.Data, &resp)
-			require.NoError(t, err, "VPC attribute response should be valid JSON: %s", string(reply.Data))
+			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
 }

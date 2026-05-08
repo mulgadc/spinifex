@@ -15,16 +15,14 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly input: unknown
   }
   const handlers = new Map<string, (input: unknown) => unknown>()
-  const send = vi.fn((command: Command): Promise<unknown> => {
+  const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
     if (!handler) {
-      return Promise.reject(
-        new Error(
-          `No handler registered for SDK command ${command.constructor.name}`,
-        ),
+      throw new Error(
+        `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
-    return Promise.resolve(handler(command.input))
+    return handler(command.input)
   })
   return {
     routerState: {
@@ -171,7 +169,7 @@ describe("create-load-balancer route", () => {
           (call[0] as { constructor: { name: string } }).constructor.name,
       )
       .filter((name) => name.startsWith("Create"))
-    expect(createCommands).toEqual([
+    expect(createCommands).toStrictEqual([
       "CreateTargetGroupCommand",
       "CreateLoadBalancerCommand",
       "CreateListenerCommand",
@@ -224,14 +222,14 @@ describe("create-load-balancer route", () => {
     const createNames = createCalls.map(
       (call) => (call[0] as { constructor: { name: string } }).constructor.name,
     )
-    expect(createNames).toEqual([
+    expect(createNames).toStrictEqual([
       "CreateLoadBalancerCommand",
       "CreateListenerCommand",
     ])
     const listenerInput = createCalls[1]?.[0].input as {
       DefaultActions: { Type: string; TargetGroupArn: string }[]
     }
-    expect(listenerInput.DefaultActions).toEqual([
+    expect(listenerInput.DefaultActions).toStrictEqual([
       { Type: "forward", TargetGroupArn: "arn:tg:existing" },
     ])
   })
@@ -261,9 +259,9 @@ describe("create-load-balancer route", () => {
       screen.getByRole("button", { name: "Create load balancer" }),
     )
 
-    expect(
-      await screen.findByText(/Wizard failed: creating load balancer/i),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByText(/Wizard failed: creating load balancer/i),
+    ).resolves.toBeInTheDocument()
     expect(screen.getByText(/subnets span must be ≥2 AZs/)).toBeInTheDocument()
     // Partial-cleanup list should mention the orphaned TG
     expect(screen.getByText(/Target Group:/)).toBeInTheDocument()

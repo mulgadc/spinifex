@@ -3,9 +3,12 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -35,15 +38,89 @@ func TestAcquireReconcileLeader_OnlyOneWinner(t *testing.T) {
 	releaseC()
 }
 
-func TestAcquireReconcileLeader_NoJetStreamFallsThrough(t *testing.T) {
-	// No JetStream on this server — caller must fall through (elected=true)
-	// rather than deadlock the cluster on first boot.
-	_, nc := testutil.StartTestNATS(t)
+// withReconcileLeaderRetry shrinks the bounded-retry window for tests so they
+// run sub-second instead of waiting the production 60s deadline.
+func withReconcileLeaderRetry(t *testing.T, retryFor, retryStep time.Duration) {
+	t.Helper()
+	prevFor, prevStep := reconcileLeaderRetryFor, reconcileLeaderRetryStep
+	reconcileLeaderRetryFor = retryFor
+	reconcileLeaderRetryStep = retryStep
+	t.Cleanup(func() {
+		reconcileLeaderRetryFor = prevFor
+		reconcileLeaderRetryStep = prevStep
+	})
+}
 
+func TestAcquireReconcileLeader_WaitsForJetStream(t *testing.T) {
+	// Cold-start scenario: NATS is up but JetStream is not yet enabled.
+	// AcquireReconcileLeader must retry until JetStream comes online and
+	// then win the election, instead of failing immediately.
+	ns, nc := testutil.StartTestNATS(t)
+	withReconcileLeaderRetry(t, 3*time.Second, 50*time.Millisecond)
+
+	enableAt := time.Now().Add(300 * time.Millisecond)
+	go func() {
+		time.Sleep(time.Until(enableAt))
+		_ = ns.EnableJetStream(nil)
+	}()
+
+	start := time.Now()
 	release, elected := AcquireReconcileLeader(nc, "node-a")
-	assert.True(t, elected, "must fall through when KV unavailable")
-	assert.NotNil(t, release)
-	release() // no-op release on fallthrough path must not panic
+	elapsed := time.Since(start)
+
+	require.True(t, elected, "must win election after JetStream comes up")
+	require.NotNil(t, release)
+	defer release()
+	assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
+		"must not return before JetStream is enabled")
+	assert.Less(t, elapsed, 3*time.Second, "must return within retry deadline")
+}
+
+func TestAcquireReconcileLeader_TimeoutReturnsNotElected(t *testing.T) {
+	// JetStream never enabled on this server — bounded retry must exhaust
+	// and return elected=false rather than fall through and run unguarded
+	// (mulga-js-72: concurrent reconciles produce silent OVN NB damage).
+	_, nc := testutil.StartTestNATS(t)
+	withReconcileLeaderRetry(t, 200*time.Millisecond, 20*time.Millisecond)
+
+	start := time.Now()
+	release, elected := AcquireReconcileLeader(nc, "node-a")
+	elapsed := time.Since(start)
+
+	assert.False(t, elected, "must skip reconcile when JetStream KV unreachable")
+	assert.Nil(t, release, "no release closure when not elected")
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "must wait full deadline")
+}
+
+func TestAcquireReconcileLeader_ConcurrentExactlyOneElected(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	const goroutines = 5
+	var (
+		wg        sync.WaitGroup
+		electedCt atomic.Int32
+		releases  = make(chan func(), goroutines)
+	)
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(id int) {
+			defer wg.Done()
+			release, elected := AcquireReconcileLeader(nc, "node-"+string(rune('a'+id)))
+			if elected {
+				electedCt.Add(1)
+				releases <- release
+			} else {
+				assert.Nil(t, release, "non-leader must return nil release")
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(releases)
+
+	assert.Equal(t, int32(1), electedCt.Load(), "exactly one caller must win")
+	for r := range releases {
+		r()
+	}
 }
 
 func TestReconcile_NoBootstrap(t *testing.T) {
@@ -54,7 +131,7 @@ func TestReconcile_NoBootstrap(t *testing.T) {
 	result := Reconcile(context.Background(), topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 }
 
 func TestReconcile_EmptyBootstrap(t *testing.T) {
@@ -92,7 +169,7 @@ func TestReconcile_CreatesBootstrapTopology(t *testing.T) {
 	result := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 
 	// Verify OVN objects exist
 	ctx := context.Background()
@@ -144,13 +221,20 @@ func TestReconcile_Idempotent(t *testing.T) {
 	r1 := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 1, r1.RoutersCreated)
 	assert.Equal(t, 1, r1.SwitchesCreated)
-	assert.Equal(t, 1, r1.IGWsCreated)
+	assert.Equal(t, 1, r1.IGWsReconciled)
 
-	// Second run should skip everything (already exists)
+	// Second run should skip router/switch creation (already exist).
+	// IGWsReconciled has "called" semantics — every successful pass counts,
+	// even when it's a no-op self-heal walk.
 	r2 := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 0, r2.RoutersCreated)
 	assert.Equal(t, 0, r2.SwitchesCreated)
-	assert.Equal(t, 0, r2.IGWsCreated)
+	assert.Equal(t, 1, r2.IGWsReconciled)
+
+	// Pass must not have duplicated the default route.
+	lr, err := ovn.GetLogicalRouter(context.Background(), "vpc-vpc-idem")
+	require.NoError(t, err)
+	assert.Len(t, lr.StaticRoutes, 1, "default route must not duplicate on retry")
 }
 
 func TestReconcile_PartialState(t *testing.T) {
@@ -183,7 +267,7 @@ func TestReconcile_PartialState(t *testing.T) {
 	result := Reconcile(ctx, topo, bootstrap)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 }
 
 // --- ReconcileFromKV tests ---
@@ -268,7 +352,7 @@ func TestReconcileFromKV_CreatesFullTopology(t *testing.T) {
 	result := ReconcileFromKV(ctx, nc, topo, nil)
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 	assert.Equal(t, 1, result.PortsCreated)
 
 	// Verify OVN objects
@@ -348,7 +432,7 @@ func TestReconcileFromKV_SkipsDetachedIGW(t *testing.T) {
 
 	result := ReconcileFromKV(ctx, nc, topo, nil)
 	assert.Equal(t, 1, result.RoutersCreated) // VPC router created
-	assert.Equal(t, 0, result.IGWsCreated)    // Detached IGW skipped
+	assert.Equal(t, 0, result.IGWsReconciled) // Detached IGW skipped
 
 	_, err := ovn.GetLogicalSwitch(ctx, "ext-vpc-det")
 	assert.Error(t, err) // External switch should NOT exist
@@ -365,7 +449,7 @@ func TestReconcileFromKV_NoBuckets(t *testing.T) {
 	result := ReconcileFromKV(context.Background(), nc, topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 	assert.Equal(t, 0, result.PortsCreated)
 }
 
@@ -455,7 +539,7 @@ func TestReconcileFromKV_VersionKeysAndBadJSON(t *testing.T) {
 	// Valid records should still be reconciled despite bad records
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 	assert.Equal(t, 1, result.PortsCreated)
 
 	// Verify OVN objects created from valid records
@@ -493,7 +577,7 @@ func TestReconcileFromKV_EmptyBuckets(t *testing.T) {
 	result := ReconcileFromKV(context.Background(), nc, topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 	assert.Equal(t, 0, result.PortsCreated)
 }
 
@@ -655,4 +739,154 @@ func TestReconcileGatewayChassis_NoOpWhenAlreadyCorrect(t *testing.T) {
 	assert.Equal(t, 0, ovn.SetGatewayChassisCalls, "no new creates expected")
 	assert.Equal(t, 0, ovn.DeleteGatewayChassisCalls, "no deletes expected")
 	assert.Equal(t, 0, ovn.UpdateGatewayChassisPriorityCalls, "no priority updates expected")
+}
+
+// seedEIPKVBucket creates the EIP KV bucket and populates it with test records.
+func seedEIPKVBucket(t *testing.T, nc *nats.Conn, eips []handlers_ec2_eip.EIPRecord) {
+	t.Helper()
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	eipKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: handlers_ec2_eip.KVBucketEIPs, History: 1})
+	require.NoError(t, err)
+	for _, e := range eips {
+		data, _ := json.Marshal(e)
+		_, err := eipKV.Put(utils.AccountKey("000000000001", e.AllocationId), data)
+		require.NoError(t, err)
+	}
+}
+
+func TestReconcileFromKV_ReconcilesEIPNATRules(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	// Seed VPC + IGW so the router exists for AddNAT.
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat1", CidrBlock: "10.10.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat1", VpcId: "vpc-nat1", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+
+	// One associated EIP (missing NAT rule), one unassociated EIP (must be skipped).
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{
+		{
+			AllocationId: "eipalloc-1", PublicIp: "10.0.0.210", PoolName: "wan",
+			State: "associated", VpcId: "vpc-nat1", PrivateIp: "10.10.1.5", ENIId: "eni-abc123",
+			CreatedAt: time.Now(),
+		},
+		{
+			AllocationId: "eipalloc-2", PublicIp: "10.0.0.211", PoolName: "wan",
+			State:     "allocated",
+			CreatedAt: time.Now(),
+		},
+	})
+
+	result := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, result.NATsReconciled, "one missing NAT rule must be created")
+
+	nat, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.210")
+	require.NoError(t, err)
+	require.NotNil(t, nat, "dnat_and_snat rule must exist after reconcile")
+	assert.Equal(t, "10.10.1.5", nat.LogicalIP)
+	assert.Equal(t, "dnat_and_snat", nat.Type)
+
+	// Unassociated EIP must produce no NAT rule.
+	nat2, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.211")
+	require.NoError(t, err)
+	assert.Nil(t, nat2, "unassociated EIP must not produce a NAT rule")
+}
+
+func TestReconcileFromKV_EIPNATIdempotent(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat2", CidrBlock: "10.20.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat2", VpcId: "vpc-nat2", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{{
+		AllocationId: "eipalloc-3", PublicIp: "10.0.0.220", PoolName: "wan",
+		State: "associated", VpcId: "vpc-nat2", PrivateIp: "10.20.1.7", ENIId: "eni-def456",
+		CreatedAt: time.Now(),
+	}})
+
+	// First reconcile: creates the NAT rule.
+	r1 := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, r1.NATsReconciled)
+
+	// Second reconcile: rule already correct, must skip.
+	r2 := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 0, r2.NATsReconciled, "correct NAT rule must not be re-created")
+}
+
+func TestReconcileFromKV_EIPNATStaleRuleReplaced(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat3", CidrBlock: "10.30.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat3", VpcId: "vpc-nat3", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{{
+		AllocationId: "eipalloc-4", PublicIp: "10.0.0.230", PoolName: "wan",
+		State: "associated", VpcId: "vpc-nat3", PrivateIp: "10.30.1.9", ENIId: "eni-ghi789",
+		CreatedAt: time.Now(),
+	}})
+
+	// Create the router so we can pre-seed a stale NAT rule against it.
+	require.NoError(t, ovn.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-nat3"}))
+	require.NoError(t, ovn.AddNAT(ctx, "vpc-vpc-nat3", &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "10.0.0.230", LogicalIP: "10.30.1.99",
+	}))
+
+	result := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, result.NATsReconciled, "stale NAT rule must be replaced")
+
+	nat, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.230")
+	require.NoError(t, err)
+	require.NotNil(t, nat)
+	assert.Equal(t, "10.30.1.9", nat.LogicalIP, "logical IP must be updated to match KV")
 }

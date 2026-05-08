@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
 	s3backend "github.com/mulgadc/viperblock/viperblock/backends/s3"
 	"github.com/nats-io/nats.go"
@@ -31,6 +32,10 @@ const defaultGP3IOPS = 3000
 
 // Ensure VolumeServiceImpl implements VolumeService
 var _ VolumeService = (*VolumeServiceImpl)(nil)
+
+// Ensure VolumeServiceImpl satisfies vm.VolumeStateUpdater so the manager
+// can call UpdateVolumeState directly without a daemon-side adapter.
+var _ vm.VolumeStateUpdater = (*VolumeServiceImpl)(nil)
 
 // VolumeServiceImpl handles EBS volume operations with S3 storage
 type VolumeServiceImpl struct {

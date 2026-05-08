@@ -862,3 +862,72 @@ func TestChownRecursive_NonExistentPath(t *testing.T) {
 	}
 	ChownRecursive("/tmp/nonexistent-path-12345", currentUser)
 }
+
+// --- SetGPUPassthrough ---
+
+func writeToml(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "spinifex*.toml")
+	require.NoError(t, err)
+	_, err = f.WriteString(content)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	return f.Name()
+}
+
+func readToml(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func TestSetGPUPassthrough_NoOp(t *testing.T) {
+	toml := "[nodes.node1.daemon]\ngpu_passthrough = true\n"
+	path := writeToml(t, toml)
+	require.NoError(t, SetGPUPassthrough(path, "node1", true))
+	assert.Equal(t, toml, readToml(t, path))
+}
+
+func TestSetGPUPassthrough_Flip(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.daemon]\ngpu_passthrough = false\n")
+	require.NoError(t, SetGPUPassthrough(path, "node1", true))
+	assert.Contains(t, readToml(t, path), "gpu_passthrough = true")
+}
+
+func TestSetGPUPassthrough_AddKeyToSection(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.daemon]\nsome_other = true\n")
+	require.NoError(t, SetGPUPassthrough(path, "node1", true))
+	got := readToml(t, path)
+	assert.Contains(t, got, "gpu_passthrough = true")
+	assert.Contains(t, got, "some_other = true")
+}
+
+func TestSetGPUPassthrough_AppendSection(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.network]\ncidr = \"10.0.0.0/24\"\n")
+	require.NoError(t, SetGPUPassthrough(path, "node1", true))
+	got := readToml(t, path)
+	assert.Contains(t, got, "[nodes.node1.daemon]")
+	assert.Contains(t, got, "gpu_passthrough = true")
+}
+
+func TestSetGPUPassthrough_DisableNoOp(t *testing.T) {
+	toml := "[nodes.node1.daemon]\ngpu_passthrough = false\n"
+	path := writeToml(t, toml)
+	require.NoError(t, SetGPUPassthrough(path, "node1", false))
+	assert.Equal(t, toml, readToml(t, path))
+}
+
+func TestSetGPUPassthrough_ReadError(t *testing.T) {
+	err := SetGPUPassthrough("/nonexistent/path/spinifex.toml", "node1", true)
+	require.Error(t, err)
+}
+
+func TestSetGPUPassthrough_SectionBoundary(t *testing.T) {
+	// gpu_passthrough = true exists but in a DIFFERENT node's section; should still write.
+	path := writeToml(t, "[nodes.node2.daemon]\ngpu_passthrough = true\n[nodes.node1.daemon]\nsome_key = 1\n")
+	require.NoError(t, SetGPUPassthrough(path, "node1", true))
+	got := readToml(t, path)
+	// node1 section should now have the key
+	assert.Contains(t, got, "[nodes.node1.daemon]\ngpu_passthrough = true")
+}

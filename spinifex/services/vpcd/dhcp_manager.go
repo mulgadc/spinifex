@@ -48,6 +48,15 @@ type DHCPManager struct {
 	jitterFraction float64
 	rng            *rand.Rand
 
+	// promiscOn/Off are called to toggle IFF_PROMISC on the DHCP bridge
+	// around each Acquire. nil = no-op (non-veth modes, or tests).
+	// promiscCount tracks in-flight acquires so the bridge is not cleared
+	// while a concurrent DORA is still waiting for a reply.
+	promiscOn    func()
+	promiscOff   func()
+	promiscMu    sync.Mutex
+	promiscCount int
+
 	mu     sync.Mutex
 	leases map[string]*managedLease // keyed by ClientID
 
@@ -97,6 +106,17 @@ func WithDHCPJitterFraction(f float64) DHCPManagerOption {
 // WithDHCPRand overrides the random source used for jitter (tests only).
 func WithDHCPRand(r *rand.Rand) DHCPManagerOption {
 	return func(m *DHCPManager) { m.rng = r }
+}
+
+// WithDHCPPromiscFuncs wires IFF_PROMISC toggling around each Acquire. on is
+// called before the DORA and off is called after (even on error). Both are
+// reference-counted so concurrent acquires keep the bridge promisc until the
+// last one completes. Pass nil to disable (default).
+func WithDHCPPromiscFuncs(on, off func()) DHCPManagerOption {
+	return func(m *DHCPManager) {
+		m.promiscOn = on
+		m.promiscOff = off
+	}
 }
 
 // NewDHCPManager creates a Manager wired against js for KV persistence and
@@ -258,6 +278,9 @@ func (m *DHCPManager) handleAcquire(msg *nats.Msg) {
 		return
 	}
 
+	m.enablePromisc()
+	defer m.disablePromisc()
+
 	ctx, cancel := context.WithTimeout(m.stopCtx, m.acquireTimeout)
 	defer cancel()
 
@@ -331,6 +354,34 @@ func (m *DHCPManager) handleRelease(msg *nats.Msg) {
 	m.forget(req.ClientID, "released")
 	slog.Info("DHCP Manager released lease", "client_id", req.ClientID)
 	m.replyRelease(msg, "")
+}
+
+// enablePromisc increments the in-flight acquire count and enables IFF_PROMISC
+// on the first call.
+func (m *DHCPManager) enablePromisc() {
+	if m.promiscOn == nil {
+		return
+	}
+	m.promiscMu.Lock()
+	defer m.promiscMu.Unlock()
+	if m.promiscCount == 0 {
+		m.promiscOn()
+	}
+	m.promiscCount++
+}
+
+// disablePromisc decrements the count and disables IFF_PROMISC when it reaches
+// zero (i.e. no more in-flight acquires need it).
+func (m *DHCPManager) disablePromisc() {
+	if m.promiscOff == nil {
+		return
+	}
+	m.promiscMu.Lock()
+	defer m.promiscMu.Unlock()
+	m.promiscCount--
+	if m.promiscCount == 0 {
+		m.promiscOff()
+	}
 }
 
 // trackAndRenew registers the lease in the in-memory map and starts the

@@ -34,8 +34,6 @@ type Deps struct {
 
 	StateStore         StateStore
 	VolumeMounter      VolumeMounter
-	QMPClientFactory   QMPClientFactory
-	ProcessLauncher    ProcessLauncher
 	NetworkPlumber     NetworkPlumber
 	InstanceTypes      InstanceTypeResolver
 	Resources          ResourceController

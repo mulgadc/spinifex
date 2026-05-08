@@ -33,6 +33,8 @@ mkdir -p "$STAGING/systemd"
 cp "$PROJECT_ROOT/build/systemd/"* "$STAGING/systemd/"
 mkdir -p "$STAGING/scripts"
 cp "$PROJECT_ROOT/build/scripts/"* "$STAGING/scripts/"
+mkdir -p "$STAGING/udev"
+cp "$PROJECT_ROOT/build/udev/"* "$STAGING/udev/"
 cp "$PROJECT_ROOT/build/logrotate/spinifex" "$STAGING/logrotate-spinifex"
 tar czf /tmp/spinifex-local.tar.gz -C "$STAGING" .
 

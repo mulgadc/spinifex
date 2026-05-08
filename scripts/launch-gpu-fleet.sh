@@ -60,6 +60,39 @@ wait_ssh() {
     return 1
 }
 
+# check_gpu_visible verifies the AMD GPU is still present on the guest PCIe bus
+# and that the amdgpu kernel module has bound to it. Returns 1 on failure so the
+# caller can write a FAIL result and return early.
+check_gpu_visible() {
+    local id="$1" ip="$2" context="$3"
+    local tag="[$id]"
+
+    echo "$tag   GPU check ($context): verifying PCIe presence..."
+    local lspci_out
+    lspci_out=$(_ssh "$ip" 'lspci -nn 2>/dev/null' || true)
+    if ! printf '%s\n' "$lspci_out" | grep -qiE "1002:75a0|Instinct|Processing accelerator"; then
+        echo "$tag   ERROR: GPU not visible in lspci after $context — passthrough may have been lost"
+        echo "$tag   Full lspci:"
+        printf '%s\n' "$lspci_out" | sed "s/^/$tag     /"
+        return 1
+    fi
+    echo "$tag   GPU present in lspci after $context"
+
+    echo "$tag   GPU check ($context): amdgpu/kfd driver state..."
+    _ssh "$ip" '
+        echo "=== lspci -v (AMD) ==="
+        lspci -v 2>/dev/null | grep -A8 -iE "1002:75a0|Instinct|Processing accelerator" || true
+        echo "=== amdgpu in lsmod ==="
+        lsmod | grep amdgpu || echo "(not loaded)"
+        echo "=== dmesg amdgpu/kfd/firmware ==="
+        sudo dmesg 2>/dev/null | grep -iE "amdgpu|kfd|1002:75a0|firmware.*amd|amd.*firmware|fatal|failed" | tail -30 || true
+        echo "=== device nodes ==="
+        ls -l /dev/kfd /dev/dri/ 2>/dev/null || echo "(none)"
+    ' | sed "s/^/$tag     /" || true
+
+    return 0
+}
+
 # provision_instance installs MI350X firmware and ROCm tooling, rebooting twice,
 # then installs Ollama and a Python YOLO/ROCm venv, and verifies compute readiness.
 # Phase state is checkpointed in /var/lib/spinifex-provision/ on the remote host;
@@ -128,6 +161,9 @@ provision_instance() {
             echo "FAIL $id $ip REBOOT1_TIMEOUT" > "$result_file"; return
         fi
         echo "$tag SSH ready after reboot 1/2"
+        if ! check_gpu_visible "$id" "$ip" "reboot 1"; then
+            echo "FAIL $id $ip GPU_LOST_AFTER_REBOOT1" > "$result_file"; return
+        fi
         _ssh "$ip" "sudo mkdir -p ${state_dir} && sudo touch ${state_dir}/phase1.done" || true
     fi
 
@@ -157,6 +193,9 @@ provision_instance() {
             echo "FAIL $id $ip REBOOT2_TIMEOUT" > "$result_file"; return
         fi
         echo "$tag SSH ready after reboot 2/2"
+        if ! check_gpu_visible "$id" "$ip" "reboot 2"; then
+            echo "FAIL $id $ip GPU_LOST_AFTER_REBOOT2" > "$result_file"; return
+        fi
         _ssh "$ip" "sudo mkdir -p ${state_dir} && sudo touch ${state_dir}/phase2.done" || true
     fi
 

@@ -285,7 +285,7 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 // the management TAP/IP allocation. Errors are logged and tolerated.
 func (m *Manager) cleanupTapDevices(instance *VM) {
 	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		if err := m.deps.NetworkPlumber.CleanupTapDevice(instance.ENIId); err != nil {
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
 			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
 		}
 		m.cleanupExtraENITaps(instance)
@@ -303,7 +303,7 @@ func (m *Manager) cleanupExtraENITaps(instance *VM) {
 		return
 	}
 	for _, extra := range instance.ExtraENIs {
-		if err := m.deps.NetworkPlumber.CleanupTapDevice(extra.ENIID); err != nil {
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(extra.ENIID)); err != nil {
 			slog.Warn("Failed to clean up extra ENI tap device", "eni", extra.ENIID, "err", err)
 		}
 	}

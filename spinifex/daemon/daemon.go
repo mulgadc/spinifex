@@ -159,7 +159,7 @@ type Daemon struct {
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
 	natsRetryOpts []utils.RetryOption
 
-	// networkPlumber handles tap device lifecycle for VPC networking.
+	// networkPlumber handles tap device lifecycle for VPC and management networking
 	networkPlumber vm.NetworkPlumber
 
 	// Management NIC infrastructure: bridge IP + IP allocator for system instances.

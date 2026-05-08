@@ -18,6 +18,8 @@ interface DeleteConfirmationDialogProps {
   description: ReactNode
   isPending: boolean
   onConfirm: () => void
+  confirmLabel?: string
+  pendingLabel?: string
 }
 
 export function DeleteConfirmationDialog({
@@ -27,6 +29,8 @@ export function DeleteConfirmationDialog({
   description,
   isPending,
   onConfirm,
+  confirmLabel = "Delete",
+  pendingLabel = "Deleting\u2026",
 }: DeleteConfirmationDialogProps) {
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
@@ -38,7 +42,7 @@ export function DeleteConfirmationDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction disabled={isPending} onClick={onConfirm}>
-            {isPending ? "Deleting\u2026" : "Delete"}
+            {isPending ? pendingLabel : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

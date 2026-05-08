@@ -89,6 +89,64 @@ describe("createInstanceSchema", () => {
       )
     }
   })
+
+  it("accepts optional root volume fields", () => {
+    const result = createInstanceSchema.safeParse({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootDeviceName: "/dev/sda1",
+      rootVolumeSize: 50,
+      rootVolumeType: "gp3",
+      rootDeleteOnTermination: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects rootVolumeSize below 1 GiB", () => {
+    const result = createInstanceSchema.safeParse({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootVolumeSize: 0,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects rootVolumeSize above 16384 GiB", () => {
+    const result = createInstanceSchema.safeParse({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootVolumeSize: 16_385,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects non-integer rootVolumeSize", () => {
+    const result = createInstanceSchema.safeParse({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootVolumeSize: 50.5,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects unsupported rootVolumeType", () => {
+    const result = createInstanceSchema.safeParse({
+      imageId: "ami-123",
+      instanceType: "t2.micro",
+      keyName: "my-key",
+      count: 1,
+      rootVolumeType: "io2",
+    })
+    expect(result.success).toBe(false)
+  })
 })
 
 describe("createKeyPairSchema", () => {

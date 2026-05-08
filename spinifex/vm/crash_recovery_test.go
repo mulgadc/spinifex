@@ -64,8 +64,13 @@ func TestRestartBackoff_Exponential(t *testing.T) {
 // and watchdog tests need: a recording resource controller, a static
 // instance-type resolver, a recording transition state, and a controllable
 // shutdown signal.
+//
+// Sets XDG_RUNTIME_DIR to a per-test tempdir so PID-file paths
+// (utils.WaitForPidFileRemoval, ReadPidFile) cannot collide between
+// tests sharing the host's real runtime dir.
 func crashTestManager(t *testing.T) (m *Manager, rc *fakeResourceController, rt *recordedTransitions, shuttingDown *atomic.Bool) {
 	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	rc = newFakeResourceController()
 	rt = &recordedTransitions{}
 	shuttingDown = &atomic.Bool{}
@@ -170,7 +175,6 @@ func TestHandleCrash_FirstCrashSetsTime(t *testing.T) {
 		v.Status = StateRunning
 	})
 
-	time.Sleep(time.Millisecond)
 	m.HandleCrash(instance, fmt.Errorf("crash 2"))
 
 	assert.Equal(t, firstTime, instance.Health.FirstCrashTime,
@@ -390,4 +394,54 @@ func TestRestartCrashedInstance_AllocateFailure(t *testing.T) {
 	assert.Equal(t, StateError, m.Status(instance))
 	assert.Equal(t, 1, instance.Health.RestartCount,
 		"RestartCount is incremented before the allocate attempt")
+}
+
+// TestRestartCrashedInstance_RunFailureRollback covers the post-Allocate
+// Run-failure path: Allocate succeeds, transition to Pending succeeds,
+// then m.Run fails (Mount error). The rollback must deallocate the
+// reservation and transition the instance back to StateError. A
+// regression that skipped the deallocate would leak one reservation
+// per crash-then-restart-fail cycle until the daemon restarts.
+func TestRestartCrashedInstance_RunFailureRollback(t *testing.T) {
+	m, rc, rt, _ := crashTestManager(t)
+
+	// Wire a VolumeMounter that fails so m.Run returns an error after the
+	// successful Allocate + Pending transition. SetDeps replaces deps
+	// entirely, so re-supply the existing wiring from crashTestManager.
+	mounter := &fakeVolumeMounter{mountErr: errors.New("mount failed during restart")}
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		Resources:       rc,
+		VolumeMounter:   mounter,
+		InstanceTypes:   fakeInstanceTypeResolver{"t3.micro": {VCPUs: 1, MemoryMiB: 1024, Architecture: "x86_64"}},
+		TransitionState: rt.apply,
+	})
+
+	// Pre-allocate one reservation so the deallocate-on-rollback is
+	// observable as a return-to-baseline rather than a negative count.
+	require.NoError(t, rc.Allocate("t3.micro"))
+	baseline := rc.allocateCount("t3.micro")
+
+	instance := &VM{
+		ID:           "i-rollback",
+		Status:       StateError,
+		InstanceType: "t3.micro",
+	}
+	m.Insert(instance)
+
+	m.RestartCrashedInstance(instance)
+
+	assert.Equal(t, baseline, rc.allocateCount("t3.micro"),
+		"Run-failure rollback must net allocations back to baseline")
+	assert.Equal(t, 1, rc.deallocateCount("t3.micro"),
+		"Deallocate must be invoked exactly once on Run-failure rollback")
+	assert.Equal(t, []string{"i-rollback"}, mounter.mounted,
+		"Mount must have been attempted (proves the launch progressed past the Pending transition)")
+
+	targets := rt.targets("i-rollback")
+	require.Len(t, targets, 2, "expected two transitions: Pending then back to Error")
+	assert.Equal(t, StatePending, targets[0])
+	assert.Equal(t, StateError, targets[1])
+	assert.Equal(t, StateError, m.Status(instance),
+		"instance must end in StateError after Run-failure rollback")
 }

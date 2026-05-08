@@ -1141,39 +1141,10 @@ func TestMarkInstanceFailed_AlreadyTerminated(t *testing.T) {
 	assert.Equal(t, vm.StateTerminated, instance.Status)
 }
 
-func TestRestoreInstances_ProvisioningInstanceLaunchTimeReset(t *testing.T) {
-	daemon := createDaemonWithJetStream(t)
-
-	// Provisioning instances (daemon crashed during first launch) should get
-	// their LaunchTime reset so the pending watchdog doesn't immediately kill
-	// them after a prolonged outage.
-	staleTime := time.Now().Add(-30 * time.Minute)
-	daemon.vmMgr.Insert(&vm.VM{
-		ID:       "i-provisioning",
-		Status:   vm.StateProvisioning,
-		Instance: &ec2.Instance{LaunchTime: &staleTime},
-	})
-	require.NoError(t, daemon.WriteState())
-
-	daemon.vmMgr.Replace(map[string]*vm.VM{})
-	before := time.Now()
-	simulateCleanRestore(t, daemon)
-
-	// Restore creates fresh objects, so look up from the map. The instance
-	// may have been removed by markInstanceFailed (launch fails in test
-	// env), so reload directly from JetStream state.
-	loaded, err := daemon.jsManager.LoadState(daemon.node)
-	require.NoError(t, err)
-	daemon.vmMgr.Replace(loaded)
-	instance, _ := daemon.vmMgr.Get("i-provisioning")
-	if instance == nil {
-		// Instance was cleaned up by markInstanceFailed — that's fine.
-		// The important thing is that the LaunchTime WAS reset before
-		// the launch attempt. We can't verify it post-cleanup, so skip.
-		t.Skip("Instance was cleaned up during recovery — LaunchTime was reset before launch attempt")
-	}
-	require.NotNil(t, instance.Instance)
-	require.NotNil(t, instance.Instance.LaunchTime)
-	assert.True(t, instance.Instance.LaunchTime.After(before) || instance.Instance.LaunchTime.Equal(before),
-		"LaunchTime should be reset for provisioning instances, got %v", *instance.Instance.LaunchTime)
-}
+// LaunchTime reset for restored instances (Pending and Provisioning) is
+// covered deterministically by classifyRestoredInstances tests in
+// vm/restore_test.go. The previous daemon-side test went through the full
+// Restore() pipeline including async relaunchAll → MarkFailed cleanup,
+// which made the post-restore state racy: the instance might or might not
+// be in the local map by the time the test ran assertions, and a t.Skip
+// branch silently turned the racing path into a green pass.

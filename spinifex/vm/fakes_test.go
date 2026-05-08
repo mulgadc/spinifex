@@ -90,6 +90,16 @@ type recordedTransitions struct {
 	m     *Manager
 	calls []recordedTransition
 	err   error
+	waits []*pendingWait
+}
+
+// pendingWait is a single (id, target) the test wants notified on. apply
+// closes done after v.Status has been updated, so receivers see the new
+// status without polling.
+type pendingWait struct {
+	id     string
+	target InstanceState
+	done   chan struct{}
 }
 
 // bind associates the recorder with the manager whose lock guards v.Status
@@ -108,15 +118,54 @@ func (r *recordedTransitions) apply(v *VM, target InstanceState) error {
 		r.mu.Unlock()
 		return err
 	}
-	r.calls = append(r.calls, recordedTransition{ID: v.ID, Target: target})
 	m := r.m
 	r.mu.Unlock()
+
+	// Publish Status before recording the call so any waitFor caller that
+	// observes the recorded transition is guaranteed to see the new Status.
 	if m != nil {
 		m.Inspect(v, func(vv *VM) { vv.Status = target })
 	} else {
 		v.Status = target
 	}
+
+	r.mu.Lock()
+	r.calls = append(r.calls, recordedTransition{ID: v.ID, Target: target})
+	var matched []*pendingWait
+	remaining := r.waits[:0]
+	for _, pw := range r.waits {
+		if pw.id == v.ID && pw.target == target {
+			matched = append(matched, pw)
+		} else {
+			remaining = append(remaining, pw)
+		}
+	}
+	r.waits = remaining
+	r.mu.Unlock()
+
+	for _, pw := range matched {
+		close(pw.done)
+	}
 	return nil
+}
+
+// waitFor returns a channel closed once apply has recorded a (id, target)
+// transition AND the corresponding v.Status flip has been published.
+// Replaces require.Eventually polling on m.Status. If the transition has
+// already happened the channel is returned already-closed.
+func (r *recordedTransitions) waitFor(id string, target InstanceState) <-chan struct{} {
+	done := make(chan struct{})
+	r.mu.Lock()
+	for _, c := range r.calls {
+		if c.ID == id && c.Target == target {
+			close(done)
+			r.mu.Unlock()
+			return done
+		}
+	}
+	r.waits = append(r.waits, &pendingWait{id: id, target: target, done: done})
+	r.mu.Unlock()
+	return done
 }
 
 func (r *recordedTransitions) snapshot() []recordedTransition {

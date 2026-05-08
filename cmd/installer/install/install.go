@@ -662,11 +662,12 @@ func (c *Config) toFirstbootConfig() firstboot.Config {
 		encapIP = c.LANAddress
 	}
 	return firstboot.Config{
-		Hostname:    c.Hostname,
-		EncapIP:     encapIP,
-		ClusterRole: c.ClusterRole,
-		JoinAddr:    c.JoinAddr,
-		Email:       c.Email,
+		Hostname:        c.Hostname,
+		EncapIP:         encapIP,
+		ClusterRole:     c.ClusterRole,
+		JoinAddr:        c.JoinAddr,
+		Email:           c.Email,
+		InstallCallback: strings.TrimSpace(os.Getenv("SPINIFEX_INSTALL_CALLBACK")),
 	}
 }
 

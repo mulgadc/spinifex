@@ -590,14 +590,12 @@ func launchService(cfg *Config) (err error) {
 		// Wait for 1 second to confirm nbdkit is running
 		time.Sleep(1 * time.Second)
 
-		// Check if nbdkit exited immediately with an error
+		// Any exit within the first second means NBDKit failed to stay up.
 		select {
 		case exitErr := <-exitChan:
-			if exitErr != 0 {
-				ebsResponse.Error = fmt.Sprintf("nbdkit failed: %v", exitErr)
-				respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
-				return
-			}
+			ebsResponse.Error = fmt.Sprintf("nbdkit exited unexpectedly (code=%d)", exitErr)
+			respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
+			return
 		default:
 			// nbdkit is still running after 1 second, which means it started successfully
 			slog.Info("NBDKit started successfully and is running")

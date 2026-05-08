@@ -197,6 +197,7 @@ path = "store/node-5/"
 [[auth]]
 access_key_id = "AKIAIOSFODNN7EXAMPLE"
 secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+account_id = "123456789012"
 `
 
 	err = os.WriteFile(configPath, []byte(configContent), 0644)

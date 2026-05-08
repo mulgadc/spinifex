@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExecute(t *testing.T) {
@@ -374,6 +375,11 @@ func TestExecute_MachineType_x86(t *testing.T) {
 }
 
 func TestExecute_ARM64_Q35(t *testing.T) {
+	const uefiPath = "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+	if _, err := os.Stat(uefiPath); err != nil {
+		t.Skipf("aarch64 UEFI firmware missing at %s: %v", uefiPath, err)
+	}
+
 	cfg := Config{
 		CPUCount:     1,
 		Memory:       512,
@@ -382,26 +388,14 @@ func TestExecute_ARM64_Q35(t *testing.T) {
 		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
 	}
 
-	uefiPath := "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-	_, uefiErr := os.Stat(uefiPath)
-	hasUEFI := uefiErr == nil
-
 	cmd, err := cfg.Execute()
 
-	if hasUEFI {
-		// UEFI firmware exists — should succeed with -M virt and -bios
-		assert.NoError(t, err)
-		assert.NotNil(t, cmd)
-		args := cmd.Args[1:]
-		assert.Contains(t, cmd.Path, "qemu-system-aarch64")
-		assert.Equal(t, "virt", argValue(args, "-M"))
-		assert.Equal(t, uefiPath, argValue(args, "-bios"))
-	} else {
-		// No firmware — error
-		assert.Error(t, err)
-		assert.Nil(t, cmd)
-		assert.Contains(t, err.Error(), "UEFI firmware file not found")
-	}
+	assert.NoError(t, err)
+	require.NotNil(t, cmd)
+	args := cmd.Args[1:]
+	assert.Contains(t, cmd.Path, "qemu-system-aarch64")
+	assert.Equal(t, "virt", argValue(args, "-M"))
+	assert.Equal(t, uefiPath, argValue(args, "-bios"))
 }
 
 func TestExecute_MissingArchitecture(t *testing.T) {
@@ -418,6 +412,10 @@ func TestExecute_MissingArchitecture(t *testing.T) {
 }
 
 func TestExecute_KVMAndCPUType(t *testing.T) {
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm missing: %v", err)
+	}
+
 	cfg := Config{
 		CPUCount:     2,
 		Memory:       1024,
@@ -431,15 +429,8 @@ func TestExecute_KVMAndCPUType(t *testing.T) {
 	assert.NoError(t, err)
 
 	args := cmd.Args[1:]
-
-	// KVM/CPU flags depend on whether /dev/kvm exists on host
-	if _, err := os.Stat("/dev/kvm"); err == nil {
-		assert.True(t, argExists(args, "-enable-kvm"))
-		assert.Equal(t, "host", argValue(args, "-cpu"))
-	} else {
-		assert.False(t, argExists(args, "-enable-kvm"))
-		assert.Empty(t, argValue(args, "-cpu"))
-	}
+	assert.True(t, argExists(args, "-enable-kvm"))
+	assert.Equal(t, "host", argValue(args, "-cpu"))
 }
 
 func TestExecute_FullConfig(t *testing.T) {

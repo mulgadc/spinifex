@@ -47,6 +47,27 @@ describe("DeleteConfirmationDialog", () => {
     expect(onConfirm).toHaveBeenCalledOnce()
   })
 
+  it("renders custom confirmLabel and pendingLabel when provided", () => {
+    const { rerender } = render(
+      <DeleteConfirmationDialog
+        {...defaultProps}
+        confirmLabel="Terminate"
+        pendingLabel="Terminating…"
+      />,
+    )
+    expect(screen.getByText("Terminate")).toBeInTheDocument()
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument()
+    rerender(
+      <DeleteConfirmationDialog
+        {...defaultProps}
+        confirmLabel="Terminate"
+        isPending={true}
+        pendingLabel="Terminating…"
+      />,
+    )
+    expect(screen.getByText("Terminating…")).toBeInTheDocument()
+  })
+
   it("renders ReactNode description", () => {
     render(
       <DeleteConfirmationDialog

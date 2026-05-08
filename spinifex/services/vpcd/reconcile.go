@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -61,6 +62,7 @@ type ReconcileResult struct {
 	SwitchesCreated int
 	IGWsCreated     int
 	PortsCreated    int
+	NATsReconciled  int
 }
 
 // Reconcile ensures OVN topology matches the expected state from the bootstrap config.
@@ -276,7 +278,10 @@ func ReconcileFromKV(ctx context.Context, nc *nats.Conn, topo *TopologyHandler, 
 		}
 	}
 
-	// 4. Reconcile ENI ports: ensure each ENI has a logical switch port
+	// 4. Reconcile ENI ports: ensure each ENI has a logical switch port.
+	// eniMAC is populated here and consumed by Step 5 to build distributed NAT
+	// rules (direct bridge mode only; centralized mode doesn't need the MAC).
+	eniMAC := make(map[string]string) // eniID → MAC
 	eniKV, err := js.KeyValue(handlers_ec2_vpc.KVBucketENIs)
 	if err != nil {
 		slog.Debug("vpcd reconcile-kv: ENI KV bucket not available", "err", err)
@@ -298,6 +303,8 @@ func ReconcileFromKV(ctx context.Context, nc *nats.Conn, topo *TopologyHandler, 
 				slog.Warn("vpcd reconcile-kv: failed to unmarshal ENI record", "key", key, "err", err)
 				continue
 			}
+
+			eniMAC[rec.NetworkInterfaceId] = rec.MacAddress
 
 			portName := "port-" + rec.NetworkInterfaceId
 			if _, err := topo.ovn.GetLogicalSwitchPort(ctx, portName); err != nil {
@@ -330,11 +337,88 @@ func ReconcileFromKV(ctx context.Context, nc *nats.Conn, topo *TopologyHandler, 
 		}
 	}
 
+	// 5. Reconcile EIP NAT rules: ensure each associated EIP has a dnat_and_snat
+	// rule in OVN NB DB. NAT rules are only created by AssociateAddress events
+	// and are never otherwise reconciled — an OVN NB DB wipe or any state drift
+	// silently breaks inbound EIP traffic. This step is the safety net.
+	eipKV, err := js.KeyValue(handlers_ec2_eip.KVBucketEIPs)
+	if err != nil {
+		slog.Debug("vpcd reconcile-kv: EIP KV bucket not available", "err", err)
+	} else {
+		eipKeys, err := eipKV.Keys()
+		if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+			slog.Warn("vpcd reconcile-kv: failed to list EIP keys", "err", err)
+		}
+		for _, key := range eipKeys {
+			if key == utils.VersionKey {
+				continue
+			}
+			entry, err := eipKV.Get(key)
+			if err != nil {
+				continue
+			}
+			var rec handlers_ec2_eip.EIPRecord
+			if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+				slog.Warn("vpcd reconcile-kv: failed to unmarshal EIP record", "key", key, "err", err)
+				continue
+			}
+			if rec.State != "associated" || rec.VpcId == "" || rec.PublicIp == "" || rec.PrivateIp == "" {
+				continue
+			}
+
+			existing, err := topo.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", rec.PublicIp)
+			if err != nil {
+				slog.Warn("vpcd reconcile-kv: failed to query NAT rule", "external_ip", rec.PublicIp, "err", err)
+				continue
+			}
+			if existing != nil && existing.LogicalIP == rec.PrivateIp {
+				slog.Debug("vpcd reconcile-kv: NAT rule correct, skipping", "external_ip", rec.PublicIp)
+				continue
+			}
+
+			routerName := "vpc-" + rec.VpcId
+			natRule := &nbdb.NAT{
+				Type:       "dnat_and_snat",
+				ExternalIP: rec.PublicIp,
+				LogicalIP:  rec.PrivateIp,
+				ExternalIDs: map[string]string{
+					"spinifex:vpc_id":    rec.VpcId,
+					"spinifex:public_ip": rec.PublicIp,
+				},
+			}
+			if !topo.useCentralizedNAT() && rec.ENIId != "" {
+				portName := "port-" + rec.ENIId
+				natRule.LogicalPort = &portName
+				if mac, ok := eniMAC[rec.ENIId]; ok && mac != "" {
+					natRule.ExternalMAC = &mac
+				}
+			}
+
+			if existing != nil {
+				if removed, err := topo.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", rec.PublicIp); err != nil {
+					slog.Warn("vpcd reconcile-kv: failed to remove stale NAT rule", "external_ip", rec.PublicIp, "err", err)
+					continue
+				} else if removed > 0 {
+					slog.Info("vpcd reconcile-kv: removed stale NAT rule before re-add", "external_ip", rec.PublicIp, "removed", removed)
+				}
+			}
+
+			if err := topo.ovn.AddNAT(ctx, routerName, natRule); err != nil {
+				slog.Error("vpcd reconcile-kv: failed to add NAT rule", "external_ip", rec.PublicIp, "logical_ip", rec.PrivateIp, "err", err)
+				continue
+			}
+			slog.Info("vpcd reconcile-kv: reconciled NAT rule",
+				"external_ip", rec.PublicIp, "logical_ip", rec.PrivateIp, "router", routerName)
+			result.NATsReconciled++
+		}
+	}
+
 	slog.Info("vpcd reconcile-kv: complete",
 		"routers_created", result.RoutersCreated,
 		"switches_created", result.SwitchesCreated,
 		"igws_created", result.IGWsCreated,
 		"ports_created", result.PortsCreated,
+		"nats_reconciled", result.NATsReconciled,
 	)
 
 	return result

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -655,4 +656,154 @@ func TestReconcileGatewayChassis_NoOpWhenAlreadyCorrect(t *testing.T) {
 	assert.Equal(t, 0, ovn.SetGatewayChassisCalls, "no new creates expected")
 	assert.Equal(t, 0, ovn.DeleteGatewayChassisCalls, "no deletes expected")
 	assert.Equal(t, 0, ovn.UpdateGatewayChassisPriorityCalls, "no priority updates expected")
+}
+
+// seedEIPKVBucket creates the EIP KV bucket and populates it with test records.
+func seedEIPKVBucket(t *testing.T, nc *nats.Conn, eips []handlers_ec2_eip.EIPRecord) {
+	t.Helper()
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	eipKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: handlers_ec2_eip.KVBucketEIPs, History: 1})
+	require.NoError(t, err)
+	for _, e := range eips {
+		data, _ := json.Marshal(e)
+		_, err := eipKV.Put(utils.AccountKey("000000000001", e.AllocationId), data)
+		require.NoError(t, err)
+	}
+}
+
+func TestReconcileFromKV_ReconcilesEIPNATRules(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	// Seed VPC + IGW so the router exists for AddNAT.
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat1", CidrBlock: "10.10.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat1", VpcId: "vpc-nat1", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+
+	// One associated EIP (missing NAT rule), one unassociated EIP (must be skipped).
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{
+		{
+			AllocationId: "eipalloc-1", PublicIp: "10.0.0.210", PoolName: "wan",
+			State: "associated", VpcId: "vpc-nat1", PrivateIp: "10.10.1.5", ENIId: "eni-abc123",
+			CreatedAt: time.Now(),
+		},
+		{
+			AllocationId: "eipalloc-2", PublicIp: "10.0.0.211", PoolName: "wan",
+			State:     "allocated",
+			CreatedAt: time.Now(),
+		},
+	})
+
+	result := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, result.NATsReconciled, "one missing NAT rule must be created")
+
+	nat, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.210")
+	require.NoError(t, err)
+	require.NotNil(t, nat, "dnat_and_snat rule must exist after reconcile")
+	assert.Equal(t, "10.10.1.5", nat.LogicalIP)
+	assert.Equal(t, "dnat_and_snat", nat.Type)
+
+	// Unassociated EIP must produce no NAT rule.
+	nat2, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.211")
+	require.NoError(t, err)
+	assert.Nil(t, nat2, "unassociated EIP must not produce a NAT rule")
+}
+
+func TestReconcileFromKV_EIPNATIdempotent(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat2", CidrBlock: "10.20.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat2", VpcId: "vpc-nat2", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{{
+		AllocationId: "eipalloc-3", PublicIp: "10.0.0.220", PoolName: "wan",
+		State: "associated", VpcId: "vpc-nat2", PrivateIp: "10.20.1.7", ENIId: "eni-def456",
+		CreatedAt: time.Now(),
+	}})
+
+	// First reconcile: creates the NAT rule.
+	r1 := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, r1.NATsReconciled)
+
+	// Second reconcile: rule already correct, must skip.
+	r2 := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 0, r2.NATsReconciled, "correct NAT rule must not be re-created")
+}
+
+func TestReconcileFromKV_EIPNATStaleRuleReplaced(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	ovn := NewMockOVNClient()
+	_ = ovn.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(ovn,
+		WithExternalNetwork("pool", []ExternalPoolConfig{{
+			Name: "wan", Gateway: "10.0.0.1", GatewayIP: "10.0.0.200", PrefixLen: 24,
+		}}),
+		WithChassisNames([]string{"chassis-node1"}),
+	)
+
+	seedKVBuckets(t, nc,
+		[]handlers_ec2_vpc.VPCRecord{{
+			VpcId: "vpc-nat3", CidrBlock: "10.30.0.0/16", State: "available", CreatedAt: time.Now(),
+		}},
+		nil,
+		[]handlers_ec2_igw.IGWRecord{{
+			InternetGatewayId: "igw-nat3", VpcId: "vpc-nat3", State: "attached", CreatedAt: time.Now(),
+		}},
+		nil,
+	)
+	seedEIPKVBucket(t, nc, []handlers_ec2_eip.EIPRecord{{
+		AllocationId: "eipalloc-4", PublicIp: "10.0.0.230", PoolName: "wan",
+		State: "associated", VpcId: "vpc-nat3", PrivateIp: "10.30.1.9", ENIId: "eni-ghi789",
+		CreatedAt: time.Now(),
+	}})
+
+	// Create the router so we can pre-seed a stale NAT rule against it.
+	require.NoError(t, ovn.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-nat3"}))
+	require.NoError(t, ovn.AddNAT(ctx, "vpc-vpc-nat3", &nbdb.NAT{
+		Type: "dnat_and_snat", ExternalIP: "10.0.0.230", LogicalIP: "10.30.1.99",
+	}))
+
+	result := ReconcileFromKV(ctx, nc, topo, nil)
+	assert.Equal(t, 1, result.NATsReconciled, "stale NAT rule must be replaced")
+
+	nat, err := ovn.FindNATByExternalIP(ctx, "dnat_and_snat", "10.0.0.230")
+	require.NoError(t, err)
+	require.NotNil(t, nat)
+	assert.Equal(t, "10.30.1.9", nat.LogicalIP, "logical IP must be updated to match KV")
 }

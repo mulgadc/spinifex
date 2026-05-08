@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // pendingInstance returns a VM in the supplied state with LaunchTime set
@@ -59,27 +60,31 @@ func TestScanAndMarkStuckPending_BoundaryNotStuck(t *testing.T) {
 }
 
 func TestScanAndMarkStuckPending_StuckPending_MarkedFailed(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	m, _, rt, _ := crashTestManager(t)
 
 	now := time.Now()
 	v := pendingInstance("i-stuck", StatePending, now.Add(-PendingWatchdogTimeout-time.Minute))
 	m.Insert(v)
 
+	terminated := rt.waitFor(v.ID, StateTerminated)
 	m.scanAndMarkStuckPending(now)
 
-	assertStuckMarkedFailed(t, m, rt, v)
+	assertStuckMarkedFailed(t, m, rt, v, terminated)
 }
 
 func TestScanAndMarkStuckPending_StuckProvisioning_MarkedFailed(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	m, _, rt, _ := crashTestManager(t)
 
 	now := time.Now()
 	v := pendingInstance("i-prov-stuck", StateProvisioning, now.Add(-PendingWatchdogTimeout-time.Second))
 	m.Insert(v)
 
+	terminated := rt.waitFor(v.ID, StateTerminated)
 	m.scanAndMarkStuckPending(now)
 
-	assertStuckMarkedFailed(t, m, rt, v)
+	assertStuckMarkedFailed(t, m, rt, v, terminated)
 }
 
 func TestScanAndMarkStuckPending_NoLaunchTime_NotMarked(t *testing.T) {
@@ -116,30 +121,32 @@ func TestScanAndMarkStuckPending_OnlyPendingStatesScanned(t *testing.T) {
 }
 
 func TestStartPendingWatchdog_CtxCancelStopsGoroutine(t *testing.T) {
+	// goleak fails the test if the watchdog goroutine outlives ctx.
+	// Without this, a regression that ignored ctx.Done would still pass:
+	// the harness reaps the leaked goroutine on test process exit.
+	defer goleak.VerifyNone(t)
+
 	m, _, _, _ := crashTestManager(t)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	m.StartPendingWatchdog(ctx)
-
-	// Immediately cancel; with PendingWatchdogInterval at 60s, the only
-	// observable signal that the goroutine respected ctx.Done is that the
-	// test exits cleanly without waiting for the next tick.
 	cancel()
-	// Yield briefly so the goroutine actually returns before the test
-	// finishes; race detector catches any leaked work.
-	time.Sleep(10 * time.Millisecond)
 }
 
-func assertStuckMarkedFailed(t *testing.T, m *Manager, rt *recordedTransitions, v *VM) {
+func assertStuckMarkedFailed(t *testing.T, m *Manager, rt *recordedTransitions, v *VM, terminated <-chan struct{}) {
 	t.Helper()
 
 	// MarkFailed transitions Pending/Provisioning → ShuttingDown
 	// synchronously, then runs terminateCleanup + finalizeTerminated in a
-	// goroutine. Wait for the terminal transition to land.
-	require.Eventually(t, func() bool {
-		return m.Status(v) == StateTerminated
-	}, 2*time.Second, 5*time.Millisecond, "stuck instance must reach Terminated")
+	// goroutine. Block on the chan recordedTransitions closes once the
+	// Terminated transition has landed and Status is published.
+	select {
+	case <-terminated:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("stuck instance %s did not reach Terminated within 10s", v.ID)
+	}
 
+	assert.Equal(t, StateTerminated, m.Status(v))
 	targets := rt.targets(v.ID)
 	require.NotEmpty(t, targets)
 	assert.Equal(t, StateShuttingDown, targets[0],

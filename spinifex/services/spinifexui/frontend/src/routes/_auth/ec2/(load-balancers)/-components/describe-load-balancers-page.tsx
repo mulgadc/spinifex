@@ -33,10 +33,10 @@ export function DescribeLoadBalancersPage() {
             disabled={!lbImageImported}
             onClick={() => navigate({ to: "/ec2/create-load-balancer" })}
           >
-            Create load balancer
+            Create Load Balancer
           </Button>
         }
-        title="Load balancers"
+        title="Load Balancers"
       />
 
       {!lbImageImported && <LbImageMissingBanner />}
@@ -47,7 +47,7 @@ export function DescribeLoadBalancersPage() {
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">DNS name</th>
+                <th className="px-4 py-2 font-medium">DNS Name</th>
                 <th className="px-4 py-2 font-medium">State</th>
                 <th className="px-4 py-2 font-medium">Type</th>
                 <th className="px-4 py-2 font-medium">Scheme</th>

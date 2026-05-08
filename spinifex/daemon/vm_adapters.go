@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -91,11 +92,28 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
+	mounted := make([]int, 0, len(instance.EBSRequests.Requests))
+	rollback := func(origErr error) error {
+		var rbErrs []error
+		for _, idx := range mounted {
+			req := instance.EBSRequests.Requests[idx]
+			if err := a.unmountOne(req); err != nil {
+				slog.Error("Mount rollback: unmount failed",
+					"volume", req.Name, "err", err)
+				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
+			}
+		}
+		if len(rbErrs) > 0 {
+			return fmt.Errorf("%w; rollback also failed: %w", origErr, errors.Join(rbErrs...))
+		}
+		return origErr
+	}
+
 	for k, v := range instance.EBSRequests.Requests {
 		ebsMountRequest, err := json.Marshal(v)
 		if err != nil {
 			slog.Error("Failed to marshal volume payload", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		reply, err := a.nc.Request(a.topic("mount"), ebsMountRequest, 30*time.Second)
@@ -104,22 +122,23 @@ func (a *volumeMounterAdapter) Mount(instance *vm.VM) error {
 
 		if err != nil {
 			slog.Error("Failed to request EBS mount", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		var ebsMountResponse types.EBSMountResponse
 		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
 			slog.Error("Failed to unmarshal volume response:", "err", err)
-			return err
+			return rollback(err)
 		}
 
 		if ebsMountResponse.Error != "" {
 			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error)
-			return fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error)
+			return rollback(fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error))
 		}
 
 		slog.Debug("Mounted volume successfully", "response", ebsMountResponse.URI)
 		instance.EBSRequests.Requests[k].NBDURI = ebsMountResponse.URI
+		mounted = append(mounted, k)
 	}
 
 	return nil
@@ -185,37 +204,40 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 }
 
 // UnmountOne sends ebs.unmount for a single request. Best-effort: errors
-// are logged. Shared by AttachVolume rollback and the DetachVolume
-// ebs.unmount step.
+// are logged and tolerated. Shared by AttachVolume rollback and the
+// DetachVolume ebs.unmount step where the caller cannot meaningfully act
+// on a failed unmount. Internal callers that need to surface rollback
+// failures use unmountOne directly.
 func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		slog.Error("UnmountOne: failed to marshal unmount request",
-			"volume", req.Name, "err", err)
-		return
-	}
-	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
-	if err != nil {
-		slog.Error("UnmountOne: ebs.unmount NATS request failed",
-			"volume", req.Name, "err", err)
-		return
-	}
-	var resp types.EBSUnMountResponse
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		slog.Error("UnmountOne: failed to unmarshal response",
-			"volume", req.Name, "err", err)
-		return
-	}
-	if resp.Error != "" {
-		slog.Error("UnmountOne: ebs.unmount returned error",
-			"volume", req.Name, "err", resp.Error)
-		return
-	}
-	if resp.Mounted {
-		slog.Error("UnmountOne: volume still mounted after unmount", "volume", req.Name)
+	if err := a.unmountOne(req); err != nil {
+		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
+}
+
+// unmountOne sends ebs.unmount and returns any error so callers (e.g. the
+// Mount partial-failure rollback) can wrap it into a richer failure.
+func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal unmount request: %w", err)
+	}
+	msg, err := a.nc.Request(a.topic("unmount"), payload, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("ebs.unmount NATS request: %w", err)
+	}
+	var resp types.EBSUnMountResponse
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return fmt.Errorf("unmarshal unmount response: %w", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)
+	}
+	if resp.Mounted {
+		return fmt.Errorf("volume still mounted after unmount")
+	}
+	return nil
 }
 
 // instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver. It looks up

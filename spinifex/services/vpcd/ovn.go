@@ -96,6 +96,7 @@ type OVNClient interface {
 	// Static routes
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error
 	DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error
+	FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error)
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
@@ -919,6 +920,36 @@ func (c *LiveOVNClient) AddStaticRoute(ctx context.Context, routerName string, r
 		return fmt.Errorf("add static route transact: %w", err)
 	}
 	return nil
+}
+
+// FindStaticRoute returns the first static route on routerName whose IPPrefix
+// matches. (nil, nil) when no row matches — caller compares Nexthop and
+// OutputPort to detect operator-overridden entries. AddStaticRoute is
+// non-idempotent (every retry leaves a fresh duplicate row), so callers that
+// run on every reconcile pass must dedupe via this helper first.
+func (c *LiveOVNClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for static route lookup: %w", err)
+	}
+	owned := make(map[string]struct{}, len(lr.StaticRoutes))
+	for _, u := range lr.StaticRoutes {
+		owned[u] = struct{}{}
+	}
+	var routes []nbdb.LogicalRouterStaticRoute
+	if err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
+		if r.IPPrefix != ipPrefix {
+			return false
+		}
+		_, ok := owned[r.UUID]
+		return ok
+	}).List(ctx, &routes); err != nil {
+		return nil, fmt.Errorf("list static routes: %w", err)
+	}
+	if len(routes) == 0 {
+		return nil, nil
+	}
+	return &routes[0], nil
 }
 
 func (c *LiveOVNClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {

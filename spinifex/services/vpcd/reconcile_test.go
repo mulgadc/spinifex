@@ -131,7 +131,7 @@ func TestReconcile_NoBootstrap(t *testing.T) {
 	result := Reconcile(context.Background(), topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 }
 
 func TestReconcile_EmptyBootstrap(t *testing.T) {
@@ -169,7 +169,7 @@ func TestReconcile_CreatesBootstrapTopology(t *testing.T) {
 	result := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 
 	// Verify OVN objects exist
 	ctx := context.Background()
@@ -221,13 +221,20 @@ func TestReconcile_Idempotent(t *testing.T) {
 	r1 := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 1, r1.RoutersCreated)
 	assert.Equal(t, 1, r1.SwitchesCreated)
-	assert.Equal(t, 1, r1.IGWsCreated)
+	assert.Equal(t, 1, r1.IGWsReconciled)
 
-	// Second run should skip everything (already exists)
+	// Second run should skip router/switch creation (already exist).
+	// IGWsReconciled has "called" semantics — every successful pass counts,
+	// even when it's a no-op self-heal walk.
 	r2 := Reconcile(context.Background(), topo, bootstrap)
 	assert.Equal(t, 0, r2.RoutersCreated)
 	assert.Equal(t, 0, r2.SwitchesCreated)
-	assert.Equal(t, 0, r2.IGWsCreated)
+	assert.Equal(t, 1, r2.IGWsReconciled)
+
+	// Pass must not have duplicated the default route.
+	lr, err := ovn.GetLogicalRouter(context.Background(), "vpc-vpc-idem")
+	require.NoError(t, err)
+	assert.Len(t, lr.StaticRoutes, 1, "default route must not duplicate on retry")
 }
 
 func TestReconcile_PartialState(t *testing.T) {
@@ -260,7 +267,7 @@ func TestReconcile_PartialState(t *testing.T) {
 	result := Reconcile(ctx, topo, bootstrap)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 }
 
 // --- ReconcileFromKV tests ---
@@ -345,7 +352,7 @@ func TestReconcileFromKV_CreatesFullTopology(t *testing.T) {
 	result := ReconcileFromKV(ctx, nc, topo, nil)
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 	assert.Equal(t, 1, result.PortsCreated)
 
 	// Verify OVN objects
@@ -425,7 +432,7 @@ func TestReconcileFromKV_SkipsDetachedIGW(t *testing.T) {
 
 	result := ReconcileFromKV(ctx, nc, topo, nil)
 	assert.Equal(t, 1, result.RoutersCreated) // VPC router created
-	assert.Equal(t, 0, result.IGWsCreated)    // Detached IGW skipped
+	assert.Equal(t, 0, result.IGWsReconciled) // Detached IGW skipped
 
 	_, err := ovn.GetLogicalSwitch(ctx, "ext-vpc-det")
 	assert.Error(t, err) // External switch should NOT exist
@@ -442,7 +449,7 @@ func TestReconcileFromKV_NoBuckets(t *testing.T) {
 	result := ReconcileFromKV(context.Background(), nc, topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 	assert.Equal(t, 0, result.PortsCreated)
 }
 
@@ -532,7 +539,7 @@ func TestReconcileFromKV_VersionKeysAndBadJSON(t *testing.T) {
 	// Valid records should still be reconciled despite bad records
 	assert.Equal(t, 1, result.RoutersCreated)
 	assert.Equal(t, 1, result.SwitchesCreated)
-	assert.Equal(t, 1, result.IGWsCreated)
+	assert.Equal(t, 1, result.IGWsReconciled)
 	assert.Equal(t, 1, result.PortsCreated)
 
 	// Verify OVN objects created from valid records
@@ -570,7 +577,7 @@ func TestReconcileFromKV_EmptyBuckets(t *testing.T) {
 	result := ReconcileFromKV(context.Background(), nc, topo, nil)
 	assert.Equal(t, 0, result.RoutersCreated)
 	assert.Equal(t, 0, result.SwitchesCreated)
-	assert.Equal(t, 0, result.IGWsCreated)
+	assert.Equal(t, 0, result.IGWsReconciled)
 	assert.Equal(t, 0, result.PortsCreated)
 }
 

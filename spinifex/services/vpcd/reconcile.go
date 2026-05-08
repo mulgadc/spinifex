@@ -85,10 +85,15 @@ func AcquireReconcileLeader(nc *nats.Conn, holder string) (func(), bool) {
 }
 
 // ReconcileResult tracks what was created during reconciliation.
+//
+// IGWsReconciled has "called" semantics rather than "created" because
+// reconcileIGW is self-healing and idempotent — every successful invocation
+// increments, regardless of whether new entities were added. Gauging "what
+// changed" requires inspecting OVN directly.
 type ReconcileResult struct {
 	RoutersCreated  int
 	SwitchesCreated int
-	IGWsCreated     int
+	IGWsReconciled  int
 	PortsCreated    int
 	NATsReconciled  int
 }
@@ -141,23 +146,20 @@ func Reconcile(ctx context.Context, topo *TopologyHandler, bootstrap *BootstrapV
 		}
 	}
 
-	// 3. Ensure IGW topology exists (external switch, SNAT, gateway chassis)
-	extSwitchName := "ext-" + bootstrap.VpcId
-	if _, err := topo.ovn.GetLogicalSwitch(ctx, extSwitchName); err != nil {
-		slog.Info("vpcd reconcile: creating IGW topology", "switch", extSwitchName)
-		if err := topo.reconcileIGW(ctx, bootstrap.VpcId, bootstrap.IgwId); err != nil {
-			slog.Error("vpcd reconcile: failed to create IGW topology", "err", err)
-		} else {
-			result.IGWsCreated++
-		}
+	// 3. Ensure IGW topology. reconcileIGW is ensure-then-skip per child, so
+	// call it unconditionally — gating on "ext switch missing" trapped
+	// partial topologies (switch + LRP present, no localnet LSP) in an
+	// unhealable state across vpcd restarts.
+	if err := topo.reconcileIGW(ctx, bootstrap.VpcId, bootstrap.IgwId); err != nil {
+		slog.Error("vpcd reconcile: failed to ensure IGW topology", "err", err)
 	} else {
-		slog.Debug("vpcd reconcile: IGW topology exists", "switch", extSwitchName)
+		result.IGWsReconciled++
 	}
 
 	slog.Info("vpcd reconcile: complete",
 		"routers_created", result.RoutersCreated,
 		"switches_created", result.SwitchesCreated,
-		"igws_created", result.IGWsCreated,
+		"igws_reconciled", result.IGWsReconciled,
 	)
 
 	return result
@@ -294,14 +296,10 @@ func ReconcileFromKV(ctx context.Context, nc *nats.Conn, topo *TopologyHandler, 
 				continue
 			}
 
-			extSwitchName := "ext-" + rec.VpcId
-			if _, err := topo.ovn.GetLogicalSwitch(ctx, extSwitchName); err != nil {
-				slog.Info("vpcd reconcile-kv: creating IGW topology", "switch", extSwitchName, "igw_id", rec.InternetGatewayId)
-				if err := topo.reconcileIGW(ctx, rec.VpcId, rec.InternetGatewayId); err != nil {
-					slog.Error("vpcd reconcile-kv: failed to create IGW topology", "err", err)
-				} else {
-					result.IGWsCreated++
-				}
+			if err := topo.reconcileIGW(ctx, rec.VpcId, rec.InternetGatewayId); err != nil {
+				slog.Error("vpcd reconcile-kv: failed to ensure IGW topology", "err", err, "igw_id", rec.InternetGatewayId)
+			} else {
+				result.IGWsReconciled++
 			}
 		}
 	}
@@ -444,7 +442,7 @@ func ReconcileFromKV(ctx context.Context, nc *nats.Conn, topo *TopologyHandler, 
 	slog.Info("vpcd reconcile-kv: complete",
 		"routers_created", result.RoutersCreated,
 		"switches_created", result.SwitchesCreated,
-		"igws_created", result.IGWsCreated,
+		"igws_reconciled", result.IGWsReconciled,
 		"ports_created", result.PortsCreated,
 		"nats_reconciled", result.NATsReconciled,
 	)

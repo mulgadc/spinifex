@@ -504,6 +504,26 @@ func (m *MockOVNClient) AddStaticRoute(_ context.Context, routerName string, rou
 	return nil
 }
 
+func (m *MockOVNClient) FindStaticRoute(_ context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lr, exists := m.routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.StaticRoutes {
+		r, ok := m.staticRoutes[uuid]
+		if !ok {
+			continue
+		}
+		if r.IPPrefix == ipPrefix {
+			result := *r
+			return &result, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *MockOVNClient) DeleteStaticRoute(_ context.Context, routerName string, ipPrefix string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

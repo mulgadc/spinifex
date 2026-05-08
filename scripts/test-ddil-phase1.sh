@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-DAEMON_URL="${DAEMON_URL:-https://127.0.0.1:8443}"
+DAEMON_URL="${DAEMON_URL:-https://127.0.0.1:4432}"
 DAEMON_SVC=spinifex-daemon
 NATS_SVC=spinifex-nats
 OVERRIDE=/etc/systemd/system/${DAEMON_SVC}.service.d/99-test-ddil.conf

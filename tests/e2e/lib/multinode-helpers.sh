@@ -487,19 +487,35 @@ dump_local_ovn_diagnostics() {
     sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state \
         list Interface 2>&1 | head -120 || true
 
+    # Is northd actually running? `ovs-appctl -t ovn-northd` without
+    # OVS_RUNDIR=/var/run/ovn looks in /var/run/openvswitch and reports
+    # "missing pidfile" even when northd is alive — that previous result was
+    # misleading. Check process + systemd state directly first.
+    echo "  --- ovn-northd process + systemd ---"
+    sudo systemctl status ovn-northd --no-pager 2>&1 | head -20 || true
+    sudo systemctl status ovn-central --no-pager 2>&1 | head -20 || true
+    sudo pgrep -af ovn-northd 2>&1 || echo "  (no ovn-northd process)"
+    sudo ls -la /var/run/ovn/ /var/run/openvswitch/ 2>&1 | head -40 || true
+
     # Northd connection health — silent journal + missing Port_Binding could
-    # mean wedged NB or SB OVSDB connection. ovs-appctl exposes the live
-    # status without restarting the daemon.
+    # mean wedged NB or SB OVSDB connection. The OVN ctl socket lives at
+    # /var/run/ovn on Debian, so OVS_RUNDIR must be set explicitly.
     echo "  --- ovn-northd connection + status ---"
-    sudo ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true
-    sudo ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true
-    sudo ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true
+    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true
+    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true
+    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true
 
     echo "  --- ovn-controller journal (last 60 lines) ---"
     sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
 
-    echo "  --- ovn-northd journal (last 80 lines) ---"
-    sudo journalctl -u ovn-northd --no-pager -n 80 2>&1 || true
+    # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
+    # vlog, not journal. Journal only sees systemd start/stop. This is where
+    # any OVSDB transaction errors or "skipped LSP" messages would appear.
+    echo "  --- /var/log/ovn/ovn-northd.log (last 200 lines) ---"
+    sudo tail -200 /var/log/ovn/ovn-northd.log 2>&1 || true
+
+    echo "  --- ovn-northd journal (full since boot) ---"
+    sudo journalctl -u ovn-northd --no-pager 2>&1 || true
 
     echo "  === end local OVN/OVS state dump ==="
     echo ""

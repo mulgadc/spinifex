@@ -180,15 +180,32 @@ dump_guest_ssh_diagnostics() {
     echo "  --- OVN SB chassis registrations (from primary, ovn-sbctl show) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 | head -120 || true" 2>&1 || true
 
+    # Is northd actually running? Previous appctl-only check looked in
+    # /var/run/openvswitch and reported "missing pidfile" even when northd
+    # is alive — the OVN ctl socket lives at /var/run/ovn on Debian. Check
+    # process + systemd state directly first.
+    echo "  --- ovn-northd process + systemd (from primary) ---"
+    peer_ssh "$LOCAL_IP" "sudo systemctl status ovn-northd --no-pager 2>&1 | head -20 || true; \
+        sudo systemctl status ovn-central --no-pager 2>&1 | head -20 || true; \
+        sudo pgrep -af ovn-northd 2>&1 || echo '  (no ovn-northd process)'; \
+        sudo ls -la /var/run/ovn/ /var/run/openvswitch/ 2>&1 | head -40 || true" 2>&1 || true
+
     # Northd connection health — silent ovn-northd journal + missing SB
     # Port_Binding rows could mean a wedged NB or SB OVSDB connection.
+    # OVS_RUNDIR=/var/run/ovn is required for appctl to find the ctl socket.
     echo "  --- ovn-northd connection + status (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true; \
-        sudo ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true; \
-        sudo ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true" 2>&1 || true
+    peer_ssh "$LOCAL_IP" "sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true; \
+        sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true; \
+        sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd debug/status 2>&1 | head -40 || true" 2>&1 || true
 
-    echo "  --- ovn-northd journal (from primary, last 80 lines) ---"
-    peer_ssh "$LOCAL_IP" "sudo journalctl -u ovn-northd --no-pager -n 80 2>&1 || true" 2>&1 || true
+    # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
+    # vlog, not journal. This is where any OVSDB transaction errors or
+    # "skipped LSP" messages would appear.
+    echo "  --- /var/log/ovn/ovn-northd.log (from primary, last 200 lines) ---"
+    peer_ssh "$LOCAL_IP" "sudo tail -200 /var/log/ovn/ovn-northd.log 2>&1 || true" 2>&1 || true
+
+    echo "  --- ovn-northd journal (from primary, full since boot) ---"
+    peer_ssh "$LOCAL_IP" "sudo journalctl -u ovn-northd --no-pager 2>&1 || true" 2>&1 || true
 
     echo "  --- OVN SB port_binding chassis claims (from primary) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,up list Port_Binding 2>&1 | head -80 || true" 2>&1 || true

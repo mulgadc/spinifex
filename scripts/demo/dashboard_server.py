@@ -55,7 +55,7 @@ async def proxy_descriptions():
     async def stream():
         while True:
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=None)) as client:
                     async with client.stream("GET", f"{YOLO_HOST}/descriptions") as resp:
                         async for line in resp.aiter_lines():
                             yield line + "\n"

@@ -3,17 +3,21 @@
 # ROCm, Ollama, and a YOLO/ROCm Python venv, then run a smoke test.
 #
 # Usage:
-#   scripts/launch-gpu-instance.sh <size>
+#   scripts/launch-gpu-instance.sh <size> [--ollama]
 #
 # Sizes:
 #   4x   g7e.4xlarge  — 1× MI350X, 300 GB disk
 #   12x  g7e.12xlarge — 2× MI350X, 600 GB disk
 #
+# Flags:
+#   --ollama   Rsync Ollama models from host to instance after provisioning
+#
 # Env overrides:
-#   SSH_KEY        Path to SSH private key (default: ~/.ssh/spinifex-key)
-#   SSH_USER       SSH user inside guest  (default: ec2-user)
-#   SSH_TIMEOUT    Seconds to wait for initial SSH   (default: 300)
-#   REBOOT_TIMEOUT Seconds to wait for SSH after reboot (default: 300)
+#   SSH_KEY           Path to SSH private key (default: ~/.ssh/spinifex-key)
+#   SSH_USER          SSH user inside guest  (default: ec2-user)
+#   SSH_TIMEOUT       Seconds to wait for initial SSH   (default: 300)
+#   REBOOT_TIMEOUT    Seconds to wait for SSH after reboot (default: 300)
+#   OLLAMA_MODELS_SRC Host path to Ollama models dir (default: /usr/share/ollama/.ollama/models/)
 set -euo pipefail
 
 export AWS_PROFILE=spinifex
@@ -25,15 +29,27 @@ REBOOT_TIMEOUT="${REBOOT_TIMEOUT:-300}"
 
 SIZE="${1:-}"
 case "$SIZE" in
-    4x)  INSTANCE_TYPE="g7e.4xlarge";  DISK_GB=300 ;;
-    12x) INSTANCE_TYPE="g7e.12xlarge"; DISK_GB=600 ;;
+    4x)  INSTANCE_TYPE="g7e.4xlarge";  DISK_GB=300; _DEFAULT_MODEL="llama3.1:70b" ;;
+    12x) INSTANCE_TYPE="g7e.12xlarge"; DISK_GB=600; _DEFAULT_MODEL="qwen3-vl:235b" ;;
     *)
-        echo "Usage: $0 <4x|12x>"
-        echo "  4x  — g7e.4xlarge  (1× MI350X, 300 GB)"
-        echo "  12x — g7e.12xlarge (2× MI350X, 600 GB)"
+        echo "Usage: $0 <4x|12x> [--ollama[=<model>]]"
+        echo "  4x  — g7e.4xlarge  (1× MI350X, 300 GB) — default model: llama3.1:70b"
+        echo "  12x — g7e.12xlarge (2× MI350X, 600 GB) — default model: qwen3-vl:235b"
         exit 1
         ;;
 esac
+
+OLLAMA_SYNC=0
+OLLAMA_MODEL=""
+OLLAMA_MODELS_SRC="${OLLAMA_MODELS_SRC:-/usr/share/ollama/.ollama/models}"
+for _arg in "${@:2}"; do
+    case "$_arg" in
+        --ollama)    OLLAMA_SYNC=1 ;;
+        --ollama=*)  OLLAMA_SYNC=1; OLLAMA_MODEL="${_arg#--ollama=}" ;;
+        *) echo "Unknown flag: $_arg"; exit 1 ;;
+    esac
+done
+[ "$OLLAMA_SYNC" = "1" ] && [ -z "$OLLAMA_MODEL" ] && OLLAMA_MODEL="$_DEFAULT_MODEL"
 
 # --- Helpers ---
 
@@ -277,6 +293,49 @@ _ssh "$IP" '. ~/yolo-rocm/bin/activate && python -c "import torch; print(\"torch
 
 echo "   YOLO predict (yolo11n, bus.jpg):"
 _ssh "$IP" '. ~/yolo-rocm/bin/activate && yolo predict model=yolo11n.pt source="https://ultralytics.com/images/bus.jpg" device=0 2>&1 | tail -10' | sed 's/^/   /'
+
+# --- Ollama model sync ---
+if [ "$OLLAMA_SYNC" = "1" ]; then
+    echo ""
+    echo "==> Syncing Ollama model '${OLLAMA_MODEL}' to ${IP}..."
+
+    _model_name="${OLLAMA_MODEL%%:*}"
+    _model_tag="${OLLAMA_MODEL##*:}"
+    _manifest_rel="manifests/registry.ollama.ai/library/${_model_name}/${_model_tag}"
+    _manifest_path="${OLLAMA_MODELS_SRC}/${_manifest_rel}"
+
+    if ! sudo test -f "$_manifest_path"; then
+        echo "❌ Manifest not found: $_manifest_path"
+        echo "   Run 'ollama list' on this host to confirm the model name"
+        exit 1
+    fi
+
+    # Build file list from manifest: manifest itself + every blob it references
+    _filelist=$(mktemp)
+    echo "$_manifest_rel" > "$_filelist"
+    sudo cat "$_manifest_path" \
+        | grep -oE 'sha256:[a-f0-9]+' \
+        | sort -u \
+        | sed 's/sha256:/blobs\/sha256-/' >> "$_filelist"
+
+    echo "   Manifest + $(( $(wc -l < "$_filelist") - 1 )) blob(s) to transfer"
+
+    sudo rsync -ah --progress \
+        --rsync-path="sudo rsync" \
+        --files-from="$_filelist" \
+        -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i ${SSH_KEY}" \
+        "${OLLAMA_MODELS_SRC}" \
+        "${SSH_USER}@${IP}:/usr/share/ollama/.ollama/models/"
+
+    rm -f "$_filelist"
+
+    echo "   Fixing ownership..."
+    _ssh "$IP" 'sudo chown -R ollama:ollama /usr/share/ollama/.ollama/models/'
+    echo "   Restarting Ollama..."
+    _ssh "$IP" 'sudo systemctl restart ollama'
+    echo "   Models on instance:"
+    _ssh "$IP" 'ollama list'
+fi
 
 # --- Final state ---
 echo ""

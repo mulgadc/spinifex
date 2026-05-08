@@ -206,6 +206,20 @@ dump_all_node_logs() {
             fi
         done
     done
+
+    # OVN NB is cluster-wide; dump once from the local node.
+    echo ""
+    echo "=== OVN northbound state ==="
+    if command -v ovn-nbctl >/dev/null 2>&1; then
+        for cmd in "show" "list port_group" "list acl" "list logical_switch_port"; do
+            echo ""
+            echo "--- ovn-nbctl $cmd ---"
+            sudo ovn-nbctl $cmd 2>&1 || echo "(ovn-nbctl $cmd failed)"
+        done
+    else
+        echo "(ovn-nbctl not installed on local node)"
+    fi
+
     echo ""
     echo "=========================================="
     echo "END OF LOG DUMP"

@@ -563,10 +563,28 @@ dump_all_node_logs() {
         fi
     done
 
+    dump_ovn_state
+
     echo ""
     echo "=========================================="
     echo "END OF LOG DUMP"
     echo "=========================================="
+}
+
+# Dump OVN northbound state (cluster-wide; one dump suffices). Captures the
+# programmed port groups, ACLs and LSPs so SG-enforcement failures can be
+# diagnosed against what vpcd actually wrote.
+dump_ovn_state() {
+    if ! command -v ovn-nbctl >/dev/null 2>&1; then
+        return
+    fi
+    echo ""
+    echo "=== OVN northbound state ==="
+    for cmd in "show" "list port_group" "list acl" "list logical_switch_port"; do
+        echo ""
+        echo "--- ovn-nbctl $cmd ---"
+        sudo ovn-nbctl $cmd 2>&1 || echo "(ovn-nbctl $cmd failed)"
+    done
 }
 
 # Get the QEMU process PID for an instance

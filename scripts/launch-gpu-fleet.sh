@@ -61,10 +61,16 @@ wait_ssh() {
 }
 
 # provision_instance installs MI350X firmware and ROCm tooling, rebooting twice,
-# then verifies compute readiness. Writes "PASS/FAIL <id> <ip> [reason]" to result_file.
+# then installs Ollama and a Python YOLO/ROCm venv, and verifies compute readiness.
+# Phase state is checkpointed in /var/lib/spinifex-provision/ on the remote host;
+# re-running (e.g. with --reprovision) skips already-completed phases automatically.
+# Markers are written after the post-phase reboot succeeds, so a marker guarantees
+# both the work and the reboot are done.
+# Writes "PASS/FAIL <id> <ip> [reason]" to result_file.
 provision_instance() {
     local id="$1" ip="$2" result_file="$3"
     local tag="[$id]"
+    local state_dir="/var/lib/spinifex-provision"
 
     echo "$tag Waiting for initial SSH ($ip)..."
     if ! wait_ssh "$ip" "$SSH_TIMEOUT"; then
@@ -73,62 +79,170 @@ provision_instance() {
     fi
     echo "$tag SSH ready"
 
-    # Phase 1: firmware + initramfs rebuild → reboot
-    echo "$tag Phase 1/3: configuring apt mirror + installing linux-firmware + rebuilding initramfs..."
-    if ! _ssh "$ip" '
-        sudo sed -i \
-            -e "s|http://archive.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
-            -e "s|http://security.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
-            /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true &&
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 | grep -E "^(E:|W:|Err:)" >&2 || true &&
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            -o Acquire::Retries=1 --no-install-recommends linux-firmware &&
-        sudo update-initramfs -u -k all
-    '; then
-        echo "$tag FAILED: firmware install"
-        echo "FAIL $id $ip FIRMWARE_INSTALL" > "$result_file"; return
-    fi
-    echo "$tag Phase 1/3 complete — rebooting (reboot 1/2)..."
-    _ssh "$ip" 'sudo reboot' || true
-    sleep 20
-    echo "$tag Waiting for SSH after reboot 1/2..."
-    if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
-        echo "$tag FAILED: SSH timeout after reboot 1"
-        echo "FAIL $id $ip REBOOT1_TIMEOUT" > "$result_file"; return
-    fi
-    echo "$tag SSH ready after reboot 1/2"
-
-    # Phase 2: ROCm userland + group membership → reboot
-    echo "$tag Phase 2/3: installing ROCm (rocminfo, rocm-smi)..."
-    if ! _ssh "$ip" '
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            -o Acquire::Retries=1 rocminfo rocm-smi &&
-        sudo usermod -aG render,video ec2-user
-    '; then
-        echo "$tag FAILED: ROCm install"
-        echo "FAIL $id $ip ROCM_INSTALL" > "$result_file"; return
-    fi
-    echo "$tag Phase 2/3 complete — rebooting (reboot 2/2)..."
-    _ssh "$ip" 'sudo reboot' || true
-    sleep 20
-    echo "$tag Waiting for SSH after reboot 2/2..."
-    if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
-        echo "$tag FAILED: SSH timeout after reboot 2"
-        echo "FAIL $id $ip REBOOT2_TIMEOUT" > "$result_file"; return
-    fi
-    echo "$tag SSH ready after reboot 2/2"
-
-    # Phase 3: amd-smi (best-effort) + verify compute readiness
-    echo "$tag Phase 3/3: installing amd-smi and verifying ROCm..."
-    _ssh "$ip" 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        -o Acquire::Retries=1 amd-smi' || true
-
-    if ! _ssh "$ip" 'rocminfo 2>/dev/null | grep -q "Device Type"'; then
-        echo "$tag FAILED: rocminfo reports no compute devices"
-        echo "FAIL $id $ip ROCM_NOT_READY" > "$result_file"; return
+    # Phase 0: fast-fail if the GPU is not visible via lspci before doing any work
+    echo "$tag Phase 0: checking GPU visibility via lspci..."
+    _ssh "$ip" 'command -v lspci >/dev/null 2>&1 || \
+        sudo apt-get install -y -qq pciutils >/dev/null 2>&1' || true
+    local lspci_out gpu_lines
+    lspci_out=$(_ssh "$ip" 'lspci 2>/dev/null' || true)
+    gpu_lines=$(printf '%s\n' "$lspci_out" | \
+        grep -iE "Advanced Micro Devices|Instinct|Display controller|Processing accelerator|3D controller" || true)
+    if [ -z "$lspci_out" ]; then
+        echo "$tag WARNING: lspci returned no output — skipping GPU visibility check"
+    elif [ -z "$gpu_lines" ]; then
+        echo "$tag FAILED: no GPU/display device visible in lspci output"
+        echo "$tag   This usually means PCIe passthrough did not bind — check host-side GPU assignment."
+        echo "$tag   Full lspci output:"
+        printf '%s\n' "$lspci_out" | sed "s/^/$tag     /"
+        echo "FAIL $id $ip GPU_NOT_VISIBLE" > "$result_file"; return
+    else
+        echo "$tag GPU(s) visible:"
+        printf '%s\n' "$gpu_lines" | sed "s/^/$tag   /"
     fi
 
-    echo "$tag PASS — ROCm ready"
+    # Phase 1: linux-firmware + initramfs rebuild → reboot 1
+    # Marker is written after reboot 1 completes, so its presence guarantees the reboot happened.
+    if _ssh "$ip" "[ -f ${state_dir}/phase1.done ]" 2>/dev/null; then
+        echo "$tag Phase 1/3: already complete (firmware+initramfs) — skipping"
+    else
+        echo "$tag Phase 1/3: configuring apt mirror + installing linux-firmware + rebuilding initramfs..."
+        if ! _ssh "$ip" '
+            sudo sed -i \
+                -e "s|http://archive.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
+                -e "s|http://security.ubuntu.com/ubuntu|https://mirrors.xtom.com/ubuntu|g" \
+                /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true &&
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 | grep -E "^(E:|W:|Err:)" >&2 || true &&
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                -o Acquire::Retries=1 --no-install-recommends linux-firmware &&
+            sudo update-initramfs -u -k all
+        '; then
+            echo "$tag FAILED: firmware install"
+            echo "FAIL $id $ip FIRMWARE_INSTALL" > "$result_file"; return
+        fi
+        echo "$tag Phase 1/3 complete — rebooting (reboot 1/2)..."
+        _ssh "$ip" 'sudo reboot' || true
+        sleep 20
+        echo "$tag Waiting for SSH after reboot 1/2..."
+        if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
+            echo "$tag FAILED: SSH timeout after reboot 1"
+            echo "FAIL $id $ip REBOOT1_TIMEOUT" > "$result_file"; return
+        fi
+        echo "$tag SSH ready after reboot 1/2"
+        _ssh "$ip" "sudo mkdir -p ${state_dir} && sudo touch ${state_dir}/phase1.done" || true
+    fi
+
+    # Phase 2: ROCm userland + system utilities → reboot 2
+    if _ssh "$ip" "[ -f ${state_dir}/phase2.done ]" 2>/dev/null; then
+        echo "$tag Phase 2/3: already complete (ROCm+utils) — skipping"
+    else
+        echo "$tag Phase 2/3: installing ROCm and system utilities..."
+        if ! _ssh "$ip" '
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                -o Acquire::Retries=1 \
+                rocminfo rocm-smi \
+                python3 python3-venv python3-pip \
+                git curl wget htop tmux \
+                ffmpeg libgl1 libglib2.0-0 &&
+            sudo usermod -aG render,video ec2-user
+        '; then
+            echo "$tag FAILED: ROCm install"
+            echo "FAIL $id $ip ROCM_INSTALL" > "$result_file"; return
+        fi
+        echo "$tag Phase 2/3 complete — rebooting (reboot 2/2)..."
+        _ssh "$ip" 'sudo reboot' || true
+        sleep 20
+        echo "$tag Waiting for SSH after reboot 2/2..."
+        if ! wait_ssh "$ip" "$REBOOT_TIMEOUT"; then
+            echo "$tag FAILED: SSH timeout after reboot 2"
+            echo "FAIL $id $ip REBOOT2_TIMEOUT" > "$result_file"; return
+        fi
+        echo "$tag SSH ready after reboot 2/2"
+        _ssh "$ip" "sudo mkdir -p ${state_dir} && sudo touch ${state_dir}/phase2.done" || true
+    fi
+
+    # Phase 3: amd-smi + ROCm verify + Ollama + Python YOLO/ROCm venv
+    if _ssh "$ip" "[ -f ${state_dir}/phase3.done ]" 2>/dev/null; then
+        echo "$tag Phase 3/3: already complete — skipping"
+    else
+        echo "$tag Phase 3/3: amd-smi, ROCm verify, Ollama, Python YOLO/ROCm venv..."
+        _ssh "$ip" 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            -o Acquire::Retries=1 amd-smi' || true
+
+        local rocminfo_out gpu_count
+        rocminfo_out=$(_ssh "$ip" 'rocminfo 2>&1' || true)
+        if ! printf '%s\n' "$rocminfo_out" | grep -q "Device Type"; then
+            echo "$tag FAILED: rocminfo reports no compute devices"
+            echo "$tag   Firmware loaded (phase1) and ROCm installed (phase2), but driver did not bind."
+            echo "$tag   rocminfo output:"
+            printf '%s\n' "$rocminfo_out" | head -60 | sed "s/^/$tag     /"
+            echo "FAIL $id $ip ROCM_NOT_READY" > "$result_file"; return
+        fi
+        gpu_count=$(printf '%s\n' "$rocminfo_out" | grep -c "Device Type" || true)
+        echo "$tag ROCm: ${gpu_count} compute device(s) found"
+
+        echo "$tag Installing Ollama (base + ROCm overlay)..."
+        if ! _ssh "$ip" '
+            curl -fsSL https://ollama.com/download/ollama-linux-amd64.tar.zst \
+                | sudo tar -x -C /usr &&
+            curl -fsSL https://ollama.com/download/ollama-linux-amd64-rocm.tar.zst \
+                | sudo tar -x -C /usr
+        '; then
+            echo "$tag FAILED: Ollama install"
+            echo "FAIL $id $ip OLLAMA_INSTALL" > "$result_file"; return
+        fi
+
+        _ssh "$ip" '
+            sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama 2>/dev/null || true &&
+            sudo usermod -aG render,video ollama || true &&
+            sudo mkdir -p /usr/share/ollama/.ollama/models &&
+            sudo chown -R ollama:ollama /usr/share/ollama
+        ' || true
+
+        if ! _ssh "$ip" 'sudo tee /etc/systemd/system/ollama.service >/dev/null' <<'SVCEOF'
+[Unit]
+Description=Ollama Service
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+        then
+            echo "$tag FAILED: write ollama service file"
+            echo "FAIL $id $ip OLLAMA_SERVICE_FILE" > "$result_file"; return
+        fi
+
+        if ! _ssh "$ip" 'sudo systemctl daemon-reload && sudo systemctl enable ollama'; then
+            echo "$tag FAILED: ollama service enable"
+            echo "FAIL $id $ip OLLAMA_SERVICE_ENABLE" > "$result_file"; return
+        fi
+        _ssh "$ip" 'sudo systemctl start ollama' || true
+
+        echo "$tag Installing Python YOLO/ROCm venv..."
+        if ! _ssh "$ip" '
+            python3 -m venv /opt/yolo-rocm &&
+            /opt/yolo-rocm/bin/pip install --upgrade --quiet pip wheel setuptools &&
+            /opt/yolo-rocm/bin/pip install --quiet \
+                torch torchvision \
+                --index-url https://download.pytorch.org/whl/rocm7.0 &&
+            /opt/yolo-rocm/bin/pip install --quiet \
+                ultralytics opencv-python-headless numpy pillow
+        '; then
+            echo "$tag FAILED: Python YOLO/ROCm venv"
+            echo "FAIL $id $ip YOLO_VENV_INSTALL" > "$result_file"; return
+        fi
+
+        _ssh "$ip" "sudo mkdir -p ${state_dir} && sudo touch ${state_dir}/phase3.done" || true
+    fi
+
+    echo "$tag PASS — ROCm ready, Ollama enabled, YOLO venv installed"
     echo "PASS $id $ip" > "$result_file"
 }
 

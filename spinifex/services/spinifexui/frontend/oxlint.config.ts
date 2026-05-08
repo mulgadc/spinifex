@@ -32,6 +32,7 @@ export default defineConfig({
         allowArrowFunctions: true,
       },
     ],
+    "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
     "eslint/prefer-destructuring": "off",

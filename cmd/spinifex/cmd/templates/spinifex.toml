@@ -52,6 +52,7 @@ advertise = "{{.AdvertiseIP}}"
 {{- end}}
 region = "{{.Region}}"
 az = "{{.Az}}"
+data_dir = "{{.DataDir}}"
 {{- if .Services}}
 services = [{{range $i, $s := .Services}}{{if $i}}, {{end}}"{{$s}}"{{end}}]
 {{- end}}

@@ -77,16 +77,25 @@ async def chat(request: Request):
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST",
-                f"{OLLAMA_HOST}/api/generate",
-                json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": True},
+                f"{OLLAMA_HOST}/v1/chat/completions",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True,
+                },
             ) as resp:
                 async for line in resp.aiter_lines():
-                    if not line:
+                    if not line.startswith("data: "):
                         continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+                        break
                     try:
-                        data = json.loads(line)
-                        yield f"data: {json.dumps({'token': data.get('response', ''), 'done': data.get('done', False)})}\n\n"
-                    except json.JSONDecodeError:
+                        data = json.loads(data_str)
+                        token = data["choices"][0]["delta"].get("content", "")
+                        yield f"data: {json.dumps({'token': token, 'done': False})}\n\n"
+                    except (json.JSONDecodeError, KeyError, IndexError):
                         pass
 
     return StreamingResponse(stream(), media_type="text/event-stream")
@@ -98,7 +107,7 @@ async def status():
     async with httpx.AsyncClient(timeout=3) as client:
         for name, url in [
             ("yolo", f"{YOLO_HOST}/health"),
-            ("ollama", f"{OLLAMA_HOST}/api/tags"),
+            ("ollama", f"{OLLAMA_HOST}/v1/models"),
         ]:
             try:
                 r = await client.get(url)

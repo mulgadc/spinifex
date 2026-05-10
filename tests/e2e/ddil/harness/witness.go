@@ -206,6 +206,13 @@ func (v *WitnessVM) ReadCounter(ctx context.Context) (int, error) {
 	return readCounterViaTunnel(ctx, v.w, v.HostNode, v.SSHPort)
 }
 
+// Terminate asks EC2 to shut the witness down. Scenarios call this from
+// t.Cleanup so a failed assertion does not leak a counter VM onto the
+// cluster between attempts.
+func (v *WitnessVM) Terminate(ctx context.Context) error {
+	return v.w.terminate(ctx, v.InstanceID)
+}
+
 // AssertProgressed fails t if the counter has not advanced beyond the value
 // captured at launch. Uses t.Helper so the caller's line number lands in the
 // failure message.

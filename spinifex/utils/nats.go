@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -21,23 +22,51 @@ var (
 	ErrCACertParse = errors.New("failed to parse CA cert")
 )
 
+// ErrClusterUnavailable is returned by NATS request helpers when the underlying
+// connection is not currently connected. Callers (gateway, scatter-gather
+// fan-out) use this to fail fast instead of waiting for per-call timeouts.
+var ErrClusterUnavailable = errors.New("cluster unavailable: NATS disconnected")
+
+// natsRetryEscalateAttempt is the attempt count past which ConnectNATSWithRetry
+// promotes the per-attempt log line from slog.Warn to slog.Error (rate-limited
+// to once a minute). With the 60s backoff cap, ~30 attempts corresponds to
+// ~30 minutes of continuous disconnection — long enough to suspect a config
+// error rather than a routine NATS restart.
+const natsRetryEscalateAttempt = 30
+
 // ConnectNATS establishes a connection to a NATS server with standard reconnect
 // handling and logging. If token is non-empty, token authentication is used.
 // If caCertPath is non-empty, TLS is enabled using the given CA certificate.
-func ConnectNATS(host, token, caCertPath string) (*nats.Conn, error) {
-	opts := []nats.Option{
+//
+// Optional callback hooks (WithDisconnectHandler / WithReconnectHandler) wrap
+// the default log lines so callers can react to connectivity changes (e.g. the
+// daemon flips its cluster/standalone mode field) without losing the existing
+// disconnect/reconnect log output.
+func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Conn, error) {
+	cfg := retryConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	natsOpts := []nats.Option{
 		nats.ReconnectWait(time.Second),
 		nats.MaxReconnects(-1),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			slog.Warn("NATS disconnected", "err", err)
+			if cfg.onDisconnect != nil {
+				cfg.onDisconnect(nc, err)
+			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			slog.Warn("NATS reconnected", "url", nc.ConnectedUrl())
+			if cfg.onReconnect != nil {
+				cfg.onReconnect(nc)
+			}
 		}),
 	}
 
 	if token != "" {
-		opts = append(opts, nats.Token(token))
+		natsOpts = append(natsOpts, nats.Token(token))
 	}
 
 	if caCertPath != "" {
@@ -49,12 +78,12 @@ func ConnectNATS(host, token, caCertPath string) (*nats.Conn, error) {
 		if !pool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("%w from %s", ErrCACertParse, caCertPath)
 		}
-		opts = append(opts, nats.Secure(&tls.Config{
+		natsOpts = append(natsOpts, nats.Secure(&tls.Config{
 			RootCAs: pool,
 		}))
 	}
 
-	nc, err := nats.Connect(host, opts...)
+	nc, err := nats.Connect(host, natsOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("NATS connect failed: %w", err)
 	}
@@ -63,13 +92,22 @@ func ConnectNATS(host, token, caCertPath string) (*nats.Conn, error) {
 	return nc, nil
 }
 
-// retryConfig holds parameters for ConnectNATSWithRetry.
+// retryConfig holds parameters for ConnectNATS / ConnectNATSWithRetry.
+//
+// retry-related fields tune the outer reconnect-with-backoff loop;
+// callback fields wrap nats.go's connection-state handlers so callers can
+// react to disconnects/reconnects without losing the default log lines.
 type retryConfig struct {
-	maxWait    time.Duration
-	retryDelay time.Duration
+	maxWait       time.Duration
+	retryDelay    time.Duration
+	maxRetryDelay time.Duration
+	onDisconnect  func(*nats.Conn, error)
+	onReconnect   func(*nats.Conn)
+	onAttemptErr  func(err error, attempt int)
+	ctx           context.Context
 }
 
-// RetryOption configures ConnectNATSWithRetry behavior.
+// RetryOption configures ConnectNATS / ConnectNATSWithRetry behavior.
 type RetryOption func(*retryConfig)
 
 // WithMaxWait sets the maximum total time to keep retrying before giving up.
@@ -82,22 +120,62 @@ func WithRetryDelay(d time.Duration) RetryOption {
 	return func(c *retryConfig) { c.retryDelay = d }
 }
 
+// WithMaxRetryDelay overrides the upper bound on the exponential backoff
+// (default 10s).
+func WithMaxRetryDelay(d time.Duration) RetryOption {
+	return func(c *retryConfig) { c.maxRetryDelay = d }
+}
+
+// WithDisconnectHandler registers an optional callback invoked after the
+// default disconnect log line. Callback runs on a NATS client goroutine; keep
+// it non-blocking (atomic stores, channel sends, goroutine spawns).
+func WithDisconnectHandler(fn func(*nats.Conn, error)) RetryOption {
+	return func(c *retryConfig) { c.onDisconnect = fn }
+}
+
+// WithReconnectHandler registers an optional callback invoked after the
+// default reconnect log line. Same goroutine constraints as WithDisconnectHandler.
+func WithReconnectHandler(fn func(*nats.Conn)) RetryOption {
+	return func(c *retryConfig) { c.onReconnect = fn }
+}
+
+// WithAttemptErrHandler registers an optional callback invoked after each
+// failed connect attempt during ConnectNATSWithRetry's outer loop. Used by the
+// daemon to surface initial-connect retries as a counter on /local/status.
+func WithAttemptErrHandler(fn func(err error, attempt int)) RetryOption {
+	return func(c *retryConfig) { c.onAttemptErr = fn }
+}
+
+// WithContext lets callers cancel the retry loop. When ctx is done,
+// ConnectNATSWithRetry returns ctx.Err().
+func WithContext(ctx context.Context) RetryOption {
+	return func(c *retryConfig) { c.ctx = ctx }
+}
+
 // ConnectNATSWithRetry calls ConnectNATS in a retry loop with exponential
-// backoff. It retries for up to 5 minutes (default) before giving up. TLS
+// backoff. It retries for up to 5 minutes (default) before giving up; pass
+// WithMaxWait(0) to retry indefinitely (cancel via WithContext). TLS
 // configuration errors (ErrCACertRead, ErrCACertParse) are permanent and
 // cause an immediate return without retrying.
 func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (*nats.Conn, error) {
 	cfg := retryConfig{
-		maxWait:    5 * time.Minute,
-		retryDelay: 500 * time.Millisecond,
+		maxWait:       5 * time.Minute,
+		retryDelay:    500 * time.Millisecond,
+		maxRetryDelay: 10 * time.Second,
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
+	if cfg.maxRetryDelay <= 0 {
+		cfg.maxRetryDelay = 10 * time.Second
+	}
 
 	start := time.Now()
+	attempt := 0
+	var lastEscalatedLog time.Time
 	for {
-		nc, err := ConnectNATS(host, token, caCertPath)
+		attempt++
+		nc, err := ConnectNATS(host, token, caCertPath, opts...)
 		if err == nil {
 			if time.Since(start) > time.Second {
 				slog.Info("NATS connection established", "elapsed", time.Since(start).Round(time.Second))
@@ -110,14 +188,38 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 			return nil, fmt.Errorf("NATS TLS configuration error: %w", err)
 		}
 
+		if cfg.onAttemptErr != nil {
+			cfg.onAttemptErr(err, attempt)
+		}
+
 		elapsed := time.Since(start)
-		if elapsed >= cfg.maxWait {
+		if cfg.maxWait > 0 && elapsed >= cfg.maxWait {
 			return nil, fmt.Errorf("NATS connect failed after %s: %w", elapsed.Round(time.Second), err)
 		}
 
-		slog.Warn("NATS not ready, retrying...", "error", err, "elapsed", elapsed.Round(time.Second), "retryIn", cfg.retryDelay)
-		time.Sleep(cfg.retryDelay)
-		cfg.retryDelay = min(cfg.retryDelay*2, 10*time.Second)
+		// Past the retry-escalation threshold (~30 attempts ≈ ~30 min disconnected
+		// at the 60s backoff cap) the warn-on-every-retry pattern can hide a
+		// stuck NATS config in routine warning noise. Escalate to slog.Error,
+		// rate-limited to once a minute, so the operator's error log surfaces it.
+		if attempt > natsRetryEscalateAttempt {
+			if lastEscalatedLog.IsZero() || time.Since(lastEscalatedLog) >= time.Minute {
+				slog.Error("NATS still disconnected", "error", err, "disconnected_for", elapsed.Round(time.Second), "attempt", attempt)
+				lastEscalatedLog = time.Now()
+			}
+		} else {
+			slog.Warn("NATS not ready, retrying...", "error", err, "elapsed", elapsed.Round(time.Second), "retryIn", cfg.retryDelay, "attempt", attempt)
+		}
+
+		if cfg.ctx != nil {
+			select {
+			case <-cfg.ctx.Done():
+				return nil, fmt.Errorf("NATS connect cancelled after %s: %w", elapsed.Round(time.Second), cfg.ctx.Err())
+			case <-time.After(cfg.retryDelay):
+			}
+		} else {
+			time.Sleep(cfg.retryDelay)
+		}
+		cfg.retryDelay = min(cfg.retryDelay*2, cfg.maxRetryDelay)
 	}
 }
 
@@ -131,6 +233,10 @@ const AccountIDHeader = "X-Account-ID"
 // successful response into Out. Handlers can ignore the account ID if the
 // operation is unscoped (e.g. DescribeInstanceTypes).
 func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string) (*Out, error) {
+	if conn == nil || !conn.IsConnected() {
+		return nil, ErrClusterUnavailable
+	}
+
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
@@ -179,6 +285,10 @@ const (
 // error is returned. When expectedNodes > 0, collection exits early once that
 // many responses have been received.
 func NATSScatterGather[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, expectedNodes int, accountID string) (*Out, error) {
+	if conn == nil || !conn.IsConnected() {
+		return nil, ErrClusterUnavailable
+	}
+
 	jsonData, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal input: %w", err)

@@ -105,6 +105,19 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
+			// Fail fast when NATS is down. IAMService.LookupAccessKey runs against
+			// JetStream KV and waits 5s per attempt before context.DeadlineExceeded;
+			// the catch-all IsConnected check in gateway.Request() is unreachable
+			// because this middleware runs first. Mirror it here so authenticated
+			// paths return the cluster-unavailable 503 promised by 1c. Only fires
+			// when NATSConn is set but disconnected — production always assigns
+			// the conn in awsgw.launchService; test helpers leaving it nil get
+			// the existing pre-1c behaviour.
+			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
+				gw.writeClusterUnavailable(w, r, service)
+				return
+			}
+
 			// Lookup access key in IAM KV store
 			if gw.IAMService == nil {
 				slog.Error("SigV4 auth: IAM service not initialized")

@@ -15,7 +15,9 @@ import (
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -2026,5 +2028,58 @@ func TestSignedHeadersIncludeHostAndDate(t *testing.T) {
 				t.Errorf("signedHeadersIncludeHostAndDate(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSigV4Auth_NATSDisconnectedShortCircuit verifies that the SigV4 middleware
+// returns the cluster-unavailable 503 promised by 1c without ever reaching the
+// IAM lookup when the NATS connection is disconnected. With IAMService nil the
+// post-lookup path would return 500 InternalError, so a 503 here proves the
+// short-circuit fired before the lookup.
+func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
+	ns, _ := testutil.StartTestNATS(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	nc.Close() // disconnected — IsConnected() returns false
+
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		NATSConn:       nc,
+		IAMService:     nil,
+	}
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	authHeader, timestamp := generateTestAuthHeader(
+		"GET", "/", "", "",
+		testAccessKey, testSecretKey, testRegion, testService,
+	)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("X-Amz-Date", timestamp)
+
+	resp := doRequest(r, req)
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	if !strings.Contains(xmlStr, "<Code>ServiceUnavailable</Code>") {
+		t.Errorf("Expected ServiceUnavailable code in body, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "cluster unavailable: NATS disconnected") {
+		t.Errorf("Expected cluster-unavailable message in body, got: %s", xmlStr)
+	}
+	if !strings.Contains(xmlStr, "/local/status") {
+		t.Errorf("Expected /local/status hint in body, got: %s", xmlStr)
 	}
 }

@@ -10,11 +10,42 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mgrWith returns a vm.Manager pre-populated with vms. Test fixture for
+// services that previously took a *vm.Instances; post-vm.Manager refactor we
+// build a Manager and Replace its set rather than inlining a map.
+func mgrWith(vms map[string]*vm.VM) *vm.Manager {
+	m := vm.NewManager()
+	if len(vms) > 0 {
+		m.Replace(vms)
+	}
+	return m
+}
+
+func TestNewInstanceServiceImpl(t *testing.T) {
+	cfg := &config.Config{}
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+	store := objectstore.NewMemoryObjectStore()
+	mgr := vm.NewManager()
+
+	svc := NewInstanceServiceImpl(cfg, instanceTypes, nil, store, mgr, nil, nil)
+
+	require.NotNil(t, svc)
+	assert.Equal(t, cfg, svc.config)
+	assert.Equal(t, instanceTypes, svc.instanceTypes)
+	assert.Nil(t, svc.natsConn)
+	assert.Equal(t, mgr, svc.vmMgr)
+	assert.Equal(t, store, svc.objectStore)
+}
 
 func TestGenerateHostname(t *testing.T) {
 	tests := []struct {
@@ -604,5 +635,404 @@ func TestCloudInitVolumeNamePerInstance(t *testing.T) {
 		assert.False(t, seen[cloudInitName],
 			"each instance must get a unique cloud-init volume name")
 		seen[cloudInitName] = true
+	}
+}
+
+// --- 1b-pre Describe* coverage (siv-22 parts) ------------------------------
+
+type fakeResourceCapacityProvider struct {
+	types      []*ec2.InstanceTypeInfo
+	gotShowCap bool
+	calls      int
+}
+
+func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+	f.calls++
+	f.gotShowCap = showCapacity
+	return f.types
+}
+
+type fakeStoppedStore struct {
+	stopped     []*vm.VM
+	terminated  []*vm.VM
+	loadByID    map[string]*vm.VM
+	listErr     error
+	listTermErr error
+	loadErr     error
+}
+
+func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
+	if v, ok := f.loadByID[id]; ok {
+		return v, nil
+	}
+	return nil, nil
+}
+func (f *fakeStoppedStore) ListStoppedInstances() ([]*vm.VM, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.stopped, nil
+}
+func (f *fakeStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) {
+	if f.listTermErr != nil {
+		return nil, f.listTermErr
+	}
+	return f.terminated, nil
+}
+
+func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeInstanceTypes_ReturnsProviderTypes(t *testing.T) {
+	prov := &fakeResourceCapacityProvider{
+		types: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("t3.small")},
+		},
+	}
+	svc := &InstanceServiceImpl{resourceMgr: prov}
+
+	out, err := svc.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, out.InstanceTypes, 2)
+	assert.False(t, prov.gotShowCap)
+}
+
+func TestDescribeInstanceTypes_CapacityFilterPropagates(t *testing.T) {
+	prov := &fakeResourceCapacityProvider{}
+	svc := &InstanceServiceImpl{resourceMgr: prov}
+
+	input := &ec2.DescribeInstanceTypesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("capacity"), Values: []*string{aws.String("true")}},
+		},
+	}
+	_, err := svc.DescribeInstanceTypes(input, "")
+	require.NoError(t, err)
+	assert.True(t, prov.gotShowCap, "capacity=true filter must reach the provider")
+}
+
+func TestDescribeInstances_Empty(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations)
+}
+
+func TestDescribeInstances_OneVisibleInstance(t *testing.T) {
+	id := "i-aaa111"
+	resID := "r-1"
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:           id,
+		InstanceType: "t3.micro",
+		Status:       vm.StateRunning,
+		AccountID:    owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String(resID),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String(id), InstanceType: aws.String("t3.micro")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, resID, *out.Reservations[0].ReservationId)
+	require.Len(t, out.Reservations[0].Instances, 1)
+	assert.Equal(t, id, *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-other",
+		AccountID: "999988887777",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-other"),
+			OwnerId:       aws.String("999988887777"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-other")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, "111122223333")
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations)
+}
+
+func TestDescribeInstances_MalformedID(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	input := &ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String("not-an-id")},
+	}
+	_, err := svc.DescribeInstances(input, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
+}
+
+func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
+	keep := &vm.VM{
+		ID: "i-keep",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-keep"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-keep")},
+	}
+	drop := &vm.VM{
+		ID: "i-drop",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-drop"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-drop")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{
+		keep.ID: keep,
+		drop.ID: drop,
+	})}
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
+	out, err := svc.DescribeInstances(input, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		Attribute: aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestDescribeInstanceAttribute_MissingAttribute(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-aaa"),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
+	id := "i-attr1"
+	owner := utils.GlobalAccountID
+	v := &vm.VM{
+		ID:           id,
+		InstanceType: "t3.large",
+		AccountID:    owner,
+		UserData:     "raw-user-data",
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	tests := []struct {
+		name       string
+		attribute  string
+		assertions func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput)
+	}{
+		{
+			name:      "instanceType",
+			attribute: ec2.InstanceAttributeNameInstanceType,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.InstanceType)
+				assert.Equal(t, "t3.large", *out.InstanceType.Value)
+			},
+		},
+		{
+			name:      "userData",
+			attribute: ec2.InstanceAttributeNameUserData,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.UserData)
+				assert.Equal(t, "raw-user-data", *out.UserData.Value)
+			},
+		},
+		{
+			name:      "disableApiTermination",
+			attribute: ec2.InstanceAttributeNameDisableApiTermination,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.DisableApiTermination)
+				assert.False(t, *out.DisableApiTermination.Value)
+			},
+		},
+		{
+			name:      "ebsOptimized",
+			attribute: ec2.InstanceAttributeNameEbsOptimized,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.EbsOptimized)
+				assert.False(t, *out.EbsOptimized.Value)
+			},
+		},
+		{
+			name:      "enaSupport",
+			attribute: ec2.InstanceAttributeNameEnaSupport,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.EnaSupport)
+				assert.True(t, *out.EnaSupport.Value)
+			},
+		},
+		{
+			name:      "sourceDestCheck",
+			attribute: ec2.InstanceAttributeNameSourceDestCheck,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.SourceDestCheck)
+				assert.True(t, *out.SourceDestCheck.Value)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(id),
+				Attribute:  aws.String(tc.attribute),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, id, *out.InstanceId)
+			tc.assertions(t, out)
+		})
+	}
+}
+
+func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-missing"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
+	id := "i-stopped1"
+	owner := utils.GlobalAccountID
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, InstanceType: "t3.medium", AccountID: owner},
+	}}
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: store,
+	}
+
+	out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, owner)
+	require.NoError(t, err)
+	assert.Equal(t, "t3.medium", *out.InstanceType.Value)
+}
+
+func TestDescribeInstanceAttribute_NotFound(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+	}
+	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-ghost"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestDescribeInstanceAttribute_HiddenForOtherAccount(t *testing.T) {
+	id := "i-other-acct"
+	v := &vm.VM{ID: id, InstanceType: "t3.micro", AccountID: "999988887777"}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	_, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestDescribeStoppedInstances_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeStoppedInstances(&ec2.DescribeInstancesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
+	owner := utils.GlobalAccountID
+	store := &fakeStoppedStore{
+		stopped: []*vm.VM{
+			{
+				ID:        "i-stop1",
+				AccountID: owner,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-stop1"),
+					OwnerId:       aws.String(owner),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-stop1")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	out, err := svc.DescribeStoppedInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-stop1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeTerminatedInstances(&ec2.DescribeInstancesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
+	owner := utils.GlobalAccountID
+	store := &fakeStoppedStore{
+		terminated: []*vm.VM{
+			{
+				ID:        "i-term1",
+				AccountID: owner,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-term1"),
+					OwnerId:       aws.String(owner),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-term1")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	out, err := svc.DescribeTerminatedInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-term1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestIsInstanceVisible(t *testing.T) {
+	tests := []struct {
+		name   string
+		caller string
+		owner  string
+		want   bool
+	}{
+		{"empty owner, global caller", utils.GlobalAccountID, "", true},
+		{"empty owner, non-global caller", "111122223333", "", false},
+		{"matching account", "111122223333", "111122223333", true},
+		{"different accounts", "111122223333", "999988887777", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsInstanceVisible(tc.caller, tc.owner))
+		})
 	}
 }

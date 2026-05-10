@@ -89,6 +89,14 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 	require.NoError(t, err)
 	daemon.stateStore = newStateStoreAdapter(daemon.jsManager)
 
+	// Re-bind the instance service so describe-stopped/terminated handlers see
+	// the KV that was just initialised.
+	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
+		objectstore.NewMemoryObjectStore(),
+		daemon.vmMgr, daemon.resourceMgr, daemon.jsManager,
+	)
+
 	return daemon
 }
 
@@ -516,6 +524,7 @@ func TestHandleEC2RunInstances_ServiceErrorPropagated(t *testing.T) {
 	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
 		daemon.config, emptyTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(),
+		daemon.vmMgr, daemon.resourceMgr, nil,
 	)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", daemon.handleEC2RunInstances)

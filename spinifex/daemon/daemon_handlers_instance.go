@@ -638,8 +638,7 @@ func matchTagValue(tags []*ec2.Tag, values []string) bool {
 	return false
 }
 
-// handleEC2DescribeInstances processes incoming EC2 DescribeInstances requests
-// This handler responds with instances running on this node owned by the caller's account
+// handleEC2DescribeInstances responds with instances running on this node visible to the caller.
 func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 	slog.Debug("Received message", "subject", msg.Subject, "data", string(msg.Data))
 
@@ -774,48 +773,9 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 	slog.Info("handleEC2DescribeInstances completed", "count", len(reservations))
 }
 
-// handleEC2DescribeInstanceTypes processes incoming EC2 DescribeInstanceTypes requests
-// This handler responds with instance types that can currently be provisioned on this node
-// based on available resources (CPU and memory not already allocated to running instances)
+// handleEC2DescribeInstanceTypes responds with instance types provisionable on this node.
 func (d *Daemon) handleEC2DescribeInstanceTypes(msg *nats.Msg) {
-	slog.Debug("Received message", "subject", msg.Subject)
-
-	// Initialize input
-	describeInput := &ec2.DescribeInstanceTypesInput{}
-	errResp := utils.UnmarshalJsonPayload(describeInput, msg.Data)
-	if errResp != nil {
-		if err := msg.Respond(errResp); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
-		}
-		slog.Error("Request does not match DescribeInstanceTypesInput")
-		return
-	}
-
-	slog.Info("Processing DescribeInstanceTypes request from this node")
-
-	// Check if "capacity" filter is set to "true"
-	showCapacity := false
-	for _, f := range describeInput.Filters {
-		if f.Name != nil && *f.Name == "capacity" {
-			for _, v := range f.Values {
-				if v != nil && *v == "true" {
-					showCapacity = true
-					break
-				}
-			}
-		}
-	}
-
-	// Get instance types based on capacity and the showCapacity flag
-	filteredTypes := d.resourceMgr.GetAvailableInstanceTypeInfos(showCapacity)
-
-	// Create the response
-	output := &ec2.DescribeInstanceTypesOutput{
-		InstanceTypes: filteredTypes,
-	}
-
-	respondWithJSON(msg, output)
-	slog.Info("handleEC2DescribeInstanceTypes completed", "count", len(filteredTypes))
+	handleNATSRequest(msg, d.instanceService.DescribeInstanceTypes)
 }
 
 // startStoppedInstanceRequest is the payload for ec2.start topic
@@ -1309,7 +1269,6 @@ func (d *Daemon) handleEC2ModifyInstanceAttribute(msg *nats.Msg) {
 }
 
 // handleEC2DescribeInstanceAttribute returns a single requested attribute for an instance.
-// It checks running instances first (in-memory), then falls back to stopped instances in KV.
 func (d *Daemon) handleEC2DescribeInstanceAttribute(msg *nats.Msg) {
 	var input ec2.DescribeInstanceAttributeInput
 	if err := json.Unmarshal(msg.Data, &input); err != nil {

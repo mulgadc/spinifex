@@ -149,6 +149,49 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	}
 }
 
+// clusterUnavailableMsg is the body returned when the gateway short-circuits
+// because the daemon's NATS connection is down. Points operators at the
+// daemon's /local/status (1b) for triage instead of letting them watch the
+// AWS CLI hang on per-call timeouts.
+const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
+
+// writeClusterUnavailable returns a 503 ServiceUnavailable for the given
+// service-flavoured XML format. The body carries the literal
+// clusterUnavailableMsg in <Message> — the generic GenerateEC2ErrorResponse
+// path drops the message string (see ErrorHandler), so we emit XML directly
+// here to make sure the /local/status hint actually reaches the operator.
+func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
+	requestID := uuid.NewString()
+	var xmlBody string
+	if svc == "iam" {
+		iam := IAMErrorResponse{
+			Error: IAMErrorDetail{
+				Type:    "Sender",
+				Code:    awserrors.ErrorServiceUnavailable,
+				Message: clusterUnavailableMsg,
+			},
+			RequestID: requestID,
+		}
+		out, err := xml.MarshalIndent(iam, "", "  ")
+		if err != nil {
+			slog.Error("Failed to marshal IAM cluster-unavailable XML", "err", err)
+			out = []byte(`<ErrorResponse><Error><Type>Sender</Type><Code>ServiceUnavailable</Code><Message>` + clusterUnavailableMsg + `</Message></Error><RequestId>` + requestID + `</RequestId></ErrorResponse>`)
+		}
+		xmlBody = xml.Header + string(out)
+	} else {
+		// ec2, elasticloadbalancing, account, spinifex — all share the EC2 envelope.
+		xmlBody = xml.Header + `<Response><Errors><Error><Code>` + awserrors.ErrorServiceUnavailable +
+			`</Code><Message>` + clusterUnavailableMsg + `</Message></Error></Errors><RequestID>` +
+			requestID + `</RequestID></Response>`
+	}
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	if _, err := w.Write([]byte(xmlBody)); err != nil {
+		slog.Error("Failed to write cluster-unavailable response", "err", err)
+	}
+}
+
 // writeThrottleError writes the service-appropriate throttle rejection response.
 func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.NewString()
@@ -187,6 +230,15 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("GetService error", "error", err)
 		gw.ErrorHandler(w, r, err)
+		return
+	}
+
+	// Fail fast when NATS is down — every NATS-bound per-service handler would
+	// otherwise hang until per-call timeout. The body points operators at
+	// /local/status (1b) for diagnosis. Account is a no-op stub that never
+	// reaches NATS, so it is exempt.
+	if svc != "account" && (gw.NATSConn == nil || !gw.NATSConn.IsConnected()) {
+		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
 

@@ -19,6 +19,7 @@ import (
 	"github.com/kdomanski/iso9660"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -232,15 +233,29 @@ type InstanceServiceImpl struct {
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	natsConn      *nats.Conn
 	objectStore   objectstore.ObjectStore
+	vmMgr         *vm.Manager
+	resourceMgr   ResourceCapacityProvider
+	stoppedStore  StoppedInstanceStore
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use
-func NewInstanceServiceImpl(cfg *config.Config, instanceTypes map[string]*ec2.InstanceTypeInfo, nc *nats.Conn, store objectstore.ObjectStore) *InstanceServiceImpl {
+func NewInstanceServiceImpl(
+	cfg *config.Config,
+	instanceTypes map[string]*ec2.InstanceTypeInfo,
+	nc *nats.Conn,
+	store objectstore.ObjectStore,
+	vmMgr *vm.Manager,
+	resourceMgr ResourceCapacityProvider,
+	stoppedStore StoppedInstanceStore,
+) *InstanceServiceImpl {
 	return &InstanceServiceImpl{
 		config:        cfg,
 		instanceTypes: instanceTypes,
 		natsConn:      nc,
 		objectStore:   store,
+		vmMgr:         vmMgr,
+		resourceMgr:   resourceMgr,
+		stoppedStore:  stoppedStore,
 	}
 }
 
@@ -841,4 +856,402 @@ func generateHostname(instanceID string) string {
 		return fmt.Sprintf("spinifex-vm-%s", uniquePart)
 	}
 	return "spinifex-vm-unknown"
+}
+
+// DescribeInstancesValidFilters lists the filter names accepted by DescribeInstances
+// (and the stopped/terminated variants, which share the same filter shape).
+var DescribeInstancesValidFilters = map[string]bool{
+	"instance-state-name": true,
+	"instance-id":         true,
+	"instance-type":       true,
+	"vpc-id":              true,
+	"subnet-id":           true,
+	"tag-key":             true,
+	"tag-value":           true,
+}
+
+// IsInstanceVisible reports whether the caller can see this instance.
+// Pre-Phase4 instances (empty AccountID) are only visible to root (GlobalAccountID).
+func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
+	if ownerAccountID == "" {
+		return callerAccountID == utils.GlobalAccountID
+	}
+	return callerAccountID == ownerAccountID
+}
+
+// instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed filters.
+func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			continue
+		}
+
+		var field string
+		switch name {
+		case "instance-state-name":
+			if ic.State != nil && ic.State.Name != nil {
+				field = *ic.State.Name
+			}
+		case "instance-id":
+			field = inst.ID
+		case "instance-type":
+			field = inst.InstanceType
+		case "vpc-id":
+			if ic.VpcId != nil {
+				field = *ic.VpcId
+			}
+		case "subnet-id":
+			if ic.SubnetId != nil {
+				field = *ic.SubnetId
+			}
+		case "tag-key":
+			if !matchTagKey(ic.Tags, values) {
+				return false
+			}
+			continue
+		case "tag-value":
+			if !matchTagValue(ic.Tags, values) {
+				return false
+			}
+			continue
+		default:
+			return false
+		}
+
+		if !filterutil.MatchesAny(values, field) {
+			return false
+		}
+	}
+
+	tags := filterutil.EC2TagsToMap(ic.Tags)
+	return filterutil.MatchesTags(filters, tags)
+}
+
+func matchTagKey(tags []*ec2.Tag, values []string) bool {
+	for _, t := range tags {
+		if t.Key != nil && filterutil.MatchesAny(values, *t.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchTagValue(tags []*ec2.Tag, values []string) bool {
+	for _, t := range tags {
+		if t.Value != nil && filterutil.MatchesAny(values, *t.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+// DescribeInstances returns instances on this node visible to the caller's account.
+func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	slog.Info("Processing DescribeInstances request from this node", "accountID", accountID)
+
+	instanceIDFilter := make(map[string]bool)
+	for _, id := range input.InstanceIds {
+		if id != nil && *id != "" {
+			if !strings.HasPrefix(*id, "i-") {
+				return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
+			}
+			instanceIDFilter[*id] = true
+		}
+	}
+
+	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	if err != nil {
+		slog.Warn("DescribeInstances: invalid filter", "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	reservationMap := make(map[string]*ec2.Reservation)
+
+	// Iterate under the manager lock — VM fields (Status, Instance, Reservation,
+	// PublicIP, PlacementGroupName) are mutated through manager-locked
+	// Inspect/UpdateState elsewhere, so reading them lock-free would race.
+	s.vmMgr.View(func(vms map[string]*vm.VM) {
+		for _, instance := range vms {
+			if !IsInstanceVisible(accountID, instance.AccountID) {
+				continue
+			}
+			if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
+				continue
+			}
+			if instance.Reservation == nil || instance.Instance == nil {
+				continue
+			}
+
+			resID := ""
+			if instance.Reservation.ReservationId != nil {
+				resID = *instance.Reservation.ReservationId
+			}
+
+			if _, exists := reservationMap[resID]; !exists {
+				reservation := &ec2.Reservation{}
+				reservation.SetReservationId(resID)
+				if instance.Reservation.OwnerId != nil {
+					reservation.SetOwnerId(*instance.Reservation.OwnerId)
+				}
+				reservation.Instances = []*ec2.Instance{}
+				reservationMap[resID] = reservation
+			}
+
+			instanceCopy := *instance.Instance
+			instanceCopy.State = &ec2.InstanceState{}
+
+			if instance.PublicIP != "" && instanceCopy.PublicIpAddress == nil {
+				instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
+			}
+
+			if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+				instanceCopy.State.SetCode(info.Code)
+				instanceCopy.State.SetName(info.Name)
+			} else {
+				slog.Warn("Instance has unmapped status, reporting as pending",
+					"instanceId", instance.ID, "status", string(instance.Status))
+				instanceCopy.State.SetCode(0)
+				instanceCopy.State.SetName("pending")
+			}
+
+			if instance.PlacementGroupName != "" {
+				instanceCopy.Placement = &ec2.Placement{
+					GroupName:        aws.String(instance.PlacementGroupName),
+					AvailabilityZone: aws.String(s.config.AZ),
+				}
+			}
+
+			if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+				continue
+			}
+
+			reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+		}
+	})
+
+	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
+	for _, reservation := range reservationMap {
+		reservations = append(reservations, reservation)
+	}
+
+	slog.Info("DescribeInstances completed", "count", len(reservations))
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// DescribeInstanceTypes returns instance types provisionable on this node.
+// The "capacity" filter (when "true") expands each type to one entry per
+// available slot so callers can report cluster-wide capacity by aggregating.
+func (s *InstanceServiceImpl) DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+	slog.Info("Processing DescribeInstanceTypes request from this node")
+
+	if s.resourceMgr == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	showCapacity := false
+	for _, f := range input.Filters {
+		if f.Name != nil && *f.Name == "capacity" {
+			for _, v := range f.Values {
+				if v != nil && *v == "true" {
+					showCapacity = true
+					break
+				}
+			}
+		}
+	}
+
+	filteredTypes := s.resourceMgr.GetAvailableInstanceTypeInfos(showCapacity)
+	slog.Info("DescribeInstanceTypes completed", "count", len(filteredTypes))
+	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: filteredTypes}, nil
+}
+
+// DescribeStoppedInstances returns stopped instances from shared KV.
+func (s *InstanceServiceImpl) DescribeStoppedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances")
+}
+
+// DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
+func (s *InstanceServiceImpl) DescribeTerminatedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
+}
+
+func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
+	instanceIDFilter := make(map[string]bool)
+	for _, id := range input.InstanceIds {
+		if id != nil {
+			instanceIDFilter[*id] = true
+		}
+	}
+
+	parsedFilters, filterErr := filterutil.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	if filterErr != nil {
+		slog.Warn(opName+": invalid filter", "err", filterErr)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	instances, err := listFn()
+	if err != nil {
+		slog.Error(opName+": failed to list instances", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	reservationMap := make(map[string]*ec2.Reservation)
+
+	for _, instance := range instances {
+		if !IsInstanceVisible(accountID, instance.AccountID) {
+			continue
+		}
+		if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
+			continue
+		}
+		if instance.Reservation == nil || instance.Instance == nil {
+			slog.Warn(opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
+				"instanceId", instance.ID)
+			continue
+		}
+
+		resID := ""
+		if instance.Reservation.ReservationId != nil {
+			resID = *instance.Reservation.ReservationId
+		}
+
+		if _, exists := reservationMap[resID]; !exists {
+			reservation := &ec2.Reservation{}
+			reservation.SetReservationId(resID)
+			if instance.Reservation.OwnerId != nil {
+				reservation.SetOwnerId(*instance.Reservation.OwnerId)
+			}
+			reservation.Instances = []*ec2.Instance{}
+			reservationMap[resID] = reservation
+		}
+
+		instanceCopy := *instance.Instance
+		instanceCopy.State = &ec2.InstanceState{}
+		if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+			instanceCopy.State.SetCode(info.Code)
+			instanceCopy.State.SetName(info.Name)
+		} else {
+			instanceCopy.State.SetCode(fallbackCode)
+			instanceCopy.State.SetName(fallbackName)
+		}
+
+		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {
+			continue
+		}
+
+		reservationMap[resID].Instances = append(reservationMap[resID].Instances, &instanceCopy)
+	}
+
+	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
+	for _, reservation := range reservationMap {
+		reservations = append(reservations, reservation)
+	}
+
+	slog.Info(opName+" completed", "count", len(reservations))
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// DescribeInstanceAttribute returns a single requested attribute for an instance.
+// Checks running instances first (in-memory), then falls back to stopped instances in KV.
+func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.Attribute == nil || *input.Attribute == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	instanceID := *input.InstanceId
+	attribute := *input.Attribute
+
+	var instance *vm.VM
+	if running, ok := s.vmMgr.Get(instanceID); ok {
+		instance = running
+	}
+
+	if instance == nil {
+		if s.stoppedStore == nil {
+			slog.Error("DescribeInstanceAttribute: stopped store not available")
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		stopped, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+		if err != nil {
+			slog.Error("DescribeInstanceAttribute: failed to load stopped instance",
+				"instanceId", instanceID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		instance = stopped
+	}
+
+	if instance == nil {
+		slog.Warn("DescribeInstanceAttribute: instance not found",
+			"instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("DescribeInstanceAttribute: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	output := &ec2.DescribeInstanceAttributeOutput{
+		InstanceId: &instanceID,
+	}
+
+	switch attribute {
+	case ec2.InstanceAttributeNameInstanceType:
+		val := instance.InstanceType
+		output.InstanceType = &ec2.AttributeValue{Value: &val}
+
+	case ec2.InstanceAttributeNameUserData:
+		val := instance.UserData
+		output.UserData = &ec2.AttributeValue{Value: &val}
+
+	case ec2.InstanceAttributeNameDisableApiTermination:
+		val := false
+		output.DisableApiTermination = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameDisableApiStop:
+		val := false
+		output.DisableApiStop = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameInstanceInitiatedShutdownBehavior:
+		val := ec2.ShutdownBehaviorStop
+		output.InstanceInitiatedShutdownBehavior = &ec2.AttributeValue{Value: &val}
+
+	case ec2.InstanceAttributeNameEbsOptimized:
+		val := false
+		output.EbsOptimized = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameEnaSupport:
+		val := true
+		output.EnaSupport = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameSourceDestCheck:
+		val := true
+		output.SourceDestCheck = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameGroupSet:
+		if instance.Instance != nil && len(instance.Instance.SecurityGroups) > 0 {
+			output.Groups = instance.Instance.SecurityGroups
+		} else {
+			output.Groups = []*ec2.GroupIdentifier{}
+		}
+
+	default:
+		slog.Warn("DescribeInstanceAttribute: unsupported attribute",
+			"instanceId", instanceID, "attribute", attribute)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	slog.Info("DescribeInstanceAttribute: completed",
+		"instanceId", instanceID, "attribute", attribute, "accountID", accountID)
+	return output, nil
 }

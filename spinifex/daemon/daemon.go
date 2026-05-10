@@ -159,6 +159,17 @@ type Daemon struct {
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
 	natsRetryOpts []utils.RetryOption
 
+	// requireNATSTimeout caps the first connectNATS attempt when the
+	// SPINIFEX_REQUIRE_NATS=1 strict-startup env var is set (§1d-strict).
+	// Default 30s; tests override to a shorter value to keep the strict-mode
+	// abort path fast.
+	requireNATSTimeout time.Duration
+
+	// exitFunc is invoked when SPINIFEX_REQUIRE_NATS=1 strict-startup is
+	// requested and the bounded first connect fails. Defaults to os.Exit;
+	// tests override to observe the abort without killing the test process.
+	exitFunc func(int)
+
 	// networkPlumber handles tap device lifecycle for VPC and management networking
 	networkPlumber vm.NetworkPlumber
 
@@ -187,7 +198,136 @@ type Daemon struct {
 	// are fully initialized. The health endpoint reports "starting" until ready.
 	ready atomic.Bool
 
+	// mode is the daemon's connectivity state — "cluster" when NATS is
+	// reachable, "standalone" when disconnected. Read-only via Mode(); flipped
+	// from utils/nats.go disconnect/reconnect callbacks (see onNATSDisconnect /
+	// onNATSReconnect). Initialised "standalone" so callers reading before
+	// connectNATS() returns get a sensible answer.
+	mode atomic.Value
+
+	// natsRetryCount counts disconnect→reconnect cycles since process start.
+	// Bumped from onNATSReconnect; surfaced via NATSRetryCount() for the
+	// /local/status endpoint added in 1b.
+	natsRetryCount atomic.Int64
+
+	// stateRevision is bumped on every successful local-state write. Surfaced
+	// via /local/status so observers can detect changes without diffing payloads.
+	stateRevision atomic.Uint64
+
+	// kvSyncFailures counts best-effort JetStream KV sync failures (timeout or
+	// put error) since process start. Bumped from RecordKVSyncFailure; surfaced
+	// via /local/status and the spinifex_daemon_kv_sync_failures_total metric.
+	kvSyncFailures atomic.Int64
+	// lastKVSyncAt holds the unix-nano timestamp of the most recent successful
+	// best-effort KV sync. Zero means "never synced since process start".
+	lastKVSyncAt atomic.Int64
+	// lastKVSyncError holds the most recent best-effort KV sync error message
+	// as a string. Cleared back to "" on the next successful sync.
+	lastKVSyncError atomic.Value
+
 	mu sync.Mutex
+}
+
+// Daemon connectivity modes stored in Daemon.mode.
+const (
+	DaemonModeStandalone = "standalone"
+	DaemonModeCluster    = "cluster"
+)
+
+// Mode returns the daemon's current connectivity mode ("cluster" or
+// "standalone"). Safe to call from any goroutine.
+func (d *Daemon) Mode() string {
+	v := d.mode.Load()
+	if v == nil {
+		return DaemonModeStandalone
+	}
+	s, ok := v.(string)
+	if !ok {
+		return DaemonModeStandalone
+	}
+	return s
+}
+
+// NATSRetryCount returns the number of disconnect→reconnect cycles observed
+// since process start.
+func (d *Daemon) NATSRetryCount() int64 {
+	return d.natsRetryCount.Load()
+}
+
+// Revision returns the local-state revision counter. Bumped on every successful
+// WriteState; observers can detect changes without diffing the full payload.
+func (d *Daemon) Revision() uint64 {
+	return d.stateRevision.Load()
+}
+
+// KVSyncFailures returns the number of best-effort JetStream KV sync failures
+// (timeout or put error) observed since process start.
+func (d *Daemon) KVSyncFailures() int64 {
+	return d.kvSyncFailures.Load()
+}
+
+// LastKVSyncAt returns the timestamp of the most recent successful best-effort
+// KV sync. Zero time means "never synced since process start".
+func (d *Daemon) LastKVSyncAt() time.Time {
+	n := d.lastKVSyncAt.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// LastKVSyncError returns the most recent best-effort KV sync error message.
+// Empty string means the last attempt succeeded (or no attempt has been made).
+func (d *Daemon) LastKVSyncError() string {
+	v := d.lastKVSyncError.Load()
+	if v == nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// RecordKVSyncSuccess implements KVSyncObserver. The JetStream manager calls
+// this from its best-effort write path on a successful Put.
+func (d *Daemon) RecordKVSyncSuccess(_ string) {
+	d.lastKVSyncAt.Store(time.Now().UnixNano())
+	d.lastKVSyncError.Store("")
+}
+
+// RecordKVSyncFailure implements KVSyncObserver. Bumps the failure counter and
+// records the error message for /local/status. The bucket arg is reserved for
+// future per-bucket labelling; the current call site is the instance-state
+// bucket and the value is logged via the manager's slog.Warn line.
+func (d *Daemon) RecordKVSyncFailure(_ string, err error) {
+	d.kvSyncFailures.Add(1)
+	if err != nil {
+		d.lastKVSyncError.Store(err.Error())
+	}
+}
+
+// onNATSDisconnect runs when the NATS client loses its connection. Flips the
+// daemon to standalone mode so /local/status callers and scatter-gather
+// bailouts react immediately. Must not block — runs on a NATS client goroutine.
+func (d *Daemon) onNATSDisconnect(_ *nats.Conn, _ error) {
+	d.mode.Store(DaemonModeStandalone)
+}
+
+// onNATSReconnect runs when the NATS client reattaches to a server. Flips back
+// to cluster mode, bumps the retry counter, and pushes the full local instance
+// state to KV so the cluster view re-converges. The KV push runs in a goroutine
+// to keep the NATS client callback non-blocking.
+func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
+	d.mode.Store(DaemonModeCluster)
+	d.natsRetryCount.Add(1)
+
+	if d.jsManager == nil {
+		return
+	}
+	go func() {
+		if err := d.WriteState(); err != nil {
+			slog.Warn("Reconnect KV resync failed", "error", err)
+		}
+	}()
 }
 
 // getSystemMemory returns the total system memory in GB
@@ -449,20 +589,24 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		return nil, fmt.Errorf("initialize resource manager: %w", err)
 	}
 
-	return &Daemon{
-		node:              cfg.Node,
-		clusterConfig:     cfg,
-		config:            &nodeCfg,
-		resourceMgr:       rm,
-		gpuProbe:          gpuProbe,
-		gpuManager:        gpuMgr,
-		ctx:               ctx,
-		cancel:            cancel,
-		vmMgr:             vm.NewManager(),
-		natsSubscriptions: make(map[string]*nats.Subscription),
-		startTime:         time.Now(),
-		detachDelay:       1 * time.Second,
-	}, nil
+	d := &Daemon{
+		node:               cfg.Node,
+		clusterConfig:      cfg,
+		config:             &nodeCfg,
+		resourceMgr:        rm,
+		gpuProbe:           gpuProbe,
+		gpuManager:         gpuMgr,
+		ctx:                ctx,
+		cancel:             cancel,
+		vmMgr:              vm.NewManager(),
+		natsSubscriptions:  make(map[string]*nats.Subscription),
+		startTime:          time.Now(),
+		detachDelay:        1 * time.Second,
+		requireNATSTimeout: 30 * time.Second,
+		exitFunc:           os.Exit,
+	}
+	d.mode.Store(DaemonModeStandalone)
+	return d, nil
 }
 
 // natsSub defines a single NATS subscription entry for the table-driven setup.
@@ -631,20 +775,181 @@ func (d *Daemon) subscribeAll() error {
 	return nil
 }
 
-// Start initializes and starts the daemon
+// Start brings the daemon up in two phases (DDIL Tier 1, §1d):
+//
+//  1. startLocal — bootstraps everything that does not need NATS (cluster
+//     manager HTTPS, mgmt bridge + IP allocator, OVS plumber, OOM score,
+//     local instance state via 1a). The daemon is reachable on /local/* and
+//     /health as soon as this returns.
+//  2. startCluster — runs in the background, retries NATS forever, then
+//     initialises JetStream + cluster-scoped services, restores instances,
+//     and subscribes to NATS topics. Mode flips to "cluster" once connected.
+//
+// Process-exit on NATS failure is no longer possible; staying up degraded is
+// always better than killing the local VM management plane.
 func (d *Daemon) Start() error {
-	if err := d.connectNATS(); err != nil {
-		return fmt.Errorf("failed to connect to NATS: %w", err)
+	if err := d.startLocal(); err != nil {
+		return err
 	}
 
-	// ClusterManager must start before JetStream init so peers can reach
-	// /health during bootstrap.
+	d.setupShutdown()
+
+	d.shutdownWg.Go(func() {
+		if err := d.startCluster(); err != nil {
+			slog.Warn("Cluster bootstrap aborted", "err", err)
+		}
+	})
+
+	d.awaitShutdown()
+	return nil
+}
+
+// startLocal performs the no-NATS bootstrap: HTTPS cluster manager,
+// management bridge detection, network plumber, OOM protection, and local
+// instance-state recovery. Failures here are fatal — these are local
+// configuration errors (TLS misconfig, bad config path) that retry would not
+// fix. The daemon is reachable via /local/* and /health once this returns.
+//
+// Invariant (DDIL §1e-audit): no code in startLocal may touch JetStream KV.
+// The 25 cluster-scoped / read-cache / expendable buckets enumerated in
+// daemon-local-autonomy.md §1e-audit are initialised exclusively from
+// startCluster() — touching any of them here would defeat Tier 1 autonomy by
+// blocking on NATS at boot. The only KV bucket the daemon owns at Tier 1 is
+// spinifex-instance-state, and even that is read from the local file (see 1a),
+// not JetStream, in this phase. assertNoClusterServicesInitialised below
+// enforces the invariant at runtime.
+func (d *Daemon) startLocal() error {
+	// ClusterManager serves /health and /local/* over HTTPS. NATS-independent.
 	if err := d.ClusterManager(); err != nil {
 		return fmt.Errorf("failed to start cluster manager: %w", err)
 	}
 
+	// Detect management bridge for system instance control plane NICs.
+	mgmtBridge := "br-mgmt"
+	if d.config.Daemon.MgmtBridge != "" {
+		mgmtBridge = d.config.Daemon.MgmtBridge
+	}
+	bridgeIP, bridgeErr := GetBridgeIPv4(mgmtBridge)
+	if bridgeErr != nil {
+		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)
+	} else if bridgeIP == "" {
+		slog.Warn("Management bridge not found, system instances will not get mgmt NIC", "bridge", mgmtBridge)
+	} else {
+		d.mgmtBridgeIP = bridgeIP
+		alloc, allocErr := NewMgmtIPAllocator(bridgeIP)
+		if allocErr != nil {
+			slog.Error("Failed to create mgmt IP allocator", "bridgeIP", bridgeIP, "err", allocErr)
+		} else {
+			d.mgmtIPAllocator = alloc
+			slog.Info("Management bridge detected", "bridge", mgmtBridge, "ip", bridgeIP)
+		}
+	}
+
+	// Initialise OVS network plumber (no NATS dep).
+	if d.networkPlumber == nil {
+		d.networkPlumber = &OVSNetworkPlumber{}
+	}
+
+	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
+	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
+		slog.Warn("Failed to set daemon OOM score", "err", err)
+	}
+
+	// Recover local instance state from disk (1a). Read-only — KV migrations,
+	// QMP reconnects, NATS subscriptions and crashed-VM relaunches happen in
+	// startCluster() once NATS is reachable. Fatal if the file is corrupt:
+	// silently dropping instance state would orphan running VMs.
+	if err := d.LoadState(); err != nil {
+		return fmt.Errorf("load local instance state: %w", err)
+	}
+	slog.Info("Loaded local instance state", "instance count", d.vmMgr.Count())
+
+	// Rebuild mgmt IP allocator from restored VMs.
+	if d.mgmtIPAllocator != nil {
+		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
+		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+	}
+
+	if err := d.assertNoClusterServicesInitialised(); err != nil {
+		return fmt.Errorf("startLocal Tier 1 invariant violated: %w", err)
+	}
+
+	d.ready.Store(true)
+	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed", time.Since(d.startTime).Round(time.Second))
+	return nil
+}
+
+// assertNoClusterServicesInitialised guards the DDIL §1e-audit Tier 1
+// invariant: at the end of startLocal, no NATS-dependent or KV-backed handle
+// may exist. A non-nil field here means a future edit accidentally hoisted a
+// cluster-scoped initialiser into the no-NATS phase, which would re-introduce
+// the boot-time NATS dependency that 1d removed. Cheap nil sweep — runs once
+// per process, on the bootstrap path only.
+func (d *Daemon) assertNoClusterServicesInitialised() error {
+	switch {
+	case d.natsConn != nil:
+		return errors.New("d.natsConn must be nil before startCluster")
+	case d.jsManager != nil:
+		return errors.New("d.jsManager must be nil before startCluster")
+	case d.instanceService != nil:
+		return errors.New("d.instanceService must be nil before startCluster")
+	case d.imageService != nil:
+		return errors.New("d.imageService must be nil before startCluster")
+	case d.snapshotService != nil:
+		return errors.New("d.snapshotService must be nil before startCluster")
+	case d.volumeService != nil:
+		return errors.New("d.volumeService must be nil before startCluster")
+	case d.eigwService != nil:
+		return errors.New("d.eigwService must be nil before startCluster")
+	case d.igwService != nil:
+		return errors.New("d.igwService must be nil before startCluster")
+	case d.placementGroupService != nil:
+		return errors.New("d.placementGroupService must be nil before startCluster")
+	case d.vpcService != nil:
+		return errors.New("d.vpcService must be nil before startCluster")
+	case d.routeTableService != nil:
+		return errors.New("d.routeTableService must be nil before startCluster")
+	case d.natGatewayService != nil:
+		return errors.New("d.natGatewayService must be nil before startCluster")
+	case d.externalIPAM != nil:
+		return errors.New("d.externalIPAM must be nil before startCluster")
+	case d.eipService != nil:
+		return errors.New("d.eipService must be nil before startCluster")
+	case d.accountService != nil:
+		return errors.New("d.accountService must be nil before startCluster")
+	case d.elbv2Service != nil:
+		return errors.New("d.elbv2Service must be nil before startCluster")
+	}
+	return nil
+}
+
+// startCluster performs the cluster-integration phase asynchronously. It
+// retries NATS indefinitely (cap 60s backoff) and only returns once the node
+// is fully participating in the cluster or d.ctx is cancelled. Errors here
+// are logged, never propagated as a process-exit.
+//
+// Invariant (DDIL §1e-audit): every JetStream KV bucket — the 18 cluster-scoped
+// buckets, 4 read-cache (IAM) buckets, and 2 expendable buckets enumerated in
+// daemon-local-autonomy.md §1e-audit — is initialised here, never in
+// startLocal. Adding a new cluster-scoped service belongs in this function;
+// hoisting one into startLocal trips assertNoClusterServicesInitialised.
+func (d *Daemon) startCluster() error {
+	if os.Getenv("SPINIFEX_REQUIRE_NATS") == "1" {
+		// §1d-strict opt-in: bounded first connect, abort on timeout. Restores
+		// the pre-DDIL fail-fast UX for dev/test/single-node deploys without
+		// flipping the prod default (which would re-introduce the SPOF that 1d
+		// removed).
+		if err := d.connectNATS(utils.WithMaxWait(d.requireNATSTimeout)); err != nil {
+			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout", d.requireNATSTimeout)
+			d.exitFunc(1)
+			return fmt.Errorf("connect NATS (strict): %w", err)
+		}
+	} else if err := d.connectNATS(); err != nil {
+		return fmt.Errorf("connect NATS: %w", err)
+	}
+
 	if err := d.initJetStream(); err != nil {
-		return fmt.Errorf("failed to initialize JetStream: %w", err)
+		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
 	// Write service manifest so other nodes know what this node runs
@@ -661,7 +966,7 @@ func (d *Daemon) Start() error {
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store)
+	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
@@ -811,28 +1116,6 @@ func (d *Daemon) Start() error {
 	// Wire LB VM lifecycle: instance launcher for system VMs.
 	d.elbv2Service.InstanceLauncher = d
 
-	// Detect management bridge for system instance control plane NICs.
-	// Must run before wireLBAgentConfig so the gateway URL uses br-mgmt IP.
-	mgmtBridge := "br-mgmt"
-	if d.config.Daemon.MgmtBridge != "" {
-		mgmtBridge = d.config.Daemon.MgmtBridge
-	}
-	bridgeIP, bridgeErr := GetBridgeIPv4(mgmtBridge)
-	if bridgeErr != nil {
-		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)
-	} else if bridgeIP == "" {
-		slog.Warn("Management bridge not found, system instances will not get mgmt NIC", "bridge", mgmtBridge)
-	} else {
-		d.mgmtBridgeIP = bridgeIP
-		alloc, allocErr := NewMgmtIPAllocator(bridgeIP)
-		if allocErr != nil {
-			slog.Error("Failed to create mgmt IP allocator", "bridgeIP", bridgeIP, "err", allocErr)
-		} else {
-			d.mgmtIPAllocator = alloc
-			slog.Info("Management bridge detected", "bridge", mgmtBridge, "ip", bridgeIP)
-		}
-	}
-
 	// Wire system credentials + gateway URL for LB agent SigV4 auth.
 	d.wireLBAgentConfig()
 
@@ -885,23 +1168,15 @@ func (d *Daemon) Start() error {
 		d.ensureDefaultVPCInfrastructure()
 	}
 
-	// Initialize network plumber for VPC tap device management
-	if d.networkPlumber == nil {
-		d.networkPlumber = &OVSNetworkPlumber{}
-	}
-
 	// Wire vm.Manager collaborators now that NATS, JetStream, network plumber,
 	// volume service, and resource manager are all ready.
 	d.vmMgr.SetDeps(d.buildVMManagerDeps())
 
-	// Protect daemon from OOM killer (prefer killing QEMU VMs instead)
-	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
-		slog.Warn("Failed to set daemon OOM score", "err", err)
-	}
-
 	d.waitForClusterReady()
 	d.upgradeJetStreamReplicas()
-	d.vmMgr.Restore()
+	if err := d.restoreInstances(); err != nil {
+		return fmt.Errorf("restore instances: %w", err)
+	}
 
 	// Rebuild mgmt IP allocator from restored VMs so we don't re-allocate IPs
 	// that are already in use by running system instances.
@@ -932,16 +1207,30 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
-// connectNATS establishes a connection to the NATS server with retry and
-// exponential backoff. On multi-node clusters, the local NATS server may not
-// be ready immediately after daemon start (e.g. if start-dev.sh is still
-// launching services). This retries for up to 5 minutes before giving up.
-func (d *Daemon) connectNATS() error {
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, d.natsRetryOpts...)
+// connectNATS establishes a connection to the NATS server. Defaults to
+// infinite retry with exponential backoff (cap 60s) so the daemon stays up
+// in standalone mode through extended NATS outages instead of process-exiting
+// (DDIL Tier 1). Tests override d.natsRetryOpts to bound the wait. Callers
+// (e.g. §1d-strict) may pass extraOpts that are applied after d.natsRetryOpts
+// so they win on conflicting fields like WithMaxWait.
+func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
+	opts := append([]utils.RetryOption{
+		utils.WithMaxWait(0), // infinite retry; cancelled via d.ctx
+		utils.WithMaxRetryDelay(60 * time.Second),
+		utils.WithContext(d.ctx),
+		utils.WithDisconnectHandler(d.onNATSDisconnect),
+		utils.WithReconnectHandler(d.onNATSReconnect),
+		utils.WithAttemptErrHandler(func(_ error, _ int) {
+			d.natsRetryCount.Add(1)
+		}),
+	}, d.natsRetryOpts...)
+	opts = append(opts, extraOpts...)
+	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
 	if err != nil {
 		return err
 	}
 	d.natsConn = nc
+	d.mode.Store(DaemonModeCluster)
 	return nil
 }
 
@@ -972,6 +1261,7 @@ func (d *Daemon) initJetStream() error {
 		}
 
 		if err == nil {
+			d.jsManager.SetSyncObserver(d)
 			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
 			break
 		}
@@ -1100,6 +1390,43 @@ func (d *Daemon) checkPredastoreReady() bool {
 	return true
 }
 
+// LoadState loads the instance state from the local file. Missing file is the
+// fresh-install signal (start with empty map). Corrupt or unknown-schema files
+// are fatal — caller refuses start rather than silently losing data. There is
+// no KV fallback: a fresh node has empty KV anyway, so silent KV-fallback on
+// file loss would just mask bugs.
+func (d *Daemon) LoadState() error {
+	path := d.localStatePath()
+	state, err := ReadLocalState(path)
+	if err != nil {
+		slog.Error("Local state load failed", "path", path, "error", err)
+		return fmt.Errorf("read local state: %w", err)
+	}
+
+	if state == nil {
+		d.vmMgr.Replace(map[string]*vm.VM{})
+		slog.Info("No local state file, starting with empty instance map", "path", path)
+		return nil
+	}
+
+	d.vmMgr.Replace(state.VMS)
+	slog.Info("Loaded local state", "path", path, "instances", len(state.VMS))
+	return nil
+}
+
+// restoreInstances delegates to vm.Manager.Restore. vm.Manager only
+// persists to the cluster StateStore (JetStream); the daemon's local
+// crash-recovery file is owned by daemon.WriteState, so we sync it here
+// to preserve the pre-2b invariant that local state == in-memory state
+// after restore. Phase 2f folds this back into vm/.
+func (d *Daemon) restoreInstances() error {
+	d.vmMgr.Restore()
+	if err := d.WriteState(); err != nil {
+		slog.Error("Failed to persist local state after restore", "error", err)
+	}
+	return nil
+}
+
 // awaitShutdown blocks until the daemon's shutdown wait group completes.
 func (d *Daemon) awaitShutdown() {
 	done := make(chan struct{})
@@ -1194,6 +1521,8 @@ func (d *Daemon) ClusterManager() error {
 		}
 	})
 
+	d.registerLocalRoutes(r)
+
 	// Load TLS certificate.
 	// Resolve relative cert paths against config directory (cert lives alongside spinifex.toml).
 	// For binary installs, systemd sets absolute paths via env vars; for dev, the config
@@ -1244,22 +1573,54 @@ func (d *Daemon) ClusterManager() error {
 	return nil
 }
 
-// WriteState writes the instance state to JetStream KV store (required).
-// The marshal+put runs under the manager lock so VM fields can't change
-// mid-encode. Lock-across-Put is a known limitation; splitting marshal from
-// put requires a JetStreamManager API change and is deferred.
+// kvSyncTimeout bounds the best-effort cluster sync so a degraded NATS does
+// not stall every state transition. 1s is well above healthy KV.Put latency
+// and well below a user-visible delay.
+const kvSyncTimeout = time.Second
+
+// localStatePath returns the on-disk path to this daemon's instance state file.
+func (d *Daemon) localStatePath() string {
+	if d.config == nil {
+		return LocalStatePath("")
+	}
+	return LocalStatePath(d.config.DataDir)
+}
+
+// WriteState persists the instance state. Local file is the source of truth;
+// JetStream KV is best-effort cluster cache. The local write is fatal on
+// failure; KV failures are logged and swallowed so partition-time clients
+// never see "KV down" errors.
+//
+// Both wire forms are marshalled inside vmMgr.View so json.Marshal sees a
+// stable VM-field snapshot. Marshaling outside the lock would race against
+// concurrent TransitionState writers under the data race detector.
 func (d *Daemon) WriteState() error {
-	if d.jsManager == nil {
-		return fmt.Errorf("JetStream manager not initialized - cannot write state")
-	}
-	var writeErr error
+	var (
+		localData, kvData []byte
+		marshalErr        error
+	)
 	d.vmMgr.View(func(vms map[string]*vm.VM) {
-		writeErr = d.jsManager.WriteState(d.node, vms)
+		localData, marshalErr = MarshalLocalState(vms)
+		if marshalErr != nil {
+			return
+		}
+		kvData, marshalErr = marshalInstanceState(vms)
 	})
-	if writeErr != nil {
-		slog.Error("JetStream write failed", "error", writeErr)
-		return fmt.Errorf("failed to write state to JetStream: %w", writeErr)
+	if marshalErr != nil {
+		return fmt.Errorf("marshal state: %w", marshalErr)
 	}
+
+	path := d.localStatePath()
+	if err := WriteLocalStateBytes(path, localData); err != nil {
+		slog.Error("Local state write failed", "path", path, "error", err)
+		return fmt.Errorf("write local state: %w", err)
+	}
+	d.stateRevision.Add(1)
+
+	if d.jsManager != nil {
+		d.jsManager.WriteStateBytesBestEffort(d.node, kvData, kvSyncTimeout)
+	}
+
 	return nil
 }
 

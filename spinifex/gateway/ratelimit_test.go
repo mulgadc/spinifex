@@ -12,6 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckIP_AllowsUnknownIP(t *testing.T) {
@@ -332,8 +335,12 @@ func TestExtractClientIP(t *testing.T) {
 }
 
 // setupTestAppWithRateLimiter creates a test HTTP handler with SigV4 auth and
-// the given rate limiter attached.
-func setupTestAppWithRateLimiter(accessKey, secretKey string, rl *AuthRateLimiter) http.Handler {
+// the given rate limiter attached. A real NATS test connection is attached so
+// the SigV4 middleware's cluster-unavailable short-circuit (mulga-siv-23) does
+// not fire and mask rate-limit behaviour.
+func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *AuthRateLimiter) http.Handler {
+	t.Helper()
+
 	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, testMasterKey)
 	if err != nil {
 		panic("failed to encrypt test secret: " + err.Error())
@@ -351,11 +358,17 @@ func setupTestAppWithRateLimiter(accessKey, secretKey string, rl *AuthRateLimite
 		},
 	}
 
+	ns, _ := testutil.StartTestNATS(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
 		RateLimiter:    rl,
+		NATSConn:       nc,
 	}
 
 	r := chi.NewRouter()
@@ -371,7 +384,7 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 	rl := NewAuthRateLimiter()
 	defer rl.Stop()
 
-	handler := setupTestAppWithRateLimiter(testAccessKey, testSecretKey, rl)
+	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
 
 	// Send maxFailures requests with invalid signatures to trigger lockout.
 	for range maxFailures {
@@ -405,7 +418,7 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 	rl := NewAuthRateLimiter()
 	defer rl.Stop()
 
-	handler := setupTestAppWithRateLimiter(testAccessKey, testSecretKey, rl)
+	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
 
 	// Accumulate failures below threshold.
 	for range maxFailures - 1 {

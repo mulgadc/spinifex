@@ -2,7 +2,10 @@
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
 After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service
-Wants=spinifex-nats.service
+# No Wants=spinifex-nats.service: Wants= reactivates a stopped unit during
+# `systemctl restart spinifex-daemon`, which would mask the standalone-startup
+# path the Tier 1 DDIL Scenario B exercises. spinifex.target Wants= covers
+# cold boot.
 
 [Service]
 Type=simple

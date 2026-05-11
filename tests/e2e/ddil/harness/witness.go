@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,8 +122,8 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 // through every call site.
 type WitnessVM struct {
 	InstanceID      string
-	HostNode        Node // cluster node the VM's QEMU process lives on
-	SSHPort         int  // QEMU hostfwd port on HostNode mapped to guest :22
+	HostNode        Node   // cluster node the VM's QEMU process lives on
+	GuestIP         string // ENI-allocated private IP; SSH target reachable from HostNode
 	LaunchedAt      time.Time
 	BaselineCounter int
 
@@ -176,14 +175,19 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 			return nil, err
 		}
 
-		placed, port, err := w.findHost(ctx, id)
+		placed, err := w.findHost(ctx, id)
 		if err != nil {
 			_ = w.terminate(ctx, id)
 			return nil, err
 		}
 
 		if placed.Index == host.Index {
-			baseline, err := readCounterViaTunnel(ctx, w, placed, port)
+			guestIP, err := w.resolvePrivateIP(ctx, id)
+			if err != nil {
+				_ = w.terminate(ctx, id)
+				return nil, err
+			}
+			baseline, err := readCounterViaTunnel(ctx, w, placed, guestIP)
 			if err != nil {
 				// The counter service may not have started yet on a freshly
 				// booted guest; a zero baseline is the expected steady state
@@ -196,7 +200,7 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 			return &WitnessVM{
 				InstanceID:      id,
 				HostNode:        placed,
-				SSHPort:         port,
+				GuestIP:         guestIP,
 				LaunchedAt:      time.Now(),
 				BaselineCounter: baseline,
 				w:               w,
@@ -209,10 +213,10 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 	return nil, fmt.Errorf("ddil harness: LaunchWitnessVM: %w after %d attempts", lastErr, maxPlacementAttempts)
 }
 
-// ReadCounter SSHes into the guest via its host's QEMU hostfwd port and
-// returns the current /var/lib/counter value.
+// ReadCounter tunnels SSH through the host node to the guest's ENI-allocated
+// private IP and returns the current /var/lib/counter value.
 func (v *WitnessVM) ReadCounter(ctx context.Context) (int, error) {
-	return readCounterViaTunnel(ctx, v.w, v.HostNode, v.SSHPort)
+	return readCounterViaTunnel(ctx, v.w, v.HostNode, v.GuestIP)
 }
 
 // Terminate asks EC2 to shut the witness down. Scenarios call this from
@@ -336,13 +340,12 @@ func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Du
 	}
 }
 
-var hostfwdPortRE = regexp.MustCompile(`hostfwd=tcp:[^:]*:(\d+)-:22`)
-
 // findHost walks every cluster node looking for the QEMU process that owns
-// instanceID. Returns the hosting node and the SSH hostfwd port extracted
-// from its command line. Matches the shell helper pattern in
-// run-multinode-e2e.sh:163-180.
-func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, int, error) {
+// instanceID. The daemon embeds the instance ID in `-pidfile`, `-qmp`, and
+// `-name guest=` on the QEMU command line, so grepping for the ID identifies
+// exactly one process per cluster regardless of net mode (user-hostfwd vs
+// tap-mode bridge).
+func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, error) {
 	cmd := fmt.Sprintf("ps auxw | grep %s | grep qemu-system | grep -v grep", shellQuote(instanceID))
 	// Give the daemon a short window to actually spawn QEMU after the
 	// EC2 state flip to running, since /aws/ec2 reports "running" before
@@ -357,20 +360,48 @@ func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, int, e
 				// that as error; try the next node rather than bailing.
 				continue
 			}
-			m := hostfwdPortRE.FindStringSubmatch(string(out))
-			if len(m) == 2 {
-				port, err := strconv.Atoi(m[1])
-				if err == nil {
-					return n, port, nil
+			if strings.Contains(string(out), instanceID) {
+				return n, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return Node{}, fmt.Errorf("ddil harness: could not locate QEMU host for %s across %d nodes", instanceID, len(w.cluster.Nodes))
+		}
+		select {
+		case <-ctx.Done():
+			return Node{}, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// resolvePrivateIP queries the cluster's EC2 gateway for the instance's
+// ENI-allocated private IP. PrepareRunInstances always populates this field
+// when the launch path auto-creates an ENI (the only mode DDIL exercises);
+// an empty value here means the daemon launched without a VPC ENI and the
+// tunnel target is undefined.
+func (w *Witness) resolvePrivateIP(ctx context.Context, instanceID string) (string, error) {
+	deadline := time.Now().Add(30 * time.Second)
+	const interval = 1 * time.Second
+	for {
+		out, err := w.ec2.DescribeInstancesWithContext(ctx, &ec2.DescribeInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		})
+		if err == nil {
+			for _, r := range out.Reservations {
+				for _, inst := range r.Instances {
+					if ip := aws.StringValue(inst.PrivateIpAddress); ip != "" {
+						return ip, nil
+					}
 				}
 			}
 		}
 		if time.Now().After(deadline) {
-			return Node{}, 0, fmt.Errorf("ddil harness: could not locate QEMU host for %s across %d nodes", instanceID, len(w.cluster.Nodes))
+			return "", fmt.Errorf("ddil harness: instance %s has no PrivateIpAddress after %s", instanceID, 30*time.Second)
 		}
 		select {
 		case <-ctx.Done():
-			return Node{}, 0, ctx.Err()
+			return "", ctx.Err()
 		case <-time.After(interval):
 		}
 	}
@@ -387,21 +418,21 @@ func (w *Witness) terminate(ctx context.Context, id string) error {
 }
 
 // readCounterViaTunnel opens an SSH connection to host, tunnels a TCP
-// channel to 127.0.0.1:port (QEMU's guest hostfwd), runs a fresh SSH
+// channel to the guest's ENI-allocated private IP on :22, runs a fresh SSH
 // handshake over that channel using the guest credentials, and reads
 // /var/lib/counter.
 //
-// The hostfwd target is 127.0.0.1 because the daemon binds QEMU's user-mode
-// networking to loopback; the orchestrator cannot reach it directly without
-// the host SSH relay.
-func readCounterViaTunnel(ctx context.Context, w *Witness, host Node, port int) (int, error) {
+// The host node routes to the OVS bridge subnet where the tap NIC lives,
+// so the runner relays through host SSH rather than dialling guestIP
+// directly (the runner sits outside the cluster's bridge network).
+func readCounterViaTunnel(ctx context.Context, w *Witness, host Node, guestIP string) (int, error) {
 	hostClient, err := dialHost(ctx, host, w.cluster.SSHUser, w.hostSigner)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = hostClient.Close() }()
 
-	guestAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	guestAddr := net.JoinHostPort(guestIP, "22")
 	tunnel, err := hostClient.DialContext(ctx, "tcp", guestAddr)
 	if err != nil {
 		return 0, fmt.Errorf("ddil harness: tunnel %s → %s: %w", host.Name, guestAddr, err)

@@ -198,12 +198,16 @@ type Daemon struct {
 	// are fully initialized. The health endpoint reports "starting" until ready.
 	ready atomic.Bool
 
-	// mode is the daemon's connectivity state — "cluster" when NATS is
-	// reachable, "standalone" when disconnected. Read-only via Mode(); flipped
-	// from utils/nats.go disconnect/reconnect callbacks (see onNATSDisconnect /
-	// onNATSReconnect). Initialised "standalone" so callers reading before
-	// connectNATS() returns get a sensible answer.
-	mode atomic.Value
+	// natsConnected is true iff the daemon's NATS client TCP connection is
+	// live. Flipped by onNATSDisconnect / onNATSReconnect and by connectNATS
+	// success. False at construction (cluster bootstrap hasn't run yet).
+	natsConnected atomic.Bool
+	// peersReachable is true iff at least one peer daemon's /health responded
+	// in the most recent peer-health probe cycle. Managed by
+	// monitorPeerReachability. Single-node clusters keep this permanently
+	// true (no peers to lose); multi-node clusters start false and flip true
+	// after the first successful probe.
+	peersReachable atomic.Bool
 
 	// natsRetryCount counts disconnect→reconnect cycles since process start.
 	// Bumped from onNATSReconnect; surfaced via NATSRetryCount() for the
@@ -228,24 +232,29 @@ type Daemon struct {
 	mu sync.Mutex
 }
 
-// Daemon connectivity modes stored in Daemon.mode.
+// Daemon connectivity modes derived by Mode().
 const (
 	DaemonModeStandalone = "standalone"
 	DaemonModeCluster    = "cluster"
 )
 
-// Mode returns the daemon's current connectivity mode ("cluster" or
-// "standalone"). Safe to call from any goroutine.
+// Mode returns the daemon's current connectivity mode. "cluster" iff both the
+// local NATS link is up AND at least one peer responded to the most recent
+// /health probe. Any other combination (NATS down, peers unreachable, or
+// both) reports "standalone". Safe to call from any goroutine.
+//
+// The two-signal design covers the DDIL Tier 1 failure modes:
+//   - NATS-only outage (Scenario A): natsConnected=false ⇒ standalone.
+//   - Daemon restart with NATS down (Scenario B): natsConnected=false ⇒
+//     standalone until both NATS and peers return.
+//   - Clean partition with local NATS still up (Scenario C):
+//     peersReachable=false ⇒ standalone even though the client socket is
+//     healthy.
 func (d *Daemon) Mode() string {
-	v := d.mode.Load()
-	if v == nil {
-		return DaemonModeStandalone
+	if d.natsConnected.Load() && d.peersReachable.Load() {
+		return DaemonModeCluster
 	}
-	s, ok := v.(string)
-	if !ok {
-		return DaemonModeStandalone
-	}
-	return s
+	return DaemonModeStandalone
 }
 
 // NATSRetryCount returns the number of disconnect→reconnect cycles observed
@@ -305,19 +314,19 @@ func (d *Daemon) RecordKVSyncFailure(_ string, err error) {
 	}
 }
 
-// onNATSDisconnect runs when the NATS client loses its connection. Flips the
-// daemon to standalone mode so /local/status callers and scatter-gather
+// onNATSDisconnect runs when the NATS client loses its connection. Flips
+// natsConnected to false so Mode() reports standalone and scatter-gather
 // bailouts react immediately. Must not block — runs on a NATS client goroutine.
 func (d *Daemon) onNATSDisconnect(_ *nats.Conn, _ error) {
-	d.mode.Store(DaemonModeStandalone)
+	d.natsConnected.Store(false)
 }
 
-// onNATSReconnect runs when the NATS client reattaches to a server. Flips back
-// to cluster mode, bumps the retry counter, and pushes the full local instance
+// onNATSReconnect runs when the NATS client reattaches to a server. Marks
+// NATS connected, bumps the retry counter, and pushes the full local instance
 // state to KV so the cluster view re-converges. The KV push runs in a goroutine
 // to keep the NATS client callback non-blocking.
 func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
-	d.mode.Store(DaemonModeCluster)
+	d.natsConnected.Store(true)
 	d.natsRetryCount.Add(1)
 
 	if d.jsManager == nil {
@@ -605,7 +614,12 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		requireNATSTimeout: 30 * time.Second,
 		exitFunc:           os.Exit,
 	}
-	d.mode.Store(DaemonModeStandalone)
+	// Single-node clusters have no peers to lose — keep peersReachable
+	// permanently true so Mode() can flip to "cluster" the moment NATS comes
+	// up, without waiting for a probe cycle that will never find anyone.
+	if d.peerCount() == 0 {
+		d.peersReachable.Store(true)
+	}
 	return d, nil
 }
 
@@ -873,6 +887,12 @@ func (d *Daemon) startLocal() error {
 	if err := d.assertNoClusterServicesInitialised(); err != nil {
 		return fmt.Errorf("startLocal Tier 1 invariant violated: %w", err)
 	}
+
+	// Peer-health probe runs in startLocal because Mode() needs a partition
+	// signal even when NATS never connects (DDIL Scenario C). The probe is
+	// NATS-independent — it dials each peer's /health over the cluster
+	// network — so it does not violate the Tier 1 invariant asserted above.
+	d.shutdownWg.Go(d.monitorPeerReachability)
 
 	d.ready.Store(true)
 	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed", time.Since(d.startTime).Round(time.Second))
@@ -1243,7 +1263,7 @@ func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
 		return err
 	}
 	d.natsConn = nc
-	d.mode.Store(DaemonModeCluster)
+	d.natsConnected.Store(true)
 	return nil
 }
 

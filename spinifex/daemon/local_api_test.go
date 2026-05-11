@@ -29,7 +29,9 @@ func newLocalAPITestDaemon(t *testing.T) *Daemon {
 		vmMgr:  vm.NewManager(),
 		config: &config.Config{DataDir: t.TempDir()},
 	}
-	d.mode.Store(DaemonModeStandalone)
+	// Zero values give natsConnected=false and peersReachable=false ⇒
+	// Mode() reports standalone, which is what the /local/status tests
+	// below assert on by default.
 	return d
 }
 
@@ -116,7 +118,10 @@ func TestLocalAPI_Status_Standalone_NoNATS(t *testing.T) {
 
 func TestLocalAPI_Status_RetryCountAndRevisionPropagate(t *testing.T) {
 	d := newLocalAPITestDaemon(t)
-	d.mode.Store(DaemonModeCluster)
+	// Mode() is derived from natsConnected + peersReachable; flip both true
+	// to assert the cluster-mode propagation through /local/status.
+	d.natsConnected.Store(true)
+	d.peersReachable.Store(true)
 	d.natsRetryCount.Store(3)
 	require.NoError(t, d.WriteState())
 	require.NoError(t, d.WriteState())

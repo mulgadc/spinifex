@@ -101,35 +101,51 @@ func startTestNATSOnPortForTest(t *testing.T, port int) *server.Server {
 	return ns
 }
 
-// TestMode_NilStored_ReturnsStandalone — bare Daemon with no mode stored returns standalone.
-// Covers the d.mode.Load() == nil branch in Mode().
-func TestMode_NilStored_ReturnsStandalone(t *testing.T) {
+// TestMode_DefaultStandalone — both signals false ⇒ standalone (zero-value
+// guard for callers reading Mode() before any initialisation).
+func TestMode_DefaultStandalone(t *testing.T) {
 	d := &Daemon{}
 	assert.Equal(t, DaemonModeStandalone, d.Mode())
 }
 
-// TestMode_WrongTypeStored_ReturnsStandalone — non-string in atomic.Value falls
-// back to standalone instead of panicking. Covers the type-assertion !ok branch.
-func TestMode_WrongTypeStored_ReturnsStandalone(t *testing.T) {
+// TestMode_RequiresBothSignals — Mode() reports cluster only when both NATS
+// is connected and peers are reachable.
+func TestMode_RequiresBothSignals(t *testing.T) {
 	d := &Daemon{}
-	d.mode.Store(struct{ x string }{x: "not a string"})
-	assert.Equal(t, DaemonModeStandalone, d.Mode())
+
+	d.natsConnected.Store(true)
+	d.peersReachable.Store(false)
+	assert.Equal(t, DaemonModeStandalone, d.Mode(), "nats up, peers unreachable ⇒ standalone")
+
+	d.natsConnected.Store(false)
+	d.peersReachable.Store(true)
+	assert.Equal(t, DaemonModeStandalone, d.Mode(), "nats down, peers reachable ⇒ standalone")
+
+	d.natsConnected.Store(true)
+	d.peersReachable.Store(true)
+	assert.Equal(t, DaemonModeCluster, d.Mode(), "both up ⇒ cluster")
 }
 
 // TestOnNATSDisconnect_FlipsMode — direct unit test of the disconnect callback
 // without needing an actual NATS disconnect roundtrip.
 func TestOnNATSDisconnect_FlipsMode(t *testing.T) {
 	d := &Daemon{}
-	d.mode.Store(DaemonModeCluster)
+	d.natsConnected.Store(true)
+	d.peersReachable.Store(true)
+	require.Equal(t, DaemonModeCluster, d.Mode())
+
 	d.onNATSDisconnect(nil, nil)
+
 	assert.Equal(t, DaemonModeStandalone, d.Mode())
 }
 
 // TestOnNATSReconnect_NoJetStreamManager_DoesNotPanic — reconnect with
-// jsManager nil flips mode + bumps counter but skips the goroutine WriteState.
+// jsManager nil marks NATS connected + bumps counter but skips the
+// goroutine WriteState. peersReachable is forced true so the derived mode
+// flips back to cluster.
 func TestOnNATSReconnect_NoJetStreamManager_DoesNotPanic(t *testing.T) {
 	d := &Daemon{}
-	d.mode.Store(DaemonModeStandalone)
+	d.peersReachable.Store(true)
 
 	d.onNATSReconnect(nil)
 

@@ -199,110 +199,12 @@ func TestSecurity_UpdateSGAddRules(t *testing.T) {
 	assert.True(t, foundHTTPS, "should have HTTPS ACL")
 }
 
-// TestSecurity_CreateSG_CreatesAddressSet locks the Phase 5.1 invariant:
-// handleCreateSG must provision the SG's `<pg>_ip4` address set alongside
-// the port group, otherwise SG-to-SG ACL match expressions reference a
-// nonexistent set and OVN rejects them.
-func TestSecurity_CreateSG_CreatesAddressSet(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	require.NoError(t, err)
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	evt := SGEvent{GroupId: "sg-as001", VpcId: "vpc-as"}
-	data, _ := json.Marshal(evt)
-	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
-	require.NoError(t, err)
-	assertSuccess(t, resp, "create SG")
-
-	mock.mu.Lock()
-	as, exists := mock.addressSets["sg_as001_ip4"]
-	mock.mu.Unlock()
-	assert.True(t, exists, "address set sg_as001_ip4 should exist after create")
-	assert.NotNil(t, as)
-	assert.Empty(t, as.Addresses, "newly created address set must be empty")
-}
-
-// TestSecurity_DeleteSG_DeletesAddressSet locks the Phase 5.2 invariant.
-func TestSecurity_DeleteSG_DeletesAddressSet(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	require.NoError(t, err)
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	evt := SGEvent{GroupId: "sg-as002", VpcId: "vpc-as"}
-	data, _ := json.Marshal(evt)
-	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
-	require.NoError(t, err)
-	assertSuccess(t, resp, "create SG")
-
-	resp, err = nc.Request(TopicDeleteSG, data, 5_000_000_000)
-	require.NoError(t, err)
-	assertSuccess(t, resp, "delete SG")
-
-	mock.mu.Lock()
-	_, exists := mock.addressSets["sg_as002_ip4"]
-	mock.mu.Unlock()
-	assert.False(t, exists, "address set sg_as002_ip4 should be deleted")
-}
-
-// handleDeleteSG must fail-fast on DeleteAddressSet errors. Once the port
-// group is gone, the orphan-PG reconciler can no longer anchor cleanup of the
-// matching address set — silently logging the AS error would leak it forever.
-func TestSecurity_DeleteSG_FailsFastOnAddressSetError(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	require.NoError(t, err)
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	evt := SGEvent{GroupId: "sg-asfail", VpcId: "vpc-asfail"}
-	data, _ := json.Marshal(evt)
-	resp, err := nc.Request(TopicCreateSG, data, 5_000_000_000)
-	require.NoError(t, err)
-	assertSuccess(t, resp, "create SG")
-
-	// Delete the address set out-of-band so handleDeleteSG's
-	// DeleteAddressSet step errors. The handler must surface the error
-	// rather than logging-and-continuing.
-	mock.mu.Lock()
-	delete(mock.addressSets, "sg_asfail_ip4")
-	mock.mu.Unlock()
-
-	resp, err = nc.Request(TopicDeleteSG, data, 5_000_000_000)
-	require.NoError(t, err)
-	assertFailure(t, resp, "delete SG with missing address set must fail")
-}
-
 // TestSecurity_CreateSG_FailsFastOnAddACLError locks the Phase 1.1 invariant
 // that handleCreateSG returns an AddACLs error to the caller and tears down
 // the half-built SG. The mock fails the batched AddACLs call, and the test
-// asserts the handler responds with failure AND that the port group +
-// address set are gone — so the next reconciler scan recreates from scratch
-// instead of observing a half-built PG with no ACLs.
+// asserts the handler responds with failure AND that the port group is
+// gone — so the next reconciler scan recreates from scratch instead of
+// observing a half-built PG with no ACLs.
 func TestSecurity_CreateSG_FailsFastOnAddACLError(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()
@@ -326,10 +228,8 @@ func TestSecurity_CreateSG_FailsFastOnAddACLError(t *testing.T) {
 
 	mock.mu.Lock()
 	_, pgExists := mock.portGroups["sg_failacl"]
-	_, asExists := mock.addressSets["sg_failacl_ip4"]
 	mock.mu.Unlock()
 	assert.False(t, pgExists, "port group must be torn down on failed provisionSG")
-	assert.False(t, asExists, "address set must be torn down on failed provisionSG")
 }
 
 // TestSecurity_UpdateSG_FailsFastOnAddACLError locks the same fail-fast policy
@@ -408,10 +308,8 @@ func TestSecurity_CreateSG_WithRules_FailsFastOnAddACLError(t *testing.T) {
 
 	mock.mu.Lock()
 	_, pgExists := mock.portGroups["sg_rulefail"]
-	_, asExists := mock.addressSets["sg_rulefail_ip4"]
 	mock.mu.Unlock()
 	assert.False(t, pgExists, "port group must be torn down when AddACLs fails")
-	assert.False(t, asExists, "address set must be torn down when AddACLs fails")
 }
 
 // TestSecurity_HandleCreateSG_OVNNotConnected, ...HandleDeleteSG_..., and
@@ -609,7 +507,6 @@ func TestSecurity_HandleDeleteSG_LeavesNoResidualState(t *testing.T) {
 
 	mock.mu.Lock()
 	_, pgExists := mock.portGroups["sg_residual"]
-	_, asExists := mock.addressSets["sg_residual_ip4"]
 	leftoverACLs := 0
 	for _, a := range mock.acls {
 		if a != nil && (a.Match == "outport == @sg_residual && ip4" || a.Match == "inport == @sg_residual && ip4") {
@@ -618,7 +515,6 @@ func TestSecurity_HandleDeleteSG_LeavesNoResidualState(t *testing.T) {
 	}
 	mock.mu.Unlock()
 	assert.False(t, pgExists, "port group must be gone")
-	assert.False(t, asExists, "address set must be gone")
 	assert.Zero(t, leftoverACLs, "no ACL rows must reference the deleted PG")
 }
 

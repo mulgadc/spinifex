@@ -64,15 +64,14 @@ type OVNClient interface {
 	// Logical Switch Port (VM/ENI)
 	CreateLogicalSwitchPort(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort) error
 	// CreateLogicalSwitchPortInGroups creates an LSP, adds it to its switch,
-	// joins it to the named port groups, and inserts privateIP into each
-	// port group's address set — all in a single OVSDB transaction. Required
-	// for SG enforcement: a non-atomic create-then-join leaves a window where
-	// the LSP exists outside any port group (OVN default = unrestricted) or
-	// where ports are members but their IPs aren't in the SG-to-SG address
-	// set (peer SGs treat the port as nonexistent and reject its traffic).
-	// privateIP may be "" and portGroupNames may be empty (e.g. router/
-	// localnet ports), in which case the address-set inserts are skipped.
-	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error
+	// and joins it to the named port groups — all in a single OVSDB
+	// transaction. Required for SG enforcement: a non-atomic create-then-join
+	// leaves a window where the LSP exists outside any port group (OVN
+	// default = unrestricted). portGroupNames may be empty (e.g. router/
+	// localnet ports). The per-port-group `_ip4`/`_ip6` Address_Set rows in
+	// SB are auto-derived by ovn-northd from each port group's port
+	// addresses; SG-to-SG match expressions resolve against those.
+	CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error
 	DeleteLogicalSwitchPort(ctx context.Context, switchName string, portName string) error
 	GetLogicalSwitchPort(ctx context.Context, name string) (*nbdb.LogicalSwitchPort, error)
 	UpdateLogicalSwitchPort(ctx context.Context, lsp *nbdb.LogicalSwitchPort) error
@@ -112,13 +111,14 @@ type OVNClient interface {
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	DeletePortGroup(ctx context.Context, name string) error
-	// UpdatePortGroupMemberships applies all port-group joins, port-group
-	// leaves, and the matching address-set entry inserts/removes for a single
-	// LSP in one atomic OVSDB transaction. Required by reconcilePortSGs so a
-	// 5-SG → different-5-SG modify never exposes an intermediate state with
-	// fewer port groups (which would let the OVN default = unrestricted apply
-	// for the gap). privateIP may be "" to skip address-set updates.
-	UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error
+	// UpdatePortGroupMemberships applies all port-group joins and leaves for a
+	// single LSP in one atomic OVSDB transaction. Required by reconcilePortSGs
+	// so a 5-SG → different-5-SG modify never exposes an intermediate state
+	// with fewer port groups (which would let the OVN default = unrestricted
+	// apply for the gap). The per-port-group `_ip4`/`_ip6` Address_Set rows
+	// in SB are auto-derived by ovn-northd from each port group's port
+	// addresses; no explicit address-set update is required here.
+	UpdatePortGroupMemberships(ctx context.Context, lspName string, addPGs, removePGs []string) error
 	// ListPortGroupsForPort returns the names of every port group whose Ports
 	// set contains the given LSP. Used by reconcilePortSGs to discover current
 	// membership before computing the add/remove diff against desired.
@@ -137,12 +137,6 @@ type OVNClient interface {
 	// single SG can carry up to 60 ingress + 60 egress rules.
 	AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
-
-	// Address Sets (referenced by ACL match expressions for SG-to-SG rules)
-	CreateAddressSet(ctx context.Context, name string, addresses []string) error
-	DeleteAddressSet(ctx context.Context, name string) error
-	AddAddressSetEntry(ctx context.Context, name string, address string) error
-	RemoveAddressSetEntry(ctx context.Context, name string, address string) error
 
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error
@@ -318,13 +312,13 @@ func (c *LiveOVNClient) CreateLogicalSwitchPort(ctx context.Context, switchName 
 }
 
 // CreateLogicalSwitchPortInGroups bundles LSP create + switch ports mutate +
-// per-port-group ports mutates + per-address-set entry mutates into one
-// transaction. Within the transaction the LSP's named UUID resolves
-// consistently across all ops, so the port group mutates can reference the
-// not-yet-committed LSP without a cache lookup. privateIP is added to each
-// port group's address set so SG-to-SG match expressions resolve from the
-// moment the LSP becomes live.
-func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error {
+// per-port-group ports mutates into one transaction. Within the transaction
+// the LSP's named UUID resolves consistently across all ops, so the port
+// group mutates can reference the not-yet-committed LSP without a cache
+// lookup. The per-port-group `_ip4`/`_ip6` Address_Set rows in SB are
+// auto-derived by ovn-northd from each port group's port addresses, so vpcd
+// must not write them explicitly — see provisionSG for details.
+func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
 	if lsp.UUID == "" {
 		lsp.UUID = namedUUID("lsp_", lsp.Name)
 	}
@@ -364,24 +358,6 @@ func (c *LiveOVNClient) CreateLogicalSwitchPortInGroups(ctx context.Context, swi
 			return fmt.Errorf("mutate port group %s ops: %w", pgName, err)
 		}
 		ops = append(ops, pgMutateOps...)
-
-		if privateIP == "" {
-			continue
-		}
-		asName := addressSetName(pgName)
-		as, err := c.getAddressSet(ctx, asName)
-		if err != nil {
-			return fmt.Errorf("get address set %s for port add: %w", asName, err)
-		}
-		asMutateOps, err := c.client.Where(as).Mutate(as, model.Mutation{
-			Field:   &as.Addresses,
-			Mutator: ovsdb.MutateOperationInsert,
-			Value:   []string{privateIP},
-		})
-		if err != nil {
-			return fmt.Errorf("mutate address set %s ops: %w", asName, err)
-		}
-		ops = append(ops, asMutateOps...)
 	}
 
 	if err := c.transactOps(ctx, ops); err != nil {
@@ -1149,7 +1125,7 @@ func (c *LiveOVNClient) DeletePortGroup(ctx context.Context, name string) error 
 	return nil
 }
 
-func (c *LiveOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
+func (c *LiveOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName string, addPGs, removePGs []string) error {
 	if len(addPGs) == 0 && len(removePGs) == 0 {
 		return nil
 	}
@@ -1173,24 +1149,6 @@ func (c *LiveOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName,
 			return fmt.Errorf("mutate port group %s ops: %w", pgName, err)
 		}
 		ops = append(ops, pgOps...)
-
-		if privateIP == "" {
-			return nil
-		}
-		asName := addressSetName(pgName)
-		as, err := c.getAddressSet(ctx, asName)
-		if err != nil {
-			return fmt.Errorf("address set %s lookup: %w", asName, err)
-		}
-		asOps, err := c.client.Where(as).Mutate(as, model.Mutation{
-			Field:   &as.Addresses,
-			Mutator: ovsdb.Mutator(mutator),
-			Value:   []string{privateIP},
-		})
-		if err != nil {
-			return fmt.Errorf("mutate address set %s ops: %w", asName, err)
-		}
-		ops = append(ops, asOps...)
 		return nil
 	}
 
@@ -1354,81 +1312,4 @@ func (c *LiveOVNClient) ClearACLs(ctx context.Context, portGroupName string) err
 		return fmt.Errorf("clear ACLs transact: %w", err)
 	}
 	return nil
-}
-
-// Address Sets
-
-func (c *LiveOVNClient) CreateAddressSet(ctx context.Context, name string, addresses []string) error {
-	as := &nbdb.AddressSet{
-		UUID:        namedUUID("as_", name),
-		Name:        name,
-		Addresses:   addresses,
-		ExternalIDs: map[string]string{},
-	}
-	ops, err := c.client.Create(as)
-	if err != nil {
-		return fmt.Errorf("create address set ops: %w", err)
-	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("create address set transact: %w", err)
-	}
-	return nil
-}
-
-func (c *LiveOVNClient) DeleteAddressSet(ctx context.Context, name string) error {
-	as, err := c.getAddressSet(ctx, name)
-	if err != nil {
-		return fmt.Errorf("delete address set lookup: %w", err)
-	}
-	ops, err := c.client.Where(as).Delete()
-	if err != nil {
-		return fmt.Errorf("delete address set ops: %w", err)
-	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("delete address set transact: %w", err)
-	}
-	return nil
-}
-
-// AddAddressSetEntry is idempotent: re-inserting an existing address is a
-// no-op in OVSDB.
-func (c *LiveOVNClient) AddAddressSetEntry(ctx context.Context, name string, address string) error {
-	return c.mutateAddressSetEntries(ctx, name, address, "insert")
-}
-
-func (c *LiveOVNClient) RemoveAddressSetEntry(ctx context.Context, name string, address string) error {
-	return c.mutateAddressSetEntries(ctx, name, address, "delete")
-}
-
-func (c *LiveOVNClient) mutateAddressSetEntries(ctx context.Context, name, address, mutator string) error {
-	as, err := c.getAddressSet(ctx, name)
-	if err != nil {
-		return fmt.Errorf("address set %s lookup: %w", mutator, err)
-	}
-	ops, err := c.client.Where(as).Mutate(as, model.Mutation{
-		Field:   &as.Addresses,
-		Mutator: ovsdb.Mutator(mutator),
-		Value:   []string{address},
-	})
-	if err != nil {
-		return fmt.Errorf("mutate address set entries ops: %w", err)
-	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		return fmt.Errorf("mutate address set entries transact: %w", err)
-	}
-	return nil
-}
-
-func (c *LiveOVNClient) getAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
-	var sets []nbdb.AddressSet
-	err := c.client.WhereCache(func(as *nbdb.AddressSet) bool {
-		return as.Name == name
-	}).List(ctx, &sets)
-	if err != nil {
-		return nil, fmt.Errorf("get address set: %w", err)
-	}
-	if len(sets) == 0 {
-		return nil, fmt.Errorf("address set %q not found", name)
-	}
-	return &sets[0], nil
 }

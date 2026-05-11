@@ -178,7 +178,7 @@ func scanENIPortMembership(ctx context.Context, topo *TopologyHandler, eniKV nat
 			continue
 		}
 		portName := "port-" + rec.NetworkInterfaceId
-		changed, err := topo.reconcilePortSGs(ctx, portName, rec.PrivateIpAddress, rec.SecurityGroupIds)
+		changed, err := topo.reconcilePortSGs(ctx, portName, rec.SecurityGroupIds)
 		if err != nil {
 			// Most often: the LSP itself doesn't exist yet. Warn-and-continue.
 			slog.Warn("vpcd reconcile-sgs: port SG reconcile failed", "eni", rec.NetworkInterfaceId, "err", err)
@@ -193,9 +193,11 @@ func scanENIPortMembership(ctx context.Context, topo *TopologyHandler, eniKV nat
 
 // scanOrphanPortGroups removes any spinifex-managed port group (`sg_*`) in OVN
 // that has no matching SG record in KV. Mirrors handleDeleteSG's teardown
-// (ClearACLs → DeletePortGroup → DeleteAddressSet) so the matching `<pg>_ip4`
-// address set never leaks. Non-`sg_*` port groups (e.g. third-party usage) are
-// left alone. Returns the count removed.
+// (ClearACLs → DeletePortGroup). The matching `<pg>_ip4` / `<pg>_ip6`
+// Address_Set rows in SB are auto-derived from port group membership by
+// ovn-northd, so removing the port group also removes its address sets.
+// Non-`sg_*` port groups (e.g. third-party usage) are left alone. Returns
+// the count removed.
 func scanOrphanPortGroups(ctx context.Context, topo *TopologyHandler, sgs []handlers_ec2_vpc.SecurityGroupRecord) int {
 	pgs, err := topo.ovn.ListPortGroups(ctx)
 	if err != nil {
@@ -223,11 +225,6 @@ func scanOrphanPortGroups(ctx context.Context, topo *TopologyHandler, sgs []hand
 		if err := topo.ovn.DeletePortGroup(ctx, pg.Name); err != nil {
 			slog.Warn("vpcd reconcile-sgs: orphan DeletePortGroup failed", "pg", pg.Name, "err", err)
 			continue
-		}
-		asName := addressSetName(pg.Name)
-		if err := topo.ovn.DeleteAddressSet(ctx, asName); err != nil {
-			// AS may already be gone — log and keep going; do not roll back the PG delete.
-			slog.Warn("vpcd reconcile-sgs: orphan DeleteAddressSet failed", "as", asName, "err", err)
 		}
 		slog.Info("vpcd reconcile-sgs: removed orphan port group", "pg", pg.Name)
 		removed++

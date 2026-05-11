@@ -120,7 +120,7 @@ func TestReconcileSGsOnce_SyncsENIMembership(t *testing.T) {
 	// Create the LSP without joining any port group — that's the drift.
 	require.NoError(t, ovn.CreateLogicalSwitchPortInGroups(ctx, "subnet-x",
 		&nbdb.LogicalSwitchPort{Name: "port-eni-sync1", Addresses: []string{"02:00:00:aa:bb:01 10.0.0.5"}},
-		nil, ""))
+		nil))
 
 	seedSGBucket(t, nc, []handlers_ec2_vpc.SecurityGroupRecord{{
 		GroupId: "sg-eni0000000000000", VpcId: "vpc-x", CreatedAt: time.Now(),
@@ -196,13 +196,13 @@ func TestReconcileSGsOnce_NoDriftZeroSync(t *testing.T) {
 	require.NoError(t, err)
 	assertSuccess(t, resp, "create SG")
 
-	// LSP already joined the port group with its IP in the address set —
-	// matches what handleCreateLSP / handleUpdatePortSGs leave behind on the
-	// happy path.
+	// LSP already joined the port group — matches what handleCreateLSP /
+	// handleUpdatePortSGs leave behind on the happy path. The per-port-group
+	// `_ip4` Address_Set is auto-derived by ovn-northd in production.
 	pgName := portGroupName("sg-converged000000")
 	require.NoError(t, ovn.CreateLogicalSwitchPortInGroups(ctx, "subnet-c",
 		&nbdb.LogicalSwitchPort{Name: "port-eni-converged", Addresses: []string{"02:00:00:aa:bb:02 10.0.0.6"}},
-		[]string{pgName}, "10.0.0.6"))
+		[]string{pgName}))
 
 	seedSGBucket(t, nc, []handlers_ec2_vpc.SecurityGroupRecord{{
 		GroupId: "sg-converged000000", VpcId: "vpc-x", CreatedAt: time.Now(),
@@ -223,8 +223,9 @@ func TestReconcileSGsOnce_NoDriftZeroSync(t *testing.T) {
 }
 
 // TestReconcileSGsOnce_DeletesOrphanPortGroup: an `sg_*` port group with no
-// matching SG record must be torn down (PG, ACLs, address set) within one
-// pass. Section G2 of the manual test plan.
+// matching SG record must be torn down (PG + ACLs) within one pass. Section
+// G2 of the manual test plan. The matching `<pg>_ip4` Address_Set is
+// auto-derived in SB by ovn-northd and goes away with the port group.
 func TestReconcileSGsOnce_DeletesOrphanPortGroup(t *testing.T) {
 	_, nc := startTestJetStreamNATS(t)
 	ovn := NewMockOVNClient()
@@ -233,9 +234,7 @@ func TestReconcileSGsOnce_DeletesOrphanPortGroup(t *testing.T) {
 	ctx := context.Background()
 
 	const orphanPG = "sg_orphan0000000000"
-	const orphanAS = "sg_orphan0000000000_ip4"
 	require.NoError(t, ovn.CreatePortGroup(ctx, orphanPG, nil))
-	require.NoError(t, ovn.CreateAddressSet(ctx, orphanAS, nil))
 
 	// Pre-existing ACL on the orphan PG to confirm the scan clears it before
 	// deleting (matches handleDeleteSG's order).

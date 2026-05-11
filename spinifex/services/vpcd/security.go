@@ -61,20 +61,27 @@ func (h *TopologyHandler) handleCreateSG(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// provisionSG creates the OVN port group, address set, default-deny ACLs, and
-// allow ACLs for the given SG. Used by handleCreateSG (CreateSecurityGroup
-// path) and the reconciler's scan-2 (SG record without OVN port group).
+// provisionSG creates the OVN port group, default-deny ACLs, and allow ACLs
+// for the given SG. Used by handleCreateSG (CreateSecurityGroup path) and the
+// reconciler's scan-2 (SG record without OVN port group).
 //
-// All-or-nothing: on any failure after the port group exists, the port group,
-// address set, and any partial ACLs are torn down so the reconciler's scan-2
-// can recreate the SG from scratch on its next pass. A partial state would
-// otherwise look healthy to scanMissingPortGroups (port group exists) while
-// silently dropping legitimate traffic via the default-deny ACL.
+// SG-to-SG match expressions reference `$<pg>_ip4` / `$<pg>_ip6` — these
+// resolve against the SB Address_Set rows that ovn-northd auto-derives from
+// each port group's port addresses (ovn-nb(5): "For each port group, there
+// are two address sets generated to the Address_Set table of the
+// OVN_Southbound database, ... with name being the name of the Port_Group
+// followed by a suffix _ip4 / _ip6"). vpcd must NOT create explicit NB
+// Address_Set rows with those names; that produces a duplicate sync to SB
+// and wedges northd in an `OVNSB commit failed` retry loop.
+//
+// All-or-nothing: on any failure after the port group exists, the port group
+// and any partial ACLs are torn down so the reconciler's scan-2 can recreate
+// the SG from scratch on its next pass. A partial state would otherwise look
+// healthy to scanMissingPortGroups (port group exists) while silently
+// dropping legitimate traffic via the default-deny ACL.
 func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingress, egress []SGRuleForACL) error {
 	pgName := portGroupName(groupId)
-	asName := addressSetName(pgName)
 
-	// Create port group (initially empty — ports are added when ENIs are assigned to the SG)
 	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
 		return fmt.Errorf("create port group %s: %w", pgName, err)
 	}
@@ -84,27 +91,13 @@ func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingre
 		if done {
 			return
 		}
-		// Best-effort rollback of the half-built SG. Each step logs but does
-		// not propagate — we already have the original error to return, and
-		// the reconciler's orphan-PG scan is the safety net for any leftover.
 		if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
 			slog.Warn("vpcd: provisionSG cleanup ClearACLs failed", "pg", pgName, "err", err)
 		}
 		if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
 			slog.Warn("vpcd: provisionSG cleanup DeletePortGroup failed", "pg", pgName, "err", err)
 		}
-		if err := h.ovn.DeleteAddressSet(ctx, asName); err != nil {
-			slog.Warn("vpcd: provisionSG cleanup DeleteAddressSet failed", "as", asName, "err", err)
-		}
 	}()
-
-	// Create the per-SG address set. ACLs whose match expression references
-	// this SG as a SourceSG (e.g. "ip4.src == $<asName>") need the set to
-	// resolve, otherwise libovsdb errors at ACL evaluation time. Empty until
-	// ports join via reconcilePortSGs.
-	if err := h.ovn.CreateAddressSet(ctx, asName, nil); err != nil {
-		return fmt.Errorf("create address set %s: %w", asName, err)
-	}
 
 	// Default deny ACLs (priority 900, logged for CMMC SC.L1-3.13.1) and
 	// allow rules (priority 1000) go in one OVSDB transaction so a 60-rule
@@ -133,7 +126,6 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 
 	ctx := context.Background()
 	pgName := portGroupName(evt.GroupId)
-	asName := addressSetName(pgName)
 
 	// Clear all ACLs before deleting the port group. Fail-fast — leaving stale
 	// ACLs causes DeletePortGroup to be rejected by libovsdb (dangling ref).
@@ -145,15 +137,6 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 
 	if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
 		slog.Error("vpcd: failed to delete port group", "pg", pgName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	// Once the port group is gone the orphan-PG reconciler scan can no longer
-	// anchor cleanup of the matching address set, so a swallowed error here
-	// would leak the AS forever. Fail-fast and let the caller retry.
-	if err := h.ovn.DeleteAddressSet(ctx, asName); err != nil {
-		slog.Error("vpcd: failed to delete address set", "as", asName, "err", err)
 		respond(msg, err)
 		return
 	}

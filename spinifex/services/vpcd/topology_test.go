@@ -3511,9 +3511,6 @@ func setupPortSGFixture(t *testing.T, mock *MockOVNClient, ctx context.Context, 
 		if err := mock.CreatePortGroup(ctx, pg, nil); err != nil {
 			t.Fatalf("CreatePortGroup %s: %v", sgId, err)
 		}
-		if err := mock.CreateAddressSet(ctx, addressSetName(pg), nil); err != nil {
-			t.Fatalf("CreateAddressSet %s: %v", addressSetName(pg), err)
-		}
 	}
 }
 
@@ -3743,69 +3740,8 @@ func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
 				if !inGroup && want {
 					t.Errorf("port missing from expected %s", name)
 				}
-				as := mock.addressSets[addressSetName(name)]
-				if as == nil {
-					t.Errorf("address set %s missing", addressSetName(name))
-					continue
-				}
-				inAS := slices.Contains(as.Addresses, "10.0.4.10")
-				if inGroup && !inAS {
-					t.Errorf("private IP missing from address set for %s after join", name)
-				}
-				if !inGroup && inAS {
-					t.Errorf("private IP unexpectedly in address set for %s after leave", name)
-				}
 			}
 		})
-	}
-}
-
-// TestTopologyHandler_CreatePort_PopulatesAddressSet locks the Phase 5
-// guarantee that handleCreatePort's atomic transaction also inserts the
-// ENI's primary IP into each SG's `<pg>_ip4` address set, so SG-to-SG rules
-// referencing this SG match traffic from this port immediately.
-func TestTopologyHandler_CreatePort_PopulatesAddressSet(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-	ctx := context.Background()
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	setupPortSGFixture(t, mock, ctx, "vpc-as", "subnet-as", "10.0.5.0/24", []string{"sg-as1", "sg-as2"})
-
-	evt := PortEvent{
-		NetworkInterfaceId: "eni-as1",
-		SubnetId:           "subnet-as",
-		VpcId:              "vpc-as",
-		PrivateIpAddress:   "10.0.5.42",
-		MacAddress:         "02:00:00:00:00:42",
-		SecurityGroupIds:   []string{"sg-as1", "sg-as2"},
-	}
-	data, _ := json.Marshal(evt)
-	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	assertSuccess(t, resp, "create port with SGs")
-
-	for _, sgId := range []string{"sg-as1", "sg-as2"} {
-		as := mock.addressSets[addressSetName(portGroupName(sgId))]
-		if as == nil {
-			t.Fatalf("address set for %s missing", sgId)
-		}
-		if !slices.Contains(as.Addresses, "10.0.5.42") {
-			t.Errorf("expected 10.0.5.42 in address set for %s, got %v", sgId, as.Addresses)
-		}
 	}
 }
 
@@ -3853,12 +3789,12 @@ func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testi
 	require.NoError(t, err)
 	assertSuccess(t, resp, "create port with pre-existing LSP")
 
-	// The port is now in the SG port group and the IP is in the address set.
+	// The port is now in the SG port group. The matching `<pg>_ip4`
+	// Address_Set is auto-derived by ovn-northd in production from port
+	// group port addresses and intentionally not modelled in the mock.
 	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-recover")
 	require.NoError(t, err)
 	assert.Contains(t, mock.portGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
-	asName := addressSetName(pgName)
-	assert.Contains(t, mock.addressSets[asName].Addresses, "10.0.6.50", "existing-LSP path must reconcile address-set entries")
 }
 
 // --- handleAddNATGateway / handleDeleteNATGateway ---

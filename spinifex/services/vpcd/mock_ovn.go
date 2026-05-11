@@ -24,7 +24,6 @@ type MockOVNClient struct {
 	staticRoutes   map[string]*nbdb.LogicalRouterStaticRoute // keyed by UUID
 	portGroups     map[string]*nbdb.PortGroup                // keyed by name
 	acls           map[string]*nbdb.ACL                      // keyed by UUID
-	addressSets    map[string]*nbdb.AddressSet               // keyed by name
 	gatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
 
 	// UpdateLogicalSwitchPortCalls counts UpdateLogicalSwitchPort invocations
@@ -68,7 +67,6 @@ func NewMockOVNClient() *MockOVNClient {
 		staticRoutes:   make(map[string]*nbdb.LogicalRouterStaticRoute),
 		portGroups:     make(map[string]*nbdb.PortGroup),
 		acls:           make(map[string]*nbdb.ACL),
-		addressSets:    make(map[string]*nbdb.AddressSet),
 		gatewayChassis: make(map[string]*nbdb.GatewayChassis),
 	}
 }
@@ -161,11 +159,12 @@ func (m *MockOVNClient) CreateLogicalSwitchPort(_ context.Context, switchName st
 }
 
 // CreateLogicalSwitchPortInGroups mirrors the live client's atomic create +
-// port-group join + address-set insert path. The mock is not transactional,
-// but every step still has to succeed up front; on a port-group or address-set
-// lookup failure we leave no LSP behind so tests observe the same
-// all-or-nothing semantics as production.
-func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string, privateIP string) error {
+// port-group join path. The mock is not transactional, but every step still
+// has to succeed up front; on a port-group lookup failure we leave no LSP
+// behind so tests observe the same all-or-nothing semantics as production.
+// SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
+// ovn-northd in production and intentionally not modelled in the mock.
+func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ls, exists := m.switches[switchName]
@@ -179,12 +178,6 @@ func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switc
 		if _, ok := m.portGroups[pgName]; !ok {
 			return fmt.Errorf("port group %q not found", pgName)
 		}
-		if privateIP == "" {
-			continue
-		}
-		if _, ok := m.addressSets[addressSetName(pgName)]; !ok {
-			return fmt.Errorf("address set %q not found", addressSetName(pgName))
-		}
 	}
 	if lsp.UUID == "" {
 		lsp.UUID = utils.GenerateResourceID("ovn")
@@ -196,13 +189,6 @@ func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switc
 		pg := m.portGroups[pgName]
 		if !slices.Contains(pg.Ports, lsp.UUID) {
 			pg.Ports = append(pg.Ports, lsp.UUID)
-		}
-		if privateIP == "" {
-			continue
-		}
-		as := m.addressSets[addressSetName(pgName)]
-		if !slices.Contains(as.Addresses, privateIP) {
-			as.Addresses = append(as.Addresses, privateIP)
 		}
 	}
 	return nil
@@ -657,19 +643,19 @@ func (m *MockOVNClient) DeletePortGroup(_ context.Context, name string) error {
 	return nil
 }
 
-// UpdatePortGroupMemberships applies all add/remove port-group joins and
-// the matching address-set entry inserts/removes for one LSP.
-func (m *MockOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName, privateIP string, addPGs, removePGs []string) error {
+// UpdatePortGroupMemberships applies all add/remove port-group joins for one
+// LSP. SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
+// ovn-northd in production and intentionally not modelled in the mock.
+func (m *MockOVNClient) UpdatePortGroupMemberships(_ context.Context, lspName string, addPGs, removePGs []string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	lsp, exists := m.ports[lspName]
 	if !exists {
-		m.mu.Unlock()
 		return fmt.Errorf("logical switch port %q not found", lspName)
 	}
 	for _, pgName := range addPGs {
 		pg, exists := m.portGroups[pgName]
 		if !exists {
-			m.mu.Unlock()
 			return fmt.Errorf("port group %q not found", pgName)
 		}
 		if !slices.Contains(pg.Ports, lsp.UUID) {
@@ -679,7 +665,6 @@ func (m *MockOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName,
 	for _, pgName := range removePGs {
 		pg, exists := m.portGroups[pgName]
 		if !exists {
-			m.mu.Unlock()
 			return fmt.Errorf("port group %q not found", pgName)
 		}
 		for i, u := range pg.Ports {
@@ -687,21 +672,6 @@ func (m *MockOVNClient) UpdatePortGroupMemberships(ctx context.Context, lspName,
 				pg.Ports = append(pg.Ports[:i], pg.Ports[i+1:]...)
 				break
 			}
-		}
-	}
-	m.mu.Unlock()
-
-	if privateIP == "" {
-		return nil
-	}
-	for _, pgName := range addPGs {
-		if err := m.AddAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
-			return err
-		}
-	}
-	for _, pgName := range removePGs {
-		if err := m.RemoveAddressSetEntry(ctx, addressSetName(pgName), privateIP); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -798,65 +768,6 @@ func (m *MockOVNClient) ClearACLs(_ context.Context, portGroupName string) error
 		delete(m.acls, aclUUID)
 	}
 	pg.ACLs = nil
-	return nil
-}
-
-// Address Sets
-
-func (m *MockOVNClient) CreateAddressSet(_ context.Context, name string, addresses []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.addressSets[name]; exists {
-		return fmt.Errorf("address set %q already exists", name)
-	}
-	as := &nbdb.AddressSet{
-		UUID:        utils.GenerateResourceID("as"),
-		Name:        name,
-		Addresses:   addresses,
-		ExternalIDs: map[string]string{},
-	}
-	m.addressSets[name] = as
-	return nil
-}
-
-func (m *MockOVNClient) DeleteAddressSet(_ context.Context, name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.addressSets[name]; !exists {
-		return fmt.Errorf("address set %q not found", name)
-	}
-	delete(m.addressSets, name)
-	return nil
-}
-
-// AddAddressSetEntry is idempotent — re-adding an existing address is a no-op.
-func (m *MockOVNClient) AddAddressSetEntry(_ context.Context, name string, address string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	as, exists := m.addressSets[name]
-	if !exists {
-		return fmt.Errorf("address set %q not found", name)
-	}
-	if slices.Contains(as.Addresses, address) {
-		return nil
-	}
-	as.Addresses = append(as.Addresses, address)
-	return nil
-}
-
-func (m *MockOVNClient) RemoveAddressSetEntry(_ context.Context, name string, address string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	as, exists := m.addressSets[name]
-	if !exists {
-		return fmt.Errorf("address set %q not found", name)
-	}
-	for i, a := range as.Addresses {
-		if a == address {
-			as.Addresses = append(as.Addresses[:i], as.Addresses[i+1:]...)
-			return nil
-		}
-	}
 	return nil
 }
 

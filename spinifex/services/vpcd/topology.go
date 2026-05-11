@@ -765,7 +765,7 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 	// leave a port with zero ACLs (OVN default = unrestricted), defeating the
 	// atomic-create guarantee on the recovery path.
 	if _, err := h.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
-		if _, err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, evt.SecurityGroupIds); err != nil {
+		if _, err := h.reconcilePortSGs(ctx, portName, evt.SecurityGroupIds); err != nil {
 			slog.Error("vpcd: failed to reconcile SGs for existing port", "port", portName, "err", err)
 			respond(msg, err)
 			return
@@ -798,14 +798,15 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 
 	// LSP create + switch-port mutate + SG port-group joins + per-SG address-set
 	// inserts MUST be one OVSDB transaction. A two-step shape leaves a window
-	// where the port exists outside any port group (OVN default = unrestricted)
-	// or where peer SGs see the port as nonexistent because its IP isn't in the
-	// `<pg>_ip4` address set yet — both opposite of the enforcement guarantee.
+	// where the port exists outside any port group (OVN default =
+	// unrestricted) — opposite of the enforcement guarantee. The matching
+	// `<pg>_ip4` Address_Set in SB is auto-derived by ovn-northd from the
+	// port group's port addresses once the LSP joins.
 	pgNames := make([]string, 0, len(evt.SecurityGroupIds))
 	for _, sgId := range evt.SecurityGroupIds {
 		pgNames = append(pgNames, portGroupName(sgId))
 	}
-	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames, evt.PrivateIpAddress); err != nil {
+	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames); err != nil {
 		slog.Error("vpcd: failed to create logical switch port", "port", portName, "switch", switchName, "err", err)
 		respond(msg, err)
 		return
@@ -843,7 +844,7 @@ func (h *TopologyHandler) handleDeletePort(msg *nats.Msg) {
 	// group's ports set), so swallowing this error guarantees the next
 	// DeleteLogicalSwitchPort fails with a misleading reference-integrity
 	// error and hides the real first-step cause.
-	if _, err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, nil); err != nil {
+	if _, err := h.reconcilePortSGs(ctx, portName, nil); err != nil {
 		slog.Error("vpcd: failed to clear port group memberships before delete", "port", portName, "err", err)
 		respond(msg, err)
 		return
@@ -883,7 +884,7 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 	ctx := context.Background()
 	portName := "port-" + evt.NetworkInterfaceId
 
-	if _, err := h.reconcilePortSGs(ctx, portName, evt.PrivateIpAddress, evt.SecurityGroupIds); err != nil {
+	if _, err := h.reconcilePortSGs(ctx, portName, evt.SecurityGroupIds); err != nil {
 		slog.Error("vpcd: failed to reconcile port SGs",
 			"port", portName, "eni_id", evt.NetworkInterfaceId, "sgs", evt.SecurityGroupIds, "err", err)
 		respond(msg, err)
@@ -905,16 +906,14 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 // converges on the next call. desiredSGs may be nil (delete-port path) to
 // remove the port from every group.
 //
-// For each port-group join, the port's privateIP is also inserted into the
-// matching address set (<pg>_ip4) so SG-to-SG rule matches like
-// "ip4.src == $<pg>_ip4" resolve to this port. Removes mirror the inserts.
-// privateIP captures the ENI's primary IP today; the helper is phrased as
-// "all private IPs" so future secondary-IP support can extend without changing
-// the call shape.
+// SG-to-SG rule matches like "ip4.src == $<pg>_ip4" resolve against the SB
+// Address_Set rows that ovn-northd auto-derives from each port group's port
+// addresses, so port-group join/leave alone is enough — no explicit
+// address-set membership maintenance is required here.
 //
 // Returns changed=true iff at least one port-group join or leave was applied;
 // callers use this to distinguish actual drift from a no-op pass.
-func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, privateIP string, desiredSGs []string) (bool, error) {
+func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName string, desiredSGs []string) (bool, error) {
 	desired := make(map[string]struct{}, len(desiredSGs))
 	for _, sgId := range desiredSGs {
 		desired[portGroupName(sgId)] = struct{}{}
@@ -949,7 +948,7 @@ func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName, private
 	// Single OVSDB transaction so a 5-SG → different-5-SG modify never
 	// exposes an intermediate state with fewer port groups (which would
 	// let the OVN default = unrestricted apply for the gap).
-	if err := h.ovn.UpdatePortGroupMemberships(ctx, lspName, privateIP, addPGs, removePGs); err != nil {
+	if err := h.ovn.UpdatePortGroupMemberships(ctx, lspName, addPGs, removePGs); err != nil {
 		return false, err
 	}
 	return true, nil

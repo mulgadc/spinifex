@@ -158,10 +158,31 @@ func TestProbePeersOnce_FlipsOnHealthChange(t *testing.T) {
 // missing addressing rather than panicking or treating "" as reachable.
 func TestProbePeerHealth_RejectsBadAddr(t *testing.T) {
 	d, _ := daemonForPeerHealth(t, &config.ClusterConfig{})
+	d.config = &config.Config{}
 	client := &http.Client{Timeout: 100 * time.Millisecond}
 	assert.False(t, d.probePeerHealth(client, config.Config{}))
-	assert.False(t, d.probePeerHealth(client, config.Config{Host: "1.2.3.4"})) // no Daemon.Host
-	assert.False(t, d.probePeerHealth(client, config.Config{Host: "1.2.3.4", Daemon: config.DaemonConfig{Host: "not-a-host-port"}}))
+	assert.False(t, d.probePeerHealth(client, config.Config{Host: "1.2.3.4"}))                                                       // no port available anywhere
+	assert.False(t, d.probePeerHealth(client, config.Config{Host: "1.2.3.4", Daemon: config.DaemonConfig{Host: "not-a-host-port"}})) // unparseable + no self fallback
+}
+
+// TestPeerDaemonPort_FallbackToSelf — admin init renders [nodes.X.daemon]
+// only for the local node, so peer.Daemon.Host is usually empty. The peer
+// probe must reuse the local daemon's port (clusters are symmetric).
+func TestPeerDaemonPort_FallbackToSelf(t *testing.T) {
+	d := &Daemon{config: &config.Config{Daemon: config.DaemonConfig{Host: "0.0.0.0:4432"}}}
+
+	// Peer with no Daemon block — use local port.
+	assert.Equal(t, "4432", d.peerDaemonPort(config.Config{Host: "10.0.0.2"}))
+
+	// Peer with explicit Daemon.Host — prefer the explicit value.
+	assert.Equal(t, "8443", d.peerDaemonPort(config.Config{
+		Host:   "10.0.0.2",
+		Daemon: config.DaemonConfig{Host: "0.0.0.0:8443"},
+	}))
+
+	// Unparseable peer Daemon.Host + no self config — empty.
+	d2 := &Daemon{}
+	assert.Equal(t, "", d2.peerDaemonPort(config.Config{Daemon: config.DaemonConfig{Host: "garbage"}}))
 }
 
 // TestMonitorPeerReachability_EndToEnd runs the real goroutine against the

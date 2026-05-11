@@ -101,6 +101,28 @@ func (d *Daemon) probePeersOnce(client *http.Client, peers []config.Config) {
 	}
 }
 
+// peerDaemonPort returns the TCP port to dial on peer p. The toml template
+// only renders [nodes.<self>.daemon] for the local node — remote-node blocks
+// carry just `host = "<ip>"` — so a peer's own DaemonConfig is typically
+// empty. Clusters are symmetric, so this falls back to the local daemon's
+// bound port. Returns "" only when neither the peer nor self has a parseable
+// host:port.
+func (d *Daemon) peerDaemonPort(p config.Config) string {
+	if p.Daemon.Host != "" {
+		if _, port, err := net.SplitHostPort(p.Daemon.Host); err == nil && port != "" {
+			return port
+		}
+	}
+	if d.config == nil || d.config.Daemon.Host == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(d.config.Daemon.Host)
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
 // probePeerHealth issues a single short-timeout GET /health against peer p.
 // Returns true iff the peer responded with a 2xx status. Connection errors,
 // TLS failures, timeouts, and non-2xx responses all count as unreachable.
@@ -109,11 +131,11 @@ func (d *Daemon) probePeerHealth(client *http.Client, p config.Config) bool {
 	if addr == "" {
 		addr = p.Host
 	}
-	if addr == "" || p.Daemon.Host == "" {
+	if addr == "" {
 		return false
 	}
-	_, port, err := net.SplitHostPort(p.Daemon.Host)
-	if err != nil {
+	port := d.peerDaemonPort(p)
+	if port == "" {
 		return false
 	}
 	url := "https://" + net.JoinHostPort(addr, port) + "/health"

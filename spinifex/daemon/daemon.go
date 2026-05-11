@@ -1096,6 +1096,19 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
+	// Wire deps needed by InstanceService.TerminateStoppedInstance now that
+	// volumeService / vpcService / externalIPAM are constructed.
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
+
+	// Wire deps for InstanceService.PrepareRunInstances (AMI/key/VPC/IPAM).
+	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
+
+	// Wire GPU claimer for InstanceService.StartStoppedInstance — nil when no
+	// passthrough hardware is configured.
+	if d.gpuManager != nil {
+		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
+	}
+
 	d.accountService, err = initServiceWithRetry("account settings service", func() (*handlers_ec2_account.AccountSettingsServiceImpl, error) {
 		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.config, d.natsConn)
 	})
@@ -1842,6 +1855,21 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.mu.Unlock()
 
 	rm.updateInstanceSubscriptions()
+}
+
+// Allocate, Deallocate, CanAllocate, InstanceTypes are the exported facade
+// satisfying handlers_ec2_instance.InstanceTypeAllocator. The unexported
+// variants stay for internal daemon callers.
+func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
+func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
+func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {
+	return rm.canAllocate(it, count)
+}
+
+// InstanceTypes returns the shared instance-type map. Callers must not mutate
+// the returned map; reloadGPUTypes mutates it in place under rm.mu.
+func (rm *ResourceManager) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
+	return rm.instanceTypes
 }
 
 // initSubscriptions sets up dynamic per-instance-type NATS subscriptions.

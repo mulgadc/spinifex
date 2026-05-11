@@ -65,6 +65,11 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore)
 	initAccountServiceForTest(t, daemon)
 
+	// Wire RunInstances deps now that image/key services exist. vpcService and
+	// externalIPAM are nil in tests, so PrepareRunInstances will skip the
+	// subnet/ENI/public-IP code paths.
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
+
 	return daemon, memStore
 }
 
@@ -96,6 +101,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 		objectstore.NewMemoryObjectStore(),
 		daemon.vmMgr, daemon.resourceMgr, daemon.jsManager,
 	)
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, nil, nil)
 
 	return daemon
 }

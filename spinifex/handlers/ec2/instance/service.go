@@ -3,6 +3,7 @@ package handlers_ec2_instance
 import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 )
 
 // InstanceService defines the interface for EC2 instance operations business logic
@@ -92,4 +93,41 @@ type ENIDeleter interface {
 // Implemented by handlers/ec2/vpc.ExternalIPAM.
 type PublicIPReleaser interface {
 	ReleaseIP(pool, ip string) error
+}
+
+// AMIMetaLoader resolves an AMI ID to its metadata for ownership/validation
+// during RunInstances. Implemented by handlers/ec2/image.ImageServiceImpl.
+type AMIMetaLoader interface {
+	GetAMIConfig(imageID string) (viperblock.AMIMetadata, error)
+}
+
+// KeyPairValidator checks that a named key pair exists for an account during
+// RunInstances. Implemented by handlers/ec2/key.KeyServiceImpl.
+type KeyPairValidator interface {
+	ValidateKeyPairExists(accountID, keyName string) error
+}
+
+// SubnetInfo carries the subset of subnet metadata RunInstances needs to
+// resolve default subnets and decide whether to auto-assign a public IP.
+type SubnetInfo struct {
+	SubnetID            string
+	VpcID               string
+	MapPublicIpOnLaunch bool
+}
+
+// ENICreator covers the VPC/ENI operations RunInstances performs while
+// auto-attaching a primary interface. Implemented via an adapter over
+// handlers/ec2/vpc.VPCServiceImpl on the daemon.
+type ENICreator interface {
+	GetDefaultSubnet(accountID string) (*SubnetInfo, error)
+	GetSubnet(accountID, subnetID string) (*SubnetInfo, error)
+	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
+	AttachENI(accountID, eniID, instanceID string, deviceIndex int64) (string, error)
+	UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error
+}
+
+// PublicIPAllocator allocates a public IP to an instance/ENI from a pool.
+// Implemented by handlers/ec2/vpc.ExternalIPAM.
+type PublicIPAllocator interface {
+	AllocateIP(region, az, allocType, allocID, eniID, instanceID string) (publicIP, poolName string, err error)
 }

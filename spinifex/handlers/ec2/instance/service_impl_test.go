@@ -18,6 +18,7 @@ import (
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -1774,4 +1775,475 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	_, stillInMgr := mgr.Get(id)
 	assert.False(t, stillInMgr, "GPU claim failure must remove the VM from the manager map")
 	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
+}
+
+// --- PrepareRunInstances / ec2.cmd dispatch tests (1b-pre phase 2d) ---------
+
+type fakeAMILoader struct {
+	byID map[string]viperblock.AMIMetadata
+	err  error
+}
+
+func (f *fakeAMILoader) GetAMIConfig(id string) (viperblock.AMIMetadata, error) {
+	if f.err != nil {
+		return viperblock.AMIMetadata{}, f.err
+	}
+	if meta, ok := f.byID[id]; ok {
+		return meta, nil
+	}
+	return viperblock.AMIMetadata{}, errors.New("not found")
+}
+
+type fakeKeyValidator struct {
+	err error
+}
+
+func (f *fakeKeyValidator) ValidateKeyPairExists(_ string, _ string) error {
+	return f.err
+}
+
+func defaultPrepareInstanceTypes() (map[string]*ec2.InstanceTypeInfo, *ec2.InstanceTypeInfo) {
+	it := &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.micro")}
+	return map[string]*ec2.InstanceTypeInfo{"t3.micro": it}, it
+}
+
+func TestPrepareRunInstances_MissingAccountID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestPrepareRunInstances_MissingInstanceType(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestPrepareRunInstances_InvalidInstanceType(t *testing.T) {
+	svc := &InstanceServiceImpl{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("unknown.type"),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceType, err.Error())
+}
+
+func TestPrepareRunInstances_MissingImageID(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{instanceTypes: types}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestPrepareRunInstances_NilAMILoader(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{instanceTypes: types}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestPrepareRunInstances_AMINotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader:     &fakeAMILoader{err: errors.New("missing")},
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-missing"),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}
+
+func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-other": {ImageOwnerAlias: "999988887777"},
+		}},
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-other"),
+	}, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}
+
+func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		keyValidator: &fakeKeyValidator{err: errors.New("no key")},
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		KeyName:      aws.String("nope"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+}
+
+func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
+	types, it := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(*ec2.InstanceTypeInfo, int) int { return 0 },
+	}
+	_ = it
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(5),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	reservation, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc")
+	require.NoError(t, err)
+	require.NotNil(t, reservation)
+	require.Len(t, instances, 2)
+	require.Len(t, reservation.Instances, 2)
+	assert.Equal(t, "acc", *reservation.OwnerId)
+	for _, inst := range instances {
+		assert.Equal(t, "acc", inst.AccountID)
+		assert.Equal(t, "t3.micro", inst.InstanceType)
+	}
+}
+
+func TestStartInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStopOrTerminateInstance_TerminateIdempotent(t *testing.T) {
+	id := "i-shutting"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateShuttingDown}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
+		ID:         id,
+		Attributes: spxtypes.EC2CommandAttributes{TerminateInstance: true},
+	})
+	require.NoError(t, err)
+}
+
+func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
+	id := "i-stopped"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
+		ID:         id,
+		Attributes: spxtypes.EC2CommandAttributes{StopInstance: true},
+	})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+type fakeENICreator struct {
+	defaultSubnet *SubnetInfo
+	subnet        *SubnetInfo
+	createOut     *ec2.CreateNetworkInterfaceOutput
+	createErr     error
+	attachCalls   int
+	updateCalls   int
+}
+
+func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
+	if f.defaultSubnet == nil {
+		return nil, errors.New("no default")
+	}
+	return f.defaultSubnet, nil
+}
+
+func (f *fakeENICreator) GetSubnet(_, _ string) (*SubnetInfo, error) {
+	if f.subnet == nil {
+		return nil, errors.New("no subnet")
+	}
+	return f.subnet, nil
+}
+
+func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.createOut, nil
+}
+
+func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
+	f.attachCalls++
+	return "attached", nil
+}
+
+func (f *fakeENICreator) UpdateENIPublicIP(_, _, _, _ string) error {
+	f.updateCalls++
+	return nil
+}
+
+type fakeIPAllocator struct {
+	publicIP string
+	poolName string
+	err      error
+}
+
+func (f *fakeIPAllocator) AllocateIP(_, _, _, _, _, _ string) (string, string, error) {
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return f.publicIP, f.poolName, nil
+}
+
+// prepareSvcWithENI returns a service wired with allocator + AMI + ENI/IP deps
+// suitable for happy-path PrepareRunInstances tests.
+func prepareSvcWithENI(t *testing.T, eni *fakeENICreator, ipam *fakeIPAllocator) (*InstanceServiceImpl, *fakeResourceCapacityProvider) {
+	t.Helper()
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		eniCreator:  eni,
+		ipAllocator: ipam,
+		natsConn:    embeddedNATS(t),
+	}
+	return svc, prov
+}
+
+func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
+	eni := &fakeENICreator{
+		defaultSubnet: &SubnetInfo{SubnetID: "subnet-default", VpcID: "vpc-1"},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.10"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-1", instances[0].ENIId)
+	assert.Equal(t, 1, eni.attachCalls)
+}
+
+func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-2"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:00"),
+				PrivateIpAddress:   aws.String("10.0.0.20"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
+	svc, _ := prepareSvcWithENI(t, eni, ipam)
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
+	assert.Equal(t, "pool-a", instances[0].PublicIPPool)
+	assert.Equal(t, 1, eni.updateCalls)
+}
+
+func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
+	eni := &fakeENICreator{createErr: errors.New("boom")}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+	require.Error(t, err)
+	// MinCount not satisfied → InsufficientInstanceCapacity (no known
+	// AWS code for raw ENI failure).
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
+}
+
+func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {
+	// Terraform-style: subnet+SG come via NetworkInterfaces[0], not top-level.
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-3"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:11"),
+				PrivateIpAddress:   aws.String("10.0.0.30"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{
+				SubnetId: aws.String("subnet-tf"),
+				Groups:   []*string{aws.String("sg-1")},
+			},
+		},
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-3", instances[0].ENIId)
+}
+
+func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		Placement:    &ec2.Placement{GroupName: aws.String("pg-1")},
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "pg-1", instances[0].PlacementGroupName)
+}
+
+func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		allocateErr:   errors.New("oom"),
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(3),
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+func TestStartInstance_AllocateFails(t *testing.T) {
+	id := "i-2"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, InstanceType: "t3.micro"},
+	})
+	v, _ := mgr.Get(id)
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		allocateErr:   errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
+	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+func TestRebootInstance_NotFound(t *testing.T) {
+	id := "i-missing"
+	mgr := mgrWith(nil)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.RebootInstance(&vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }

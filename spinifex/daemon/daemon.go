@@ -1100,6 +1100,9 @@ func (d *Daemon) startCluster() error {
 	// volumeService / vpcService / externalIPAM are constructed.
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
 
+	// Wire deps for InstanceService.PrepareRunInstances (AMI/key/VPC/IPAM).
+	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
+
 	// Wire GPU claimer for InstanceService.StartStoppedInstance — nil when no
 	// passthrough hardware is configured.
 	if d.gpuManager != nil {

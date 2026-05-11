@@ -606,14 +606,14 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 				s.vmMgr.MarkFailed(instance, "gpu_claim_failed")
 				continue
 			}
-			instance.GPUPCIAddress = pciAddr
+			instance.GPUPCIAddresses = []string{pciAddr}
 			instance.GPUXVGAEnabled = xvga
 			slog.Info("LaunchRunInstances: GPU claimed for instance", "instanceId", instance.ID, "gpu", pciAddr, "xvga", xvga)
 		}
 
 		if err := s.vmMgr.Run(instance); err != nil {
 			slog.Error("LaunchRunInstances: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
-			if instance.GPUPCIAddress != "" && s.gpuClaimer != nil {
+			if len(instance.GPUPCIAddresses) > 0 && s.gpuClaimer != nil {
 				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
 					slog.Error("LaunchRunInstances: GPU release failed after launch failure",
 						"instanceId", instance.ID, "err", releaseErr)
@@ -1773,7 +1773,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceIn
 			s.vmMgr.Delete(instance.ID)
 			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
-		instance.GPUPCIAddress = pciAddr
+		instance.GPUPCIAddresses = []string{pciAddr}
 		instance.GPUXVGAEnabled = xvga
 		gpuClaimed = true
 		slog.Info("GPU claimed for instance", "instanceId", input.InstanceID, "gpu", pciAddr, "xvga", xvga)

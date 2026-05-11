@@ -659,23 +659,6 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 	}
 }
 
-// setBridgePromiscMode enables or disables promiscuous mode on a Linux bridge.
-// Non-fatal: logs a warning on failure so vpcd keeps running on routers that
-// broadcast DHCP offers (where promisc is not required).
-func setBridgePromiscMode(bridge string, on bool) {
-	mode := "off"
-	if on {
-		mode = "on"
-	}
-	out, err := sudoCommand("ip", "link", "set", bridge, "promisc", mode).CombinedOutput()
-	if err != nil {
-		slog.Warn("vpcd: failed to set promisc on DHCP bridge",
-			"bridge", bridge, "on", on, "err", err, "output", strings.TrimSpace(string(out)))
-		return
-	}
-	slog.Debug("vpcd: DHCP bridge promisc", "bridge", bridge, "on", on)
-}
-
 // setMacvlanMAC sets the MAC address on a macvlan interface. The interface is
 // brought down, MAC changed, and brought back up. Requires sudo/NET_ADMIN.
 func setMacvlanMAC(iface, mac string) error {

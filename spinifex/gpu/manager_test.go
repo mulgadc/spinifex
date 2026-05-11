@@ -292,6 +292,38 @@ func TestManagerCounts_MultiGPU(t *testing.T) {
 	}
 }
 
+func TestManagerMarkFailed_MakesUnavailable(t *testing.T) {
+	root, gpu := buildManagerSysfs(t)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if m.Available() != 1 {
+		t.Fatalf("want Available=1 before MarkFailed, got %d", m.Available())
+	}
+	m.MarkFailed(gpu.PCIAddress)
+	if m.Available() != 0 {
+		t.Errorf("want Available=0 after MarkFailed, got %d", m.Available())
+	}
+	if m.TotalCount() != 1 {
+		t.Errorf("want TotalCount=1 after MarkFailed (entry retained), got %d", m.TotalCount())
+	}
+	// MarkFailed on an unknown address must be a no-op (not panic).
+	m.MarkFailed("ffff:ff:ff.f")
+}
+
+func TestManagerMarkFailed_ClaimedEntryIgnored(t *testing.T) {
+	root, gpu := buildManagerSysfs(t)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, err := m.Claim("i-running"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	// MarkFailed on a claimed (non-empty InstanceID) entry must not mark it unavailable.
+	m.MarkFailed(gpu.PCIAddress)
+	if m.AllocatedCount() != 1 {
+		t.Errorf("claimed GPU must still be allocated after MarkFailed, AllocatedCount=%d", m.AllocatedCount())
+	}
+}
+
 func TestManagerReclaim_Success(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)

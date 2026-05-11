@@ -786,6 +786,12 @@ func copySplashImage(root string) {
 
 // maskSystemdUnit creates a symlink to /dev/null for the given unit, which is
 // the standard way to permanently disable a unit so systemd will never start it.
+func maskSystemdUnit(root, unit string) error {
+	unitPath := filepath.Join(root, "etc/systemd/system", unit)
+	_ = os.Remove(unitPath)
+	return os.Symlink("/dev/null", unitPath)
+}
+
 // setShadowPassword sets a Unix password on the installed system without
 // going through PAM. See the long comment in installSpinifex for the
 // rationale.

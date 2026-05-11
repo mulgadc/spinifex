@@ -1715,6 +1715,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		mgr := gpu.NewManager(probe.Devices)
 		d.gpuManager = mgr
 		d.resourceMgr.reloadGPUTypes(models, mgr)
+		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
 		return
 	}
@@ -1726,82 +1727,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		return
 	}
 	d.gpuManager = nil
-	d.resourceMgr.reloadGPUTypes(nil, nil)
-	slog.Info("GPU passthrough disabled via config reload")
-}
-
-// setupReload registers a SIGHUP handler that reloads GPU config without restarting.
-func (d *Daemon) setupReload() {
-	d.shutdownWg.Go(func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGHUP)
-		defer signal.Stop(sigChan)
-		for {
-			select {
-			case <-d.ctx.Done():
-				return
-			case <-sigChan:
-				slog.Info("SIGHUP received — reloading GPU config")
-				d.reloadConfig()
-			}
-		}
-	})
-}
-
-// reloadConfig re-reads spinifex.toml and applies any GPU passthrough changes.
-func (d *Daemon) reloadConfig() {
-	if d.configPath == "" {
-		slog.Warn("SIGHUP: no config path set, cannot reload")
-		return
-	}
-	newCfg, err := config.LoadConfig(d.configPath)
-	if err != nil {
-		slog.Error("SIGHUP: config reload failed", "err", err)
-		return
-	}
-	newNodeCfg := newCfg.Nodes[d.node]
-	d.applyGPUConfig(newNodeCfg.Daemon.GPUPassthrough)
-}
-
-// applyGPUConfig activates or deactivates GPU passthrough at runtime.
-// Transition false→true: re-probes hardware, initialises gpuManager, adds g5 types.
-// Transition true→false: refused when GPU instances are running; otherwise tears down.
-func (d *Daemon) applyGPUConfig(enabled bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	wasEnabled := d.gpuManager != nil
-	if enabled == wasEnabled {
-		slog.Debug("GPU passthrough state unchanged on reload", "passthrough", enabled)
-		return
-	}
-
-	if enabled {
-		probe := probeGPU()
-		d.gpuProbe = probe
-		if !probe.Capable {
-			slog.Warn("GPU passthrough enable failed: prerequisites not met",
-				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
-			return
-		}
-		var models []instancetypes.GPUModel
-		for _, dev := range probe.Devices {
-			models = append(models, resolveGPUModel(dev, d.config.Daemon.GPUModelOverrides))
-		}
-		mgr := gpu.NewManager(probe.Devices)
-		d.gpuManager = mgr
-		d.resourceMgr.reloadGPUTypes(models, mgr)
-		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
-		return
-	}
-
-	// true → false: refuse if instances are running
-	if d.gpuManager.AllocatedCount() > 0 {
-		slog.Warn("GPU passthrough disable refused: GPU instances are running",
-			"allocated", d.gpuManager.AllocatedCount())
-		return
-	}
-	d.gpuManager = nil
+	d.instanceService.SetGPUClaimer(nil)
 	d.resourceMgr.reloadGPUTypes(nil, nil)
 	slog.Info("GPU passthrough disabled via config reload")
 }
@@ -2212,87 +2138,6 @@ func gpuXVGAEnabled(dev *gpu.GPUDevice, overrides []config.GPUModelOverride) boo
 		}
 	}
 	return !gpu.IsComputeGPU(dev.VendorID, dev.DeviceID)
-}
-
-func gpuVendorDisplayName(v gpu.Vendor) string {
-	switch v {
-	case gpu.VendorNVIDIA:
-		return "NVIDIA"
-	case gpu.VendorAMD:
-		return "AMD"
-	case gpu.VendorIntel:
-		return "Intel"
-	default:
-		return "Unknown"
-	}
-}
-
-// gpuProbeResult holds the outcome of the always-on startup hardware probe.
-// Populated before any config-gated activation logic runs.
-type gpuProbeResult struct {
-	Capable     bool // true when Devices, IOMMUActive, and VFIOPresent are all satisfied
-	IOMMUActive bool
-	VFIOPresent bool
-	Devices     []gpu.GPUDevice
-}
-
-// probeGPU discovers GPU hardware and checks passthrough prerequisites.
-// It is read-only and has no side effects.
-func probeGPU() gpuProbeResult {
-	var r gpuProbeResult
-
-	devices, err := gpu.Discover()
-	if err != nil {
-		slog.Debug("GPU probe: discover failed", "err", err)
-	}
-	r.Devices = devices
-
-	// IOMMU is active when the kernel has populated iommu_groups in sysfs.
-	groups, err := os.ReadDir("/sys/kernel/iommu_groups")
-	r.IOMMUActive = err == nil && len(groups) > 0
-
-	// vfio_pci module is present when its sysfs module directory exists.
-	_, err = os.Stat("/sys/module/vfio_pci")
-	r.VFIOPresent = err == nil
-
-	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
-	return r
-}
-
-// resolveGPUModel maps a discovered GPU to an instance type model.
-// Overrides take priority, then the production model list, then a g5 default.
-// Any GPU device that reaches the default path is treated as a g5 instance,
-// so consumer GPUs used for testing work without explicit config entries.
-func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) instancetypes.GPUModel {
-	for i := range overrides {
-		o := &overrides[i]
-		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID {
-			return instancetypes.GPUModel{
-				VendorID:     o.VendorID,
-				DeviceID:     o.DeviceID,
-				Family:       o.Family,
-				Manufacturer: o.Manufacturer,
-				Name:         o.Name,
-				MemoryMiB:    o.MemoryMiB,
-			}
-		}
-	}
-	if m := instancetypes.GPUModelForVendorDevice(dev.VendorID, dev.DeviceID); m != nil {
-		return *m
-	}
-	// Default: any discovered GPU device maps to g5 using its detected specs.
-	name := dev.Model
-	if name == "" {
-		name = fmt.Sprintf("GPU %s:%s", dev.VendorID, dev.DeviceID)
-	}
-	return instancetypes.GPUModel{
-		VendorID:     dev.VendorID,
-		DeviceID:     dev.DeviceID,
-		Family:       "g5",
-		Manufacturer: gpuVendorDisplayName(dev.Vendor),
-		Name:         name,
-		MemoryMiB:    dev.MemoryMiB,
-	}
 }
 
 func gpuVendorDisplayName(v gpu.Vendor) string {

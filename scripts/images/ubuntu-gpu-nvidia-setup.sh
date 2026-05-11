@@ -21,12 +21,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
 
-# Pinned kernel and headers so DKMS has a stable build target.
-apt-get install -y --no-install-recommends \
-    linux-image-generic \
-    linux-headers-generic \
-    initramfs-tools
-
+# Detect the cloud image's existing kernel BEFORE installing anything.
+# Installing linux-image-generic would upgrade to a newer kernel version;
+# DKMS would then build for that version but the VM boots the original
+# cloud image kernel, causing a version mismatch at modprobe time.
 KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
 if [[ -z "${KVER}" ]]; then
     echo "ERROR: No kernel found under /boot"
@@ -34,22 +32,41 @@ if [[ -z "${KVER}" ]]; then
 fi
 echo "Target kernel: ${KVER}"
 
-# nvidia-dkms-550-server post-install runs `dkms autoinstall` against ${KVER}.
+# Install headers for the exact kernel already present, plus initramfs-tools.
 apt-get install -y --no-install-recommends \
-    nvidia-headless-550-server \
-    nvidia-utils-550-server
+    "linux-headers-${KVER}" \
+    initramfs-tools
 
-if dkms status 2>/dev/null | grep -q "nvidia"; then
-    echo "NVIDIA DKMS module: $(dkms status 2>/dev/null | grep nvidia | head -1)"
+# Install the NVIDIA server DKMS driver. Use the distro default version (no
+# hardcoded suffix) so Ubuntu 26.04's 580 driver is used instead of 550.
+# nvidia-dkms-server is a meta package that resolves to the current recommended
+# version; nvidia-utils-server brings nvidia-smi and related tools.
+apt-get install -y --no-install-recommends \
+    nvidia-dkms-server \
+    nvidia-utils-server
+
+# Detect the installed NVIDIA DKMS module name + version for explicit build.
+NVIDIA_DKMS_NAME=$(dkms status 2>/dev/null | awk -F'[,/ ]+' '/nvidia/{print $1; exit}')
+NVIDIA_DKMS_VER=$(dkms status 2>/dev/null  | awk -F'[,/ ]+' '/nvidia/{print $2; exit}')
+
+if [[ -n "${NVIDIA_DKMS_NAME}" && -n "${NVIDIA_DKMS_VER}" ]]; then
+    echo "Building NVIDIA DKMS module ${NVIDIA_DKMS_NAME}/${NVIDIA_DKMS_VER} for kernel ${KVER}..."
+    dkms install -m "${NVIDIA_DKMS_NAME}" -v "${NVIDIA_DKMS_VER}" --kernelver "${KVER}" --force 2>&1
 else
-    echo "WARNING: nvidia DKMS module not found in dkms status"
+    echo "WARNING: nvidia DKMS module not found in dkms status — driver install may have failed"
 fi
 
-# Pin kernel + NVIDIA packages so unattended-upgrades cannot invalidate the
-# pre-built DKMS module inside the guest.
+# Verify the module was actually built.
+NVIDIA_KO=$(find "/lib/modules/${KVER}/updates" -name "nvidia.ko*" 2>/dev/null | head -1)
+if [[ -z "${NVIDIA_KO}" ]]; then
+    echo "ERROR: nvidia.ko not found under /lib/modules/${KVER}/updates after DKMS build"
+    exit 1
+fi
+echo "NVIDIA kernel module: ${NVIDIA_KO}"
+
+# Pin the exact kernel + headers so unattended-upgrades cannot replace the
+# kernel the DKMS module was built for.
 apt-mark hold \
-    linux-image-generic \
-    linux-headers-generic \
     "linux-image-${KVER}" \
     "linux-headers-${KVER}"
 
@@ -86,11 +103,5 @@ EOF
 # Rebuild initramfs with nouveau blacklisted and NVIDIA module included.
 update-initramfs -u -k "${KVER}"
 
-# The DKMS build tree and kernel headers are only needed to compile nvidia.ko.
-# The built module lives in /lib/modules/${KVER}/ — remove headers and build
-# artefacts to recover ~500MB from the image.
-apt-get remove --purge -y linux-headers-generic "linux-headers-${KVER}" 2>/dev/null || true
-apt-get autoremove -y 2>/dev/null || true
-rm -rf /var/lib/dkms/nvidia/*/build
 
-echo "NVIDIA GPU image setup complete: kernel=${KVER}, NVIDIA 550 driver + DKMS pre-built"
+echo "NVIDIA GPU image setup complete: kernel=${KVER}, NVIDIA driver + DKMS pre-built"

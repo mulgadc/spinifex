@@ -149,3 +149,35 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 	_, dropPresent := d.natsSubscriptions[drop.ID]
 	assert.False(t, dropPresent)
 }
+
+// --- ReleaseGPU ---
+
+// ReleaseGPU is a no-op when the daemon has no GPU manager.
+func TestReleaseGPU_NoManager_NoOp(t *testing.T) {
+	d := &Daemon{}
+	a := newInstanceCleanerAdapter(d)
+	instance := &vm.VM{ID: "i-nogpu", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	// Must not panic.
+	a.ReleaseGPU(instance)
+}
+
+// ReleaseGPU is a no-op for instances without a GPU allocation.
+func TestReleaseGPU_NoAddresses_NoOp(t *testing.T) {
+	mgr := gpu.NewManager(nil)
+	d := &Daemon{gpuManager: mgr}
+	a := newInstanceCleanerAdapter(d)
+	instance := &vm.VM{ID: "i-nogpu"}
+	// Must not panic or error.
+	a.ReleaseGPU(instance)
+}
+
+// ReleaseGPU logs a warning when the manager returns an error (instance not claimed).
+func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
+	mgr := gpu.NewManager(nil)
+	d := &Daemon{gpuManager: mgr}
+	a := newInstanceCleanerAdapter(d)
+	// GPU address set but no claim registered — Release returns an error.
+	instance := &vm.VM{ID: "i-unclaimed", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	// Must not panic; the error is logged as a warning.
+	a.ReleaseGPU(instance)
+}

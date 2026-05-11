@@ -148,6 +148,31 @@ jobs:
                       --format testname \
                       -- -tags=e2e -timeout 45m ./tests/e2e/ddil/scenarios/...
 
+      - name: Collect Cluster Logs
+        if: failure()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          # Pull spinifex-* journals + QEMU process listings from every
+          # node into the artifact bundle so failures can be triaged
+          # without re-provisioning the cluster. Best-effort — a missing
+          # node should not mask the original test failure.
+          set +e
+          INVENTORY=$(tofu output -json inventory)
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          SSH_USER=$(echo "$INVENTORY" | jq -r '.ssh_user')
+          LOG_DIR="${RUNNER_TEMP}/ddil-results/cluster-logs"
+          mkdir -p "${LOG_DIR}"
+
+          mapfile -t NODE_IPS < <(echo "$INVENTORY" | jq -r '.nodes[].wan_ip')
+          for ip in "${NODE_IPS[@]}"; do
+            echo "=== collecting ${ip} ==="
+            SSH="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${SSH_USER}@${ip}"
+            ${SSH} 'sudo journalctl -u "spinifex-*" --no-pager -n 5000' > "${LOG_DIR}/${ip}-spinifex.log" 2>&1
+            ${SSH} 'ps auxw | grep -E "qemu-system|spinifex" | grep -v grep' > "${LOG_DIR}/${ip}-procs.txt" 2>&1
+            ${SSH} 'ls -la /var/lib/spinifex 2>/dev/null; ls -la /var/log/spinifex 2>/dev/null' > "${LOG_DIR}/${ip}-state.txt" 2>&1
+          done
+
       - name: Upload DDIL Results
         if: always()
         uses: actions/upload-artifact@v7

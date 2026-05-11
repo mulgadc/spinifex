@@ -188,11 +188,12 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
 
     if [[ "$DO_IMPORT" == true ]]; then
         echo "Importing as AMI..."
+        rm -f "$OUTPUT_IMAGE"
         IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
         if [[ -n "${SYSTEM_TAG:-}" ]]; then
             IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
         fi
-        (cd "$PROJECT_DIR" && ./bin/spx admin images import "${IMPORT_ARGS[@]}")
+        spx admin images import "${IMPORT_ARGS[@]}"
     fi
     exit 0
 fi
@@ -421,14 +422,15 @@ echo ""
 
 if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
+    rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
-    (cd "$PROJECT_DIR" && sudo -u spinifex-storage ./bin/spx admin images import "${IMPORT_ARGS[@]}")
+    spx admin images import "${IMPORT_ARGS[@]}"
 else
     echo "To import as AMI, run:"
-    echo "  cd $PROJECT_DIR && ./bin/spx admin images import \\"
+    echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 \\"

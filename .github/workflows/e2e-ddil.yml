@@ -95,7 +95,23 @@ jobs:
           # tofu-cluster, wan_ip == cluster IP and the runner's outbound
           # IP is distinct — see e2e-ddil-test-harness.md §3 Scenario C.
           NODE_IPS=$(echo "$INVENTORY" | jq -r '[.nodes[].wan_ip] | join(",")')
+          PRIMARY_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           echo "DDIL_NODES=${NODE_IPS}"
+
+          # Witness VMs talk to the cluster's AWS gateway via aws-sdk-go,
+          # which resolves credentials from the standard chain. spx admin
+          # init writes [spinifex] to ${SSH_USER}'s ~/.aws/credentials on
+          # node1 — pull them over SSH and export as the SDK's env-var
+          # entries so the harness can launch instances without depending
+          # on a cluster-bootstrapped profile being present on the runner.
+          CREDS=$(ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${PRIMARY_IP}" 'cat ~/.aws/credentials')
+          AWS_ACCESS_KEY_ID=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
+          AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::Failed to extract spinifex AWS credentials from ${PRIMARY_IP}"
+            exit 1
+          fi
 
           mkdir -p "${RUNNER_TEMP}/ddil-results"
           cd "${GITHUB_WORKSPACE}/spinifex"
@@ -104,6 +120,8 @@ jobs:
           DDIL_SSH_KEY="${SSH_KEY}" \
           DDIL_QUARANTINED="${{ inputs.quarantined }}" \
           AWS_REGION="${REGION}" \
+          AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+          AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
             go test -tags=e2e -timeout 45m -json \
               ./tests/e2e/ddil/scenarios/... \
               | tee "${RUNNER_TEMP}/ddil-results/results.json"

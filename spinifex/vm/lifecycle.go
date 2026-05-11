@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -279,8 +280,6 @@ func (m *Manager) startQEMU(instance *VM) error {
 	exitChan := make(chan int, 1)
 	startupConfirmed := make(chan bool, 1)
 
-	qemuLogPath := filepath.Join(utils.RuntimeDir(), "qemu.log")
-
 	go func() {
 		cmd, err := instance.Config.Execute()
 		if err != nil {
@@ -289,38 +288,44 @@ func (m *Manager) startQEMU(instance *VM) error {
 			return
 		}
 
-		// QEMU stdout/stderr go to a single shared file rather than pipes
-		// back to daemon-side goroutines. If the daemon exits (e.g.
-		// `systemctl restart spinifex-daemon`), a pipe's read end closes
-		// and QEMU's next write triggers SIGPIPE, killing the guest —
-		// defeating DDIL Scenario B's "daemon restart preserves running
-		// instances" guarantee. With a file, the FD is dup'd into QEMU at
-		// fork and survives daemon exit. POSIX O_APPEND makes concurrent
-		// short writes from multiple QEMUs interleave atomically per
-		// line, so a single shared log is safe and avoids per-instance
-		// clutter in RuntimeDir.
-		logFile, err := os.OpenFile(qemuLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			slog.Error("Failed to open QEMU log file", "path", qemuLogPath, "err", err)
+			slog.Error("Failed to pipe STDOUT VM", "err", err)
 			processChan <- 0
 			return
 		}
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			slog.Error("Failed to pipe STDERR VM", "err", err)
+			processChan <- 0
+			return
+		}
 
 		if err := cmd.Start(); err != nil {
 			slog.Error("Failed to start VM", "err", err)
-			_ = logFile.Close()
 			processChan <- 0
 			return
 		}
-		_ = logFile.Close()
 
-		slog.Info("VM started successfully", "pid", cmd.Process.Pid, "qemu_log", qemuLogPath)
+		slog.Info("VM started successfully", "pid", cmd.Process.Pid)
 
 		if err := utils.SetOOMScore(cmd.Process.Pid, 500); err != nil {
 			slog.Warn("Failed to set QEMU OOM score", "pid", cmd.Process.Pid, "err", err)
 		}
+
+		go func() {
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				slog.Info("[qemu]", "line", scanner.Text())
+			}
+		}()
+		go func() {
+			scanner := bufio.NewScanner(stderr)
+			slog.Info("QEMU stderr reader started")
+			for scanner.Scan() {
+				slog.Error("[qemu-stderr]", "line", scanner.Text())
+			}
+		}()
 
 		processChan <- cmd.Process.Pid
 

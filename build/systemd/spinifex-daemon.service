@@ -38,6 +38,18 @@ OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
+# DDIL Tier 1 (mulga-siv-58): QEMU pidfiles, QMP sockets, and the
+# shared qemu.log all resolve via utils.pidPath() — which falls back
+# to os.TempDir() (=/tmp) when $HOME/spinifex doesn't exist. With
+# PrivateTmp=yes, each daemon start gets a fresh /tmp namespace, so
+# pidfiles written by QEMU (running in the OLD daemon's namespace)
+# are invisible to the new daemon. The /local/instances handler then
+# reports PID=0 and Scenario B fails its "live QEMU PID" assertion.
+# Pin XDG_RUNTIME_DIR to the host-wide tmpfs at /run/spinifex (created
+# by tmpfiles.d, already in ReadWritePaths) so pidPath() returns a
+# stable, namespace-independent path that both daemon incarnations and
+# QEMU children resolve identically.
+Environment=XDG_RUNTIME_DIR=/run/spinifex
 
 # Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl, dhcpcd)
 # CAP_SYS_ADMIN: required for GPU passthrough sysfs operations (vfio group management).

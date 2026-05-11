@@ -647,15 +647,43 @@ func TestCloudInitVolumeNamePerInstance(t *testing.T) {
 // --- 1b-pre Describe* coverage (siv-22 parts) ------------------------------
 
 type fakeResourceCapacityProvider struct {
-	types      []*ec2.InstanceTypeInfo
-	gotShowCap bool
-	calls      int
+	types         []*ec2.InstanceTypeInfo
+	gotShowCap    bool
+	calls         int
+	instanceTypes map[string]*ec2.InstanceTypeInfo
+	allocateErr   error
+	allocated     []*ec2.InstanceTypeInfo
+	deallocated   []*ec2.InstanceTypeInfo
+	canAllocFn    func(*ec2.InstanceTypeInfo, int) int
 }
 
 func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
 	f.calls++
 	f.gotShowCap = showCapacity
 	return f.types
+}
+
+func (f *fakeResourceCapacityProvider) Allocate(it *ec2.InstanceTypeInfo) error {
+	if f.allocateErr != nil {
+		return f.allocateErr
+	}
+	f.allocated = append(f.allocated, it)
+	return nil
+}
+
+func (f *fakeResourceCapacityProvider) Deallocate(it *ec2.InstanceTypeInfo) {
+	f.deallocated = append(f.deallocated, it)
+}
+
+func (f *fakeResourceCapacityProvider) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {
+	if f.canAllocFn != nil {
+		return f.canAllocFn(it, count)
+	}
+	return count
+}
+
+func (f *fakeResourceCapacityProvider) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
+	return f.instanceTypes
 }
 
 type fakeStoppedStore struct {
@@ -1562,4 +1590,188 @@ func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"eni-1234"}, ed.calls)
+}
+
+// --- StartStoppedInstance tests ---
+
+type fakeGPUClaimer struct {
+	claimed     []string
+	released    []string
+	claimErr    error
+	pciAddress  string
+	xvgaEnabled bool
+}
+
+func (f *fakeGPUClaimer) Claim(instanceID string) (string, bool, error) {
+	f.claimed = append(f.claimed, instanceID)
+	if f.claimErr != nil {
+		return "", false, f.claimErr
+	}
+	return f.pciAddress, f.xvgaEnabled, nil
+}
+
+func (f *fakeGPUClaimer) Release(instanceID string) error {
+	f.released = append(f.released, instanceID)
+	return nil
+}
+
+func TestStartStoppedInstance_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestStartStoppedInstance_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NilResourceMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}}}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NilVMMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		stoppedStore: &fakeStoppedStore{loadByID: map[string]*vm.VM{}},
+		resourceMgr:  &fakeResourceCapacityProvider{},
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_LoadError(t *testing.T) {
+	store := &fakeStoppedStore{loadErr: errors.New("kv down")}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NotFound(t *testing.T) {
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestStartStoppedInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStartStoppedInstance_NotVisible(t *testing.T) {
+	id := "i-foreign"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc", InstanceType: "t3.micro"},
+	}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+
+	// Cross-tenant rejection must not delete from KV.
+	assert.Empty(t, store.deletedStopped, "cross-tenant rejection must not delete stopped instance")
+}
+
+func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
+	id := "i-badtype"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: "z99.nope"},
+	}}
+	prov := &fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.Empty(t, prov.allocated, "no allocation should occur for unknown type")
+}
+
+func TestStartStoppedInstance_AllocateFails(t *testing.T) {
+	id := "i-alloc-fail"
+	itype := "t3.micro"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			itype: {InstanceType: aws.String(itype)},
+		},
+		allocateErr: errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// GPU claim failure must roll back the resource allocation and remove the VM
+// from the manager's map — otherwise stale capacity stays consumed.
+func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
+	id := "i-gpu-fail"
+	itype := "g5.xlarge"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			itype: {InstanceType: aws.String(itype), GpuInfo: &ec2.GpuInfo{
+				Gpus: []*ec2.GpuDeviceInfo{{Name: aws.String("nvidia-a10g"), Count: aws.Int64(1)}},
+			}},
+		},
+	}
+	claimer := &fakeGPUClaimer{claimErr: errors.New("vfio bind failed")}
+	mgr := vm.NewManager()
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        mgr,
+		gpuClaimer:   claimer,
+	}
+	_, err := svc.StartStoppedInstance(&StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+
+	require.Len(t, prov.allocated, 1, "allocator must have been called")
+	require.Len(t, prov.deallocated, 1, "GPU claim failure must trigger deallocate")
+	_, stillInMgr := mgr.Get(id)
+	assert.False(t, stillInMgr, "GPU claim failure must remove the VM from the manager map")
+	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
 }

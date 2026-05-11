@@ -65,6 +65,10 @@ func (s *NATSInstanceService) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return utils.NATSRequest[ec2.ModifyInstanceAttributeOutput](s.natsConn, "ec2.ModifyInstanceAttribute", input, 30*time.Second, accountID)
 }
 
+func (s *NATSInstanceService) StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
+	return utils.NATSRequest[StartStoppedInstanceOutput](s.natsConn, "ec2.StartStoppedInstance", input, 30*time.Second, accountID)
+}
+
 func (s *NATSInstanceService) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
 	return utils.NATSRequest[TerminateStoppedInstanceOutput](s.natsConn, "ec2.TerminateStoppedInstance", input, 30*time.Second, accountID)
 }

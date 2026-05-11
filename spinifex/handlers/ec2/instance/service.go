@@ -14,7 +14,19 @@ type InstanceService interface {
 	DescribeStoppedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	DescribeTerminatedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error)
+	StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error)
 	TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error)
+}
+
+// StartStoppedInstanceInput is the payload for ec2.StartStoppedInstance.
+type StartStoppedInstanceInput struct {
+	InstanceID string `json:"instance_id"`
+}
+
+// StartStoppedInstanceOutput is the response payload.
+type StartStoppedInstanceOutput struct {
+	Status     string `json:"status"`
+	InstanceID string `json:"instanceId"`
 }
 
 // TerminateStoppedInstanceInput is the payload for ec2.TerminateStoppedInstance.
@@ -32,6 +44,25 @@ type TerminateStoppedInstanceOutput struct {
 // DescribeInstanceTypes. Implemented by daemon.ResourceManager.
 type ResourceCapacityProvider interface {
 	GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo
+}
+
+// InstanceTypeAllocator extends ResourceCapacityProvider with the mutating
+// resource-reservation methods used by StartStoppedInstance. Implemented by
+// daemon.ResourceManager.
+type InstanceTypeAllocator interface {
+	ResourceCapacityProvider
+	Allocate(instanceType *ec2.InstanceTypeInfo) error
+	Deallocate(instanceType *ec2.InstanceTypeInfo)
+	CanAllocate(instanceType *ec2.InstanceTypeInfo, count int) int
+	InstanceTypes() map[string]*ec2.InstanceTypeInfo
+}
+
+// GPUClaimer binds a GPU (and its IOMMU group) to vfio-pci for a starting
+// instance. Returns the PCI address and whether QEMU should set x-vga=on.
+// nil claimer means the daemon has no GPU passthrough configured.
+type GPUClaimer interface {
+	Claim(instanceID string) (pciAddress string, xvgaEnabled bool, err error)
+	Release(instanceID string) error
 }
 
 // StoppedInstanceStore covers KV-backed read/write access for stopped instances

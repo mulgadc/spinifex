@@ -60,6 +60,10 @@ func (s *MockInstanceService) ModifyInstanceAttribute(_ *ec2.ModifyInstanceAttri
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
+func (s *MockInstanceService) StartStoppedInstance(input *StartStoppedInstanceInput, _ string) (*StartStoppedInstanceOutput, error) {
+	return &StartStoppedInstanceOutput{Status: "running", InstanceID: input.InstanceID}, nil
+}
+
 func (s *MockInstanceService) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, _ string) (*TerminateStoppedInstanceOutput, error) {
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
 }

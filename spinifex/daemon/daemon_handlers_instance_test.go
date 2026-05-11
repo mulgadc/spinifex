@@ -207,7 +207,7 @@ func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
 	store.loadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(startStoppedInstanceRequest{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test1", d.handleEC2StartStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -216,7 +216,7 @@ func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 	// d.stateStore intentionally left nil.
 
-	body, _ := json.Marshal(startStoppedInstanceRequest{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test2", d.handleEC2StartStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -226,7 +226,7 @@ func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(startStoppedInstanceRequest{InstanceID: "i-foreign"})
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test3", d.handleEC2StartStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
@@ -245,7 +245,7 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(startStoppedInstanceRequest{InstanceID: v.ID})
+	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test4", d.handleEC2StartStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"])
 }

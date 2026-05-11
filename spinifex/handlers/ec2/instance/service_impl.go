@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -235,11 +236,12 @@ type InstanceServiceImpl struct {
 	natsConn      *nats.Conn
 	objectStore   objectstore.ObjectStore
 	vmMgr         *vm.Manager
-	resourceMgr   ResourceCapacityProvider
+	resourceMgr   InstanceTypeAllocator
 	stoppedStore  StoppedInstanceStore
 	volumeDeleter VolumeDeleter
 	eniDeleter    ENIDeleter
 	ipReleaser    PublicIPReleaser
+	gpuClaimer    GPUClaimer
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use
@@ -249,7 +251,7 @@ func NewInstanceServiceImpl(
 	nc *nats.Conn,
 	store objectstore.ObjectStore,
 	vmMgr *vm.Manager,
-	resourceMgr ResourceCapacityProvider,
+	resourceMgr InstanceTypeAllocator,
 	stoppedStore StoppedInstanceStore,
 ) *InstanceServiceImpl {
 	return &InstanceServiceImpl{
@@ -270,6 +272,12 @@ func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter
 	s.volumeDeleter = vd
 	s.eniDeleter = ed
 	s.ipReleaser = pr
+}
+
+// SetGPUClaimer wires the GPU passthrough claim/release dependency used by
+// StartStoppedInstance. nil disables GPU passthrough for the service.
+func (s *InstanceServiceImpl) SetGPUClaimer(g GPUClaimer) {
+	s.gpuClaimer = g
 }
 
 // RunInstance creates a single EC2 instance (called per-instance by daemon)
@@ -1248,6 +1256,109 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	slog.Info("ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
+// StartStoppedInstance picks up a stopped instance from shared KV, re-launches
+// it on this daemon node, then removes it from shared KV.
+func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
+	if input.InstanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil {
+		slog.Error("StartStoppedInstance: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if s.resourceMgr == nil {
+		slog.Error("StartStoppedInstance: resource manager not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if s.vmMgr == nil {
+		slog.Error("StartStoppedInstance: vm manager not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(input.InstanceID)
+	if err != nil {
+		slog.Error("StartStoppedInstance: failed to load stopped instance", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Status != vm.StateStopped {
+		slog.Error("StartStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("StartStoppedInstance: instance not visible",
+			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	// Reset node-local fields that are stale after cross-node migration.
+	instance.ResetNodeLocalState()
+
+	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
+	if !ok {
+		slog.Error("StartStoppedInstance: instance type not available on this node",
+			"instanceId", input.InstanceID, "instanceType", instance.InstanceType)
+		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+	}
+	if err := s.resourceMgr.Allocate(instanceType); err != nil {
+		slog.Error("StartStoppedInstance: failed to allocate resources", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+	}
+
+	// Add to local map + clear stop attribute before launch.
+	instance.Attributes = spxtypes.EC2CommandAttributes{StartInstance: true}
+	s.vmMgr.Insert(instance)
+
+	// Claim GPU for GPU instance types — binds the full IOMMU group to vfio-pci.
+	gpuClaimed := false
+	if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
+		pciAddr, xvga, gpuErr := s.gpuClaimer.Claim(instance.ID)
+		if gpuErr != nil {
+			slog.Error("StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "err", gpuErr)
+			s.resourceMgr.Deallocate(instanceType)
+			s.vmMgr.Delete(instance.ID)
+			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		}
+		instance.GPUPCIAddress = pciAddr
+		instance.GPUXVGAEnabled = xvga
+		gpuClaimed = true
+		slog.Info("GPU claimed for instance", "instanceId", input.InstanceID, "gpu", pciAddr, "xvga", xvga)
+	}
+
+	if err := s.vmMgr.Run(instance); err != nil {
+		slog.Error("StartStoppedInstance: vmMgr.Run failed", "instanceId", input.InstanceID, "err", err)
+		if gpuClaimed {
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.Error("StartStoppedInstance: GPU release failed after launch failure",
+					"instanceId", input.InstanceID, "err", relErr)
+			}
+		}
+		s.resourceMgr.Deallocate(instanceType)
+		s.vmMgr.Delete(instance.ID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Discover actual guest device names via QMP query-block.
+	s.vmMgr.UpdateGuestDeviceNames(instance)
+
+	// Remove from shared KV now that it's running locally. Retry once on failure —
+	// a stale KV entry risks duplicate starts.
+	if err := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); err != nil {
+		slog.Warn("StartStoppedInstance: first KV delete failed, retrying",
+			"instanceId", input.InstanceID, "err", err)
+		if retryErr := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); retryErr != nil {
+			slog.Error("StartStoppedInstance: KV delete failed after retry, instance is running locally but stale entry remains in shared KV",
+				"instanceId", input.InstanceID, "err", retryErr)
+		}
+	}
+
+	slog.Info("Started stopped instance from shared KV", "instanceId", instance.ID)
+	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
 // TerminateStoppedInstance picks up a stopped instance from shared KV, deletes

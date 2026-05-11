@@ -496,10 +496,15 @@ func awaitGuestSSH(ctx context.Context, w *Witness, host Node, publicIP string, 
 			return nil
 		}
 		lastErr = err
-		msg := err.Error()
-		transient := strings.Contains(msg, "connection refused") ||
+		msg := strings.ToLower(err.Error())
+		// "connect failed" covers x/crypto/ssh's
+		//   `ssh: rejected: connect failed (Connection refused)`
+		// which fires when the SSH jump host's DialContext fails — the
+		// canonical signal that the guest hasn't bound :22 yet.
+		transient := strings.Contains(msg, "connect failed") ||
+			strings.Contains(msg, "connection refused") ||
 			strings.Contains(msg, "connection reset") ||
-			strings.Contains(msg, "EOF") ||
+			strings.Contains(msg, "eof") ||
 			strings.Contains(msg, "i/o timeout") ||
 			strings.Contains(msg, "no route to host")
 		if !transient {

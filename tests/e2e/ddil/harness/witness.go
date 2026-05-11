@@ -62,7 +62,9 @@ type Witness struct {
 //     names that change between releases.
 //   - DDIL_WITNESS_KEY_NAME (default spinifex-key) — EC2 key pair name
 //     the daemon injects via cloud-init.
-//   - DDIL_GUEST_SSH_USER (default ubuntu) — user for guest SSH.
+//   - DDIL_GUEST_SSH_USER (default ec2-user) — user for guest SSH; matches
+//     the default account on the cluster's ami-ubuntu-* images (shell E2E
+//     uses the same login at tests/e2e/run-multinode-e2e.sh:650).
 //   - DDIL_GUEST_SSH_KEY (required) — private key for guest SSH; must
 //     pair with the public material registered under DDIL_WITNESS_KEY_NAME
 //     so authorized_keys on the cloud-init guest accepts it.
@@ -114,7 +116,7 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		ssh:          transport,
 		hostSigner:   hostSigner,
 		guestSigner:  guestSigner,
-		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ubuntu"),
+		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ec2-user"),
 		ami:          os.Getenv("DDIL_WITNESS_AMI"),
 		instanceType: os.Getenv("DDIL_WITNESS_INSTANCE_TYPE"),
 		keyName:      envDefault("DDIL_WITNESS_KEY_NAME", "spinifex-key"),

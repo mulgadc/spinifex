@@ -192,12 +192,14 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 				_ = w.terminate(ctx, id)
 				return nil, err
 			}
+			if err := awaitGuestSSH(ctx, w, placed, publicIP, 90*time.Second); err != nil {
+				_ = w.terminate(ctx, id)
+				return nil, fmt.Errorf("ddil harness: witness sshd ready: %w", err)
+			}
 			baseline, err := readCounter(ctx, w, placed, publicIP)
 			if err != nil {
-				// The counter service may not have started yet on a freshly
-				// booted guest; a zero baseline is the expected steady state
-				// since the service seeds /var/lib/counter with 0 on first
-				// ExecStartPre. Treat a connection failure as fatal so
+				// Counter service may still be seeding /var/lib/counter on
+				// first ExecStartPre after sshd came up. Treat as fatal so
 				// scenarios don't silently skip the progress assertion.
 				_ = w.terminate(ctx, id)
 				return nil, fmt.Errorf("ddil harness: witness baseline read: %w", err)
@@ -474,6 +476,74 @@ func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (i
 		return 0, fmt.Errorf("ddil harness: parse /var/lib/counter %q: %w", s, err)
 	}
 	return n, nil
+}
+
+// awaitGuestSSH polls the host-tunnelled SSH handshake to publicIP:22 until
+// it succeeds or timeout expires. Cloud-init brings the witness AMI up in
+// 30–60s on tofu-cluster hardware; the OVN dnat_and_snat rule for the EIP
+// is also written asynchronously to RunInstances, so the tunnel can land
+// before either layer is ready. We retry on the transport errors that
+// indicate "guest not yet listening" (Connection refused / reset / EOF /
+// io timeout) and fail fast on auth errors so a misconfigured key surfaces
+// immediately.
+func awaitGuestSSH(ctx context.Context, w *Witness, host Node, publicIP string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	const interval = 2 * time.Second
+	var lastErr error
+	for {
+		err := probeGuestSSH(ctx, w, host, publicIP)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		msg := err.Error()
+		transient := strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "connection reset") ||
+			strings.Contains(msg, "EOF") ||
+			strings.Contains(msg, "i/o timeout") ||
+			strings.Contains(msg, "no route to host")
+		if !transient {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("ddil harness: %s sshd not ready after %s: %w", publicIP, timeout, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// probeGuestSSH opens, handshakes, and closes a single SSH session through
+// host to publicIP:22 — used as the readiness check by awaitGuestSSH.
+func probeGuestSSH(ctx context.Context, w *Witness, host Node, publicIP string) error {
+	hostClient, err := dialHost(ctx, host, w.cluster.SSHUser, w.hostSigner)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = hostClient.Close() }()
+
+	guestAddr := net.JoinHostPort(publicIP, "22")
+	tunnel, err := hostClient.DialContext(ctx, "tcp", guestAddr)
+	if err != nil {
+		return fmt.Errorf("ddil harness: tunnel %s → %s: %w", host.Name, guestAddr, err)
+	}
+
+	guestCfg := &ssh.ClientConfig{
+		User:            w.guestUser,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(w.guestSigner)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // ephemeral test VM
+		Timeout:         5 * time.Second,
+	}
+	c, chans, reqs, err := ssh.NewClientConn(tunnel, guestAddr, guestCfg)
+	if err != nil {
+		_ = tunnel.Close()
+		return fmt.Errorf("ddil harness: guest ssh handshake on %s: %w", guestAddr, err)
+	}
+	_ = ssh.NewClient(c, chans, reqs).Close()
+	return nil
 }
 
 func dialHost(ctx context.Context, node Node, user string, signer ssh.Signer) (*ssh.Client, error) {

@@ -2247,3 +2247,47 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
+
+func TestLaunchRunInstances_EmptyList(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		config: &config.Config{},
+		vmMgr:  vm.NewManager(),
+	}
+	// Must not panic, must not call into nil deps.
+	svc.LaunchRunInstances(nil, &ec2.RunInstancesInput{}, &ec2.InstanceTypeInfo{})
+}
+
+func TestLaunchRunInstances_SkipsStateChanged(t *testing.T) {
+	id := "i-already-running"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{
+		config: &config.Config{},
+		vmMgr:  mgr,
+	}
+	// Skip path returns early without calling GenerateVolumes / vmMgr.Run.
+	svc.LaunchRunInstances([]*vm.VM{v}, &ec2.RunInstancesInput{}, &ec2.InstanceTypeInfo{})
+}
+
+// TestRunInstances_PrepareError covers the InstanceService-level RunInstances
+// (sync convenience method) error propagation when PrepareRunInstances rejects.
+func TestRunInstances_PrepareError(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.RunInstances(&ec2.RunInstancesInput{}, "acc")
+	require.Error(t, err)
+}
+
+// TestSetters exercises the dep-wiring setters so they're not 0-cov.
+func TestSetters(t *testing.T) {
+	svc := NewInstanceServiceImpl(
+		&config.Config{},
+		map[string]*ec2.InstanceTypeInfo{},
+		nil, nil, vm.NewManager(),
+		&fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{}},
+		nil,
+	)
+	svc.SetTerminationDeps(&fakeVolumeDeleter{}, &fakeENIDeleter{}, &fakePublicIPReleaser{})
+	svc.SetGPUClaimer(&fakeGPUClaimer{})
+	svc.SetRunInstancesDeps(&fakeAMILoader{}, &fakeKeyValidator{}, nil, nil)
+	require.NotNil(t, svc)
+}

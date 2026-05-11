@@ -553,7 +553,9 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true}
+			// Connected NATS satisfies the 1c cluster-available gate so the
+			// request reaches the per-service malformed-query parser.
+			gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t)}
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
 			ctx := context.WithValue(req.Context(), ctxService, tc.service)
 			ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
@@ -571,7 +573,7 @@ func TestRequest_MalformedQueryString_EndToEnd(t *testing.T) {
 }
 
 func TestRequest_EC2MissingAction(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: connectedNATS(t)}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := context.WithValue(req.Context(), ctxService, "ec2")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
@@ -587,7 +589,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 }
 
 func TestRequest_IAMNilService(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: nil}
+	gw := &GatewayConfig{DisableLogging: true, IAMService: nil, NATSConn: connectedNATS(t)}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
@@ -600,6 +602,17 @@ func TestRequest_IAMNilService(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, 500, resp.StatusCode)
 	assert.Contains(t, string(body), "InternalError")
+}
+
+// connectedNATS returns a live test NATS connection for short-circuit-bypass
+// tests that exercise per-service handlers without actually publishing.
+func connectedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	ns, _ := testutil.StartTestNATS(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	return nc
 }
 
 func TestRequest_AccountReturns200(t *testing.T) {
@@ -1267,4 +1280,61 @@ func TestThrottleMiddleware_PerActionIsolation(t *testing.T) {
 	// RunInstances should be independent.
 	resp = makeReq("RunInstances")
 	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestRequest_ClusterUnavailableNilConn_EC2(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxService, "ec2")
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	gw.Request(w, req)
+	resp := w.Result()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "<Code>ServiceUnavailable</Code>")
+	assert.Contains(t, xmlStr, "cluster unavailable: NATS disconnected")
+	assert.Contains(t, xmlStr, "/local/status")
+	assert.Contains(t, xmlStr, "<Response>") // EC2 XML envelope
+}
+
+func TestRequest_ClusterUnavailableNilConn_IAM(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxService, "iam")
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	gw.Request(w, req)
+	resp := w.Result()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	assert.Contains(t, xmlStr, "<Code>ServiceUnavailable</Code>")
+	assert.Contains(t, xmlStr, "<ErrorResponse>") // IAM XML envelope
+}
+
+func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
+	ns, _ := testutil.StartTestNATS(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	nc.Close()
+
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), ctxService, "ec2")
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	gw.Request(w, req)
+	resp := w.Result()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }

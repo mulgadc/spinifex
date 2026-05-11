@@ -73,6 +73,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 
 	cfg := &config.Config{
 		BaseDir: tmpDir,
+		DataDir: tmpDir,
 		WalDir:  tmpDir,
 		NATS: config.NATSConfig{
 			Host: natsURL,
@@ -102,8 +103,11 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	daemon.natsConn = nc
 	daemon.detachDelay = 0 // Skip sleep in tests
 
-	// Initialize services (needed for handler tests)
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore())
+	// Initialize services (needed for handler tests).
+	// jsManager is nil here; pass a nil literal to keep the StoppedInstanceStore
+	// interface itself nil (rather than a typed-nil pointer) so the service can
+	// short-circuit cleanly when no KV is available.
+	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr, nil)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nc)
 
 	// Wire the minimum vm.Deps that handler tests rely on. Lifecycle (Run/Start/
@@ -393,6 +397,7 @@ func TestDaemon_Initialization(t *testing.T) {
 
 	cfg := &config.Config{
 		BaseDir: tmpDir,
+		DataDir: tmpDir,
 		WalDir:  tmpDir,
 		NATS: config.NATSConfig{
 			Host: "nats://localhost:4222",
@@ -939,11 +944,11 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	// Create daemon with NATS connection
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
-		Nodes: map[string]config.Config{"node-1": {BaseDir: tmpDir}},
+		Nodes: map[string]config.Config{"node-1": {BaseDir: tmpDir, DataDir: tmpDir}},
 	}
 	daemon, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
-	daemon.config = &config.Config{BaseDir: tmpDir}
+	daemon.config = &config.Config{BaseDir: tmpDir, DataDir: tmpDir}
 
 	// Connect to NATS and initialize JetStream
 	nc, err := nats.Connect(natsURL)
@@ -956,14 +961,14 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	err = daemon.jsManager.InitKVBucket()
 	require.NoError(t, err)
 
-	// Pre-populate JetStream with test state
-	err = daemon.jsManager.WriteState("node-1", vms)
+	// Pre-populate the local state file with test state. Post-1a, LoadState
+	// reads from the local file (KV is best-effort cache only).
+	err = WriteLocalState(daemon.localStatePath(), vms)
 	require.NoError(t, err)
 
-	// Manually trigger the load and allocation logic normally found in Start()
-	loaded, err := daemon.jsManager.LoadState(daemon.node)
+	// Manually trigger the LoadState and allocation logic normally found in Start()
+	err = daemon.LoadState()
 	require.NoError(t, err)
-	daemon.vmMgr.Replace(loaded)
 
 	// Simulate the allocation loop in Start()
 	for _, instance := range daemon.vmMgr.Snapshot() {
@@ -3020,13 +3025,68 @@ func TestInstanceTypeMemoryMiB_NilSafety(t *testing.T) {
 	}))
 }
 
-// --- Daemon.WriteState nil jsManager ---
+// --- Daemon.WriteState / Daemon.LoadState nil jsManager ---
+//
+// Post-1a: local file is the source of truth, KV is best-effort. A nil
+// jsManager is a valid configuration (e.g. standalone daemon, fresh install
+// before NATS is up) and must not block local persistence.
 
 func TestDaemon_WriteState_NilJSManager(t *testing.T) {
-	d := &Daemon{jsManager: nil}
-	err := d.WriteState()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "JetStream manager not initialized")
+	tmpDir := t.TempDir()
+	d := &Daemon{
+		jsManager: nil,
+		config:    &config.Config{DataDir: tmpDir},
+		vmMgr:     vm.NewManager(),
+	}
+	d.vmMgr.Insert(&vm.VM{ID: "i-1"})
+	require.NoError(t, d.WriteState())
+
+	state, err := ReadLocalState(LocalStatePath(tmpDir))
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.Contains(t, state.VMS, "i-1")
+}
+
+func TestDaemon_LoadState_NilJSManager(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, WriteLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
+		"i-seed": {ID: "i-seed"},
+	}))
+
+	d := &Daemon{
+		jsManager: nil,
+		config:    &config.Config{DataDir: tmpDir},
+		vmMgr:     vm.NewManager(),
+	}
+	require.NoError(t, d.LoadState())
+	_, ok := d.vmMgr.Get("i-seed")
+	assert.True(t, ok)
+}
+
+func TestDaemon_LoadState_MissingFileIsFreshInstall(t *testing.T) {
+	d := &Daemon{
+		jsManager: nil,
+		config:    &config.Config{DataDir: t.TempDir()},
+		vmMgr:     vm.NewManager(),
+	}
+	require.NoError(t, d.LoadState())
+	assert.Equal(t, 0, d.vmMgr.Count())
+}
+
+func TestDaemon_LoadState_CorruptFileFatal(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := LocalStatePath(tmpDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+
+	d := &Daemon{
+		jsManager: nil,
+		config:    &config.Config{DataDir: tmpDir},
+		vmMgr:     vm.NewManager(),
+	}
+	err := d.LoadState()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read local state")
 }
 
 // --- GetAvailableInstanceTypeInfos edge cases ---
@@ -3688,6 +3748,7 @@ func TestClusterManager_TLSServesHTTPS(t *testing.T) {
 		Nodes: map[string]config.Config{
 			"node-1": {
 				BaseDir: tmpDir,
+				DataDir: tmpDir,
 				Daemon: config.DaemonConfig{
 					Host:    addr,
 					TLSCert: certPath,

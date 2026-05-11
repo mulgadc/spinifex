@@ -2,6 +2,7 @@ package viperblockd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,6 +22,52 @@ import (
 
 	"github.com/nats-io/nats.go"
 )
+
+// loadStateRetryAttempts and loadStateRetryBaseDelay tune the mount-time
+// retry loop for transient backend errors (predastore restarting, NATS
+// disconnect, etc.). 5 attempts at 200ms * 1.5^n caps total wait at ~3.7s,
+// well under the daemon's 30s ebs.mount NATS timeout. See mulga-siv-25.
+const (
+	loadStateRetryAttempts  = 5
+	loadStateRetryBaseDelay = 200 * time.Millisecond
+)
+
+// retryLoadState invokes loadFn up to attempts times, retrying with
+// exponential backoff (delay * 3/2 each step) only when the returned error
+// is viperblock.ErrStateBackendUnavailable. Success, ErrStateNotFound, and
+// any unclassified error return immediately so callers see them. Extracted
+// for unit testability — see loadStateWithRetry for the production caller.
+func retryLoadState(volume string, attempts int, baseDelay time.Duration, sleep func(time.Duration), loadFn func() error) error {
+	delay := baseDelay
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err = loadFn()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("LoadState succeeded after retry",
+					"volume", volume, "attempt", attempt)
+			}
+			return nil
+		}
+		if !errors.Is(err, viperblock.ErrStateBackendUnavailable) {
+			return err
+		}
+		if attempt == attempts {
+			break
+		}
+		slog.Warn("LoadState transient failure, retrying",
+			"volume", volume, "attempt", attempt, "delay", delay, "err", err)
+		sleep(delay)
+		delay = delay * 3 / 2
+	}
+	return fmt.Errorf("LoadState exhausted %d retries: %w", attempts, err)
+}
+
+// loadStateWithRetry calls vb.LoadState with the production retry budget
+// (loadStateRetryAttempts / loadStateRetryBaseDelay).
+func loadStateWithRetry(vb *viperblock.VB, volume string) error {
+	return retryLoadState(volume, loadStateRetryAttempts, loadStateRetryBaseDelay, time.Sleep, vb.LoadState)
+}
 
 var serviceName = "viperblock"
 
@@ -463,8 +510,10 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		// Next, connect to the volume and confirm the state
-		// First, fetch the state from the remote backend
-		err = vb.LoadState()
+		// First, fetch the state from the remote backend. Retry on transient
+		// backend errors (predastore restart races, NATS hiccups) so daemon
+		// recovery doesn't tip a healthy volume into the cleanup path.
+		err = loadStateWithRetry(vb, ebsRequest.Name)
 
 		if err != nil {
 			ebsResponse.Error = err.Error()

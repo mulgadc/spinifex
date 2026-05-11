@@ -2,9 +2,10 @@ import { defineConfig } from "oxlint"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
 import remix from "ultracite/oxlint/remix"
+import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, remix],
+  extends: [core, react, remix, vitest],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -31,6 +32,7 @@ export default defineConfig({
         allowArrowFunctions: true,
       },
     ],
+    "eslint/no-console": "error",
     "eslint/no-plusplus": ["error", { allowForLoopAfterthoughts: true }],
     "eslint/no-use-before-define": "off",
     "eslint/prefer-destructuring": "off",
@@ -65,6 +67,7 @@ export default defineConfig({
         "**/*.{test,spec}.{ts,tsx,js,jsx}",
         "**/__tests__/**/*.{ts,tsx,js,jsx}",
       ],
+      plugins: ["vitest"],
       rules: {
         "eslint/require-await": "off",
         "import/first": "off",
@@ -74,6 +77,11 @@ export default defineConfig({
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-type-assertion": "off",
         "unicorn/no-useless-undefined": "off",
+        "vitest/max-expects": "off",
+        "vitest/prefer-called-with": "off",
+        "vitest/prefer-describe-function-title": "off",
+        "vitest/prefer-import-in-mock": "off",
+        "vitest/require-mock-type-parameters": "off",
       },
     },
   ],

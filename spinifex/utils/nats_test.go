@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,10 +10,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -572,4 +576,248 @@ func TestConnectNATSWithRetry_TLSErrorNoRetry(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCACertRead)
 	assert.Contains(t, err.Error(), "NATS TLS configuration error")
 	assert.Less(t, elapsed, time.Second, "should fail immediately without retrying")
+}
+
+// --- Disconnect/Reconnect callback tests ---
+
+func TestConnectNATS_DisconnectCallbackFires(t *testing.T) {
+	ns := startTestNATSServer(t)
+
+	disconnected := make(chan struct{}, 1)
+	nc, err := ConnectNATS(ns.ClientURL(), "", "",
+		WithDisconnectHandler(func(_ *nats.Conn, _ error) {
+			select {
+			case disconnected <- struct{}{}:
+			default:
+			}
+		}),
+	)
+	require.NoError(t, err)
+	defer nc.Close()
+	require.True(t, nc.IsConnected())
+
+	ns.Shutdown()
+
+	select {
+	case <-disconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("disconnect callback did not fire")
+	}
+}
+
+func TestConnectNATS_ReconnectCallbackFires(t *testing.T) {
+	// Pin the test NATS to a specific port so we can restart it on the same URL.
+	port := freePort(t)
+	ns := startTestNATSOnPort(t, port)
+
+	reconnected := make(chan struct{}, 1)
+	nc, err := ConnectNATS(ns.ClientURL(), "", "",
+		WithReconnectHandler(func(_ *nats.Conn) {
+			select {
+			case reconnected <- struct{}{}:
+			default:
+			}
+		}),
+	)
+	require.NoError(t, err)
+	defer nc.Close()
+	require.True(t, nc.IsConnected())
+
+	ns.Shutdown()
+	// Wait until the client noticed the drop so the reconnect path runs.
+	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
+
+	startTestNATSOnPort(t, port)
+
+	select {
+	case <-reconnected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect callback did not fire")
+	}
+}
+
+// --- Fast-fail when disconnected ---
+
+func TestNATSRequest_DisconnectedFastFail(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := ConnectNATS(ns.ClientURL(), "", "")
+	require.NoError(t, err)
+	defer nc.Close()
+
+	ns.Shutdown()
+	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
+
+	start := time.Now()
+	_, err = NATSRequest[map[string]any](nc, "ec2.Describe", struct{}{}, 5*time.Second, "")
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, ErrClusterUnavailable)
+	assert.Less(t, elapsed, 500*time.Millisecond, "should bail before per-call timeout")
+}
+
+func TestNATSScatterGather_DisconnectedFastFail(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := ConnectNATS(ns.ClientURL(), "", "")
+	require.NoError(t, err)
+	defer nc.Close()
+
+	ns.Shutdown()
+	require.Eventually(t, func() bool { return !nc.IsConnected() }, 3*time.Second, 50*time.Millisecond)
+
+	start := time.Now()
+	_, err = NATSScatterGather[map[string]any](nc, "ec2.Describe", struct{}{}, 5*time.Second, 0, "")
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, ErrClusterUnavailable)
+	assert.Less(t, elapsed, 500*time.Millisecond, "should bail before fan-out timeout")
+}
+
+// --- 1c fail-fast tests: NATS request helpers reject when conn is down ---
+
+func TestNATSRequest_NilConn_ReturnsClusterUnavailable(t *testing.T) {
+	type Resp struct{}
+	_, err := NATSRequest[Resp](nil, "test.never", struct{}{}, 50*time.Millisecond, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrClusterUnavailable)
+}
+
+func TestNATSRequest_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	nc.Close()
+
+	type Resp struct{}
+	_, err = NATSRequest[Resp](nc, "test.never", struct{}{}, 50*time.Millisecond, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrClusterUnavailable)
+}
+
+func TestNATSScatterGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
+	type Resp struct{}
+	_, err := NATSScatterGather[Resp](nil, "test.never", struct{}{}, 50*time.Millisecond, 1, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrClusterUnavailable)
+}
+
+func TestNATSScatterGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	nc.Close()
+
+	type Resp struct{}
+	_, err = NATSScatterGather[Resp](nc, "test.never", struct{}{}, 50*time.Millisecond, 1, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrClusterUnavailable)
+}
+
+// --- 1c callback hook plumbing: WithDisconnectHandler / WithReconnectHandler ---
+
+func TestConnectNATS_DisconnectReconnectCallbacks(t *testing.T) {
+	port := freePort(t)
+	ns := startTestNATSOnPort(t, port)
+
+	disconnects := make(chan struct{}, 4)
+	reconnects := make(chan struct{}, 4)
+
+	nc, err := ConnectNATS("nats://127.0.0.1:"+strconv.Itoa(port), "", "",
+		WithDisconnectHandler(func(_ *nats.Conn, _ error) { disconnects <- struct{}{} }),
+		WithReconnectHandler(func(_ *nats.Conn) { reconnects <- struct{}{} }),
+	)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	ns.Shutdown()
+	select {
+	case <-disconnects:
+	case <-time.After(3 * time.Second):
+		t.Fatal("disconnect callback never fired")
+	}
+
+	startTestNATSOnPort(t, port)
+	select {
+	case <-reconnects:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect callback never fired")
+	}
+}
+
+// --- helpers for restartable NATS server ---
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr, ok := l.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	port := addr.Port
+	require.NoError(t, l.Close())
+	return port
+}
+
+func startTestNATSOnPort(t *testing.T, port int) *server.Server {
+	t.Helper()
+	opts := &server.Options{
+		Host:   "127.0.0.1",
+		Port:   port,
+		NoLog:  true,
+		NoSigs: true,
+	}
+	ns, err := server.NewServer(opts)
+	require.NoError(t, err)
+	go ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { ns.Shutdown() })
+	return ns
+}
+
+// TestConnectNATSWithRetry_LogEscalatesPastThreshold drives ConnectNATSWithRetry
+// against a closed port with a tight retry loop until the attempt count exceeds
+// natsRetryEscalateAttempt, then asserts that at least one escalated slog.Error
+// line was emitted with disconnected_for context (rate-limited to once per
+// minute) while earlier attempts stayed at slog.Warn.
+func TestConnectNATSWithRetry_LogEscalatesPastThreshold(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	_, err := ConnectNATSWithRetry("nats://127.0.0.1:1", "", "",
+		WithRetryDelay(1*time.Millisecond),
+		WithMaxRetryDelay(1*time.Millisecond),
+		WithMaxWait(300*time.Millisecond),
+	)
+	require.Error(t, err)
+
+	logs := buf.String()
+	warnCount := strings.Count(logs, "level=WARN msg=\"NATS not ready, retrying...\"")
+	errCount := strings.Count(logs, "level=ERROR msg=\"NATS still disconnected\"")
+
+	assert.GreaterOrEqual(t, warnCount, 1, "expect warn logs for first 30 attempts")
+	assert.GreaterOrEqual(t, errCount, 1, "expect at least one escalated error log past the threshold")
+	assert.LessOrEqual(t, errCount, 2, "rate-limited to once per minute, so a sub-second test should see at most one or two")
+	assert.Contains(t, logs, "disconnected_for=", "escalated error should include disconnected_for")
+}
+
+// TestConnectNATSWithRetry_NoEscalation_BelowThreshold keeps the attempt count
+// under natsRetryEscalateAttempt and checks that no escalated slog.Error line
+// is produced.
+func TestConnectNATSWithRetry_NoEscalation_BelowThreshold(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	// Exponential backoff capped at 5ms × maxWait 50ms = ≲15 attempts < 30.
+	_, err := ConnectNATSWithRetry("nats://127.0.0.1:1", "", "",
+		WithRetryDelay(5*time.Millisecond),
+		WithMaxRetryDelay(5*time.Millisecond),
+		WithMaxWait(50*time.Millisecond),
+	)
+	require.Error(t, err)
+
+	logs := buf.String()
+	assert.NotContains(t, logs, "NATS still disconnected", "should not escalate before threshold")
+	assert.Contains(t, logs, "NATS not ready, retrying...", "should still log warn lines")
 }

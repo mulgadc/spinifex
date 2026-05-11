@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({})
 
@@ -35,10 +35,6 @@ function wrapper({ children }: { children: ReactNode }) {
   )
 }
 
-afterEach(() => {
-  mockSend.mockClear()
-})
-
 function createQueryClient() {
   queryClient = new QueryClient({
     defaultOptions: {
@@ -64,8 +60,8 @@ describe("useModifyLoadBalancerAttributes", () => {
       ],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb:1",
       Attributes: [
         { Key: "deletion_protection.enabled", Value: "true" },
@@ -87,8 +83,8 @@ describe("useModifyTargetGroupAttributes", () => {
       attributes: [{ key: "stickiness.enabled", value: "true" }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: TG_ARN,
       Attributes: [{ Key: "stickiness.enabled", Value: "true" }],
     })
@@ -102,8 +98,8 @@ describe("useDeleteLoadBalancer", () => {
 
     result.current.mutate("arn:aws:elasticloadbalancing:lb/app/foo/abc")
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:aws:elasticloadbalancing:lb/app/foo/abc",
     })
   })
@@ -116,8 +112,8 @@ describe("useDeleteTargetGroup", () => {
 
     result.current.mutate("arn:aws:elasticloadbalancing:tg/app/foo/abc")
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: "arn:aws:elasticloadbalancing:tg/app/foo/abc",
     })
   })
@@ -148,8 +144,8 @@ describe("useCreateTargetGroup", () => {
 
     result.current.mutate(baseParams)
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Name: "my-tg",
       Protocol: "HTTP",
       Port: 80,
@@ -179,8 +175,8 @@ describe("useCreateTargetGroup", () => {
       ],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input.Tags).toEqual([
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.Tags).toStrictEqual([
       { Key: "env", Value: "prod" },
     ])
   })
@@ -199,8 +195,8 @@ describe("useCreateLoadBalancer", () => {
       tags: [{ key: "env", value: "prod" }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Name: "my-alb",
       Scheme: "internet-facing",
       Type: "application",
@@ -223,7 +219,7 @@ describe("useCreateLoadBalancer", () => {
       tags: [],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     const input = mockSend.mock.calls[0]?.[0].input
     expect(input.SecurityGroups).toBeUndefined()
     expect(input.Tags).toBeUndefined()
@@ -242,8 +238,8 @@ describe("useCreateListener", () => {
       defaultTargetGroupArn: "arn:tg:1",
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:lb:1",
       Protocol: "HTTP",
       Port: 80,
@@ -262,8 +258,8 @@ describe("useRegisterTargets", () => {
       targets: [{ id: "i-aaa" }, { id: "i-bbb" }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: TG_ARN,
       Targets: [
         { Id: "i-aaa", Port: undefined },
@@ -281,8 +277,8 @@ describe("useRegisterTargets", () => {
       targets: [{ id: "i-aaa", port: 8080 }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input.Targets).toEqual([
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input.Targets).toStrictEqual([
       { Id: "i-aaa", Port: 8080 },
     ])
   })
@@ -298,8 +294,8 @@ describe("useDeregisterTargets", () => {
       targets: [{ id: "i-aaa", port: 80 }],
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       TargetGroupArn: TG_ARN,
       Targets: [{ Id: "i-aaa", Port: 80 }],
     })
@@ -313,8 +309,8 @@ describe("useDeleteListener", () => {
 
     result.current.mutate("arn:listener:1")
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(mockSend.mock.calls[0]?.[0].input).toEqual({
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       ListenerArn: "arn:listener:1",
     })
   })
@@ -373,7 +369,7 @@ describe("useCreateLoadBalancerWizard", () => {
       },
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(result.current.data?.error).toBeUndefined()
     expect(result.current.data?.loadBalancerArn).toBe("arn:lb:new")
     expect(result.current.data?.created).toHaveLength(3)
@@ -402,7 +398,7 @@ describe("useCreateLoadBalancerWizard", () => {
       },
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(mockSend).toHaveBeenCalledTimes(2)
     expect(result.current.data?.created).toHaveLength(2)
   })
@@ -429,10 +425,10 @@ describe("useCreateLoadBalancerWizard", () => {
       },
     })
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(result.current.data?.error?.message).toBe("lb boom")
     expect(result.current.data?.failedStep).toBe("creating load balancer")
-    expect(result.current.data?.created).toEqual([
+    expect(result.current.data?.created).toStrictEqual([
       { type: "Target Group", id: "arn:tg:new" },
     ])
     expect(result.current.data?.loadBalancerArn).toBeUndefined()

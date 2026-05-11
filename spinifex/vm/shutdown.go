@@ -173,6 +173,60 @@ func (m *Manager) MarkFailed(instance *VM, reason string) {
 	}()
 }
 
+// MarkRecoveryFailed handles the case where daemon-restart recovery cannot
+// bring a previously-running instance back online (Run error during
+// relaunch, or QMP reconnect failure on a surviving QEMU). It transitions
+// the instance to StateError with a Server.RecoveryFailed StateReason,
+// then runs the non-destructive cleanup chain (graceful unmount + tap
+// teardown + GPU release + resource deallocation) in a goroutine. Unlike
+// MarkFailed, it does NOT delete volumes, release public IPs, detach
+// ENIs, or remove placement-group membership — those resources are
+// preserved so the operator can either retry recovery or issue an
+// explicit ec2.TerminateInstances (which will then honour
+// DeleteOnTermination as normal). The instance stays in the local map
+// and OnInstanceDown is NOT fired so the ec2.cmd.<id> subscription
+// remains live for operator action.
+func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
+	skip := false
+	var observed InstanceState
+	m.Inspect(instance, func(v *VM) {
+		observed = v.Status
+		if v.Status == StateError || v.Status == StateShuttingDown || v.Status == StateTerminated {
+			skip = true
+			return
+		}
+		if v.Instance != nil {
+			v.Instance.StateReason = &ec2.StateReason{
+				Code:    aws.String("Server.RecoveryFailed"),
+				Message: aws.String(reason),
+			}
+		}
+	})
+	if skip {
+		slog.Info("MarkRecoveryFailed: instance already in terminal/cleanup state, skipping",
+			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		return
+	}
+
+	if err := m.transitionWithPrecheck(instance, StateError); err != nil {
+		slog.Error("MarkRecoveryFailed transition failed", "instanceId", instance.ID, "err", err)
+		if m.Status(instance) != StateError {
+			return
+		}
+	}
+	slog.Error("Instance marked recovery_failed; volumes and ENIs preserved for operator action",
+		"instanceId", instance.ID, "reason", reason)
+
+	go func() {
+		m.stopCleanup(instance)
+		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
+		if err := m.writeRunningState(); err != nil {
+			slog.Error("Failed to persist state after recovery failure",
+				"instanceId", instance.ID, "err", err)
+		}
+	}()
+}
+
 // finalizeTerminated transitions instance to terminated, writes the
 // terminated KV entry, removes the instance from the local map, fires
 // OnInstanceDown, and persists the running set. Shared by Terminate and

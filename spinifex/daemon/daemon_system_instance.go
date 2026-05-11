@@ -225,7 +225,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				vpcID = *result.NetworkInterfaces[0].VpcId
 			}
 			portName := "port-" + instance.ENIId
-			d.publishNATEvent("vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+			utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
 			instance.PublicIP = publicIP
 			instance.PublicIPPool = poolName
 			slog.Info("LaunchSystemInstance: allocated public IP via direct IPAM",

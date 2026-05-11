@@ -8,7 +8,15 @@ Wants=spinifex-nats.service
 Type=simple
 User=spinifex-daemon
 Group=spinifex
-ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
+# DDIL Tier 1 (siv-17): no ExecStartPre wait-for-nats. The daemon starts in
+# standalone mode and reconnects to NATS in the background — process-exiting
+# on a missing NATS would kill the local VM management plane.
+#
+# Opt-in strict-startup (§1d-strict, siv-44): set SPINIFEX_REQUIRE_NATS=1 to
+# restore pre-DDIL fail-fast UX. First NATS connect uses a ~30s bounded retry
+# and the daemon aborts on timeout. Intended for dev/test/single-node deploys
+# where silent NATS misconfig is more confusing than helpful. Do NOT set this
+# in the shipped unit — it re-introduces the SPOF that Tier 1 removed.
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5

@@ -8,16 +8,18 @@ function wrapper({ children }: { children: ReactNode }) {
   return <ThemeProvider defaultTheme="light">{children}</ThemeProvider>
 }
 
-beforeEach(() => {
+function setupThemeEnv() {
   localStorage.clear()
   document.documentElement.classList.remove("light", "dark")
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockReturnValue({ matches: false }),
   })
-})
+}
 
 describe("ThemeProvider", () => {
+  beforeEach(setupThemeEnv)
+
   it("renders children", () => {
     render(
       <ThemeProvider>
@@ -33,7 +35,7 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("light")).toBe(true)
+    expect(document.documentElement.classList.contains("light")).toBeTruthy()
   })
 
   it("applies dark class to documentElement", () => {
@@ -42,7 +44,7 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
+    expect(document.documentElement.classList.contains("dark")).toBeTruthy()
   })
 
   it("uses system theme when set to system", () => {
@@ -55,7 +57,7 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
+    expect(document.documentElement.classList.contains("dark")).toBeTruthy()
   })
 
   it("reads stored theme from localStorage", () => {
@@ -65,7 +67,7 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
+    expect(document.documentElement.classList.contains("dark")).toBeTruthy()
   })
 
   it("ignores invalid stored theme", () => {
@@ -75,7 +77,7 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("light")).toBe(true)
+    expect(document.documentElement.classList.contains("light")).toBeTruthy()
   })
 
   it("uses custom storageKey", () => {
@@ -85,11 +87,13 @@ describe("ThemeProvider", () => {
         <p>Test</p>
       </ThemeProvider>,
     )
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
+    expect(document.documentElement.classList.contains("dark")).toBeTruthy()
   })
 })
 
 describe("useTheme", () => {
+  beforeEach(setupThemeEnv)
+
   it("throws when used outside ThemeProvider", () => {
     expect(() => renderHook(() => useTheme())).toThrow(
       "useTheme must be used within a ThemeProvider",
@@ -114,13 +118,13 @@ describe("useTheme", () => {
 
   it("removes previous class when theme changes", () => {
     const { result } = renderHook(() => useTheme(), { wrapper })
-    expect(document.documentElement.classList.contains("light")).toBe(true)
+    expect(document.documentElement.classList.contains("light")).toBeTruthy()
 
     act(() => {
       result.current.setTheme("dark")
     })
 
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
-    expect(document.documentElement.classList.contains("light")).toBe(false)
+    expect(document.documentElement.classList.contains("dark")).toBeTruthy()
+    expect(document.documentElement.classList.contains("light")).toBeFalsy()
   })
 })

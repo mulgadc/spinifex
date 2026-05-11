@@ -87,11 +87,29 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 	case command.Attributes.DetachVolume:
 		d.handleDetachVolume(msg, command, instance)
 	case command.Attributes.StartInstance:
-		d.handleStartInstance(msg, command, instance)
+		if err := d.instanceService.StartInstance(instance, command); err != nil {
+			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			return
+		}
+		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
+			slog.Error("Failed to respond to NATS request", "err", err)
+		}
 	case command.Attributes.RebootInstance:
-		d.handleRebootInstance(msg, command, instance)
+		if err := d.instanceService.RebootInstance(instance, command); err != nil {
+			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			return
+		}
+		if err := msg.Respond([]byte(`{}`)); err != nil {
+			slog.Error("Failed to respond to NATS request", "err", err)
+		}
 	case command.Attributes.StopInstance, command.Attributes.TerminateInstance:
-		d.handleStopOrTerminateInstance(msg, command, instance)
+		if err := d.instanceService.StopOrTerminateInstance(instance, command); err != nil {
+			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+			return
+		}
+		if err := msg.Respond([]byte(`{}`)); err != nil {
+			slog.Error("Failed to respond to NATS request", "err", err)
+		}
 	default:
 		slog.Warn("Unhandled EC2 instance command", "id", command.ID, "attributes", command.Attributes)
 		respondWithError(msg, awserrors.ErrorServerInternal)

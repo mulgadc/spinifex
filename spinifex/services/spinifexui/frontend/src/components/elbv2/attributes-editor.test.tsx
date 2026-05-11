@@ -156,7 +156,7 @@ describe("AttributesEditor", () => {
     expect(lbKeys).toContain("connection_logs.s3.prefix")
 
     const tgKeys = targetGroupAttributeSpecs.map((s) => s.key)
-    expect(tgKeys).toEqual([
+    expect(tgKeys).toStrictEqual([
       "deregistration_delay.timeout_seconds",
       "stickiness.enabled",
       "stickiness.type",

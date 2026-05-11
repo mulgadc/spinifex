@@ -3,23 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useCopyToClipboard } from "./use-copy-to-clipboard"
 
-beforeEach(() => {
-  vi.useFakeTimers()
-  Object.defineProperty(navigator, "clipboard", {
-    value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    writable: true,
-    configurable: true,
-  })
-})
-
-afterEach(() => {
-  vi.useRealTimers()
-})
-
 describe("useCopyToClipboard", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it("starts with copied as false", () => {
     const { result } = renderHook(() => useCopyToClipboard())
-    expect(result.current.copied).toBe(false)
+    expect(result.current.copied).toBeFalsy()
   })
 
   it("sets copied to true after calling copy", async () => {
@@ -31,7 +31,7 @@ describe("useCopyToClipboard", () => {
 
     // oxlint-disable-next-line typescript/unbound-method -- vitest mock
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("hello")
-    expect(result.current.copied).toBe(true)
+    expect(result.current.copied).toBeTruthy()
   })
 
   it("resets copied to false after 2 seconds", async () => {
@@ -40,12 +40,12 @@ describe("useCopyToClipboard", () => {
     await act(async () => {
       await result.current.copy("hello")
     })
-    expect(result.current.copied).toBe(true)
+    expect(result.current.copied).toBeTruthy()
 
     act(() => {
       vi.advanceTimersByTime(2000)
     })
-    expect(result.current.copied).toBe(false)
+    expect(result.current.copied).toBeFalsy()
   })
 
   it("resets the timer on rapid successive copies", async () => {
@@ -59,7 +59,7 @@ describe("useCopyToClipboard", () => {
     act(() => {
       vi.advanceTimersByTime(1500)
     })
-    expect(result.current.copied).toBe(true)
+    expect(result.current.copied).toBeTruthy()
 
     await act(async () => {
       await result.current.copy("second")
@@ -69,13 +69,13 @@ describe("useCopyToClipboard", () => {
     act(() => {
       vi.advanceTimersByTime(1500)
     })
-    expect(result.current.copied).toBe(true)
+    expect(result.current.copied).toBeTruthy()
 
     // 2s after second copy — should reset
     act(() => {
       vi.advanceTimersByTime(500)
     })
-    expect(result.current.copied).toBe(false)
+    expect(result.current.copied).toBeFalsy()
   })
 
   it("clears the timer on unmount", async () => {
@@ -87,9 +87,10 @@ describe("useCopyToClipboard", () => {
 
     unmount()
 
-    // Advancing time after unmount should not throw
-    act(() => {
-      vi.advanceTimersByTime(2000)
-    })
+    expect(() => {
+      act(() => {
+        vi.advanceTimersByTime(2000)
+      })
+    }).not.toThrow()
   })
 })

@@ -88,54 +88,54 @@ describe("calculateSubnetCidrs", () => {
 
 describe("cidrsOverlap", () => {
   it("detects overlapping CIDRs", () => {
-    expect(cidrsOverlap("10.0.0.0/20", "10.0.8.0/24")).toBe(true)
+    expect(cidrsOverlap("10.0.0.0/20", "10.0.8.0/24")).toBeTruthy()
   })
 
   it("returns false for non-overlapping CIDRs", () => {
-    expect(cidrsOverlap("10.0.0.0/20", "10.0.128.0/20")).toBe(false)
+    expect(cidrsOverlap("10.0.0.0/20", "10.0.128.0/20")).toBeFalsy()
   })
 
   it("detects identical CIDRs as overlapping", () => {
-    expect(cidrsOverlap("10.0.0.0/20", "10.0.0.0/20")).toBe(true)
+    expect(cidrsOverlap("10.0.0.0/20", "10.0.0.0/20")).toBeTruthy()
   })
 })
 
 describe("cidrContains", () => {
   it("returns true when subnet fits inside VPC", () => {
-    expect(cidrContains("10.0.0.0/16", "10.0.0.0/20")).toBe(true)
+    expect(cidrContains("10.0.0.0/16", "10.0.0.0/20")).toBeTruthy()
   })
 
   it("returns false when subnet exceeds VPC range", () => {
-    expect(cidrContains("10.0.0.0/16", "10.1.0.0/20")).toBe(false)
+    expect(cidrContains("10.0.0.0/16", "10.1.0.0/20")).toBeFalsy()
   })
 
   it("returns true for VPC containing itself", () => {
-    expect(cidrContains("10.0.0.0/16", "10.0.0.0/16")).toBe(true)
+    expect(cidrContains("10.0.0.0/16", "10.0.0.0/16")).toBeTruthy()
   })
 })
 
 describe("isValidCidr", () => {
   it("accepts valid /16 CIDR", () => {
-    expect(isValidCidr("10.0.0.0/16")).toBe(true)
+    expect(isValidCidr("10.0.0.0/16")).toBeTruthy()
   })
 
   it("accepts valid /28 CIDR", () => {
-    expect(isValidCidr("10.0.0.0/28")).toBe(true)
+    expect(isValidCidr("10.0.0.0/28")).toBeTruthy()
   })
 
   it("rejects /15 (too large)", () => {
-    expect(isValidCidr("10.0.0.0/15")).toBe(false)
+    expect(isValidCidr("10.0.0.0/15")).toBeFalsy()
   })
 
   it("rejects /29 (too small)", () => {
-    expect(isValidCidr("10.0.0.0/29")).toBe(false)
+    expect(isValidCidr("10.0.0.0/29")).toBeFalsy()
   })
 
   it("rejects invalid format", () => {
-    expect(isValidCidr("not-a-cidr")).toBe(false)
+    expect(isValidCidr("not-a-cidr")).toBeFalsy()
   })
 
   it("rejects octets > 255", () => {
-    expect(isValidCidr("256.0.0.0/16")).toBe(false)
+    expect(isValidCidr("256.0.0.0/16")).toBeFalsy()
   })
 })

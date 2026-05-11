@@ -3,7 +3,9 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1245,4 +1247,92 @@ func TestJetStreamManager_ListTerminatedInstances_SkipsVersionKey(t *testing.T) 
 	instances, err := jsm.ListTerminatedInstances()
 	require.NoError(t, err)
 	assert.Empty(t, instances)
+}
+
+// fakeKVObserver records observer callbacks for tests.
+type fakeKVObserver struct {
+	mu        sync.Mutex
+	successes []string
+	failures  []fakeKVObserverFailure
+}
+
+type fakeKVObserverFailure struct {
+	bucket string
+	err    error
+}
+
+func (f *fakeKVObserver) RecordKVSyncSuccess(bucket string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.successes = append(f.successes, bucket)
+}
+
+func (f *fakeKVObserver) RecordKVSyncFailure(bucket string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failures = append(f.failures, fakeKVObserverFailure{bucket: bucket, err: err})
+}
+
+func (f *fakeKVObserver) snapshot() ([]string, []fakeKVObserverFailure) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	successes := append([]string(nil), f.successes...)
+	failures := append([]fakeKVObserverFailure(nil), f.failures...)
+	return successes, failures
+}
+
+func TestJetStreamManager_BestEffort_Success_NotifiesObserver(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	obs := &fakeKVObserver{}
+	jsm.SetSyncObserver(obs)
+
+	jsm.WriteStateBytesBestEffort("obs-success", []byte(`{"vms":{}}`), 5*time.Second)
+
+	successes, failures := obs.snapshot()
+	require.Len(t, successes, 1)
+	assert.Equal(t, InstanceStateBucket, successes[0])
+	assert.Empty(t, failures)
+}
+
+func TestJetStreamManager_BestEffort_PutError_NotifiesObserver(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	obs := &fakeKVObserver{}
+	jsm.SetSyncObserver(obs)
+
+	// Closing the connection forces the inflight Put to fail without timing out.
+	nc.Close()
+
+	jsm.WriteStateBytesBestEffort("obs-fail", []byte(`{"vms":{}}`), 5*time.Second)
+
+	successes, failures := obs.snapshot()
+	assert.Empty(t, successes)
+	require.Len(t, failures, 1)
+	assert.Equal(t, InstanceStateBucket, failures[0].bucket)
+	assert.Error(t, failures[0].err)
+}
+
+func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc, 1)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	// No observer set — must not panic on success or failure paths.
+	jsm.WriteStateBytesBestEffort("obs-nil", []byte(`{"vms":{}}`), 5*time.Second)
 }

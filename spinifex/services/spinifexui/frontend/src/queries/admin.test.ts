@@ -31,7 +31,7 @@ function getQueryFn(opts: {
 
 describe("adminNodesQueryOptions", () => {
   it("has the correct query key", () => {
-    expect(adminNodesQueryOptions.queryKey).toEqual(["admin", "nodes"])
+    expect(adminNodesQueryOptions.queryKey).toStrictEqual(["admin", "nodes"])
   })
 
   it("throws when not authenticated", async () => {
@@ -57,7 +57,7 @@ describe("adminNodesQueryOptions", () => {
 
 describe("adminVMsQueryOptions", () => {
   it("has the correct query key", () => {
-    expect(adminVMsQueryOptions.queryKey).toEqual(["admin", "vms"])
+    expect(adminVMsQueryOptions.queryKey).toStrictEqual(["admin", "vms"])
   })
 
   it("throws when not authenticated", async () => {
@@ -83,7 +83,7 @@ describe("adminVMsQueryOptions", () => {
 
 describe("adminStorageStatusQueryOptions", () => {
   it("has the correct query key", () => {
-    expect(adminStorageStatusQueryOptions.queryKey).toEqual([
+    expect(adminStorageStatusQueryOptions.queryKey).toStrictEqual([
       "admin",
       "storageStatus",
     ])

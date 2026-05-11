@@ -48,11 +48,11 @@ function seedClient(opts: {
   return queryClient
 }
 
-afterEach(() => {
-  mockSend.mockReset()
-})
-
 describe("TargetsTab", () => {
+  afterEach(() => {
+    mockSend.mockReset()
+  })
+
   it("renders empty state when no targets registered", () => {
     const queryClient = seedClient({})
     render(
@@ -134,7 +134,7 @@ describe("TargetsTab", () => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(deregCallsBefore),
     )
     const deregCall = mockSend.mock.calls[deregCallsBefore]?.[0]
-    expect(deregCall.input).toEqual({
+    expect(deregCall.input).toStrictEqual({
       TargetGroupArn: TG_ARN,
       Targets: [{ Id: "i-aaa", Port: 80 }],
     })

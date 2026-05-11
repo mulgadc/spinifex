@@ -35,6 +35,15 @@ const (
 	TerminatedInstanceBucketVersion = 1
 )
 
+// KVSyncObserver receives best-effort KV sync outcomes from
+// WriteStateBytesBestEffort. Implementations must be safe for concurrent use
+// and must not block — callbacks run in the same goroutine that performed the
+// Put. nil observer is allowed.
+type KVSyncObserver interface {
+	RecordKVSyncSuccess(bucket string)
+	RecordKVSyncFailure(bucket string, err error)
+}
+
 // JetStreamManager manages JetStream KV store operations for instance state
 type JetStreamManager struct {
 	js           nats.JetStreamContext
@@ -43,6 +52,13 @@ type JetStreamManager struct {
 	terminatedKV nats.KeyValue // spinifex-terminated-instances
 	replicas     int
 	kvMu         sync.Mutex // protects kv during recovery
+	obs          KVSyncObserver
+}
+
+// SetSyncObserver registers obs to receive best-effort KV sync outcomes. Pass
+// nil to clear. Safe to call before or after Init*Bucket.
+func (m *JetStreamManager) SetSyncObserver(obs KVSyncObserver) {
+	m.obs = obs
 }
 
 // NewJetStreamManager creates a new JetStreamManager from a NATS connection.
@@ -396,14 +412,7 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 		return errors.New("KV bucket not initialized")
 	}
 
-	// Create a struct without the mutex to avoid copying the lock
-	state := struct {
-		VMS map[string]*vm.VM `json:"vms"`
-	}{
-		VMS: vms,
-	}
-
-	jsonData, err := json.Marshal(state)
+	jsonData, err := marshalInstanceState(vms)
 	if err != nil {
 		return err
 	}
@@ -428,6 +437,78 @@ func (m *JetStreamManager) WriteState(nodeID string, vms map[string]*vm.VM) erro
 
 	slog.Debug("Wrote state to JetStream KV", "key", key, "instances", len(vms))
 	return nil
+}
+
+// WriteStateBestEffort attempts to push instance state to KV with a deadline.
+// On timeout or error, it logs a warning and returns — never blocks the caller
+// past `timeout` and never returns an error. Used when the local state file is
+// the source of truth and KV is a best-effort cache. vms must be a snapshot
+// owned by the caller (e.g. from vm.Manager.SnapshotMap).
+//
+// Note: kv.Put has no context API. On timeout, the in-flight Put goroutine
+// continues and completes (or fails) on its own. This leaks at most one
+// goroutine per write; under sustained partition the leak is bounded by
+// WriteState call cadence (per-state-transition, not a tight loop).
+func (m *JetStreamManager) WriteStateBestEffort(nodeID string, vms map[string]*vm.VM, timeout time.Duration) {
+	if m.kv == nil {
+		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)
+		return
+	}
+
+	jsonData, err := marshalInstanceState(vms)
+	if err != nil {
+		slog.Warn("KV sync skipped: marshal failed", "node", nodeID, "err", err)
+		return
+	}
+
+	m.WriteStateBytesBestEffort(nodeID, jsonData, timeout)
+}
+
+// WriteStateBytesBestEffort behaves like WriteStateBestEffort but accepts
+// pre-marshalled JSON. Used by hot paths that marshal under a short-lived lock
+// and commit lock-free.
+func (m *JetStreamManager) WriteStateBytesBestEffort(nodeID string, jsonData []byte, timeout time.Duration) {
+	if m.kv == nil {
+		slog.Debug("KV bucket not initialized, skipping cluster sync", "node", nodeID)
+		return
+	}
+
+	key := InstanceStatePrefix + nodeID
+	done := make(chan error, 1)
+	go func() {
+		_, putErr := m.kv.Put(key, jsonData)
+		done <- putErr
+	}()
+
+	select {
+	case putErr := <-done:
+		if putErr != nil {
+			if m.obs != nil {
+				m.obs.RecordKVSyncFailure(InstanceStateBucket, putErr)
+			}
+			slog.Warn("KV sync failed (best-effort)", "key", key, "err", putErr)
+			return
+		}
+		if m.obs != nil {
+			m.obs.RecordKVSyncSuccess(InstanceStateBucket)
+		}
+		slog.Debug("Wrote state to KV (best-effort)", "key", key, "bytes", len(jsonData))
+	case <-time.After(timeout):
+		if m.obs != nil {
+			m.obs.RecordKVSyncFailure(InstanceStateBucket, fmt.Errorf("kv sync timeout after %s", timeout))
+		}
+		slog.Warn("KV sync timed out (best-effort)", "key", key, "timeout", timeout)
+	}
+}
+
+// marshalInstanceState produces the JSON wire form of vms.
+func marshalInstanceState(vms map[string]*vm.VM) ([]byte, error) {
+	state := struct {
+		VMS map[string]*vm.VM `json:"vms"`
+	}{
+		VMS: vms,
+	}
+	return json.Marshal(state)
 }
 
 // LoadState loads the instance state from the KV store for the given node.

@@ -114,6 +114,16 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			continue
 		}
 
+		// Recovery-failed instances stay in StateError until the operator
+		// explicitly retries or terminates. Skip relaunch and resource
+		// re-allocation; resources were already released by stopCleanup
+		// when MarkRecoveryFailed fired on the previous daemon run.
+		if instance.Status == StateError {
+			slog.Warn("Instance in error state; skipping recovery relaunch (operator must retry or terminate)",
+				"instance", instance.ID)
+			continue
+		}
+
 		typeKnown := true
 		if m.deps.InstanceTypes != nil {
 			_, typeKnown = m.deps.InstanceTypes.Resolve(instance.InstanceType)
@@ -149,9 +159,9 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 			} else {
 				slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
 				if err := m.reconnectInstance(instance); err != nil {
-					slog.Error("Failed to reconnect to running instance, marking failed to tear down orphaned QEMU",
+					slog.Error("Failed to reconnect to running instance, marking recovery-failed to preserve user data",
 						"instanceId", instance.ID, "err", err)
-					m.MarkFailed(instance, "reconnect_failed")
+					m.MarkRecoveryFailed(instance, "reconnect_failed")
 				}
 				continue
 			}
@@ -293,7 +303,7 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 			slog.Info("Launching instance (recovery)", "instance", inst.ID)
 			if err := m.Run(inst); err != nil {
 				slog.Error("Failed to launch instance during recovery", "instanceId", inst.ID, "err", err)
-				m.MarkFailed(inst, "recovery_launch_failed")
+				m.MarkRecoveryFailed(inst, "recovery_launch_failed")
 			}
 		}(instance)
 	}

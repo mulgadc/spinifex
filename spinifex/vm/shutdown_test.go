@@ -771,3 +771,222 @@ func TestTerminate_WriteRunningStateFailure_RollbackInsert(t *testing.T) {
 	require.True(t, ok, "writeRunningState failure must re-insert the instance into the local map")
 	assert.Same(t, v, got)
 }
+
+// TestMarkRecoveryFailed_PreservesVolumesAndAWSResources locks down the
+// siv-25 architectural invariant: when daemon recovery cannot bring a
+// previously-running instance back online, the cleanup path must NOT
+// invoke DeleteVolumes, ReleasePublicIP, DetachAndDeleteENI, or
+// RemoveFromPlacementGroup. A regression here re-introduces the P0 data
+// loss: a benign `systemctl restart spinifex-daemon` would destroy user
+// volumes flagged DeleteOnTermination=true.
+func TestMarkRecoveryFailed_PreservesVolumesAndAWSResources(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	m, _, _, cleaner, rt := shutdownTestManager(t)
+	saved := make(chan struct{}, 1)
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      &signalingStore{onSave: func() { saved <- struct{}{} }},
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: cleaner,
+		TransitionState: rt.apply,
+		ShutdownSignal:  func() bool { return false },
+	})
+
+	instance := &VM{
+		ID:        "i-recovery-failed",
+		Status:    StatePending,
+		AccountID: "111122223333",
+		Instance:  &ec2.Instance{},
+	}
+	m.Insert(instance)
+
+	errored := rt.waitFor(instance.ID, StateError)
+	m.MarkRecoveryFailed(instance, "recovery_launch_failed")
+
+	require.NotNil(t, instance.Instance.StateReason,
+		"MarkRecoveryFailed must populate StateReason synchronously")
+	assert.Equal(t, "Server.RecoveryFailed", *instance.Instance.StateReason.Code)
+	assert.Equal(t, "recovery_launch_failed", *instance.Instance.StateReason.Message)
+
+	select {
+	case <-errored:
+	case <-time.After(markFailedDeadline):
+		t.Fatalf("MarkRecoveryFailed did not transition to StateError within %s", markFailedDeadline)
+	}
+
+	assert.Equal(t, StateError, m.Status(instance),
+		"instance must remain in StateError; never transition to terminated")
+
+	// writeRunningState is the goroutine's last step; SaveRunningState
+	// signals on the chan so we can assert on the cleaner without racing.
+	select {
+	case <-saved:
+	case <-time.After(markFailedDeadline):
+		t.Fatalf("cleanup goroutine did not write running state within %s", markFailedDeadline)
+	}
+
+	cleaner.mu.Lock()
+	defer cleaner.mu.Unlock()
+	assert.Empty(t, cleaner.deleteVolumes,
+		"recovery failure must not call DeleteVolumes — preserves user data")
+	assert.Empty(t, cleaner.releasePublicIP,
+		"recovery failure must not call ReleasePublicIP — instance retains its IP")
+	assert.Empty(t, cleaner.detachAndDeleteENI,
+		"recovery failure must not call DetachAndDeleteENI — instance retains its ENI")
+	assert.Empty(t, cleaner.removeFromPlacement,
+		"recovery failure must not call RemoveFromPlacementGroup")
+	assert.NotEmpty(t, cleaner.releaseGPU,
+		"recovery failure must release host-side GPU claim (no QEMU using it)")
+
+	// Local map must retain the instance so a later ec2.TerminateInstances
+	// can find and clean it up via the destructive path.
+	_, ok := m.Get(instance.ID)
+	assert.True(t, ok, "instance must stay in the local map for operator action")
+}
+
+// TestMarkRecoveryFailed_DoesNotFireOnInstanceDown verifies the per-id
+// NATS subscription contract: OnInstanceDown must NOT fire on a
+// recovery-failed instance, because the daemon must keep the
+// ec2.cmd.<id> subscription live so the operator's terminate command
+// can reach this node.
+func TestMarkRecoveryFailed_DoesNotFireOnInstanceDown(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	var down atomic.Int64
+	m, _, _, _, rt := shutdownTestManager(t)
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      newFakeStateStore(),
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: &recordingInstanceCleaner{},
+		TransitionState: rt.apply,
+		ShutdownSignal:  func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(string) { down.Add(1) },
+		},
+	})
+
+	instance := &VM{
+		ID:       "i-keep-sub",
+		Status:   StatePending,
+		Instance: &ec2.Instance{},
+	}
+	m.Insert(instance)
+
+	errored := rt.waitFor(instance.ID, StateError)
+	m.MarkRecoveryFailed(instance, "reconnect_failed")
+
+	select {
+	case <-errored:
+	case <-time.After(markFailedDeadline):
+		t.Fatalf("MarkRecoveryFailed did not transition to StateError within %s", markFailedDeadline)
+	}
+
+	// Give the async goroutine a moment to finish; even after completion
+	// OnInstanceDown must remain zero.
+	assert.Eventually(t, func() bool {
+		return m.Status(instance) == StateError
+	}, markFailedDeadline, 10*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Zero(t, down.Load(),
+		"recovery failure must not fire OnInstanceDown — per-id NATS subscription must stay live for operator action")
+}
+
+// TestMarkRecoveryFailed_NoOpOnTerminal verifies idempotency: an
+// instance already in StateError / StateShuttingDown / StateTerminated
+// must not be re-transitioned or have its StateReason overwritten.
+func TestMarkRecoveryFailed_NoOpOnTerminal(t *testing.T) {
+	for _, status := range []InstanceState{StateError, StateShuttingDown, StateTerminated} {
+		t.Run(string(status), func(t *testing.T) {
+			m, _, _, cleaner, rt := shutdownTestManager(t)
+			instance := &VM{
+				ID:       "i-noop-" + string(status),
+				Status:   status,
+				Instance: &ec2.Instance{},
+			}
+			m.Insert(instance)
+
+			m.MarkRecoveryFailed(instance, "should_skip")
+
+			assert.Empty(t, rt.snapshot(),
+				"MarkRecoveryFailed must not transition an already-terminal instance")
+			assert.Nil(t, instance.Instance.StateReason,
+				"MarkRecoveryFailed must not overwrite StateReason on terminal instance")
+			cleaner.mu.Lock()
+			defer cleaner.mu.Unlock()
+			assert.Empty(t, cleaner.releaseGPU,
+				"MarkRecoveryFailed must not run cleanup on terminal instance")
+		})
+	}
+}
+
+// TestClassifyRestoredInstances_StateErrorSkipsRelaunch verifies the
+// restore-side companion fix: an instance already in StateError (from a
+// prior recovery failure) must NOT be queued for relaunch and must NOT
+// have its resources re-allocated. Without this, every daemon restart
+// would re-trigger the failing recovery loop and eventually re-destroy
+// volumes once the loop hit the terminateCleanup path.
+func TestClassifyRestoredInstances_StateErrorSkipsRelaunch(t *testing.T) {
+	m := NewManager()
+	rc := &countingResourceController{}
+	m.SetDeps(Deps{
+		NodeID:        "test-node",
+		StateStore:    newFakeStateStore(),
+		InstanceTypes: fakeInstanceTypeResolver{"t3.micro": {VCPUs: 2, MemoryMiB: 1024}},
+		Resources:     rc,
+	})
+
+	code := "Server.RecoveryFailed"
+	msg := "recovery_launch_failed"
+	v := &VM{
+		ID:           "i-recovery-error",
+		Status:       StateError,
+		InstanceType: "t3.micro",
+		Instance:     &ec2.Instance{StateReason: &ec2.StateReason{Code: &code, Message: &msg}},
+	}
+	m.Insert(v)
+
+	toLaunch := m.classifyRestoredInstances()
+
+	assert.Empty(t, toLaunch, "StateError instance must not be queued for relaunch")
+	assert.Zero(t, rc.allocations,
+		"StateError instance must not re-allocate resources (already released by stopCleanup)")
+	_, ok := m.Get(v.ID)
+	assert.True(t, ok, "StateError instance must stay in the local map for operator action")
+	assert.Equal(t, StateError, m.Status(v), "status must be preserved")
+}
+
+// countingResourceController counts how often Allocate fires so a test
+// can prove the restore path skipped its resource-allocation branch.
+type countingResourceController struct {
+	allocations int
+}
+
+func (c *countingResourceController) Allocate(_ string) error         { c.allocations++; return nil }
+func (c *countingResourceController) Deallocate(_ string)             {}
+func (c *countingResourceController) CanAllocate(_ string, n int) int { return n }
+
+// signalingStore is a no-op StateStore that fires onSave once per
+// SaveRunningState call. Used by recovery-failure tests to wait for the
+// cleanup goroutine's last step without polling a racy shared map.
+type signalingStore struct {
+	onSave func()
+}
+
+func (s *signalingStore) SaveRunningState(string, map[string]*VM) error {
+	if s.onSave != nil {
+		s.onSave()
+	}
+	return nil
+}
+func (s *signalingStore) LoadRunningState(string) (map[string]*VM, error) {
+	return map[string]*VM{}, nil
+}
+func (s *signalingStore) WriteStoppedInstance(string, *VM) error    { return nil }
+func (s *signalingStore) LoadStoppedInstance(string) (*VM, error)   { return nil, nil }
+func (s *signalingStore) DeleteStoppedInstance(string) error        { return nil }
+func (s *signalingStore) ListStoppedInstances() ([]*VM, error)      { return nil, nil }
+func (s *signalingStore) WriteTerminatedInstance(string, *VM) error { return nil }
+func (s *signalingStore) ListTerminatedInstances() ([]*VM, error)   { return nil, nil }
+
+var _ StateStore = (*signalingStore)(nil)

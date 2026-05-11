@@ -15,7 +15,7 @@ To enable GPU passthrough, you may first need to run:
 ```bash
 sudo spx admin gpu setup
 ```
-Note that this command will blacklist the GPU's drivers from the host machine such that they can be used by VM instances Therefore the GPU will **NOT** be available to the host machine until after the VM instance  It will also require rebooting the host machine before the changes take effect.
+Note that this command will blacklist the GPU's drivers from the host machine so that they can be used by VM instances. The GPU will **NOT** be available to the host machine after this point. A reboot is required before the changes take effect.
 
 ### Enable Passthrough
 After reboot, the banner message should reflect that GPU passthrough is **ready** but not **enabled**.
@@ -32,7 +32,7 @@ After running this command, you should see:
 
 The host machine is now configured to provide GPU passthrough to EC2 instances on the host machine.
 
-Lastly, import the Spinifex GPU enabled AMI: [link]
+Lastly, import the Spinifex GPU-enabled AMI.
 
 As a final check, spin up an EC2 instance, SSH into it, and check that the host machine's GPU is visible from the EC2 instance.
 
@@ -40,7 +40,7 @@ As a final check, spin up an EC2 instance, SSH into it, and check that the host 
 Spinifex is able to detect multiple GPUs. After running the setup commands, the total number of allocatable GPUs is printed.
 
 ### Mapping GPUs to EC2 instances
-By defualt, any consumer grade GPUs are mapped to the g5 EC2 instance class, which is the most basic "Accelerated Computing" Ec2 instance provided by AWS. If using a consumer GPU, running:
+By default, any consumer-grade GPUs are mapped to the g5 EC2 instance class, which is the most basic "Accelerated Computing" EC2 instance provided by AWS. If using a consumer GPU, running:
 ```bash
 aws ec2 describe-instance-types
 ```

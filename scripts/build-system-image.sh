@@ -82,7 +82,7 @@ case "$DISTRO" in
             exit 1
         fi
         SOURCE_IMAGE="ubuntu-${UBUNTU_VERSION}-minimal-cloudimg-amd64.img"
-        SOURCE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/${SOURCE_IMAGE}"
+        SOURCE_URL="https://cloud-images.ubuntu.com/minimal/releases/${UBUNTU_CODENAME:-noble}/release/${SOURCE_IMAGE}"
         OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.qcow2"
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.raw"
         DISTRO_VERSION="${UBUNTU_VERSION}"

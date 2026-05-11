@@ -120,18 +120,16 @@ func runAdminGpuStatus(cmd *cobra.Command, _ []string) {
 		fmt.Printf("Passthrough:     enabled\n")
 		fmt.Printf("GPU pool:        %d/%d allocated\n", resp.AllocGPUs, resp.TotalGPUs)
 
-		var g5Types []string
+		var gpuTypes []string
 		for _, cap := range resp.InstanceTypes {
-			if strings.HasPrefix(cap.Name, "g5.") {
-				g5Types = append(g5Types, cap.Name)
-			}
+			gpuTypes = append(gpuTypes, cap.Name)
 		}
-		if len(g5Types) > 0 {
-			fmt.Printf("Instance types:  %s\n", strings.Join(g5Types, " "))
+		if len(gpuTypes) > 0 {
+			fmt.Printf("Instance types:  %s\n", strings.Join(gpuTypes, " "))
 		}
 	} else if resp.GPUCapable {
 		fmt.Printf("Passthrough:     disabled\n")
-		fmt.Printf("Instance types:  (none — run 'spx admin gpu enable' to activate g5.*)\n")
+		fmt.Printf("Instance types:  (none — run 'spx admin gpu enable' to activate)\n")
 	} else {
 		fmt.Printf("Passthrough:     disabled\n")
 		fmt.Printf("Instance types:  (prerequisites not met)\n")
@@ -306,6 +304,30 @@ func runAdminGpuSetup(_ *cobra.Command, _ []string) {
 		fmt.Println("    Already blacklisted")
 	}
 
+	fmt.Println("==> Configuring amdgpu blacklist")
+	const amdgpuConf = "/etc/modprobe.d/blacklist-amdgpu.conf"
+	hasAMD := false
+	for _, d := range devices {
+		if d.Vendor == gpu.VendorAMD {
+			hasAMD = true
+			break
+		}
+	}
+	if hasAMD {
+		if _, err := os.Stat(amdgpuConf); os.IsNotExist(err) {
+			if err := os.WriteFile(amdgpuConf, []byte("blacklist amdgpu\n"), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to write amdgpu blacklist: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("    amdgpu blacklisted")
+			rebootNeeded = true
+		} else {
+			fmt.Println("    Already blacklisted")
+		}
+	} else {
+		fmt.Println("    No AMD GPUs — skipping")
+	}
+
 	fmt.Println("==> Configuring vfio-pci early binding")
 	const vfioPCIConf = "/etc/modprobe.d/vfio-pci.conf"
 	existing, _ := os.ReadFile(vfioPCIConf)
@@ -363,15 +385,29 @@ func runAdminGpuSetup(_ *cobra.Command, _ []string) {
 
 	fmt.Println("==> Verifying GPU driver binding")
 	for _, d := range devices {
-		driverLink := "/sys/bus/pci/devices/" + d.PCIAddress + "/driver"
-		target, err := os.Readlink(driverLink)
-		driver := filepath.Base(target)
-		if err != nil || driver != "vfio-pci" {
-			fmt.Fprintf(os.Stderr, "%s is bound to %q, not vfio-pci\n", d.PCIAddress, driver)
-			fmt.Fprintf(os.Stderr, "  Check: ls -la %s\n", driverLink)
+		current, err := gpu.CurrentDriver(d.PCIAddress)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Cannot read driver for %s: %v\n", d.PCIAddress, err)
 			os.Exit(1)
 		}
-		fmt.Printf("    %s - vfio-pci\n", d.PCIAddress)
+		if current == "vfio-pci" {
+			fmt.Printf("    %s → vfio-pci\n", d.PCIAddress)
+			continue
+		}
+		if current != "" {
+			// Bound to native driver — blacklist/initramfs changes may not have taken effect.
+			fmt.Fprintf(os.Stderr, "%s is bound to %q, not vfio-pci — reboot may be required\n", d.PCIAddress, current)
+			fmt.Fprintf(os.Stderr, "  Check: ls -la /sys/bus/pci/devices/%s/driver\n", d.PCIAddress)
+			os.Exit(1)
+		}
+		// Device is unbound (ids= did not auto-claim it) — bind explicitly via driver_override.
+		fmt.Printf("    %s unbound — binding to vfio-pci\n", d.PCIAddress)
+		if _, err := gpu.BindVFIO(d.PCIAddress); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to bind %s to vfio-pci: %v\n", d.PCIAddress, err)
+			fmt.Fprintf(os.Stderr, "  Check: ls -la /sys/bus/pci/devices/%s/driver\n", d.PCIAddress)
+			os.Exit(1)
+		}
+		fmt.Printf("    %s → vfio-pci\n", d.PCIAddress)
 	}
 
 	fmt.Println("==> Enabling GPU passthrough")

@@ -3,7 +3,9 @@ set -euo pipefail
 
 export AWS_PROFILE=spinifex
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/spinifex-key}"
+# Resolve the actual user's home — $HOME is /root when run under sudo.
+_USER_HOME=$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)
+SSH_KEY="${SSH_KEY:-${_USER_HOME}/.ssh/spinifex-key}"
 SSH_USER="${SSH_USER:-ec2-user}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-300}"
 
@@ -19,7 +21,8 @@ Usage:
 
 Options:
   --type TYPE    EC2 instance type to launch (required)
-  --disk GB      Root disk size in GB (default: 300)
+  --disk GB      Root disk size in GB (default: 50)
+  --ami  NAME    Override the AMI name to use (default: ubuntu-amd-gpu or ubuntu-nvidia-gpu)
   --amd          Force AMD GPU AMI  (ubuntu-amd-gpu)
   --nvidia       Force NVIDIA GPU AMI (ubuntu-nvidia-gpu)
 
@@ -31,13 +34,15 @@ EOF
 }
 
 INSTANCE_TYPE=""
-DISK_GB=300
+DISK_GB=50
 GPU_BRAND=""
+AMI_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --type)   INSTANCE_TYPE="$2"; shift 2 ;;
         --disk)   DISK_GB="$2";        shift 2 ;;
+        --ami)    AMI_OVERRIDE="$2";   shift 2 ;;
         --amd)    GPU_BRAND="amd";     shift ;;
         --nvidia) GPU_BRAND="nvidia";  shift ;;
         -h|--help) usage; exit 0 ;;
@@ -95,12 +100,13 @@ case "$GPU_BRAND" in
 esac
 
 # --- Resolve AMI ---
-echo "==> Resolving AMI: ${AMI_NAME}"
+AMI_LOOKUP="${AMI_OVERRIDE:-${AMI_NAME}}"
+echo "==> Resolving AMI: ${AMI_LOOKUP}"
 AMI_ID=$(aws ec2 describe-images \
-    --query "Images[?Name=='${AMI_NAME}'].ImageId | [0]" --output text 2>/dev/null || true)
+    --query "Images[?Name=='${AMI_LOOKUP}'].ImageId | [0]" --output text 2>/dev/null || true)
 if [ -z "$AMI_ID" ] || [ "$AMI_ID" = "None" ]; then
-    echo "No AMI found with name '${AMI_NAME}'."
-    echo "Build and import it first:"
+    echo "No AMI found with name '${AMI_LOOKUP}'."
+    echo "Build and import it first, or specify the AMI name with --ami <name>"
     echo "  scripts/build-system-image.sh scripts/images/ubuntu-gpu-${GPU_BRAND}.conf --import"
     exit 1
 fi
@@ -119,10 +125,14 @@ echo "   $SUBNET_ID"
 # --- Ensure SSH key ---
 if [ ! -f "$SSH_KEY" ]; then
     echo "==> Generating SSH key"
-    mkdir -p "$(dirname "$SSH_KEY")"
-    ssh-keygen -t ed25519 -f "$SSH_KEY" -N ""
+    sudo -u "${SUDO_USER:-$(id -un)}" mkdir -p "$(dirname "$SSH_KEY")"
+    sudo -u "${SUDO_USER:-$(id -un)}" ssh-keygen -t ed25519 -f "$SSH_KEY" -N ""
 fi
-! aws ec2 import-key-pair --key-name spinifex-key \
+# Delete before import — stale key pair material causes import to fail
+# silently, leaving the instance unreachable via SSH.
+echo "==> Importing SSH key"
+aws ec2 delete-key-pair --key-name spinifex-key >/dev/null 2>&1 || true
+aws ec2 import-key-pair --key-name spinifex-key \
     --public-key-material "fileb://${SSH_KEY}.pub" >/dev/null 2>&1 || true
 
 # --- Launch ---

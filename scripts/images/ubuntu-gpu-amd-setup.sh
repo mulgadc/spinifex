@@ -33,6 +33,7 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     linux-image-generic \
     linux-headers-generic \
     linux-firmware \
+    initramfs-tools \
     pciutils \
     rocminfo rocm-smi-lib \
     python3 python3-venv python3-pip \

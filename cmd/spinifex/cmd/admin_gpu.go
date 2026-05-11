@@ -207,6 +207,9 @@ func gpuToggle(_ *cobra.Command, enable bool) {
 		}
 		if r.GPUPassthrough == enable {
 			fmt.Println(" done.")
+			// Refresh the MOTD banner immediately so the login prompt
+			// reflects the new GPU passthrough state without requiring a reboot.
+			_ = exec.Command("spx", "admin", "banner", "--boot-check").Run()
 			runAdminGpuStatus(adminGpuStatusCmd, nil)
 			return
 		}
@@ -372,7 +375,7 @@ func runAdminGpuSetup(_ *cobra.Command, _ []string) {
 		}
 		fmt.Println("\nSetup complete — reboot required.")
 		fmt.Println("  sudo reboot")
-		fmt.Println("  Then re-run: sudo spx admin gpu setup")
+		fmt.Println("  Then run: sudo spx admin gpu enable")
 		return
 	}
 

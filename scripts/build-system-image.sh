@@ -253,9 +253,13 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
     done
     echo "Resizing partition..."
     # After qemu-img resize the GPT backup header sits at the old end of disk.
-    # Move it to the new end before parted tries to resize, otherwise parted
-    # refuses with "Unable to satisfy all constraints on the partition."
-    sudo sgdisk --move-second-header "${NBD_DEV}" 2>/dev/null || true
+    # Relocate it to the new end (sfdisk --relocate is util-linux built-in,
+    # no extra packages needed), then re-read the partition table before parted
+    # runs — without this, parted sees stale GPT geometry and fails with
+    # "Unable to satisfy all constraints on the partition."
+    sudo sgdisk --move-second-header "${NBD_DEV}"
+    sudo partprobe "${NBD_DEV}" 2>/dev/null || true
+    sleep 1
     sudo parted --script "${NBD_DEV}" resizepart 1 100%
 fi
 

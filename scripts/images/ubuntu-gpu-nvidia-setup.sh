@@ -24,7 +24,8 @@ apt-get update -qq
 # Pinned kernel and headers so DKMS has a stable build target.
 apt-get install -y --no-install-recommends \
     linux-image-generic \
-    linux-headers-generic
+    linux-headers-generic \
+    initramfs-tools
 
 KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
 if [[ -z "${KVER}" ]]; then
@@ -84,5 +85,12 @@ EOF
 
 # Rebuild initramfs with nouveau blacklisted and NVIDIA module included.
 update-initramfs -u -k "${KVER}"
+
+# The DKMS build tree and kernel headers are only needed to compile nvidia.ko.
+# The built module lives in /lib/modules/${KVER}/ — remove headers and build
+# artefacts to recover ~500MB from the image.
+apt-get remove --purge -y linux-headers-generic "linux-headers-${KVER}" 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
+rm -rf /var/lib/dkms/nvidia/*/build
 
 echo "NVIDIA GPU image setup complete: kernel=${KVER}, NVIDIA 550 driver + DKMS pre-built"

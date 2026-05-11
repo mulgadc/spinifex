@@ -2,18 +2,24 @@ package handlers_ec2_instance
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -653,14 +659,20 @@ func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacit
 }
 
 type fakeStoppedStore struct {
-	stopped      []*vm.VM
-	terminated   []*vm.VM
-	loadByID     map[string]*vm.VM
-	wroteStopped map[string]*vm.VM
-	listErr      error
-	listTermErr  error
-	loadErr      error
-	writeErr     error
+	stopped         []*vm.VM
+	terminated      []*vm.VM
+	loadByID        map[string]*vm.VM
+	wroteStopped    map[string]*vm.VM
+	wroteTerminated map[string]*vm.VM
+	deletedStopped  []string
+	listErr         error
+	listTermErr     error
+	loadErr         error
+	writeErr        error
+	writeTermErr    error
+	deleteErr       error
+	deleteFailFirst bool
+	deleteAttempts  int
 }
 
 func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
@@ -692,6 +704,27 @@ func (f *fakeStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) erro
 		f.wroteStopped = make(map[string]*vm.VM)
 	}
 	f.wroteStopped[id] = instance
+	return nil
+}
+func (f *fakeStoppedStore) WriteTerminatedInstance(id string, instance *vm.VM) error {
+	if f.writeTermErr != nil {
+		return f.writeTermErr
+	}
+	if f.wroteTerminated == nil {
+		f.wroteTerminated = make(map[string]*vm.VM)
+	}
+	f.wroteTerminated[id] = instance
+	return nil
+}
+func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
+	f.deleteAttempts++
+	if f.deleteFailFirst && f.deleteAttempts == 1 {
+		return errors.New("transient delete failure")
+	}
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedStopped = append(f.deletedStopped, id)
 	return nil
 }
 
@@ -1266,4 +1299,267 @@ func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 	}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// --- TerminateStoppedInstance tests ---
+
+type fakeVolumeDeleter struct {
+	calls   []string
+	deleted []string
+	err     error
+}
+
+func (f *fakeVolumeDeleter) DeleteVolume(input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
+	id := aws.StringValue(input.VolumeId)
+	f.calls = append(f.calls, id)
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.deleted = append(f.deleted, id)
+	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+type fakeENIDeleter struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeENIDeleter) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+	f.calls = append(f.calls, aws.StringValue(input.NetworkInterfaceId))
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+type fakePublicIPReleaser struct {
+	pool string
+	ip   string
+	err  error
+}
+
+func (f *fakePublicIPReleaser) ReleaseIP(pool, ip string) error {
+	f.pool = pool
+	f.ip = ip
+	return f.err
+}
+
+// embeddedNATS spins up an in-process NATS server scoped to the test and
+// returns a connected client. Used for service tests that exercise the
+// ebs.delete path inside TerminateStoppedInstance.
+func embeddedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	opts := &server.Options{
+		Host:   "127.0.0.1",
+		Port:   -1,
+		NoLog:  true,
+		NoSigs: true,
+	}
+	ns, err := server.NewServer(opts)
+	require.NoError(t, err)
+	go ns.Start()
+	require.True(t, ns.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { ns.Shutdown() })
+
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+	return nc
+}
+
+func TestTerminateStoppedInstance_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestTerminateStoppedInstance_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestTerminateStoppedInstance_LoadError(t *testing.T) {
+	store := &fakeStoppedStore{loadErr: errors.New("kv down")}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotFound(t *testing.T) {
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotVisible(t *testing.T) {
+	id := "i-stopped"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
+	id := "i-term-001"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	out, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, id, out.InstanceID)
+
+	require.NotNil(t, store.wroteTerminated[id])
+	assert.Equal(t, vm.StateTerminated, store.wroteTerminated[id].Status)
+	assert.Contains(t, store.deletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_WriteTerminatedError_Aborts(t *testing.T) {
+	id := "i-werr"
+	store := &fakeStoppedStore{
+		loadByID:     map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		writeTermErr: errors.New("kv write boom"),
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, store.deletedStopped, "stopped delete must not run when terminated write fails")
+}
+
+func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
+	id := "i-retry"
+	store := &fakeStoppedStore{
+		loadByID:        map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		deleteFailFirst: true,
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, 2, store.deleteAttempts, "first delete fails, retry succeeds")
+	assert.Contains(t, store.deletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
+	id := "i-vol"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-user-001", DeleteOnTermination: true},
+		{Name: "vol-keep-001", DeleteOnTermination: false},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-user-001"}, vd.calls, "only DeleteOnTermination=true volumes deleted")
+	assert.Equal(t, []string{"vol-user-001"}, vd.deleted)
+}
+
+func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
+	id := "i-no-vd"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-user-001", DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "missing VolumeDeleter must not abort termination")
+	require.NotNil(t, store.wroteTerminated[id])
+}
+
+func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
+	id := "i-int-vol"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-efi-001", EFI: true},
+		{Name: "vol-ci-001", CloudInit: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+
+	nc := embeddedNATS(t)
+	var ebsDeleted []string
+	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
+		var req spxtypes.EBSDeleteRequest
+		_ = json.Unmarshal(msg.Data, &req)
+		ebsDeleted = append(ebsDeleted, req.Volume)
+		_ = msg.Respond([]byte(`{"Success":true}`))
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	svc := &InstanceServiceImpl{stoppedStore: store, natsConn: nc}
+
+	_, err = svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"vol-efi-001", "vol-ci-001"}, ebsDeleted)
+}
+
+func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
+	id := "i-pubip"
+	v := &vm.VM{
+		ID:           id,
+		Status:       vm.StateStopped,
+		AccountID:    "acc",
+		PublicIP:     "203.0.113.5",
+		PublicIPPool: "pool-a",
+		ENIId:        "eni-xyz",
+		Instance: &ec2.Instance{
+			InstanceId:       aws.String(id),
+			VpcId:            aws.String("vpc-1"),
+			PrivateIpAddress: aws.String("10.0.0.5"),
+		},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	pr := &fakePublicIPReleaser{}
+	svc := &InstanceServiceImpl{stoppedStore: store, ipReleaser: pr}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "pool-a", pr.pool)
+	assert.Equal(t, "203.0.113.5", pr.ip)
+}
+
+func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
+	id := "i-eni"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-1234"}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"eni-1234"}, ed.calls)
 }

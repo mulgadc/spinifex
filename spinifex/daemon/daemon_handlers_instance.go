@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -248,7 +247,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) {
 						}
 						// Publish vpc.add-nat for dnat_and_snat rule
 						portName := "port-" + *eni.NetworkInterfaceId
-						d.publishNATEvent("vpc.add-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+						utils.PublishNATEvent(d.natsConn, "vpc.add-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 						// Set on ec2Instance response
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
 						instance.PublicIP = publicIP
@@ -904,151 +903,8 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	}
 }
 
-// terminateStoppedInstanceRequest is the payload for ec2.terminate topic
-type terminateStoppedInstanceRequest struct {
-	InstanceID string `json:"instance_id"`
-}
-
-// handleEC2TerminateStoppedInstance picks up a stopped instance from shared KV,
-// deletes its volumes, and removes it from shared KV.
 func (d *Daemon) handleEC2TerminateStoppedInstance(msg *nats.Msg) {
-	var req terminateStoppedInstanceRequest
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		slog.Error("handleEC2TerminateStoppedInstance: failed to unmarshal request", "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	if req.InstanceID == "" {
-		slog.Error("handleEC2TerminateStoppedInstance: missing instance_id")
-		respondWithError(msg, awserrors.ErrorMissingParameter)
-		return
-	}
-
-	if d.stateStore == nil {
-		slog.Error("handleEC2TerminateStoppedInstance: state store not available")
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	// Load instance from shared KV
-	instance, err := d.stateStore.LoadStoppedInstance(req.InstanceID)
-	if err != nil {
-		slog.Error("handleEC2TerminateStoppedInstance: failed to load stopped instance", "instanceId", req.InstanceID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-	if instance == nil {
-		slog.Warn("handleEC2TerminateStoppedInstance: instance not found in shared KV", "instanceId", req.InstanceID)
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
-	}
-
-	if instance.Status != vm.StateStopped {
-		slog.Error("handleEC2TerminateStoppedInstance: instance not in stopped state", "instanceId", req.InstanceID, "status", instance.Status)
-		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
-	}
-
-	// Verify the caller owns this instance
-	if !checkInstanceOwnership(msg, req.InstanceID, instance.AccountID) {
-		return
-	}
-
-	// Delete volumes — no QEMU shutdown or unmount needed (already done during stop)
-	instance.EBSRequests.Mu.Lock()
-	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI, cloud-init) are always cleaned up via ebs.delete
-		if ebsRequest.EFI || ebsRequest.CloudInit {
-			ebsDeleteData, err := json.Marshal(types.EBSDeleteRequest{Volume: ebsRequest.Name})
-			if err != nil {
-				slog.Error("handleEC2TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)
-				continue
-			}
-			deleteMsg, err := d.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
-			if err != nil {
-				slog.Warn("handleEC2TerminateStoppedInstance: ebs.delete failed for internal volume", "name", ebsRequest.Name, "err", err)
-			} else {
-				slog.Info("handleEC2TerminateStoppedInstance: ebs.delete sent for internal volume", "name", ebsRequest.Name, "data", string(deleteMsg.Data))
-			}
-			continue
-		}
-
-		// User-visible volumes: respect DeleteOnTermination flag
-		if !ebsRequest.DeleteOnTermination {
-			slog.Info("handleEC2TerminateStoppedInstance: volume has DeleteOnTermination=false, skipping", "name", ebsRequest.Name)
-			continue
-		}
-
-		slog.Info("handleEC2TerminateStoppedInstance: deleting volume with DeleteOnTermination=true", "name", ebsRequest.Name)
-		_, err := d.volumeService.DeleteVolume(&ec2.DeleteVolumeInput{
-			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID)
-		if err != nil {
-			slog.Error("handleEC2TerminateStoppedInstance: failed to delete volume", "name", ebsRequest.Name, "err", err)
-		}
-	}
-	instance.EBSRequests.Mu.Unlock()
-
-	// Release public IP before termination
-	if instance.PublicIP != "" && instance.PublicIPPool != "" && d.externalIPAM != nil {
-		portName := "port-" + instance.ENIId
-		vpcId := ""
-		logicalIP := ""
-		if instance.Instance != nil {
-			if instance.Instance.VpcId != nil {
-				vpcId = *instance.Instance.VpcId
-			}
-			if instance.Instance.PrivateIpAddress != nil {
-				logicalIP = *instance.Instance.PrivateIpAddress
-			}
-		}
-		d.publishNATEvent("vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
-
-		if err := d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP); err != nil {
-			slog.Warn("handleEC2TerminateStoppedInstance: failed to release public IP", "ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
-		} else {
-			slog.Info("handleEC2TerminateStoppedInstance: released public IP", "ip", instance.PublicIP, "instanceId", req.InstanceID)
-		}
-	}
-
-	// Delete ENI if present
-	if instance.ENIId != "" && d.vpcService != nil {
-		_, eniErr := d.vpcService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: &instance.ENIId,
-		}, instance.AccountID)
-		if eniErr != nil {
-			slog.Error("handleEC2TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", eniErr)
-		} else {
-			slog.Info("handleEC2TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", req.InstanceID)
-		}
-	}
-
-	// Write to terminated KV bucket FIRST so the instance is visible in DescribeInstances.
-	// If this fails, the instance remains in the stopped bucket (safe to retry).
-	instance.Status = vm.StateTerminated
-	if err := d.stateStore.WriteTerminatedInstance(req.InstanceID, instance); err != nil {
-		slog.Error("handleEC2TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", req.InstanceID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	// Now safe to remove from shared stopped KV — instance already exists in terminated bucket.
-	// Retry once on failure to avoid duplicate entries in DescribeInstances.
-	if err := d.stateStore.DeleteStoppedInstance(req.InstanceID); err != nil {
-		slog.Warn("handleEC2TerminateStoppedInstance: first stopped KV delete failed, retrying",
-			"instanceId", req.InstanceID, "err", err)
-		if retryErr := d.stateStore.DeleteStoppedInstance(req.InstanceID); retryErr != nil {
-			slog.Error("handleEC2TerminateStoppedInstance: stopped KV delete failed after retry, instance may appear in both buckets",
-				"instanceId", req.InstanceID, "err", retryErr)
-		}
-	}
-
-	slog.Info("Terminated stopped instance from shared KV", "instanceId", req.InstanceID)
-
-	if err := msg.Respond(fmt.Appendf(nil, `{"status":"terminated","instanceId":"%s"}`, req.InstanceID)); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
+	handleNATSRequest(msg, d.instanceService.TerminateStoppedInstance)
 }
 
 // handleEC2DescribeStoppedInstances returns stopped instances from shared KV.
@@ -1276,27 +1132,4 @@ func (d *Daemon) handleEC2DescribeInstanceAttribute(msg *nats.Msg) {
 	slog.Info("handleEC2DescribeInstanceAttribute: completed",
 		"instanceId", instanceID, "attribute", attribute, "accountID", accountID)
 	respondWithJSON(msg, output)
-}
-
-// publishNATEvent sends a NAT lifecycle event (vpc.add-nat or vpc.delete-nat) to NATS.
-// For vpc.add-nat, it uses request-reply to ensure the OVN NAT rule is committed
-// before returning, preventing ARP propagation races. For vpc.delete-nat, it
-// uses fire-and-forget since the caller doesn't need to wait.
-func (d *Daemon) publishNATEvent(topic, vpcId, externalIP, logicalIP, portName, mac string) {
-	evt := struct {
-		VpcId      string `json:"vpc_id"`
-		ExternalIP string `json:"external_ip"`
-		LogicalIP  string `json:"logical_ip"`
-		PortName   string `json:"port_name"`
-		MAC        string `json:"mac"`
-	}{VpcId: vpcId, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac}
-
-	if topic == "vpc.add-nat" {
-		if err := utils.RequestEvent(d.natsConn, topic, evt, 10*time.Second); err != nil {
-			slog.Warn("publishNATEvent: failed to add NAT rule — OVN dnat_and_snat rule not created; restart vpcd or re-associate EIP to recover",
-				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
-		}
-		return
-	}
-	utils.PublishEvent(d.natsConn, topic, evt)
 }

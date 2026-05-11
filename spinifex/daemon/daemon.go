@@ -1096,6 +1096,10 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
+	// Wire deps needed by InstanceService.TerminateStoppedInstance now that
+	// volumeService / vpcService / externalIPAM are constructed.
+	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
+
 	d.accountService, err = initServiceWithRetry("account settings service", func() (*handlers_ec2_account.AccountSettingsServiceImpl, error) {
 		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.config, d.natsConn)
 	})

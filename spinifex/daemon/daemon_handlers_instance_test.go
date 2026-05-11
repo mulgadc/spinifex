@@ -257,7 +257,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 	store.loadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test1", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -265,7 +265,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test2", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -279,7 +279,7 @@ func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testi
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: v.ID})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test3", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 
@@ -302,7 +302,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: v.ID})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test4", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 
 	var resp map[string]string
@@ -329,7 +329,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *t
 	store.stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: v.ID})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test5", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 
 	var resp map[string]string
@@ -347,7 +347,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: "i-foreign-term"})
+	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test6", d.handleEC2TerminateStoppedInstance, testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 

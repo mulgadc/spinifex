@@ -3,6 +3,7 @@ package handlers_ec2_instance
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -236,6 +237,9 @@ type InstanceServiceImpl struct {
 	vmMgr         *vm.Manager
 	resourceMgr   ResourceCapacityProvider
 	stoppedStore  StoppedInstanceStore
+	volumeDeleter VolumeDeleter
+	eniDeleter    ENIDeleter
+	ipReleaser    PublicIPReleaser
 }
 
 // NewInstanceServiceImpl creates a new instance service implementation for daemon use
@@ -257,6 +261,15 @@ func NewInstanceServiceImpl(
 		resourceMgr:   resourceMgr,
 		stoppedStore:  stoppedStore,
 	}
+}
+
+// SetTerminationDeps wires the dependencies required by TerminateStoppedInstance.
+// Kept separate from the main constructor so handlers needing only read or
+// modify paths can construct a service without dragging the VPC/volume stack in.
+func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser) {
+	s.volumeDeleter = vd
+	s.eniDeleter = ed
+	s.ipReleaser = pr
 }
 
 // RunInstance creates a single EC2 instance (called per-instance by daemon)
@@ -1235,6 +1248,142 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	slog.Info("ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
+// TerminateStoppedInstance picks up a stopped instance from shared KV, deletes
+// its volumes, releases its public IP and ENI, writes it to the terminated
+// bucket, then removes it from the stopped bucket. No QEMU shutdown or unmount
+// is needed — the instance was already drained during stop.
+func (s *InstanceServiceImpl) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
+	if input.InstanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil {
+		slog.Error("TerminateStoppedInstance: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(input.InstanceID)
+	if err != nil {
+		slog.Error("TerminateStoppedInstance: failed to load stopped instance", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("TerminateStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Status != vm.StateStopped {
+		slog.Error("TerminateStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("TerminateStoppedInstance: instance not visible",
+			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	s.deleteInstanceVolumes(instance, input.InstanceID)
+	s.releaseInstancePublicIP(instance, input.InstanceID)
+	s.deleteInstanceENI(instance, input.InstanceID)
+
+	// Write to terminated KV FIRST so the instance is visible in DescribeInstances.
+	// If this fails the instance stays in the stopped bucket — safe to retry.
+	instance.Status = vm.StateTerminated
+	if err := s.stoppedStore.WriteTerminatedInstance(input.InstanceID, instance); err != nil {
+		slog.Error("TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Now safe to remove from stopped KV. Retry once on failure so the instance
+	// doesn't appear in both buckets.
+	if err := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); err != nil {
+		slog.Warn("TerminateStoppedInstance: first stopped KV delete failed, retrying",
+			"instanceId", input.InstanceID, "err", err)
+		if retryErr := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); retryErr != nil {
+			slog.Error("TerminateStoppedInstance: stopped KV delete failed after retry, instance may appear in both buckets",
+				"instanceId", input.InstanceID, "err", retryErr)
+		}
+	}
+
+	slog.Info("Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
+	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
+}
+
+func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID string) {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		// Internal volumes (EFI, cloud-init) are always cleaned up via ebs.delete.
+		if ebsRequest.EFI || ebsRequest.CloudInit {
+			ebsDeleteData, err := json.Marshal(spxtypes.EBSDeleteRequest{Volume: ebsRequest.Name})
+			if err != nil {
+				slog.Error("TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)
+				continue
+			}
+			deleteMsg, err := s.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
+			if err != nil {
+				slog.Warn("TerminateStoppedInstance: ebs.delete failed for internal volume", "name", ebsRequest.Name, "err", err)
+			} else {
+				slog.Info("TerminateStoppedInstance: ebs.delete sent for internal volume", "name", ebsRequest.Name, "data", string(deleteMsg.Data))
+			}
+			continue
+		}
+
+		// User-visible volumes: respect DeleteOnTermination.
+		if !ebsRequest.DeleteOnTermination {
+			slog.Info("TerminateStoppedInstance: volume has DeleteOnTermination=false, skipping", "name", ebsRequest.Name)
+			continue
+		}
+
+		slog.Info("TerminateStoppedInstance: deleting volume with DeleteOnTermination=true", "name", ebsRequest.Name)
+		if s.volumeDeleter == nil {
+			slog.Warn("TerminateStoppedInstance: volume deleter not configured, skipping", "name", ebsRequest.Name)
+			continue
+		}
+		if _, err := s.volumeDeleter.DeleteVolume(&ec2.DeleteVolumeInput{
+			VolumeId: &ebsRequest.Name,
+		}, instance.AccountID); err != nil {
+			slog.Error("TerminateStoppedInstance: failed to delete volume", "name", ebsRequest.Name, "err", err)
+		}
+	}
+	_ = instanceID
+}
+
+func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceID string) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" || s.ipReleaser == nil {
+		return
+	}
+	portName := "port-" + instance.ENIId
+	vpcID := ""
+	logicalIP := ""
+	if instance.Instance != nil {
+		if instance.Instance.VpcId != nil {
+			vpcID = *instance.Instance.VpcId
+		}
+		if instance.Instance.PrivateIpAddress != nil {
+			logicalIP = *instance.Instance.PrivateIpAddress
+		}
+	}
+	utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, logicalIP, portName, "")
+
+	if err := s.ipReleaser.ReleaseIP(instance.PublicIPPool, instance.PublicIP); err != nil {
+		slog.Warn("TerminateStoppedInstance: failed to release public IP", "ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
+	} else {
+		slog.Info("TerminateStoppedInstance: released public IP", "ip", instance.PublicIP, "instanceId", instanceID)
+	}
+}
+
+func (s *InstanceServiceImpl) deleteInstanceENI(instance *vm.VM, instanceID string) {
+	if instance.ENIId == "" || s.eniDeleter == nil {
+		return
+	}
+	if _, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: &instance.ENIId,
+	}, instance.AccountID); err != nil {
+		slog.Error("TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
+	} else {
+		slog.Info("TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
+	}
 }
 
 // DescribeInstanceAttribute returns a single requested attribute for an instance.

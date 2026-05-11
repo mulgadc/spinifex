@@ -1363,121 +1363,13 @@ func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
 	_ = daemon.jsManager.DeleteStoppedInstance("i-filter-002")
 }
 
-// --- handleEC2TerminateStoppedInstance tests ---
-
-func TestHandleEC2TerminateStoppedInstance_MissingInstanceID(t *testing.T) {
-	natsURL := sharedJSNATSURL
-
-	daemon := createFullTestDaemonWithJetStream(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	reqData, _ := json.Marshal(map[string]string{"instance_id": ""})
-	reply, err := daemon.natsConn.Request("ec2.terminate", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var errResp map[string]any
-	err = json.Unmarshal(reply.Data, &errResp)
-	require.NoError(t, err)
-	assert.Equal(t, awserrors.ErrorMissingParameter, errResp["Code"])
-}
-
-func TestHandleEC2TerminateStoppedInstance_MissingInstance(t *testing.T) {
-	natsURL := sharedJSNATSURL
-
-	daemon := createFullTestDaemonWithJetStream(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	reqData, _ := json.Marshal(map[string]string{"instance_id": "i-nonexistent"})
-	reply, err := daemon.natsConn.Request("ec2.terminate", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var errResp map[string]any
-	err = json.Unmarshal(reply.Data, &errResp)
-	require.NoError(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
-}
-
-func TestHandleEC2TerminateStoppedInstance_NotStoppedState(t *testing.T) {
-	natsURL := sharedJSNATSURL
-
-	daemon := createFullTestDaemonWithJetStream(t, natsURL)
-
-	// Write an instance in running state to shared KV
-	runningVM := &vm.VM{
-		ID:           "i-term-running",
-		Status:       vm.StateRunning,
-		InstanceType: getTestInstanceType(t),
-		AccountID:    testAccountID,
-	}
-	err := daemon.jsManager.WriteStoppedInstance(runningVM.ID, runningVM)
-	require.NoError(t, err)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	reqData, _ := json.Marshal(map[string]string{"instance_id": "i-term-running"})
-	reply, err := natsRequest(daemon.natsConn, "ec2.terminate", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var errResp map[string]any
-	err = json.Unmarshal(reply.Data, &errResp)
-	require.NoError(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, errResp["Code"])
-
-	// Cleanup
-	_ = daemon.jsManager.DeleteStoppedInstance(runningVM.ID)
-}
-
-func TestHandleEC2TerminateStoppedInstance_Success(t *testing.T) {
-	natsURL := sharedJSNATSURL
-
-	daemon := createFullTestDaemonWithJetStream(t, natsURL)
-
-	// Write a stopped instance to shared KV
-	stoppedVM := &vm.VM{
-		ID:           "i-term-stopped-001",
-		Status:       vm.StateStopped,
-		InstanceType: getTestInstanceType(t),
-		LastNode:     "node-1",
-		AccountID:    testAccountID,
-		Reservation: &ec2.Reservation{
-			ReservationId: aws.String("r-term-001"),
-			OwnerId:       aws.String("123456789012"),
-		},
-		Instance: &ec2.Instance{
-			InstanceId:   aws.String("i-term-stopped-001"),
-			InstanceType: aws.String(getTestInstanceType(t)),
-		},
-	}
-	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
-	require.NoError(t, err)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	reqData, _ := json.Marshal(map[string]string{"instance_id": "i-term-stopped-001"})
-	reply, err := natsRequest(daemon.natsConn, "ec2.terminate", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp map[string]string
-	err = json.Unmarshal(reply.Data, &resp)
-	require.NoError(t, err)
-	assert.Equal(t, "terminated", resp["status"])
-	assert.Equal(t, "i-term-stopped-001", resp["instanceId"])
-
-	// Verify instance was removed from shared KV
-	loaded, err := daemon.jsManager.LoadStoppedInstance("i-term-stopped-001")
-	require.NoError(t, err)
-	assert.Nil(t, loaded, "Instance should be removed from shared KV after termination")
-}
+// --- handleEC2TerminateStoppedInstance wrapper smoke test ---
+//
+// Detailed logic coverage lives in
+// handlers/ec2/instance/service_impl_test.go (TestTerminateStoppedInstance_*).
+// The wrapper smoke case is TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV
+// further below; it confirms the NATS → handleNATSRequest → service round-trip
+// stays intact end-to-end against real JetStream KV.
 
 func TestHandleEC2GetConsoleOutput(t *testing.T) {
 	natsURL := sharedNATSURL
@@ -2833,63 +2725,6 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 	assert.Equal(t, "completed", *output.VolumeModification.ModificationState)
 }
 
-// --- handleEC2TerminateStoppedInstance with volumes ---
-
-func TestHandleEC2TerminateStoppedInstance_WithVolumes(t *testing.T) {
-	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
-
-	// Subscribe a dummy ebs.delete handler
-	ebsDeleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		_ = msg.Respond([]byte(`{"status":"deleted"}`))
-	})
-	require.NoError(t, err)
-	defer ebsDeleteSub.Unsubscribe()
-
-	stoppedVM := &vm.VM{
-		ID:           "i-term-vol-001",
-		Status:       vm.StateStopped,
-		AccountID:    testAccountID,
-		InstanceType: getTestInstanceType(t),
-		LastNode:     "node-1",
-		Reservation: &ec2.Reservation{
-			ReservationId: aws.String("r-term-vol-001"),
-			OwnerId:       aws.String("123456789012"),
-		},
-		Instance: &ec2.Instance{
-			InstanceId:   aws.String("i-term-vol-001"),
-			InstanceType: aws.String(getTestInstanceType(t)),
-		},
-	}
-	// Add EFI, CloudInit, and a user volume with DeleteOnTermination
-	stoppedVM.EBSRequests.Requests = []types.EBSRequest{
-		{Name: "vol-efi-001", EFI: true},
-		{Name: "vol-ci-001", CloudInit: true},
-		{Name: "vol-user-001", DeleteOnTermination: true},
-		{Name: "vol-keep-001", DeleteOnTermination: false},
-	}
-
-	err = daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
-	require.NoError(t, err)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.terminate", "spinifex-workers", daemon.handleEC2TerminateStoppedInstance)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	reqData, _ := json.Marshal(map[string]string{"instance_id": "i-term-vol-001"})
-	reply, err := natsRequest(daemon.natsConn, "ec2.terminate", reqData, 10*time.Second)
-	require.NoError(t, err)
-
-	var resp map[string]string
-	err = json.Unmarshal(reply.Data, &resp)
-	require.NoError(t, err)
-	assert.Equal(t, "terminated", resp["status"])
-	assert.Equal(t, "i-term-vol-001", resp["instanceId"])
-
-	loaded, err := daemon.jsManager.LoadStoppedInstance("i-term-vol-001")
-	require.NoError(t, err)
-	assert.Nil(t, loaded)
-}
-
 // --- handleEC2DescribeInstanceTypes with capacity filter ---
 
 func TestHandleEC2DescribeInstanceTypes_CapacityFilter(t *testing.T) {
@@ -3638,7 +3473,7 @@ func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	reqData, _ := json.Marshal(terminateStoppedInstanceRequest{InstanceID: stoppedVM.ID})
+	reqData, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: stoppedVM.ID})
 	reply, err := natsRequest(daemon.natsConn, "ec2.terminate", reqData, 30*time.Second)
 	require.NoError(t, err)
 	assert.Contains(t, string(reply.Data), "terminated")

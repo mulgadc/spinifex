@@ -59,3 +59,7 @@ func (s *MockInstanceService) DescribeTerminatedInstances(_ *ec2.DescribeInstanc
 func (s *MockInstanceService) ModifyInstanceAttribute(_ *ec2.ModifyInstanceAttributeInput, _ string) (*ec2.ModifyInstanceAttributeOutput, error) {
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
+
+func (s *MockInstanceService) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, _ string) (*TerminateStoppedInstanceOutput, error) {
+	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
+}

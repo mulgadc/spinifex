@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -570,7 +571,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) {
 			logicalIP = *instance.Instance.PrivateIpAddress
 		}
 	}
-	a.d.publishNATEvent("vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
+	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
 
 	if err := a.d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP); err != nil {
 		slog.Warn("Failed to release public IP on termination",

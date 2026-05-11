@@ -93,6 +93,15 @@
 - `describe-images` (verify custom AMI name and state)
 - Extract backing snapshot ID from Predastore config (for cleanup before termination)
 
+### Phase 5f: Security Group Enforcement (egress ACL)
+Proves vpcd programs OVN ACLs that actually drop traffic, not just nominal SG records. Tests egress only — in single-node `dev_networking` mode, runner→VM SSH bypasses OVN via the hostfwd NIC, so ingress isn't a faithful probe. Egress goes through the OVN tap NIC (default route).
+- Discover VM's OVN gateway from inside the VM (`ip route show default`)
+- Test 5f-1 (baseline): ICMP from VM to gateway works under default SG (allow-all egress)
+  - Skipped gracefully if env blocks ICMP regardless of SG (no false fail)
+- Test 5f-2 (revoke): `revoke-security-group-egress` strips the allow-all rule → ICMP must drop
+- Test 5f-3 (re-authorize): `authorize-security-group-egress` restores the rule → ICMP must work again
+- Restore the default egress rule on any failure path so subsequent phases (6, 7, 8) keep their SSH probes working
+
 ### Phase 6: Tag Management
 - `create-tags` (3 tags on instance)
 - `describe-tags` (filter by resource-id)
@@ -329,6 +338,8 @@ Tests that EC2 resources are properly isolated between tenant accounts (Alpha, B
 - `create-key-pair`
 - `spx admin images import` (with node1 config paths)
 - `describe-images` (verify AMI)
+- `create-security-group` + 2× `authorize-security-group-ingress` (tcp/22 + icmp from 0.0.0.0/0)
+  - All subsequent run-instances use this SG so VMs are reachable. The default SG is egress-only, so without this every Phase 5 SSH probe would be dropped by OVN ACL.
 
 ### Phase 4b: Multi-Node Key Pair Operations
 - `import-key-pair` (multinode-test-key-2, from local RSA key)
@@ -583,6 +594,9 @@ Runs on a real 3-node libvirt cluster provisioned by OpenTofu (`scripts/tofu-clu
 
 ### Phase 3: Instance Lifecycle + Distribution
 - Discover nano instance type and AMI (from bootstrap import)
+- `authorize-security-group-ingress` (tcp/22 on default VPC's default SG, 0.0.0.0/0)
+  - Required because the default SG is egress-only and the runner's IP is not a member; without this Phase 4 SSH would be dropped by OVN port-group ACL.
+  - Idempotent (tolerates `InvalidPermission.Duplicate` on re-runs).
 - `run-instances` x3 with staggered launches
 - Poll all instances to running state
 - Check instance distribution across physical nodes (QEMU process check)
@@ -756,6 +770,13 @@ lands.
 
 ### Known gaps
 
+- Security group enforcement breadth — Phase 5f covers egress
+  authorize/revoke for the default SG. Not yet covered: ingress
+  enforcement under external networking (`dev_networking=false`),
+  SG-to-SG source references (sg-A allows sg-B), per-port-range allows
+  (deny tcp/22 but allow tcp/80), `ModifyInstanceAttribute --groups`
+  swap, and reconciler convergence after a vpcd restart with drift.
+  Follow-up: mulga-js-79 (in progress).
 - Chaos framework (randomised fault injection, long-running stress) —
   follow-up plan TBD.
 - Multi-day partition — requires long-running CI infrastructure;

@@ -843,6 +843,87 @@ fi
 
 echo "CreateImage lifecycle test passed"
 
+# Phase 5f: Security Group Enforcement (egress)
+# Verifies vpcd programs OVN ACLs that actually drop traffic when an SG
+# rule is revoked. We test EGRESS because in single-node dev_networking
+# mode, INGRESS SSH bypasses OVN via the QEMU hostfwd NIC — the OVN tap
+# only owns the default route inside the VM, so egress is what hits the
+# ACL. The default SG ships with one allow-all egress rule we can flip.
+echo "Phase 5f: Security Group Enforcement (egress ACL)"
+
+# Discover the VM's OVN-side gateway from inside the VM (cloud-init
+# suppresses the default route on the dev NIC, so this is always the
+# OVN logical-router port).
+PROBE_GW=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
+    -p "$SSH_PORT" -i "test-key-1.pem" \
+    ec2-user@"$SSH_HOST" "ip route show default | awk '{print \$3}' | head -1" 2>/dev/null | tr -d '[:space:]')
+if [ -z "$PROBE_GW" ]; then
+    echo "  ERROR: could not discover default gateway inside VM — skipping Phase 5f"
+else
+    echo "  Probe target (VM default gateway): $PROBE_GW"
+
+    probe_egress_icmp() {
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
+            -p "$SSH_PORT" -i "test-key-1.pem" \
+            ec2-user@"$SSH_HOST" "ping -c 3 -W 2 $PROBE_GW" 2>&1
+    }
+
+    # Restore the default egress rule on any failure so later phases stay healthy.
+    sg_egress_restore() {
+        aws ec2 authorize-security-group-egress \
+            --group-id "$DEFAULT_SG_PHASE5" \
+            --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null 2>&1 || true
+    }
+
+    # Test 5f-1: Baseline — allow-all egress is in place.
+    echo "Test 5f-1: Egress baseline (allow-all)"
+    BASELINE_OUT=$(probe_egress_icmp)
+    if echo "$BASELINE_OUT" | grep -qE '[1-3] (packets )?received'; then
+        echo "  PASS: ICMP egress works with default allow-all"
+        SG_ENFORCE_RUN=true
+    else
+        echo "  SKIP: baseline ICMP did not work; cannot verify enforcement"
+        echo "  (env may block ICMP between VM and gateway regardless of SG)"
+        echo "  Output: $BASELINE_OUT"
+        SG_ENFORCE_RUN=false
+    fi
+
+    if [ "$SG_ENFORCE_RUN" = "true" ]; then
+        # Test 5f-2: Revoke egress → ICMP must be dropped.
+        echo "Test 5f-2: Revoke egress → expect drop"
+        aws ec2 revoke-security-group-egress \
+            --group-id "$DEFAULT_SG_PHASE5" \
+            --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null
+        sleep 3  # ACL propagation (vpcd handler is synchronous; small buffer for OVN flow install)
+        REVOKE_OUT=$(probe_egress_icmp || true)
+        if echo "$REVOKE_OUT" | grep -qE '0 (packets )?received|100% packet loss'; then
+            echo "  PASS: ICMP dropped after revoke"
+        else
+            echo "  FAIL: ICMP still succeeded after revoking allow-all egress"
+            echo "  Output: $REVOKE_OUT"
+            sg_egress_restore
+            exit 1
+        fi
+
+        # Test 5f-3: Re-authorize → ICMP works again.
+        echo "Test 5f-3: Re-authorize egress → expect allow"
+        sg_egress_restore
+        sleep 3
+        RESTORE_OUT=$(probe_egress_icmp)
+        if echo "$RESTORE_OUT" | grep -qE '[1-3] (packets )?received'; then
+            echo "  PASS: ICMP restored after re-authorize"
+        else
+            echo "  FAIL: ICMP still dropped after re-authorize"
+            echo "  Output: $RESTORE_OUT"
+            exit 1
+        fi
+
+        echo "Phase 5f: Security Group enforcement verified (revoke → drop, authorize → allow)"
+    fi
+fi
+
 # Phase 6: Tag Management
 echo "Phase 6: Tag Management"
 

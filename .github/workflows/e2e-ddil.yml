@@ -53,6 +53,13 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
+      - name: Install gotestsum
+        run: |
+          # Idempotent: re-running `go install` on a cached binary is a no-op.
+          # Pinned tag keeps Actions output format stable across runs.
+          go install gotest.tools/gotestsum@v1.12.0
+          echo "${HOME}/go/bin" >> "${GITHUB_PATH}"
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -115,6 +122,8 @@ jobs:
 
           mkdir -p "${RUNNER_TEMP}/ddil-results"
           cd "${GITHUB_WORKSPACE}/spinifex"
+          # gotestsum: human-readable PASS/FAIL/SKIP lines in Actions stdout
+          # while still emitting the machine-readable jsonfile artifact.
           DDIL_NODES="${NODE_IPS}" \
           DDIL_SSH_USER="${SSH_USER}" \
           DDIL_SSH_KEY="${SSH_KEY}" \
@@ -122,9 +131,9 @@ jobs:
           AWS_REGION="${REGION}" \
           AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
           AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-            go test -tags=e2e -timeout 45m -json \
-              ./tests/e2e/ddil/scenarios/... \
-              | tee "${RUNNER_TEMP}/ddil-results/results.json"
+            gotestsum --jsonfile "${RUNNER_TEMP}/ddil-results/results.json" \
+                      --format testname \
+                      -- -tags=e2e -timeout 45m ./tests/e2e/ddil/scenarios/...
 
       - name: Upload DDIL Results
         if: always()

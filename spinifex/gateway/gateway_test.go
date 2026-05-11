@@ -12,6 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
+	awssession "github.com/aws/aws-sdk-go/aws/session"
+	awsec2 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -72,9 +77,11 @@ func TestGenerateEC2ErrorResponse_Structure(t *testing.T) {
 			// Verify request ID
 			assert.Contains(t, xmlStr, "<RequestID>"+tc.requestID+"</RequestID>")
 
-			// Verify root element
-			assert.Contains(t, xmlStr, `<ErrorResponse xmlns="`+xmlnsEC2+`">`)
-			assert.Contains(t, xmlStr, "</ErrorResponse>")
+			// Verify root element — EC2 query API uses <Response>, not
+			// <ErrorResponse>; aws-sdk-go v1 rejects the latter with
+			// SerializationError.
+			assert.Contains(t, xmlStr, "<Response>")
+			assert.Contains(t, xmlStr, "</Response>")
 
 			// Verify Errors wrapper
 			assert.Contains(t, xmlStr, "<Errors>")
@@ -203,7 +210,7 @@ func TestErrorHandler_UnknownError(t *testing.T) {
 	xmlStr := string(body)
 	// Unknown errors should be remapped to InternalError
 	assert.Contains(t, xmlStr, "<Code>InternalError</Code>")
-	assert.Contains(t, xmlStr, `<ErrorResponse xmlns="`+xmlnsEC2+`">`)
+	assert.Contains(t, xmlStr, "<Response>")
 	assert.Contains(t, xmlStr, "<Errors>")
 }
 
@@ -222,7 +229,7 @@ func TestErrorHandler_EC2Service(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	xmlStr := string(body)
-	assert.Contains(t, xmlStr, `<ErrorResponse xmlns="`+xmlnsEC2+`">`)
+	assert.Contains(t, xmlStr, "<Response>")
 	assert.Contains(t, xmlStr, "<Errors>")
 	assert.Contains(t, xmlStr, "<Code>InvalidParameterValue</Code>")
 }
@@ -1156,7 +1163,7 @@ func TestWriteThrottleError_EC2(t *testing.T) {
 	assert.Equal(t, 503, resp.StatusCode)
 	assert.Equal(t, "application/xml", resp.Header.Get("Content-Type"))
 	assert.Contains(t, string(body), "<Code>RequestLimitExceeded</Code>")
-	assert.Contains(t, string(body), `<ErrorResponse xmlns="`+xmlnsEC2+`">`)
+	assert.Contains(t, string(body), "<Response>")
 }
 
 func TestWriteThrottleError_IAM(t *testing.T) {
@@ -1337,4 +1344,50 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 	resp := w.Result()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+// TestGenerateEC2ErrorResponse_SDKRoundTrip serves the EC2 error envelope from
+// an httptest server, points an aws-sdk-go v1 EC2 client at it, and asserts
+// the SDK surfaces the code via awserr.Error.Code() — not SerializationError.
+//
+// This is the regression guard for the bug behind mulga-siv-56 §3: aws-sdk-go
+// v1's ec2query response handler rejects the IAM `<ErrorResponse>` envelope
+// and discards the embedded code, leaving Go callers without a parseable
+// AWS error.
+func TestGenerateEC2ErrorResponse_SDKRoundTrip(t *testing.T) {
+	const wantCode = "InvalidInstanceType"
+	const wantMessage = "The instance type 't2.micro' is not supported in this region."
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := GenerateEC2ErrorResponse(wantCode, wantMessage, "req-sdk-roundtrip")
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	sess, err := awssession.NewSession(&aws.Config{
+		Region:      aws.String("us-east-1"),
+		Endpoint:    aws.String(srv.URL),
+		Credentials: awscreds.NewStaticCredentials("AKIA-TEST", "secret", ""),
+		DisableSSL:  aws.Bool(true),
+		// Suppress the default retry loop — error responses are not retryable
+		// here and waiting them out wastes test time.
+		MaxRetries: aws.Int(0),
+	})
+	require.NoError(t, err)
+
+	client := awsec2.New(sess)
+	_, err = client.RunInstances(&awsec2.RunInstancesInput{
+		ImageId:      aws.String("ami-test"),
+		InstanceType: aws.String("t2.micro"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	})
+	require.Error(t, err)
+
+	var awsErr awserr.Error
+	require.True(t, errors.As(err, &awsErr), "expected awserr.Error, got %T: %v", err, err)
+	assert.Equal(t, wantCode, awsErr.Code())
+	assert.NotEqual(t, "SerializationError", awsErr.Code(), "SDK could not parse the envelope")
 }

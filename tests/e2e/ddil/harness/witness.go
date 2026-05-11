@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,7 +56,11 @@ type Witness struct {
 //   - AWS_REGION (required) — passed to the AWS SDK client.
 //   - DDIL_WITNESS_AMI (optional) — specific AMI ID; if unset, an
 //     ami-ubuntu-* image is discovered at launch time.
-//   - DDIL_WITNESS_INSTANCE_TYPE (default t2.micro) — instance type.
+//   - DDIL_WITNESS_INSTANCE_TYPE (optional) — explicit instance type; if
+//     unset, the smallest registered type (by memory, then vCPUs) is
+//     auto-discovered at launch time. Auto-discovery beats hard-coding
+//     `t2.micro` because tofu clusters seed `*.nano` variants under
+//     names that change between releases.
 //   - DDIL_WITNESS_KEY_NAME (default spinifex-key) — EC2 key pair name.
 //   - DDIL_GUEST_SSH_USER (default ubuntu) — user for guest SSH.
 //   - DDIL_GUEST_SSH_KEY (default cluster.SSHKeyPath) — private key for
@@ -107,7 +112,7 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		guestSigner:  guestSigner,
 		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ubuntu"),
 		ami:          os.Getenv("DDIL_WITNESS_AMI"),
-		instanceType: envDefault("DDIL_WITNESS_INSTANCE_TYPE", "t2.micro"),
+		instanceType: os.Getenv("DDIL_WITNESS_INSTANCE_TYPE"),
 		keyName:      envDefault("DDIL_WITNESS_KEY_NAME", "spinifex-key"),
 	}, nil
 }
@@ -141,6 +146,10 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 	if err != nil {
 		return nil, err
 	}
+	instanceType, err := w.resolveInstanceType(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	userData := base64.StdEncoding.EncodeToString(cloudInitWitness)
 
@@ -148,7 +157,7 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 	for attempt := 1; attempt <= maxPlacementAttempts; attempt++ {
 		out, err := w.ec2.RunInstancesWithContext(ctx, &ec2.RunInstancesInput{
 			ImageId:      aws.String(ami),
-			InstanceType: aws.String(w.instanceType),
+			InstanceType: aws.String(instanceType),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
 			KeyName:      aws.String(w.keyName),
@@ -249,6 +258,52 @@ func (w *Witness) resolveAMI(ctx context.Context) (string, error) {
 	}
 	w.ami = aws.StringValue(out.Images[0].ImageId)
 	return w.ami, nil
+}
+
+// resolveInstanceType returns the witness instance type, caching the result.
+// When DDIL_WITNESS_INSTANCE_TYPE is set it is honoured verbatim; otherwise
+// DescribeInstanceTypes is consulted and the smallest registered type — by
+// memory first, vCPUs as tiebreaker — is selected. The sort key is
+// quantitative on purpose: naming conventions (`t2.nano`, `c6i.large`, …)
+// shift between cluster releases, but smallest-by-resource always picks the
+// cheapest valid launch target.
+func (w *Witness) resolveInstanceType(ctx context.Context) (string, error) {
+	if w.instanceType != "" {
+		return w.instanceType, nil
+	}
+	out, err := w.ec2.DescribeInstanceTypesWithContext(ctx, &ec2.DescribeInstanceTypesInput{})
+	if err != nil {
+		return "", fmt.Errorf("ddil harness: DescribeInstanceTypes: %w", err)
+	}
+	if len(out.InstanceTypes) == 0 {
+		return "", errors.New("ddil harness: cluster registered no instance types")
+	}
+	sort.Slice(out.InstanceTypes, func(i, j int) bool {
+		a, b := out.InstanceTypes[i], out.InstanceTypes[j]
+		var aMem, bMem int64
+		if a.MemoryInfo != nil {
+			aMem = aws.Int64Value(a.MemoryInfo.SizeInMiB)
+		}
+		if b.MemoryInfo != nil {
+			bMem = aws.Int64Value(b.MemoryInfo.SizeInMiB)
+		}
+		if aMem != bMem {
+			return aMem < bMem
+		}
+		var aCPU, bCPU int64
+		if a.VCpuInfo != nil {
+			aCPU = aws.Int64Value(a.VCpuInfo.DefaultVCpus)
+		}
+		if b.VCpuInfo != nil {
+			bCPU = aws.Int64Value(b.VCpuInfo.DefaultVCpus)
+		}
+		return aCPU < bCPU
+	})
+	w.instanceType = aws.StringValue(out.InstanceTypes[0].InstanceType)
+	if w.instanceType == "" {
+		return "", errors.New("ddil harness: smallest instance type has empty name")
+	}
+	return w.instanceType, nil
 }
 
 func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Duration) error {

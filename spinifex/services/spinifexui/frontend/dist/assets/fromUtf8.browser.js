@@ -1,0 +1,1 @@
+var e=e=>new TextEncoder().encode(e);export{e as t};

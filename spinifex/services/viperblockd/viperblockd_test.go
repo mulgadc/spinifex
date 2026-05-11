@@ -1,12 +1,16 @@
 package viperblockd
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNew tests the service constructor
@@ -438,4 +442,75 @@ func TestMountedVolumePortRange(t *testing.T) {
 		assert.True(t, vol.Port >= 10809)
 		assert.True(t, vol.Port <= 65535)
 	}
+}
+
+// TestRetryLoadState pins the retry policy used by ebs.mount: transient
+// backend errors retry with backoff, ErrStateNotFound fails fast, and the
+// retry budget is honoured. Required by mulga-siv-25 medium-term fix.
+func TestRetryLoadState(t *testing.T) {
+	t.Run("success_first_attempt_no_sleep", func(t *testing.T) {
+		calls := 0
+		sleeps := 0
+		err := retryLoadState("vol-x", 5, 10*time.Millisecond,
+			func(time.Duration) { sleeps++ },
+			func() error { calls++; return nil })
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, 0, sleeps)
+	})
+
+	t.Run("transient_recovers_within_budget", func(t *testing.T) {
+		calls := 0
+		sleeps := 0
+		err := retryLoadState("vol-x", 5, 10*time.Millisecond,
+			func(time.Duration) { sleeps++ },
+			func() error {
+				calls++
+				if calls < 3 {
+					return fmt.Errorf("wrap: %w", viperblock.ErrStateBackendUnavailable)
+				}
+				return nil
+			})
+		require.NoError(t, err)
+		assert.Equal(t, 3, calls)
+		assert.Equal(t, 2, sleeps)
+	})
+
+	t.Run("not_found_fails_fast", func(t *testing.T) {
+		calls := 0
+		sleeps := 0
+		err := retryLoadState("vol-x", 5, 10*time.Millisecond,
+			func(time.Duration) { sleeps++ },
+			func() error { calls++; return viperblock.ErrStateNotFound })
+		require.Error(t, err)
+		assert.ErrorIs(t, err, viperblock.ErrStateNotFound)
+		assert.Equal(t, 1, calls, "ErrStateNotFound must not be retried")
+		assert.Equal(t, 0, sleeps)
+	})
+
+	t.Run("unclassified_fails_fast", func(t *testing.T) {
+		calls := 0
+		sentinel := errors.New("permission denied")
+		err := retryLoadState("vol-x", 5, 10*time.Millisecond,
+			func(time.Duration) {},
+			func() error { calls++; return sentinel })
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("exhausts_budget_on_persistent_transient", func(t *testing.T) {
+		calls := 0
+		sleeps := 0
+		var lastDelay time.Duration
+		err := retryLoadState("vol-x", 4, 100*time.Millisecond,
+			func(d time.Duration) { sleeps++; lastDelay = d },
+			func() error { calls++; return viperblock.ErrStateBackendUnavailable })
+		require.Error(t, err)
+		assert.ErrorIs(t, err, viperblock.ErrStateBackendUnavailable)
+		assert.Equal(t, 4, calls)
+		assert.Equal(t, 3, sleeps, "sleep happens between attempts, not after the final one")
+		// Backoff multiplier is 1.5: 100ms, 150ms, 225ms.
+		assert.Equal(t, 225*time.Millisecond, lastDelay)
+	})
 }

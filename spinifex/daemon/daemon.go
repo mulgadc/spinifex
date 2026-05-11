@@ -1744,16 +1744,18 @@ func (d *Daemon) setupShutdown() {
 		// Cancel context to stop heartbeat and other goroutines
 		d.cancel()
 
-		// If coordinated shutdown already handled VMs (DRAIN phase), skip the
-		// per-instance teardown. Otherwise, set the flag now so crash handlers
-		// and restart schedulers know to bail out during SIGTERM-based shutdown.
+		// DDIL Tier 1 (mulga-siv-58): SIGTERM alone never stops local VMs.
+		// `systemctl restart spinifex-daemon` must preserve every QEMU child so
+		// the new daemon can reattach via the persisted local state file
+		// (Scenario B). VMs are only stopped when coordinated cluster shutdown
+		// has explicitly drained them — handleShutdownDrain sets shuttingDown
+		// after calling StopAll, and crash/restart handlers also gate on this
+		// flag to bail out.
 		if d.shuttingDown.Load() {
 			slog.Info("Coordinated shutdown in progress, skipping VM stop (already handled by DRAIN phase)")
 		} else {
+			slog.Info("SIGTERM with no coordinated drain — leaving local VMs running for restart recovery")
 			d.shuttingDown.Store(true)
-			if err := d.vmMgr.StopAll(); err != nil {
-				slog.Error("Failed to stop instances during shutdown", "err", err)
-			}
 		}
 
 		// Stop ELBv2 background goroutines
@@ -1783,8 +1785,12 @@ func (d *Daemon) setupShutdown() {
 			slog.Error("Failed to write state", "err", err)
 		}
 
-		// Close NATS connection
-		d.natsConn.Close()
+		// Close NATS connection. natsConn is nil when the daemon was started
+		// with NATS unreachable and never managed an initial connect — that
+		// is the DDIL Scenario B path (daemon restart while NATS is down).
+		if d.natsConn != nil {
+			d.natsConn.Close()
+		}
 
 		// Shutdown cluster manager
 		if d.clusterServer != nil {

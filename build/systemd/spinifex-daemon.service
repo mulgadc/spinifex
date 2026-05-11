@@ -23,6 +23,17 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5
+# DDIL Tier 1 (mulga-siv-58): KillMode=process so systemd only signals the
+# daemon's main PID, not the cgroup. QEMU children stay alive across
+# `systemctl restart spinifex-daemon` and the new daemon reattaches to them
+# via the persisted local state file + pidfile + QMP socket. With the
+# default control-group mode, restart would terminate every guest VM —
+# defeating Scenario B's "daemon restart preserves running instances".
+KillMode=process
+# 15s upper bound on the SIGTERM grace window. The new SIGTERM handler
+# skips VM teardown (it now just persists state and exits), so 15s is
+# plenty of slack for the cluster-manager + NATS unsubscribe path.
+TimeoutStopSec=15
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/

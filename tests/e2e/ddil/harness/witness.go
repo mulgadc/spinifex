@@ -35,13 +35,14 @@ var cloudInitWitness []byte
 // tests/e2e/run-multinode-e2e.sh's AWSGW_PORT.
 const gatewayPort = 9999
 
-// Witness bundles the AWS SDK client, guest SSH credentials, and AMI
+// Witness bundles the AWS SDK client, guest/host SSH credentials, and AMI
 // selection needed to launch and interrogate counter VMs. One Witness is
 // shared across the scenarios in a suite.
 type Witness struct {
 	ec2          *ec2.EC2
 	cluster      *Cluster
 	ssh          SSH
+	hostSigner   ssh.Signer
 	guestSigner  ssh.Signer
 	guestUser    string
 	ami          string
@@ -93,6 +94,11 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		return nil, fmt.Errorf("ddil harness: aws session: %w", err)
 	}
 
+	hostSigner, err := loadSigner(cluster.SSHKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("ddil harness: host ssh key: %w", err)
+	}
+
 	guestKeyPath := os.Getenv("DDIL_GUEST_SSH_KEY")
 	if guestKeyPath == "" {
 		return nil, errors.New("ddil harness: NewWitness requires DDIL_GUEST_SSH_KEY (path to the private key paired with DDIL_WITNESS_KEY_NAME's registered material)")
@@ -106,6 +112,7 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		ec2:          ec2.New(sess),
 		cluster:      cluster,
 		ssh:          transport,
+		hostSigner:   hostSigner,
 		guestSigner:  guestSigner,
 		guestUser:    envDefault("DDIL_GUEST_SSH_USER", "ubuntu"),
 		ami:          os.Getenv("DDIL_WITNESS_AMI"),
@@ -185,7 +192,7 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 				_ = w.terminate(ctx, id)
 				return nil, err
 			}
-			baseline, err := readCounter(ctx, w, publicIP)
+			baseline, err := readCounter(ctx, w, placed, publicIP)
 			if err != nil {
 				// The counter service may not have started yet on a freshly
 				// booted guest; a zero baseline is the expected steady state
@@ -211,10 +218,10 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 	return nil, fmt.Errorf("ddil harness: LaunchWitnessVM: %w after %d attempts", lastErr, maxPlacementAttempts)
 }
 
-// ReadCounter SSHes the guest at its public IP and returns the current
-// /var/lib/counter value.
+// ReadCounter SSHes the guest at its public IP (tunnelled through the
+// hosting cluster node) and returns the current /var/lib/counter value.
 func (v *WitnessVM) ReadCounter(ctx context.Context) (int, error) {
-	return readCounter(ctx, v.w, v.PublicIP)
+	return readCounter(ctx, v.w, v.HostNode, v.PublicIP)
 }
 
 // Terminate asks EC2 to shut the witness down. Scenarios call this from
@@ -416,26 +423,33 @@ func (w *Witness) terminate(ctx context.Context, id string) error {
 	return nil
 }
 
-// readCounter SSHes the witness at publicIP:22 directly and reads
-// /var/lib/counter. The cluster's MapPublicIpOnLaunch wires the EIP from
-// the external pool, which sits on the same WAN subnet as DDIL_NODES, so
-// the runner reaches it without a host relay.
-func readCounter(ctx context.Context, w *Witness, publicIP string) (int, error) {
+// readCounter tunnels SSH through host to publicIP:22 and reads
+// /var/lib/counter. The cluster's external pool (MapPublicIpOnLaunch) sits
+// on an OVN-managed subnet that isn't routable from the off-cluster runner;
+// the host node, however, reaches it via OVN's gateway router. Using the
+// VM's hosting node as the jump keeps the relay inside the cluster.
+func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (int, error) {
+	hostClient, err := dialHost(ctx, host, w.cluster.SSHUser, w.hostSigner)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = hostClient.Close() }()
+
 	guestAddr := net.JoinHostPort(publicIP, "22")
+	tunnel, err := hostClient.DialContext(ctx, "tcp", guestAddr)
+	if err != nil {
+		return 0, fmt.Errorf("ddil harness: tunnel %s → %s: %w", host.Name, guestAddr, err)
+	}
+
 	guestCfg := &ssh.ClientConfig{
 		User:            w.guestUser,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(w.guestSigner)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // ephemeral test VM
 		Timeout:         10 * time.Second,
 	}
-	d := net.Dialer{Timeout: guestCfg.Timeout}
-	conn, err := d.DialContext(ctx, "tcp", guestAddr)
+	c, chans, reqs, err := ssh.NewClientConn(tunnel, guestAddr, guestCfg)
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: dial guest %s: %w", guestAddr, err)
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, guestAddr, guestCfg)
-	if err != nil {
-		_ = conn.Close()
+		_ = tunnel.Close()
 		return 0, fmt.Errorf("ddil harness: guest ssh handshake on %s: %w", guestAddr, err)
 	}
 	guestClient := ssh.NewClient(c, chans, reqs)
@@ -460,6 +474,26 @@ func readCounter(ctx context.Context, w *Witness, publicIP string) (int, error) 
 		return 0, fmt.Errorf("ddil harness: parse /var/lib/counter %q: %w", s, err)
 	}
 	return n, nil
+}
+
+func dialHost(ctx context.Context, node Node, user string, signer ssh.Signer) (*ssh.Client, error) {
+	cfg := &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // tofu-cluster test hosts
+		Timeout:         10 * time.Second,
+	}
+	d := net.Dialer{Timeout: cfg.Timeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(node.Addr, "22"))
+	if err != nil {
+		return nil, fmt.Errorf("ddil harness: dial host %s: %w", node.Name, err)
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, node.Addr, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ddil harness: host ssh handshake %s: %w", node.Name, err)
+	}
+	return ssh.NewClient(c, chans, reqs), nil
 }
 
 func loadSigner(path string) (ssh.Signer, error) {

@@ -55,3 +55,7 @@ func (s *MockInstanceService) DescribeStoppedInstances(_ *ec2.DescribeInstancesI
 func (s *MockInstanceService) DescribeTerminatedInstances(_ *ec2.DescribeInstancesInput, _ string) (*ec2.DescribeInstancesOutput, error) {
 	return &ec2.DescribeInstancesOutput{}, nil
 }
+
+func (s *MockInstanceService) ModifyInstanceAttribute(_ *ec2.ModifyInstanceAttributeInput, _ string) (*ec2.ModifyInstanceAttributeOutput, error) {
+	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}

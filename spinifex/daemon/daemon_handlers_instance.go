@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1162,110 +1161,8 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 	slog.Info(handlerName+" completed", "count", len(reservations))
 }
 
-// handleEC2ModifyInstanceAttribute modifies attributes of a stopped instance in shared KV.
-// All supported attributes (InstanceType, UserData) require the instance to be stopped.
 func (d *Daemon) handleEC2ModifyInstanceAttribute(msg *nats.Msg) {
-	var input ec2.ModifyInstanceAttributeInput
-	if err := json.Unmarshal(msg.Data, &input); err != nil {
-		slog.Error("handleEC2ModifyInstanceAttribute: failed to unmarshal request", "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	if input.InstanceId == nil || *input.InstanceId == "" {
-		slog.Error("handleEC2ModifyInstanceAttribute: missing instance_id")
-		respondWithError(msg, awserrors.ErrorMissingParameter)
-		return
-	}
-
-	instanceID := *input.InstanceId
-
-	// SourceDestCheck is a networking concept that doesn't apply to bare-metal VMs.
-	// Accept the call as a no-op so Terraform and the AWS CLI don't error out.
-	// Unlike InstanceType/UserData, AWS allows this on running instances, so handle
-	// it before the stopped-state gate.
-	if input.SourceDestCheck != nil {
-		slog.Info("handleEC2ModifyInstanceAttribute: accepting SourceDestCheck (no-op on bare metal)", "instanceId", instanceID)
-		if err := msg.Respond([]byte(`{}`)); err != nil {
-			slog.Error("Failed to respond to NATS request", "err", err)
-		}
-		return
-	}
-
-	if d.stateStore == nil {
-		slog.Error("handleEC2ModifyInstanceAttribute: state store not available")
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	instance, err := d.stateStore.LoadStoppedInstance(instanceID)
-	if err != nil {
-		slog.Error("handleEC2ModifyInstanceAttribute: failed to load stopped instance", "instanceId", instanceID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-	if instance == nil {
-		slog.Warn("handleEC2ModifyInstanceAttribute: instance not found in shared KV", "instanceId", instanceID)
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
-	}
-
-	if instance.Status != vm.StateStopped {
-		slog.Error("handleEC2ModifyInstanceAttribute: instance not in stopped state", "instanceId", instanceID, "status", instance.Status)
-		respondWithError(msg, awserrors.ErrorIncorrectInstanceState)
-		return
-	}
-
-	// Verify the caller owns this instance
-	if !checkInstanceOwnership(msg, instanceID, instance.AccountID) {
-		return
-	}
-
-	// Apply the requested attribute change
-	if input.InstanceType != nil && input.InstanceType.Value != nil {
-		newType := *input.InstanceType.Value
-		if newType == "" {
-			slog.Error("handleEC2ModifyInstanceAttribute: empty instance type value", "instanceId", instanceID)
-			respondWithError(msg, awserrors.ErrorInvalidInstanceAttributeValue)
-			return
-		}
-		if instance.Instance == nil {
-			slog.Error("handleEC2ModifyInstanceAttribute: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
-			respondWithError(msg, awserrors.ErrorServerInternal)
-			return
-		}
-		slog.Info("handleEC2ModifyInstanceAttribute: changing instance type",
-			"instanceId", instanceID, "oldType", instance.InstanceType, "newType", newType)
-
-		instance.InstanceType = newType
-		instance.Config.InstanceType = newType
-		instance.Instance.InstanceType = aws.String(newType)
-		// Clear StateReason — resolves capacity-unavailable state from instance-type-missing bug
-		instance.Instance.StateReason = nil
-	}
-
-	if input.UserData != nil && input.UserData.Value != nil {
-		slog.Info("handleEC2ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
-
-		// Value arrives as decoded bytes (JSON unmarshal handles base64 → []byte automatically)
-		instance.UserData = string(input.UserData.Value)
-		if instance.RunInstancesInput != nil {
-			instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
-		}
-	}
-
-	if err := d.stateStore.WriteStoppedInstance(instanceID, instance); err != nil {
-		slog.Error("handleEC2ModifyInstanceAttribute: failed to write modified instance to KV",
-			"instanceId", instanceID, "err", err)
-		respondWithError(msg, awserrors.ErrorServerInternal)
-		return
-	}
-
-	slog.Info("handleEC2ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
-
-	if err := msg.Respond([]byte(`{}`)); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
+	handleNATSRequest(msg, d.instanceService.ModifyInstanceAttribute)
 }
 
 // handleEC2DescribeInstanceAttribute returns a single requested attribute for an instance.

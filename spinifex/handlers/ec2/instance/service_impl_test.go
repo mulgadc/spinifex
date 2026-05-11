@@ -653,12 +653,14 @@ func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacit
 }
 
 type fakeStoppedStore struct {
-	stopped     []*vm.VM
-	terminated  []*vm.VM
-	loadByID    map[string]*vm.VM
-	listErr     error
-	listTermErr error
-	loadErr     error
+	stopped      []*vm.VM
+	terminated   []*vm.VM
+	loadByID     map[string]*vm.VM
+	wroteStopped map[string]*vm.VM
+	listErr      error
+	listTermErr  error
+	loadErr      error
+	writeErr     error
 }
 
 func (f *fakeStoppedStore) LoadStoppedInstance(id string) (*vm.VM, error) {
@@ -681,6 +683,16 @@ func (f *fakeStoppedStore) ListTerminatedInstances() ([]*vm.VM, error) {
 		return nil, f.listTermErr
 	}
 	return f.terminated, nil
+}
+func (f *fakeStoppedStore) WriteStoppedInstance(id string, instance *vm.VM) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	if f.wroteStopped == nil {
+		f.wroteStopped = make(map[string]*vm.VM)
+	}
+	f.wroteStopped[id] = instance
+	return nil
 }
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
@@ -1035,4 +1047,223 @@ func TestIsInstanceVisible(t *testing.T) {
 			assert.Equal(t, tc.want, IsInstanceVisible(tc.caller, tc.owner))
 		})
 	}
+}
+
+func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestModifyInstanceAttribute_SourceDestCheckNoOp(t *testing.T) {
+	// SourceDestCheck succeeds without touching KV or requiring stopped state.
+	svc := &InstanceServiceImpl{}
+	out, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:      aws.String("i-sdc-001"),
+		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, "acc")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+}
+
+func TestModifyInstanceAttribute_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String("i-1"),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String("i-missing"),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
+	id := "i-stopped"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
+	id := "i-type"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {
+			ID:           id,
+			Status:       vm.StateStopped,
+			AccountID:    "acc",
+			InstanceType: "t3.micro",
+			Config:       vm.Config{InstanceType: "t3.micro"},
+			Instance: &ec2.Instance{
+				InstanceId:   aws.String(id),
+				InstanceType: aws.String("t3.micro"),
+			},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.wroteStopped[id]
+	require.NotNil(t, updated)
+	assert.Equal(t, "t3.medium", updated.InstanceType)
+	assert.Equal(t, "t3.medium", updated.Config.InstanceType)
+	assert.Equal(t, "t3.medium", *updated.Instance.InstanceType)
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType_EmptyValue(t *testing.T) {
+	id := "i-empty"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", Instance: &ec2.Instance{}},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceAttributeValue, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType_NilEmbeddedInstance(t *testing.T) {
+	id := "i-nil-inst"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
+	id := "i-ud"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {
+			ID:        id,
+			Status:    vm.StateStopped,
+			AccountID: "acc",
+			UserData:  "old",
+			RunInstancesInput: &ec2.RunInstancesInput{
+				UserData: aws.String("b2xk"),
+			},
+			Instance: &ec2.Instance{InstanceId: aws.String(id)},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	newContent := "#!/bin/bash"
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		UserData:   &ec2.BlobAttributeValue{Value: []byte(newContent)},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.wroteStopped[id]
+	require.NotNil(t, updated)
+	assert.Equal(t, newContent, updated.UserData)
+	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
+}
+
+func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
+	id := "i-recovery"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {
+			ID:           id,
+			Status:       vm.StateStopped,
+			AccountID:    "acc",
+			InstanceType: "m7i.small",
+			Config:       vm.Config{InstanceType: "m7i.small"},
+			Instance: &ec2.Instance{
+				InstanceId:   aws.String(id),
+				InstanceType: aws.String("m7i.small"),
+				StateReason: &ec2.StateReason{
+					Code:    aws.String("Server.InsufficientInstanceCapacity"),
+					Message: aws.String("Instance type not available on any node"),
+				},
+			},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.wroteStopped[id]
+	require.NotNil(t, updated)
+	assert.Nil(t, updated.Instance.StateReason)
+}
+
+func TestModifyInstanceAttribute_WriteError(t *testing.T) {
+	id := "i-werr"
+	store := &fakeStoppedStore{
+		loadByID: map[string]*vm.VM{
+			id: {
+				ID:           id,
+				Status:       vm.StateStopped,
+				AccountID:    "acc",
+				InstanceType: "t3.micro",
+				Config:       vm.Config{InstanceType: "t3.micro"},
+				Instance: &ec2.Instance{
+					InstanceId:   aws.String(id),
+					InstanceType: aws.String("t3.micro"),
+				},
+			},
+		},
+		writeErr: fmt.Errorf("kv write boom"),
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

@@ -1157,6 +1157,86 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstanc
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
+// ModifyInstanceAttribute applies a single attribute change to a stopped instance.
+// All supported attributes (InstanceType, UserData) require the instance to be
+// stopped. SourceDestCheck is a networking concept that does not apply to
+// bare-metal VMs; it is accepted as a no-op on any instance state so Terraform
+// and the AWS CLI do not error out.
+func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if input.SourceDestCheck != nil {
+		slog.Info("ModifyInstanceAttribute: accepting SourceDestCheck (no-op on bare metal)", "instanceId", instanceID)
+		return &ec2.ModifyInstanceAttributeOutput{}, nil
+	}
+
+	if s.stoppedStore == nil {
+		slog.Error("ModifyInstanceAttribute: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.Error("ModifyInstanceAttribute: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.Warn("ModifyInstanceAttribute: instance not found in shared KV", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if instance.Status != vm.StateStopped {
+		slog.Error("ModifyInstanceAttribute: instance not in stopped state", "instanceId", instanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.Warn("ModifyInstanceAttribute: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if input.InstanceType != nil && input.InstanceType.Value != nil {
+		newType := *input.InstanceType.Value
+		if newType == "" {
+			slog.Error("ModifyInstanceAttribute: empty instance type value", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorInvalidInstanceAttributeValue)
+		}
+		if instance.Instance == nil {
+			slog.Error("ModifyInstanceAttribute: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("ModifyInstanceAttribute: changing instance type",
+			"instanceId", instanceID, "oldType", instance.InstanceType, "newType", newType)
+
+		instance.InstanceType = newType
+		instance.Config.InstanceType = newType
+		instance.Instance.InstanceType = aws.String(newType)
+		// Clear StateReason — resolves capacity-unavailable state from instance-type-missing bug.
+		instance.Instance.StateReason = nil
+	}
+
+	if input.UserData != nil && input.UserData.Value != nil {
+		slog.Info("ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
+		instance.UserData = string(input.UserData.Value)
+		if instance.RunInstancesInput != nil {
+			instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
+		}
+	}
+
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.Error("ModifyInstanceAttribute: failed to write modified instance to KV",
+			"instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
+	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
 // DescribeInstanceAttribute returns a single requested attribute for an instance.
 // Checks running instances first (in-memory), then falls back to stopped instances in KV.
 func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {

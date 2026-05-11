@@ -13,6 +13,7 @@ type InstanceService interface {
 	DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error)
 	DescribeStoppedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
 	DescribeTerminatedInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error)
+	ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error)
 }
 
 // ResourceCapacityProvider exposes per-node instance-type availability used by
@@ -21,10 +22,11 @@ type ResourceCapacityProvider interface {
 	GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo
 }
 
-// StoppedInstanceStore provides KV-backed read access to stopped/terminated
-// instances. Implemented by daemon.JetStreamManager.
+// StoppedInstanceStore provides KV-backed read/write access to stopped and
+// read access to terminated instances. Implemented by daemon.JetStreamManager.
 type StoppedInstanceStore interface {
 	LoadStoppedInstance(instanceID string) (*vm.VM, error)
 	ListStoppedInstances() ([]*vm.VM, error)
 	ListTerminatedInstances() ([]*vm.VM, error)
+	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 }

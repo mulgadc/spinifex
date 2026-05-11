@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -142,11 +144,17 @@ var _ vm.StateStore = (*fakeStateStore)(nil)
 
 // daemonWithFakeStateStore returns a daemon wired with an in-memory NATS
 // connection (via createTestDaemon) and the supplied fake StateStore.
-// The daemon does not have JetStream initialized.
+// The daemon does not have JetStream initialized. Rewires d.instanceService
+// to point at the fake store so handlers that delegate to InstanceService
+// (e.g. ModifyInstanceAttribute) see the injected state.
 func daemonWithFakeStateStore(t *testing.T, store *fakeStateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
+	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		d.config, d.resourceMgr.instanceTypes, d.natsConn,
+		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
+	)
 	return d
 }
 

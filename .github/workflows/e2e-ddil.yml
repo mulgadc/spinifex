@@ -133,6 +133,15 @@ jobs:
             exit 1
           fi
 
+          # Guest SSH key: bootstrap-install.sh imports spinifex-key into EC2;
+          # the matching private material was generated on the primary node at
+          # ~/.ssh/spinifex-key. Pull it to the runner so the harness can SSH
+          # the witness via its MapPublicIpOnLaunch-assigned EIP.
+          GUEST_KEY="${RUNNER_TEMP}/spinifex-key"
+          scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${PRIMARY_IP}:~/.ssh/spinifex-key" "${GUEST_KEY}"
+          chmod 600 "${GUEST_KEY}"
+
           mkdir -p "${RUNNER_TEMP}/ddil-results"
           cd "${GITHUB_WORKSPACE}/spinifex"
           # gotestsum: human-readable PASS/FAIL/SKIP lines in Actions stdout
@@ -140,6 +149,7 @@ jobs:
           DDIL_NODES="${NODE_IPS}" \
           DDIL_SSH_USER="${SSH_USER}" \
           DDIL_SSH_KEY="${SSH_KEY}" \
+          DDIL_GUEST_SSH_KEY="${GUEST_KEY}" \
           DDIL_QUARANTINED="${{ inputs.quarantined }}" \
           AWS_REGION="${REGION}" \
           AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \

@@ -612,12 +612,17 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		requireNATSTimeout: 30 * time.Second,
 		exitFunc:           os.Exit,
 	}
-	// Single-node clusters have no peers to lose — keep peersReachable
-	// permanently true so Mode() can flip to "cluster" the moment NATS comes
-	// up, without waiting for a probe cycle that will never find anyone.
-	if d.peerCount() == 0 {
-		d.peersReachable.Store(true)
-	}
+	// Initialise peersReachable optimistically. Mode() also requires
+	// natsConnected, which starts false, so the optimistic init never
+	// causes Mode() to falsely report cluster — but it does prevent the
+	// first probe tick from triggering a spurious "heal" edge on
+	// multi-node clusters at startup (zero-value false → first-successful-
+	// probe true would otherwise fire reconcileOnHeal at boot,
+	// concurrently with startCluster's own bootstrap and perturbing the
+	// timing the DDIL harness relies on). Single-node clusters never
+	// run a probe at all, so this also keeps the prior single-node
+	// behaviour where Mode() flips to cluster the moment NATS comes up.
+	d.peersReachable.Store(true)
 	return d, nil
 }
 

@@ -38,12 +38,16 @@ func (d *Daemon) reconcileOnHeal(reason string) {
 		return
 	}
 
-	// Re-fire default-VPC bootstrap. Idempotent — every step checks
-	// for existing infrastructure before creating. Covers the failure
-	// mode where startCluster ran during partition and the initial
-	// CreateInternetGateway / CreateSecurityGroup calls returned errors
-	// against an unreachable NATS.
-	d.ensureDefaultVPCInfrastructure()
+	// NOTE: an earlier revision called d.ensureDefaultVPCInfrastructure()
+	// here. DDIL Scenario C regressed because the very first peer-probe
+	// tick on multi-node startup flips peersReachable false→true and
+	// triggers this path concurrently with startCluster's own
+	// ensureDefaultVPCInfrastructure call. The Describe→Create→Attach
+	// sequence is not cluster-wide singleton, so multiple daemons +
+	// double calls per daemon could race and produce duplicate IGW
+	// attachments, corrupting default-VPC routing. Heal-time bootstrap
+	// re-fire needs leader election or a debounce against the
+	// startup-time path before re-introducing.
 
 	slog.Info("reconcileOnHeal: complete", "reason", reason, "revision", d.Revision())
 }

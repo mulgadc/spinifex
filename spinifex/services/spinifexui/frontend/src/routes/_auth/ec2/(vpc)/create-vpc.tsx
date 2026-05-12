@@ -108,9 +108,9 @@ function CreateVpc() {
       })
       const vpcId = result.Vpc?.VpcId
       if (vpcId) {
-        void navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
+        navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
       } else {
-        void navigate({ to: "/ec2/describe-vpcs" })
+        navigate({ to: "/ec2/describe-vpcs" })
       }
       return
     }
@@ -121,7 +121,7 @@ function CreateVpc() {
     setWizardResult(result)
 
     if (!result.error && result.vpcId) {
-      void navigate({
+      navigate({
         to: "/ec2/describe-vpcs/$id",
         params: { id: result.vpcId },
       })

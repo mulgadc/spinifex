@@ -167,7 +167,7 @@ function CreateInstance() {
   const onSubmit = async (data: CreateInstanceFormData) => {
     await createMutation.mutateAsync(data)
 
-    void navigate({ to: "/ec2/describe-instances" })
+    navigate({ to: "/ec2/describe-instances" })
   }
 
   return (

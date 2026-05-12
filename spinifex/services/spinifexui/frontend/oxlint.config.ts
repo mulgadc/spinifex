@@ -40,6 +40,18 @@ export default defineConfig({
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
     "typescript/no-confusing-void-expression": "off",
+    "typescript/no-floating-promises": [
+      "error",
+      {
+        allowForKnownSafeCalls: [
+          {
+            from: "package",
+            name: "UseNavigateResult",
+            package: "@tanstack/router-core",
+          },
+        ],
+      },
+    ],
     "typescript/no-misused-promises": "off",
     "typescript/only-throw-error": [
       "error",

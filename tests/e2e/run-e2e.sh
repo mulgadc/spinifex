@@ -3321,12 +3321,23 @@ else
 fi
 
 # Confirm client's private IP made it into the client_pg_ip4 address set so
-# target-sg's SG-to-SG match expression resolves.
-SGE_CLIENT_AS_ADDRS=$(sudo ovn-nbctl --no-leader-only --bare --columns=addresses find address_set name="${SGE_CLIENT_PG}_ip4" 2>/dev/null || echo "")
-if echo "$SGE_CLIENT_AS_ADDRS" | grep -qF "$SGE_CLIENT_PRIV"; then
-    echo "  PASS: client private IP $SGE_CLIENT_PRIV in address_set ${SGE_CLIENT_PG}_ip4"
+# target-sg's SG-to-SG match expression resolves. The <pg>_ip4 / <pg>_ip6
+# sets are auto-derived by ovn-northd from port_group membership and live in
+# SB, not NB (see security.go:73, topology.go:803). northd is async so retry
+# briefly to ride out the post-join propagation window.
+SGE_AS_OK=false
+for SGE_W in $(seq 1 10); do
+    SGE_CLIENT_AS_ADDRS=$(sudo ovn-sbctl --no-leader-only --bare --columns=addresses find address_set name="${SGE_CLIENT_PG}_ip4" 2>/dev/null || echo "")
+    if echo "$SGE_CLIENT_AS_ADDRS" | grep -qF "$SGE_CLIENT_PRIV"; then
+        SGE_AS_OK=true
+        break
+    fi
+    sleep 1
+done
+if [ "$SGE_AS_OK" = "true" ]; then
+    echo "  PASS: client private IP $SGE_CLIENT_PRIV in SB address_set ${SGE_CLIENT_PG}_ip4"
 else
-    echo "FAIL: client private IP $SGE_CLIENT_PRIV missing from address_set ${SGE_CLIENT_PG}_ip4"
+    echo "FAIL: client private IP $SGE_CLIENT_PRIV missing from SB address_set ${SGE_CLIENT_PG}_ip4"
     echo "  addresses: $SGE_CLIENT_AS_ADDRS"
     exit 1
 fi

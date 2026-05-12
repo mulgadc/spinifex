@@ -3237,7 +3237,10 @@ echo "  client-vm: $SGE_CLIENT_VM"
 
 # systemd-run fully detaches the http server from cloud-init's process group;
 # `nohup ... &` alone races with cloud-init exit and the server can get killed.
-SGE_TARGET_USERDATA=$(cat <<'EOF' | base64 -w0
+# Pass plaintext — AWS CLI base64-encodes --user-data automatically; awsgw
+# decodes once on receipt. Pre-encoding here results in a double-encoded blob
+# landing verbatim in /tmp/cloud-init-startup.sh.
+SGE_TARGET_USERDATA=$(cat <<'EOF'
 #!/bin/bash
 systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
     /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0

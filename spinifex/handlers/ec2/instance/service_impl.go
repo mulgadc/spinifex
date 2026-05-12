@@ -475,6 +475,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
 			ec2Instance.SetSubnetId(*input.SubnetId)
 			ec2Instance.SetVpcId(*eni.VpcId)
+			ec2Instance.SecurityGroups = eni.Groups
 			ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
 				{
 					NetworkInterfaceId: eni.NetworkInterfaceId,
@@ -483,6 +484,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 					SubnetId:           input.SubnetId,
 					VpcId:              eni.VpcId,
 					Status:             aws.String("in-use"),
+					Groups:             eni.Groups,
 					Attachment: &ec2.InstanceNetworkInterfaceAttachment{
 						DeviceIndex: aws.Int64(0),
 						Status:      aws.String("attached"),

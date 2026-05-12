@@ -38,5 +38,12 @@ func (d *Daemon) reconcileOnHeal(reason string) {
 		return
 	}
 
+	// Re-fire default-VPC bootstrap. Idempotent — every step checks
+	// for existing infrastructure before creating. Covers the failure
+	// mode where startCluster ran during partition and the initial
+	// CreateInternetGateway / CreateSecurityGroup calls returned errors
+	// against an unreachable NATS.
+	d.ensureDefaultVPCInfrastructure()
+
 	slog.Info("reconcileOnHeal: complete", "reason", reason, "revision", d.Revision())
 }

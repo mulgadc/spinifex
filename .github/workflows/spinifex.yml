@@ -17,6 +17,9 @@ on:
       - dev
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build_and_test:
     name: Build and Test

@@ -11,6 +11,9 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 env:
   GIT_BRANCH: ${{ github.ref_name }}
 

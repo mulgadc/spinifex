@@ -19,6 +19,7 @@ on:
         required: false
 
 permissions:
+  contents: read
   statuses: write
 
 env:

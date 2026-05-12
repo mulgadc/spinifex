@@ -45,11 +45,6 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 FAILED_TESTS=()
 
-# Stamp of test start, used by dump_all_node_logs to bound the journal window
-# instead of tailing a fixed line count. Exported so peer_ssh subshells inherit
-# it. Format accepted by `journalctl --since` (epoch seconds prefixed with @).
-export DUMP_SINCE="@$(date +%s)"
-
 # ==========================================================================
 # Helper functions
 # ==========================================================================
@@ -193,34 +188,23 @@ dump_guest_ssh_diagnostics() {
     echo ""
 }
 
-# Dump logs from ALL nodes on failure.
-#
-# Uses --since the test start (DUMP_SINCE, exported by the entrypoint) rather
-# than a fixed -n line count. A 50-line tail gets swamped by the periodic
-# ovs-vsctl chassis-poll noise, hiding the actual handler activity (mulga-js-82
-# diagnosed cell-10 stop-instance hangs blind for exactly this reason).
+# Dump logs from ALL nodes on failure
 dump_all_node_logs() {
     echo ""
     echo "=========================================="
     echo "DUMPING LOGS FROM ALL NODES"
     echo "=========================================="
-    # Fall back to "30 min ago" if the caller didn't set DUMP_SINCE — covers
-    # the typical real-multi cell runtime with margin for slow boots.
-    local since="${DUMP_SINCE:-30 min ago}"
-    echo "(journal window: --since \"${since}\")"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local ip="${NODE_IPS[$i]}"
         echo ""
         echo "=== Node $((i+1)) ($ip) ==="
         for svc in spinifex-nats spinifex-predastore spinifex-viperblock \
                    spinifex-daemon spinifex-awsgw spinifex-vpcd; do
-            echo "--- ${svc} ---"
+            echo "--- ${svc} (last 50 lines) ---"
             if [ "$ip" = "$LOCAL_IP" ]; then
-                sudo journalctl -u "$svc" --since "$since" -o short-iso --no-pager 2>/dev/null \
-                    || echo "(not found)"
+                sudo journalctl -u "$svc" --no-pager -n 50 2>/dev/null || echo "(not found)"
             else
-                peer_ssh "$ip" "sudo journalctl -u $svc --since '$since' -o short-iso --no-pager" 2>/dev/null \
-                    || echo "(node unreachable)"
+                peer_ssh "$ip" "sudo journalctl -u $svc --no-pager -n 50" 2>/dev/null || echo "(node unreachable)"
             fi
         done
     done

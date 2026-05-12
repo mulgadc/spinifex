@@ -197,7 +197,7 @@ jobs:
             for svc in spinifex-nats spinifex-predastore spinifex-viperblock spinifex-daemon spinifex-awsgw spinifex-vpcd dhcpcd; do
               echo "--- $svc ---"
               ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" tf-user@${IP} \
-                "sudo journalctl -u $svc --since '$SINCE' -o short-iso --no-pager 2>/dev/null || echo '(not found)'" 2>&1 || echo "(node unreachable)"
+                "sudo journalctl -u $svc --no-pager -n 200 2>/dev/null || echo '(not found)'" 2>&1 || echo "(node unreachable)"
             done
             echo "--- DHCP client state ---"
             ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" tf-user@${IP} \

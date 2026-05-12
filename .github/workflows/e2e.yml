@@ -28,7 +28,7 @@ jobs:
   e2e_single:
     name: Single-Node E2E
     runs-on: [ self-hosted, ci-single ]
-    timeout-minutes: 35
+    timeout-minutes: 30
     env:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
     steps:
@@ -161,7 +161,7 @@ jobs:
   e2e_real_multi:
     name: Real Multi-Node E2E
     runs-on: [ self-hosted, ci-multi ]
-    timeout-minutes: 40
+    timeout-minutes: 30
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
     steps:

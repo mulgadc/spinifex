@@ -262,3 +262,51 @@ func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
 }
+
+// writePredastoreEncryptionKey is called from both `spx admin init` and `spx
+// admin join`; both depend on it producing a 32-byte file at 0600 in the
+// expected layout. Predastore's keyfile loader rejects anything that isn't
+// exactly that, so a regression here would break service startup on every
+// node.
+func TestWritePredastoreEncryptionKey(t *testing.T) {
+	configDir := t.TempDir()
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "predastore", "encryption.key"), keyPath)
+
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(32), info.Size(), "predastore master key must be exactly 32 bytes")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "predastore master key must be mode 0600")
+
+	// Per-node invariant: two successive calls (on what would be two
+	// different nodes) must produce different key material. If they ever
+	// returned the same bytes we'd have silently lost the per-node
+	// blast-radius property.
+	configDir2 := t.TempDir()
+	keyPath2, err := writePredastoreEncryptionKey(configDir2)
+	require.NoError(t, err)
+
+	key1, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	key2, err := os.ReadFile(keyPath2)
+	require.NoError(t, err)
+	assert.NotEqual(t, key1, key2, "per-node keys must differ")
+}
+
+// Joiners run `spx admin join` against a configDir that doesn't yet contain
+// a predastore/ subdir. The helper must create it (predastore subdir is
+// owned by spinifex-storage in prod, but the helper just needs the dir to
+// exist).
+func TestWritePredastoreEncryptionKey_CreatesMissingDir(t *testing.T) {
+	configDir := t.TempDir()
+	// Don't pre-create the predastore subdir — simulate a fresh joiner.
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+
+	dirInfo, err := os.Stat(filepath.Dir(keyPath))
+	require.NoError(t, err)
+	assert.True(t, dirInfo.IsDir())
+}

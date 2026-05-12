@@ -314,6 +314,17 @@ if has_service "predastore"; then
     export SPINIFEX_PREDASTORE_TLS_CERT=$CONFIG_DIR/server.pem
     export SPINIFEX_PREDASTORE_TLS_KEY=$CONFIG_DIR/server.key
 
+    # Per-node predastore encryption key. Self-heal for devs who skipped
+    # `spx admin init`: generate with umask 0177 so the file is 0600 from
+    # creation (predastore rejects group/other-readable keys outright).
+    ENCRYPTION_KEY="$CONFIG_DIR/predastore/encryption.key"
+    if [ ! -f "$ENCRYPTION_KEY" ]; then
+        mkdir -p "$CONFIG_DIR/predastore"
+        ( umask 0177 && openssl rand -out "$ENCRYPTION_KEY" 32 )
+        echo "   Generated predastore encryption key: $ENCRYPTION_KEY"
+    fi
+    export SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE="$ENCRYPTION_KEY"
+
     # Auto-detect Predastore host:port from spinifex.toml [nodes.<name>.predastore] section
     PREDASTORE_BIND="0.0.0.0:8443"
     if [ -f "$CONFIG_DIR/spinifex.toml" ]; then

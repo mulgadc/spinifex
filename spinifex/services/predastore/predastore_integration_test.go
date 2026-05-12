@@ -147,6 +147,17 @@ func startPredastoreServer(t *testing.T) *Config {
 		t.Fatalf("Failed to generate certificate: %v", err)
 	}
 
+	// Predastore mandates a 32-byte master key at mode 0600 (rejected otherwise
+	// by internal/keyfile.Load).
+	encryptionKeyPath := filepath.Join(testDir, "encryption.key")
+	testEncryptionKey := make([]byte, 32)
+	if _, err := rand.Read(testEncryptionKey); err != nil {
+		t.Fatalf("Failed to generate test encryption key: %v", err)
+	}
+	if err := os.WriteFile(encryptionKeyPath, testEncryptionKey, 0600); err != nil {
+		t.Fatalf("Failed to write test encryption key: %v", err)
+	}
+
 	// Create config file. Five storage nodes are declared so predastore's dev-mode
 	// path launches all QUIC servers locally as goroutines (server.go:629). Buckets
 	// are created via the S3 API after startup — config buckets are no longer
@@ -206,13 +217,14 @@ account_id = "123456789012"
 	}
 
 	cfg := &Config{
-		ConfigPath: configPath,
-		Port:       18443,
-		Host:       "127.0.0.1",
-		Debug:      false,
-		BasePath:   testDir,
-		TlsCert:    certPath,
-		TlsKey:     keyPath,
+		ConfigPath:        configPath,
+		Port:              18443,
+		Host:              "127.0.0.1",
+		Debug:             false,
+		BasePath:          testDir,
+		TlsCert:           certPath,
+		TlsKey:            keyPath,
+		EncryptionKeyFile: encryptionKeyPath,
 	}
 	sharedConfig = cfg
 

@@ -25,6 +25,11 @@ type Config struct {
 	TlsCert    string
 	TlsKey     string
 
+	// EncryptionKeyFile is the path to this node's 32-byte AES-256 master
+	// key for predastore at-rest encryption. Each node has its own key;
+	// fragments are only ever opened on the node that sealed them.
+	EncryptionKeyFile string
+
 	NodeID int
 
 	// Profiling
@@ -52,6 +57,10 @@ func New(config any) (svc *Service, err error) {
 
 // Start starts the predastore service
 func (svc *Service) Start() (int, error) {
+	if svc.Config.EncryptionKeyFile == "" {
+		return 0, fmt.Errorf("predastore encryption key file is required (set EncryptionKeyFile)")
+	}
+
 	if err := utils.WritePidFileTo(svc.Config.BasePath, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
@@ -64,6 +73,7 @@ func (svc *Service) Start() (int, error) {
 		s3.WithDebug(svc.Config.Debug),
 		s3.WithNodeID(svc.Config.NodeID),
 		s3.WithPprof(svc.Config.PprofEnabled, svc.Config.PprofOutputPath),
+		s3.WithEncryptionKeyFile(svc.Config.EncryptionKeyFile),
 	)
 	if err != nil {
 		slog.Error("Failed to create predastore server", "error", err)

@@ -17,6 +17,7 @@ Environment=SPINIFEX_PREDASTORE_CONFIG_PATH=/etc/spinifex/predastore/predastore.
 Environment=SPINIFEX_PREDASTORE_BASE_PATH=/var/lib/spinifex/predastore/
 Environment=SPINIFEX_PREDASTORE_TLS_CERT=/etc/spinifex/server.pem
 Environment=SPINIFEX_PREDASTORE_TLS_KEY=/etc/spinifex/server.key
+Environment=SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE=/etc/spinifex/predastore/encryption.key
 
 # Filesystem access
 NoNewPrivileges=yes

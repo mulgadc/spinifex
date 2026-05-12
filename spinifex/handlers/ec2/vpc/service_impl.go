@@ -257,9 +257,25 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 		}
 	}
 
+	// Provision the per-VPC default SG synchronously. On failure the VPC
+	// record persists; user must DeleteVpc and retry.
+	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
+		slog.Error("Failed to create default security group for VPC", "vpcId", vpcID, "accountID", accountID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	return &ec2.CreateVpcOutput{
 		Vpc: s.vpcRecordToEC2(&record, accountID),
 	}, nil
+}
+
+// requireVPCExists returns InvalidVpcID.NotFound if the VPC doesn't exist for
+// this account.
+func (s *VPCServiceImpl) requireVPCExists(accountID, vpcId string) error {
+	if _, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcId)); err != nil {
+		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+	}
+	return nil
 }
 
 // DeleteVpc deletes a VPC
@@ -290,14 +306,69 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		}
 		entry, err := s.subnetKV.Get(k)
 		if err != nil {
-			continue
+			// ErrKeyNotFound means the subnet was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc bypass a subnet
+			// dependency it can't see.
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("DeleteVpc: subnet read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var subnet SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &subnet); err != nil {
-			continue
+			slog.Warn("DeleteVpc: subnet unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if subnet.VpcId == vpcID {
 			return nil, errors.New(awserrors.ErrorDependencyViolation)
+		}
+	}
+
+	// Reject if any non-default SG remains in this VPC; the cascade only
+	// auto-deletes the default SG (matches AWS DeleteVpc semantics).
+	defaultSGId := ""
+	sgKeys, err := s.sgKV.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, k := range sgKeys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(k)
+		if err != nil {
+			// ErrKeyNotFound means the SG was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc orphan a
+			// non-default SG it can't see.
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("DeleteVpc: SG read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		var sg SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &sg); err != nil {
+			slog.Warn("DeleteVpc: SG unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if sg.VpcId != vpcID {
+			continue
+		}
+		if !sg.IsDefault {
+			return nil, errors.New(awserrors.ErrorDependencyViolation)
+		}
+		defaultSGId = sg.GroupId
+	}
+
+	// Cascade-delete the default SG before removing the VPC record so a vpcd
+	// failure surfaces to the caller and leaves both records intact for retry.
+	if defaultSGId != "" {
+		if err := s.deleteSecurityGroupInternal(accountID, defaultSGId); err != nil {
+			slog.Error("DeleteVpc: cascade-delete of default SG failed", "vpcId", vpcID, "groupId", defaultSGId, "err", err)
+			return nil, err
 		}
 	}
 
@@ -419,7 +490,6 @@ func (s *VPCServiceImpl) CreateSubnet(input *ec2.CreateSubnetInput, accountID st
 	if err := json.Unmarshal(vpcEntry.Value(), &vpcRecord); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-
 	// Validate subnet CIDR
 	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
 	if err != nil {
@@ -1010,6 +1080,15 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 		if err := s.createMainRouteTable(accountID, vpcID, DefaultVPCCidr); err != nil {
 			slog.Error("Failed to create main route table for VPC", "vpcId", vpcID, "err", err)
 		}
+	}
+
+	// Best-effort default SG provisioning. Bootstrap runs during daemon Start()
+	// before vpcd has subscribed to vpc.create-sg, so the synchronous round-trip
+	// will time out on first boot. The SG record is already in KV; vpcd's
+	// reconcile-sgs loop creates the OVN port group on its first scan.
+	if _, err := s.createDefaultSecurityGroupInternal(accountID, vpcID); err != nil {
+		slog.Warn("Default security group bootstrap deferred to vpcd reconciler",
+			"vpcId", vpcID, "accountID", accountID, "err", err)
 	}
 
 	slog.Info("Created default VPC and subnet",

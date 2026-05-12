@@ -258,6 +258,22 @@ echo "$KEY_MATERIAL" > multinode-test-key.pem
 chmod 600 multinode-test-key.pem
 echo "  Key created: multinode-test-key"
 
+# Default SG is egress-only on this branch; create an explicit SG that allows
+# SSH + ICMP so subsequent run-instances calls produce reachable VMs.
+echo ""
+echo "Creating test security group..."
+DEFAULT_VPC_ID=$($AWS_EC2 describe-vpcs --query 'Vpcs[?IsDefault==`true`].VpcId | [0]' --output text)
+MULTINODE_SG=$($AWS_EC2 create-security-group \
+    --group-name multinode-test-sg \
+    --description "Pseudo multi-node e2e (SSH + ICMP ingress)" \
+    --vpc-id "$DEFAULT_VPC_ID" \
+    --query 'GroupId' --output text)
+$AWS_EC2 authorize-security-group-ingress \
+    --group-id "$MULTINODE_SG" --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
+$AWS_EC2 authorize-security-group-ingress \
+    --group-id "$MULTINODE_SG" --protocol icmp --port -1 --cidr 0.0.0.0/0 > /dev/null
+echo "  SG created: $MULTINODE_SG (tcp/22 + icmp from 0.0.0.0/0)"
+
 # Import Ubuntu image (use node1's config and spinifex-dir)
 echo ""
 echo "Importing Ubuntu image..."
@@ -300,7 +316,8 @@ for i in 1 2 3; do
     RUN_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" \
         --instance-type "$INSTANCE_TYPE" \
-        --key-name multinode-test-key)
+        --key-name multinode-test-key \
+        --security-group-ids "$MULTINODE_SG")
 
     INSTANCE_ID=$(echo "$RUN_OUTPUT" | jq -r '.Instances[0].InstanceId')
     if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
@@ -526,6 +543,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 3)
 
 BATCH_COUNT=$(echo "$RUN_OUTPUT" | jq '.Instances | length')
@@ -624,6 +642,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 5)
 
 BATCH_COUNT=$(echo "$RUN_OUTPUT" | jq '.Instances | length')
@@ -684,6 +703,7 @@ if RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 100 2>&1); then
     echo "FAIL: Expected error but got success"
     echo "Output: $RUN_OUTPUT"
@@ -716,6 +736,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 2)
 
 BATCH_COUNT=$(echo "$RUN_OUTPUT" | jq '.Instances | length')
@@ -745,6 +766,7 @@ if RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 100 2>&1); then
     echo "FAIL: Expected InsufficientInstanceCapacity"
     exit 1
@@ -876,6 +898,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 3 \
     --placement GroupName=test-spread)
 
@@ -915,6 +938,7 @@ if FOURTH_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 1 \
     --placement GroupName=test-spread 2>&1); then
     echo "FAIL: Expected InsufficientInstanceCapacity for 4th spread instance"
@@ -943,6 +967,7 @@ REPLACE_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 1 \
     --placement GroupName=test-spread)
 REPLACE_ID=$(echo "$REPLACE_OUTPUT" | jq -r '.Instances[0].InstanceId')
@@ -970,6 +995,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 3 \
     --placement GroupName=test-cluster)
 
@@ -1019,6 +1045,7 @@ EXTRA_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 1 \
     --placement GroupName=test-cluster)
 EXTRA_ID=$(echo "$EXTRA_OUTPUT" | jq -r '.Instances[0].InstanceId')
@@ -1059,6 +1086,7 @@ FILL_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 1 \
     --placement GroupName=test-cluster)
 FILL_ID=$(echo "$FILL_OUTPUT" | jq -r '.Instances[0].InstanceId')
@@ -1068,6 +1096,7 @@ if CAP_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 100 \
     --placement GroupName=test-cluster 2>&1); then
     echo "FAIL: Expected InsufficientInstanceCapacity"; exit 1
@@ -1091,6 +1120,7 @@ INUSE_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 1 \
     --placement GroupName=test-spread)
 INUSE_ID=$(echo "$INUSE_OUTPUT" | jq -r '.Instances[0].InstanceId')
@@ -1136,6 +1166,7 @@ RUN_OUTPUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name multinode-test-key \
+    --security-group-ids "$MULTINODE_SG" \
     --count 3)
 REG_COUNT=$(echo "$RUN_OUTPUT" | jq '.Instances | length')
 if [ "$REG_COUNT" -ne 3 ]; then
@@ -1169,7 +1200,8 @@ for i in 1 2 3; do
     RUN_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" \
         --instance-type "$INSTANCE_TYPE" \
-        --key-name multinode-test-key)
+        --key-name multinode-test-key \
+        --security-group-ids "$MULTINODE_SG")
     INSTANCE_ID=$(echo "$RUN_OUTPUT" | jq -r '.Instances[0].InstanceId')
     if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
         echo "  ERROR: Failed to launch instance $i for Phase 6 setup"

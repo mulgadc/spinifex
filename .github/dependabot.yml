@@ -8,7 +8,7 @@ updates:
       day: monday
       timezone: Australia/Sydney
     cooldown:
-      default-days: 1
+      default-days: 3
     groups:
       go-dependencies:
         patterns:
@@ -22,7 +22,7 @@ updates:
       day: monday
       timezone: Australia/Sydney
     cooldown:
-      default-days: 1
+      default-days: 3
     ignore:
       - dependency-name: "*"
         update-types:
@@ -41,7 +41,7 @@ updates:
       day: monday
       timezone: Australia/Sydney
     cooldown:
-      default-days: 1
+      default-days: 3
     ignore:
       - dependency-name: "@types/node"
         update-types:

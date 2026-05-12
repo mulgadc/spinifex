@@ -526,7 +526,10 @@ func extractClientError(results []nodeLaunchResult) error {
 			awserrors.ErrorInvalidAMIIDMalformed,
 			awserrors.ErrorInvalidAMIIDUnavailable,
 			awserrors.ErrorInvalidKeyPairNotFound,
-			awserrors.ErrorMissingParameter:
+			awserrors.ErrorMissingParameter,
+			awserrors.ErrorInvalidGroupNotFound,
+			awserrors.ErrorInvalidParameterValue,
+			awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded:
 			return inner
 		}
 	}

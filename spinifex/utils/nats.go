@@ -410,7 +410,7 @@ func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portNam
 // reports an error.
 func RequestEvent(nc *nats.Conn, topic string, event any, timeout time.Duration) error {
 	if nc == nil {
-		return nil
+		return fmt.Errorf("%s: nats connection not initialized", topic)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {

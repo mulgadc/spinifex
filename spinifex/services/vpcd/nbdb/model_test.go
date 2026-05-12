@@ -25,6 +25,7 @@ func TestFullDatabaseModel(t *testing.T) {
 		"Gateway_Chassis",
 		"Port_Group",
 		"ACL",
+		"Address_Set",
 	}
 
 	types := dbModel.Types()

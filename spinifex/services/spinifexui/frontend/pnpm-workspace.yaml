@@ -1,5 +1,3 @@
-minimumReleaseAge: 1440
-minimumReleaseAgeExclude:
-  - ultracite
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
+minimumReleaseAge: 4320

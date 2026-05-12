@@ -91,7 +91,14 @@ func ReconcileSGsOnce(ctx context.Context, nc *nats.Conn, topo *TopologyHandler)
 		result.PortGroupsRecreated = scanMissingPortGroups(ctx, topo, sgs)
 	}
 
-	// OVN port groups with no matching SG record → tear down.
+	// OVN port groups with no matching SG record → tear down. Re-snapshot KV
+	// right before the orphan check: scanMissingPortGroups may have taken
+	// seconds on a large cluster, and any CreateSecurityGroup that landed in
+	// the meantime would otherwise look like an orphan against the stale
+	// snapshot and get silently deleted.
+	if sgKV != nil {
+		sgs = listSGRecords(sgKV)
+	}
 	result.OrphanPortGroupsRemoved = scanOrphanPortGroups(ctx, topo, sgs)
 
 	// ENIs with SecurityGroupIds → reconcile membership.

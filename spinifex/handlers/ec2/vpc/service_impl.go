@@ -306,11 +306,20 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		}
 		entry, err := s.subnetKV.Get(k)
 		if err != nil {
-			continue
+			// ErrKeyNotFound means the subnet was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc bypass a subnet
+			// dependency it can't see.
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("DeleteVpc: subnet read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var subnet SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &subnet); err != nil {
-			continue
+			slog.Warn("DeleteVpc: subnet unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if subnet.VpcId == vpcID {
 			return nil, errors.New(awserrors.ErrorDependencyViolation)
@@ -330,11 +339,20 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		}
 		entry, err := s.sgKV.Get(k)
 		if err != nil {
-			continue
+			// ErrKeyNotFound means the SG was deleted between Keys() and
+			// Get() — fine to skip. Any other error is fail-closed: a
+			// transient read error must not let DeleteVpc orphan a
+			// non-default SG it can't see.
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("DeleteVpc: SG read failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var sg SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &sg); err != nil {
-			continue
+			slog.Warn("DeleteVpc: SG unmarshal failed", "key", k, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if sg.VpcId != vpcID {
 			continue

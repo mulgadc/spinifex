@@ -878,8 +878,11 @@ else
     }
 
     # Test 5f-1: Baseline — allow-all egress is in place.
+    # `|| true` so set -e doesn't kill us when the probe legitimately fails
+    # (e.g., OVN logical router not responding to ICMP echo in this env);
+    # the SKIP branch below needs to be reachable.
     echo "Test 5f-1: Egress baseline (allow-all)"
-    BASELINE_OUT=$(probe_egress_icmp)
+    BASELINE_OUT=$(probe_egress_icmp || true)
     if echo "$BASELINE_OUT" | grep -qE '[1-3] (packets )?received'; then
         echo "  PASS: ICMP egress works with default allow-all"
         SG_ENFORCE_RUN=true
@@ -911,7 +914,7 @@ else
         echo "Test 5f-3: Re-authorize egress → expect allow"
         sg_egress_restore
         sleep 3
-        RESTORE_OUT=$(probe_egress_icmp)
+        RESTORE_OUT=$(probe_egress_icmp || true)
         if echo "$RESTORE_OUT" | grep -qE '[1-3] (packets )?received'; then
             echo "  PASS: ICMP restored after re-authorize"
         else

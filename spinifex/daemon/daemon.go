@@ -229,6 +229,12 @@ type Daemon struct {
 	// as a string. Cleared back to "" on the next successful sync.
 	lastKVSyncError atomic.Value
 
+	// reconciling coalesces concurrent reconcileOnHeal invocations. Both
+	// the NATS reconnect callback and the peer-probe heal edge may fire
+	// near-simultaneously on the same heal; the second caller observes
+	// the flag set and returns.
+	reconciling atomic.Bool
+
 	mu sync.Mutex
 }
 
@@ -322,21 +328,13 @@ func (d *Daemon) onNATSDisconnect(_ *nats.Conn, _ error) {
 }
 
 // onNATSReconnect runs when the NATS client reattaches to a server. Marks
-// NATS connected, bumps the retry counter, and pushes the full local instance
-// state to KV so the cluster view re-converges. The KV push runs in a goroutine
-// to keep the NATS client callback non-blocking.
+// NATS connected, bumps the retry counter, and dispatches reconcileOnHeal
+// in a goroutine to keep this NATS client callback non-blocking.
 func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 	d.natsConnected.Store(true)
 	d.natsRetryCount.Add(1)
 
-	if d.jsManager == nil {
-		return
-	}
-	go func() {
-		if err := d.WriteState(); err != nil {
-			slog.Warn("Reconnect KV resync failed", "error", err)
-		}
-	}()
+	go d.reconcileOnHeal("nats-reconnect")
 }
 
 // getSystemMemory returns the total system memory in GB

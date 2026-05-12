@@ -98,6 +98,15 @@ func (d *Daemon) probePeersOnce(client *http.Client, peers []config.Config) {
 	prev := d.peersReachable.Swap(reachable)
 	if prev != reachable {
 		slog.Info("peer reachability changed", "reachable", reachable, "peers", len(peers))
+		if reachable {
+			// Scenario C heal edge: local NATS client stayed connected
+			// to its local server throughout the partition so
+			// onNATSReconnect never fires. The peer-probe flip is the
+			// only signal that the cluster is back. Goroutine keeps
+			// the probe ticker non-blocking; reconcileOnHeal coalesces
+			// with any concurrent NATS-reconnect path.
+			go d.reconcileOnHeal("peer-probe-heal")
+		}
 	}
 }
 

@@ -12,9 +12,9 @@ export function ErrorBoundary({ error, reset }: ErrorComponentProps) {
   const queryClient = useQueryClient()
 
   function handleTryAgain() {
-    queryClient.invalidateQueries()
+    void queryClient.invalidateQueries()
     reset()
-    router.invalidate()
+    void router.invalidate()
   }
 
   return (

@@ -60,7 +60,7 @@ export function SidebarLayout() {
     clearCredentials()
     clearClients()
     queryClient.clear()
-    navigate({ to: "/login" })
+    void navigate({ to: "/login" })
   }
 
   return (

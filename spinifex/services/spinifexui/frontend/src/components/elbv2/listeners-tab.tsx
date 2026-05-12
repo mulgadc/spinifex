@@ -241,7 +241,7 @@ function AddListenerDialog({
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
-            handleConfirm()
+            void handleConfirm()
           }}
         >
           <ListenerForm form={form} targetGroups={targetGroups} />

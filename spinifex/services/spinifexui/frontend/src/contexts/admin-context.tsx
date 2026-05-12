@@ -80,7 +80,7 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    detect()
+    void detect()
   }, [])
 
   return <AdminContext value={state}>{children}</AdminContext>

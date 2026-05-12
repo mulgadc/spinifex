@@ -78,9 +78,8 @@ export function useStartInstance() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -93,9 +92,8 @@ export function useStopInstance() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -108,9 +106,8 @@ export function useTerminateInstance() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -123,9 +120,8 @@ export function useRebootInstance() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -149,9 +145,8 @@ export function useCreateInstance() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -192,9 +187,7 @@ export function useCreateKeyPair() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
-    },
+    onSuccess: () => queryClient.invalidateQueries(ec2KeyPairsQueryOptions),
   })
 }
 
@@ -212,9 +205,7 @@ export function useImportKeyPair() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
-    },
+    onSuccess: () => queryClient.invalidateQueries(ec2KeyPairsQueryOptions),
   })
 }
 
@@ -227,9 +218,7 @@ export function useDeleteKeyPair() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries(ec2KeyPairsQueryOptions)
-    },
+    onSuccess: () => queryClient.invalidateQueries(ec2KeyPairsQueryOptions),
   })
 }
 
@@ -244,9 +233,8 @@ export function useCreateVolume() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] }),
   })
 }
 
@@ -260,9 +248,8 @@ export function useModifyVolume() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] }),
   })
 }
 
@@ -275,9 +262,8 @@ export function useDeleteVolume() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] }),
   })
 }
 
@@ -292,9 +278,8 @@ export function useCreateSnapshot() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] }),
   })
 }
 
@@ -307,9 +292,8 @@ export function useDeleteSnapshot() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] }),
   })
 }
 
@@ -325,9 +309,8 @@ export function useCopySnapshot() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "snapshots"] }),
   })
 }
 
@@ -343,10 +326,11 @@ export function useAttachVolume() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] }),
+        queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
+      ]),
   })
 }
 
@@ -362,10 +346,11 @@ export function useDetachVolume() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] })
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "volumes"] }),
+        queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
+      ]),
   })
 }
 
@@ -382,9 +367,8 @@ export function useModifyInstanceAttribute() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] }),
   })
 }
 
@@ -411,9 +395,8 @@ export function useCreateImage() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "images"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "images"] }),
   })
 }
 
@@ -434,9 +417,8 @@ export function useCreateVpc() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] }),
   })
 }
 
@@ -449,9 +431,8 @@ export function useDeleteVpc() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] }),
   })
 }
 
@@ -467,9 +448,8 @@ export function useCreateSubnet() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] }),
   })
 }
 
@@ -482,9 +462,8 @@ export function useDeleteSubnet() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
-    },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] }),
   })
 }
 
@@ -499,11 +478,10 @@ export function useCreatePlacementGroup() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
+    onSuccess: () =>
+      queryClient.invalidateQueries({
         queryKey: ["ec2", "placementGroups"],
-      })
-    },
+      }),
   })
 }
 
@@ -516,11 +494,10 @@ export function useDeletePlacementGroup() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
+    onSuccess: () =>
+      queryClient.invalidateQueries({
         queryKey: ["ec2", "placementGroups"],
-      })
-    },
+      }),
   })
 }
 
@@ -535,11 +512,10 @@ export function useCreateSecurityGroup() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
+    onSuccess: () =>
+      queryClient.invalidateQueries({
         queryKey: ["ec2", "securityGroups"],
-      })
-    },
+      }),
   })
 }
 
@@ -552,11 +528,10 @@ export function useDeleteSecurityGroup() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
+    onSuccess: () =>
+      queryClient.invalidateQueries({
         queryKey: ["ec2", "securityGroups"],
-      })
-    },
+      }),
   })
 }
 
@@ -579,14 +554,13 @@ export function useAuthorizeSecurityGroupIngress() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: (_data, params) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups"],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups", params.groupId],
-      })
-    },
+    onSuccess: (_data, params) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["ec2", "securityGroups", params.groupId],
+        }),
+      ]),
   })
 }
 
@@ -609,14 +583,13 @@ export function useAuthorizeSecurityGroupEgress() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: (_data, params) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups"],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups", params.groupId],
-      })
-    },
+    onSuccess: (_data, params) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["ec2", "securityGroups", params.groupId],
+        }),
+      ]),
   })
 }
 
@@ -639,14 +612,13 @@ export function useRevokeSecurityGroupIngress() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: (_data, params) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups"],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups", params.groupId],
-      })
-    },
+    onSuccess: (_data, params) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["ec2", "securityGroups", params.groupId],
+        }),
+      ]),
   })
 }
 
@@ -669,14 +641,13 @@ export function useRevokeSecurityGroupEgress() {
       })
       return await getEc2Client().send(command)
     },
-    onSuccess: (_data, params) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups"],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "securityGroups", params.groupId],
-      })
-    },
+    onSuccess: (_data, params) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "securityGroups"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["ec2", "securityGroups", params.groupId],
+        }),
+      ]),
   })
 }
 
@@ -940,13 +911,14 @@ export function useCreateVpcWizard() {
         }
       }
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] })
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
-      void queryClient.invalidateQueries({
-        queryKey: ["ec2", "internetGateways"],
-      })
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
-    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ec2", "vpcs"] }),
+        queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["ec2", "internetGateways"],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] }),
+      ]),
   })
 }

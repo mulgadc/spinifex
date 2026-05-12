@@ -28,11 +28,10 @@ export function useUploadObject() {
 
       return await upload.done()
     },
-    onSuccess: (_, variables) => {
-      void queryClient.invalidateQueries({
+    onSuccess: (_, variables) =>
+      queryClient.invalidateQueries({
         queryKey: ["s3", "buckets", variables.bucket, "objects"],
-      })
-    },
+      }),
   })
 }
 
@@ -47,11 +46,10 @@ export function useCreateBucket() {
 
       return await getS3Client().send(command)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
+    onSuccess: () =>
+      queryClient.invalidateQueries({
         queryKey: ["s3", "buckets"],
-      })
-    },
+      }),
   })
 }
 
@@ -67,10 +65,9 @@ export function useDeleteObject() {
 
       return await getS3Client().send(command)
     },
-    onSuccess: (_, variables) => {
-      void queryClient.invalidateQueries({
+    onSuccess: (_, variables) =>
+      queryClient.invalidateQueries({
         queryKey: ["s3", "buckets", variables.bucket, "objects"],
-      })
-    },
+      }),
   })
 }

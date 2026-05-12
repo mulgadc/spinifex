@@ -108,9 +108,9 @@ function CreateVpc() {
       })
       const vpcId = result.Vpc?.VpcId
       if (vpcId) {
-        navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
+        void navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
       } else {
-        navigate({ to: "/ec2/describe-vpcs" })
+        void navigate({ to: "/ec2/describe-vpcs" })
       }
       return
     }
@@ -121,7 +121,10 @@ function CreateVpc() {
     setWizardResult(result)
 
     if (!result.error && result.vpcId) {
-      navigate({ to: "/ec2/describe-vpcs/$id", params: { id: result.vpcId } })
+      void navigate({
+        to: "/ec2/describe-vpcs/$id",
+        params: { id: result.vpcId },
+      })
     }
     setProgressMessage("")
   }

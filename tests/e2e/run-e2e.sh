@@ -3235,9 +3235,12 @@ SGE_CLIENT_VM=$(aws ec2 run-instances \
     --query 'Instances[0].InstanceId' --output text)
 echo "  client-vm: $SGE_CLIENT_VM"
 
+# systemd-run fully detaches the http server from cloud-init's process group;
+# `nohup ... &` alone races with cloud-init exit and the server can get killed.
 SGE_TARGET_USERDATA=$(cat <<'EOF' | base64 -w0
 #!/bin/bash
-nohup python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/sge-http.log 2>&1 &
+systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
+    /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
 EOF
 )
 
@@ -3374,7 +3377,14 @@ for SGE_W in $(seq 1 30); do
     sleep 2
 done
 if [ "$SGE_HTTP_OK" != "true" ]; then
-    echo "FAIL: client cannot reach target:8080 — allow rule not enforced or cloud-init didn't start http server"
+    echo "FAIL: client cannot reach target:8080"
+    # Disambiguate: curl -v shows "Connection refused" (server down) vs
+    # "Connection timed out" (ACL filtered). Then dump target console for
+    # cloud-init / systemd-run / python3 evidence.
+    echo "  --- curl -v from client to target:8080 ---"
+    $SGE_CLIENT_SSH "curl -v --connect-timeout 3 http://${SGE_TARGET_PRIV}:8080/" 2>&1 | tail -25 || true
+    echo "  --- target console output (tail 80) ---"
+    aws ec2 get-console-output --instance-id "$SGE_TARGET_VM" --output text 2>&1 | tail -80 || true
     exit 1
 fi
 

@@ -16,10 +16,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
-// daemonPort is the cluster-manager HTTPS port (see
-// spinifex/daemon/daemon.go ClusterManager). The harness targets the same
-// port the production daemon exposes.
-const daemonPort = 8443
+// daemonPort is the cluster-manager HTTPS port the daemon binds for /health
+// and /local/* (see spinifex/daemon/daemon.go ClusterManager, configured via
+// [nodes.<id>.daemon].host). 4432 is the deployed default; 8443 is predastore.
+const daemonPort = 4432
 
 // DaemonMode mirrors the daemon's operating mode reported by /local/status.
 //

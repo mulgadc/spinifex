@@ -19,6 +19,7 @@ on:
         required: false
 
 permissions:
+  contents: read
   statuses: write
 
 env:
@@ -97,7 +98,7 @@ jobs:
   e2e_pseudo_multi:
     name: Pseudo Multi-Node E2E
     runs-on: [ self-hosted, ci-pseudo ]
-    timeout-minutes: 30
+    timeout-minutes: 25
     env:
       TOFU_LOG: /tmp/e2e-tofu-pseudo-${{ github.run_id }}.log
     steps:
@@ -161,7 +162,7 @@ jobs:
   e2e_real_multi:
     name: Real Multi-Node E2E
     runs-on: [ self-hosted, ci-multi ]
-    timeout-minutes: 35
+    timeout-minutes: 30
     env:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
     steps:

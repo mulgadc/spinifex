@@ -121,7 +121,10 @@ function CreateVpc() {
     setWizardResult(result)
 
     if (!result.error && result.vpcId) {
-      navigate({ to: "/ec2/describe-vpcs/$id", params: { id: result.vpcId } })
+      navigate({
+        to: "/ec2/describe-vpcs/$id",
+        params: { id: result.vpcId },
+      })
     }
     setProgressMessage("")
   }

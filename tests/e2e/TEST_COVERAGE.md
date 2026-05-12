@@ -93,6 +93,15 @@
 - `describe-images` (verify custom AMI name and state)
 - Extract backing snapshot ID from Predastore config (for cleanup before termination)
 
+### Phase 5f: Security Group Enforcement (egress ACL)
+Proves vpcd programs OVN ACLs that actually drop traffic, not just nominal SG records. Tests egress only — in single-node `dev_networking` mode, runner→VM SSH bypasses OVN via the hostfwd NIC, so ingress isn't a faithful probe. Egress goes through the OVN tap NIC (default route).
+- Discover VM's OVN gateway from inside the VM (`ip route show default`)
+- Test 5f-1 (baseline): ICMP from VM to gateway works under default SG (allow-all egress)
+  - Skipped gracefully if env blocks ICMP regardless of SG (no false fail)
+- Test 5f-2 (revoke): `revoke-security-group-egress` strips the allow-all rule → ICMP must drop
+- Test 5f-3 (re-authorize): `authorize-security-group-egress` restores the rule → ICMP must work again
+- Restore the default egress rule on any failure path so subsequent phases (6, 7, 8) keep their SSH probes working
+
 ### Phase 6: Tag Management
 - `create-tags` (3 tags on instance)
 - `describe-tags` (filter by resource-id)
@@ -285,6 +294,44 @@ Tests that EC2 resources are properly isolated between tenant accounts (Alpha, B
 - Terminate instances, delete volumes/snapshots/keys/VPCs/IGWs/EIGWs/subnets
 - Clean up AWS CLI profiles
 
+### Phase 8b: VPC Public/Private Subnet E2E
+Gated on `external_mode = "pool"` (skipped when only `dev_networking` is configured). Validates AWS-parity public/private subnet semantics end-to-end through OVN.
+- Step 1: Discover default VPC + default subnet (`MapPublicIpOnLaunch=true`)
+- Step 2: Public subnet instance
+  - `run-instances` into default subnet → auto-assigned `PublicIpAddress`
+  - `ovn-nbctl lr-nat-list` shows per-instance `dnat_and_snat` rule for `PUB_PRIVATE_IP`
+  - Asserts NO blanket VPC CIDR SNAT (mulga-754 AWS-parity regression)
+  - SSH via public IP succeeds (when bridge/macvlan reachable)
+  - Outbound internet from inside the VM (via OVN SNAT)
+  - Step 2b: In-guest TLS trust — cloud-init injects Spinifex CA into the guest, so `curl https://awsgw` and `https://predastore-s3` work without `--insecure`
+- Step 3: Private subnet isolation
+  - `create-subnet` 172.31.16.0/20 with `MapPublicIpOnLaunch=false`
+  - `run-instances` into private subnet → no public IP, no internet access from inside the VM
+
+### Phase 8c: Route Table Validation
+- Step 1: Default VPC main route table — local route + 0.0.0.0/0 → IGW present
+- Step 2: Custom route table CRUD lifecycle — create, list local route, `create-route`, `associate-route-table`, `disassociate-route-table`, `delete-route`, `delete-route-table`
+- Step 3: Error paths — cannot delete the local route; cannot delete the main route table
+
+### Phase 8d: NAT Gateway E2E (mulga-763)
+Reuses `PUB_INSTANCE_ID` (bastion) + `PRIV_INSTANCE_ID` from Phase 8b. End-to-end proof that NAT GW creation/teardown flips private-instance outbound connectivity.
+- Step 1: Bastion → private SSH ready (via `ProxyJump` through PUB_IP)
+- Step 2: Baseline — private VM cannot reach internet
+- Step 3: `allocate-address` + `create-nat-gateway` + `create-route` (0.0.0.0/0 → NAT GW); verify OVN SNAT rule appears
+- Step 4: Private VM CAN now reach internet (retried, NAT propagation can take a few seconds)
+- Step 5: `delete-nat-gateway` + cleanup route + `release-address`; verify private VM loses internet again
+
+### Phase 8e: Security Group Enforcement (SG-to-SG datapath)
+End-to-end proof that the `RunInstances → ENI → vpcd → OVN port group + ACL → datapath` chain actually drops unauthorized traffic. This is the deepest SG enforcement test in the suite and supersedes Phase 5f for SG-to-SG semantics.
+- **Capacity note**: Phase 8b's instance termination (PUB+PRIV) runs *before* Phase 8e on single-node to free 2 nano slots. Without that, 5 simultaneous nanos (main + PUB + PRIV + client + target) exhaust the runner and the gateway masks `InsufficientInstanceCapacity` as `InvalidInstanceType` via `isKnownInstanceType`.
+- Step 1: Create `sge-client` and `sge-target` SGs; authorize tcp/22 on client-sg from 0.0.0.0/0; authorize tcp/8080 on target-sg from **client-sg** (SG-to-SG via `UserIdGroupPairs`)
+- Step 2: Launch `client-vm` (sge-client) and `target-vm` (sge-target) in default subnet; target VM's HTTP server started via cloud-init `user-data` (port 8080) — target-sg has no SSH ingress, so we never SSH into it
+- Step 3: `ovn-nbctl` port_group membership inspection — both client + target LSPs are in their port groups; verifies the SG-to-SG match expression resolves
+- Step 4: Allowed — `curl client → target:8080` succeeds (SG-to-SG allow)
+- Step 5: Denied — `nc client → target:22` blocked (target-sg has no SSH ingress; default-deny ACL drops)
+- Step 6: Revoke target-sg's tcp/8080 rule and retest immediately — confirms vpcd's sync `RequestEvent` contract (no eventually-consistent gap)
+- Step 7: Cleanup — terminate both VMs, delete both SGs
+
 ### Phase 9: Terminate and Verify Cleanup
 - `delete-snapshot` (CreateImage backing snapshot, so DeleteOnTermination is not blocked)
 - `terminate-instances` (poll -> terminated)
@@ -329,6 +376,8 @@ Tests that EC2 resources are properly isolated between tenant accounts (Alpha, B
 - `create-key-pair`
 - `spx admin images import` (with node1 config paths)
 - `describe-images` (verify AMI)
+- `create-security-group` + 2× `authorize-security-group-ingress` (tcp/22 + icmp from 0.0.0.0/0)
+  - All subsequent run-instances use this SG so VMs are reachable. The default SG is egress-only, so without this every Phase 5 SSH probe would be dropped by OVN ACL.
 
 ### Phase 4b: Multi-Node Key Pair Operations
 - `import-key-pair` (multinode-test-key-2, from local RSA key)
@@ -583,6 +632,9 @@ Runs on a real 3-node libvirt cluster provisioned by OpenTofu (`scripts/tofu-clu
 
 ### Phase 3: Instance Lifecycle + Distribution
 - Discover nano instance type and AMI (from bootstrap import)
+- `authorize-security-group-ingress` (tcp/22 on default VPC's default SG, 0.0.0.0/0)
+  - Required because the default SG is egress-only and the runner's IP is not a member; without this Phase 4 SSH would be dropped by OVN port-group ACL.
+  - Idempotent (tolerates `InvalidPermission.Duplicate` on re-runs).
 - `run-instances` x3 with staggered launches
 - Poll all instances to running state
 - Check instance distribution across physical nodes (QEMU process check)
@@ -731,9 +783,9 @@ live state — update it in the same PR that changes the test body.
 
 | Letter | Scenario | DDIL finding closed | Status |
 |--------|----------|---------------------|--------|
-| A | NATS-only kill (daemon stays up, standalone mode) | Finding 1 | SKIPPED |
-| B | Daemon restart without NATS (recovers from local state) | Finding 1 | SKIPPED |
-| C | Clean cluster-network partition (majority + isolated both progress) | Finding 1/2 | SKIPPED |
+| A | NATS-only kill (daemon stays up, standalone mode) | Finding 1 | ENABLED |
+| B | Daemon restart without NATS (recovers from local state) | Finding 1 | ENABLED |
+| C | Clean cluster-network partition (majority + isolated both progress) | Finding 1/2 | ENABLED |
 | D | Degraded link under SATCOM profile (fan-out + Raft) | Finding 3 | SKIPPED |
 | E | Predastore write under partition (repair journal drains on heal) | Finding 2 | SKIPPED |
 | F | Raft under SATCOM latency (≤1 election over 5 min) | Finding 3 | SKIPPED |
@@ -756,6 +808,14 @@ lands.
 
 ### Known gaps
 
+- Security group enforcement breadth — Phase 5f covers egress
+  authorize/revoke for the default SG (dev_networking single-node);
+  Phase 8e covers SG-to-SG ingress + revoke under external pool mode.
+  Not yet covered: `ModifyInstanceAttribute --groups` swap (verify port
+  group membership changes mid-flight), reconciler convergence after a
+  vpcd restart with drift (kill vpcd, delete an OVN port group, restart
+  vpcd, assert it converges), and per-port-range allow/deny combinations
+  on a single SG. Follow-up: mulga-js-79 (in progress).
 - Chaos framework (randomised fault injection, long-running stress) —
   follow-up plan TBD.
 - Multi-day partition — requires long-running CI infrastructure;

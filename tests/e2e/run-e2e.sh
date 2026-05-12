@@ -256,6 +256,30 @@ aws ec2 describe-images --image-ids "$AMI_ID" | jq -e ".Images[0] | select(.Imag
 
 # Phase 5: Instance Lifecycle
 echo "Phase 5: Instance Lifecycle"
+
+# Authorize SSH on the default VPC's default SG before any run-instances. AWS
+# default SGs allow ingress only from members of the same SG; subsequent SSH
+# probes (Phase 5a-ii, 5a-iv, 7, 8c, 8d) come from the test runner's IP and
+# would be dropped by the OVN port-group ACL otherwise.
+DEFAULT_VPC_PHASE5=$(aws ec2 describe-vpcs \
+    --query 'Vpcs[?IsDefault==`true`].VpcId | [0]' --output text)
+DEFAULT_SG_PHASE5=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$DEFAULT_VPC_PHASE5" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+echo "Default VPC: $DEFAULT_VPC_PHASE5; default SG: $DEFAULT_SG_PHASE5"
+# Tolerate InvalidPermission.Duplicate on re-runs (idempotent).
+set +e
+AUTH_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE5" \
+    --protocol tcp --port 22 --cidr 0.0.0.0/0 2>&1)
+AUTH_EXIT=$?
+set -e
+if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize SSH ingress on default SG: $AUTH_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
+
 # Launch a VM (run-instances)
 echo "Running: aws ec2 run-instances --image-id $AMI_ID --instance-type $INSTANCE_TYPE --key-name test-key-1"
 # Capture full output for debugging
@@ -818,6 +842,90 @@ else
 fi
 
 echo "CreateImage lifecycle test passed"
+
+# Phase 5f: Security Group Enforcement (egress)
+# Verifies vpcd programs OVN ACLs that actually drop traffic when an SG
+# rule is revoked. We test EGRESS because in single-node dev_networking
+# mode, INGRESS SSH bypasses OVN via the QEMU hostfwd NIC — the OVN tap
+# only owns the default route inside the VM, so egress is what hits the
+# ACL. The default SG ships with one allow-all egress rule we can flip.
+echo "Phase 5f: Security Group Enforcement (egress ACL)"
+
+# Discover the VM's OVN-side gateway from inside the VM (cloud-init
+# suppresses the default route on the dev NIC, so this is always the
+# OVN logical-router port).
+PROBE_GW=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
+    -p "$SSH_PORT" -i "test-key-1.pem" \
+    ec2-user@"$SSH_HOST" "ip route show default | awk '{print \$3}' | head -1" 2>/dev/null | tr -d '[:space:]')
+if [ -z "$PROBE_GW" ]; then
+    echo "  ERROR: could not discover default gateway inside VM — skipping Phase 5f"
+else
+    echo "  Probe target (VM default gateway): $PROBE_GW"
+
+    probe_egress_icmp() {
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes \
+            -p "$SSH_PORT" -i "test-key-1.pem" \
+            ec2-user@"$SSH_HOST" "ping -c 3 -W 2 $PROBE_GW" 2>&1
+    }
+
+    # Restore the default egress rule on any failure so later phases stay healthy.
+    sg_egress_restore() {
+        aws ec2 authorize-security-group-egress \
+            --group-id "$DEFAULT_SG_PHASE5" \
+            --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null 2>&1 || true
+    }
+
+    # Test 5f-1: Baseline — allow-all egress is in place.
+    # `|| true` so set -e doesn't kill us when the probe legitimately fails
+    # (e.g., OVN logical router not responding to ICMP echo in this env);
+    # the SKIP branch below needs to be reachable.
+    echo "Test 5f-1: Egress baseline (allow-all)"
+    BASELINE_OUT=$(probe_egress_icmp || true)
+    if echo "$BASELINE_OUT" | grep -qE '[1-3] (packets )?received'; then
+        echo "  PASS: ICMP egress works with default allow-all"
+        SG_ENFORCE_RUN=true
+    else
+        echo "  SKIP: baseline ICMP did not work; cannot verify enforcement"
+        echo "  (env may block ICMP between VM and gateway regardless of SG)"
+        echo "  Output: $BASELINE_OUT"
+        SG_ENFORCE_RUN=false
+    fi
+
+    if [ "$SG_ENFORCE_RUN" = "true" ]; then
+        # Test 5f-2: Revoke egress → ICMP must be dropped.
+        echo "Test 5f-2: Revoke egress → expect drop"
+        aws ec2 revoke-security-group-egress \
+            --group-id "$DEFAULT_SG_PHASE5" \
+            --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null
+        sleep 3  # ACL propagation (vpcd handler is synchronous; small buffer for OVN flow install)
+        REVOKE_OUT=$(probe_egress_icmp || true)
+        if echo "$REVOKE_OUT" | grep -qE '0 (packets )?received|100% packet loss'; then
+            echo "  PASS: ICMP dropped after revoke"
+        else
+            echo "  FAIL: ICMP still succeeded after revoking allow-all egress"
+            echo "  Output: $REVOKE_OUT"
+            sg_egress_restore
+            exit 1
+        fi
+
+        # Test 5f-3: Re-authorize → ICMP works again.
+        echo "Test 5f-3: Re-authorize egress → expect allow"
+        sg_egress_restore
+        sleep 3
+        RESTORE_OUT=$(probe_egress_icmp || true)
+        if echo "$RESTORE_OUT" | grep -qE '[1-3] (packets )?received'; then
+            echo "  PASS: ICMP restored after re-authorize"
+        else
+            echo "  FAIL: ICMP still dropped after re-authorize"
+            echo "  Output: $RESTORE_OUT"
+            exit 1
+        fi
+
+        echo "Phase 5f: Security Group enforcement verified (revoke → drop, authorize → allow)"
+    fi
+fi
 
 # Phase 6: Tag Management
 echo "Phase 6: Tag Management"
@@ -3052,28 +3160,313 @@ echo "  PASS: Bastion → private instance SSH works (hostname: $PRIV_HOSTNAME)"
     echo "Phase 8d: NAT Gateway E2E PASSED"
 }
 
+# Free single-node capacity before Phase 8e by terminating the Phase 8b
+# instances early — nothing between here and Phase 8b's later cleanup uses
+# PUB/PRIV. On nano-only single-node CI the running pool would otherwise be
+# main + PUB + PRIV (3 instances) + Phase 8e's 2 more = 5, which exceeds
+# capacity. The gateway masquerades that as "InvalidInstanceType: None"
+# (RunInstances.go isKnownInstanceType masquerade), masking the real cause.
 echo ""
-echo "Phase 8b/8d Step: Cleanup"
-# Terminate both instances
-echo "Terminating public instance $PUB_INSTANCE_ID..."
-aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID"
-echo "Terminating private instance $PRIV_INSTANCE_ID..."
-aws ec2 terminate-instances --instance-ids "$PRIV_INSTANCE_ID"
-
-# Wait for both to terminate
-for CLEANUP_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
-    CLEANUP_COUNT=0
-    while [ $CLEANUP_COUNT -lt 60 ]; do
-        CLEANUP_STATE=$(aws ec2 describe-instances --instance-ids "$CLEANUP_ID" \
+echo "Freeing capacity for Phase 8e: terminating Phase 8b instances early..."
+aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID" > /dev/null
+for EARLY_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
+    EARLY_COUNT=0
+    while [ $EARLY_COUNT -lt 60 ]; do
+        EARLY_STATE=$(aws ec2 describe-instances --instance-ids "$EARLY_ID" \
             --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
-        if [ "$CLEANUP_STATE" == "terminated" ] || [ "$CLEANUP_STATE" == "None" ]; then
-            echo "Instance $CLEANUP_ID terminated"
+        if [ "$EARLY_STATE" = "terminated" ] || [ "$EARLY_STATE" = "None" ]; then
             break
         fi
         sleep 1
-        CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+        EARLY_COUNT=$((EARLY_COUNT + 1))
     done
 done
+# Mark as already cleaned so the later cleanup block becomes a no-op.
+PHASE8B_INSTANCES_TERMINATED=true
+echo "  PUB+PRIV terminated; capacity reclaimed"
+
+# Phase 8e: Security Group Enforcement
+# Reuses DEFAULT_VPC, DEFAULT_SUBNET, AMI_ID, INSTANCE_TYPE, test-key-1.pem
+# from earlier phases. Validates the closed loop from RunInstances
+# (--security-group-ids) → ENI → vpcd → OVN port group + ACL → datapath drop.
+echo ""
+echo "Phase 8e: Security Group Enforcement"
+echo "========================================"
+
+# Step 1: Create client-sg and target-sg.
+echo "Step 1: Create security groups"
+SGE_CLIENT_SG=$(aws ec2 create-security-group \
+    --group-name sge-client \
+    --description "Phase 8e client SG (SSH ingress from anywhere)" \
+    --vpc-id "$DEFAULT_VPC" \
+    --query 'GroupId' --output text)
+echo "  client-sg: $SGE_CLIENT_SG"
+
+SGE_TARGET_SG=$(aws ec2 create-security-group \
+    --group-name sge-target \
+    --description "Phase 8e target SG (TCP/8080 ingress from client-sg only)" \
+    --vpc-id "$DEFAULT_VPC" \
+    --query 'GroupId' --output text)
+echo "  target-sg: $SGE_TARGET_SG"
+
+aws ec2 authorize-security-group-ingress \
+    --group-id "$SGE_CLIENT_SG" \
+    --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
+echo "  client-sg ingress: tcp/22 from 0.0.0.0/0"
+
+# SG-to-SG via UserIdGroupPair (the VPC-form; --source-group is EC2-Classic only).
+aws ec2 authorize-security-group-ingress \
+    --group-id "$SGE_TARGET_SG" \
+    --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,UserIdGroupPairs=[{GroupId=$SGE_CLIENT_SG}]" > /dev/null
+echo "  target-sg ingress: tcp/8080 from $SGE_CLIENT_SG (SG-to-SG)"
+
+# Step 2: Launch client-vm and target-vm in the public subnet so both get
+# public IPs (MapPublicIpOnLaunch=true). Target's HTTP server is started via
+# cloud-init user-data — target-sg has no SSH ingress, so we cannot ssh into it.
+echo ""
+echo "Step 2: Launch client-vm and target-vm"
+
+SGE_CLIENT_VM=$(aws ec2 run-instances \
+    --image-id "$AMI_ID" \
+    --instance-type "$INSTANCE_TYPE" \
+    --subnet-id "$DEFAULT_SUBNET" \
+    --key-name test-key-1 \
+    --security-group-ids "$SGE_CLIENT_SG" \
+    --query 'Instances[0].InstanceId' --output text)
+echo "  client-vm: $SGE_CLIENT_VM"
+
+# systemd-run fully detaches the http server from cloud-init's process group;
+# `nohup ... &` alone races with cloud-init exit and the server can get killed.
+# Pass plaintext — AWS CLI base64-encodes --user-data automatically; awsgw
+# decodes once on receipt. Pre-encoding here results in a double-encoded blob
+# landing verbatim in /tmp/cloud-init-startup.sh.
+SGE_TARGET_USERDATA=$(cat <<'EOF'
+#!/bin/bash
+systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
+    /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
+EOF
+)
+
+SGE_TARGET_VM=$(aws ec2 run-instances \
+    --image-id "$AMI_ID" \
+    --instance-type "$INSTANCE_TYPE" \
+    --subnet-id "$DEFAULT_SUBNET" \
+    --key-name test-key-1 \
+    --security-group-ids "$SGE_TARGET_SG" \
+    --user-data "$SGE_TARGET_USERDATA" \
+    --query 'Instances[0].InstanceId' --output text)
+echo "  target-vm: $SGE_TARGET_VM"
+
+# Wait both running.
+for SGE_VM in "$SGE_CLIENT_VM" "$SGE_TARGET_VM"; do
+    SGE_W=0
+    SGE_S="unknown"
+    while [ $SGE_W -lt 90 ]; do
+        SGE_S=$(aws ec2 describe-instances --instance-ids "$SGE_VM" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "pending")
+        if [ "$SGE_S" = "running" ]; then break; fi
+        sleep 1
+        SGE_W=$((SGE_W + 1))
+    done
+    if [ "$SGE_S" != "running" ]; then
+        echo "FAIL: $SGE_VM did not reach running (got: $SGE_S)"
+        exit 1
+    fi
+done
+echo "  Both VMs running"
+
+SGE_CLIENT_PUB=$(aws ec2 describe-instances --instance-ids "$SGE_CLIENT_VM" \
+    --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+SGE_CLIENT_PRIV=$(aws ec2 describe-instances --instance-ids "$SGE_CLIENT_VM" \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+SGE_TARGET_PRIV=$(aws ec2 describe-instances --instance-ids "$SGE_TARGET_VM" \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+SGE_CLIENT_ENI=$(aws ec2 describe-instances --instance-ids "$SGE_CLIENT_VM" \
+    --query 'Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId' --output text)
+SGE_TARGET_ENI=$(aws ec2 describe-instances --instance-ids "$SGE_TARGET_VM" \
+    --query 'Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId' --output text)
+echo "  client-vm: pub=$SGE_CLIENT_PUB priv=$SGE_CLIENT_PRIV eni=$SGE_CLIENT_ENI"
+echo "  target-vm: priv=$SGE_TARGET_PRIV eni=$SGE_TARGET_ENI"
+
+# Step 3: Internal correctness via ovn-nbctl — confirm each LSP joined the
+# expected port group. Catches Phase 4 membership regressions independently
+# of packet timing.
+echo ""
+echo "Step 3: ovn-nbctl port_group membership"
+# OVN port group names use [_a-zA-Z0-9]; spinifex maps sg-XXXX → sg_XXXX.
+SGE_CLIENT_PG="${SGE_CLIENT_SG//-/_}"
+SGE_TARGET_PG="${SGE_TARGET_SG//-/_}"
+SGE_CLIENT_LSP="port-${SGE_CLIENT_ENI}"
+SGE_TARGET_LSP="port-${SGE_TARGET_ENI}"
+
+SGE_CLIENT_LSP_UUID=$(sudo ovn-nbctl --no-leader-only --bare --columns=_uuid find logical_switch_port name="$SGE_CLIENT_LSP" 2>/dev/null || echo "")
+SGE_TARGET_LSP_UUID=$(sudo ovn-nbctl --no-leader-only --bare --columns=_uuid find logical_switch_port name="$SGE_TARGET_LSP" 2>/dev/null || echo "")
+if [ -z "$SGE_CLIENT_LSP_UUID" ] || [ -z "$SGE_TARGET_LSP_UUID" ]; then
+    echo "FAIL: LSP UUIDs not found in OVN NB"
+    echo "  client-lsp ($SGE_CLIENT_LSP): '$SGE_CLIENT_LSP_UUID'"
+    echo "  target-lsp ($SGE_TARGET_LSP): '$SGE_TARGET_LSP_UUID'"
+    exit 1
+fi
+
+SGE_CLIENT_PG_PORTS=$(sudo ovn-nbctl --no-leader-only --bare --columns=ports find port_group name="$SGE_CLIENT_PG" 2>/dev/null || echo "")
+SGE_TARGET_PG_PORTS=$(sudo ovn-nbctl --no-leader-only --bare --columns=ports find port_group name="$SGE_TARGET_PG" 2>/dev/null || echo "")
+
+if echo "$SGE_CLIENT_PG_PORTS" | grep -q "$SGE_CLIENT_LSP_UUID"; then
+    echo "  PASS: client LSP in port_group $SGE_CLIENT_PG"
+else
+    echo "FAIL: client LSP $SGE_CLIENT_LSP_UUID not in port_group $SGE_CLIENT_PG"
+    echo "  ports: $SGE_CLIENT_PG_PORTS"
+    exit 1
+fi
+if echo "$SGE_TARGET_PG_PORTS" | grep -q "$SGE_TARGET_LSP_UUID"; then
+    echo "  PASS: target LSP in port_group $SGE_TARGET_PG"
+else
+    echo "FAIL: target LSP $SGE_TARGET_LSP_UUID not in port_group $SGE_TARGET_PG"
+    echo "  ports: $SGE_TARGET_PG_PORTS"
+    exit 1
+fi
+
+# Confirm client's private IP made it into the client_pg_ip4 address set so
+# target-sg's SG-to-SG match expression resolves. The <pg>_ip4 / <pg>_ip6
+# sets are auto-derived by ovn-northd from port_group membership and live in
+# SB, not NB (see security.go:73, topology.go:803). northd is async so retry
+# briefly to ride out the post-join propagation window.
+SGE_AS_OK=false
+for SGE_W in $(seq 1 10); do
+    SGE_CLIENT_AS_ADDRS=$(sudo ovn-sbctl --no-leader-only --bare --columns=addresses find address_set name="${SGE_CLIENT_PG}_ip4" 2>/dev/null || echo "")
+    if echo "$SGE_CLIENT_AS_ADDRS" | grep -qF "$SGE_CLIENT_PRIV"; then
+        SGE_AS_OK=true
+        break
+    fi
+    sleep 1
+done
+if [ "$SGE_AS_OK" = "true" ]; then
+    echo "  PASS: client private IP $SGE_CLIENT_PRIV in SB address_set ${SGE_CLIENT_PG}_ip4"
+else
+    echo "FAIL: client private IP $SGE_CLIENT_PRIV missing from SB address_set ${SGE_CLIENT_PG}_ip4"
+    echo "  addresses: $SGE_CLIENT_AS_ADDRS"
+    exit 1
+fi
+
+# Wait for client SSH to be ready (cloud-init).
+SGE_CLIENT_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes -i test-key-1.pem ec2-user@$SGE_CLIENT_PUB"
+echo ""
+echo "Waiting for client-vm SSH..."
+SGE_SSH_OK=false
+for SGE_W in $(seq 1 60); do
+    if $SGE_CLIENT_SSH 'true' 2>/dev/null; then
+        SGE_SSH_OK=true
+        break
+    fi
+    sleep 2
+done
+if [ "$SGE_SSH_OK" != "true" ]; then
+    echo "FAIL: client-vm SSH did not become ready"
+    exit 1
+fi
+echo "  PASS: client-vm SSH ready"
+
+# Step 4: Allowed traffic — client → target:8080 must succeed.
+# Retry to give target's cloud-init time to start python3 -m http.server.
+echo ""
+echo "Step 4: Allowed traffic (client → target:8080, SG-to-SG allow rule)"
+SGE_HTTP_OK=false
+for SGE_W in $(seq 1 30); do
+    if $SGE_CLIENT_SSH "curl -sS -o /dev/null -m 5 http://${SGE_TARGET_PRIV}:8080/" 2>/dev/null; then
+        SGE_HTTP_OK=true
+        echo "  PASS: client → target:8080 succeeded (after ${SGE_W} attempts)"
+        break
+    fi
+    sleep 2
+done
+if [ "$SGE_HTTP_OK" != "true" ]; then
+    echo "FAIL: client cannot reach target:8080"
+    # Disambiguate: curl -v shows "Connection refused" (server down) vs
+    # "Connection timed out" (ACL filtered). Then dump target console for
+    # cloud-init / systemd-run / python3 evidence.
+    echo "  --- curl -v from client to target:8080 ---"
+    $SGE_CLIENT_SSH "curl -v --connect-timeout 3 http://${SGE_TARGET_PRIV}:8080/" 2>&1 | tail -25 || true
+    echo "  --- target console output (tail 80) ---"
+    aws ec2 get-console-output --instance-id "$SGE_TARGET_VM" --output text 2>&1 | tail -80 || true
+    exit 1
+fi
+
+# Step 5: Denied traffic — client → target:22 must fail.
+# target-sg has no SSH ingress; default-deny ACL must drop.
+echo ""
+echo "Step 5: Denied traffic (client → target:22, no SSH ingress on target-sg)"
+if $SGE_CLIENT_SSH "nc -z -w 5 ${SGE_TARGET_PRIV} 22" 2>/dev/null; then
+    echo "FAIL: client reached target:22 — default-deny ACL not enforced"
+    exit 1
+fi
+echo "  PASS: client → target:22 blocked"
+
+# Step 6: Revoke target-sg's 8080 rule and retest immediately.
+# The synchronous vpc.update-sg RequestEvent contract (Phase 7) makes
+# propagation to OVN immediate — no sleep needed.
+echo ""
+echo "Step 6: Revoke target-sg ingress, retest (sync RequestEvent contract)"
+aws ec2 revoke-security-group-ingress \
+    --group-id "$SGE_TARGET_SG" \
+    --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,UserIdGroupPairs=[{GroupId=$SGE_CLIENT_SG}]" > /dev/null
+echo "  Revoked tcp/8080 from $SGE_CLIENT_SG"
+
+# Fresh TCP connection — conntrack does not affect new connections.
+if $SGE_CLIENT_SSH "curl -sS -o /dev/null -m 5 http://${SGE_TARGET_PRIV}:8080/" 2>/dev/null; then
+    echo "FAIL: client still reached target:8080 after revoke — propagation not immediate"
+    exit 1
+fi
+echo "  PASS: client → target:8080 now blocked after revoke"
+
+# Step 7: Cleanup — terminate Phase 8e VMs and delete SGs before the shared
+# 8b/8d cleanup runs. Otherwise the SGs would still reference live ENIs.
+echo ""
+echo "Step 7: Cleanup"
+aws ec2 terminate-instances --instance-ids "$SGE_CLIENT_VM" "$SGE_TARGET_VM" > /dev/null
+for SGE_VM in "$SGE_CLIENT_VM" "$SGE_TARGET_VM"; do
+    SGE_W=0
+    SGE_S="unknown"
+    while [ $SGE_W -lt 60 ]; do
+        SGE_S=$(aws ec2 describe-instances --instance-ids "$SGE_VM" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+        if [ "$SGE_S" = "terminated" ] || [ "$SGE_S" = "None" ]; then break; fi
+        sleep 1
+        SGE_W=$((SGE_W + 1))
+    done
+done
+aws ec2 delete-security-group --group-id "$SGE_TARGET_SG"
+aws ec2 delete-security-group --group-id "$SGE_CLIENT_SG"
+echo "  PASS: VMs terminated, SGs deleted"
+
+echo ""
+echo "Phase 8e: Security Group Enforcement PASSED"
+
+echo ""
+echo "Phase 8b/8d Step: Cleanup"
+if [ "$PHASE8B_INSTANCES_TERMINATED" = "true" ]; then
+    echo "  PUB+PRIV already terminated before Phase 8e (capacity reclaim)"
+else
+    # Terminate both instances
+    echo "Terminating public instance $PUB_INSTANCE_ID..."
+    aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID"
+    echo "Terminating private instance $PRIV_INSTANCE_ID..."
+    aws ec2 terminate-instances --instance-ids "$PRIV_INSTANCE_ID"
+
+    # Wait for both to terminate
+    for CLEANUP_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
+        CLEANUP_COUNT=0
+        while [ $CLEANUP_COUNT -lt 60 ]; do
+            CLEANUP_STATE=$(aws ec2 describe-instances --instance-ids "$CLEANUP_ID" \
+                --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+            if [ "$CLEANUP_STATE" == "terminated" ] || [ "$CLEANUP_STATE" == "None" ]; then
+                echo "Instance $CLEANUP_ID terminated"
+                break
+            fi
+            sleep 1
+            CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+        done
+    done
+fi
 
 # Verify public IP NAT rule removed after termination (async via NATS)
 if [ "$HAS_OVN" = true ]; then

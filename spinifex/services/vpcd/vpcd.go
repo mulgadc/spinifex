@@ -445,8 +445,15 @@ func launchService(cfg *Config) error {
 	// Pass 2: Reconcile from NATS KV (handles reboots, OVN DB loss, missed events).
 	// Runs after subscribing so new events are not missed during reconciliation.
 	// Leader-gated (mulga-siv-29) to avoid concurrent Create races against OVN NB.
+	//
+	// ReconcileFromKV creates ENI LSPs with the non-atomic primitive (no SG
+	// port-group joins). Calling ReconcileSGsOnce immediately after — under the
+	// same leader lock — recreates any missing port groups and joins the
+	// fresh LSPs to them, closing the enforcement gap before the periodic
+	// loop's first 30s tick.
 	if isLeader {
 		ReconcileFromKV(ctx, nc, topo, chassisNames)
+		ReconcileSGsOnce(ctx, nc, topo)
 	}
 
 	// Pass 3: Retrofit localnet options on every external switch. Walks OVN
@@ -464,6 +471,17 @@ func launchService(cfg *Config) error {
 		releaseLeader()
 	}
 
+	// Periodic SG/port-group/address-set drift convergence. Leader-gated on the
+	// shared reconcile bucket so only one vpcd in the cluster runs the scans at
+	// a time; cancelled when the parent ctx is.
+	loopCtx, loopCancel := context.WithCancel(ctx)
+	defer loopCancel()
+	loopDone := make(chan struct{})
+	go func() {
+		ReconcileSGsLoop(loopCtx, nc, topo)
+		close(loopDone)
+	}()
+
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs), "dhcp_subscriptions", len(dhcpSubs))
 
@@ -473,6 +491,8 @@ func launchService(cfg *Config) error {
 	<-sigChan
 
 	slog.Info("vpcd service shutting down")
+	loopCancel()
+	<-loopDone
 	return nil
 }
 

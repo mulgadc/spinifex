@@ -51,7 +51,9 @@ export function useCreateLoadBalancer() {
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "loadBalancers"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "loadBalancers"],
+      })
     },
   })
 }
@@ -66,7 +68,9 @@ export function useDeleteLoadBalancer() {
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "loadBalancers"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "loadBalancers"],
+      })
     },
   })
 }
@@ -90,7 +94,7 @@ export function useModifyLoadBalancerAttributes() {
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: [
           "elbv2",
           "loadBalancers",
@@ -128,7 +132,9 @@ export function useCreateTargetGroup() {
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "targetGroups"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "targetGroups"],
+      })
     },
   })
 }
@@ -143,7 +149,9 @@ export function useDeleteTargetGroup() {
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "targetGroups"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "targetGroups"],
+      })
     },
   })
 }
@@ -167,7 +175,7 @@ export function useModifyTargetGroupAttributes() {
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: [
           "elbv2",
           "targetGroups",
@@ -205,7 +213,7 @@ export function useCreateListener() {
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "listeners", variables.loadBalancerArn],
       })
     },
@@ -220,7 +228,7 @@ export function useDeleteListener() {
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] })
+      void queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] })
     },
   })
 }
@@ -355,7 +363,7 @@ export function useCreateLoadBalancerWizard() {
       }
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["elbv2"] })
+      void queryClient.invalidateQueries({ queryKey: ["elbv2"] })
     },
   })
 }
@@ -388,7 +396,7 @@ export function useRegisterTargets() {
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups", variables.targetGroupArn, "health"],
       })
     },
@@ -406,7 +414,7 @@ export function useDeregisterTargets() {
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups", variables.targetGroupArn, "health"],
       })
     },

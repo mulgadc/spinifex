@@ -115,6 +115,16 @@ type ACL struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
+// AddressSet represents an OVN Address_Set — a named set of IP addresses
+// referenced by ACL match expressions (e.g. ip4.src == $sg_xxx_ip4) for
+// SG-to-SG rule enforcement.
+type AddressSet struct {
+	UUID        string            `ovsdb:"_uuid"`
+	Name        string            `ovsdb:"name"`
+	Addresses   []string          `ovsdb:"addresses"`
+	ExternalIDs map[string]string `ovsdb:"external_ids"`
+}
+
 // GatewayChassis represents an OVN Gateway_Chassis for HA scheduling.
 type GatewayChassis struct {
 	UUID        string            `ovsdb:"_uuid"`
@@ -139,5 +149,6 @@ func FullDatabaseModel() (model.ClientDBModel, error) {
 		"Gateway_Chassis":             &GatewayChassis{},
 		"Port_Group":                  &PortGroup{},
 		"ACL":                         &ACL{},
+		"Address_Set":                 &AddressSet{},
 	})
 }

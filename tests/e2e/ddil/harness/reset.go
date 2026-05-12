@@ -188,10 +188,14 @@ func AssertCleanState(ctx context.Context, t *testing.T, c *Cluster, ssh SSH) {
 }
 
 // countDropRules reports how many DROP rules are installed in INPUT/OUTPUT
-// on node. `|| true` at the shell level keeps grep's no-match exit 1 from
-// being surfaced as an SSH error.
+// on node. `iptables -S` without a chain prints every chain in
+// iptables-save format (`-A INPUT ... -j DROP`); filtering for the two
+// chains we care about keeps the count scoped to PartitionNode's targets.
+// `2>/dev/null` swallows sudo/iptables stderr so a noisy environment does
+// not poison the grep input, and `|| true` covers grep's no-match exit 1.
 func countDropRules(ctx context.Context, ssh SSH, n Node) (int, error) {
-	out, err := ssh.Run(ctx, n, "sudo iptables -S INPUT -S OUTPUT | grep -c -- '-j DROP' || true")
+	const cmd = `sudo iptables -S 2>/dev/null | grep -E '^-A (INPUT|OUTPUT) ' | grep -c -- '-j DROP' || true`
+	out, err := ssh.Run(ctx, n, cmd)
 	if err != nil {
 		return 0, err
 	}
@@ -201,7 +205,7 @@ func countDropRules(ctx context.Context, ssh SSH, n Node) (int, error) {
 	}
 	count, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("parse iptables drop count %q: %w", s, err)
+		return 0, fmt.Errorf("parse iptables drop count %q (raw output: %q): %w", s, string(out), err)
 	}
 	return count, nil
 }

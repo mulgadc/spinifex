@@ -456,6 +456,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			eniOut, eniErr := s.eniCreator.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 				SubnetId:    input.SubnetId,
 				Description: aws.String("Primary network interface for " + instance.ID),
+				Groups:      input.SecurityGroupIds,
 			}, accountID)
 			if eniErr != nil {
 				slog.Error("PrepareRunInstances: auto-create ENI failed", "instanceId", instance.ID, "subnetId", *input.SubnetId, "err", eniErr)
@@ -474,6 +475,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
 			ec2Instance.SetSubnetId(*input.SubnetId)
 			ec2Instance.SetVpcId(*eni.VpcId)
+			ec2Instance.SecurityGroups = eni.Groups
 			ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
 				{
 					NetworkInterfaceId: eni.NetworkInterfaceId,
@@ -482,6 +484,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 					SubnetId:           input.SubnetId,
 					VpcId:              eni.VpcId,
 					Status:             aws.String("in-use"),
+					Groups:             eni.Groups,
 					Attachment: &ec2.InstanceNetworkInterfaceAttachment{
 						DeviceIndex: aws.Int64(0),
 						Status:      aws.String("attached"),

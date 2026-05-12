@@ -163,3 +163,69 @@ func scenarioSkip(t *testing.T, letter, dep string) {
 	t.Helper()
 	t.Skipf("scenario %s requires %s", letter, dep)
 }
+
+// scenarioDeps bundles the live cluster handles every flipped scenario
+// needs. Returned by requireLiveCluster; nil on dry-run / missing env so
+// the caller's t.Skip path does not have to dereference it.
+type scenarioDeps struct {
+	cluster *harness.Cluster
+	ssh     harness.SSH
+	dc      *harness.DaemonClient
+	witness *harness.Witness
+}
+
+// requireLiveCluster wires up the cluster, SSH, daemon client, and witness
+// factory a flipped scenario needs. Skips (rather than fails) on dry-run,
+// missing DDIL_NODES, or missing AWS_REGION so the suite can run on a
+// laptop without provisioning the tofu cluster — Phase 1's smoke path.
+func requireLiveCluster(t *testing.T) scenarioDeps {
+	t.Helper()
+	if dryRun() {
+		t.Skipf("DDIL_DRY_RUN=1")
+	}
+	c, s, err := setupCluster()
+	if err != nil {
+		t.Fatalf("cluster setup: %v", err)
+	}
+	if c == nil || s == nil {
+		t.Skipf("DDIL_NODES unset (scenario requires a live cluster)")
+	}
+	if len(c.Nodes) < 3 {
+		t.Skipf("scenario requires 3-node cluster, got %d", len(c.Nodes))
+	}
+	w, err := harness.NewWitness(c, s)
+	if err != nil {
+		t.Skipf("witness setup: %v", err)
+	}
+	return scenarioDeps{
+		cluster: c,
+		ssh:     s,
+		dc:      harness.NewDaemonClient(),
+		witness: w,
+	}
+}
+
+// launchWitnesses launches one counter VM on each requested host, registers
+// a t.Cleanup that terminates them, and returns the slice in input order.
+// A launch failure fails the test rather than skipping — the harness
+// retries placement up to maxPlacementAttempts internally, so a hard error
+// here means the cluster cannot serve a witness at all.
+func launchWitnesses(ctx context.Context, t *testing.T, w *harness.Witness, hosts ...harness.Node) []*harness.WitnessVM {
+	t.Helper()
+	out := make([]*harness.WitnessVM, 0, len(hosts))
+	for _, h := range hosts {
+		v, err := harness.LaunchWitnessVM(ctx, w, h)
+		if err != nil {
+			t.Fatalf("launch witness on %s: %v", h.Name, err)
+		}
+		t.Cleanup(func() {
+			cctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			defer cancel()
+			if err := v.Terminate(cctx); err != nil {
+				t.Logf("terminate witness %s: %v", v.InstanceID, err)
+			}
+		})
+		out = append(out, v)
+	}
+	return out
+}

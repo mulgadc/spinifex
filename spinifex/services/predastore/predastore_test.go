@@ -9,13 +9,14 @@ import (
 // TestNew tests the service constructor
 func TestNew(t *testing.T) {
 	cfg := &Config{
-		ConfigPath: "/tmp/test-config.toml",
-		Port:       8443,
-		Host:       "0.0.0.0",
-		Debug:      false,
-		BasePath:   "/tmp/predastore",
-		TlsCert:    "/tmp/cert.pem",
-		TlsKey:     "/tmp/key.pem",
+		ConfigPath:        "/tmp/test-config.toml",
+		Port:              8443,
+		Host:              "0.0.0.0",
+		Debug:             false,
+		BasePath:          "/tmp/predastore",
+		TlsCert:           "/tmp/cert.pem",
+		TlsKey:            "/tmp/key.pem",
+		EncryptionKeyFile: "/tmp/encryption.key",
 	}
 
 	svc, err := New(cfg)
@@ -30,6 +31,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, "/tmp/predastore", svc.Config.BasePath)
 	assert.Equal(t, "/tmp/cert.pem", svc.Config.TlsCert)
 	assert.Equal(t, "/tmp/key.pem", svc.Config.TlsKey)
+	assert.Equal(t, "/tmp/encryption.key", svc.Config.EncryptionKeyFile)
 }
 
 // TestNewWithNilConfig tests that New handles nil config correctly
@@ -53,6 +55,7 @@ func TestConfigDefaults(t *testing.T) {
 	assert.Empty(t, cfg.BasePath)
 	assert.Empty(t, cfg.TlsCert)
 	assert.Empty(t, cfg.TlsKey)
+	assert.Empty(t, cfg.EncryptionKeyFile)
 }
 
 // TestConfigWithDebug tests Config with debug enabled
@@ -71,13 +74,14 @@ func TestConfigWithDebug(t *testing.T) {
 // TestConfigFullyPopulated tests a fully populated config
 func TestConfigFullyPopulated(t *testing.T) {
 	cfg := &Config{
-		ConfigPath: "/etc/predastore/config.toml",
-		Port:       9443,
-		Host:       "127.0.0.1",
-		Debug:      true,
-		BasePath:   "/var/lib/predastore",
-		TlsCert:    "/etc/ssl/certs/predastore.crt",
-		TlsKey:     "/etc/ssl/private/predastore.key",
+		ConfigPath:        "/etc/predastore/config.toml",
+		Port:              9443,
+		Host:              "127.0.0.1",
+		Debug:             true,
+		BasePath:          "/var/lib/predastore",
+		TlsCert:           "/etc/ssl/certs/predastore.crt",
+		TlsKey:            "/etc/ssl/private/predastore.key",
+		EncryptionKeyFile: "/etc/spinifex/predastore/encryption.key",
 	}
 
 	assert.Equal(t, "/etc/predastore/config.toml", cfg.ConfigPath)
@@ -87,6 +91,7 @@ func TestConfigFullyPopulated(t *testing.T) {
 	assert.Equal(t, "/var/lib/predastore", cfg.BasePath)
 	assert.Equal(t, "/etc/ssl/certs/predastore.crt", cfg.TlsCert)
 	assert.Equal(t, "/etc/ssl/private/predastore.key", cfg.TlsKey)
+	assert.Equal(t, "/etc/spinifex/predastore/encryption.key", cfg.EncryptionKeyFile)
 }
 
 // TestServiceMethods tests the service interface methods
@@ -230,6 +235,28 @@ func TestServiceStartWithoutConfig(t *testing.T) {
 	// Skip this test - it requires actual config file and will block/exit
 	// This is covered by integration tests instead
 	t.Skip("Skipping test that requires actual predastore config file - covered by integration tests")
+}
+
+// Start() must fail fast (before touching the pid file or trying to bind a
+// port) when no encryption key file is configured. Predastore itself
+// enforces this at the s3.Server layer, but a clear pre-check error at the
+// spinifex service boundary saves operators an opaque downstream failure.
+func TestServiceStartRejectsMissingEncryptionKey(t *testing.T) {
+	cfg := &Config{
+		ConfigPath: "/tmp/test-config.toml",
+		Port:       18443,
+		Host:       "127.0.0.1",
+		BasePath:   t.TempDir(),
+		TlsCert:    "/tmp/cert.pem",
+		TlsKey:     "/tmp/key.pem",
+		// EncryptionKeyFile deliberately left empty.
+	}
+	svc, err := New(cfg)
+	assert.NoError(t, err)
+
+	_, err = svc.Start()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "encryption key file is required")
 }
 
 // TestConfigDebugFlag tests debug flag behavior

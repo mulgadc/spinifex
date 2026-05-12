@@ -115,6 +115,13 @@ var predastoreStartCmd = &cobra.Command{
 			return
 		}
 
+		encryptionKeyFile := viper.GetString("encryption-key-file")
+
+		if encryptionKeyFile == "" {
+			fmt.Println("Encryption key file is not set")
+			return
+		}
+
 		nodeID := viper.GetInt("node-id")
 		pprofEnabled := viper.GetBool("pprof")
 		pprofOutput := viper.GetString("pprof-output")
@@ -127,6 +134,8 @@ var predastoreStartCmd = &cobra.Command{
 			Debug:      debug,
 			TlsCert:    tlsCert,
 			TlsKey:     tlsKey,
+
+			EncryptionKeyFile: encryptionKeyFile,
 
 			NodeID: nodeID,
 
@@ -858,13 +867,20 @@ func init() {
 	viper.BindEnv("tls-key", "SPINIFEX_PREDASTORE_TLS_KEY")
 	viper.BindPFlag("tls-key", predastoreCmd.PersistentFlags().Lookup("tls-key"))
 
+	// Predastore at-rest encryption master key (per node; mode 0600)
+	predastoreCmd.PersistentFlags().String("encryption-key-file", "", "Path to this node's 32-byte AES-256 master key file (required)")
+	viper.BindEnv("encryption-key-file", "SPINIFEX_PREDASTORE_ENCRYPTION_KEY_FILE")
+	viper.BindPFlag("encryption-key-file", predastoreCmd.PersistentFlags().Lookup("encryption-key-file"))
+
 	// Predastore Backend
 	predastoreCmd.PersistentFlags().String("backend", "distributed", "Predastore (S3) backend")
 	viper.BindEnv("backend", "SPINIFEX_PREDASTORE_BACKEND")
 	viper.BindPFlag("backend", predastoreCmd.PersistentFlags().Lookup("backend"))
 
-	// Predastore Node ID
-	predastoreCmd.PersistentFlags().Int("node-id", 0, "Predastore (S3) node ID")
+	// Predastore Node ID. Default -1 is dev mode (launch every configured
+	// QUIC node in-process). Production deployments set this to the node's
+	// real ID (>= 1) via SPINIFEX_PREDASTORE_NODE_ID or --node-id.
+	predastoreCmd.PersistentFlags().Int("node-id", -1, "Predastore (S3) node ID (-1 = dev mode, >= 1 = production)")
 	viper.BindEnv("node-id", "SPINIFEX_PREDASTORE_NODE_ID")
 	viper.BindPFlag("node-id", predastoreCmd.PersistentFlags().Lookup("node-id"))
 

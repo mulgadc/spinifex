@@ -198,12 +198,16 @@ type Daemon struct {
 	// are fully initialized. The health endpoint reports "starting" until ready.
 	ready atomic.Bool
 
-	// mode is the daemon's connectivity state — "cluster" when NATS is
-	// reachable, "standalone" when disconnected. Read-only via Mode(); flipped
-	// from utils/nats.go disconnect/reconnect callbacks (see onNATSDisconnect /
-	// onNATSReconnect). Initialised "standalone" so callers reading before
-	// connectNATS() returns get a sensible answer.
-	mode atomic.Value
+	// natsConnected is true iff the daemon's NATS client TCP connection is
+	// live. Flipped by onNATSDisconnect / onNATSReconnect and by connectNATS
+	// success. False at construction (cluster bootstrap hasn't run yet).
+	natsConnected atomic.Bool
+	// peersReachable is true iff at least one peer daemon's /health responded
+	// in the most recent peer-health probe cycle. Managed by
+	// monitorPeerReachability. Single-node clusters keep this permanently
+	// true (no peers to lose); multi-node clusters start false and flip true
+	// after the first successful probe.
+	peersReachable atomic.Bool
 
 	// natsRetryCount counts disconnect→reconnect cycles since process start.
 	// Bumped from onNATSReconnect; surfaced via NATSRetryCount() for the
@@ -225,27 +229,43 @@ type Daemon struct {
 	// as a string. Cleared back to "" on the next successful sync.
 	lastKVSyncError atomic.Value
 
+	// reconciling coalesces concurrent reconcileOnHeal invocations. Both
+	// the NATS reconnect callback and the peer-probe heal edge may fire
+	// near-simultaneously on the same heal; the second caller observes
+	// the flag set and returns.
+	reconciling atomic.Bool
+	// stateWriteMu serialises WriteState. Concurrent callers (each terminate /
+	// stop goroutine triggers TransitionState → WriteState) share a single
+	// path + ".tmp" staging file; without serialisation one rename races the
+	// other and fails ENOENT, which aborts the cleanup chain and leaks ENIs.
+	stateWriteMu sync.Mutex
+
 	mu sync.Mutex
 }
 
-// Daemon connectivity modes stored in Daemon.mode.
+// Daemon connectivity modes derived by Mode().
 const (
 	DaemonModeStandalone = "standalone"
 	DaemonModeCluster    = "cluster"
 )
 
-// Mode returns the daemon's current connectivity mode ("cluster" or
-// "standalone"). Safe to call from any goroutine.
+// Mode returns the daemon's current connectivity mode. "cluster" iff both the
+// local NATS link is up AND at least one peer responded to the most recent
+// /health probe. Any other combination (NATS down, peers unreachable, or
+// both) reports "standalone". Safe to call from any goroutine.
+//
+// The two-signal design covers the DDIL Tier 1 failure modes:
+//   - NATS-only outage (Scenario A): natsConnected=false ⇒ standalone.
+//   - Daemon restart with NATS down (Scenario B): natsConnected=false ⇒
+//     standalone until both NATS and peers return.
+//   - Clean partition with local NATS still up (Scenario C):
+//     peersReachable=false ⇒ standalone even though the client socket is
+//     healthy.
 func (d *Daemon) Mode() string {
-	v := d.mode.Load()
-	if v == nil {
-		return DaemonModeStandalone
+	if d.natsConnected.Load() && d.peersReachable.Load() {
+		return DaemonModeCluster
 	}
-	s, ok := v.(string)
-	if !ok {
-		return DaemonModeStandalone
-	}
-	return s
+	return DaemonModeStandalone
 }
 
 // NATSRetryCount returns the number of disconnect→reconnect cycles observed
@@ -305,29 +325,21 @@ func (d *Daemon) RecordKVSyncFailure(_ string, err error) {
 	}
 }
 
-// onNATSDisconnect runs when the NATS client loses its connection. Flips the
-// daemon to standalone mode so /local/status callers and scatter-gather
+// onNATSDisconnect runs when the NATS client loses its connection. Flips
+// natsConnected to false so Mode() reports standalone and scatter-gather
 // bailouts react immediately. Must not block — runs on a NATS client goroutine.
 func (d *Daemon) onNATSDisconnect(_ *nats.Conn, _ error) {
-	d.mode.Store(DaemonModeStandalone)
+	d.natsConnected.Store(false)
 }
 
-// onNATSReconnect runs when the NATS client reattaches to a server. Flips back
-// to cluster mode, bumps the retry counter, and pushes the full local instance
-// state to KV so the cluster view re-converges. The KV push runs in a goroutine
-// to keep the NATS client callback non-blocking.
+// onNATSReconnect runs when the NATS client reattaches to a server. Marks
+// NATS connected, bumps the retry counter, and dispatches reconcileOnHeal
+// in a goroutine to keep this NATS client callback non-blocking.
 func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
-	d.mode.Store(DaemonModeCluster)
+	d.natsConnected.Store(true)
 	d.natsRetryCount.Add(1)
 
-	if d.jsManager == nil {
-		return
-	}
-	go func() {
-		if err := d.WriteState(); err != nil {
-			slog.Warn("Reconnect KV resync failed", "error", err)
-		}
-	}()
+	go d.reconcileOnHeal("nats-reconnect")
 }
 
 // getSystemMemory returns the total system memory in GB
@@ -622,7 +634,17 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		requireNATSTimeout: 30 * time.Second,
 		exitFunc:           os.Exit,
 	}
-	d.mode.Store(DaemonModeStandalone)
+	// Initialise peersReachable optimistically. Mode() also requires
+	// natsConnected, which starts false, so the optimistic init never
+	// causes Mode() to falsely report cluster — but it does prevent the
+	// first probe tick from triggering a spurious "heal" edge on
+	// multi-node clusters at startup (zero-value false → first-successful-
+	// probe true would otherwise fire reconcileOnHeal at boot,
+	// concurrently with startCluster's own bootstrap and perturbing the
+	// timing the DDIL harness relies on). Single-node clusters never
+	// run a probe at all, so this also keeps the prior single-node
+	// behaviour where Mode() flips to cluster the moment NATS comes up.
+	d.peersReachable.Store(true)
 	return d, nil
 }
 
@@ -890,6 +912,12 @@ func (d *Daemon) startLocal() error {
 	if err := d.assertNoClusterServicesInitialised(); err != nil {
 		return fmt.Errorf("startLocal Tier 1 invariant violated: %w", err)
 	}
+
+	// Peer-health probe runs in startLocal because Mode() needs a partition
+	// signal even when NATS never connects (DDIL Scenario C). The probe is
+	// NATS-independent — it dials each peer's /health over the cluster
+	// network — so it does not violate the Tier 1 invariant asserted above.
+	d.shutdownWg.Go(d.monitorPeerReachability)
 
 	d.ready.Store(true)
 	slog.Info("Daemon local-bootstrap complete", "node", d.node, "elapsed", time.Since(d.startTime).Round(time.Second))
@@ -1180,6 +1208,7 @@ func (d *Daemon) startCluster() error {
 	// Ensure default VPC exists for system and admin accounts
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {
+		failedDefaultVPCs := map[string]struct{}{}
 		for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
@@ -1192,10 +1221,12 @@ func (d *Daemon) startCluster() error {
 			}
 			if _, err := d.vpcService.EnsureDefaultVPC(accountID, opts...); err != nil {
 				slog.Error("Failed to ensure default VPC", "accountID", accountID, "error", err)
+				failedDefaultVPCs[accountID] = struct{}{}
 			}
 		}
-		// Ensure default VPC has an IGW and default security group
-		d.ensureDefaultVPCInfrastructure()
+		// Skip IGW/route setup for accounts whose default VPC failed; otherwise
+		// we'd attach infrastructure to a half-built VPC (no default SG yet).
+		d.ensureDefaultVPCInfrastructure(failedDefaultVPCs)
 	}
 
 	// Wire vm.Manager collaborators now that NATS, JetStream, network plumber,
@@ -1260,7 +1291,7 @@ func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
 		return err
 	}
 	d.natsConn = nc
-	d.mode.Store(DaemonModeCluster)
+	d.natsConnected.Store(true)
 	return nil
 }
 
@@ -1625,6 +1656,9 @@ func (d *Daemon) localStatePath() string {
 // stable VM-field snapshot. Marshaling outside the lock would race against
 // concurrent TransitionState writers under the data race detector.
 func (d *Daemon) WriteState() error {
+	d.stateWriteMu.Lock()
+	defer d.stateWriteMu.Unlock()
+
 	var (
 		localData, kvData []byte
 		marshalErr        error
@@ -1743,16 +1777,18 @@ func (d *Daemon) setupShutdown() {
 		// Cancel context to stop heartbeat and other goroutines
 		d.cancel()
 
-		// If coordinated shutdown already handled VMs (DRAIN phase), skip the
-		// per-instance teardown. Otherwise, set the flag now so crash handlers
-		// and restart schedulers know to bail out during SIGTERM-based shutdown.
+		// DDIL Tier 1 (mulga-siv-58): SIGTERM alone never stops local VMs.
+		// `systemctl restart spinifex-daemon` must preserve every QEMU child so
+		// the new daemon can reattach via the persisted local state file
+		// (Scenario B). VMs are only stopped when coordinated cluster shutdown
+		// has explicitly drained them — handleShutdownDrain sets shuttingDown
+		// after calling StopAll, and crash/restart handlers also gate on this
+		// flag to bail out.
 		if d.shuttingDown.Load() {
 			slog.Info("Coordinated shutdown in progress, skipping VM stop (already handled by DRAIN phase)")
 		} else {
+			slog.Info("SIGTERM with no coordinated drain — leaving local VMs running for restart recovery")
 			d.shuttingDown.Store(true)
-			if err := d.vmMgr.StopAll(); err != nil {
-				slog.Error("Failed to stop instances during shutdown", "err", err)
-			}
 		}
 
 		// Stop ELBv2 background goroutines
@@ -1782,8 +1818,12 @@ func (d *Daemon) setupShutdown() {
 			slog.Error("Failed to write state", "err", err)
 		}
 
-		// Close NATS connection
-		d.natsConn.Close()
+		// Close NATS connection. natsConn is nil when the daemon was started
+		// with NATS unreachable and never managed an initial connect — that
+		// is the DDIL Scenario B path (daemon restart while NATS is down).
+		if d.natsConn != nil {
+			d.natsConn.Close()
+		}
 
 		// Shutdown cluster manager
 		if d.clusterServer != nil {

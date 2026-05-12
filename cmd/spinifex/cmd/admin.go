@@ -904,6 +904,16 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 	fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
 
+	// Predastore encryption key is per-node and never transmitted; generate
+	// it locally now so the service has it on first start.
+	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating predastore encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
+	fmt.Printf("   Key: %s\n", predastoreKeyPath)
+
 	fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
 	fmt.Printf("   Access Key:  %s\n", bootstrapResult.AdminAccessKey)
 	fmt.Printf("   Secret Key:  %s\n", bootstrapResult.AdminSecretKey)
@@ -1171,6 +1181,17 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 	fmt.Println("\n🔐 Generated IAM master key")
 	fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+
+	// Predastore encryption key is per-node and never distributed via the
+	// formation server. Generate only the leader's own key here; each
+	// joiner generates its own during `spx admin join`.
+	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error generating predastore encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
+	fmt.Printf("   Key: %s\n", predastoreKeyPath)
 
 	// Read CA cert/key for distribution to joining nodes
 	caCertData, err := os.ReadFile(filepath.Join(configDir, "ca.pem"))
@@ -1642,6 +1663,16 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	fmt.Println("✅ IAM master key received from leader")
 	fmt.Printf("✅ Bootstrap file written: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 
+	// Predastore encryption key is per-node: generate locally rather than
+	// receiving from the leader. Each node only opens fragments it sealed
+	// itself, so there is no cluster-wide predastore key to share.
+	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error generating predastore encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Predastore encryption key generated: %s\n", predastoreKeyPath)
+
 	// Generate server cert signed by CA with this node's bind IP
 	if err := admin.GenerateServerCertOnly(configDir, bindIP); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
@@ -2111,6 +2142,27 @@ func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, acces
 		AdminAccessKey: adminAccessKey,
 		AdminSecretKey: adminSecretKey,
 	}, nil
+}
+
+// writePredastoreEncryptionKey generates a fresh 32-byte AES-256 master key
+// for this node's predastore data dir and writes it to
+// <configDir>/predastore/encryption.key with mode 0600. The key is per-node:
+// every node generates its own at init/join time and never transmits it,
+// because predastore only opens fragments on the node that sealed them.
+func writePredastoreEncryptionKey(configDir string) (string, error) {
+	predastoreDir := filepath.Join(configDir, "predastore")
+	if err := os.MkdirAll(predastoreDir, 0750); err != nil {
+		return "", fmt.Errorf("create predastore config dir: %w", err)
+	}
+	key, err := handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return "", fmt.Errorf("generate predastore encryption key: %w", err)
+	}
+	keyPath := filepath.Join(predastoreDir, "encryption.key")
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return "", fmt.Errorf("save predastore encryption key: %w", err)
+	}
+	return keyPath, nil
 }
 
 // writeSystemCredentials writes the system access key to a plaintext JSON file.

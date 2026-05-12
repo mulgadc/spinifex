@@ -2,7 +2,10 @@
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
 After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service
-Wants=spinifex-nats.service
+# No Wants=spinifex-nats.service: Wants= reactivates a stopped unit during
+# `systemctl restart spinifex-daemon`, which would mask the standalone-startup
+# path the Tier 1 DDIL Scenario B exercises. spinifex.target Wants= covers
+# cold boot.
 
 [Service]
 Type=simple
@@ -20,10 +23,33 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5
+# DDIL Tier 1 (mulga-siv-58): KillMode=process so systemd only signals the
+# daemon's main PID, not the cgroup. QEMU children stay alive across
+# `systemctl restart spinifex-daemon` and the new daemon reattaches to them
+# via the persisted local state file + pidfile + QMP socket. With the
+# default control-group mode, restart would terminate every guest VM —
+# defeating Scenario B's "daemon restart preserves running instances".
+KillMode=process
+# 15s upper bound on the SIGTERM grace window. The new SIGTERM handler
+# skips VM teardown (it now just persists state and exits), so 15s is
+# plenty of slack for the cluster-manager + NATS unsubscribe path.
+TimeoutStopSec=15
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
+# DDIL Tier 1 (mulga-siv-58): QEMU pidfiles, QMP sockets, and the
+# shared qemu.log all resolve via utils.pidPath() — which falls back
+# to os.TempDir() (=/tmp) when $HOME/spinifex doesn't exist. With
+# PrivateTmp=yes, each daemon start gets a fresh /tmp namespace, so
+# pidfiles written by QEMU (running in the OLD daemon's namespace)
+# are invisible to the new daemon. The /local/instances handler then
+# reports PID=0 and Scenario B fails its "live QEMU PID" assertion.
+# Pin XDG_RUNTIME_DIR to the host-wide tmpfs at /run/spinifex (created
+# by tmpfiles.d, already in ReadWritePaths) so pidPath() returns a
+# stable, namespace-independent path that both daemon incarnations and
+# QEMU children resolve identically.
+Environment=XDG_RUNTIME_DIR=/run/spinifex
 
 # Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl, dhcpcd)
 # CAP_SYS_ADMIN: required for GPU passthrough sysfs operations (vfio group management).

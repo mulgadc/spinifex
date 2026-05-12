@@ -17,6 +17,9 @@ on:
       - .github/workflows/ui.yml
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   ui_build_and_test:
     name: UI Build and Test

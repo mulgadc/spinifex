@@ -472,6 +472,60 @@ func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
 		"should propagate InvalidAMIID.NotFound, not InsufficientInstanceCapacity")
 }
 
+// TestDistributeInstances_PropagatesSGValidationErrors verifies that
+// SG-related boundary errors from the daemon (`InvalidGroup.NotFound`,
+// `InvalidParameterValue` for cross-VPC SGs, and
+// `SecurityGroupsPerInterfaceLimitExceeded` for >5 SGs) reach the caller
+// instead of being collapsed into `InsufficientInstanceCapacity`.
+// Terraform / SDK consumers branch on the specific code; masking it as
+// "no capacity" makes a typo'd SG ID look like a transient cluster issue.
+func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
+	cases := []struct {
+		name          string
+		daemonErrCode string
+	}{
+		{"invalid-group-not-found", awserrors.ErrorInvalidGroupNotFound},
+		{"cross-vpc-invalid-param-value", awserrors.ErrorInvalidParameterValue},
+		{"too-many-sgs", awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := startTestNATSServer(t)
+
+			statusSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+				resp := types.NodeStatusResponse{
+					Node:          "node-1",
+					InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 2}},
+				}
+				data, _ := json.Marshal(resp)
+				_ = nc.Publish(msg.Reply, data)
+			})
+			require.NoError(t, err)
+			defer statusSub.Unsubscribe()
+
+			daemonSub, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-1", func(msg *nats.Msg) {
+				_ = msg.Respond(utils.GenerateErrorPayload(tc.daemonErrCode))
+			})
+			require.NoError(t, err)
+			defer daemonSub.Unsubscribe()
+
+			time.Sleep(50 * time.Millisecond)
+
+			input := &ec2.RunInstancesInput{
+				ImageId:      aws.String("ami-test"),
+				InstanceType: aws.String("t3.micro"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}
+
+			_, err = distributeInstances(input, nc, "test-account")
+			require.Error(t, err)
+			assert.Equal(t, tc.daemonErrCode, err.Error(),
+				"daemon SG validation error must be surfaced, not InsufficientInstanceCapacity")
+		})
+	}
+}
+
 func TestDistributeInstances_LaunchCountCappedToMaxCount(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 

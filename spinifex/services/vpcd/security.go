@@ -45,36 +45,69 @@ func (h *TopologyHandler) handleCreateSG(msg *nats.Msg) {
 	}
 
 	ctx := context.Background()
-	pgName := portGroupName(evt.GroupId)
-
-	// Create port group (initially empty — ports are added when ENIs are assigned to the SG)
-	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
-		slog.Error("vpcd: failed to create port group", "pg", pgName, "err", err)
+	if err := h.provisionSG(ctx, evt.GroupId, evt.IngressRules, evt.EgressRules); err != nil {
+		slog.Error("vpcd: failed to provision security group", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return
 	}
 
-	// Add default deny ACLs (priority 900) — drop all traffic not explicitly
-	// allowed. Logging is enabled so boundary communications are observable via
-	// syslog (CMMC SC.L1-3.13.1).
-	if err := h.ovn.AddACL(ctx, pgName, denyIngressACL(pgName)); err != nil {
-		slog.Warn("vpcd: failed to add default deny ingress ACL", "pg", pgName, "err", err)
-	}
-	if err := h.ovn.AddACL(ctx, pgName, denyEgressACL(pgName)); err != nil {
-		slog.Warn("vpcd: failed to add default deny egress ACL", "pg", pgName, "err", err)
-	}
-
-	// Add ACLs for initial rules (priority 1000 — higher than deny)
-	h.addRuleACLs(ctx, pgName, evt.IngressRules, evt.EgressRules)
-
 	slog.Info("vpcd: created security group port group",
-		"pg", pgName,
+		"pg", portGroupName(evt.GroupId),
 		"group_id", evt.GroupId,
 		"vpc_id", evt.VpcId,
 		"ingress_rules", len(evt.IngressRules),
 		"egress_rules", len(evt.EgressRules),
 	)
 	respond(msg, nil)
+}
+
+// provisionSG creates the OVN port group, default-deny ACLs, and allow ACLs
+// for the given SG. Used by handleCreateSG (CreateSecurityGroup path) and the
+// reconciler's scan-2 (SG record without OVN port group).
+//
+// SG-to-SG match expressions reference `$<pg>_ip4` / `$<pg>_ip6` — these
+// resolve against the SB Address_Set rows that ovn-northd auto-derives from
+// each port group's port addresses (ovn-nb(5): "For each port group, there
+// are two address sets generated to the Address_Set table of the
+// OVN_Southbound database, ... with name being the name of the Port_Group
+// followed by a suffix _ip4 / _ip6"). vpcd must NOT create explicit NB
+// Address_Set rows with those names; that produces a duplicate sync to SB
+// and wedges northd in an `OVNSB commit failed` retry loop.
+//
+// All-or-nothing: on any failure after the port group exists, the port group
+// and any partial ACLs are torn down so the reconciler's scan-2 can recreate
+// the SG from scratch on its next pass. A partial state would otherwise look
+// healthy to scanMissingPortGroups (port group exists) while silently
+// dropping legitimate traffic via the default-deny ACL.
+func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingress, egress []SGRuleForACL) error {
+	pgName := portGroupName(groupId)
+
+	if err := h.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
+		return fmt.Errorf("create port group %s: %w", pgName, err)
+	}
+
+	done := false
+	defer func() {
+		if done {
+			return
+		}
+		if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
+			slog.Warn("vpcd: provisionSG cleanup ClearACLs failed", "pg", pgName, "err", err)
+		}
+		if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
+			slog.Warn("vpcd: provisionSG cleanup DeletePortGroup failed", "pg", pgName, "err", err)
+		}
+	}()
+
+	// Default deny ACLs (priority 900, logged for CMMC SC.L1-3.13.1) and
+	// allow rules (priority 1000) go in one OVSDB transaction so a 60-rule
+	// SG creation is one round-trip, not 62.
+	specs := append([]ACLSpec{denyIngressACL(pgName), denyEgressACL(pgName)}, ruleACLSpecs(pgName, ingress, egress)...)
+	if err := h.ovn.AddACLs(ctx, pgName, specs); err != nil {
+		return fmt.Errorf("add ACLs on %s: %w", pgName, err)
+	}
+	done = true
+	return nil
 }
 
 // handleDeleteSG deletes the OVN Port Group and all associated ACLs.
@@ -94,9 +127,12 @@ func (h *TopologyHandler) handleDeleteSG(msg *nats.Msg) {
 	ctx := context.Background()
 	pgName := portGroupName(evt.GroupId)
 
-	// Clear all ACLs before deleting the port group
+	// Clear all ACLs before deleting the port group. Fail-fast — leaving stale
+	// ACLs causes DeletePortGroup to be rejected by libovsdb (dangling ref).
 	if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
-		slog.Warn("vpcd: failed to clear ACLs", "pg", pgName, "err", err)
+		slog.Error("vpcd: failed to clear ACLs", "pg", pgName, "err", err)
+		respond(msg, err)
+		return
 	}
 
 	if err := h.ovn.DeletePortGroup(ctx, pgName); err != nil {
@@ -132,19 +168,18 @@ func (h *TopologyHandler) handleUpdateSG(msg *nats.Msg) {
 
 	// Clear existing ACLs
 	if err := h.ovn.ClearACLs(ctx, pgName); err != nil {
-		slog.Warn("vpcd: failed to clear ACLs for update", "pg", pgName, "err", err)
+		slog.Error("vpcd: failed to clear ACLs for update", "pg", pgName, "err", err)
+		respond(msg, err)
+		return
 	}
 
-	// Re-add default deny ACLs (priority 900) with logging enabled.
-	if err := h.ovn.AddACL(ctx, pgName, denyIngressACL(pgName)); err != nil {
-		slog.Warn("vpcd: failed to re-add default deny ingress ACL", "pg", pgName, "err", err)
+	// Re-add default deny ACLs + current rules in one transaction.
+	specs := append([]ACLSpec{denyIngressACL(pgName), denyEgressACL(pgName)}, ruleACLSpecs(pgName, evt.IngressRules, evt.EgressRules)...)
+	if err := h.ovn.AddACLs(ctx, pgName, specs); err != nil {
+		slog.Error("vpcd: failed to add ACLs for update", "pg", pgName, "err", err)
+		respond(msg, err)
+		return
 	}
-	if err := h.ovn.AddACL(ctx, pgName, denyEgressACL(pgName)); err != nil {
-		slog.Warn("vpcd: failed to re-add default deny egress ACL", "pg", pgName, "err", err)
-	}
-
-	// Add ACLs for current rules
-	h.addRuleACLs(ctx, pgName, evt.IngressRules, evt.EgressRules)
 
 	slog.Info("vpcd: updated security group ACLs",
 		"pg", pgName,
@@ -156,26 +191,18 @@ func (h *TopologyHandler) handleUpdateSG(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// addRuleACLs adds OVN ACLs for a set of ingress and egress rules at priority 1000
-// (higher than the default deny at 900, so allow rules take precedence).
-// Allow rules are not logged — accept logging on a private network is
-// high-volume and low-signal. Only denies carry Log=true.
-func (h *TopologyHandler) addRuleACLs(ctx context.Context, pgName string, ingress, egress []SGRuleForACL) {
+// ruleACLSpecs builds the priority-1000 allow ACL specs for the given rules.
+// Allow rules are not logged — accept logging on a private network is high
+// volume and low signal; only denies carry Log=true.
+func ruleACLSpecs(pgName string, ingress, egress []SGRuleForACL) []ACLSpec {
+	specs := make([]ACLSpec, 0, len(ingress)+len(egress))
 	for _, rule := range ingress {
-		match := BuildIngressACLMatch(pgName, rule)
-		spec := ACLSpec{Direction: "to-lport", Priority: 1000, Match: match, Action: "allow-related"}
-		if err := h.ovn.AddACL(ctx, pgName, spec); err != nil {
-			slog.Warn("vpcd: failed to add ingress ACL", "pg", pgName, "match", match, "err", err)
-		}
+		specs = append(specs, ACLSpec{Direction: "to-lport", Priority: 1000, Match: BuildIngressACLMatch(pgName, rule), Action: "allow-related"})
 	}
-
 	for _, rule := range egress {
-		match := BuildEgressACLMatch(pgName, rule)
-		spec := ACLSpec{Direction: "from-lport", Priority: 1000, Match: match, Action: "allow-related"}
-		if err := h.ovn.AddACL(ctx, pgName, spec); err != nil {
-			slog.Warn("vpcd: failed to add egress ACL", "pg", pgName, "match", match, "err", err)
-		}
+		specs = append(specs, ACLSpec{Direction: "from-lport", Priority: 1000, Match: BuildEgressACLMatch(pgName, rule), Action: "allow-related"})
 	}
+	return specs
 }
 
 // denyIngressACL builds the default-deny ingress ACL for a port group with

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -14,6 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // startTestNATS starts an embedded NATS server for testing.
@@ -1750,7 +1754,7 @@ func TestTopologyHandler_BadJSON(t *testing.T) {
 	topics := []string{
 		TopicVPCCreate, TopicVPCDelete,
 		TopicSubnetCreate, TopicSubnetDelete,
-		TopicCreatePort, TopicDeletePort,
+		TopicCreatePort, TopicDeletePort, TopicUpdatePortSGs,
 		TopicIGWAttach, TopicIGWDetach,
 	}
 	for _, topic := range topics {
@@ -3485,4 +3489,573 @@ func TestGwLrpRange(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Phase 4: SG enforcement port-group membership ---
+
+// setupPortSGFixture stands up a switch + DHCP options + the port groups for
+// the named SGs so a vpc.create-port event can join them.
+func setupPortSGFixture(t *testing.T, mock *MockOVNClient, ctx context.Context, vpcId, subnetId, cidr string, sgIds []string) {
+	t.Helper()
+	if err := mock.CreateLogicalRouter(ctx, nbdbLogicalRouter("vpc-"+vpcId, vpcId)); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	if err := mock.CreateLogicalSwitch(ctx, nbdbLogicalSwitch("subnet-"+subnetId, subnetId, vpcId)); err != nil {
+		t.Fatalf("CreateLogicalSwitch: %v", err)
+	}
+	if _, err := mock.CreateDHCPOptions(ctx, nbdbDHCPOptions(cidr, subnetId, vpcId)); err != nil {
+		t.Fatalf("CreateDHCPOptions: %v", err)
+	}
+	for _, sgId := range sgIds {
+		pg := portGroupName(sgId)
+		if err := mock.CreatePortGroup(ctx, pg, nil); err != nil {
+			t.Fatalf("CreatePortGroup %s: %v", sgId, err)
+		}
+	}
+}
+
+func TestTopologyHandler_CreatePort_JoinsPortGroups(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-sg1", "subnet-sg1", "10.0.1.0/24", []string{"sg-1111", "sg-2222"})
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-sg1",
+		SubnetId:           "subnet-sg1",
+		VpcId:              "vpc-sg1",
+		PrivateIpAddress:   "10.0.1.10",
+		MacAddress:         "02:00:00:00:00:01",
+		SecurityGroupIds:   []string{"sg-1111", "sg-2222"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	assertSuccess(t, resp, "create port with SGs")
+
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-sg1")
+	if err != nil {
+		t.Fatalf("GetLogicalSwitchPort: %v", err)
+	}
+
+	for _, sgId := range []string{"sg-1111", "sg-2222"} {
+		pg := mock.portGroups[portGroupName(sgId)]
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			t.Errorf("expected %s membership in port group %s, got %v", lsp.UUID, sgId, pg.Ports)
+		}
+	}
+}
+
+func TestTopologyHandler_CreatePort_MissingPortGroup_NoLSPCreated(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	// Switch + DHCP, but the SG's port group is intentionally absent.
+	setupPortSGFixture(t, mock, ctx, "vpc-sg2", "subnet-sg2", "10.0.2.0/24", nil)
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-sg2",
+		SubnetId:           "subnet-sg2",
+		VpcId:              "vpc-sg2",
+		PrivateIpAddress:   "10.0.2.10",
+		MacAddress:         "02:00:00:00:00:02",
+		SecurityGroupIds:   []string{"sg-missing"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	assertFailure(t, resp, "create port with missing SG port group")
+
+	if _, err := mock.GetLogicalSwitchPort(ctx, "port-eni-sg2"); err == nil {
+		t.Error("expected LSP not to be created when atomic transaction fails")
+	}
+}
+
+func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-del", "subnet-del", "10.0.3.0/24", []string{"sg-del"})
+
+	createEvt := PortEvent{
+		NetworkInterfaceId: "eni-del",
+		SubnetId:           "subnet-del",
+		VpcId:              "vpc-del",
+		PrivateIpAddress:   "10.0.3.10",
+		MacAddress:         "02:00:00:00:00:03",
+		SecurityGroupIds:   []string{"sg-del"},
+	}
+	data, _ := json.Marshal(createEvt)
+	resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	assertSuccess(t, resp, "create port")
+
+	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 1 {
+		t.Fatalf("setup: expected 1 member in port group, got %d", got)
+	}
+
+	delEvt := PortEvent{
+		NetworkInterfaceId: "eni-del",
+		SubnetId:           "subnet-del",
+		VpcId:              "vpc-del",
+		PrivateIpAddress:   "10.0.3.10",
+		MacAddress:         "02:00:00:00:00:03",
+	}
+	data, _ = json.Marshal(delEvt)
+	resp, _ = nc.Request(TopicDeletePort, data, 5_000_000_000)
+	assertSuccess(t, resp, "delete port")
+
+	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 0 {
+		t.Errorf("expected 0 members after delete-port, got %d", got)
+	}
+}
+
+func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
+	cases := []struct {
+		name     string
+		initial  []string
+		desired  []string
+		expected []string
+	}{
+		{name: "empty_to_A", initial: nil, desired: []string{"sg-A"}, expected: []string{"sg-A"}},
+		{name: "A_to_B", initial: []string{"sg-A"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
+		{name: "A_to_AB", initial: []string{"sg-A"}, desired: []string{"sg-A", "sg-B"}, expected: []string{"sg-A", "sg-B"}},
+		{name: "AB_to_B", initial: []string{"sg-A", "sg-B"}, desired: []string{"sg-B"}, expected: []string{"sg-B"}},
+		{name: "AB_to_empty", initial: []string{"sg-A", "sg-B"}, desired: nil, expected: nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, nc := startTestNATS(t)
+			mock := NewMockOVNClient()
+			_ = mock.Connect(context.Background())
+			ctx := context.Background()
+
+			topo := NewTopologyHandler(mock)
+			subs, err := topo.Subscribe(nc)
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			defer func() {
+				for _, s := range subs {
+					_ = s.Unsubscribe()
+				}
+			}()
+
+			// All possible SGs need their port groups in place — desired \ initial
+			// has to find them on the way in.
+			allSGs := make(map[string]struct{})
+			for _, s := range tc.initial {
+				allSGs[s] = struct{}{}
+			}
+			for _, s := range tc.desired {
+				allSGs[s] = struct{}{}
+			}
+			sgList := make([]string, 0, len(allSGs))
+			for s := range allSGs {
+				sgList = append(sgList, s)
+			}
+			setupPortSGFixture(t, mock, ctx, "vpc-tr", "subnet-tr", "10.0.4.0/24", sgList)
+
+			createEvt := PortEvent{
+				NetworkInterfaceId: "eni-tr",
+				SubnetId:           "subnet-tr",
+				VpcId:              "vpc-tr",
+				PrivateIpAddress:   "10.0.4.10",
+				MacAddress:         "02:00:00:00:00:04",
+				SecurityGroupIds:   tc.initial,
+			}
+			data, _ := json.Marshal(createEvt)
+			resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
+			assertSuccess(t, resp, "create port")
+
+			updEvt := UpdatePortSGsEvent{
+				NetworkInterfaceId: "eni-tr",
+				PrivateIpAddress:   "10.0.4.10",
+				SecurityGroupIds:   tc.desired,
+			}
+			data, _ = json.Marshal(updEvt)
+			resp, err = nc.Request(TopicUpdatePortSGs, data, 5_000_000_000)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			assertSuccess(t, resp, "update port SGs")
+
+			lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-tr")
+			if err != nil {
+				t.Fatalf("GetLogicalSwitchPort: %v", err)
+			}
+			expected := make(map[string]struct{}, len(tc.expected))
+			for _, s := range tc.expected {
+				expected[portGroupName(s)] = struct{}{}
+			}
+			for name, pg := range mock.portGroups {
+				inGroup := slices.Contains(pg.Ports, lsp.UUID)
+				_, want := expected[name]
+				if inGroup && !want {
+					t.Errorf("port unexpectedly in %s", name)
+				}
+				if !inGroup && want {
+					t.Errorf("port missing from expected %s", name)
+				}
+			}
+		})
+	}
+}
+
+// handleCreatePort must converge SG memberships even when the LSP already
+// exists from a previous failed attempt — otherwise a port stranded outside
+// its SG port groups would have unrestricted traffic until the next
+// reconciler pass (~30s of zero-ACL exposure on the recovery path).
+func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	setupPortSGFixture(t, mock, ctx, "vpc-recover", "subnet-recover", "10.0.6.0/24", []string{"sg-recover"})
+
+	// Pre-create the LSP without joining any port group, simulating a
+	// previous create that crashed mid-transaction in some hypothetical
+	// non-atomic world.
+	require.NoError(t, mock.CreateLogicalSwitchPort(ctx, "subnet-subnet-recover", &nbdb.LogicalSwitchPort{
+		Name:      "port-eni-recover",
+		Addresses: []string{"02:00:00:00:00:99 10.0.6.50"},
+	}))
+	pgName := portGroupName("sg-recover")
+	require.NotContains(t, mock.portGroups[pgName].Ports, mock.ports["port-eni-recover"].UUID)
+
+	evt := PortEvent{
+		NetworkInterfaceId: "eni-recover",
+		SubnetId:           "subnet-recover",
+		VpcId:              "vpc-recover",
+		PrivateIpAddress:   "10.0.6.50",
+		MacAddress:         "02:00:00:00:00:99",
+		SecurityGroupIds:   []string{"sg-recover"},
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicCreatePort, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "create port with pre-existing LSP")
+
+	// The port is now in the SG port group. The matching `<pg>_ip4`
+	// Address_Set is auto-derived by ovn-northd in production from port
+	// group port addresses and intentionally not modelled in the mock.
+	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-recover")
+	require.NoError(t, err)
+	assert.Contains(t, mock.portGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
+}
+
+// --- handleAddNATGateway / handleDeleteNATGateway ---
+//
+// These handlers are fire-and-forget (no respond()), so tests publish + flush
+// + poll OVN state instead of awaiting a NATS reply.
+
+// natGatewayProcessed waits for the SNAT rule for subnetCidr to (dis)appear on
+// router routerName. Polls because handleAdd/DeleteNATGateway is fire-and-
+// forget; without a wait the test races the dispatch goroutine.
+func natGatewayProcessed(t *testing.T, mock *MockOVNClient, routerName, subnetCidr string, wantPresent bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mock.mu.Lock()
+		lr := mock.routers[routerName]
+		present := false
+		if lr != nil {
+			for _, uuid := range lr.NAT {
+				if n := mock.nats[uuid]; n != nil && n.Type == "snat" && n.LogicalIP == subnetCidr {
+					present = true
+					break
+				}
+			}
+		}
+		mock.mu.Unlock()
+		if present == wantPresent {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("NAT-Gateway SNAT (router=%s, cidr=%s) wantPresent=%v never converged", routerName, subnetCidr, wantPresent)
+}
+
+func TestTopologyHandler_AddNATGateway_AddsSnat(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        "vpc-vpc-natgw",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-natgw"},
+	}))
+
+	evt := NATGatewayEvent{
+		VpcId:        "vpc-natgw",
+		NatGatewayId: "nat-001",
+		PublicIp:     "203.0.113.10",
+		SubnetCidr:   "10.0.50.0/24",
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Flush())
+
+	natGatewayProcessed(t, mock, "vpc-vpc-natgw", "10.0.50.0/24", true)
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	lr := mock.routers["vpc-vpc-natgw"]
+	require.Len(t, lr.NAT, 1)
+	nat := mock.nats[lr.NAT[0]]
+	assert.Equal(t, "snat", nat.Type)
+	assert.Equal(t, "203.0.113.10", nat.ExternalIP)
+	assert.Equal(t, "10.0.50.0/24", nat.LogicalIP)
+	assert.Equal(t, "nat-001", nat.ExternalIDs["spinifex:nat_gateway_id"])
+	_ = ctx
+}
+
+func TestTopologyHandler_AddNATGateway_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-bad"}))
+
+	require.NoError(t, nc.Publish(TopicAddNATGateway, []byte("not json")))
+	require.NoError(t, nc.Flush())
+
+	// Malformed payload must not produce a NAT rule, and must not panic the
+	// subscribed goroutine (the rest of the test suite would also start
+	// failing if it did).
+	time.Sleep(50 * time.Millisecond)
+	mock.mu.Lock()
+	natCount := len(mock.routers["vpc-vpc-bad"].NAT)
+	mock.mu.Unlock()
+	assert.Zero(t, natCount, "malformed payload must not add a NAT rule")
+	_ = ctx
+}
+
+func TestTopologyHandler_DeleteNATGateway_RemovesSnat(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-rm"}))
+
+	evt := NATGatewayEvent{
+		VpcId:        "vpc-rm",
+		NatGatewayId: "nat-rm",
+		PublicIp:     "203.0.113.20",
+		SubnetCidr:   "10.0.51.0/24",
+	}
+	data, _ := json.Marshal(evt)
+	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Flush())
+	natGatewayProcessed(t, mock, "vpc-vpc-rm", "10.0.51.0/24", true)
+
+	require.NoError(t, nc.Publish(TopicDeleteNATGateway, data))
+	require.NoError(t, nc.Flush())
+	natGatewayProcessed(t, mock, "vpc-vpc-rm", "10.0.51.0/24", false)
+
+	mock.mu.Lock()
+	natCount := len(mock.routers["vpc-vpc-rm"].NAT)
+	mock.mu.Unlock()
+	assert.Zero(t, natCount, "delete must remove the SNAT rule")
+	_ = ctx
+}
+
+func TestTopologyHandler_DeleteNATGateway_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, nc.Publish(TopicDeleteNATGateway, []byte("not json")))
+	require.NoError(t, nc.Flush())
+	time.Sleep(50 * time.Millisecond) // give the handler a chance to log-and-return
+}
+
+// --- handleDeleteNAT (1:1 dnat_and_snat removal) ---
+
+func TestTopologyHandler_DeleteNAT_OvnNotConnected(t *testing.T) {
+	_, nc := startTestNATS(t)
+	topo := NewTopologyHandler(nil)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	data, _ := json.Marshal(NATEvent{VpcId: "v", LogicalIP: "10.0.0.1"})
+	resp, err := nc.Request(TopicDeleteNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat must fail when ovn is nil")
+}
+
+func TestTopologyHandler_DeleteNAT_BadJSON(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	resp, err := nc.Request(TopicDeleteNAT, []byte("not json"), 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat with malformed payload must fail")
+}
+
+func TestTopologyHandler_DeleteNAT_Success(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-dnatrm"}))
+
+	addEvt := NATEvent{VpcId: "vpc-dnatrm", ExternalIP: "203.0.113.30", LogicalIP: "10.0.60.5"}
+	addData, _ := json.Marshal(addEvt)
+	resp, err := nc.Request(TopicAddNAT, addData, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "add NAT")
+
+	delEvt := NATEvent{VpcId: "vpc-dnatrm", LogicalIP: "10.0.60.5"}
+	delData, _ := json.Marshal(delEvt)
+	resp, err = nc.Request(TopicDeleteNAT, delData, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "delete NAT")
+
+	lr, _ := mock.GetLogicalRouter(ctx, "vpc-vpc-dnatrm")
+	assert.Empty(t, lr.NAT, "NAT rule must be removed")
+}
+
+// TestTopologyHandler_DeleteNAT_NotFound: an idempotent delete-by-LogicalIP
+// for a NAT that doesn't exist must return a clear error, not silently
+// succeed. Otherwise EIP disassociation can't tell whether it actually
+// disabled the NAT or hit a stale fixture.
+func TestTopologyHandler_DeleteNAT_NotFound(t *testing.T) {
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-empty"}))
+
+	delEvt := NATEvent{VpcId: "vpc-empty", LogicalIP: "10.99.99.99"}
+	data, _ := json.Marshal(delEvt)
+	resp, err := nc.Request(TopicDeleteNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertFailure(t, resp, "delete-nat for non-existent rule must fail")
 }

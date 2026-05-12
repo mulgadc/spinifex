@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -346,6 +347,69 @@ func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp guards against regression of
+// the Terraform AWS provider's auto-revoke of the default ::/0 IPv6 egress
+// rule. Spinifex stores no IPv6 rules, so the call must succeed as a no-op
+// instead of returning InvalidParameterValue (which surfaces as bare
+// "UnknownError" to terraform and aborts every aws_security_group apply).
+func TestRevokeSecurityGroupEgress_IPv6OnlyIsNoOp(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-noop")
+
+	allProto := "-1"
+	out, err := svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.True(t, aws.BoolValue(out.Return))
+}
+
+// TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp mirrors the egress no-op test
+// — the ingress path shares the same parsing code and must behave the same.
+func TestRevokeSecurityGroupIngress_IPv6OnlyIsNoOp(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-revoke-ingress-noop")
+
+	allProto := "-1"
+	out, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.True(t, aws.BoolValue(out.Return))
+}
+
+// TestAuthorizeSecurityGroupEgress_IPv6Rejected guards the inverse: authorize
+// with IPv6 sources must still fail. Spinifex cannot enforce IPv6 — accepting
+// the call would persist a rule OVN can never program.
+func TestAuthorizeSecurityGroupEgress_IPv6Rejected(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "ipv6-authorize-rejected")
+
+	allProto := "-1"
+	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+}
+
 // TestRevokeSecurityGroupEgress_RuleNotFound: egress counterpart — revoking a
 // non-existent egress rule returns InvalidPermission.NotFound.
 func TestRevokeSecurityGroupEgress_RuleNotFound(t *testing.T) {
@@ -380,7 +444,7 @@ func TestIpPermissionsToSGRules_TCP(t *testing.T) {
 		},
 	}
 
-	rules, err := ipPermissionsToSGRules(perms)
+	rules, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
 	require.NoError(t, err)
 	require.Len(t, rules, 1)
 	assert.Equal(t, "tcp", rules[0].IpProtocol)
@@ -398,7 +462,7 @@ func TestIpPermissionsToSGRules_AllTraffic(t *testing.T) {
 		},
 	}
 
-	rules, err := ipPermissionsToSGRules(perms)
+	rules, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
 	require.NoError(t, err)
 	require.Len(t, rules, 1)
 	assert.Equal(t, "-1", rules[0].IpProtocol)
@@ -414,10 +478,67 @@ func TestIpPermissionsToSGRules_SourceSG(t *testing.T) {
 		},
 	}
 
-	rules, err := ipPermissionsToSGRules(perms)
+	rules, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
 	require.NoError(t, err)
 	require.Len(t, rules, 1)
 	assert.Equal(t, srcSG, rules[0].SourceSG)
+}
+
+// TestIpPermissionsToSGRules_IPv6OnlyAuthorize rejects an authorize call whose
+// only source is Ipv6Ranges. Spinifex's OVN ACL builder is IPv4-only — an IPv6
+// rule would persist as state OVN cannot program.
+func TestIpPermissionsToSGRules_IPv6OnlyAuthorize(t *testing.T) {
+	allProto := "-1"
+	perms := []*ec2.IpPermission{
+		{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		},
+	}
+
+	_, err := ipPermissionsToSGRules(perms, sgParseAuthorize)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "IPv6")
+}
+
+// TestIpPermissionsToSGRules_IPv6OnlyRevoke tolerates IPv6-only permissions on
+// revoke (returns zero rules, no error). The Terraform AWS provider sends
+// exactly this shape when it auto-revokes the default ::/0 IPv6 egress rule
+// after every aws_security_group create.
+func TestIpPermissionsToSGRules_IPv6OnlyRevoke(t *testing.T) {
+	allProto := "-1"
+	perms := []*ec2.IpPermission{
+		{
+			IpProtocol: &allProto,
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		},
+	}
+
+	rules, err := ipPermissionsToSGRules(perms, sgParseRevoke)
+	require.NoError(t, err)
+	assert.Empty(t, rules)
+}
+
+// TestIpPermissionsToSGRules_MixedV4V6Revoke keeps the v4 rule and drops the
+// v6 part on a mixed-source permission. Mixed perms are uncommon from real
+// tooling but worth covering — IPv6 must never silently corrupt the IPv4
+// parse output.
+func TestIpPermissionsToSGRules_MixedV4V6Revoke(t *testing.T) {
+	proto := "tcp"
+	perms := []*ec2.IpPermission{
+		{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(80),
+			ToPort:     aws.Int64(80),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/8")}},
+			Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String("::/0")}},
+		},
+	}
+
+	rules, err := ipPermissionsToSGRules(perms, sgParseRevoke)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	assert.Equal(t, "10.0.0.0/8", rules[0].CidrIp)
 }
 
 func TestSGRulesToIpPermissions_Conversion(t *testing.T) {

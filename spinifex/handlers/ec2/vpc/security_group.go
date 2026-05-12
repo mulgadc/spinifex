@@ -496,7 +496,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 		return nil, err
 	}
 
-	newRules, err := ipPermissionsToSGRules(input.IpPermissions)
+	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.Warn("AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -562,7 +562,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 		return nil, err
 	}
 
-	newRules, err := ipPermissionsToSGRules(input.IpPermissions)
+	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.Warn("AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -624,10 +624,13 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions)
+	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.Warn("RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(revokeRules) == 0 {
+		return &ec2.RevokeSecurityGroupIngressOutput{Return: aws.Bool(true)}, nil
 	}
 	if err := assertRulesPresent(record.IngressRules, revokeRules); err != nil {
 		return nil, err
@@ -678,10 +681,13 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions)
+	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.Warn("RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(revokeRules) == 0 {
+		return &ec2.RevokeSecurityGroupEgressOutput{Return: aws.Bool(true)}, nil
 	}
 	if err := assertRulesPresent(record.EgressRules, revokeRules); err != nil {
 		return nil, err
@@ -730,11 +736,29 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 	return sg
 }
 
+// sgParseMode selects how ipPermissionsToSGRules handles IPv6 sources.
+// Spinifex stores IPv4-only rules (the OVN ACL builder in vpcd/acl.go cannot
+// program IPv6), so Ipv6Ranges are unrepresentable. Authorize must reject
+// them; Revoke must tolerate them silently because the Terraform AWS provider
+// auto-revokes the default ::/0 IPv6 egress on every aws_security_group it
+// creates and would otherwise abort every apply that touches an SG.
+type sgParseMode int
+
+const (
+	sgParseAuthorize sgParseMode = iota
+	sgParseRevoke
+)
+
 // ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice, validating
 // every tenant-supplied CidrIp/SourceSG. This is the only path that constructs SGRule
 // from external input — validating here makes it impossible for a future handler to
 // bypass the check.
-func ipPermissionsToSGRules(perms []*ec2.IpPermission) ([]SGRule, error) {
+//
+// Permissions whose only source is Ipv6Ranges contribute no rules. In
+// sgParseAuthorize they cause an error; in sgParseRevoke they are skipped.
+// Mixed v4+v6 permissions keep their v4/SG entries and silently drop the v6
+// part on revoke (no stored rule can match v6 anyway).
+func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRule, error) {
 	var rules []SGRule
 	for _, perm := range perms {
 		if perm == nil {
@@ -777,6 +801,22 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission) ([]SGRule, error) {
 			}
 			rules = append(rules, r)
 			appended = true
+		}
+
+		hasIPv6 := false
+		for _, r6 := range perm.Ipv6Ranges {
+			if r6 != nil && r6.CidrIpv6 != nil {
+				hasIPv6 = true
+				break
+			}
+		}
+		if hasIPv6 {
+			if mode == sgParseAuthorize {
+				return nil, errors.New("IPv6 rules are not supported")
+			}
+			if !appended {
+				continue
+			}
 		}
 
 		if !appended {

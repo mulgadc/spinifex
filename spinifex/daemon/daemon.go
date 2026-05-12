@@ -225,6 +225,12 @@ type Daemon struct {
 	// as a string. Cleared back to "" on the next successful sync.
 	lastKVSyncError atomic.Value
 
+	// stateWriteMu serialises WriteState. Concurrent callers (each terminate /
+	// stop goroutine triggers TransitionState → WriteState) share a single
+	// path + ".tmp" staging file; without serialisation one rename races the
+	// other and fails ENOENT, which aborts the cleanup chain and leaks ENIs.
+	stateWriteMu sync.Mutex
+
 	mu sync.Mutex
 }
 
@@ -1611,6 +1617,9 @@ func (d *Daemon) localStatePath() string {
 // stable VM-field snapshot. Marshaling outside the lock would race against
 // concurrent TransitionState writers under the data race detector.
 func (d *Daemon) WriteState() error {
+	d.stateWriteMu.Lock()
+	defer d.stateWriteMu.Unlock()
+
 	var (
 		localData, kvData []byte
 		marshalErr        error

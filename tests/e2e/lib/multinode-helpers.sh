@@ -431,7 +431,28 @@ wait_for_ssh() {
     done
 
     echo "  ERROR: SSH not ready after $max_attempts attempts"
+    dump_local_ovn_diagnostics
     return 1
+}
+
+# Slim OVN/OVS state dump for SSH-failure triage on single-node and
+# pseudo-multinode runners. Multi-node has dump_guest_ssh_diagnostics with
+# peer_ssh probes; this is the local-only equivalent.
+dump_local_ovn_diagnostics() {
+    if ! command -v ovn-nbctl >/dev/null 2>&1; then
+        return 0
+    fi
+    echo ""
+    echo "  === Local OVN/OVS state ==="
+    echo "  --- ovn-nbctl show ---"
+    sudo ovn-nbctl show 2>&1 | head -100 || true
+    echo "  --- ovn-sbctl show ---"
+    sudo ovn-sbctl show 2>&1 | head -60 || true
+    echo "  --- NB Port_Group ports + ACLs (head 60) ---"
+    sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 | head -60 || true
+    echo "  --- SB Port_Binding (head 60) ---"
+    sudo ovn-sbctl --bare --columns=logical_port,chassis,up list Port_Binding 2>&1 | head -60 || true
+    echo "  === end OVN/OVS state ==="
 }
 
 # Test SSH connectivity by running 'id' command and verifying ec2-user in output
@@ -550,7 +571,7 @@ dump_all_node_logs() {
             echo "--- $logs_dir contents ---"
             sudo ls -la "$logs_dir/" 2>/dev/null || true
 
-            for log in nats predastore viperblock spinifex awsgw; do
+            for log in nats predastore viperblock spinifex awsgw vpcd; do
                 if sudo test -f "$logs_dir/$log.log"; then
                     echo ""
                     echo "--- $log.log (last 50 lines) ---"

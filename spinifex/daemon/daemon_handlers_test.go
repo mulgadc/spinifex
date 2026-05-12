@@ -30,6 +30,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -551,6 +552,117 @@ func TestHandleEC2RunInstances_ServiceErrorPropagated(t *testing.T) {
 	// not swallow it into ServerInternal
 	assert.Contains(t, string(reply.Data), "InvalidInstanceType")
 	assert.NotContains(t, string(reply.Data), "ServerInternal")
+}
+
+// --- handleEC2RunInstances SG propagation to ENI ---
+
+// runInstancesAndCheckENISGs drives handleEC2RunInstances with the given
+// input shape and returns the (sg1, sg2, eniGroupIds) triple so callers can
+// assert membership. The test sets up a VPC + subnet + SGs first, then
+// fires RunInstances. Volume/VM provisioning runs in a background goroutine
+// and fails (no real predastore/QEMU) — but the ENI is created synchronously
+// before the NATS reply, so the assertion fires on the persisted KV record.
+func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstancesInput, subnetID, sg1, sg2 string)) (sg1, sg2 string, eniGroups []string) {
+	t.Helper()
+	daemon := createVPCTestDaemon(t)
+
+	memStore := objectstore.NewMemoryObjectStore()
+	bucket := daemon.config.Predastore.Bucket
+	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, bucket)
+	daemon.keyService = handlers_ec2_key.NewKeyServiceImplWithStore(memStore, bucket)
+	seedTestAMI(t, memStore, bucket, "ami-sgprop")
+	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
+
+	vpcOut, err := daemon.vpcService.CreateVpc(&ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.99.0.0/16"),
+	}, testAccountID)
+	require.NoError(t, err)
+	vpcID := *vpcOut.Vpc.VpcId
+
+	subnetOut, err := daemon.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     aws.String(vpcID),
+		CidrBlock: aws.String("10.99.1.0/24"),
+	}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnetOut.Subnet.SubnetId
+
+	sg1Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-prop-1"),
+		Description: aws.String("test"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+	sg1 = *sg1Out.GroupId
+
+	sg2Out, err := daemon.vpcService.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-prop-2"),
+		Description: aws.String("test"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+	sg2 = *sg2Out.GroupId
+
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", daemon.handleEC2RunInstances)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-sgprop"),
+		InstanceType: aws.String(getTestInstanceType(t)),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}
+	mutator(input, subnetID, sg1, sg2)
+	reqData, _ := json.Marshal(input)
+	_, err = natsRequest(daemon.natsConn, "ec2.RunInstances", reqData, 10*time.Second)
+	require.NoError(t, err)
+
+	// The ENI is durable in KV by the time the handler responds. Inspect it
+	// via the canonical Describe path so we exercise the same record shape
+	// callers see, not internal state.
+	enis, err := daemon.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("subnet-id"),
+			Values: []*string{aws.String(subnetID)},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, enis.NetworkInterfaces, 1, "expected exactly one ENI in the test subnet")
+
+	eniGroups = make([]string, 0, len(enis.NetworkInterfaces[0].Groups))
+	for _, g := range enis.NetworkInterfaces[0].Groups {
+		eniGroups = append(eniGroups, *g.GroupId)
+	}
+	return sg1, sg2, eniGroups
+}
+
+// TestRunInstances_PropagatesSGsToENI locks the daemon-layer call site
+// (daemon_handlers_instance.go: `Groups: runInstancesInput.SecurityGroupIds`
+// passed into CreateNetworkInterface). A regression dropping that field
+// would silently put the ENI on the default SG and not be caught by the
+// existing service-layer tests.
+func TestRunInstances_PropagatesSGsToENI(t *testing.T) {
+	sg1, sg2, got := runInstancesAndCheckENISGs(t, func(input *ec2.RunInstancesInput, subnetID, sg1, sg2 string) {
+		input.SubnetId = aws.String(subnetID)
+		input.SecurityGroupIds = []*string{aws.String(sg1), aws.String(sg2)}
+	})
+	assert.ElementsMatch(t, []string{sg1, sg2}, got)
+}
+
+// TestRunInstances_PropagatesSGsToENI_TerraformShape covers the same
+// invariant for the Terraform path that puts SubnetId + SGs inside
+// NetworkInterfaces[0] instead of the top-level fields. The extraction
+// happens in handleEC2RunInstances (around the NIC[0]→top-level copy
+// block); a regression there would let SGs through but lose the subnet,
+// or vice versa.
+func TestRunInstances_PropagatesSGsToENI_TerraformShape(t *testing.T) {
+	sg1, sg2, got := runInstancesAndCheckENISGs(t, func(input *ec2.RunInstancesInput, subnetID, sg1, sg2 string) {
+		input.NetworkInterfaces = []*ec2.InstanceNetworkInterfaceSpecification{{
+			SubnetId: aws.String(subnetID),
+			Groups:   []*string{aws.String(sg1), aws.String(sg2)},
+		}}
+	})
+	assert.ElementsMatch(t, []string{sg1, sg2}, got)
 }
 
 // --- handleStopOrTerminateInstance tests (JetStream required for TransitionState) ---
@@ -2307,6 +2419,8 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { nc.Close() })
+
+	testutil.StubVpcdSGResponder(t, nc)
 
 	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(daemon.config, nc)
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package vpcd
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -42,6 +43,14 @@ type MockOVNClient struct {
 	SetGatewayChassisCalls            int
 	DeleteGatewayChassisCalls         int
 	UpdateGatewayChassisPriorityCalls int
+
+	// AddACLErrAfter, when > 0, makes AddACL return an error on the Nth
+	// call (1-indexed). Lets fail-fast tests inject a transient OVN error
+	// at a specific point in the create/update flow without rewiring the
+	// whole client. Counter persists across calls until the mock is
+	// recreated.
+	AddACLErrAfter int
+	addACLCalls    int
 }
 
 var _ OVNClient = (*MockOVNClient)(nil)
@@ -149,6 +158,42 @@ func (m *MockOVNClient) CreateLogicalSwitchPort(_ context.Context, switchName st
 	return nil
 }
 
+// CreateLogicalSwitchPortInGroups mirrors the live client's atomic create +
+// port-group join path. The mock is not transactional, but every step still
+// has to succeed up front; on a port-group lookup failure we leave no LSP
+// behind so tests observe the same all-or-nothing semantics as production.
+// SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
+// ovn-northd in production and intentionally not modelled in the mock.
+func (m *MockOVNClient) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ls, exists := m.switches[switchName]
+	if !exists {
+		return fmt.Errorf("logical switch %q not found", switchName)
+	}
+	if _, exists := m.ports[lsp.Name]; exists {
+		return fmt.Errorf("logical switch port %q already exists", lsp.Name)
+	}
+	for _, pgName := range portGroupNames {
+		if _, ok := m.portGroups[pgName]; !ok {
+			return fmt.Errorf("port group %q not found", pgName)
+		}
+	}
+	if lsp.UUID == "" {
+		lsp.UUID = utils.GenerateResourceID("ovn")
+	}
+	stored := *lsp
+	m.ports[lsp.Name] = &stored
+	ls.Ports = append(ls.Ports, lsp.UUID)
+	for _, pgName := range portGroupNames {
+		pg := m.portGroups[pgName]
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			pg.Ports = append(pg.Ports, lsp.UUID)
+		}
+	}
+	return nil
+}
+
 func (m *MockOVNClient) DeleteLogicalSwitchPort(_ context.Context, switchName string, portName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,6 +204,16 @@ func (m *MockOVNClient) DeleteLogicalSwitchPort(_ context.Context, switchName st
 	ls, exists := m.switches[switchName]
 	if !exists {
 		return fmt.Errorf("logical switch %q not found", switchName)
+	}
+	// Mirror libovsdb's reference-integrity rejection: an LSP still in any
+	// port group's Ports set cannot be deleted. Forces every delete-port
+	// path to clear membership first — handleDeletePort already does this
+	// via reconcilePortSGs, but locking the invariant in the mock catches
+	// any reordering that would only break against real OVN.
+	for pgName, pg := range m.portGroups {
+		if slices.Contains(pg.Ports, port.UUID) {
+			return fmt.Errorf("logical switch port %q still in port group %q", portName, pgName)
+		}
 	}
 	// Remove port UUID from switch's ports list
 	for i, uuid := range ls.Ports {
@@ -573,56 +628,132 @@ func (m *MockOVNClient) CreatePortGroup(_ context.Context, name string, ports []
 func (m *MockOVNClient) DeletePortGroup(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.portGroups[name]; !exists {
+	pg, exists := m.portGroups[name]
+	if !exists {
 		return fmt.Errorf("port group %q not found", name)
 	}
-	// Remove ACLs associated with this port group
-	pg := m.portGroups[name]
-	for _, aclUUID := range pg.ACLs {
-		delete(m.acls, aclUUID)
+	// Mirror libovsdb's reference-integrity rejection: a port group with
+	// referenced ACL rows cannot be deleted directly. Live OVN's
+	// `Where(pg).Delete()` only removes the PG row and would leak the ACLs;
+	// forcing every caller through ClearACLs first matches that contract.
+	if len(pg.ACLs) > 0 {
+		return fmt.Errorf("port group %q has %d ACLs still attached; clear ACLs before delete", name, len(pg.ACLs))
 	}
 	delete(m.portGroups, name)
 	return nil
 }
 
-func (m *MockOVNClient) SetPortGroupPorts(_ context.Context, name string, ports []string) error {
+// UpdatePortGroupMemberships applies all add/remove port-group joins for one
+// LSP. SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
+// ovn-northd in production and intentionally not modelled in the mock.
+func (m *MockOVNClient) UpdatePortGroupMemberships(_ context.Context, lspName string, addPGs, removePGs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		return fmt.Errorf("logical switch port %q not found", lspName)
+	}
+	for _, pgName := range addPGs {
+		pg, exists := m.portGroups[pgName]
+		if !exists {
+			return fmt.Errorf("port group %q not found", pgName)
+		}
+		if !slices.Contains(pg.Ports, lsp.UUID) {
+			pg.Ports = append(pg.Ports, lsp.UUID)
+		}
+	}
+	for _, pgName := range removePGs {
+		pg, exists := m.portGroups[pgName]
+		if !exists {
+			return fmt.Errorf("port group %q not found", pgName)
+		}
+		for i, u := range pg.Ports {
+			if u == lsp.UUID {
+				pg.Ports = append(pg.Ports[:i], pg.Ports[i+1:]...)
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// ListPortGroupsForPort returns names of port groups whose Ports contains the
+// given LSP's UUID. Mirrors the live client; the mock returns an empty slice
+// (not an error) when the LSP exists but has no memberships, and an error
+// only when the LSP itself is unknown.
+func (m *MockOVNClient) ListPortGroupsForPort(_ context.Context, lspName string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lsp, exists := m.ports[lspName]
+	if !exists {
+		return nil, fmt.Errorf("logical switch port %q not found", lspName)
+	}
+	names := make([]string, 0)
+	for name, pg := range m.portGroups {
+		if slices.Contains(pg.Ports, lsp.UUID) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// GetPortGroup returns the port group with the given name, or an error if it
+// doesn't exist. Mirrors the live client.
+func (m *MockOVNClient) GetPortGroup(_ context.Context, name string) (*nbdb.PortGroup, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pg, exists := m.portGroups[name]
 	if !exists {
-		return fmt.Errorf("port group %q not found", name)
+		return nil, fmt.Errorf("port group %q not found", name)
 	}
-	pg.Ports = ports
-	return nil
+	return pg, nil
+}
+
+// ListPortGroups returns a snapshot of every port group currently in the mock
+// store. The slice is freshly allocated; mutating it does not affect the mock.
+func (m *MockOVNClient) ListPortGroups(_ context.Context) ([]nbdb.PortGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]nbdb.PortGroup, 0, len(m.portGroups))
+	for _, pg := range m.portGroups {
+		out = append(out, *pg)
+	}
+	return out, nil
 }
 
 // ACLs
 
-func (m *MockOVNClient) AddACL(_ context.Context, portGroupName string, spec ACLSpec) error {
+func (m *MockOVNClient) AddACLs(_ context.Context, portGroupName string, specs []ACLSpec) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.addACLCalls++
+	if m.AddACLErrAfter > 0 && m.addACLCalls == m.AddACLErrAfter {
+		return fmt.Errorf("injected AddACLs failure on call %d", m.addACLCalls)
+	}
 	pg, exists := m.portGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
 	}
-	acl := &nbdb.ACL{
-		UUID:      utils.GenerateResourceID("acl"),
-		Direction: spec.Direction,
-		Priority:  spec.Priority,
-		Match:     spec.Match,
-		Action:    spec.Action,
-		Log:       spec.Log,
+	for _, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:      utils.GenerateResourceID("acl"),
+			Direction: spec.Direction,
+			Priority:  spec.Priority,
+			Match:     spec.Match,
+			Action:    spec.Action,
+			Log:       spec.Log,
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		m.acls[acl.UUID] = acl
+		pg.ACLs = append(pg.ACLs, acl.UUID)
 	}
-	if spec.Name != "" {
-		name := spec.Name
-		acl.Name = &name
-	}
-	if spec.Severity != "" {
-		severity := spec.Severity
-		acl.Severity = &severity
-	}
-	m.acls[acl.UUID] = acl
-	pg.ACLs = append(pg.ACLs, acl.UUID)
 	return nil
 }
 

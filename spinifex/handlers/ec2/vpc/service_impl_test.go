@@ -22,6 +22,7 @@ func setupTestVPCServiceWithNC(t *testing.T) (*VPCServiceImpl, *nats.Conn) {
 
 	svc, err := NewVPCServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)
+	testutil.StubVpcdSGResponder(t, nc)
 	return svc, nc
 }
 
@@ -29,6 +30,20 @@ func setupTestVPCService(t *testing.T) *VPCServiceImpl {
 	t.Helper()
 	svc, _ := setupTestVPCServiceWithNC(t)
 	return svc
+}
+
+// setupTestVPCServiceWithFailingVpcd creates a VPC service whose vpcd stub
+// always returns success=false. Used by Phase 7 propagation tests to assert
+// vpcd-side errors surface to the API caller. The default-VPC bootstrap is
+// not needed here — these tests CreateVpc themselves once they have working
+// stubs swapped in.
+func setupTestVPCServiceWithFailingVpcd(t *testing.T, errMsg string) (*VPCServiceImpl, *nats.Conn) {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	testutil.StubVpcdSGFailingResponder(t, nc, errMsg)
+	return svc, nc
 }
 
 func createTestVPC(t *testing.T, svc *VPCServiceImpl, cidr string) string {
@@ -581,6 +596,64 @@ func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
 	assert.Equal(t, 1, defaultCount)
 }
 
+// TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where
+// EnsureDefaultVPC runs before vpcd has subscribed to vpc.create-sg. Without
+// the fix, the synchronous SG round-trip errors out and EnsureDefaultVPC
+// returns early, leaving the VPC without a default subnet or main route table.
+// After the fix the SG step is best-effort, so subnet + RTB still land in KV
+// and vpcd's reconcile-sgs loop converges the OVN port group asynchronously.
+func TestEnsureDefaultVPC_NoVpcdResponder(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	// Intentionally NOT calling StubVpcdSGResponder — vpc.create-sg has no
+	// responder, mirroring the bootstrap race.
+
+	info, err := svc.EnsureDefaultVPC(testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+
+	// Default VPC, subnet, and main RTB must all be present in KV.
+	desc, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Vpcs, 1)
+	assert.True(t, *desc.Vpcs[0].IsDefault)
+
+	subDesc, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, subDesc.Subnets, 1)
+	assert.Equal(t, info.VpcId, *subDesc.Subnets[0].VpcId)
+
+	require.NotNil(t, svc.rtbKV)
+	rtbKeys, err := svc.rtbKV.Keys()
+	require.NoError(t, err)
+	foundMainRTB := false
+	for _, k := range rtbKeys {
+		entry, err := svc.rtbKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			VpcId  string `json:"vpc_id"`
+			IsMain bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			continue
+		}
+		if rec.VpcId == info.VpcId && rec.IsMain {
+			foundMainRTB = true
+			break
+		}
+	}
+	assert.True(t, foundMainRTB, "main route table must exist for default VPC even when vpcd is unavailable")
+
+	// Default SG record is best-effort; KV write happens before the synchronous
+	// vpcd round-trip, so the record should still be present.
+	sgKeys, err := svc.sgKV.Keys()
+	require.NoError(t, err)
+	assert.NotEmpty(t, sgKeys, "default SG record must persist in KV for vpcd reconciler to converge")
+}
+
 func TestGetDefaultSubnet(t *testing.T) {
 	svc := setupTestVPCService(t)
 
@@ -780,6 +853,7 @@ func TestDeleteSubnet_PublishesEvent(t *testing.T) {
 func TestEnsureDefaultVPC_WithConfigAZ(t *testing.T) {
 	// Create a service with custom config that has AZ set
 	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
 
 	cfg := &config.Config{AZ: "us-west-2b"}
 	svc, err := NewVPCServiceImplWithNATS(cfg, nc)
@@ -1595,4 +1669,44 @@ func TestDescribeSubnets_FilterByTag(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, desc.Subnets, 1)
 	assert.Equal(t, *out.Subnet.SubnetId, *desc.Subnets[0].SubnetId)
+}
+
+// --- SetExternalIPAM / GetSubnet ---
+
+// TestSetExternalIPAM_StoresRefs: SetExternalIPAM is the wiring hook by which
+// awsgw injects the external IPAM + EIP KV into the VPC service so
+// DeleteNetworkInterface can release auto-assigned public IPs. Locks the
+// trivial setter so a future "moved to constructor" refactor doesn't
+// silently leave the references nil.
+func TestSetExternalIPAM_StoresRefs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	eipKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "spinifex-eips-test", History: 1})
+	require.NoError(t, err)
+	ipam := &ExternalIPAM{}
+
+	svc.SetExternalIPAM(ipam, eipKV)
+	assert.Same(t, ipam, svc.externalIPAM, "externalIPAM ref must be stored")
+	assert.Equal(t, eipKV, svc.eipKV, "eipKV ref must be stored")
+}
+
+func TestGetSubnet_Success(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
+
+	rec, err := svc.GetSubnet(testAccountID, subnetID)
+	require.NoError(t, err)
+	assert.Equal(t, subnetID, rec.SubnetId)
+	assert.Equal(t, vpcID, rec.VpcId)
+	assert.Equal(t, "10.0.1.0/24", rec.CidrBlock)
+}
+
+func TestGetSubnet_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	_, err := svc.GetSubnet(testAccountID, "subnet-missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subnet-missing")
 }

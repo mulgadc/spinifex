@@ -2,6 +2,7 @@ package handlers_ec2_vpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -447,10 +448,12 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-one")
+	sg2 := createTestSG(t, svc, vpcId, "sg-two")
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
-		Groups:             []*string{aws.String("sg-111"), aws.String("sg-222")},
+		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
 	}, testAccountID)
 	require.NoError(t, err)
 
@@ -460,8 +463,93 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.NetworkInterfaces, 1)
 	require.Len(t, desc.NetworkInterfaces[0].Groups, 2)
-	assert.Equal(t, "sg-111", *desc.NetworkInterfaces[0].Groups[0].GroupId)
-	assert.Equal(t, "sg-222", *desc.NetworkInterfaces[0].Groups[1].GroupId)
+	assert.Equal(t, sg1, *desc.NetworkInterfaces[0].Groups[0].GroupId)
+	assert.Equal(t, sg2, *desc.NetworkInterfaces[0].Groups[1].GroupId)
+}
+
+func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-mod-1")
+	sg2 := createTestSG(t, svc, vpcId, "sg-mod-2")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Groups:             []*string{aws.String(sg1), aws.String(sg2)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), eniId)
+		assert.Contains(t, string(msg.Data), sg1)
+		assert.Contains(t, string(msg.Data), sg2)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.update-port-sgs event")
+	}
+}
+
+func TestModifyNetworkInterfaceAttribute_DescriptionOnly_NoSGEvent(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Description:        &ec2.AttributeValue{Value: aws.String("only desc")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case <-eventCh:
+		t.Fatal("unexpected vpc.update-port-sgs event for description-only modify")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-evt-A")
+
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+		Groups:   []*string{aws.String(sgA)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), sgA)
+		assert.Contains(t, string(msg.Data), `"security_group_ids"`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vpc.create-port event")
+	}
 }
 
 func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
@@ -519,15 +607,31 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
+	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
 	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
-		Groups:   []*string{aws.String("sg-aaa"), aws.String("sg-bbb")},
+		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.NetworkInterface.Groups, 2)
-	assert.Equal(t, "sg-aaa", *out.NetworkInterface.Groups[0].GroupId)
-	assert.Equal(t, "sg-bbb", *out.NetworkInterface.Groups[1].GroupId)
+	assert.Equal(t, sgA, *out.NetworkInterface.Groups[0].GroupId)
+	assert.Equal(t, sgB, *out.NetworkInterface.Groups[1].GroupId)
+}
+
+func TestCreateNetworkInterface_FallsBackToDefaultSG(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	defaultSG := findDefaultSGInVPC(t, svc, vpcId)
+
+	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterface.Groups, 1)
+	assert.Equal(t, defaultSG, *out.NetworkInterface.Groups[0].GroupId)
 }
 
 func TestDescribeNetworkInterfaces_FilterByNetworkInterfaceId(t *testing.T) {
@@ -657,11 +761,13 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
+	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
 
 	// Create ENI with security groups
 	out, err := svc.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
-		Groups:   []*string{aws.String("sg-aaa"), aws.String("sg-bbb")},
+		Groups:   []*string{aws.String(sgA), aws.String(sgB)},
 	}, testAccountID)
 	require.NoError(t, err)
 	eniId := *out.NetworkInterface.NetworkInterfaceId
@@ -671,7 +777,7 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	// Match one of the SGs
 	desc, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
 		Filters: []*ec2.Filter{
-			{Name: aws.String("group-id"), Values: []*string{aws.String("sg-bbb")}},
+			{Name: aws.String("group-id"), Values: []*string{aws.String(sgB)}},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -858,4 +964,110 @@ func TestIsEIPOwned_MultipleRecords_OneMatches(t *testing.T) {
 	owned, err := svc.isEIPOwned("eni-target", testAccountID)
 	assert.NoError(t, err)
 	assert.True(t, owned)
+}
+
+// --- validateSGAttachment (Phase 2.2) ---
+
+func TestValidateSGAttachment_OK(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sg := createTestSG(t, svc, vpcID, "ok")
+
+	err := svc.validateSGAttachment(testAccountID, []string{sg}, vpcID)
+	assert.NoError(t, err)
+}
+
+func TestValidateSGAttachment_EmptyList(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	err := svc.validateSGAttachment(testAccountID, nil, vpcID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestValidateSGAttachment_TooMany(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgs := make([]string, 6)
+	for i := range sgs {
+		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("sg-%d", i))
+	}
+
+	err := svc.validateSGAttachment(testAccountID, sgs, vpcID)
+	assert.ErrorContains(t, err, "SecurityGroupsPerInterfaceLimitExceeded")
+}
+
+func TestValidateSGAttachment_UnknownVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	err := svc.validateSGAttachment(testAccountID, []string{"sg-aaa"}, "vpc-missing")
+	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
+}
+
+func TestValidateSGAttachment_SGNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	err := svc.validateSGAttachment(testAccountID, []string{"sg-doesntexist"}, vpcID)
+	assert.ErrorContains(t, err, "InvalidGroup.NotFound")
+}
+
+func TestValidateSGAttachment_CrossVPC(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcA := createTestVPC(t, svc, "10.0.0.0/16")
+	vpcB := createTestVPC(t, svc, "10.1.0.0/16")
+	sgInA := createTestSG(t, svc, vpcA, "in-a")
+
+	err := svc.validateSGAttachment(testAccountID, []string{sgInA}, vpcB)
+	assert.ErrorContains(t, err, "InvalidParameterValue")
+}
+
+// Phase 7: ModifyNetworkInterfaceAttribute must propagate vpcd errors so the
+// caller knows OVN port-group reconciliation didn't happen. The KV record
+// already changed by this point — that's intentional (reconciler converges).
+func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	sg1 := createTestSG(t, svc, vpcId, "sg-mod-fail-1")
+
+	// Swap the stub's vpc.update-port-sgs reply to an error in-place so
+	// there's exactly one responder (no race with a layered subscriber).
+	testutil.OverrideVpcdStubResponse(nc, "vpc.update-port-sgs",
+		[]byte(`{"success":false,"error":"forced-update-port-sgs-error"}`))
+
+	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniId),
+		Groups:             []*string{aws.String(sg1)},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced-update-port-sgs-error")
+}
+
+// TestUpdateENIPublicIP_Success: persists PublicIpAddress + PublicIpPool on
+// the ENI record so DescribeNetworkInterfaces shows the auto-assigned public
+// IP after RunInstances and EIP associate-address.
+func TestUpdateENIPublicIP_Success(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	require.NoError(t, svc.UpdateENIPublicIP(testAccountID, eniId, "203.0.113.7", "amazon"))
+
+	out, err := svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterfaces, 1)
+	require.NotNil(t, out.NetworkInterfaces[0].Association)
+	assert.Equal(t, "203.0.113.7", *out.NetworkInterfaces[0].Association.PublicIp)
+}
+
+func TestUpdateENIPublicIP_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+
+	err := svc.UpdateENIPublicIP(testAccountID, "eni-missing", "203.0.113.8", "amazon")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "eni-missing")
 }

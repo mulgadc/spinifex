@@ -146,8 +146,10 @@ dump_guest_ssh_diagnostics() {
     fi
 
     if [ -n "$mac" ] && [ "$mac" != "None" ]; then
+        # ovn-sbctl find parses 'mac~=...' as a column name. mac is a set
+        # column on Port_Binding so list+grep is the simplest correct form.
         echo "  --- OVN port binding for MAC ${mac} (from primary) ---"
-        peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --columns=logical_port,chassis,mac find port_binding mac~='${mac}' 2>&1 || true" 2>&1 || true
+        peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,mac list Port_Binding 2>&1 | grep -F '${mac}' || echo '(no Port_Binding matched MAC ${mac})'" 2>&1 || true
     fi
 
     # ----- Cross-chassis dataplane diagnostics (mulga-siv-27 follow-up) -----
@@ -528,6 +530,29 @@ if [ -z "$AMI_ID" ] || [ "$AMI_ID" == "None" ]; then
     exit 1
 fi
 echo "Using AMI: $AMI_ID"
+
+# Authorize SSH on the default VPC's default SG before any run-instances. AWS
+# default SGs allow ingress only from members of the same SG; the Phase 4 SSH
+# probe comes from the test runner's IP and would be dropped by the OVN
+# port-group ACL otherwise.
+DEFAULT_VPC_PHASE3=$($AWS_EC2 describe-vpcs \
+    --query 'Vpcs[?IsDefault==`true`].VpcId | [0]' --output text)
+DEFAULT_SG_PHASE3=$($AWS_EC2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$DEFAULT_VPC_PHASE3" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+echo "Default VPC: $DEFAULT_VPC_PHASE3; default SG: $DEFAULT_SG_PHASE3"
+# Tolerate InvalidPermission.Duplicate on re-runs (idempotent).
+set +e
+AUTH_OUTPUT=$($AWS_EC2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE3" \
+    --protocol tcp --port 22 --cidr 0.0.0.0/0 2>&1)
+AUTH_EXIT=$?
+set -e
+if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize SSH ingress on default SG: $AUTH_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
 # Launch 3 instances with stagger to encourage distribution
 echo "Launching 3 instances..."
@@ -1264,11 +1289,34 @@ $AWS_EC2 create-route --route-table-id "$NATGW_MAIN_RTB" \
     --destination-cidr-block 0.0.0.0/0 --gateway-id "$NATGW_IGW_ID" > /dev/null
 echo "  Main route table: 0.0.0.0/0 → $NATGW_IGW_ID"
 
+# Security groups: SG enforcement is wired into OVN ACLs, so the default SG
+# (egress-only) drops inbound SSH. Create explicit SGs for bastion and private
+# instances so the bastion is reachable and the private VMs accept SSH from it.
+NATGW_BASTION_SG=$($AWS_EC2 create-security-group \
+    --vpc-id "$NATGW_VPC_ID" --group-name natgw-bastion \
+    --description "Phase 11 bastion (SSH ingress from anywhere)" \
+    --query 'GroupId' --output text)
+$AWS_EC2 authorize-security-group-ingress \
+    --group-id "$NATGW_BASTION_SG" --protocol tcp --port 22 --cidr 0.0.0.0/0 > /dev/null
+echo "  Bastion SG: $NATGW_BASTION_SG (tcp/22 from 0.0.0.0/0)"
+
+NATGW_PRIV_SG=$($AWS_EC2 create-security-group \
+    --vpc-id "$NATGW_VPC_ID" --group-name natgw-private \
+    --description "Phase 11 private (SSH from bastion-sg, ICMP from VPC)" \
+    --query 'GroupId' --output text)
+$AWS_EC2 authorize-security-group-ingress \
+    --group-id "$NATGW_PRIV_SG" \
+    --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,UserIdGroupPairs=[{GroupId=$NATGW_BASTION_SG}]" > /dev/null
+$AWS_EC2 authorize-security-group-ingress \
+    --group-id "$NATGW_PRIV_SG" --protocol icmp --port -1 --cidr 10.100.0.0/16 > /dev/null
+echo "  Private SG: $NATGW_PRIV_SG (tcp/22 from bastion-sg, icmp from VPC)"
+
 echo ""
 echo "Step 2: Launching bastion in public subnet..."
 NATGW_BASTION_ID=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
     --subnet-id "$NATGW_PUB_SUBNET" --key-name spinifex-key \
+    --security-group-ids "$NATGW_BASTION_SG" \
     --count 1 --query 'Instances[0].InstanceId' --output text)
 echo "  Bastion: $NATGW_BASTION_ID"
 wait_for_instance_state "$NATGW_BASTION_ID" "running" 120
@@ -1293,6 +1341,16 @@ done
 if [ "$BASTION_OK" != true ]; then
     echo "  FAIL: Bastion SSH not reachable after 150s"
     fail_test "NAT GW bastion SSH"
+    # Best-effort cleanup so the failure doesn't leak the bastion + SGs + VPC.
+    terminate_and_wait "$NATGW_BASTION_ID" 2>/dev/null || true
+    $AWS_EC2 delete-security-group --group-id "$NATGW_PRIV_SG" 2>/dev/null || true
+    $AWS_EC2 delete-security-group --group-id "$NATGW_BASTION_SG" 2>/dev/null || true
+    $AWS_EC2 delete-subnet --subnet-id "$NATGW_PRIV_SUBNET" 2>/dev/null || true
+    $AWS_EC2 delete-subnet --subnet-id "$NATGW_PUB_SUBNET" 2>/dev/null || true
+    $AWS_EC2 detach-internet-gateway --vpc-id "$NATGW_VPC_ID" \
+        --internet-gateway-id "$NATGW_IGW_ID" 2>/dev/null || true
+    $AWS_EC2 delete-internet-gateway --internet-gateway-id "$NATGW_IGW_ID" 2>/dev/null || true
+    $AWS_EC2 delete-vpc --vpc-id "$NATGW_VPC_ID" 2>/dev/null || true
 else
     echo "  PASS: Bastion SSH ready"
 
@@ -1323,6 +1381,7 @@ else
     NATGW_PRIV_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
         --subnet-id "$NATGW_PRIV_SUBNET" --key-name spinifex-key \
+        --security-group-ids "$NATGW_PRIV_SG" \
         --count 3 --placement "GroupName=nat-spread" --output json)
     NATGW_PRIV_IDS=()
     for i in 0 1 2; do
@@ -1517,6 +1576,8 @@ else
     $AWS_EC2 delete-placement-group --group-name nat-spread 2>/dev/null || true
 
     # Cleanup VPC resources
+    $AWS_EC2 delete-security-group --group-id "$NATGW_PRIV_SG" 2>/dev/null || true
+    $AWS_EC2 delete-security-group --group-id "$NATGW_BASTION_SG" 2>/dev/null || true
     $AWS_EC2 delete-subnet --subnet-id "$NATGW_PRIV_SUBNET" 2>/dev/null || true
     $AWS_EC2 delete-subnet --subnet-id "$NATGW_PUB_SUBNET" 2>/dev/null || true
     $AWS_EC2 detach-internet-gateway --vpc-id "$NATGW_VPC_ID" \

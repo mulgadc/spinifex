@@ -584,9 +584,6 @@ func TestAuthorizeSecurityGroupEgress_RejectsInvalidRule(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "inj-sg-egress")
 
-	// A malformed/injection-shaped SourceSG can't resolve in KV — the
-	// validateSGRuleReferences lookup rejects with InvalidGroup.NotFound,
-	// which is enough to stop the rule from being persisted.
 	proto := "-1"
 	_, err := svc.AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId: aws.String(sgID),
@@ -596,7 +593,7 @@ func TestAuthorizeSecurityGroupEgress_RejectsInvalidRule(t *testing.T) {
 		}},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
 
 func TestRevokeSecurityGroupIngress_RejectsInvalidRule(t *testing.T) {

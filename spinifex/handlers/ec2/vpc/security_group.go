@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -18,10 +19,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// validateSGRule rejects CidrIp values that would break out of an OVN ACL
-// match-expression token. CidrIp must be IPv4 and round-trip to canonical
-// form. SourceSG values are validated downstream by validateSGRuleReferences,
-// which does a KV lookup that catches malformed IDs.
+// sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
+var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
+
+// validateSGRule rejects values that could break out of an OVN ACL match-expression token.
+// CidrIp must be IPv4 and round-trip to canonical form (so "10.0.0.5/8" with host bits set is
+// rejected, as is anything containing operators/whitespace that net.ParseCIDR would not accept).
+// IPv6 is rejected because the ACL builder in vpcd/acl.go is IPv4-only — accepting an IPv6 CIDR
+// would persist a rule that OVN can never program.
+// SourceSG must match the spinifex SG-ID format. At least one source must be specified.
 func validateSGRule(r SGRule) error {
 	if r.CidrIp == "" && r.SourceSG == "" {
 		return errors.New("rule must specify CidrIp or SourceSG")
@@ -37,6 +43,9 @@ func validateSGRule(r SGRule) error {
 		if ipnet.String() != r.CidrIp {
 			return fmt.Errorf("invalid CidrIp %q: not canonical (expected %q)", r.CidrIp, ipnet.String())
 		}
+	}
+	if r.SourceSG != "" && !sgIDRegex.MatchString(r.SourceSG) {
+		return fmt.Errorf("invalid SourceSG %q: must match sg-<17 hex chars>", r.SourceSG)
 	}
 	return nil
 }

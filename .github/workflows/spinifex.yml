@@ -36,12 +36,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: mulgadc/viperblock
+          ref: dev
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v6
         with:
           repository: mulgadc/predastore
+          ref: dev
           path: predastore
 
       - name: Setup Go
@@ -76,12 +78,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: mulgadc/viperblock
+          ref: dev
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v6
         with:
           repository: mulgadc/predastore
+          ref: dev
           path: predastore
 
       - name: Setup Go
@@ -110,12 +114,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: mulgadc/viperblock
+          ref: dev
           path: viperblock
 
       - name: Checkout Predastore
         uses: actions/checkout@v6
         with:
           repository: mulgadc/predastore
+          ref: dev
           path: predastore
 
       - name: Setup Go

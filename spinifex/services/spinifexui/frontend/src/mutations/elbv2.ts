@@ -50,10 +50,11 @@ export function useCreateLoadBalancer() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "loadBalancers"],
-      }),
+      })
+    },
   })
 }
 
@@ -66,10 +67,11 @@ export function useDeleteLoadBalancer() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "loadBalancers"],
-      }),
+      })
+    },
   })
 }
 
@@ -91,15 +93,16 @@ export function useModifyLoadBalancerAttributes() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: (_data, variables) =>
-      queryClient.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
         queryKey: [
           "elbv2",
           "loadBalancers",
           variables.loadBalancerArn,
           "attributes",
         ],
-      }),
+      })
+    },
   })
 }
 
@@ -128,10 +131,11 @@ export function useCreateTargetGroup() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups"],
-      }),
+      })
+    },
   })
 }
 
@@ -144,10 +148,11 @@ export function useDeleteTargetGroup() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups"],
-      }),
+      })
+    },
   })
 }
 
@@ -169,15 +174,16 @@ export function useModifyTargetGroupAttributes() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: (_data, variables) =>
-      queryClient.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
         queryKey: [
           "elbv2",
           "targetGroups",
           variables.targetGroupArn,
           "attributes",
         ],
-      }),
+      })
+    },
   })
 }
 
@@ -206,10 +212,11 @@ export function useCreateListener() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: (_data, variables) =>
-      queryClient.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "listeners", variables.loadBalancerArn],
-      }),
+      })
+    },
   })
 }
 
@@ -220,8 +227,9 @@ export function useDeleteListener() {
       const command = new DeleteListenerCommand({ ListenerArn: listenerArn })
       return await getElbv2Client().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] })
+    },
   })
 }
 
@@ -354,7 +362,9 @@ export function useCreateLoadBalancerWizard() {
         }
       }
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["elbv2"] }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["elbv2"] })
+    },
   })
 }
 
@@ -385,10 +395,11 @@ export function useRegisterTargets() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: (_data, variables) =>
-      queryClient.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups", variables.targetGroupArn, "health"],
-      }),
+      })
+    },
   })
 }
 
@@ -402,9 +413,10 @@ export function useDeregisterTargets() {
       })
       return await getElbv2Client().send(command)
     },
-    onSuccess: (_data, variables) =>
-      queryClient.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups", variables.targetGroupArn, "health"],
-      }),
+      })
+    },
   })
 }

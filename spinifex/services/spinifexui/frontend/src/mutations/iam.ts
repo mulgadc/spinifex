@@ -31,8 +31,9 @@ export function useCreateUser() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "users"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "users"] })
+    },
   })
 }
 
@@ -43,8 +44,9 @@ export function useDeleteUser() {
       const command = new DeleteUserCommand({ UserName: userName })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "users"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "users"] })
+    },
   })
 }
 
@@ -55,8 +57,9 @@ export function useCreateAccessKey() {
       const command = new CreateAccessKeyCommand({ UserName: userName })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] })
+    },
   })
 }
 
@@ -70,8 +73,9 @@ export function useDeleteAccessKey() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] })
+    },
   })
 }
 
@@ -90,8 +94,9 @@ export function useUpdateAccessKey() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "access-keys"] })
+    },
   })
 }
 
@@ -107,8 +112,9 @@ export function useCreatePolicy() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "policies"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "policies"] })
+    },
   })
 }
 
@@ -119,8 +125,9 @@ export function useDeletePolicy() {
       const command = new DeletePolicyCommand({ PolicyArn: policyArn })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["iam", "policies"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "policies"] })
+    },
   })
 }
 
@@ -134,10 +141,11 @@ export function useAttachUserPolicy() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["iam", "attached-user-policies"],
-      }),
+      })
+    },
   })
 }
 
@@ -151,9 +159,10 @@ export function useDetachUserPolicy() {
       })
       return await getIamClient().send(command)
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
         queryKey: ["iam", "attached-user-policies"],
-      }),
+      })
+    },
   })
 }

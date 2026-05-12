@@ -56,6 +56,26 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
+      - name: Install gotestsum
+        env:
+          GOTESTSUM_VERSION: "1.12.0"
+        run: |
+          # Prebuilt tarball, not `go install`: gotestsum v1.12.0 pulls
+          # x/tools v0.19.0 whose tokeninternal static-assert pegs a
+          # narrow Go window (~1.22). The self-hosted runner's Go falls
+          # outside that window, so source-install fails with
+          # `invalid array length -delta * delta`. A prebuilt binary
+          # sidesteps toolchain coupling entirely.
+          BIN_DIR="${RUNNER_TEMP}/gotestsum-bin"
+          mkdir -p "${BIN_DIR}"
+          if [ ! -x "${BIN_DIR}/gotestsum" ]; then
+            curl -fsSL \
+              "https://github.com/gotestyourself/gotestsum/releases/download/v${GOTESTSUM_VERSION}/gotestsum_${GOTESTSUM_VERSION}_linux_amd64.tar.gz" \
+              | tar -xz -C "${BIN_DIR}" gotestsum
+          fi
+          echo "${BIN_DIR}" >> "${GITHUB_PATH}"
+          "${BIN_DIR}/gotestsum" --version
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -98,18 +118,73 @@ jobs:
           # tofu-cluster, wan_ip == cluster IP and the runner's outbound
           # IP is distinct — see e2e-ddil-test-harness.md §3 Scenario C.
           NODE_IPS=$(echo "$INVENTORY" | jq -r '[.nodes[].wan_ip] | join(",")')
+          PRIMARY_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           echo "DDIL_NODES=${NODE_IPS}"
+
+          # Witness VMs talk to the cluster's AWS gateway via aws-sdk-go,
+          # which resolves credentials from the standard chain. spx admin
+          # init writes [spinifex] to ${SSH_USER}'s ~/.aws/credentials on
+          # node1 — pull them over SSH and export as the SDK's env-var
+          # entries so the harness can launch instances without depending
+          # on a cluster-bootstrapped profile being present on the runner.
+          CREDS=$(ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${PRIMARY_IP}" 'cat ~/.aws/credentials')
+          AWS_ACCESS_KEY_ID=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
+          AWS_SECRET_ACCESS_KEY=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::Failed to extract spinifex AWS credentials from ${PRIMARY_IP}"
+            exit 1
+          fi
+
+          # Guest SSH key: bootstrap-install.sh imports spinifex-key into EC2;
+          # the matching private material was generated on the primary node at
+          # ~/.ssh/spinifex-key. Pull it to the runner so the harness can SSH
+          # the witness via its MapPublicIpOnLaunch-assigned EIP.
+          GUEST_KEY="${RUNNER_TEMP}/spinifex-key"
+          scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${SSH_USER}@${PRIMARY_IP}:~/.ssh/spinifex-key" "${GUEST_KEY}"
+          chmod 600 "${GUEST_KEY}"
 
           mkdir -p "${RUNNER_TEMP}/ddil-results"
           cd "${GITHUB_WORKSPACE}/spinifex"
+          # gotestsum: human-readable PASS/FAIL/SKIP lines in Actions stdout
+          # while still emitting the machine-readable jsonfile artifact.
           DDIL_NODES="${NODE_IPS}" \
           DDIL_SSH_USER="${SSH_USER}" \
           DDIL_SSH_KEY="${SSH_KEY}" \
+          DDIL_GUEST_SSH_KEY="${GUEST_KEY}" \
           DDIL_QUARANTINED="${{ inputs.quarantined }}" \
           AWS_REGION="${REGION}" \
-            go test -tags=e2e -timeout 45m -json \
-              ./tests/e2e/ddil/scenarios/... \
-              | tee "${RUNNER_TEMP}/ddil-results/results.json"
+          AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+          AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+            gotestsum --jsonfile "${RUNNER_TEMP}/ddil-results/results.json" \
+                      --format testname \
+                      -- -tags=e2e -timeout 45m ./tests/e2e/ddil/scenarios/...
+
+      - name: Collect Cluster Logs
+        if: failure()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          # Pull spinifex-* journals + QEMU process listings from every
+          # node into the artifact bundle so failures can be triaged
+          # without re-provisioning the cluster. Best-effort — a missing
+          # node should not mask the original test failure.
+          set +e
+          INVENTORY=$(tofu output -json inventory)
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          SSH_USER=$(echo "$INVENTORY" | jq -r '.ssh_user')
+          LOG_DIR="${RUNNER_TEMP}/ddil-results/cluster-logs"
+          mkdir -p "${LOG_DIR}"
+
+          mapfile -t NODE_IPS < <(echo "$INVENTORY" | jq -r '.nodes[].wan_ip')
+          for ip in "${NODE_IPS[@]}"; do
+            echo "=== collecting ${ip} ==="
+            SSH="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${SSH_USER}@${ip}"
+            ${SSH} 'sudo journalctl -u "spinifex-*" --no-pager -n 5000' > "${LOG_DIR}/${ip}-spinifex.log" 2>&1
+            ${SSH} 'ps auxw | grep -E "qemu-system|spinifex" | grep -v grep' > "${LOG_DIR}/${ip}-procs.txt" 2>&1
+            ${SSH} 'ls -la /var/lib/spinifex 2>/dev/null; ls -la /var/log/spinifex 2>/dev/null' > "${LOG_DIR}/${ip}-state.txt" 2>&1
+          done
 
       - name: Upload DDIL Results
         if: always()

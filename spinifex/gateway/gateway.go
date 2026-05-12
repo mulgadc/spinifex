@@ -61,15 +61,22 @@ var supportedServices = map[string]bool{
 	"spinifex":             true,
 }
 
-const xmlnsEC2 = "http://ec2.amazonaws.com/doc/2016-11-15/"
-
-type ErrorResponse struct {
-	XMLName   xml.Name `xml:"http://ec2.amazonaws.com/doc/2016-11-15/ ErrorResponse"`
-	Errors    Errors   `xml:"Errors"`
-	RequestID string   `xml:"RequestID"`
+// EC2ErrorResponse is the EC2 query-API error envelope.
+//
+// Real AWS EC2 emits `<Response><Errors><Error>...</Error></Errors><RequestID>...</Response>`
+// for error replies. aws-sdk-go v1's ec2query response handler is strict — it
+// rejects the IAM-style `<ErrorResponse>` envelope with SerializationError and
+// drops the underlying error code, leaving callers without an awserr.Code() to
+// inspect. The cluster-unavailable bailout in writeClusterUnavailable already
+// uses this shape inline; this type is the structural equivalent for the
+// generic error path.
+type EC2ErrorResponse struct {
+	XMLName   xml.Name  `xml:"Response"`
+	Errors    EC2Errors `xml:"Errors"`
+	RequestID string    `xml:"RequestID"`
 }
 
-type Errors struct {
+type EC2Errors struct {
 	Error ErrorDetail `xml:"Error"`
 }
 
@@ -423,8 +430,8 @@ func ParseAWSQueryArgs(query string) (map[string]string, error) {
 }
 
 func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
-	errorXml := ErrorResponse{
-		Errors: Errors{
+	errorXml := EC2ErrorResponse{
+		Errors: EC2Errors{
 			Error: ErrorDetail{
 				Code:    code,
 				Message: errors.New(message),
@@ -437,7 +444,7 @@ func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
 
 	if err != nil {
 		slog.Error("Failed to build XML", "error", err)
-		return []byte(xml.Header + `<ErrorResponse xmlns="` + xmlnsEC2 + `"><Errors><Error><Code>InternalError</Code><Message>Internal error</Message></Error></Errors><RequestID>` + requestID + `</RequestID></ErrorResponse>`)
+		return []byte(xml.Header + `<Response><Errors><Error><Code>InternalError</Code><Message>Internal error</Message></Error></Errors><RequestID>` + requestID + `</RequestID></Response>`)
 	}
 
 	// Add XML header

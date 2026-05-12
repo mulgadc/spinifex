@@ -281,6 +281,27 @@ pass "create-subnet: $SUBNET_ID"
 $AWS_EC2 modify-subnet-attribute --subnet-id "$SUBNET_ID" --map-public-ip-on-launch 2>&1 || { fail "modify-subnet-attribute"; exit 1; }
 pass "MapPublicIpOnLaunch enabled"
 
+# Authorize ingress on the new VPC's default SG before any run-instances.
+# Default SGs allow ingress only from members of the same SG; LB health probes
+# and client traffic come from outside the SG and would otherwise be dropped
+# by the OVN port-group ACL, causing 120s polling timeouts.
+DEFAULT_SG_LB=$($AWS_EC2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+echo "VPC default SG: $DEFAULT_SG_LB"
+for port in 80 9000; do
+    set +e
+    AUTH_OUTPUT=$($AWS_EC2 authorize-security-group-ingress \
+        --group-id "$DEFAULT_SG_LB" \
+        --protocol tcp --port "$port" --cidr 0.0.0.0/0 2>&1)
+    AUTH_EXIT=$?
+    set -e
+    if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+        fail "authorize tcp/$port on default SG: $AUTH_OUTPUT"; exit 1
+    fi
+done
+pass "default SG ingress: tcp/80, tcp/9000 from 0.0.0.0/0"
+
 # ==========================================================================
 # Phase 2: Launch Dual-Purpose App Instances
 # ==========================================================================

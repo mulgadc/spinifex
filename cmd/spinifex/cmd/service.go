@@ -877,8 +877,10 @@ func init() {
 	viper.BindEnv("backend", "SPINIFEX_PREDASTORE_BACKEND")
 	viper.BindPFlag("backend", predastoreCmd.PersistentFlags().Lookup("backend"))
 
-	// Predastore Node ID
-	predastoreCmd.PersistentFlags().Int("node-id", 0, "Predastore (S3) node ID")
+	// Predastore Node ID. Default -1 is dev mode (launch every configured
+	// QUIC node in-process). Production deployments set this to the node's
+	// real ID (>= 1) via SPINIFEX_PREDASTORE_NODE_ID or --node-id.
+	predastoreCmd.PersistentFlags().Int("node-id", -1, "Predastore (S3) node ID (-1 = dev mode, >= 1 = production)")
 	viper.BindEnv("node-id", "SPINIFEX_PREDASTORE_NODE_ID")
 	viper.BindPFlag("node-id", predastoreCmd.PersistentFlags().Lookup("node-id"))
 

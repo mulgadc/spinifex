@@ -225,6 +225,11 @@ account_id = "123456789012"
 		TlsCert:           certPath,
 		TlsKey:            keyPath,
 		EncryptionKeyFile: encryptionKeyPath,
+		// Predastore rejects NodeID 0; -1 triggers dev mode, which launches
+		// every configured QUIC node in-process. The test config defines
+		// five nodes, so this is the only sane choice for a single-process
+		// integration test.
+		NodeID: -1,
 	}
 	sharedConfig = cfg
 

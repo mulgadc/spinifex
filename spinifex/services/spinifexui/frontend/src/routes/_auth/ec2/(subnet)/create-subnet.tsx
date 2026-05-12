@@ -73,7 +73,10 @@ function CreateSubnet() {
     const result = await createMutation.mutateAsync(data)
     const subnetId = result.Subnet?.SubnetId
     if (subnetId) {
-      navigate({ to: "/ec2/describe-subnets/$id", params: { id: subnetId } })
+      navigate({
+        to: "/ec2/describe-subnets/$id",
+        params: { id: subnetId },
+      })
     } else {
       navigate({ to: "/ec2/describe-subnets" })
     }

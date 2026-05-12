@@ -3157,6 +3157,31 @@ echo "  PASS: Bastion → private instance SSH works (hostname: $PRIV_HOSTNAME)"
     echo "Phase 8d: NAT Gateway E2E PASSED"
 }
 
+# Free single-node capacity before Phase 8e by terminating the Phase 8b
+# instances early — nothing between here and Phase 8b's later cleanup uses
+# PUB/PRIV. On nano-only single-node CI the running pool would otherwise be
+# main + PUB + PRIV (3 instances) + Phase 8e's 2 more = 5, which exceeds
+# capacity. The gateway masquerades that as "InvalidInstanceType: None"
+# (RunInstances.go isKnownInstanceType masquerade), masking the real cause.
+echo ""
+echo "Freeing capacity for Phase 8e: terminating Phase 8b instances early..."
+aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID" > /dev/null
+for EARLY_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
+    EARLY_COUNT=0
+    while [ $EARLY_COUNT -lt 60 ]; do
+        EARLY_STATE=$(aws ec2 describe-instances --instance-ids "$EARLY_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+        if [ "$EARLY_STATE" = "terminated" ] || [ "$EARLY_STATE" = "None" ]; then
+            break
+        fi
+        sleep 1
+        EARLY_COUNT=$((EARLY_COUNT + 1))
+    done
+done
+# Mark as already cleaned so the later cleanup block becomes a no-op.
+PHASE8B_INSTANCES_TERMINATED=true
+echo "  PUB+PRIV terminated; capacity reclaimed"
+
 # Phase 8e: Security Group Enforcement
 # Reuses DEFAULT_VPC, DEFAULT_SUBNET, AMI_ID, INSTANCE_TYPE, test-key-1.pem
 # from earlier phases. Validates the closed loop from RunInstances
@@ -3391,26 +3416,30 @@ echo "Phase 8e: Security Group Enforcement PASSED"
 
 echo ""
 echo "Phase 8b/8d Step: Cleanup"
-# Terminate both instances
-echo "Terminating public instance $PUB_INSTANCE_ID..."
-aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID"
-echo "Terminating private instance $PRIV_INSTANCE_ID..."
-aws ec2 terminate-instances --instance-ids "$PRIV_INSTANCE_ID"
+if [ "$PHASE8B_INSTANCES_TERMINATED" = "true" ]; then
+    echo "  PUB+PRIV already terminated before Phase 8e (capacity reclaim)"
+else
+    # Terminate both instances
+    echo "Terminating public instance $PUB_INSTANCE_ID..."
+    aws ec2 terminate-instances --instance-ids "$PUB_INSTANCE_ID"
+    echo "Terminating private instance $PRIV_INSTANCE_ID..."
+    aws ec2 terminate-instances --instance-ids "$PRIV_INSTANCE_ID"
 
-# Wait for both to terminate
-for CLEANUP_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
-    CLEANUP_COUNT=0
-    while [ $CLEANUP_COUNT -lt 60 ]; do
-        CLEANUP_STATE=$(aws ec2 describe-instances --instance-ids "$CLEANUP_ID" \
-            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
-        if [ "$CLEANUP_STATE" == "terminated" ] || [ "$CLEANUP_STATE" == "None" ]; then
-            echo "Instance $CLEANUP_ID terminated"
-            break
-        fi
-        sleep 1
-        CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+    # Wait for both to terminate
+    for CLEANUP_ID in "$PUB_INSTANCE_ID" "$PRIV_INSTANCE_ID"; do
+        CLEANUP_COUNT=0
+        while [ $CLEANUP_COUNT -lt 60 ]; do
+            CLEANUP_STATE=$(aws ec2 describe-instances --instance-ids "$CLEANUP_ID" \
+                --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+            if [ "$CLEANUP_STATE" == "terminated" ] || [ "$CLEANUP_STATE" == "None" ]; then
+                echo "Instance $CLEANUP_ID terminated"
+                break
+            fi
+            sleep 1
+            CLEANUP_COUNT=$((CLEANUP_COUNT + 1))
+        done
     done
-done
+fi
 
 # Verify public IP NAT rule removed after termination (async via NATS)
 if [ "$HAS_OVN" = true ]; then

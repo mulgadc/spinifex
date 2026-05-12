@@ -40,7 +40,6 @@ export default defineConfig({
     "eslint/sort-keys": "off",
     "import/consistent-type-specifier-style": "off",
     "typescript/no-confusing-void-expression": "off",
-    "typescript/no-floating-promises": "off",
     "typescript/no-misused-promises": "off",
     "typescript/only-throw-error": [
       "error",

@@ -152,72 +152,9 @@ dump_guest_ssh_diagnostics() {
         peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,mac list Port_Binding 2>&1 | grep -F '${mac}' || echo '(no Port_Binding matched MAC ${mac})'" 2>&1 || true
     fi
 
-    # NB-side state — the SSH bug surfaces as Port_Binding rows missing in
-    # SB despite Logical_Switch_Port rows present in NB. Capture both sides
-    # so we can localise the chain break (NB write vs NB→SB translation
-    # vs chassis claim). See docs/development/bugs/sg-enforcement-e2e-ssh.md.
-    echo "  --- ovn-nbctl show (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl show 2>&1 | head -200 || true" 2>&1 || true
-
-    # type / dhcpv4_options / enabled / options are the fields most likely
-    # to make northd silently skip translation; capture them in full.
-    echo "  --- NB Logical_Switch_Port (from primary, full, head 200) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,type,addresses,port_security,dhcpv4_options,enabled,up,options,external_ids list Logical_Switch_Port 2>&1 | head -200 || true" 2>&1 || true
-
-    echo "  --- NB DHCP_Options (from primary, verify dhcpv4_options refs are live) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=_uuid,cidr,external_ids list DHCP_Options 2>&1 | head -60 || true" 2>&1 || true
-
-    echo "  --- NB Logical_Switch ports (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true" 2>&1 || true
-
-    echo "  --- NB Port_Group ports + ACLs (from primary, head 120) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 | head -120 || true" 2>&1 || true
-
-    echo "  --- NB Address_Set (from primary, head 60) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-nbctl --bare --columns=name,addresses list Address_Set 2>&1 | head -60 || true" 2>&1 || true
-
     # ----- Cross-chassis dataplane diagnostics (mulga-siv-27 follow-up) -----
-    echo "  --- OVN SB chassis registrations (from primary, ovn-sbctl show) ---"
-    peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 | head -120 || true" 2>&1 || true
-
-    # Is northd actually running? Previous appctl-only check looked in
-    # /var/run/openvswitch and reported "missing pidfile" even when northd
-    # is alive — the OVN ctl socket lives at /var/run/ovn on Debian. Check
-    # process + systemd state directly first.
-    echo "  --- ovn-northd process + systemd (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo systemctl status ovn-northd --no-pager 2>&1 | head -20 || true; \
-        sudo systemctl status ovn-central --no-pager 2>&1 | head -20 || true; \
-        sudo pgrep -af ovn-northd 2>&1 || echo '  (no ovn-northd process)'; \
-        sudo ls -la /var/run/ovn/ /var/run/openvswitch/ 2>&1 | head -40 || true" 2>&1 || true
-
-    # Northd connection health — silent ovn-northd journal + missing SB
-    # Port_Binding rows could mean a wedged NB or SB OVSDB connection.
-    # OVS_RUNDIR=/var/run/ovn is required for appctl to find the ctl socket.
-    echo "  --- ovn-northd connection + status (from primary) ---"
-    peer_ssh "$LOCAL_IP" "sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true; \
-        sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true; \
-        sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd list-commands 2>&1 | head -40 || true" 2>&1 || true
-
-    # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
-    # vlog, not journal. setup-ovn.sh sets vlog ANY:file:dbg so the cause of
-    # the `OVNSB commit failed` retry loop names itself here. We dump
-    # filtered + raw views.
-    echo "  --- /var/log/ovn/ovn-northd.log filtered (WARN/ERR/EMER + non-poll) ---"
-    peer_ssh "$LOCAL_IP" "sudo grep -aE '\\|(WARN|ERR|EMER)\\||transaction|commit|ovsdb_idl|inc_proc_eng|recompute' /var/log/ovn/ovn-northd.log 2>/dev/null | grep -av poll_loop | tail -300 || true" 2>&1 || true
-    echo "  --- /var/log/ovn/ovn-northd.log (from primary, last 1000 lines, raw) ---"
-    peer_ssh "$LOCAL_IP" "sudo tail -1000 /var/log/ovn/ovn-northd.log 2>&1 || true" 2>&1 || true
-
-    # OVSDB server logs — silent at info level last run, dump filtered+raw.
-    echo "  --- /var/log/ovn/ovsdb-server-sb.log filtered (WARN/ERR/non-poll) ---"
-    peer_ssh "$LOCAL_IP" "sudo grep -avE 'poll_loop|memory\\|INFO' /var/log/ovn/ovsdb-server-sb.log 2>/dev/null | tail -100 || true" 2>&1 || true
-    echo "  --- /var/log/ovn/ovsdb-server-sb.log (from primary, last 200 lines, raw) ---"
-    peer_ssh "$LOCAL_IP" "sudo tail -200 /var/log/ovn/ovsdb-server-sb.log 2>&1 || true" 2>&1 || true
-
-    echo "  --- /var/log/ovn/ovsdb-server-nb.log (from primary, last 100 lines) ---"
-    peer_ssh "$LOCAL_IP" "sudo tail -100 /var/log/ovn/ovsdb-server-nb.log 2>&1 || true" 2>&1 || true
-
-    echo "  --- ovn-northd journal (from primary, full since boot) ---"
-    peer_ssh "$LOCAL_IP" "sudo journalctl -u ovn-northd --no-pager 2>&1 || true" 2>&1 || true
+    echo "  --- OVN SB chassis registrations (from primary) ---"
+    peer_ssh "$LOCAL_IP" "sudo ovn-sbctl show 2>&1 || true" 2>&1 || true
 
     echo "  --- OVN SB port_binding chassis claims (from primary) ---"
     peer_ssh "$LOCAL_IP" "sudo ovn-sbctl --bare --columns=logical_port,chassis,up list Port_Binding 2>&1 | head -80 || true" 2>&1 || true
@@ -228,11 +165,6 @@ dump_guest_ssh_diagnostics() {
     if [ -n "$host_ip" ] && [ "$host_ip" != "unknown" ]; then
         echo "  --- on hosting node ${host_ip}: ovs-vsctl show (taps + geneve) ---"
         peer_ssh "$host_ip" "sudo ovs-vsctl show 2>&1 | grep -E 'Bridge|Port|Interface|tap-|geneve|external_ids|iface-id|attached-mac|remote_ip' | head -80 || true" 2>&1 || true
-
-        # ovs-vsctl show does not print external_ids; dump them explicitly so
-        # we can confirm the tap iface-id matches the LSP name vpcd created.
-        echo "  --- on hosting node ${host_ip}: OVS Interface external_ids (head 120) ---"
-        peer_ssh "$host_ip" "sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state list Interface 2>&1 | head -120 || true" 2>&1 || true
 
         echo "  --- on hosting node ${host_ip}: ovn-controller status + system-id ---"
         peer_ssh "$host_ip" "sudo ovs-vsctl get open_vswitch . external_ids:system-id 2>&1; \
@@ -276,20 +208,6 @@ dump_all_node_logs() {
             fi
         done
     done
-
-    # OVN NB is cluster-wide; dump once from the local node.
-    echo ""
-    echo "=== OVN northbound state ==="
-    if command -v ovn-nbctl >/dev/null 2>&1; then
-        for cmd in "show" "list port_group" "list acl" "list logical_switch_port"; do
-            echo ""
-            echo "--- ovn-nbctl $cmd ---"
-            sudo ovn-nbctl $cmd 2>&1 || echo "(ovn-nbctl $cmd failed)"
-        done
-    else
-        echo "(ovn-nbctl not installed on local node)"
-    fi
-
     echo ""
     echo "=========================================="
     echo "END OF LOG DUMP"
@@ -737,9 +655,7 @@ for idx in "${!INSTANCE_IDS[@]}"; do
             echo "  ERROR: Failed to get SSH port for $instance_id on $host_ip"
             dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" ""
             fail_test "Guest SSH ($instance_id)"
-            # TEMP fail-fast — see SSH-not-ready branch below.
-            echo "  TEMP: aborting multi-node run on first SSH-port detection failure"
-            exit 1
+            continue
         fi
         echo "  SSH endpoint: $SSH_HOST:$SSH_PORT"
     fi
@@ -769,11 +685,7 @@ for idx in "${!INSTANCE_IDS[@]}"; do
         echo "  ERROR: SSH not ready after 60 attempts"
         dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" "$SSH_PORT"
         fail_test "Guest SSH ($instance_id)"
-        # TEMP fail-fast: abort the run on the first SSH timeout so we don't
-        # wait through 2 more identical failures while debugging the missing
-        # SB Port_Binding bug. Restore `continue` once SSH is green again.
-        echo "  TEMP: aborting multi-node run on first SSH failure"
-        exit 1
+        continue
     fi
 
     # Test SSH connectivity

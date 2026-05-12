@@ -435,106 +435,24 @@ wait_for_ssh() {
     return 1
 }
 
-# Local OVN/OVS state dump for SSH-failure diagnostics on single-node and
-# pseudo-multinode runners (where the primary == hosting node == local).
-# Multi-node has dump_guest_ssh_diagnostics with peer_ssh; this is the
-# local-only sibling. See docs/development/bugs/sg-enforcement-e2e-ssh.md.
+# Slim OVN/OVS state dump for SSH-failure triage on single-node and
+# pseudo-multinode runners. Multi-node has dump_guest_ssh_diagnostics with
+# peer_ssh probes; this is the local-only equivalent.
 dump_local_ovn_diagnostics() {
     if ! command -v ovn-nbctl >/dev/null 2>&1; then
-        echo "  --- ovn-nbctl not installed; skipping OVN dump ---"
         return 0
     fi
-
     echo ""
-    echo "  === Local OVN/OVS state dump ==="
-
-    # Readable summary first — easier to eyeball than column dumps.
+    echo "  === Local OVN/OVS state ==="
     echo "  --- ovn-nbctl show ---"
-    sudo ovn-nbctl show 2>&1 | head -200 || true
-
+    sudo ovn-nbctl show 2>&1 | head -100 || true
     echo "  --- ovn-sbctl show ---"
-    sudo ovn-sbctl show 2>&1 | head -120 || true
-
-    # Full LSP row content. type / dhcpv4_options / enabled / options are
-    # the fields most likely to make northd silently skip translation; the
-    # earlier 4-column dump didn't include them.
-    echo "  --- NB Logical_Switch_Port (full, head 200) ---"
-    sudo ovn-nbctl --bare --columns=name,type,addresses,port_security,dhcpv4_options,enabled,up,options,external_ids \
-        list Logical_Switch_Port 2>&1 | head -200 || true
-
-    echo "  --- NB DHCP_Options (verify dhcpv4_options refs are live) ---"
-    sudo ovn-nbctl --bare --columns=_uuid,cidr,external_ids list DHCP_Options 2>&1 | head -60 || true
-
-    echo "  --- NB Logical_Switch ports ---"
-    sudo ovn-nbctl --bare --columns=name,ports list Logical_Switch 2>&1 || true
-
-    echo "  --- NB Port_Group ports + ACLs (head 120) ---"
-    sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 \
-        | head -120 || true
-
-    echo "  --- NB Address_Set (head 60) ---"
-    sudo ovn-nbctl --bare --columns=name,addresses list Address_Set 2>&1 \
-        | head -60 || true
-
-    echo "  --- SB Port_Binding (head 120) ---"
-    sudo ovn-sbctl --bare --columns=logical_port,chassis,up,mac \
-        list Port_Binding 2>&1 | head -120 || true
-
-    echo "  --- SB Chassis ---"
-    sudo ovn-sbctl --bare --columns=name,hostname list Chassis 2>&1 || true
-
-    echo "  --- OVS Interface external_ids (br-int taps, head 120) ---"
-    sudo ovs-vsctl --bare --columns=name,external_ids,admin_state,link_state \
-        list Interface 2>&1 | head -120 || true
-
-    # Is northd actually running? `ovs-appctl -t ovn-northd` without
-    # OVS_RUNDIR=/var/run/ovn looks in /var/run/openvswitch and reports
-    # "missing pidfile" even when northd is alive — that previous result was
-    # misleading. Check process + systemd state directly first.
-    echo "  --- ovn-northd process + systemd ---"
-    sudo systemctl status ovn-northd --no-pager 2>&1 | head -20 || true
-    sudo systemctl status ovn-central --no-pager 2>&1 | head -20 || true
-    sudo pgrep -af ovn-northd 2>&1 || echo "  (no ovn-northd process)"
-    sudo ls -la /var/run/ovn/ /var/run/openvswitch/ 2>&1 | head -40 || true
-
-    # Northd connection health — silent journal + missing Port_Binding could
-    # mean wedged NB or SB OVSDB connection. The OVN ctl socket lives at
-    # /var/run/ovn on Debian, so OVS_RUNDIR must be set explicitly.
-    echo "  --- ovn-northd connection + status ---"
-    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd nb-connection-status 2>&1 || true
-    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd sb-connection-status 2>&1 || true
-    sudo OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-northd list-commands 2>&1 | head -40 || true
-
-    echo "  --- ovn-controller journal (last 60 lines) ---"
-    sudo journalctl -u ovn-controller --no-pager -n 60 2>&1 || true
-
-    # Northd's real log — daemon logs to /var/log/ovn/ovn-northd.log via
-    # vlog, not journal. setup-ovn.sh sets vlog ANY:file:dbg so the cause of
-    # the `OVNSB commit failed` retry loop names itself here. We grep out
-    # poll_loop / inc_proc_engine recompute-fallback noise to keep the
-    # filtered view readable, and dump the full tail too in case debug-rate
-    # output evicts the first failure.
-    echo "  --- /var/log/ovn/ovn-northd.log filtered (WARN/ERR/EMER + non-poll lines) ---"
-    sudo grep -aE '\|(WARN|ERR|EMER)\||transaction|commit|ovsdb_idl|inc_proc_eng|recompute' /var/log/ovn/ovn-northd.log 2>/dev/null \
-        | grep -av 'poll_loop' | tail -300 || true
-    echo "  --- /var/log/ovn/ovn-northd.log (last 1000 lines, raw) ---"
-    sudo tail -1000 /var/log/ovn/ovn-northd.log 2>&1 || true
-
-    # OVSDB server logs — silent at info level last run, so we also dump
-    # filtered + raw to confirm.
-    echo "  --- /var/log/ovn/ovsdb-server-sb.log filtered (WARN/ERR/non-poll) ---"
-    sudo grep -avE 'poll_loop|memory\|INFO' /var/log/ovn/ovsdb-server-sb.log 2>/dev/null | tail -100 || true
-    echo "  --- /var/log/ovn/ovsdb-server-sb.log (last 200 lines, raw) ---"
-    sudo tail -200 /var/log/ovn/ovsdb-server-sb.log 2>&1 || true
-
-    echo "  --- /var/log/ovn/ovsdb-server-nb.log (last 100 lines) ---"
-    sudo tail -100 /var/log/ovn/ovsdb-server-nb.log 2>&1 || true
-
-    echo "  --- ovn-northd journal (full since boot) ---"
-    sudo journalctl -u ovn-northd --no-pager 2>&1 || true
-
-    echo "  === end local OVN/OVS state dump ==="
-    echo ""
+    sudo ovn-sbctl show 2>&1 | head -60 || true
+    echo "  --- NB Port_Group ports + ACLs (head 60) ---"
+    sudo ovn-nbctl --bare --columns=name,ports,acls list Port_Group 2>&1 | head -60 || true
+    echo "  --- SB Port_Binding (head 60) ---"
+    sudo ovn-sbctl --bare --columns=logical_port,chassis,up list Port_Binding 2>&1 | head -60 || true
+    echo "  === end OVN/OVS state ==="
 }
 
 # Test SSH connectivity by running 'id' command and verifying ec2-user in output
@@ -666,28 +584,10 @@ dump_all_node_logs() {
         fi
     done
 
-    dump_ovn_state
-
     echo ""
     echo "=========================================="
     echo "END OF LOG DUMP"
     echo "=========================================="
-}
-
-# Dump OVN northbound state (cluster-wide; one dump suffices). Captures the
-# programmed port groups, ACLs and LSPs so SG-enforcement failures can be
-# diagnosed against what vpcd actually wrote.
-dump_ovn_state() {
-    if ! command -v ovn-nbctl >/dev/null 2>&1; then
-        return
-    fi
-    echo ""
-    echo "=== OVN northbound state ==="
-    for cmd in "show" "list port_group" "list acl" "list logical_switch_port"; do
-        echo ""
-        echo "--- ovn-nbctl $cmd ---"
-        sudo ovn-nbctl $cmd 2>&1 || echo "(ovn-nbctl $cmd failed)"
-    done
 }
 
 # Get the QEMU process PID for an instance

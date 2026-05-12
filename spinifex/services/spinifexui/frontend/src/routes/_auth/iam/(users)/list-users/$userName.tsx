@@ -266,7 +266,7 @@ function UserDetail() {
                         disabled={pendingKeyAction === key.AccessKeyId}
                         onClick={() => {
                           if (key.AccessKeyId) {
-                            handleDeleteAccessKey(key.AccessKeyId)
+                            void handleDeleteAccessKey(key.AccessKeyId)
                           }
                         }}
                         size="sm"
@@ -313,7 +313,7 @@ function UserDetail() {
                       key={policy.Arn}
                       onClick={() => {
                         if (policy.Arn) {
-                          handleAttachPolicy(policy.Arn)
+                          void handleAttachPolicy(policy.Arn)
                         }
                       }}
                       type="button"
@@ -349,7 +349,7 @@ function UserDetail() {
                       disabled={pendingPolicyAction === policy.PolicyArn}
                       onClick={() => {
                         if (policy.PolicyArn) {
-                          handleDetachPolicy(policy.PolicyArn)
+                          void handleDetachPolicy(policy.PolicyArn)
                         }
                       }}
                       size="sm"

@@ -46,6 +46,11 @@ func queryGuestDeviceMap(qmpClient *qmp.QMPClient, instanceID string) (map[strin
 	return buildDeviceMap(devices), nil
 }
 
+// deviceMapRetrySleep is the sleep seam used by queryGuestDeviceMapWait.
+// Tests override it to drive the retry cadence without burning real
+// wall-clock time on each iteration.
+var deviceMapRetrySleep = time.Sleep
+
 // queryGuestDeviceMapWait retries queryGuestDeviceMap until expectedDevice
 // appears in the result. This handles the race where query-block is called
 // immediately after device_add, before QEMU has registered the new device.
@@ -64,7 +69,7 @@ func queryGuestDeviceMapWait(qmpClient *qmp.QMPClient, instanceID, expectedDevic
 		if attempt < maxAttempts-1 {
 			slog.Debug("queryGuestDeviceMapWait: device not yet visible, retrying",
 				"expectedDevice", expectedDevice, "attempt", attempt+1, "maxAttempts", maxAttempts)
-			time.Sleep(retryDelay)
+			deviceMapRetrySleep(retryDelay)
 		}
 	}
 

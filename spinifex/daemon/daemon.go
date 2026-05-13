@@ -1365,6 +1365,11 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	}
 }
 
+// initRetrySleep is the sleep seam used by initServiceWithRetry. Tests
+// override it to drive backoff cadence without the real 35s wall-clock
+// budget that 7 doublings (500ms→1s→2s→4s→8s→10s→10s) would impose.
+var initRetrySleep = time.Sleep
+
 // initServiceWithRetry initializes a service using the provided init function,
 // retrying with exponential backoff (500ms→10s) for up to 5 minutes. During
 // cluster restarts, JetStream KV may be temporarily unavailable while NATS
@@ -1392,7 +1397,7 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 		}
 
 		slog.Warn("Failed to init "+name, "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second))
-		time.Sleep(retryDelay)
+		initRetrySleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
 }

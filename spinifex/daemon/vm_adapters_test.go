@@ -262,6 +262,8 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 				"happy path must write resolved NBDURI back to req")
 		})
 	}
+}
+
 // --- ReleaseGPU ---
 
 // ReleaseGPU is a no-op when the daemon has no GPU manager.

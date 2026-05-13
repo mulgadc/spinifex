@@ -4044,23 +4044,33 @@ func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
 
 // --- initServiceWithRetry ---
 
+// stubInitRetrySleep replaces the package-level sleep seam with a recorder
+// that captures durations without sleeping. Restored via t.Cleanup.
+func stubInitRetrySleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var sleeps []time.Duration
+	prev := initRetrySleep
+	initRetrySleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+	t.Cleanup(func() { initRetrySleep = prev })
+	return &sleeps
+}
+
 func TestInitServiceWithRetry_SuccessFirstAttempt(t *testing.T) {
+	sleeps := stubInitRetrySleep(t)
 	calls := 0
-	start := time.Now()
 	got, err := initServiceWithRetry("svc", func() (int, error) {
 		calls++
 		return 42, nil
 	})
-	elapsed := time.Since(start)
 	require.NoError(t, err)
 	assert.Equal(t, 42, got)
 	assert.Equal(t, 1, calls)
-	assert.Less(t, elapsed, 200*time.Millisecond, "no sleep on first-attempt success")
+	assert.Empty(t, *sleeps, "no sleep on first-attempt success")
 }
 
 func TestInitServiceWithRetry_SuccessAfterRetries(t *testing.T) {
+	sleeps := stubInitRetrySleep(t)
 	calls := 0
-	start := time.Now()
 	got, err := initServiceWithRetry("svc", func() (string, error) {
 		calls++
 		if calls < 3 {
@@ -4068,37 +4078,20 @@ func TestInitServiceWithRetry_SuccessAfterRetries(t *testing.T) {
 		}
 		return "ok", nil
 	})
-	elapsed := time.Since(start)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", got)
 	assert.Equal(t, 3, calls)
-	// Backoff: 500ms after attempt 1, 1s after attempt 2 → ~1.5s total minimum.
-	assert.GreaterOrEqual(t, elapsed, 1500*time.Millisecond-50*time.Millisecond)
-	assert.Less(t, elapsed, 5*time.Second)
-}
-
-func TestInitServiceWithRetry_TimeoutWrapsLastError(t *testing.T) {
-	// maxWait is hard-coded to 5 minutes; exercising the timeout-exhaust
-	// path would inflate the suite without a clock seam in production.
-	// The retry-then-success path above pins per-attempt accounting; the
-	// delay-capped test below pins the worst-case sleep envelope.
-	t.Skip("timeout path requires a clock seam not present in production; documented gap")
+	assert.Equal(t, []time.Duration{500 * time.Millisecond, 1 * time.Second}, *sleeps,
+		"two sleeps between three attempts must follow the documented 500ms→1s schedule")
 }
 
 func TestInitServiceWithRetry_DelayCappedAt10s(t *testing.T) {
-	// Drive enough retries to push the backoff past the 10s cap, then
-	// verify no observed sleep exceeds 10s. Backoff doublings:
-	//   500ms → 1s → 2s → 4s → 8s → 10s (capped) → 10s (capped) ...
-	// After 6 retries the cap is hit; the 6th sleep must be ~10s, not 16s.
-	var sleeps []time.Duration
-	var last time.Time
+	// Drive 7 attempts so backoff doublings hit the cap. Six sleeps separate
+	// the seven attempts: 500ms → 1s → 2s → 4s → 8s → 10s. The 6th sleep
+	// must be 10s (capped), not 16s.
+	sleeps := stubInitRetrySleep(t)
 	calls := 0
 	_, err := initServiceWithRetry("svc", func() (int, error) {
-		now := time.Now()
-		if calls > 0 {
-			sleeps = append(sleeps, now.Sub(last))
-		}
-		last = now
 		calls++
 		if calls >= 7 {
 			return 1, nil
@@ -4106,12 +4099,16 @@ func TestInitServiceWithRetry_DelayCappedAt10s(t *testing.T) {
 		return 0, errors.New("retry")
 	})
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(sleeps), 6)
-	for i, d := range sleeps {
-		assert.LessOrEqual(t, d, 11*time.Second, "sleep %d exceeded 10s cap: %v", i, d)
+	want := []time.Duration{
+		500 * time.Millisecond,
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		10 * time.Second,
 	}
-	assert.GreaterOrEqual(t, sleeps[5], 9500*time.Millisecond)
-	assert.LessOrEqual(t, sleeps[5], 11*time.Second)
+	assert.Equal(t, want, *sleeps,
+		"backoff must double then cap at 10s on the 6th sleep")
 }
 
 // --- getSystemMemory ---

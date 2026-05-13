@@ -139,7 +139,7 @@ function CreatePlacementGroup() {
 }
 
 function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`
+  return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
 function buildCreatePlacementGroupCommands(

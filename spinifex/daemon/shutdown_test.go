@@ -3,9 +3,15 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,4 +194,267 @@ func TestPublishShutdownProgress(t *testing.T) {
 			assert.Equal(t, tt.remaining, progress.Remaining)
 		})
 	}
+}
+
+// configurePidDir overrides BaseDir so pidDir() resolves to an isolated tmp
+// directory and returns that directory after creating it.
+func configurePidDir(t *testing.T, d *Daemon) string {
+	t.Helper()
+	root := t.TempDir()
+	d.config.BaseDir = filepath.Join(root, "spinifex")
+	pidDir := filepath.Join(root, "logs")
+	require.NoError(t, os.MkdirAll(pidDir, 0o750))
+	return pidDir
+}
+
+// startSleepProcess forks a sleep process and arranges for it to be reaped
+// when the test completes. Returns the PID.
+func startSleepProcess(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		wg.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+// TestHandleShutdownGate covers the GATE phase handler: service stop fan-out,
+// shuttingDown flag, and ACK reply for valid, malformed, and partial-failure inputs.
+func TestHandleShutdownGate(t *testing.T) {
+	t.Run("valid request stops configured services and sets shuttingDown", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{"awsgw", "ui", "vpcd"}
+		pidDir := configurePidDir(t, daemon)
+
+		pid := startSleepProcess(t)
+		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+
+		subject := "spinifex.cluster.shutdown.gate"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "gate"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+
+		assert.Equal(t, "node-1", ack.Node)
+		assert.Equal(t, "gate", ack.Phase)
+		assert.Empty(t, ack.Error)
+		assert.Contains(t, ack.Stopped, "awsgw")
+		assert.True(t, daemon.shuttingDown.Load())
+
+		_, statErr := os.Stat(filepath.Join(pidDir, "awsgw.pid"))
+		assert.True(t, os.IsNotExist(statErr), "awsgw pid file should be removed")
+	})
+
+	t.Run("malformed json returns error ack", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{}
+		configurePidDir(t, daemon)
+
+		subject := "spinifex.cluster.shutdown.gate.malformed"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		reply, err := daemon.natsConn.Request(subject, []byte(`{not valid json}`), 5*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+
+		assert.Equal(t, "gate", ack.Phase)
+		assert.NotEmpty(t, ack.Error)
+		assert.Empty(t, ack.Stopped)
+		assert.False(t, daemon.shuttingDown.Load(), "shuttingDown must not be set on parse failure")
+	})
+
+	t.Run("partial service-stop failure still sends ack", func(t *testing.T) {
+		daemon := createTestDaemon(t, sharedNATSURL)
+		daemon.config.Services = []string{"awsgw", "ui", "vpcd"}
+		pidDir := configurePidDir(t, daemon)
+
+		pid := startSleepProcess(t)
+		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+
+		subject := "spinifex.cluster.shutdown.gate.partial"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownGate)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "gate"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+
+		assert.Equal(t, "gate", ack.Phase)
+		assert.Empty(t, ack.Error)
+		assert.Equal(t, []string{"awsgw"}, ack.Stopped, "only the service with a live pid file should appear in stopped")
+		assert.True(t, daemon.shuttingDown.Load())
+	})
+}
+
+// TestHandleShutdownDrain covers the DRAIN phase handler: graceful StopAll,
+// shutdown marker, state persistence, and progress publishing.
+func TestHandleShutdownDrain(t *testing.T) {
+	t.Run("happy path stops all vms writes marker and persists state", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		daemon.vmMgr.Insert(&vm.VM{ID: "i-drain-001"})
+
+		subject := "spinifex.cluster.shutdown.drain.happy"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "drain"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, "drain", ack.Phase)
+		assert.Empty(t, ack.Error)
+
+		marker, err := daemon.jsManager.ReadShutdownMarker(daemon.node)
+		require.NoError(t, err)
+		assert.True(t, marker, "shutdown marker should be written for node")
+
+		statePath := daemon.localStatePath()
+		_, statErr := os.Stat(statePath)
+		assert.NoError(t, statErr, "local state file should exist after DRAIN")
+	})
+
+	t.Run("empty vm map skips StopAll but still writes marker and state", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		subject := "spinifex.cluster.shutdown.drain.empty"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "drain"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 10*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, "drain", ack.Phase)
+		assert.Empty(t, ack.Error)
+
+		marker, err := daemon.jsManager.ReadShutdownMarker(daemon.node)
+		require.NoError(t, err)
+		assert.True(t, marker)
+	})
+
+	t.Run("malformed json returns error ack with no marker", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		subject := "spinifex.cluster.shutdown.drain.malformed"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		reply, err := daemon.natsConn.Request(subject, []byte(`{not json`), 5*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Equal(t, "drain", ack.Phase)
+		assert.NotEmpty(t, ack.Error)
+
+		marker, err := daemon.jsManager.ReadShutdownMarker(daemon.node)
+		require.NoError(t, err)
+		assert.False(t, marker, "no marker should be written when parse fails")
+	})
+
+	t.Run("multiple vms publish initial and final progress", func(t *testing.T) {
+		daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
+		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
+
+		const vmCount = 3
+		for i := 0; i < vmCount; i++ {
+			daemon.vmMgr.Insert(&vm.VM{ID: fmt.Sprintf("i-drain-%03d", i)})
+		}
+
+		progressSub, err := daemon.natsConn.SubscribeSync("spinifex.cluster.shutdown.progress")
+		require.NoError(t, err)
+		defer progressSub.Unsubscribe()
+
+		subject := "spinifex.cluster.shutdown.drain.multi"
+		sub, err := daemon.natsConn.Subscribe(subject, daemon.handleShutdownDrain)
+		require.NoError(t, err)
+		defer sub.Unsubscribe()
+		require.NoError(t, daemon.natsConn.Flush())
+
+		payload, err := json.Marshal(ShutdownRequest{Phase: "drain"})
+		require.NoError(t, err)
+
+		reply, err := daemon.natsConn.Request(subject, payload, 30*time.Second)
+		require.NoError(t, err)
+
+		var ack ShutdownACK
+		require.NoError(t, json.Unmarshal(reply.Data, &ack))
+		assert.Empty(t, ack.Error)
+
+		var progresses []ShutdownProgress
+		for {
+			msg, err := progressSub.NextMsg(500 * time.Millisecond)
+			if err != nil {
+				break
+			}
+			var p ShutdownProgress
+			require.NoError(t, json.Unmarshal(msg.Data, &p))
+			progresses = append(progresses, p)
+		}
+
+		require.GreaterOrEqual(t, len(progresses), 2, "expected initial and final progress publishes")
+		first := progresses[0]
+		last := progresses[len(progresses)-1]
+
+		assert.Equal(t, "drain", first.Phase)
+		assert.Equal(t, vmCount, first.Total)
+		assert.Equal(t, vmCount, first.Remaining, "initial progress should report all VMs remaining")
+
+		assert.Equal(t, "drain", last.Phase)
+		assert.Equal(t, vmCount, last.Total)
+		assert.Equal(t, 0, last.Remaining, "final progress should report zero remaining")
+	})
 }

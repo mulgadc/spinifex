@@ -1,15 +1,24 @@
 package vm
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"maps"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

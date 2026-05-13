@@ -310,6 +310,12 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 	wg.Wait()
 }
 
+// attachQMPForReconnect is a test seam over (*Manager).AttachQMP so unit
+// tests can drive reconnectInstance's success/failure branches without
+// spawning the qmpHeartbeat goroutine (which sleeps 30s with no
+// cancellation and otherwise leaks under goleak).
+var attachQMPForReconnect = (*Manager).AttachQMP
+
 // reconnectInstance re-establishes the QMP connection for an instance whose
 // QEMU survived the daemon restart, fires OnInstanceUp so the daemon
 // reinstalls per-instance NATS subscriptions, and persists the running
@@ -324,7 +330,7 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 // only flipped to StateRunning after subscribes are confirmed live so a
 // failed reconnect does not advertise a half-working instance to peers.
 func (m *Manager) reconnectInstance(instance *VM) error {
-	if err := m.AttachQMP(instance); err != nil {
+	if err := attachQMPForReconnect(m, instance); err != nil {
 		return fmt.Errorf("failed to reconnect QMP: %w", err)
 	}
 

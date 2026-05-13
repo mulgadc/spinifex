@@ -342,12 +342,18 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 	go d.reconcileOnHeal("nats-reconnect")
 }
 
+// execCommand wraps exec.Command so tests can substitute a fake builder.
+// Mirrors the sudoCommand seam in network.go — getSystemMemory shells out to
+// sysctl (darwin) or grep /proc/meminfo (linux), neither of which can be
+// faked without an indirection that the test can swap.
+var execCommand = exec.Command
+
 // getSystemMemory returns the total system memory in GB
 func getSystemMemory() (float64, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		// macOS: use sysctl
-		cmd := exec.Command("sysctl", "-n", "hw.memsize")
+		cmd := execCommand("sysctl", "-n", "hw.memsize")
 		output, err := cmd.Output()
 		if err != nil {
 			return 0, fmt.Errorf("failed to get system memory on macOS: %w", err)
@@ -360,7 +366,7 @@ func getSystemMemory() (float64, error) {
 
 	case "linux":
 		// Linux: read from /proc/meminfo
-		cmd := exec.Command("grep", "MemTotal", "/proc/meminfo")
+		cmd := execCommand("grep", "MemTotal", "/proc/meminfo")
 		output, err := cmd.Output()
 		if err != nil {
 			return 0, fmt.Errorf("failed to read /proc/meminfo: %w", err)

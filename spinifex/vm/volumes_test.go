@@ -1,11 +1,14 @@
 package vm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -283,36 +286,109 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 	assert.ErrorIs(t, err, ErrVolumeNotAttached)
 }
 
-func TestDetachVolume_BootVolumeRejected(t *testing.T) {
-	m := NewManager()
-	m.Insert(&VM{
-		ID:       "i-1",
-		Status:   StateRunning,
-		Instance: &ec2.Instance{},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-boot", Boot: true}},
+// TestDetachVolume_DeviceGuards covers the four cross-check and undetachable
+// guards at the head of DetachVolume. Bypassing any of these is destructive:
+// detaching a boot/EFI/CloudInit volume kills the instance, and a device-name
+// mismatch silently rips out the wrong disk. The mismatch case additionally
+// pins the error text so an operator-visible diagnostic stays intact.
+func TestDetachVolume_DeviceGuards(t *testing.T) {
+	tests := []struct {
+		name           string
+		req            types.EBSRequest
+		requestDevice  string
+		expectQMP      bool
+		wantErr        error
+		wantErrSubstrs []string
+	}{
+		{
+			name:          "boot volume rejected",
+			req:           types.EBSRequest{Name: "vol-boot", Boot: true, DeviceName: "/dev/sdf"},
+			requestDevice: "",
+			wantErr:       ErrVolumeNotDetachable,
 		},
-	})
-
-	_, err := m.DetachVolume("i-1", "vol-boot", "", false)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrVolumeNotDetachable)
-}
-
-func TestDetachVolume_DeviceMismatch(t *testing.T) {
-	m := NewManager()
-	m.Insert(&VM{
-		ID:       "i-1",
-		Status:   StateRunning,
-		Instance: &ec2.Instance{},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		{
+			name:          "EFI volume rejected",
+			req:           types.EBSRequest{Name: "vol-efi", EFI: true, DeviceName: "/dev/sdf"},
+			requestDevice: "",
+			wantErr:       ErrVolumeNotDetachable,
 		},
-	})
+		{
+			name:          "CloudInit volume rejected",
+			req:           types.EBSRequest{Name: "vol-ci", CloudInit: true, DeviceName: "/dev/sdf"},
+			requestDevice: "",
+			wantErr:       ErrVolumeNotDetachable,
+		},
+		{
+			name:           "device mismatch surfaces expected and actual",
+			req:            types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			requestDevice:  "/dev/sdg",
+			wantErr:        ErrVolumeDeviceMismatch,
+			wantErrSubstrs: []string{"/dev/sdg", "/dev/sdf"},
+		},
+		{
+			name:          "empty device skips cross-check and proceeds",
+			req:           types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			requestDevice: "",
+			expectQMP:     true,
+		},
+		{
+			name:          "matching device passes cross-check and proceeds",
+			req:           types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			requestDevice: "/dev/sdf",
+			expectQMP:     true,
+		},
+	}
 
-	_, err := m.DetachVolume("i-1", "vol-1", "/dev/sdg", false)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrVolumeDeviceMismatch)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := &qmpRecorder{}
+			qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+				recorder.record(cmd)
+				return nil
+			})
+			defer cancel()
+
+			mounter := &fakeVolumeMounter{}
+			m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+			m.Insert(&VM{
+				ID:        "i-1",
+				Status:    StateRunning,
+				Instance:  &ec2.Instance{},
+				QMPClient: qmpClient,
+				EBSRequests: types.EBSRequests{
+					Requests: []types.EBSRequest{tt.req},
+				},
+			})
+
+			device, err := m.DetachVolume("i-1", tt.req.Name, tt.requestDevice, false)
+
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+				for _, s := range tt.wantErrSubstrs {
+					assert.Contains(t, err.Error(), s,
+						"error must surface %q so an operator sees expected vs actual", s)
+				}
+				assert.Empty(t, recorder.executes(),
+					"guard rejection must short-circuit before any QMP traffic")
+				assert.Empty(t, mounter.unmountedOne,
+					"guard rejection must not invoke UnmountOne")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.req.DeviceName, device,
+				"DetachVolume must echo the recorded API device name")
+			executed := recorder.executes()
+			require.NotEmpty(t, executed, "proceed path must issue QMP commands")
+			assert.Equal(t, "device_del", executed[0],
+				"proceed path begins with device_del")
+			assert.Contains(t, executed, "blockdev-del",
+				"proceed path must issue blockdev-del")
+			assert.Equal(t, []string{tt.req.Name}, mounter.unmountedOne,
+				"proceed path must invoke UnmountOne best-effort")
+		})
+	}
 }
 
 func TestReboot_InstanceNotFound(t *testing.T) {
@@ -556,4 +632,109 @@ func TestAttachVolume_DeviceAddFailure_BlockdevDelFails_SkipsUnmountOne(t *testi
 	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add", "blockdev-del"}, recorder.executes())
 	assert.Empty(t, mounter.unmountedOne,
 		"failed blockdev-del must skip UnmountOne — unmounting under a live block node crashes QEMU")
+}
+
+// captureSlog redirects slog.Default to a text handler over the returned
+// buffer for the duration of t. The "succeeded after retry" log line is the
+// only operator-visible signal that blockdev-del needed to wait, so retry
+// tests must be able to assert on its presence/absence.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestTryBlockdevDel covers the bounded retry loop that handles QEMU's
+// transient "node is in use" GenericError after device_del. Each sub-test
+// configures a QMP responder that fails the first N attempts with the
+// chosen error class, then succeeds (or keeps failing) so the loop can
+// exercise the success-on-retry, non-retryable, and exhaustion branches.
+//
+// DetachDelay is zero throughout so the 20-attempt exhaustion case stays
+// well under a second; the production 1s polling delay is not under test.
+// Sub-tests run sequentially because captureSlog mutates the process-wide
+// slog.Default — parallel sub-tests would race on the shared logger.
+func TestTryBlockdevDel(t *testing.T) {
+	const inUseDesc = "Node 'nbd-vol-1' is in use"
+
+	t.Run("success on first attempt logs no retry message", func(t *testing.T) {
+		buf := captureSlog(t)
+
+		var attempts int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			atomic.AddInt32(&attempts, 1)
+			return nil
+		})
+		defer cancel()
+
+		m := NewManagerWithDeps(Deps{})
+		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		require.NoError(t, err)
+		assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+		assert.NotContains(t, buf.String(), "succeeded after retry",
+			"first-attempt success must not log the retry-success line")
+	})
+
+	t.Run("success on third attempt logs succeeded after retry", func(t *testing.T) {
+		buf := captureSlog(t)
+
+		var attempts int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			n := atomic.AddInt32(&attempts, 1)
+			if n < 3 {
+				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
+			}
+			return nil
+		})
+		defer cancel()
+
+		m := NewManagerWithDeps(Deps{})
+		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		require.NoError(t, err)
+		assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
+		logs := buf.String()
+		assert.Contains(t, logs, "succeeded after retry")
+		assert.Contains(t, logs, "attempts=3")
+	})
+
+	t.Run("non-in-use error on second attempt returns immediately", func(t *testing.T) {
+		var attempts int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			n := atomic.AddInt32(&attempts, 1)
+			switch n {
+			case 1:
+				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
+			default:
+				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "permission denied"}}
+			}
+		})
+		defer cancel()
+
+		m := NewManagerWithDeps(Deps{})
+		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "permission denied")
+		assert.Equal(t, int32(2), atomic.LoadInt32(&attempts),
+			"non-retryable error must stop the loop on the attempt that produced it")
+	})
+
+	t.Run("twenty in-use errors return the last error", func(t *testing.T) {
+		var attempts int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			atomic.AddInt32(&attempts, 1)
+			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
+		})
+		defer cancel()
+
+		m := NewManagerWithDeps(Deps{})
+		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
+		require.Error(t, err)
+		assert.True(t, isQMPNodeInUse(err),
+			"exhaustion must return the last 'in use' error, not a wrapped or sentinel value")
+		assert.Equal(t, int32(blockdevDelMaxAttempts), atomic.LoadInt32(&attempts),
+			"retry must cap at blockdevDelMaxAttempts attempts")
+	})
 }

@@ -981,7 +981,7 @@ func TestSlogRequestLogger_CapturesStatusCode(t *testing.T) {
 func TestEC2ActionMapCompleteness(t *testing.T) {
 	expectedActions := []string{
 		"DescribeInstances", "RunInstances", "StartInstances", "StopInstances",
-		"TerminateInstances", "RebootInstances", "DescribeInstanceTypes", "GetConsoleOutput",
+		"TerminateInstances", "RebootInstances", "DescribeInstanceTypes", "DescribeInstanceStatus", "GetConsoleOutput",
 		"ModifyInstanceAttribute", "DescribeInstanceAttribute",
 		"CreateKeyPair", "DeleteKeyPair", "DescribeKeyPairs", "ImportKeyPair",
 		"DescribeImages", "CreateImage", "DeregisterImage", "RegisterImage", "CopyImage",

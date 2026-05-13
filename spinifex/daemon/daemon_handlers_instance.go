@@ -313,6 +313,11 @@ func (d *Daemon) handleEC2DescribeInstanceTypes(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceTypes)
 }
 
+// handleEC2DescribeInstanceStatus responds with status entries for VMs on this node visible to the caller.
+func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
+	handleNATSRequest(msg, d.instanceService.DescribeInstanceStatus)
+}
+
 // startStoppedInstanceRequest is the payload for ec2.start topic
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)

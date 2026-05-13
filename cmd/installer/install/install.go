@@ -574,6 +574,7 @@ GRUB_TIMEOUT=5
 GRUB_DISTRIBUTOR=Spinifex
 GRUB_CMDLINE_LINUX_DEFAULT=""
 GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200 systemd.show_status=1"
+GRUB_DISABLE_OS_PROBER=true
 `
 
 	if err := os.WriteFile(filepath.Join(mountRoot, "etc/default/grub"), []byte(grubDefault), 0o644); err != nil {

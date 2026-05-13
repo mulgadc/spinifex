@@ -663,9 +663,9 @@ func TestTryBlockdevDel(t *testing.T) {
 	t.Run("success on first attempt logs no retry message", func(t *testing.T) {
 		buf := captureSlog(t)
 
-		var attempts int32
+		var attempts atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			atomic.AddInt32(&attempts, 1)
+			attempts.Add(1)
 			return nil
 		})
 		defer cancel()
@@ -673,7 +673,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		m := NewManagerWithDeps(Deps{})
 		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
-		assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+		assert.Equal(t, int32(1), attempts.Load())
 		assert.NotContains(t, buf.String(), "succeeded after retry",
 			"first-attempt success must not log the retry-success line")
 	})
@@ -681,9 +681,9 @@ func TestTryBlockdevDel(t *testing.T) {
 	t.Run("success on third attempt logs succeeded after retry", func(t *testing.T) {
 		buf := captureSlog(t)
 
-		var attempts int32
+		var attempts atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			n := atomic.AddInt32(&attempts, 1)
+			n := attempts.Add(1)
 			if n < 3 {
 				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
 			}
@@ -694,16 +694,16 @@ func TestTryBlockdevDel(t *testing.T) {
 		m := NewManagerWithDeps(Deps{})
 		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.NoError(t, err)
-		assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
+		assert.Equal(t, int32(3), attempts.Load())
 		logs := buf.String()
 		assert.Contains(t, logs, "succeeded after retry")
 		assert.Contains(t, logs, "attempts=3")
 	})
 
 	t.Run("non-in-use error on second attempt returns immediately", func(t *testing.T) {
-		var attempts int32
+		var attempts atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			n := atomic.AddInt32(&attempts, 1)
+			n := attempts.Add(1)
 			switch n {
 			case 1:
 				return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
@@ -717,14 +717,14 @@ func TestTryBlockdevDel(t *testing.T) {
 		err := m.tryBlockdevDel(&VM{ID: "i-1", QMPClient: qmpClient}, "nbd-vol-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "permission denied")
-		assert.Equal(t, int32(2), atomic.LoadInt32(&attempts),
+		assert.Equal(t, int32(2), attempts.Load(),
 			"non-retryable error must stop the loop on the attempt that produced it")
 	})
 
 	t.Run("twenty in-use errors return the last error", func(t *testing.T) {
-		var attempts int32
+		var attempts atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			atomic.AddInt32(&attempts, 1)
+			attempts.Add(1)
 			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": inUseDesc}}
 		})
 		defer cancel()
@@ -734,7 +734,7 @@ func TestTryBlockdevDel(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, isQMPNodeInUse(err),
 			"exhaustion must return the last 'in use' error, not a wrapped or sentinel value")
-		assert.Equal(t, int32(blockdevDelMaxAttempts), atomic.LoadInt32(&attempts),
+		assert.Equal(t, int32(blockdevDelMaxAttempts), attempts.Load(),
 			"retry must cap at blockdevDelMaxAttempts attempts")
 	})
 }

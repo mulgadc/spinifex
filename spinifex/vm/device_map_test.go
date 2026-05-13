@@ -218,9 +218,9 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 
 	t.Run("device present on first attempt makes no extra calls", func(t *testing.T) {
 		sleeps := stubDeviceMapRetrySleep(t)
-		var calls int32
+		var calls atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			atomic.AddInt32(&calls, 1)
+			calls.Add(1)
 			require.Equal(t, "query-block", cmd.Execute)
 			return map[string]any{
 				"return": []qmp.BlockDevice{
@@ -235,15 +235,15 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Contains(t, deviceMap, "vdisk-vol-new")
-		assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "exactly one query-block call expected")
+		assert.Equal(t, int32(1), calls.Load(), "exactly one query-block call expected")
 		assert.Empty(t, *sleeps, "no sleep should occur on first-attempt success")
 	})
 
 	t.Run("device missing all 5 attempts invokes final probe and returns last result", func(t *testing.T) {
 		sleeps := stubDeviceMapRetrySleep(t)
-		var calls int32
+		var calls atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			atomic.AddInt32(&calls, 1)
+			calls.Add(1)
 			require.Equal(t, "query-block", cmd.Execute)
 			return map[string]any{
 				"return": []qmp.BlockDevice{
@@ -256,7 +256,7 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-missing")
 
 		require.NoError(t, err)
-		assert.Equal(t, int32(6), atomic.LoadInt32(&calls),
+		assert.Equal(t, int32(6), calls.Load(),
 			"5 retry attempts plus the final fall-through probe must all run")
 		assert.Equal(t, []time.Duration{retryDelay, retryDelay, retryDelay, retryDelay}, *sleeps,
 			"4 sleeps must occur between the 5 in-loop attempts (none after the final fall-through)")
@@ -267,9 +267,9 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 
 	t.Run("device appears on third attempt skips remaining retries", func(t *testing.T) {
 		sleeps := stubDeviceMapRetrySleep(t)
-		var calls int32
+		var calls atomic.Int32
 		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
-			n := atomic.AddInt32(&calls, 1)
+			n := calls.Add(1)
 			require.Equal(t, "query-block", cmd.Execute)
 			devices := []qmp.BlockDevice{
 				bootDevice("os", "/machine/peripheral-anon/device[0]/virtio-backend"),
@@ -285,7 +285,7 @@ func TestQueryGuestDeviceMapWait(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Contains(t, deviceMap, "vdisk-vol-late")
-		assert.Equal(t, int32(3), atomic.LoadInt32(&calls),
+		assert.Equal(t, int32(3), calls.Load(),
 			"third-attempt success must not trigger a 4th or 5th probe")
 		assert.Equal(t, []time.Duration{retryDelay, retryDelay}, *sleeps,
 			"exactly 2 sleeps must occur (after attempts 1 and 2); none after the 3rd success")

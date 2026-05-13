@@ -573,6 +573,54 @@ external_interface = "br-wan"
 DHCP server when VMs launch and releases them on terminate. Requires `dhclient`
 on the host (`apt install isc-dhcp-client`).
 
+## Host-Local Subnet (No Upstream Router)
+
+```
+Network: 192.168.10.0/24 — host-local, reachable from the host only
+Host WAN: 198.51.100.10/24 on br-wan (existing address — unchanged)
+Gateway: 192.168.10.1 — second address added to br-wan
+```
+
+Add the VM pool gateway as a second address on `br-wan` alongside the existing WAN
+IP. The host acts as the gateway for the pool — no upstream router or DHCP server
+needed for this range.
+
+```yaml
+# /etc/netplan/…
+bridges:
+  br-wan:
+    addresses:
+      - 192.168.10.1/24      # VM pool gateway — host-local
+      - 198.51.100.10/24     # existing WAN IP — unchanged
+    routes:
+      - to: default
+        via: 198.51.100.1
+```
+
+```toml
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name        = "wan"
+source      = "static"         # required — no upstream DHCP for this range
+range_start = "192.168.10.2"
+range_end   = "192.168.10.100"
+gateway     = "192.168.10.1"   # second address on br-wan
+prefix_len  = 24
+dns_servers = ["8.8.8.8"]
+```
+
+**Setup:** Apply with `sudo netplan apply`. VMs are reachable from the host at
+`192.168.10.x`. For internet access through the host's WAN interface:
+
+```bash
+sysctl -w net.ipv4.ip_forward=1
+iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o br-wan -j MASQUERADE
+```
+
+Persist via `/etc/sysctl.d/99-ip-forward.conf` and `netfilter-persistent save`.
+
 ## Datacenter / Colo (ISP Block)
 
 ```

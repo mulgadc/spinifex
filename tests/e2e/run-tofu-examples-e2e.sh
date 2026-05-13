@@ -138,9 +138,18 @@ assert_bastion_private_subnet() {
         log "  bastion: ~/.ssh/bastion-demo.pem never appeared (cloud-init stalled?)"
         return 1
     fi
-    ssh "${SSH_OPTS[@]}" -i "$key" "ec2-user@${bastion}" \
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/bastion-demo.pem ec2-user@${private} id" \
-        | grep -q '^uid='
+    local inner_ssh="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -i ~/.ssh/bastion-demo.pem ec2-user@${private}"
+
+    local attempt
+    for attempt in $(seq 1 30); do
+        if ssh "${SSH_OPTS[@]}" -i "$key" "ec2-user@${bastion}" "${inner_ssh} true" 2>/dev/null; then
+            ssh "${SSH_OPTS[@]}" -i "$key" "ec2-user@${bastion}" "${inner_ssh} id" | grep -q '^uid='
+            return $?
+        fi
+        sleep 5
+    done
+    log "  bastion→private: SSH never reachable after 150s"
+    return 1
 }
 
 assert_nginx_alb() {

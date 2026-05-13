@@ -119,3 +119,18 @@ func TestRenderedConfig_HasMigrationVersionMarker(t *testing.T) {
 	assert.Equal(t, "# spinifex-config-version: 3", firstLine,
 		"nats.conf template must start with the current migration version marker")
 }
+
+func TestNew_ValidConfig(t *testing.T) {
+	cfg := &Config{Port: 4222, Host: "127.0.0.1"}
+	svc, err := New(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	assert.Same(t, cfg, svc.Config)
+}
+
+func TestNew_InvalidConfigType(t *testing.T) {
+	svc, err := New("not a config")
+	assert.Nil(t, svc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid config type")
+}

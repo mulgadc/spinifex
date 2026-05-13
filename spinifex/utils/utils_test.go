@@ -1004,6 +1004,76 @@ func TestReadPidFileFrom_EmptyDir(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestServiceStatus_Stopped(t *testing.T) {
+	dir := t.TempDir()
+	status, err := ServiceStatus(dir, fmt.Sprintf("no-such-svc-%d", time.Now().UnixNano()))
+	require.NoError(t, err)
+	assert.Equal(t, "stopped", status)
+}
+
+func TestServiceStatus_Running(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	require.NoError(t, WritePidFileTo(dir, "running-svc", cmd.Process.Pid))
+
+	status, err := ServiceStatus(dir, "running-svc")
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("running (pid: %d)", cmd.Process.Pid), status)
+}
+
+func TestServiceStatus_CorruptPidFile(t *testing.T) {
+	dir := t.TempDir()
+	// Write a non-numeric pid file — ReadPidFileFrom should fail to parse it.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad-svc.pid"), []byte("not-a-pid"), 0o644))
+
+	_, err := ServiceStatus(dir, "bad-svc")
+	assert.Error(t, err)
+}
+
+func TestWaitForProcessExit_ProcessAlreadyDead(t *testing.T) {
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	require.NoError(t, cmd.Wait())
+
+	// `true` has exited and been reaped — WaitForProcessExit should return
+	// nil immediately on the first tick.
+	err := WaitForProcessExit(pid, 2*time.Second)
+	assert.NoError(t, err)
+}
+
+func TestWaitForProcessExit_ProcessExitsBeforeTimeout(t *testing.T) {
+	cmd := exec.Command("sleep", "0.1")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+
+	// Reap in the background so the kernel releases the PID once sleep exits.
+	go func() { _ = cmd.Wait() }()
+
+	err := WaitForProcessExit(pid, 5*time.Second)
+	assert.NoError(t, err)
+}
+
+func TestWaitForProcessExit_Timeout(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	err := WaitForProcessExit(cmd.Process.Pid, 200*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout")
+}
+
 func TestHashMAC_FirstOctetPinnedTo02(t *testing.T) {
 	// First octet must be literal 0x02 across all inputs. Anything else
 	// (e.g. 0x4a, 0xfe — technically valid LAA) visually encroaches on

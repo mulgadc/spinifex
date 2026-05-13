@@ -6,13 +6,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/services/nats"
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
+	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+	"github.com/mulgadc/spinifex/spinifex/services/vpcd"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestNew(t *testing.T) {
 	// Test known service types
-	services := []string{"nats", "predastore", "viperblock", "spinifex", "awsgw"}
+	services := []string{"nats", "predastore", "viperblock", "spinifex", "awsgw", "spinifex-ui", "vpcd"}
 
 	for _, s := range services {
 		var svc Service
@@ -32,6 +34,10 @@ func TestNew(t *testing.T) {
 		case "awsgw":
 			svc, err = New(s, &config.ClusterConfig{})
 			// No special setup needed
+		case "spinifex-ui":
+			svc, err = New(s, &spinifexui.Config{})
+		case "vpcd":
+			svc, err = New(s, &vpcd.Config{})
 		}
 
 		assert.NoError(t, err)

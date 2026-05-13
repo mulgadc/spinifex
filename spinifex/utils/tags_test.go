@@ -34,3 +34,21 @@ func TestExtractTags(t *testing.T) {
 	assert.NotNil(t, empty)
 	assert.Empty(t, empty)
 }
+
+func TestMapToEC2Tags_Populated(t *testing.T) {
+	got := MapToEC2Tags(map[string]string{
+		"Name": "web-1",
+		"Env":  "prod",
+	})
+	assert.Len(t, got, 2)
+	asMap := make(map[string]string, len(got))
+	for _, tag := range got {
+		asMap[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	assert.Equal(t, map[string]string{"Name": "web-1", "Env": "prod"}, asMap)
+}
+
+func TestMapToEC2Tags_Empty(t *testing.T) {
+	assert.Nil(t, MapToEC2Tags(nil))
+	assert.Nil(t, MapToEC2Tags(map[string]string{}))
+}

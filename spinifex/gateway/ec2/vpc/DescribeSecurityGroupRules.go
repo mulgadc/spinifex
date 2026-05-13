@@ -22,7 +22,7 @@ func DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, nats
 	if input != nil {
 		for _, id := range input.SecurityGroupRuleIds {
 			if id == nil || !sgrIDRegex.MatchString(*id) {
-				return output, errors.New(awserrors.ErrorInvalidParameterValue)
+				return output, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 			}
 		}
 	}

@@ -483,6 +483,7 @@ func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
 var describeSecurityGroupRulesValidFilters = map[string]bool{
 	"group-id":               true,
 	"security-group-rule-id": true,
+	"tag-key":                true,
 }
 
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
@@ -525,13 +526,13 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 		}
 		entry, err := s.sgKV.Get(key)
 		if err != nil {
-			slog.Warn("DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
-			continue
+			slog.Error("DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		var record SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			slog.Warn("DescribeSecurityGroupRules: SG unmarshal failed", "key", key, "err", err)
-			continue
+			slog.Error("DescribeSecurityGroupRules: SG unmarshal failed", "key", key, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
 		for _, r := range record.IngressRules {

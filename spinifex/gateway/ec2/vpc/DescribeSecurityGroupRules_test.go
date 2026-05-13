@@ -7,15 +7,16 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDescribeSecurityGroupRules_NilInput_PassesValidation(t *testing.T) {
-	// Nil input means "all rules in account". The call dives into the NATS
-	// service (nil conn) and will fail there, but the gateway-side validation
-	// must accept nil — that's what this assertion proves: the error is not
-	// the gateway's InvalidParameterValue.
+	// Nil input means "all rules in account"; the gateway must not reject it.
+	// The call dives into the NATS service (nil conn) and fails there, so the
+	// assertion is that the error is not the gateway's malformed-ID error.
 	_, err := DescribeSecurityGroupRules(nil, nil, testAccountID)
-	assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, err.Error())
 }
 
 func TestDescribeSecurityGroupRules_MalformedRuleID(t *testing.T) {
@@ -31,7 +32,7 @@ func TestDescribeSecurityGroupRules_MalformedRuleID(t *testing.T) {
 			SecurityGroupRuleIds: []*string{aws.String(bad)},
 		}
 		_, err := DescribeSecurityGroupRules(input, nil, testAccountID)
-		assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue, "expected InvalidParameterValue for %q", bad)
+		assert.EqualError(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, "expected InvalidSecurityGroupRuleId.Malformed for %q", bad)
 	}
 }
 
@@ -40,16 +41,16 @@ func TestDescribeSecurityGroupRules_NilRuleIDEntry(t *testing.T) {
 		SecurityGroupRuleIds: []*string{nil},
 	}
 	_, err := DescribeSecurityGroupRules(input, nil, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	assert.EqualError(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 }
 
 func TestDescribeSecurityGroupRules_ValidRuleIDPassesValidation(t *testing.T) {
 	// A well-formed sgr- ID passes gateway validation; the call then dives
-	// into the NATS service (nil conn) and fails there. The assertion is
-	// that the error is NOT the gateway's InvalidParameterValue.
+	// into the NATS service (nil conn) and fails there.
 	input := &ec2.DescribeSecurityGroupRulesInput{
 		SecurityGroupRuleIds: []*string{aws.String("sgr-0123456789abcdef0")},
 	}
 	_, err := DescribeSecurityGroupRules(input, nil, testAccountID)
-	assert.NotEqual(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, err.Error())
 }

@@ -245,18 +245,27 @@ jobs:
 
       - name: Configure Go workspace
         run: |
-          cd spinifex
-          go work init . ../predastore ../viperblock ../viperblock/nbd ../viperblock/nbd/libguestfs.org/nbdkit
-
-      - name: Build spinifex binaries
-        run: cd spinifex && make build
+          go work init ./spinifex ./predastore ./viperblock \
+            ./viperblock/nbd ./viperblock/nbd/libguestfs.org/nbdkit
 
       - name: Install ISO builder dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
             debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
-            grub-common mtools busybox-static ovmf zstd
+            grub-common mtools busybox-static ovmf zstd \
+            nbdkit nbdkit-plugin-dev pkg-config gcc
+
+      - name: Build spinifex binaries
+        run: cd spinifex && make build
+
+      - name: Build nbdkit viperblock plugin
+        run: |
+          mkdir -p viperblock/lib
+          cd viperblock && CGO_ENABLED=1 go build \
+            -buildmode=c-shared \
+            -o lib/nbdkit-viperblock-plugin.so \
+            nbd/viperblock.go
 
       - name: Build release ISO
         id: build-iso

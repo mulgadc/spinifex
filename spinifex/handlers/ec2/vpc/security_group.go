@@ -52,7 +52,7 @@ func validateSGRule(r SGRule) error {
 
 const (
 	KVBucketSecurityGroups        = "spinifex-vpc-security-groups"
-	KVBucketSecurityGroupsVersion = 1
+	KVBucketSecurityGroupsVersion = 2
 
 	// AWS defaults: 2,500 SGs per VPC, 60 inbound + 60 outbound rules per SG.
 	maxSGsPerVPC      = 2500
@@ -66,7 +66,13 @@ const (
 )
 
 // SGRule represents a single ingress or egress rule in a security group.
+//
+// RuleId is the persistent AWS-style identifier returned by
+// DescribeSecurityGroupRules. It is assigned at insert by Authorize* and by
+// the v1→v2 migration for pre-existing rules; sgRuleKey deliberately excludes
+// it so duplicate-content rules are still rejected regardless of ID.
 type SGRule struct {
+	RuleId     string `json:"rule_id"`     // sgr-<17 hex>; assigned on Authorize, backfilled by migration
 	IpProtocol string `json:"ip_protocol"` // "tcp", "udp", "icmp", "-1" (all)
 	FromPort   int64  `json:"from_port"`
 	ToPort     int64  `json:"to_port"`
@@ -168,7 +174,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput
 
 	// Default egress rule: allow all outbound traffic
 	defaultEgress := []SGRule{
-		{IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
+		{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
 	}
 
 	record := SecurityGroupRecord{
@@ -473,6 +479,155 @@ func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
 	return false
 }
 
+// describeSecurityGroupRulesValidFilters defines the set of filter names accepted by DescribeSecurityGroupRules.
+var describeSecurityGroupRulesValidFilters = map[string]bool{
+	"group-id":               true,
+	"security-group-rule-id": true,
+}
+
+// DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
+// across every security group in the caller's account, optionally narrowed by
+// SecurityGroupRuleIds or filters (group-id, security-group-rule-id, tag:*,
+// tag-key). MaxResults and NextToken are accepted but ignored — matches the
+// existing Describe* precedent in spinifex.
+func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+	requested := make(map[string]bool)
+	if input != nil {
+		for _, id := range input.SecurityGroupRuleIds {
+			if id != nil {
+				requested[*id] = true
+			}
+		}
+	}
+
+	var filters []*ec2.Filter
+	if input != nil {
+		filters = input.Filters
+	}
+	parsedFilters, err := filterutil.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
+	if err != nil {
+		slog.Warn("DescribeSecurityGroupRules: invalid filter", "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	prefix := accountID + "."
+	keys, err := s.sgKV.Keys()
+	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var rules []*ec2.SecurityGroupRule
+	emitted := make(map[string]bool)
+
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.sgKV.Get(key)
+		if err != nil {
+			slog.Warn("DescribeSecurityGroupRules: SG read failed", "key", key, "err", err)
+			continue
+		}
+		var record SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.Warn("DescribeSecurityGroupRules: SG unmarshal failed", "key", key, "err", err)
+			continue
+		}
+
+		for _, r := range record.IngressRules {
+			if !sgRuleMatchesFilters(&record, r, parsedFilters) {
+				continue
+			}
+			if len(requested) > 0 && !requested[r.RuleId] {
+				continue
+			}
+			rules = append(rules, sgRuleToSecurityGroupRule(&record, r, false, accountID))
+			emitted[r.RuleId] = true
+		}
+		for _, r := range record.EgressRules {
+			if !sgRuleMatchesFilters(&record, r, parsedFilters) {
+				continue
+			}
+			if len(requested) > 0 && !requested[r.RuleId] {
+				continue
+			}
+			rules = append(rules, sgRuleToSecurityGroupRule(&record, r, true, accountID))
+			emitted[r.RuleId] = true
+		}
+	}
+
+	if len(requested) > 0 {
+		for id := range requested {
+			if !emitted[id] {
+				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+			}
+		}
+	}
+
+	slog.Info("DescribeSecurityGroupRules completed", "count", len(rules), "accountID", accountID)
+
+	return &ec2.DescribeSecurityGroupRulesOutput{
+		SecurityGroupRules: rules,
+	}, nil
+}
+
+// sgRuleMatchesFilters applies the DescribeSecurityGroupRules filter set to a
+// single rule within its parent record. Rule-level tags are not yet persisted,
+// so tag:* and tag-key filters always fail to match (consistent with returning
+// the empty set for tag queries until per-rule tagging lands).
+func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			// rule.Tags is not yet populated; any tag:* filter excludes every rule.
+			return false
+		}
+		switch name {
+		case "group-id":
+			if !filterutil.MatchesAny(values, record.GroupId) {
+				return false
+			}
+		case "security-group-rule-id":
+			if !filterutil.MatchesAny(values, rule.RuleId) {
+				return false
+			}
+		case "tag-key":
+			// rule.Tags is not yet populated; tag-key excludes every rule.
+			return false
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sgRuleToSecurityGroupRule flattens a stored SGRule into the AWS API shape.
+// accountID supplies GroupOwnerId and (for SG-source rules) the
+// ReferencedGroupInfo.UserId. VpcId is derived from the parent record —
+// spinifex enforces same-VPC SG references at security_group.go:validateSGRuleReferences,
+// so the referenced SG's VpcId always equals the parent's.
+func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgress bool, accountID string) *ec2.SecurityGroupRule {
+	out := &ec2.SecurityGroupRule{
+		SecurityGroupRuleId: aws.String(rule.RuleId),
+		GroupId:             aws.String(record.GroupId),
+		GroupOwnerId:        aws.String(accountID),
+		IsEgress:            aws.Bool(isEgress),
+		IpProtocol:          aws.String(rule.IpProtocol),
+		FromPort:            aws.Int64(rule.FromPort),
+		ToPort:              aws.Int64(rule.ToPort),
+	}
+	if rule.CidrIp != "" {
+		out.CidrIpv4 = aws.String(rule.CidrIp)
+	}
+	if rule.SourceSG != "" {
+		out.ReferencedGroupInfo = &ec2.ReferencedSecurityGroup{
+			GroupId: aws.String(rule.SourceSG),
+			UserId:  aws.String(accountID),
+			VpcId:   aws.String(record.VpcId),
+		}
+	}
+	return out
+}
+
 // AuthorizeSecurityGroupIngress adds ingress rules to a security group.
 func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
 	if input.GroupId == nil || *input.GroupId == "" {
@@ -504,8 +659,12 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecur
 	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
+	existing := make(map[string]struct{}, len(record.IngressRules))
+	for _, r := range record.IngressRules {
+		existing[sgRuleKey(r)] = struct{}{}
+	}
 	for _, nr := range newRules {
-		if slices.Contains(record.IngressRules, nr) {
+		if _, ok := existing[sgRuleKey(nr)]; ok {
 			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 		}
 	}
@@ -570,8 +729,12 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(input *ec2.AuthorizeSecuri
 	if err := s.validateSGRuleReferences(accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
+	existing := make(map[string]struct{}, len(record.EgressRules))
+	for _, r := range record.EgressRules {
+		existing[sgRuleKey(r)] = struct{}{}
+	}
 	for _, nr := range newRules {
-		if slices.Contains(record.EgressRules, nr) {
+		if _, ok := existing[sgRuleKey(nr)]; ok {
 			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 		}
 	}
@@ -787,6 +950,9 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 			if err := validateSGRule(r); err != nil {
 				return nil, err
 			}
+			if mode == sgParseAuthorize {
+				r.RuleId = utils.GenerateResourceID("sgr")
+			}
 			rules = append(rules, r)
 			appended = true
 		}
@@ -798,6 +964,9 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 			r := SGRule{IpProtocol: proto, FromPort: fromPort, ToPort: toPort, SourceSG: *pair.GroupId}
 			if err := validateSGRule(r); err != nil {
 				return nil, err
+			}
+			if mode == sgParseAuthorize {
+				r.RuleId = utils.GenerateResourceID("sgr")
 			}
 			rules = append(rules, r)
 			appended = true
@@ -935,10 +1104,10 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 		Description: defaultSecurityGroupDescription,
 		VpcId:       vpcId,
 		IngressRules: []SGRule{
-			{IpProtocol: "-1", FromPort: 0, ToPort: 0, SourceSG: groupId},
+			{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, SourceSG: groupId},
 		},
 		EgressRules: []SGRule{
-			{IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
+			{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
 		},
 		Tags:      map[string]string{},
 		IsDefault: true,

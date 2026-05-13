@@ -14,6 +14,10 @@ func (d *Daemon) handleEC2DescribeSecurityGroups(msg *nats.Msg) {
 	handleNATSRequest(msg, d.vpcService.DescribeSecurityGroups)
 }
 
+func (d *Daemon) handleEC2DescribeSecurityGroupRules(msg *nats.Msg) {
+	handleNATSRequest(msg, d.vpcService.DescribeSecurityGroupRules)
+}
+
 func (d *Daemon) handleEC2AuthorizeSecurityGroupIngress(msg *nats.Msg) {
 	handleNATSRequest(msg, d.vpcService.AuthorizeSecurityGroupIngress)
 }

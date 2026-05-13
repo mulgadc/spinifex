@@ -1547,3 +1547,260 @@ func failingUpdateResponder(t *testing.T, nc *nats.Conn, msg string) {
 		testutil.OverrideVpcdStubResponse(nc, "vpc.update-sg", []byte(`{"success":true}`))
 	})
 }
+
+// --- DescribeSecurityGroupRules ---
+
+// authorizeIngressTCP authorises a single TCP ingress rule and returns the
+// resulting sgr- ID by re-reading the SG record via DescribeSecurityGroupRules.
+func authorizeIngressTCP(t *testing.T, svc *VPCServiceImpl, sgID string, port int64, cidr string) string {
+	t.Helper()
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(port),
+			ToPort:     aws.Int64(port),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(cidr)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	for _, r := range out.SecurityGroupRules {
+		if r.IsEgress != nil && !*r.IsEgress && r.FromPort != nil && *r.FromPort == port && r.CidrIpv4 != nil && *r.CidrIpv4 == cidr {
+			require.NotNil(t, r.SecurityGroupRuleId)
+			return *r.SecurityGroupRuleId
+		}
+	}
+	t.Fatalf("authorised rule not found in DescribeSecurityGroupRules output")
+	return ""
+}
+
+func TestDescribeSecurityGroupRules_All(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgA := createTestSG(t, svc, vpcID, "rules-a")
+	sgB := createTestSG(t, svc, vpcID, "rules-b")
+	authorizeIngressTCP(t, svc, sgA, 22, "10.0.0.0/24")
+	authorizeIngressTCP(t, svc, sgB, 443, "0.0.0.0/0")
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{}, testAccountID)
+	require.NoError(t, err)
+
+	var ingressForA, egressForA, ingressForB int
+	for _, r := range out.SecurityGroupRules {
+		require.NotNil(t, r.SecurityGroupRuleId)
+		assert.Regexp(t, `^sgr-[0-9a-f]{17}$`, *r.SecurityGroupRuleId)
+		require.NotNil(t, r.GroupOwnerId)
+		assert.Equal(t, testAccountID, *r.GroupOwnerId)
+		switch *r.GroupId {
+		case sgA:
+			if *r.IsEgress {
+				egressForA++
+			} else {
+				ingressForA++
+			}
+		case sgB:
+			if !*r.IsEgress {
+				ingressForB++
+			}
+		}
+	}
+	assert.Equal(t, 1, ingressForA)
+	assert.Equal(t, 1, egressForA) // default egress
+	assert.Equal(t, 1, ingressForB)
+}
+
+func TestDescribeSecurityGroupRules_FilterByGroupID(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgA := createTestSG(t, svc, vpcID, "filter-a")
+	sgB := createTestSG(t, svc, vpcID, "filter-b")
+	authorizeIngressTCP(t, svc, sgA, 22, "10.0.0.0/24")
+	authorizeIngressTCP(t, svc, sgB, 22, "10.0.0.0/24")
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgA)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotEmpty(t, out.SecurityGroupRules)
+	for _, r := range out.SecurityGroupRules {
+		assert.Equal(t, sgA, *r.GroupId)
+	}
+}
+
+func TestDescribeSecurityGroupRules_FilterByRuleID(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "by-rule-id")
+	ruleID := authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("security-group-rule-id"), Values: []*string{aws.String(ruleID)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	assert.Equal(t, ruleID, *out.SecurityGroupRules[0].SecurityGroupRuleId)
+}
+
+func TestDescribeSecurityGroupRules_ByRuleIDsExplicit(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "explicit-ids")
+	ruleID := authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String(ruleID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.SecurityGroupRules, 1)
+	assert.Equal(t, ruleID, *out.SecurityGroupRules[0].SecurityGroupRuleId)
+}
+
+func TestDescribeSecurityGroupRules_RuleIDNotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	createTestSG(t, svc, vpcID, "any")
+
+	_, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String("sgr-deadbeefdeadbeef0")},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidSecurityGroupRuleId.NotFound")
+}
+
+func TestDescribeSecurityGroupRules_NilInput(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	createTestSG(t, svc, vpcID, "nil-input")
+
+	out, err := svc.DescribeSecurityGroupRules(nil, testAccountID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, out.SecurityGroupRules)
+}
+
+func TestDescribeSecurityGroupRules_TagFiltersReturnNothing(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "tag-filter")
+	authorizeIngressTCP(t, svc, sgID, 22, "10.0.0.0/24")
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag:Owner"), Values: []*string{aws.String("teamA")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.SecurityGroupRules)
+}
+
+func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	srcSG := createTestSG(t, svc, vpcID, "source")
+	dstSG := createTestSG(t, svc, vpcID, "dest")
+
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(dstSG),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       &proto,
+			FromPort:         aws.Int64(80),
+			ToPort:           aws.Int64(80),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(srcSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(dstSG)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	found := false
+	for _, r := range out.SecurityGroupRules {
+		if r.ReferencedGroupInfo != nil {
+			require.NotNil(t, r.ReferencedGroupInfo.GroupId)
+			require.NotNil(t, r.ReferencedGroupInfo.UserId)
+			require.NotNil(t, r.ReferencedGroupInfo.VpcId)
+			assert.Equal(t, srcSG, *r.ReferencedGroupInfo.GroupId)
+			assert.Equal(t, testAccountID, *r.ReferencedGroupInfo.UserId)
+			assert.Equal(t, vpcID, *r.ReferencedGroupInfo.VpcId)
+			assert.Nil(t, r.CidrIpv4)
+			found = true
+		}
+	}
+	assert.True(t, found, "expected at least one rule with ReferencedGroupInfo")
+}
+
+func TestAuthorizeSecurityGroupIngress_AssignsRuleIDs(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "assigns-ids")
+
+	proto := "tcp"
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto,
+			FromPort:   aws.Int64(80),
+			ToPort:     aws.Int64(80),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	entry, err := svc.sgKV.Get(utils.AccountKey(testAccountID, sgID))
+	require.NoError(t, err)
+	var record SecurityGroupRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	require.NotEmpty(t, record.IngressRules)
+	for _, r := range record.IngressRules {
+		assert.Regexp(t, `^sgr-[0-9a-f]{17}$`, r.RuleId)
+	}
+}
+
+// TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate verifies the
+// key-based dedup still catches duplicate-content rules now that RuleId is in
+// the struct. The old slices.Contains check would have missed this because
+// freshly-generated IDs make two otherwise-identical rules unequal under Go
+// struct equality.
+func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "dup-rule")
+
+	proto := "tcp"
+	perm := &ec2.IpPermission{
+		IpProtocol: &proto,
+		FromPort:   aws.Int64(22),
+		ToPort:     aws.Int64(22),
+		IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+	}
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidPermission.Duplicate")
+}
+
+func TestDescribeSecurityGroupRules_InvalidFilter(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	createTestSG(t, svc, vpcID, "invalid-filter")
+
+	_, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("ip-permission.cidr"), Values: []*string{aws.String("10.0.0.0/24")}}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}

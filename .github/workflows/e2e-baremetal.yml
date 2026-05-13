@@ -66,10 +66,24 @@ jobs:
             VIPERBLOCK_SRC="${RUNNER_TEMP}/bm-bins/viperblock" \
             VERSION="$(cd "$GITHUB_WORKSPACE" && git describe --tags --always 2>/dev/null || echo dev)"
 
+      - name: Write ePDU credentials
+        run: |
+          install -m 0600 /dev/null "${RUNNER_TEMP}/epdu.env"
+          cat >> "${RUNNER_TEMP}/epdu.env" <<EOF
+          EPDU_HOST=192.168.1.63
+          EPDU_SNMP_USER=ci-bmpower
+          EPDU_SNMP_SEC_LEVEL=authPriv
+          EPDU_SNMP_AUTH_PROTO=MD5
+          EPDU_SNMP_AUTH_PASS=${{ secrets.BM_EPDU_AUTH_PASS }}
+          EPDU_SNMP_PRIV_PROTO=DES
+          EPDU_SNMP_PRIV_PASS=${{ secrets.BM_EPDU_PRIV_PASS }}
+          EOF
+
       - name: Run Bare-Metal E2E
         env:
           BM_CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
           BM_SSH_KEY: /home/tf-user/.ssh/bm-ci
+          BM_EPDU_ENV: ${{ runner.temp }}/epdu.env
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
         run: |
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \

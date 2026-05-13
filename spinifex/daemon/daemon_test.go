@@ -3927,3 +3927,341 @@ func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
 	assert.Equal(t, "RTX 3060", m.Name)
 	assert.Equal(t, int64(12288), m.MemoryMiB)
 }
+
+// --- initServiceWithRetry ---
+
+func TestInitServiceWithRetry_SuccessFirstAttempt(t *testing.T) {
+	calls := 0
+	start := time.Now()
+	got, err := initServiceWithRetry("svc", func() (int, error) {
+		calls++
+		return 42, nil
+	})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	assert.Equal(t, 42, got)
+	assert.Equal(t, 1, calls)
+	assert.Less(t, elapsed, 200*time.Millisecond, "no sleep on first-attempt success")
+}
+
+func TestInitServiceWithRetry_SuccessAfterRetries(t *testing.T) {
+	calls := 0
+	start := time.Now()
+	got, err := initServiceWithRetry("svc", func() (string, error) {
+		calls++
+		if calls < 3 {
+			return "", errors.New("not ready")
+		}
+		return "ok", nil
+	})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got)
+	assert.Equal(t, 3, calls)
+	// Backoff: 500ms after attempt 1, 1s after attempt 2 → ~1.5s total minimum.
+	assert.GreaterOrEqual(t, elapsed, 1500*time.Millisecond-50*time.Millisecond)
+	assert.Less(t, elapsed, 5*time.Second)
+}
+
+func TestInitServiceWithRetry_TimeoutWrapsLastError(t *testing.T) {
+	// maxWait is hard-coded to 5 minutes; exercising the timeout-exhaust
+	// path would inflate the suite without a clock seam in production.
+	// The retry-then-success path above pins per-attempt accounting; the
+	// delay-capped test below pins the worst-case sleep envelope.
+	t.Skip("timeout path requires a clock seam not present in production; documented gap")
+}
+
+func TestInitServiceWithRetry_DelayCappedAt10s(t *testing.T) {
+	// Drive enough retries to push the backoff past the 10s cap, then
+	// verify no observed sleep exceeds 10s. Backoff doublings:
+	//   500ms → 1s → 2s → 4s → 8s → 10s (capped) → 10s (capped) ...
+	// After 6 retries the cap is hit; the 6th sleep must be ~10s, not 16s.
+	var sleeps []time.Duration
+	var last time.Time
+	calls := 0
+	_, err := initServiceWithRetry("svc", func() (int, error) {
+		now := time.Now()
+		if calls > 0 {
+			sleeps = append(sleeps, now.Sub(last))
+		}
+		last = now
+		calls++
+		if calls >= 7 {
+			return 1, nil
+		}
+		return 0, errors.New("retry")
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(sleeps), 6)
+	for i, d := range sleeps {
+		assert.LessOrEqual(t, d, 11*time.Second, "sleep %d exceeded 10s cap: %v", i, d)
+	}
+	assert.GreaterOrEqual(t, sleeps[5], 9500*time.Millisecond)
+	assert.LessOrEqual(t, sleeps[5], 11*time.Second)
+}
+
+// --- getSystemMemory ---
+
+func TestGetSystemMemory_Linux_Valid(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only branch")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("printf", "MemTotal:       16777216 kB\n")
+	}
+	mem, err := getSystemMemory()
+	require.NoError(t, err)
+	assert.InDelta(t, 16.0, mem, 0.001)
+}
+
+func TestGetSystemMemory_Linux_Malformed(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only branch")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("printf", "MemTotal:\n")
+	}
+	_, err := getSystemMemory()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected /proc/meminfo format")
+}
+
+func TestGetSystemMemory_Linux_GrepFails(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only branch")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("/bin/false")
+	}
+	_, err := getSystemMemory()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/proc/meminfo")
+}
+
+func TestGetSystemMemory_Linux_ParseOverflow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only branch")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("printf", "MemTotal:       99999999999999999999 kB\n")
+	}
+	_, err := getSystemMemory()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse memory size")
+}
+
+func TestGetSystemMemory_Darwin_Valid(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only branch; getSystemMemory dispatches on runtime.GOOS")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("printf", "17179869184\n")
+	}
+	mem, err := getSystemMemory()
+	require.NoError(t, err)
+	assert.InDelta(t, 16.0, mem, 0.001)
+}
+
+func TestGetSystemMemory_Darwin_SysctlFails(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only branch; getSystemMemory dispatches on runtime.GOOS")
+	}
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("/usr/bin/false")
+	}
+	_, err := getSystemMemory()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "macOS")
+}
+
+// --- gpuXVGAEnabled ---
+
+func TestGpuXVGAEnabled(t *testing.T) {
+	tests := []struct {
+		name      string
+		dev       *gpu.GPUDevice
+		overrides []config.GPUModelOverride
+		want      bool
+	}{
+		{
+			name: "override present XVGAOff true forces false",
+			dev:  &gpu.GPUDevice{VendorID: "10de", DeviceID: "2236"},
+			overrides: []config.GPUModelOverride{
+				{VendorID: "10de", DeviceID: "2236", XVGAOff: true},
+			},
+			want: false,
+		},
+		{
+			name: "override present XVGAOff false forces true",
+			dev:  &gpu.GPUDevice{VendorID: "10de", DeviceID: "2236"},
+			overrides: []config.GPUModelOverride{
+				{VendorID: "10de", DeviceID: "2236", XVGAOff: false},
+			},
+			want: true,
+		},
+		{
+			name: "no override compute GPU returns false",
+			dev:  &gpu.GPUDevice{VendorID: "10de", DeviceID: "2236"},
+			want: false,
+		},
+		{
+			name: "no override consumer GPU returns true",
+			dev:  &gpu.GPUDevice{VendorID: "10de", DeviceID: "2684"},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, gpuXVGAEnabled(tt.dev, tt.overrides))
+		})
+	}
+}
+
+// --- reloadGPUTypes ---
+
+func TestReloadGPUTypes_EmptyModelsPreservesCPUTypes(t *testing.T) {
+	rm := &ResourceManager{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"t3.micro": {InstanceType: aws.String("t3.micro")},
+			"t3.large": {InstanceType: aws.String("t3.large")},
+			"g5.xlarge": {
+				InstanceType: aws.String("g5.xlarge"),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{
+					{Count: aws.Int64(1), Name: aws.String("A10G")},
+				}},
+			},
+			"g5.4xlarge": {
+				InstanceType: aws.String("g5.4xlarge"),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{
+					{Count: aws.Int64(1), Name: aws.String("A10G")},
+				}},
+			},
+		},
+	}
+
+	rm.reloadGPUTypes(nil, nil)
+
+	assert.Contains(t, rm.instanceTypes, "t3.micro")
+	assert.Contains(t, rm.instanceTypes, "t3.large")
+	assert.NotContains(t, rm.instanceTypes, "g5.xlarge")
+	assert.NotContains(t, rm.instanceTypes, "g5.4xlarge")
+	assert.Nil(t, rm.gpuManager)
+}
+
+func TestReloadGPUTypes_NonEmptyReplacesGPUTypes(t *testing.T) {
+	rm := &ResourceManager{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"t3.micro": {InstanceType: aws.String("t3.micro")},
+			"g5.xlarge": {
+				InstanceType: aws.String("g5.xlarge"),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{
+					{Count: aws.Int64(1), Name: aws.String("A10G")},
+				}},
+			},
+		},
+	}
+
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil)
+
+	assert.Contains(t, rm.instanceTypes, "t3.micro", "CPU type preserved")
+	assert.NotContains(t, rm.instanceTypes, "g5.xlarge", "old GPU type removed")
+
+	hasG4dn := false
+	for name := range rm.instanceTypes {
+		if strings.HasPrefix(name, "g4dn.") {
+			hasG4dn = true
+			break
+		}
+	}
+	assert.True(t, hasG4dn, "new GPU family inserted")
+}
+
+func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
+	// updateInstanceSubscriptions is called unconditionally at the end of
+	// reloadGPUTypes. Observe the side-effect via a real NATS connection:
+	// an empty rm.instanceSubs becomes populated after the call, proving the
+	// per-type subscribe loop ran exactly once for the new map state.
+	// Requires a non-nil gpuManager because canAllocate gates GPU types on
+	// availGPU > 0.
+	port := freePortForTest(t)
+	startTestNATSOnPortForTest(t, port)
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", port))
+	require.NoError(t, err)
+	t.Cleanup(func() { drainAndClose(t, nc) })
+
+	gpuMgr := gpu.NewManager([]gpu.GPUDevice{
+		{PCIAddress: "0000:01:00.0", VendorID: "10de", DeviceID: "1eb8"},
+	})
+
+	rm := &ResourceManager{
+		hostVCPU:      16,
+		hostMemGB:     64.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+		natsConn:      nc,
+		nodeID:        "test-node",
+		instanceSubs:  make(map[string]*nats.Subscription),
+		handler:       func(*nats.Msg) {},
+	}
+
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, gpuMgr)
+	subsAfter := len(rm.instanceSubs)
+	require.Greater(t, subsAfter, 0, "subscriptions added after reload — updateInstanceSubscriptions ran")
+
+	// Each g4dn size produces both queue and node-specific topics; record the
+	// count so we can prove a second call does not double-subscribe.
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, gpuMgr)
+	assert.Equal(t, subsAfter, len(rm.instanceSubs),
+		"second reload with identical models must not double-subscribe — proves idempotent invocation")
+}
+
+// --- assertNoClusterServicesInitialised ---
+
+func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
+	type fieldCase struct {
+		name    string
+		set     func(d *Daemon)
+		wantMsg string
+	}
+
+	cases := []fieldCase{
+		{name: "natsConn", set: func(d *Daemon) { d.natsConn = &nats.Conn{} }, wantMsg: "natsConn"},
+		{name: "jsManager", set: func(d *Daemon) { d.jsManager = &JetStreamManager{} }, wantMsg: "jsManager"},
+		{name: "instanceService", set: func(d *Daemon) { d.instanceService = &handlers_ec2_instance.InstanceServiceImpl{} }, wantMsg: "instanceService"},
+		{name: "imageService", set: func(d *Daemon) { d.imageService = &handlers_ec2_image.ImageServiceImpl{} }, wantMsg: "imageService"},
+		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &handlers_ec2_snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
+		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &handlers_ec2_volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
+		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
+		{name: "igwService", set: func(d *Daemon) { d.igwService = &handlers_ec2_igw.IGWServiceImpl{} }, wantMsg: "igwService"},
+		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &handlers_ec2_placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
+		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
+		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &handlers_ec2_routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
+		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &handlers_ec2_natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
+		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &handlers_ec2_vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
+		{name: "eipService", set: func(d *Daemon) { d.eipService = &handlers_ec2_eip.EIPServiceImpl{} }, wantMsg: "eipService"},
+		{name: "accountService", set: func(d *Daemon) { d.accountService = &handlers_ec2_account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},
+		{name: "elbv2Service", set: func(d *Daemon) { d.elbv2Service = &handlers_elbv2.ELBv2ServiceImpl{} }, wantMsg: "elbv2Service"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Daemon{}
+			tc.set(d)
+			err := d.assertNoClusterServicesInitialised()
+			require.Error(t, err, "%s set non-nil must trip invariant", tc.name)
+			assert.Contains(t, err.Error(), tc.wantMsg)
+		})
+	}
+}

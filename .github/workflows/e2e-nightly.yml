@@ -61,7 +61,7 @@ jobs:
 
       - name: Clean Workspace
         if: steps.gate.outputs.selected == 'true'
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         if: steps.gate.outputs.selected == 'true'

@@ -34,7 +34,7 @@ jobs:
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -103,7 +103,7 @@ jobs:
       TOFU_LOG: /tmp/e2e-tofu-pseudo-${{ github.run_id }}.log
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -167,7 +167,7 @@ jobs:
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token

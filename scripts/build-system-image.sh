@@ -82,7 +82,7 @@ case "$DISTRO" in
             exit 1
         fi
         SOURCE_IMAGE="ubuntu-${UBUNTU_VERSION}-minimal-cloudimg-amd64.img"
-        SOURCE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/${SOURCE_IMAGE}"
+        SOURCE_URL="https://cloud-images.ubuntu.com/minimal/releases/${UBUNTU_CODENAME:-noble}/release/${SOURCE_IMAGE}"
         OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.qcow2"
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.raw"
         DISTRO_VERSION="${UBUNTU_VERSION}"
@@ -188,11 +188,12 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
 
     if [[ "$DO_IMPORT" == true ]]; then
         echo "Importing as AMI..."
+        rm -f "$OUTPUT_IMAGE"
         IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
         if [[ -n "${SYSTEM_TAG:-}" ]]; then
             IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
         fi
-        (cd "$PROJECT_DIR" && ./bin/spx admin images import "${IMPORT_ARGS[@]}")
+        spx admin images import "${IMPORT_ARGS[@]}"
     fi
     exit 0
 fi
@@ -253,9 +254,13 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
     done
     echo "Resizing partition..."
     # After qemu-img resize the GPT backup header sits at the old end of disk.
-    # Move it to the new end before parted tries to resize, otherwise parted
-    # refuses with "Unable to satisfy all constraints on the partition."
-    sudo sgdisk --move-second-header "${NBD_DEV}" 2>/dev/null || true
+    # Relocate it to the new end (sfdisk --relocate is util-linux built-in,
+    # no extra packages needed), then re-read the partition table before parted
+    # runs — without this, parted sees stale GPT geometry and fails with
+    # "Unable to satisfy all constraints on the partition."
+    sudo sgdisk --move-second-header "${NBD_DEV}"
+    sudo partprobe "${NBD_DEV}" 2>/dev/null || true
+    sleep 1
     sudo parted --script "${NBD_DEV}" resizepart 1 100%
 fi
 
@@ -417,14 +422,15 @@ echo ""
 
 if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
+    rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
-    (cd "$PROJECT_DIR" && sudo -u spinifex-storage ./bin/spx admin images import "${IMPORT_ARGS[@]}")
+    spx admin images import "${IMPORT_ARGS[@]}"
 else
     echo "To import as AMI, run:"
-    echo "  cd $PROJECT_DIR && ./bin/spx admin images import \\"
+    echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 \\"

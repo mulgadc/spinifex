@@ -658,7 +658,7 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		}
 		br, err := portToBr("veth-wan-ovs")
 		if err != nil {
-			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs not on OVS — is setup-ovn.sh's veth branch installed and systemd-networkd up? %w", err)
+			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs not on OVS — is spinifex-veth-wan.service running? %w", err)
 		}
 		if br != OvnExternalBridge {
 			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-ovs is on OVS bridge %q, expected %q",
@@ -666,7 +666,7 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		}
 		master, err := readLinkMaster("veth-wan-br")
 		if err != nil {
-			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br missing or has no master — systemd-networkd drop-in not applied? %w", err)
+			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br missing or has no master — is spinifex-veth-wan.service running? %w", err)
 		}
 		if master != dhcpBindBridge {
 			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br master is %q, expected %q (dhcp_bind_bridge)",

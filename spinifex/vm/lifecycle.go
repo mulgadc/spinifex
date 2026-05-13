@@ -111,6 +111,16 @@ func (m *Manager) launch(instance *VM) error {
 	qmpClient, err := newQMPClientWithHandshake(instance)
 	if err != nil {
 		slog.Error("Failed to create QMP client", "err", err)
+		// QEMU started but QMP handshake failed. Kill it synchronously so the
+		// VFIO device is released before the caller frees the GPU pool entry;
+		// otherwise the next Claim gets the same PCI address while QEMU still
+		// holds /dev/vfio/<group>, causing "device or resource busy".
+		if pid, pidErr := utils.ReadPidFile(instance.ID); pidErr == nil && pid > 0 {
+			if proc, procErr := os.FindProcess(pid); procErr == nil {
+				_ = proc.Signal(syscall.SIGKILL)
+			}
+			_ = utils.WaitForProcessExit(pid, 10*time.Second)
+		}
 		return err
 	}
 	instance.QMPClient = qmpClient
@@ -253,16 +263,16 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})
 
-	if instance.GPUPCIAddress != "" {
+	for i, addr := range instance.GPUPCIAddresses {
 		xvga := "off"
 		if instance.GPUXVGAEnabled {
 			xvga = "on"
 		}
 		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu0,x-vga=%s", instance.GPUPCIAddress, xvga),
+			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu%d,x-vga=%s", addr, i, xvga),
 		})
 		slog.Info("GPU passthrough device configured",
-			"pci", instance.GPUPCIAddress, "instanceId", instance.ID, "xvga", xvga)
+			"pci", addr, "index", i, "instanceId", instance.ID, "xvga", xvga)
 	}
 
 	qmpSocket, err := utils.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))

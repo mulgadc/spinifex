@@ -108,52 +108,69 @@ func (m *Manager) Release(instanceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	idx := -1
-	for i := range m.pool {
-		if m.pool[i].InstanceID == instanceID {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
-		return fmt.Errorf("no GPU claimed by instance %s", instanceID)
-	}
-
-	entry := &m.pool[idx]
 	var firstErr error
+	released := false
 
-	for _, member := range entry.groupMembers {
-		orig := entry.memberDrivers[member.PCIAddress]
-		if orig == "vfio-pci" {
-			// GPU was already bound to vfio-pci before this instance (e.g. by
-			// spx-test-gpu at node setup). QEMU released the group fd on exit;
-			// the device stays vfio-pci bound and is immediately available for
-			// the next claim. Skipping unbind avoids a needless round-trip and
-			// eliminates a brief window where the device is unbound.
+	for i := range m.pool {
+		if m.pool[i].InstanceID != instanceID {
 			continue
 		}
-		if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
-			slog.Error("GPU release failed for IOMMU group member",
-				"instance", instanceID, "pci", member.PCIAddress, "err", err)
-			if firstErr == nil {
-				firstErr = err
+		released = true
+		entry := &m.pool[i]
+
+		for _, member := range entry.groupMembers {
+			orig := entry.memberDrivers[member.PCIAddress]
+			if orig == "vfio-pci" {
+				// GPU was already bound to vfio-pci before this instance (e.g. by
+				// spx-test-gpu at node setup). QEMU released the group fd on exit;
+				// the device stays vfio-pci bound and is immediately available for
+				// the next claim. Skipping unbind avoids a needless round-trip and
+				// eliminates a brief window where the device is unbound.
+				continue
 			}
+			if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
+				slog.Error("GPU release failed for IOMMU group member",
+					"instance", instanceID, "pci", member.PCIAddress, "err", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+
+		entry.InstanceID = ""
+		entry.groupMembers = nil
+		entry.memberDrivers = nil
+
+		if firstErr != nil {
+			entry.Available = false
+			slog.Error("GPU marked unavailable after failed release — operator action required",
+				"gpu", entry.Device.PCIAddress)
+		} else {
+			slog.Info("GPU released", "instance", instanceID, "gpu", entry.Device.PCIAddress)
 		}
 	}
 
-	entry.InstanceID = ""
-	entry.groupMembers = nil
-	entry.memberDrivers = nil
-
-	if firstErr != nil {
-		entry.Available = false
-		slog.Error("GPU marked unavailable after failed release — operator action required",
-			"gpu", entry.Device.PCIAddress)
-		return firstErr
+	if !released {
+		return fmt.Errorf("no GPU claimed by instance %s", instanceID)
 	}
+	return firstErr
+}
 
-	slog.Info("GPU released", "instance", instanceID, "gpu", entry.Device.PCIAddress)
-	return nil
+// MarkFailed marks a GPU as permanently unavailable after a VFIO/QEMU launch
+// error. The entry is skipped by Claim until the daemon restarts. Call this
+// after releasing a GPU whose QEMU crashed during startup so the same broken
+// device is not immediately re-assigned to the next instance.
+func (m *Manager) MarkFailed(pciAddress string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.pool {
+		if m.pool[i].Device.PCIAddress == pciAddress && m.pool[i].InstanceID == "" {
+			m.pool[i].Available = false
+			slog.Warn("GPU marked unavailable after launch failure — restart daemon to retry",
+				"pci", pciAddress)
+			return
+		}
+	}
 }
 
 // Available returns the count of GPUs that can be claimed right now.

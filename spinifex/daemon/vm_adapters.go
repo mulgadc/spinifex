@@ -398,16 +398,18 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		}
 		d.natsSubscriptions[consoleSubKey] = consoleSub
 
-		// Re-claim GPU after a daemon restart with a still-running QEMU
+		// Re-claim GPU(s) after a daemon restart with a still-running QEMU
 		// process: the manager's reconnect path fires OnInstanceUp without
 		// going through the handler-side Claim, so the GPU pool would
 		// otherwise treat the slot as free. ReclaimByAddress is a no-op
 		// when the same instance already owns the slot, so the launch and
 		// start-stopped paths (which Claim before Run) are unaffected.
-		if d.gpuManager != nil && instance.GPUPCIAddress != "" {
-			if err := d.gpuManager.ReclaimByAddress(instance.GPUPCIAddress, instance.ID); err != nil {
-				slog.Warn("Failed to re-claim GPU on instance up",
-					"gpu", instance.GPUPCIAddress, "instanceId", instance.ID, "err", err)
+		if d.gpuManager != nil {
+			for _, addr := range instance.GPUPCIAddresses {
+				if err := d.gpuManager.ReclaimByAddress(addr, instance.ID); err != nil {
+					slog.Warn("Failed to re-claim GPU on instance up",
+						"gpu", addr, "instanceId", instance.ID, "err", err)
+				}
 			}
 		}
 		return nil
@@ -630,13 +632,13 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) {
 // original host driver. No-op for instances without a GPU allocation or
 // when GPU passthrough is disabled.
 func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) {
-	if a.d.gpuManager == nil || instance.GPUPCIAddress == "" {
+	if a.d.gpuManager == nil || len(instance.GPUPCIAddresses) == 0 {
 		return
 	}
 	if err := a.d.gpuManager.Release(instance.ID); err != nil {
 		slog.Error("Failed to release GPU on stop, device may need manual rebind",
-			"gpu", instance.GPUPCIAddress, "instanceId", instance.ID, "err", err)
+			"gpus", instance.GPUPCIAddresses, "instanceId", instance.ID, "err", err)
 		return
 	}
-	slog.Info("GPU released", "gpu", instance.GPUPCIAddress, "instanceId", instance.ID)
+	slog.Info("GPU released", "gpus", instance.GPUPCIAddresses, "instanceId", instance.ID)
 }

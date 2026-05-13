@@ -495,17 +495,34 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 			continue
 		}
 
-		requiresGPU := instancetypes.IsGPUType(it)
-		availGPU := 0
-		if rm.gpuManager != nil && requiresGPU {
-			availGPU = rm.gpuManager.Available()
+		// GPU types are capacity-gated by GPU pool size, not host CPU/memory.
+		// The GPU is the scarce resource; CPU/memory on GPU-class hardware is abundant.
+		if instancetypes.IsGPUType(it) {
+			availGPU := 0
+			if rm.gpuManager != nil {
+				availGPU = rm.gpuManager.Available()
+			}
+			gpusNeeded := instancetypes.GPUCountForType(name)
+			count := 0
+			if gpusNeeded > 0 {
+				count = availGPU / gpusNeeded
+			}
+			if showCapacity {
+				for range count {
+					infos = append(infos, it)
+				}
+			} else if count > 0 {
+				infos = append(infos, it)
+			}
+			continue
 		}
+
 		count := canAllocateCount(
 			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 			vCPUs, memMiB,
 			1<<30, // effectively unlimited — let resources be the constraint
-			availGPU, requiresGPU,
+			0, false,
 		)
 
 		if showCapacity {
@@ -1738,6 +1755,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		mgr := gpu.NewManager(probe.Devices)
 		d.gpuManager = mgr
 		d.resourceMgr.reloadGPUTypes(models, mgr)
+		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
 		return
 	}
@@ -1749,6 +1767,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 		return
 	}
 	d.gpuManager = nil
+	d.instanceService.SetGPUClaimer(nil)
 	d.resourceMgr.reloadGPUTypes(nil, nil)
 	slog.Info("GPU passthrough disabled via config reload")
 }
@@ -1854,10 +1873,10 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	requiresGPU := instancetypes.IsGPUType(instanceType)
-	availGPU := 0
-	if rm.gpuManager != nil && requiresGPU {
-		availGPU = rm.gpuManager.Available()
+	// GPU capacity is managed exclusively by gpuManager.Claim; don't double-gate
+	// on host CPU/memory which is always abundant on GPU-class hardware.
+	if instancetypes.IsGPUType(instanceType) {
+		return count
 	}
 
 	return canAllocateCount(
@@ -1866,7 +1885,7 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 		instanceTypeVCPUs(instanceType),
 		instanceTypeMemoryMiB(instanceType),
 		count,
-		availGPU, requiresGPU,
+		0, false,
 	)
 }
 

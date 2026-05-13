@@ -25,6 +25,12 @@ GPU_FAMILY="${GPU_FAMILY:-g5}"
 
 export AWS_PROFILE=spinifex
 
+# AWS commands run as the invoking user so their ~/.aws/config (spinifex profile
+# + CA bundle) is used when the script is called via sudo.
+INVOKING_USER="${SUDO_USER:-$(id -un)}"
+INVOKING_HOME=$(getent passwd "$INVOKING_USER" | cut -d: -f6)
+aws_as_user() { sudo -u "$INVOKING_USER" env HOME="$INVOKING_HOME" AWS_PROFILE=spinifex aws "$@"; }
+
 # --- Wait for EC2 daemon to subscribe to NATS ---
 # Port 3000 (UI) becomes ready before the daemon finishes initialising.
 # Poll describe-key-pairs until it doesn't return InternalError.
@@ -32,7 +38,7 @@ echo "==> Waiting for EC2 daemon to be ready"
 DAEMON_TIMEOUT=60
 DAEMON_ELAPSED=0
 while [ $DAEMON_ELAPSED -lt $DAEMON_TIMEOUT ]; do
-    if aws ec2 describe-key-pairs --output text >/dev/null 2>&1; then
+    if aws_as_user ec2 describe-key-pairs --output text >/dev/null 2>&1; then
         break
     fi
     sleep 2
@@ -53,9 +59,9 @@ if [ ! -f "$SSH_KEY.pub" ]; then
 fi
 
 echo "==> Importing SSH key"
-! aws ec2 import-key-pair --key-name spinifex-key \
-    --public-key-material "fileb://$SSH_KEY.pub"
-aws ec2 describe-key-pairs
+aws_as_user ec2 import-key-pair --key-name spinifex-key \
+    --public-key-material "fileb://$SSH_KEY.pub" || true
+aws_as_user ec2 describe-key-pairs
 
 # --- GPU pre-flight (TEST_GPU=1 only) ---
 if [[ "$TEST_GPU" == "1" ]]; then
@@ -82,7 +88,7 @@ if [[ "$TEST_GPU" == "1" ]]; then
     echo "   GPU PCI ID: ${GPU_VENDOR_ID}:${GPU_DEVICE_ID}"
 
     echo "==> [GPU] Verifying ${GPU_FAMILY} instance types advertised"
-    G5_TYPES=$(aws ec2 describe-instance-types \
+    G5_TYPES=$(aws_as_user ec2 describe-instance-types \
         --query "InstanceTypes[?starts_with(InstanceType, \`${GPU_FAMILY}\`)].InstanceType" \
         --output text 2>/dev/null || true)
     if [[ -z "$G5_TYPES" ]]; then
@@ -110,7 +116,7 @@ esac
 
 AMI_NAME="ami-${IMAGE_NAME}"
 
-EXISTING_AMI_ID=$(aws ec2 describe-images \
+EXISTING_AMI_ID=$(aws_as_user ec2 describe-images \
     --query "Images[?Name=='${AMI_NAME}'] | [0].ImageId" \
     --output text)
 
@@ -137,7 +143,7 @@ else
     INSTANCE_TYPE="t3.small"
 fi
 
-AMI_ID=$(aws ec2 describe-images \
+AMI_ID=$(aws_as_user ec2 describe-images \
     --query "Images[?Name=='${AMI_NAME}'] | [0].ImageId" \
     --output text)
 
@@ -146,7 +152,7 @@ if [ -z "$AMI_ID" ] || [ "$AMI_ID" = "None" ]; then
     exit 1
 fi
 
-SUBNET_ID=$(aws ec2 describe-subnets --query 'Subnets[?MapPublicIpOnLaunch==`true`].SubnetId | [0]' --output text)
+SUBNET_ID=$(aws_as_user ec2 describe-subnets --query 'Subnets[?MapPublicIpOnLaunch==`true`].SubnetId | [0]' --output text)
 if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
     echo "❌ No subnet found"
     exit 1
@@ -154,7 +160,7 @@ fi
 
 echo "  AMI: $AMI_ID  type: $INSTANCE_TYPE  subnet: $SUBNET_ID"
 
-INSTANCE_ID=$(aws ec2 run-instances \
+INSTANCE_ID=$(aws_as_user ec2 run-instances \
     --image-id "$AMI_ID" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name spinifex-key \
@@ -173,7 +179,7 @@ echo "==> Waiting for instance to reach running state"
 COUNT=0
 STATE="unknown"
 while [ $COUNT -lt 60 ]; do
-    DESCRIBE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" 2>/dev/null) || {
+    DESCRIBE=$(aws_as_user ec2 describe-instances --instance-ids "$INSTANCE_ID" 2>/dev/null) || {
         sleep 2; COUNT=$((COUNT + 1)); continue
     }
     STATE=$(echo "$DESCRIBE" | jq -r '.Reservations[0].Instances[0].State.Name // "not-found"')
@@ -196,7 +202,7 @@ echo "==> Waiting for public IP assignment (up to 300s)"
 SSH_INST_PORT=22
 SSH_INST_HOST=""
 for _i in $(seq 1 300); do
-    _ip=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+    _ip=$(aws_as_user ec2 describe-instances --instance-ids "$INSTANCE_ID" \
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>/dev/null || true)
     if [ -n "$_ip" ] && [ "$_ip" != "None" ] && [ "$_ip" != "null" ]; then
         SSH_INST_HOST="$_ip"
@@ -256,14 +262,14 @@ if [[ "$TEST_GPU" == "1" ]]; then
                -o ConnectTimeout=5 -o BatchMode=yes \
                -p "$SSH_INST_PORT" -i "$SSH_KEY" \
                ec2-user@"$SSH_INST_HOST" \
-               'lspci 2>/dev/null | grep -i nvidia' 2>/dev/null; then
+               'lspci 2>/dev/null | grep -iE "nvidia|amdgpu|instinct"' 2>/dev/null; then
             GPU_VISIBLE=1
             break
         fi
         sleep 5
     done
     if [[ $GPU_VISIBLE -eq 0 ]]; then
-        echo "❌ NVIDIA GPU not visible in guest via lspci"
+        echo "❌ GPU not visible in guest via lspci"
         exit 1
     fi
     echo "   GPU visible in guest"

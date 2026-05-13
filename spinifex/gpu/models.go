@@ -25,6 +25,7 @@ var knownModels = map[string]modelInfo{
 	"10de:2782": {"NVIDIA GeForce RTX 4070", 12288},
 	"10de:2204": {"NVIDIA GeForce RTX 3090", 24576},
 	// AMD datacenter
+	"1002:75a0": {"AMD Instinct MI350X", 294896},
 	"1002:7448": {"AMD Instinct MI300X", 196608},
 	"1002:740c": {"AMD Instinct MI250X", 65536},
 	// AMD consumer
@@ -49,6 +50,7 @@ var computeModels = map[string]bool{
 	"10de:26b5": true, // L40
 	"10de:26b9": true, // L40S
 	// AMD datacenter
+	"1002:75a0": true, // MI350X
 	"1002:7448": true, // MI300X
 	"1002:740c": true, // MI250X
 }

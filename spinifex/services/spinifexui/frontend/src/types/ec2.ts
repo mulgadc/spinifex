@@ -243,7 +243,11 @@ export const createPlacementGroupSchema = z.object({
   groupName: z
     .string()
     .min(1, "Group name is required")
-    .max(255, "Group name must be 255 characters or less"),
+    .max(255, "Group name must be 255 characters or less")
+    .regex(
+      /^[\w\s._\-:/()#,@[\]+=&;{}!$*]+$/,
+      "Group name contains invalid characters",
+    ),
   strategy: z.string().min(1, "Strategy is required"),
 })
 

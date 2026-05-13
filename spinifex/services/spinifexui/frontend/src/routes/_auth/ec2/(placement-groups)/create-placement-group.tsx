@@ -138,6 +138,10 @@ function CreatePlacementGroup() {
   )
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`
+}
+
 function buildCreatePlacementGroupCommands(
   watch: (name?: string) => unknown,
 ): CliCommand[] {
@@ -145,6 +149,7 @@ function buildCreatePlacementGroupCommands(
   const name = typeof rawName === "string" ? rawName : ""
   const rawStrategy = watch("strategy")
   const strategy = typeof rawStrategy === "string" ? rawStrategy : ""
+  const nameValue = name ? shellSingleQuote(name) : "<GroupName>"
 
   return [
     {
@@ -155,7 +160,7 @@ function buildCreatePlacementGroupCommands(
           value: "AWS_PROFILE=spinifex aws ec2 create-placement-group",
         },
         { type: "flag", value: " \\\n  --group-name" },
-        { type: "value", value: ` ${name || "<GroupName>"}` },
+        { type: "value", value: ` ${nameValue}` },
         { type: "flag", value: " \\\n  --strategy" },
         { type: "value", value: ` ${strategy || "spread"}` },
       ],

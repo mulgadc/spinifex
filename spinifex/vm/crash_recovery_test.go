@@ -71,6 +71,11 @@ func TestRestartBackoff_Exponential(t *testing.T) {
 func crashTestManager(t *testing.T) (m *Manager, rc *fakeResourceController, rt *recordedTransitions, shuttingDown *atomic.Bool) {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	prevAfter := restartAfterFunc
+	t.Cleanup(func() { restartAfterFunc = prevAfter })
+	restartAfterFunc = func(_ time.Duration, _ func()) *time.Timer {
+		return time.NewTimer(time.Hour)
+	}
 	rc = newFakeResourceController()
 	rt = &recordedTransitions{}
 	shuttingDown = &atomic.Bool{}
@@ -309,12 +314,21 @@ func TestMaybeRestart_InsufficientResources(t *testing.T) {
 }
 
 // TestMaybeRestart_SchedulesRestart asserts the all-guards-pass branch
-// reaches the time.AfterFunc scheduling path. We can't easily wait the
-// full backoff, but the absence of an early-return signal (counter reset
-// or RestartCount mutation in MaybeRestart itself) tells us scheduling
-// happened.
+// reaches the scheduling path. The restartAfterFunc seam is overridden
+// so the real 5s+ backoff timer never fires — that timer would otherwise
+// fire post-test and panic on the manager's nil VolumeMounter.
 func TestMaybeRestart_SchedulesRestart(t *testing.T) {
 	m, _, _, _ := crashTestManager(t)
+
+	var scheduledDelay time.Duration
+	var scheduledCount atomic.Int32
+	prev := restartAfterFunc
+	t.Cleanup(func() { restartAfterFunc = prev })
+	restartAfterFunc = func(d time.Duration, _ func()) *time.Timer {
+		scheduledDelay = d
+		scheduledCount.Add(1)
+		return time.NewTimer(time.Hour)
+	}
 
 	instance := &VM{
 		ID:           "i-restart-schedule",
@@ -330,6 +344,8 @@ func TestMaybeRestart_SchedulesRestart(t *testing.T) {
 
 	m.MaybeRestart(instance)
 
+	assert.Equal(t, int32(1), scheduledCount.Load(), "MaybeRestart must schedule exactly one restart")
+	assert.Equal(t, RestartBackoff(0), scheduledDelay, "scheduled delay must match backoff for RestartCount=0")
 	assert.Equal(t, 1, instance.Health.CrashCount,
 		"counter reset path must not run when window is still open")
 	assert.Equal(t, 0, instance.Health.RestartCount,

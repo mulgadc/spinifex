@@ -21,6 +21,11 @@ const (
 	restartBackoffMax  = 2 * time.Minute
 )
 
+// restartAfterFunc is the scheduling seam used by MaybeRestart. Tests
+// override it to capture the scheduled callback without firing a real
+// timer (the backoff is multi-second).
+var restartAfterFunc = time.AfterFunc
+
 // RestartBackoff computes the exponential backoff delay for the given
 // restart count. Pure function — no side effects.
 func RestartBackoff(restartCount int) time.Duration {
@@ -200,7 +205,7 @@ func (m *Manager) MaybeRestart(instance *VM) {
 		"delay", delay,
 		"restartCount", restartCount+1)
 
-	time.AfterFunc(delay, func() {
+	restartAfterFunc(delay, func() {
 		m.RestartCrashedInstance(instance)
 	})
 }

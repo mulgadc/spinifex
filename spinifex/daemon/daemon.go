@@ -746,8 +746,9 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.terminate", d.handleEC2TerminateStoppedInstance, "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", d.handleEC2DescribeStoppedInstances, "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", d.handleEC2DescribeTerminatedInstances, "spinifex-workers"},
-		// these 2 fan out to all nodes and gateway aggregates the results
+		// these 3 fan out to all nodes and gateway aggregates the results
 		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
+		{"ec2.DescribeInstanceStatus", d.handleEC2DescribeInstanceStatus, ""},
 		{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
 		{"ec2.EnableEbsEncryptionByDefault", d.handleEC2EnableEbsEncryptionByDefault, "spinifex-workers"},
 		{"ec2.DisableEbsEncryptionByDefault", d.handleEC2DisableEbsEncryptionByDefault, "spinifex-workers"},

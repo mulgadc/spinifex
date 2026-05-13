@@ -313,6 +313,14 @@ func (d *Daemon) handleEC2DescribeInstanceTypes(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceTypes)
 }
 
+// handleEC2DescribeInstanceStatus responds with health/status entries for the
+// running (and, with IncludeAllInstances, in-flight) instances on this node
+// visible to the caller. Fan-out subscription — gateway aggregates and adds
+// stopped instances from the parallel KV query.
+func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
+	handleNATSRequest(msg, d.instanceService.DescribeInstanceStatus)
+}
+
 // startStoppedInstanceRequest is the payload for ec2.start topic
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)

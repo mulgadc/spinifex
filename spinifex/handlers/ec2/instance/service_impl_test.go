@@ -2291,3 +2291,229 @@ func TestSetters(t *testing.T) {
 	svc.SetRunInstancesDeps(&fakeAMILoader{}, &fakeKeyValidator{}, nil, nil)
 	require.NotNil(t, svc)
 }
+
+// --- DescribeInstanceStatus ---
+
+func instanceStatusService(t *testing.T, az string, vms map[string]*vm.VM) *InstanceServiceImpl {
+	t.Helper()
+	return &InstanceServiceImpl{
+		config: &config.Config{AZ: az},
+		vmMgr:  mgrWith(vms),
+	}
+}
+
+func runningVM(id, owner string) *vm.VM {
+	return &vm.VM{
+		ID:        id,
+		Status:    vm.StateRunning,
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-" + id),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String(id)},
+	}
+}
+
+func TestDescribeInstanceStatus_Empty(t *testing.T) {
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_RunningInstance(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "i-aaa", *s.InstanceId)
+	assert.Equal(t, "az-a", *s.AvailabilityZone)
+	assert.Equal(t, "running", *s.InstanceState.Name)
+	assert.Equal(t, int64(16), *s.InstanceState.Code)
+	assert.Equal(t, "ok", *s.InstanceStatus.Status)
+	assert.Equal(t, "ok", *s.SystemStatus.Status)
+	require.Len(t, s.InstanceStatus.Details, 1)
+	assert.Equal(t, "passed", *s.InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_AccountFilteringHidesOtherTenant(t *testing.T) {
+	v := runningVM("i-other", "999988887777")
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, "111122223333")
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_StoppedExcludedByDefault(t *testing.T) {
+	owner := "111122223333"
+	stopped := runningVM("i-stop", owner)
+	stopped.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_IncludeAllSurfacesPending(t *testing.T) {
+	owner := "111122223333"
+	pend := runningVM("i-pend", owner)
+	pend.Status = vm.StatePending
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{pend.ID: pend})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "pending", *out.InstanceStatuses[0].InstanceState.Name)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].SystemStatus.Status)
+}
+
+func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
+	owner := "111122223333"
+	stopped := runningVM("i-stop", owner)
+	stopped.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "stopped", *out.InstanceStatuses[0].InstanceState.Name)
+}
+
+func TestDescribeInstanceStatus_TerminatedNeverReturned(t *testing.T) {
+	owner := "111122223333"
+	term := runningVM("i-term", owner)
+	term.Status = vm.StateTerminated
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{term.ID: term})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_ErrorStateNeverReturned(t *testing.T) {
+	owner := "111122223333"
+	errVM := runningVM("i-err", owner)
+	errVM.Status = vm.StateError
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errVM.ID: errVM})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_InstanceIDFilter(t *testing.T) {
+	owner := "111122223333"
+	keep := runningVM("i-keep", owner)
+	drop := runningVM("i-drop", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{keep.ID: keep, drop.ID: drop})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{aws.String("i-keep")},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-keep", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
+	_, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{aws.String("not-an-id")},
+	}, utils.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
+}
+
+func TestDescribeInstanceStatus_UnknownFilter(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	_, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("event.code"),
+			Values: []*string{aws.String("system-reboot")},
+		}},
+	}, owner)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+}
+
+func TestDescribeInstanceStatus_StateNameFilter(t *testing.T) {
+	owner := "111122223333"
+	run := runningVM("i-run", owner)
+	stop := runningVM("i-stop", owner)
+	stop.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{run.ID: run, stop.ID: stop})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("instance-state-name"),
+			Values: []*string{aws.String("running")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-run", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_AvailabilityZoneFilter(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("availability-zone"),
+			Values: []*string{aws.String("az-a")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	out, err = svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("availability-zone"),
+			Values: []*string{aws.String("az-b")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
+	owner := "111122223333"
+	tagged := runningVM("i-tag", owner)
+	tagged.Instance.Tags = []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("foo")}}
+	plain := runningVM("i-plain", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{tagged.ID: tagged, plain.ID: plain})
+
+	out, err := svc.DescribeInstanceStatus(&ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("tag:Name"),
+			Values: []*string{aws.String("foo")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
+}

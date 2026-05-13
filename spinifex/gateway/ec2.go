@@ -80,6 +80,9 @@ var ec2Actions = map[string]EC2Handler{
 	"DescribeInstanceTypes": ec2Handler(func(input *ec2.DescribeInstanceTypesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceTypes(input, gw.NATSConn, gw.ExpectedNodes)
 	}),
+	"DescribeInstanceStatus": ec2Handler(func(input *ec2.DescribeInstanceStatusInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.DescribeInstanceStatus(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID, gw.AZ)
+	}),
 	"GetConsoleOutput": ec2Handler(func(input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.GetConsoleOutput(input, gw.NATSConn, accountID)
 	}),

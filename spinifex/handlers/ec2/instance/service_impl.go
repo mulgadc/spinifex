@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -1343,6 +1344,18 @@ var DescribeInstancesValidFilters = map[string]bool{
 	"tag-value":           true,
 }
 
+// DescribeInstanceStatusValidFilters lists the filter names accepted by
+// DescribeInstanceStatus. The set is deliberately minimal: tag:* is
+// auto-accepted by ParseFilters, and the AWS-defined event.*, instance-status.*
+// and system-status.* filters are rejected because they cannot meaningfully
+// narrow Mulga's static-payload health model (no events, single static value
+// per status field). The gateway imports this map for pre-publish validation.
+var DescribeInstanceStatusValidFilters = map[string]bool{
+	"availability-zone":   true,
+	"instance-state-code": true,
+	"instance-state-name": true,
+}
+
 // IsInstanceVisible reports whether the caller can see this instance.
 // Pre-Phase4 instances (empty AccountID) are only visible to root (GlobalAccountID).
 func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
@@ -2046,4 +2059,162 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInsta
 	slog.Info("DescribeInstanceAttribute: completed",
 		"instanceId", instanceID, "attribute", attribute, "accountID", accountID)
 	return output, nil
+}
+
+// describeInstanceStatusIncludedStates returns the VM states that surface in
+// DescribeInstanceStatus for the given IncludeAllInstances setting. Default
+// (false) returns only running. true also returns the in-flight and stopped
+// states. Terminated and error are never returned — terminated matches AWS
+// behaviour (drops from DescribeInstanceStatus shortly after termination);
+// error is a Spinifex-internal state whose name is not a valid AWS state
+// label.
+func describeInstanceStatusIncludedStates(includeAll bool) map[vm.InstanceState]bool {
+	if !includeAll {
+		return map[vm.InstanceState]bool{vm.StateRunning: true}
+	}
+	return map[vm.InstanceState]bool{
+		vm.StateRunning:      true,
+		vm.StatePending:      true,
+		vm.StateProvisioning: true,
+		vm.StateStopping:     true,
+		vm.StateStopped:      true,
+		vm.StateShuttingDown: true,
+	}
+}
+
+// buildInstanceStatus produces the static per-VM InstanceStatus payload.
+// Running instances report ok/passed; every other included state reports
+// not-applicable. Mulga does not perform real health probing — the values
+// reflect lifecycle state only.
+func (s *InstanceServiceImpl) buildInstanceStatus(v *vm.VM) *ec2.InstanceStatus {
+	state := &ec2.InstanceState{}
+	if info, ok := vm.EC2StateCodes[v.Status]; ok {
+		state.SetCode(info.Code)
+		state.SetName(info.Name)
+	} else {
+		state.SetCode(0)
+		state.SetName("pending")
+	}
+
+	status := instanceStatusNotApplicable
+	reachability := instanceStatusNotApplicable
+	if v.Status == vm.StateRunning {
+		status = instanceStatusOK
+		reachability = instanceStatusPassed
+	}
+
+	return &ec2.InstanceStatus{
+		AvailabilityZone: aws.String(s.config.AZ),
+		InstanceId:       aws.String(v.ID),
+		InstanceState:    state,
+		InstanceStatus: &ec2.InstanceStatusSummary{
+			Status: aws.String(status),
+			Details: []*ec2.InstanceStatusDetails{{
+				Name:   aws.String("reachability"),
+				Status: aws.String(reachability),
+			}},
+		},
+		SystemStatus: &ec2.InstanceStatusSummary{
+			Status: aws.String(status),
+			Details: []*ec2.InstanceStatusDetails{{
+				Name:   aws.String("reachability"),
+				Status: aws.String(reachability),
+			}},
+		},
+	}
+}
+
+const (
+	instanceStatusOK            = "ok"
+	instanceStatusPassed        = "passed"
+	instanceStatusNotApplicable = "not-applicable"
+)
+
+// instanceStatusMatchesFilters checks whether a rendered InstanceStatus and
+// its source VM satisfy all parsed filters. tag:* filters use the VM's tag
+// set (instance-level tags). Other recognised names match against the
+// rendered status fields.
+func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			continue
+		}
+		var field string
+		switch name {
+		case "availability-zone":
+			if is.AvailabilityZone != nil {
+				field = *is.AvailabilityZone
+			}
+		case "instance-state-name":
+			if is.InstanceState != nil && is.InstanceState.Name != nil {
+				field = *is.InstanceState.Name
+			}
+		case "instance-state-code":
+			if is.InstanceState != nil && is.InstanceState.Code != nil {
+				field = strconv.FormatInt(*is.InstanceState.Code, 10)
+			}
+		default:
+			return false
+		}
+		if !filterutil.MatchesAny(values, field) {
+			return false
+		}
+	}
+
+	if v.Instance != nil {
+		tags := filterutil.EC2TagsToMap(v.Instance.Tags)
+		return filterutil.MatchesTags(filters, tags)
+	}
+	return filterutil.MatchesTags(filters, nil)
+}
+
+// DescribeInstanceStatus returns per-VM health/status entries for the running
+// instances on this node visible to the caller. With IncludeAllInstances=true
+// the daemon also surfaces in-flight and stopping states (stopped instances
+// come from the gateway's parallel KV query, not this handler). Terminated
+// and error-state VMs are never surfaced.
+func (s *InstanceServiceImpl) DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error) {
+	slog.Info("Processing DescribeInstanceStatus request from this node", "accountID", accountID)
+
+	instanceIDFilter := make(map[string]bool)
+	for _, id := range input.InstanceIds {
+		if id == nil || *id == "" {
+			continue
+		}
+		if !strings.HasPrefix(*id, "i-") {
+			return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
+		}
+		instanceIDFilter[*id] = true
+	}
+
+	parsedFilters, err := filterutil.ParseFilters(input.Filters, DescribeInstanceStatusValidFilters)
+	if err != nil {
+		slog.Warn("DescribeInstanceStatus: invalid filter", "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	includedStates := describeInstanceStatusIncludedStates(aws.BoolValue(input.IncludeAllInstances))
+
+	statuses := make([]*ec2.InstanceStatus, 0)
+	s.vmMgr.View(func(vms map[string]*vm.VM) {
+		for _, v := range vms {
+			if !IsInstanceVisible(accountID, v.AccountID) {
+				continue
+			}
+			if len(instanceIDFilter) > 0 && !instanceIDFilter[v.ID] {
+				continue
+			}
+			if !includedStates[v.Status] {
+				continue
+			}
+			is := s.buildInstanceStatus(v)
+			if len(parsedFilters) > 0 && !instanceStatusMatchesFilters(v, is, parsedFilters) {
+				continue
+			}
+			statuses = append(statuses, is)
+		}
+	})
+
+	slog.Info("DescribeInstanceStatus completed", "count", len(statuses))
+	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses}, nil
 }

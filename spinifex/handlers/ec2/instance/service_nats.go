@@ -49,6 +49,12 @@ func (s *NATSInstanceService) DescribeInstanceTypes(_ *ec2.DescribeInstanceTypes
 	return nil, fmt.Errorf("DescribeInstanceTypes is fan-out; use gateway scatter-gather, not NATSInstanceService")
 }
 
+// DescribeInstanceStatus is a fan-out operation; use the gateway's scatter-gather
+// helper instead of this single-node client.
+func (s *NATSInstanceService) DescribeInstanceStatus(_ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
+	return nil, fmt.Errorf("DescribeInstanceStatus is fan-out; use gateway scatter-gather, not NATSInstanceService")
+}
+
 func (s *NATSInstanceService) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
 	return utils.NATSRequest[ec2.DescribeInstanceAttributeOutput](s.natsConn, "ec2.DescribeInstanceAttribute", input, 30*time.Second, accountID)
 }

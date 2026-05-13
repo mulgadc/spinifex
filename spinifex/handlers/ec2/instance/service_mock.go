@@ -44,6 +44,10 @@ func (s *MockInstanceService) DescribeInstanceTypes(_ *ec2.DescribeInstanceTypes
 	return &ec2.DescribeInstanceTypesOutput{}, nil
 }
 
+func (s *MockInstanceService) DescribeInstanceStatus(_ *ec2.DescribeInstanceStatusInput, _ string) (*ec2.DescribeInstanceStatusOutput, error) {
+	return &ec2.DescribeInstanceStatusOutput{}, nil
+}
+
 func (s *MockInstanceService) DescribeInstanceAttribute(input *ec2.DescribeInstanceAttributeInput, _ string) (*ec2.DescribeInstanceAttributeOutput, error) {
 	return &ec2.DescribeInstanceAttributeOutput{InstanceId: input.InstanceId}, nil
 }

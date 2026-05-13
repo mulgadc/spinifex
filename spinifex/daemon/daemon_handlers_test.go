@@ -3483,6 +3483,62 @@ func TestHandleEC2DescribeInstances_MalformedInstanceID(t *testing.T) {
 	assert.Contains(t, string(reply.Data), "InvalidInstanceID.Malformed")
 }
 
+// --- handleEC2DescribeInstanceStatus round-trip ---
+
+func TestHandleEC2DescribeInstanceStatus_RoundTrip(t *testing.T) {
+	daemon := createFullTestDaemon(t, sharedNATSURL)
+
+	runningVM := &vm.VM{
+		ID:        "i-status-001",
+		Status:    vm.StateRunning,
+		AccountID: testAccountID,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-status-001"),
+			OwnerId:       aws.String(testAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-status-001")},
+	}
+	daemon.vmMgr.Insert(runningVM)
+	t.Cleanup(func() { daemon.vmMgr.Delete(runningVM.ID) })
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.rt", daemon.handleEC2DescribeInstanceStatus)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reqData, _ := json.Marshal(&ec2.DescribeInstanceStatusInput{})
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstanceStatus.rt", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var output ec2.DescribeInstanceStatusOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &output))
+
+	found := false
+	for _, s := range output.InstanceStatuses {
+		if s.InstanceId != nil && *s.InstanceId == "i-status-001" {
+			found = true
+			assert.Equal(t, "running", *s.InstanceState.Name)
+			assert.Equal(t, "ok", *s.InstanceStatus.Status)
+			assert.Equal(t, "ok", *s.SystemStatus.Status)
+		}
+	}
+	assert.True(t, found, "expected running instance in DescribeInstanceStatus output")
+}
+
+func TestHandleEC2DescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
+	daemon := createFullTestDaemon(t, sharedNATSURL)
+
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.malformed", daemon.handleEC2DescribeInstanceStatus)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.DescribeInstanceStatusInput{InstanceIds: []*string{aws.String("not-an-id")}}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstanceStatus.malformed", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(reply.Data), "InvalidInstanceID.Malformed")
+}
+
 // --- Terminated instance handler tests ---
 
 func TestHandleEC2DescribeTerminatedInstances_ReturnsTerminatedInstances(t *testing.T) {

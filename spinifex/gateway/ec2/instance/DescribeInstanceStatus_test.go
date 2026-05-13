@@ -1,6 +1,7 @@
 package gateway_ec2_instance
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -266,6 +267,193 @@ func TestBuildInstanceStatusFromInstance_FallbackStateName(t *testing.T) {
 	in := &ec2.Instance{InstanceId: aws.String("i-x")}
 	got := buildInstanceStatusFromInstance(in, "az-a")
 	assert.Equal(t, "stopped", *got.InstanceState.Name)
+}
+
+// Regression: the stopped-instance handler unmarshals with DisallowUnknownFields,
+// so forwarding the raw DescribeInstanceStatusInput JSON failed with ValidationError
+// because of the IncludeAllInstances field. The gateway must project to
+// DescribeInstancesInput before publishing.
+func TestDescribeInstanceStatus_IncludeAllProjectsInputForStoppedHandler(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
+		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
+	})
+	require.NoError(t, err)
+
+	var capturedReq ec2.DescribeInstancesInput
+	var unmarshalErr error
+	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+		dec := json.NewDecoder(bytes.NewReader(msg.Data))
+		dec.DisallowUnknownFields()
+		unmarshalErr = dec.Decode(&capturedReq)
+		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{
+				Instances: []*ec2.Instance{{
+					InstanceId: aws.String("i-stop"),
+					State:      &ec2.InstanceState{Code: aws.Int64(80), Name: aws.String("stopped")},
+				}},
+			}},
+		})
+	})
+	require.NoError(t, err)
+
+	input := &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+		InstanceIds:         []*string{aws.String("i-stop")},
+	}
+	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	require.NoError(t, err)
+	require.NoError(t, unmarshalErr, "projected input must decode cleanly under DisallowUnknownFields")
+	require.Len(t, out.InstanceStatuses, 1)
+	require.NotNil(t, capturedReq.InstanceIds)
+	require.Len(t, capturedReq.InstanceIds, 1)
+	assert.Equal(t, "i-stop", *capturedReq.InstanceIds[0])
+}
+
+func TestStoppedCompatibleFilters_StripsStatusOnlyNames(t *testing.T) {
+	filters := []*ec2.Filter{
+		{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
+		{Name: aws.String("instance-state-code"), Values: []*string{aws.String("80")}},
+		{Name: aws.String("instance-state-name"), Values: []*string{aws.String("stopped")}},
+		{Name: aws.String("tag:Name"), Values: []*string{aws.String("foo")}},
+	}
+	got := stoppedCompatibleFilters(filters)
+	require.Len(t, got, 2)
+	names := []string{*got[0].Name, *got[1].Name}
+	assert.ElementsMatch(t, []string{"instance-state-name", "tag:Name"}, names)
+}
+
+func TestStoppedCompatibleFilters_Empty(t *testing.T) {
+	assert.Nil(t, stoppedCompatibleFilters(nil))
+	assert.Nil(t, stoppedCompatibleFilters([]*ec2.Filter{}))
+}
+
+func TestFilterStoppedStatuses_AvailabilityZoneMatch(t *testing.T) {
+	in := []*ec2.InstanceStatus{
+		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
+			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
+	}
+	filters := []*ec2.Filter{
+		{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
+	}
+	got := filterStoppedStatuses(in, filters, "az-a")
+	require.Len(t, got, 1)
+}
+
+func TestFilterStoppedStatuses_AvailabilityZoneMiss(t *testing.T) {
+	in := []*ec2.InstanceStatus{
+		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
+			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
+	}
+	filters := []*ec2.Filter{
+		{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-b")}},
+	}
+	got := filterStoppedStatuses(in, filters, "az-a")
+	assert.Empty(t, got)
+}
+
+func TestFilterStoppedStatuses_StateCodeMatch(t *testing.T) {
+	in := []*ec2.InstanceStatus{
+		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
+			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
+	}
+	filters := []*ec2.Filter{
+		{Name: aws.String("instance-state-code"), Values: []*string{aws.String("80")}},
+	}
+	got := filterStoppedStatuses(in, filters, "az-a")
+	require.Len(t, got, 1)
+}
+
+func TestFilterStoppedStatuses_StateCodeMiss(t *testing.T) {
+	in := []*ec2.InstanceStatus{
+		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
+			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
+	}
+	filters := []*ec2.Filter{
+		{Name: aws.String("instance-state-code"), Values: []*string{aws.String("16")}},
+	}
+	got := filterStoppedStatuses(in, filters, "az-a")
+	assert.Empty(t, got)
+}
+
+func TestFilterStoppedStatuses_NoFiltersPassthrough(t *testing.T) {
+	in := []*ec2.InstanceStatus{{InstanceId: aws.String("i-1")}}
+	got := filterStoppedStatuses(in, nil, "az-a")
+	assert.Equal(t, in, got)
+}
+
+func TestFilterStoppedStatuses_UnknownFilterIgnored(t *testing.T) {
+	in := []*ec2.InstanceStatus{
+		{InstanceId: aws.String("i-1"), AvailabilityZone: aws.String("az-a"),
+			InstanceState: &ec2.InstanceState{Code: aws.Int64(80)}},
+	}
+	// Filter that the stopped-bucket already applies (instance-state-name)
+	// should not also be enforced gateway-side — pass-through.
+	filters := []*ec2.Filter{
+		{Name: aws.String("instance-state-name"), Values: []*string{aws.String("running")}},
+	}
+	got := filterStoppedStatuses(in, filters, "az-a")
+	require.Len(t, got, 1)
+}
+
+func TestDescribeInstanceStatus_IncludeAllWithAZFilterMatches(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
+		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
+	})
+	require.NoError(t, err)
+
+	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{
+				InstanceId: aws.String("i-stop"),
+				State:      &ec2.InstanceState{Code: aws.Int64(80), Name: aws.String("stopped")},
+			}}}},
+		})
+	})
+	require.NoError(t, err)
+
+	input := &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+		Filters: []*ec2.Filter{
+			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-a")}},
+		},
+	}
+	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-stop", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_IncludeAllWithAZFilterMisses(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+
+	_, err := nc.Subscribe("ec2.DescribeInstanceStatus", func(msg *nats.Msg) {
+		respondJSON(t, msg, &ec2.DescribeInstanceStatusOutput{})
+	})
+	require.NoError(t, err)
+
+	_, err = nc.QueueSubscribe("ec2.DescribeStoppedInstances", "spinifex-workers", func(msg *nats.Msg) {
+		respondJSON(t, msg, &ec2.DescribeInstancesOutput{
+			Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{
+				InstanceId: aws.String("i-stop"),
+				State:      &ec2.InstanceState{Code: aws.Int64(80), Name: aws.String("stopped")},
+			}}}},
+		})
+	})
+	require.NoError(t, err)
+
+	input := &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+		Filters: []*ec2.Filter{
+			{Name: aws.String("availability-zone"), Values: []*string{aws.String("az-other")}},
+		},
+	}
+	out, err := DescribeInstanceStatus(input, nc, 1, "123456789012", "az-a")
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
 }
 
 func TestDedupStatuses_FirstWins(t *testing.T) {

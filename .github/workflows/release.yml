@@ -199,7 +199,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token

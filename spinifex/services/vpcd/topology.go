@@ -812,12 +812,18 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 		return
 	}
 
+	// Logged at INFO so the `<MAC> <IP>` string is captured in journals — the SB
+	// Address_Set ovn-northd derives for SG-to-SG ACL matches keys off this exact
+	// field, and a malformed addresses entry silently breaks cross-SG traffic.
 	slog.Info("vpcd: created logical switch port for ENI",
 		"port", portName,
 		"switch", switchName,
 		"eni_id", evt.NetworkInterfaceId,
 		"ip", evt.PrivateIpAddress,
+		"mac", evt.MacAddress,
+		"addr_str", addrStr,
 		"sgs", evt.SecurityGroupIds,
+		"port_groups", pgNames,
 	)
 	respond(msg, nil)
 }
@@ -951,6 +957,15 @@ func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName string, 
 	if err := h.ovn.UpdatePortGroupMemberships(ctx, lspName, addPGs, removePGs); err != nil {
 		return false, err
 	}
+	// Logged at INFO so SG-to-SG ACL failures can be correlated with the exact
+	// port-group join/leave events that drive ovn-northd's SB Address_Set
+	// derivation
+	slog.Info("vpcd: reconciled port group memberships",
+		"port", lspName,
+		"added", addPGs,
+		"removed", removePGs,
+		"desired", desiredSGs,
+	)
 	return true, nil
 }
 

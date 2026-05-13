@@ -46,6 +46,36 @@ install_tofu() {
     rm -rf "$tmp"
 }
 
+# dump_ovn_state captures OVN NB port_group/ACL state and the SB Address_Set
+# rows ovn-northd derives from port-group membership. Called inside run_workbook
+# on assertion failure (before destroy, while VMs still exist) and again from
+# the EXIT trap (after destroy, mostly for parity).
+#
+# SG-to-SG ACL matches like `ip4.src == $sg_<id>_ip4` resolve against SB
+# Address_Sets that ovn-northd auto-derives from port-group LSP addresses; if
+# this dump shows port groups with members but no matching `<pg>_ip4` address
+# set (or an empty one), that pinpoints the SG enforcement break.
+dump_ovn_state() {
+    local label="${1:-ovn-state}"
+    log "--- ${label}: ovn-nbctl ls-list ---"
+    sudo ovn-nbctl --no-leader-only ls-list 2>&1 | head -40 || true
+    log "--- ${label}: ovn-nbctl lr-list ---"
+    sudo ovn-nbctl --no-leader-only lr-list 2>&1 | head -40 || true
+    log "--- ${label}: port groups (name, ports, ACL count) ---"
+    sudo ovn-nbctl --no-leader-only --bare --columns=name,ports list port_group 2>&1 | head -200 || true
+    log "--- ${label}: logical_switch_port name/addresses/port_security ---"
+    sudo ovn-nbctl --no-leader-only --bare --columns=name,addresses,port_security \
+        list logical_switch_port 2>&1 | head -200 || true
+    log "--- ${label}: NB ACLs (priority, direction, match, action) ---"
+    sudo ovn-nbctl --no-leader-only --bare \
+        --columns=priority,direction,match,action,name list acl 2>&1 | head -200 || true
+    log "--- ${label}: SB address_sets (auto-derived from port groups) ---"
+    sudo ovn-sbctl --no-leader-only --bare --columns=name,addresses list address_set 2>&1 | head -200 || true
+    log "--- ${label}: SB port bindings (logical_port, mac, chassis, up) ---"
+    sudo ovn-sbctl --no-leader-only --bare \
+        --columns=logical_port,mac,chassis,up list port_binding 2>&1 | head -80 || true
+}
+
 cleanup() {
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ]; then
@@ -284,6 +314,9 @@ run_workbook() {
         log "  PASS ${example}"
     else
         log "  FAIL ${example}: assertion"
+        # Capture OVN state while VMs still exist — the EXIT trap fires after
+        # destroy, by which point port groups, address sets, and ACLs are gone.
+        dump_ovn_state "post-fail ${example} (pre-destroy)"
         rc=1
     fi
 

@@ -122,6 +122,37 @@ if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
 fi
 echo "   $SUBNET_ID"
 
+VPC_ID=$(aws ec2 describe-subnets --subnet-ids "$SUBNET_ID" \
+    --query 'Subnets[0].VpcId' --output text 2>/dev/null || true)
+if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+    echo "Could not resolve VPC for subnet $SUBNET_ID"
+    exit 1
+fi
+
+# --- Ensure SSH security group ---
+# The default VPC SG only allows intra-SG traffic; we need a group that
+# permits port 22 from anywhere so the SSH wait below can connect.
+SSH_SG_NAME="spinifex-gpu-ssh"
+echo "==> Ensuring SSH security group (${SSH_SG_NAME})"
+SG_ID=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=${SSH_SG_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
+    SG_ID=$(aws ec2 create-security-group \
+        --group-name "$SSH_SG_NAME" \
+        --description "Allow SSH access to GPU instances" \
+        --vpc-id "$VPC_ID" \
+        --query 'GroupId' --output text)
+    aws ec2 authorize-security-group-ingress \
+        --group-id "$SG_ID" \
+        --protocol tcp \
+        --port 22 \
+        --cidr 0.0.0.0/0 >/dev/null
+    echo "   Created $SG_ID"
+else
+    echo "   Reusing $SG_ID"
+fi
+
 # --- Ensure SSH key ---
 if [ ! -f "$SSH_KEY" ]; then
     echo "==> Generating SSH key"
@@ -142,6 +173,7 @@ ID=$(aws ec2 run-instances \
     --instance-type "$INSTANCE_TYPE" \
     --key-name spinifex-key \
     --subnet-id "$SUBNET_ID" \
+    --security-group-ids "$SG_ID" \
     --count 1 \
     --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${DISK_GB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
     --query 'Instances[0].InstanceId' --output text)

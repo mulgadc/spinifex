@@ -48,10 +48,13 @@ import (
 func drainAndClose(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	done := make(chan struct{})
-	nc.SetClosedHandler(func(*nats.Conn) { close(done) })
+	var once sync.Once
+	nc.SetClosedHandler(func(*nats.Conn) { once.Do(func() { close(done) }) })
 	if err := nc.Drain(); err != nil {
 		nc.Close()
-		return
+		// Do not return early: the handler callback may still be running
+		// (e.g. writing state to the temp dir). Fall through to the wait so
+		// we give it time to finish before t.TempDir() RemoveAll runs.
 	}
 	select {
 	case <-done:

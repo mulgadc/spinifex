@@ -1349,7 +1349,7 @@ var DescribeInstancesValidFilters = map[string]bool{
 // auto-accepted by ParseFilters, and the AWS-defined event.*, instance-status.*
 // and system-status.* filters are rejected because they cannot meaningfully
 // narrow Mulga's static-payload health model (no events, single static value
-// per status field). The gateway imports this map for pre-publish validation.
+// per status field).
 var DescribeInstanceStatusValidFilters = map[string]bool{
 	"availability-zone":   true,
 	"instance-state-code": true,

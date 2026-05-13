@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -22,8 +21,8 @@ const notApplicable = "not-applicable"
 // DescribeInstanceStatus queries all spinifex nodes for the status of their
 // running instances via NATS and aggregates the results. When the caller asks
 // for IncludeAllInstances, the gateway also queries the stopped-instance KV
-// bucket in parallel and synthesises an InstanceStatus entry for each stopped
-// instance with status/reachability=not-applicable.
+// bucket and synthesises an InstanceStatus entry for each stopped instance
+// with status/reachability=not-applicable.
 //
 // Input validation (i- prefix, filter names) happens daemon-side via the
 // service layer, matching the pattern used by every other Describe* endpoint.
@@ -114,17 +113,9 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	}
 
 	if aws.BoolValue(input.IncludeAllInstances) {
-		var kvMu sync.Mutex
-		var kvWg sync.WaitGroup
-		kvWg.Go(func() {
-			stopped := queryStoppedInstancesForStatus(natsConn, jsonData, accountID, az)
-			if len(stopped) > 0 {
-				kvMu.Lock()
-				allStatuses = append(allStatuses, stopped...)
-				kvMu.Unlock()
-			}
-		})
-		kvWg.Wait()
+		if stopped := queryStoppedInstancesForStatus(natsConn, jsonData, accountID, az); len(stopped) > 0 {
+			allStatuses = append(allStatuses, stopped...)
+		}
 	}
 
 	finalStatuses := dedupStatuses(allStatuses)
@@ -137,42 +128,22 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
 }
 
-// queryStoppedInstancesForStatus performs a single NATS request to the
-// stopped-KV responder (queue group) and transforms each returned *ec2.Instance
-// into an *ec2.InstanceStatus carrying status/reachability=not-applicable.
+// queryStoppedInstancesForStatus reuses the DescribeInstances KV bucket helper
+// and transforms each returned *ec2.Instance into an *ec2.InstanceStatus
+// carrying status/reachability=not-applicable.
 func queryStoppedInstancesForStatus(natsConn *nats.Conn, jsonData []byte, accountID, az string) []*ec2.InstanceStatus {
-	reqMsg := nats.NewMsg("ec2.DescribeStoppedInstances")
-	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
-	if err != nil {
-		slog.Warn("DescribeInstanceStatus: Failed to query stopped-instance bucket", "err", err)
-		return nil
-	}
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-		code := ""
-		if responseError.Code != nil {
-			code = *responseError.Code
-		}
-		slog.Warn("DescribeInstanceStatus: Stopped-instance bucket query returned error", "code", code)
-		return nil
-	}
-	var output ec2.DescribeInstancesOutput
-	if err := json.Unmarshal(msg.Data, &output); err != nil {
-		slog.Error("DescribeInstanceStatus: Failed to unmarshal stopped-instance response", "err", err)
-		return nil
-	}
+	reservations := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
-	for _, res := range output.Reservations {
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
 		for _, inst := range res.Instances {
 			if inst == nil || inst.InstanceId == nil {
 				continue
 			}
 			statuses = append(statuses, buildInstanceStatusFromInstance(inst, "stopped", az))
 		}
-	}
-	if len(statuses) > 0 {
-		slog.Info("DescribeInstanceStatus: Collected statuses from stopped-instance bucket", "count", len(statuses))
 	}
 	return statuses
 }

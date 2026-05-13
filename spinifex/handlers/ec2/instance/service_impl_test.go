@@ -2391,6 +2391,8 @@ func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "stopped", *out.InstanceStatuses[0].InstanceState.Name)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].SystemStatus.Status)
 }
 
 func TestDescribeInstanceStatus_TerminatedNeverReturned(t *testing.T) {

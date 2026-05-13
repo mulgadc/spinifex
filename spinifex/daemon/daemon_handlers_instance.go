@@ -313,10 +313,7 @@ func (d *Daemon) handleEC2DescribeInstanceTypes(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceTypes)
 }
 
-// handleEC2DescribeInstanceStatus responds with health/status entries for the
-// running (and, with IncludeAllInstances, in-flight) instances on this node
-// visible to the caller. Fan-out subscription — gateway aggregates and adds
-// stopped instances from the parallel KV query.
+// handleEC2DescribeInstanceStatus responds with status entries for VMs on this node visible to the caller.
 func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceStatus)
 }

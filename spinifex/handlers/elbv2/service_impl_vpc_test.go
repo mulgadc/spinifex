@@ -679,3 +679,84 @@ func TestCreateLoadBalancer_AMIResolverError_ReturnsServerInternal(t *testing.T)
 	require.NoError(t, err)
 	assert.Empty(t, lbs, "no LB record should be persisted when AMI resolver errors")
 }
+
+// TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies that
+// when the caller supplies SecurityGroups on the LB input, the underlying ALB
+// ENI is created with those SGs (not the VPC default SG). Without this the
+// ENI's OVN port-group never gains the user's allow rules and inbound traffic
+// is dropped by the SG enforcement default-deny ACL.
+func TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.NotEmpty(t, subnets.Subnets)
+	subnetID := *subnets.Subnets[0].SubnetId
+	vpcID := *subnets.Subnets[0].VpcId
+
+	sgOut, err := vpcSvc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("alb-sg"),
+		Description: aws.String("ALB ingress"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+	sgID := *sgOut.GroupId
+
+	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("sg-attach-alb"),
+		Subnets:        []*string{aws.String(subnetID)},
+		SecurityGroups: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	eniDesc, err := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+
+	var albENI *ec2.NetworkInterface
+	for _, eni := range eniDesc.NetworkInterfaces {
+		if eni.RequesterManaged != nil && *eni.RequesterManaged {
+			albENI = eni
+			break
+		}
+	}
+	require.NotNil(t, albENI, "ELB-managed ENI must be created")
+
+	require.Len(t, albENI.Groups, 1, "ALB ENI must join exactly the specified SG, not the default SG")
+	assert.Equal(t, sgID, *albENI.Groups[0].GroupId)
+}
+
+// TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault preserves the
+// AWS-semantics fallback: an ALB created without SecurityGroups joins the
+// VPC's default SG (so the default-deny ACL has at least one allow source).
+func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnets.Subnets[0].SubnetId
+	vpcID := *subnets.Subnets[0].VpcId
+
+	defaultSGID, err := vpcSvc.FindDefaultSGForVPC(testAccountID, vpcID)
+	require.NoError(t, err)
+	require.NotEmpty(t, defaultSGID, "VPC must have a default SG provisioned")
+
+	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("no-sg-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	eniDesc, err := vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+
+	var albENI *ec2.NetworkInterface
+	for _, eni := range eniDesc.NetworkInterfaces {
+		if eni.RequesterManaged != nil && *eni.RequesterManaged {
+			albENI = eni
+			break
+		}
+	}
+	require.NotNil(t, albENI)
+	require.Len(t, albENI.Groups, 1)
+	assert.Equal(t, defaultSGID, *albENI.Groups[0].GroupId)
+}

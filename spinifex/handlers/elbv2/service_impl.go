@@ -611,7 +611,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	vpcID := ""
 	if s.VPCService != nil && len(subnets) > 0 {
 		for _, subnetID := range subnets {
-			eniOut, eniErr := s.VPCService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+			eniIn := &ec2.CreateNetworkInterfaceInput{
 				SubnetId:    aws.String(subnetID),
 				Description: aws.String(fmt.Sprintf("ELB %s/%s/%s", arnPathSegment, name, lbID)),
 				TagSpecifications: []*ec2.TagSpecification{
@@ -623,7 +623,15 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 						},
 					},
 				},
-			}, accountID)
+			}
+			// SG enforcement gates inbound traffic by the ENI's port-group
+			// membership, which is set at ENI creation. Empty Groups
+			// intentionally falls back to the VPC default SG inside
+			// eni.CreateNetworkInterface.
+			if len(securityGroups) > 0 {
+				eniIn.Groups = aws.StringSlice(securityGroups)
+			}
+			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
 				// Rollback: delete any ENIs already created
 				for _, rollbackENI := range eniIDs {

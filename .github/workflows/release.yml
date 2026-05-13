@@ -199,7 +199,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          ISO_BUILDER="${GITHUB_WORKSPACE}/mulga/scripts/iso-builder"
+          if [ -f "${ISO_BUILDER}/Makefile" ]; then
+            sudo make -C "${ISO_BUILDER}" clean
+          fi
+          sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token

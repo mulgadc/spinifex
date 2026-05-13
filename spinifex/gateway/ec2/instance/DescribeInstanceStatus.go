@@ -14,20 +14,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// notApplicable is the AWS-reported status/reachability value for instances
-// that are not in the running state.
-const notApplicable = "not-applicable"
+const (
+	notApplicable          = "not-applicable"
+	reachabilityDetailName = "reachability"
+)
 
-// DescribeInstanceStatus queries all spinifex nodes for the status of their
-// running instances via NATS and aggregates the results. When the caller asks
-// for IncludeAllInstances, the gateway also queries the stopped-instance KV
-// bucket and synthesises an InstanceStatus entry for each stopped instance
-// with status/reachability=not-applicable.
-//
-// Input validation (i- prefix, filter names) happens daemon-side via the
-// service layer, matching the pattern used by every other Describe* endpoint.
-// The aggregator captures the first deterministic 4xx any responder returns
-// and propagates it only if no data was collected (mirrors DescribeInstances).
+// DescribeInstanceStatus fans out to every node and, with IncludeAllInstances,
+// also augments from the stopped-instance KV bucket. The aggregator propagates
+// the first deterministic 4xx only when no data was collected, matching
+// DescribeInstances.
 func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string) (*ec2.DescribeInstanceStatusOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceStatusInput{}
@@ -128,9 +123,6 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
 }
 
-// queryStoppedInstancesForStatus reuses the DescribeInstances KV bucket helper
-// and transforms each returned *ec2.Instance into an *ec2.InstanceStatus
-// carrying status/reachability=not-applicable.
 func queryStoppedInstancesForStatus(natsConn *nats.Conn, jsonData []byte, accountID, az string) []*ec2.InstanceStatus {
 	reservations := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
@@ -142,29 +134,19 @@ func queryStoppedInstancesForStatus(natsConn *nats.Conn, jsonData []byte, accoun
 			if inst == nil || inst.InstanceId == nil {
 				continue
 			}
-			statuses = append(statuses, buildInstanceStatusFromInstance(inst, "stopped", az))
+			statuses = append(statuses, buildInstanceStatusFromInstance(inst, az))
 		}
 	}
 	return statuses
 }
 
-// buildInstanceStatusFromInstance transforms a stopped-KV reservation entry
-// into an InstanceStatus. Stopped/pending/etc. instances always report
-// not-applicable for both status and reachability; AWS uses the same value
-// when the instance is not running.
-func buildInstanceStatusFromInstance(inst *ec2.Instance, fallbackStateName string, az string) *ec2.InstanceStatus {
-	state := &ec2.InstanceState{}
+func buildInstanceStatusFromInstance(inst *ec2.Instance, az string) *ec2.InstanceStatus {
+	state := &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameStopped)}
 	if inst.State != nil {
 		if inst.State.Name != nil {
-			state.SetName(*inst.State.Name)
-		} else {
-			state.SetName(fallbackStateName)
+			state.Name = inst.State.Name
 		}
-		if inst.State.Code != nil {
-			state.SetCode(*inst.State.Code)
-		}
-	} else {
-		state.SetName(fallbackStateName)
+		state.Code = inst.State.Code
 	}
 
 	return &ec2.InstanceStatus{
@@ -174,24 +156,22 @@ func buildInstanceStatusFromInstance(inst *ec2.Instance, fallbackStateName strin
 		InstanceStatus: &ec2.InstanceStatusSummary{
 			Status: aws.String(notApplicable),
 			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String("reachability"),
+				Name:   aws.String(reachabilityDetailName),
 				Status: aws.String(notApplicable),
 			}},
 		},
 		SystemStatus: &ec2.InstanceStatusSummary{
 			Status: aws.String(notApplicable),
 			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String("reachability"),
+				Name:   aws.String(reachabilityDetailName),
 				Status: aws.String(notApplicable),
 			}},
 		},
 	}
 }
 
-// dedupStatuses removes duplicate InstanceStatus entries by InstanceId.
-// First-writer-wins: running fan-out responses arrive before the stopped-KV
-// query result, so a running entry naturally wins over a stale stopped entry
-// during stop/start race windows.
+// First-writer-wins by InstanceId, so a running fan-out entry naturally beats a
+// stale stopped-KV entry during stop/start race windows.
 func dedupStatuses(in []*ec2.InstanceStatus) []*ec2.InstanceStatus {
 	if len(in) == 0 {
 		return nil

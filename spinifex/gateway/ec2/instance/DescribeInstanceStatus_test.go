@@ -252,7 +252,7 @@ func TestBuildInstanceStatusFromInstance_PopulatesState(t *testing.T) {
 		InstanceId: aws.String("i-x"),
 		State:      &ec2.InstanceState{Code: aws.Int64(80), Name: aws.String("stopped")},
 	}
-	got := buildInstanceStatusFromInstance(in, "stopped", "az-a")
+	got := buildInstanceStatusFromInstance(in, "az-a")
 	require.NotNil(t, got)
 	assert.Equal(t, "i-x", *got.InstanceId)
 	assert.Equal(t, int64(80), *got.InstanceState.Code)
@@ -264,7 +264,7 @@ func TestBuildInstanceStatusFromInstance_PopulatesState(t *testing.T) {
 
 func TestBuildInstanceStatusFromInstance_FallbackStateName(t *testing.T) {
 	in := &ec2.Instance{InstanceId: aws.String("i-x")}
-	got := buildInstanceStatusFromInstance(in, "stopped", "az-a")
+	got := buildInstanceStatusFromInstance(in, "az-a")
 	assert.Equal(t, "stopped", *got.InstanceState.Name)
 }
 

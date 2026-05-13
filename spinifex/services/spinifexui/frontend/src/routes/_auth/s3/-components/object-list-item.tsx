@@ -23,9 +23,11 @@ export function ObjectListItem({
   fullKey,
 }: ObjectListItemProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [downloadError, setDownloadError] = useState<Error | null>(null)
   const deleteMutation = useDeleteObject()
 
   async function downloadObject() {
+    setDownloadError(null)
     try {
       const command = new GetObjectCommand({
         Bucket: bucketName,
@@ -48,7 +50,7 @@ export function ObjectListItem({
         URL.revokeObjectURL(url)
       }
     } catch (error) {
-      throw new Error("Failed to download object", { cause: error })
+      setDownloadError(new Error("Failed to download object", { cause: error }))
     }
   }
 
@@ -70,6 +72,9 @@ export function ObjectListItem({
           error={deleteMutation.error}
           msg="Failed to delete object"
         />
+      )}
+      {downloadError && (
+        <ErrorBanner error={downloadError} msg="Failed to download object" />
       )}
       <div className="flex items-center justify-between rounded-lg border bg-card p-4">
         <div className="flex items-center gap-3">

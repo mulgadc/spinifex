@@ -15,7 +15,8 @@ export const createPolicySchema = z.object({
   policyName: z
     .string()
     .min(1, "Policy name is required")
-    .max(128, "Policy name must be 128 characters or less"),
+    .max(128, "Policy name must be 128 characters or less")
+    .regex(/^[\w+=,.@-]+$/, "Policy name contains invalid characters"),
   description: z.string().optional(),
   policyDocument: z
     .string()

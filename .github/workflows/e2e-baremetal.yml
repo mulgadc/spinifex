@@ -22,7 +22,7 @@ jobs:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/checkout@v6
 

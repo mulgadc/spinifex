@@ -97,10 +97,10 @@ func TestOnInstanceDownHook_NoOpWhenAbsent(t *testing.T) {
 }
 
 // When the daemon's gpuManager is unset, the hook must still register NATS
-// subscriptions and ignore the GPUPCIAddress on the VM.
+// subscriptions and ignore the GPUPCIAddresses on the VM.
 func TestOnInstanceUpHook_NoGPUManager_SkipsReclaim(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
-	instance := &vm.VM{ID: "i-up-nogpu", GPUPCIAddress: "0000:01:00.0"}
+	instance := &vm.VM{ID: "i-up-nogpu", GPUPCIAddresses: []string{"0000:01:00.0"}}
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	require.Contains(t, d.natsSubscriptions, instance.ID)
@@ -116,17 +116,17 @@ func TestOnInstanceUpHook_NoGPUAddress_SkipsReclaim(t *testing.T) {
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	assert.Equal(t, 0, d.gpuManager.AllocatedCount(),
-		"hook must not call Reclaim for instances without a GPUPCIAddress")
+		"hook must not call Reclaim for instances without GPUPCIAddresses")
 }
 
 // With a gpuManager that has no entries, calling Reclaim for an instance
-// with a GPUPCIAddress will fail inside the manager. The hook logs a warning
+// with a GPUPCIAddresses entry will fail inside the manager. The hook logs a warning
 // and returns nil — the NATS subscriptions must still register so the
 // reconnect path doesn't roll back.
 func TestOnInstanceUpHook_GPUReclaimError_DoesNotPropagate(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
 	d.gpuManager = gpu.NewManager(nil)
-	instance := &vm.VM{ID: "i-up-gpu-missing", GPUPCIAddress: "0000:99:00.0"}
+	instance := &vm.VM{ID: "i-up-gpu-missing", GPUPCIAddresses: []string{"0000:99:00.0"}}
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	require.Contains(t, d.natsSubscriptions, instance.ID)
@@ -148,4 +148,36 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 	assert.NotNil(t, d.natsSubscriptions[keep.ID+".console"])
 	_, dropPresent := d.natsSubscriptions[drop.ID]
 	assert.False(t, dropPresent)
+}
+
+// --- ReleaseGPU ---
+
+// ReleaseGPU is a no-op when the daemon has no GPU manager.
+func TestReleaseGPU_NoManager_NoOp(t *testing.T) {
+	d := &Daemon{}
+	a := newInstanceCleanerAdapter(d)
+	instance := &vm.VM{ID: "i-nogpu", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	// Must not panic.
+	a.ReleaseGPU(instance)
+}
+
+// ReleaseGPU is a no-op for instances without a GPU allocation.
+func TestReleaseGPU_NoAddresses_NoOp(t *testing.T) {
+	mgr := gpu.NewManager(nil)
+	d := &Daemon{gpuManager: mgr}
+	a := newInstanceCleanerAdapter(d)
+	instance := &vm.VM{ID: "i-nogpu"}
+	// Must not panic or error.
+	a.ReleaseGPU(instance)
+}
+
+// ReleaseGPU logs a warning when the manager returns an error (instance not claimed).
+func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
+	mgr := gpu.NewManager(nil)
+	d := &Daemon{gpuManager: mgr}
+	a := newInstanceCleanerAdapter(d)
+	// GPU address set but no claim registered — Release returns an error.
+	instance := &vm.VM{ID: "i-unclaimed", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	// Must not panic; the error is logged as a warning.
+	a.ReleaseGPU(instance)
 }

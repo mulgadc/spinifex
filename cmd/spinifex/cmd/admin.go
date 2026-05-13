@@ -1113,6 +1113,20 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	finalizeNodeSetup(spxRoot, certPath, bootstrapResult.AdminAccessKey, bootstrapResult.AdminSecretKey, region, bindIP, advertiseIP)
 
+	// Write node.conf so spx admin banner works on source installs (not just ISO).
+	nodeHostname, _ := os.Hostname()
+	if nodeHostname == "" {
+		nodeHostname = node
+	}
+	nodeConfPath := filepath.Join(configDir, "node.conf")
+	if err := writeNodeConf(nodeConfPath, map[string]string{
+		"MANAGEMENT_IP":    advertiseIP,
+		"MANAGEMENT_IFACE": "br-wan",
+		"NODE_HOSTNAME":    nodeHostname,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not write %s: %v\n", nodeConfPath, err)
+	}
+
 	// Print success message
 	fmt.Println("\n🎉 Spinifex initialization complete!")
 	fmt.Println()
@@ -2361,6 +2375,12 @@ func runAdminBanner(cmd *cobra.Command, _ []string) {
 	}
 
 	// Resolve current IP from the management interface at runtime.
+	// If node.conf is absent or has no MANAGEMENT_IFACE (source installs before
+	// the first spx admin init writes node.conf), fall back to br-wan which
+	// setup-ovn.sh always creates as the management bridge.
+	if iface == "" {
+		iface = "br-wan"
+	}
 	currentIP := resolveIfaceIP(iface)
 	if currentIP == "" {
 		currentIP = recordedIP // fall back to value recorded at install time

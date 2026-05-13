@@ -76,9 +76,10 @@ type Deps struct {
 // Manager owns the in-memory map of running VMs on this node and every
 // lifecycle transition that mutates that map.
 type Manager struct {
-	mu   sync.Mutex
-	vms  map[string]*VM
-	deps Deps
+	mu          sync.Mutex
+	vms         map[string]*VM
+	deps        Deps
+	goroutineWg sync.WaitGroup
 }
 
 // NewManager returns a Manager with no collaborators wired. Production code
@@ -258,4 +259,11 @@ func (m *Manager) Replace(vms map[string]*VM) {
 	defer m.mu.Unlock()
 	m.vms = make(map[string]*VM, len(vms))
 	maps.Copy(m.vms, vms)
+}
+
+// WaitForBackgroundWork blocks until all background goroutines started by
+// MarkFailed and MarkRecoveryFailed have completed. Intended for tests that
+// need the temp directory to be quiescent before cleanup runs.
+func (m *Manager) WaitForBackgroundWork() {
+	m.goroutineWg.Wait()
 }

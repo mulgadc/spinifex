@@ -165,12 +165,12 @@ func (m *Manager) MarkFailed(instance *VM, reason string) {
 	}
 	slog.Info("Instance marked as failed", "instanceId", instance.ID, "reason", reason)
 
-	go func() {
+	m.goroutineWg.Go(func() {
 		m.terminateCleanup(instance)
 		if err := m.finalizeTerminated(instance); err != nil {
 			slog.Error("MarkFailed finalize failed", "instanceId", instance.ID, "err", err)
 		}
-	}()
+	})
 }
 
 // MarkRecoveryFailed handles the case where daemon-restart recovery cannot
@@ -217,14 +217,14 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 	slog.Error("Instance marked recovery_failed; volumes and ENIs preserved for operator action",
 		"instanceId", instance.ID, "reason", reason)
 
-	go func() {
+	m.goroutineWg.Go(func() {
 		m.stopCleanup(instance)
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 		if err := m.writeRunningState(); err != nil {
 			slog.Error("Failed to persist state after recovery failure",
 				"instanceId", instance.ID, "err", err)
 		}
-	}()
+	})
 }
 
 // finalizeTerminated transitions instance to terminated, writes the

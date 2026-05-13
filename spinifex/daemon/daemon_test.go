@@ -48,10 +48,13 @@ import (
 func drainAndClose(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	done := make(chan struct{})
-	nc.SetClosedHandler(func(*nats.Conn) { close(done) })
+	var once sync.Once
+	nc.SetClosedHandler(func(*nats.Conn) { once.Do(func() { close(done) }) })
 	if err := nc.Drain(); err != nil {
 		nc.Close()
-		return
+		// Do not return early: the handler callback may still be running
+		// (e.g. writing state to the temp dir). Fall through to the wait so
+		// we give it time to finish before t.TempDir() RemoveAll runs.
 	}
 	select {
 	case <-done:
@@ -3135,6 +3138,117 @@ func TestGetAvailableInstanceTypeInfos_ShowCapacity(t *testing.T) {
 	// With showCapacity=false, should return exactly 1
 	infos = rm.GetAvailableInstanceTypeInfos(false)
 	assert.Len(t, infos, 1)
+}
+
+// --- GPU-gated GetAvailableInstanceTypeInfos ---
+
+func makeGPUInstanceType(name string, vcpus int64, memMiB int64) *ec2.InstanceTypeInfo {
+	return &ec2.InstanceTypeInfo{
+		InstanceType: aws.String(name),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(vcpus)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(memMiB)},
+		GpuInfo: &ec2.GpuInfo{
+			Gpus: []*ec2.GpuDeviceInfo{{
+				Count:        aws.Int64(int64(instancetypes.GPUCountForType(name))),
+				Manufacturer: aws.String("AMD"),
+				Name:         aws.String("Instinct MI350X"),
+				MemoryInfo:   &ec2.GpuDeviceMemoryInfo{SizeInMiB: aws.Int64(294896)},
+			}},
+		},
+	}
+}
+
+func makeGPUDevice() gpu.GPUDevice {
+	return gpu.GPUDevice{VendorID: "1002", DeviceID: "75a0", PCIAddress: "0000:03:00.0", Vendor: gpu.VendorAMD}
+}
+
+// GPU types with no gpuManager are hidden — there is no GPU hardware on this node.
+func TestGetAvailableInstanceTypeInfos_GPUType_NoManager_Hidden(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:  128,
+		hostMemGB: 1024.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"g7e.4xlarge": makeGPUInstanceType("g7e.4xlarge", 16, 128*1024),
+		},
+	}
+	infos := rm.GetAvailableInstanceTypeInfos(false)
+	assert.Empty(t, infos, "GPU type must not appear when gpuManager is nil")
+}
+
+// GPU types gate on pool availability, not host CPU/memory — even a tiny host
+// with a GPU pool exposes the type.
+func TestGetAvailableInstanceTypeInfos_GPUType_GatedByPool(t *testing.T) {
+	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice()})
+	rm := &ResourceManager{
+		hostVCPU:  4,   // would normally block a 16-vCPU instance
+		hostMemGB: 8.0, // would normally block a 128 GB instance
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"g7e.4xlarge": makeGPUInstanceType("g7e.4xlarge", 16, 128*1024),
+		},
+		gpuManager: mgr,
+	}
+	infos := rm.GetAvailableInstanceTypeInfos(false)
+	assert.Len(t, infos, 1, "GPU type must appear when pool has free GPUs regardless of CPU/memory")
+}
+
+// Multi-GPU type (g7e.12xlarge, needs 2) appears only when pool has ≥ 2 free GPUs.
+func TestGetAvailableInstanceTypeInfos_MultiGPUType_RequiresTwoGPUs(t *testing.T) {
+	oneGPU := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()})
+	rm := &ResourceManager{
+		hostVCPU:  128,
+		hostMemGB: 1024.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"g7e.12xlarge": makeGPUInstanceType("g7e.12xlarge", 48, 512*1024),
+		},
+		gpuManager: oneGPU,
+	}
+	infos := rm.GetAvailableInstanceTypeInfos(false)
+	assert.Empty(t, infos, "g7e.12xlarge must not appear with only 1 free GPU")
+
+	twoGPUs := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice()})
+	rm.gpuManager = twoGPUs
+	infos = rm.GetAvailableInstanceTypeInfos(false)
+	assert.Len(t, infos, 1, "g7e.12xlarge must appear when pool has ≥ 2 free GPUs")
+}
+
+// showCapacity=true for GPU types emits pool/gpuCount slots.
+func TestGetAvailableInstanceTypeInfos_GPUType_ShowCapacity(t *testing.T) {
+	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice(), makeGPUDevice(), makeGPUDevice()})
+	rm := &ResourceManager{
+		hostVCPU:  128,
+		hostMemGB: 1024.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"g7e.4xlarge":  makeGPUInstanceType("g7e.4xlarge", 16, 128*1024),
+			"g7e.12xlarge": makeGPUInstanceType("g7e.12xlarge", 48, 512*1024),
+		},
+		gpuManager: mgr,
+	}
+	// 4 GPUs → 4× g7e.4xlarge (1 GPU each) or 2× g7e.12xlarge (2 GPUs each)
+	infos := rm.GetAvailableInstanceTypeInfos(true)
+	count4xl := 0
+	count12xl := 0
+	for _, it := range infos {
+		switch *it.InstanceType {
+		case "g7e.4xlarge":
+			count4xl++
+		case "g7e.12xlarge":
+			count12xl++
+		}
+	}
+	assert.Equal(t, 4, count4xl, "4 GPUs → 4 slots for g7e.4xlarge")
+	assert.Equal(t, 2, count12xl, "4 GPUs → 2 slots for g7e.12xlarge")
+}
+
+// canAllocate for GPU types returns count without CPU/memory gating.
+func TestCanAllocate_GPUType_BypassesCPUMemory(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      4,   // deliberately tiny
+		hostMemGB:     8.0, // deliberately tiny
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{},
+	}
+	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
+	assert.Equal(t, 1, rm.canAllocate(gpuType, 1),
+		"GPU type must be allocatable even when CPU/memory would normally block it")
 }
 
 // --- NewDaemon ---

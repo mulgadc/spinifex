@@ -118,9 +118,10 @@ type VM struct {
 	// filters out tagged VMs from customer-facing listings.
 	ManagedBy string `json:"managed_by,omitempty"`
 
-	// GPUPCIAddress is the PCI address of the GPU bound to this instance via VFIO
-	// (e.g. "0000:03:00.0"). Empty for non-GPU instances.
-	GPUPCIAddress string `json:"gpu_pci_address,omitempty"`
+	// GPUPCIAddresses holds the PCI addresses of all GPUs bound to this instance via
+	// VFIO (e.g. ["0000:03:00.0"]). Empty for non-GPU instances. Single-GPU instances
+	// have one entry; multi-GPU instances have one per assigned GPU.
+	GPUPCIAddresses []string `json:"gpu_pci_addresses,omitempty"`
 	// GPUXVGAEnabled controls whether x-vga=on is passed to QEMU for this instance's
 	// GPU device. True for consumer GPUs; false for headless datacenter cards.
 	GPUXVGAEnabled bool `json:"gpu_xvga_enabled,omitempty"`

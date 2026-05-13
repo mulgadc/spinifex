@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+httpx
+opencv-python-headless
+ultralytics

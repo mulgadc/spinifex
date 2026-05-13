@@ -56,6 +56,10 @@ func createDaemonWithJetStream(t *testing.T) *Daemon {
 		ConsumeCleanShutdownMarker: daemon.consumeCleanShutdownMarker(),
 	})
 
+	// Registered after t.TempDir() so it runs first (LIFO): goroutines
+	// spawned by MarkFailed/MarkRecoveryFailed finish before RemoveAll runs.
+	t.Cleanup(daemon.vmMgr.WaitForBackgroundWork)
+
 	return daemon
 }
 

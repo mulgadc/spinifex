@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spinifex — GPU Compute Demo</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg:       #07070d;
+  --surface:  #0e0e18;
+  --border:   #1a1a2e;
+  --accent:   #6366f1;
+  --accent2:  #22d3ee;
+  --text:     #d4d4d8;
+  --muted:    #52525b;
+  --green:    #22c55e;
+  --red:      #ef4444;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.logo {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: #fff;
+  white-space: nowrap;
+}
+.logo em { color: var(--accent); font-style: normal; }
+
+.divider { width: 1px; height: 24px; background: var(--border); }
+
+.subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+
+.instances {
+  margin-left: auto;
+  display: flex;
+  gap: 20px;
+}
+
+.inst {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.inst-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.inst-dot.offline { background: var(--red); }
+.inst-dot.live {
+  background: var(--green);
+  box-shadow: 0 0 0 0 var(--green);
+  animation: ring 2s infinite;
+}
+
+@keyframes ring {
+  0%   { box-shadow: 0 0 0 0 rgba(34,197,94,.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
+
+/* ── Layout ── */
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  grid-template-rows: 1fr 1fr;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+}
+
+/* ── Panel ── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.panel-head {
+  padding: 9px 14px;
+  background: rgba(0,0,0,.3);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.panel-head h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.chip {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip.accent { border-color: rgba(99,102,241,.4); color: #818cf8; }
+.chip.cyan   { border-color: rgba(34,211,238,.3); color: var(--accent2); }
+
+/* ── Video panel ── */
+.video-panel { grid-row: 1 / 3; position: relative; }
+
+.video-wrap {
+  flex: 1;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.video-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.video-footer {
+  padding: 8px 14px;
+  font-size: 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  gap: 16px;
+}
+
+/* ── Description panel ── */
+.desc-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+  min-height: 0;
+}
+
+.desc-entry {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.desc-entry:last-child { border-bottom: none; padding-bottom: 0; }
+
+.desc-time {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.desc-text {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.cursor {
+  display: inline-block;
+  width: 2px; height: 13px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+.desc-placeholder {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ── Chat panel ── */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.msg {
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.msg.user {
+  background: #1e1e42;
+  align-self: flex-end;
+  color: #c7d2fe;
+}
+.msg.assistant {
+  background: #111120;
+  align-self: flex-start;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.chat-foot {
+  border-top: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chat-foot input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s;
+}
+.chat-foot input:focus { border-color: var(--accent); }
+.chat-foot input::placeholder { color: var(--muted); }
+
+.send-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, opacity .15s;
+  white-space: nowrap;
+}
+.send-btn:hover { background: #4f52d1; }
+.send-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Spini<em>fex</em></div>
+  <div class="divider"></div>
+  <div class="subtitle">GPU Compute Platform &mdash; Live Demo</div>
+  <div class="instances">
+    <div class="inst">
+      <div class="inst-dot live" id="dot-yolo"></div>
+      <span>YOLO&nbsp;&middot;&nbsp;g7e.4xlarge</span>
+    </div>
+    <div class="inst">
+      <div class="inst-dot live" id="dot-qwen"></div>
+      <span>Qwen3-VL 235B&nbsp;&middot;&nbsp;g7e.12xlarge</span>
+    </div>
+    <div class="inst">
+      <div class="inst-dot live" id="dot-llama"></div>
+      <span>Llama&nbsp;3.1 70B&nbsp;&middot;&nbsp;g7e.4xlarge</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Left: YOLO video, full height -->
+  <div class="panel video-panel">
+    <div class="panel-head">
+      <h2>Live Object Detection</h2>
+      <span class="chip accent">YOLO11 &middot; AMD MI350X</span>
+    </div>
+    <div class="video-wrap">
+      <img id="video-feed" src="/proxy/video" alt="YOLO stream loading...">
+    </div>
+    <div class="video-footer">
+      <span>Real-time inference &mdash; AMD MI350X GPU</span>
+      <span id="fps-counter"></span>
+    </div>
+  </div>
+
+  <!-- Top right: qwen3-vl scene analysis -->
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Scene Analysis</h2>
+      <span class="chip cyan">Qwen3-VL 235B &middot; MI350X</span>
+    </div>
+    <div class="desc-content" id="desc-content">
+      <p class="desc-placeholder">Waiting for first frame analysis&hellip;</p>
+    </div>
+  </div>
+
+  <!-- Bottom right: Llama3.1 chat -->
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Chat</h2>
+      <span class="chip accent">Llama 3.1 70B &middot; MI350X</span>
+    </div>
+    <div class="chat-messages" id="chat-messages">
+      <div class="msg assistant">
+        Hello! I&rsquo;m Llama&nbsp;3.1&nbsp;70B running on an AMD MI350X GPU, orchestrated by Spinifex. Ask me anything.
+      </div>
+    </div>
+    <div class="chat-foot">
+      <input type="text" id="chat-input" placeholder="Ask Llama 3.1…" autocomplete="off">
+      <button class="send-btn" id="send-btn" onclick="sendChat()">Send</button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── Scene description stream ─────────────────────────────────────────────────
+const descContent = document.getElementById('desc-content');
+let activeEntry = null;
+let activeText  = '';
+
+function initDescriptions() {
+  const es = new EventSource('/proxy/descriptions');
+
+  es.onmessage = (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+
+    if (data.type === 'token' && data.text) {
+      if (!activeEntry) {
+        // Remove placeholder if present
+        descContent.querySelector('.desc-placeholder')?.remove();
+
+        activeEntry = document.createElement('div');
+        activeEntry.className = 'desc-entry';
+        activeEntry.innerHTML = `<div class="desc-time">${new Date().toLocaleTimeString()}</div><div class="desc-text"></div>`;
+        descContent.appendChild(activeEntry);
+        activeText = '';
+      }
+      activeText += data.text;
+      const textEl = activeEntry.querySelector('.desc-text');
+      textEl.innerHTML = escHtml(activeText) + '<span class="cursor"></span>';
+      descContent.scrollTop = descContent.scrollHeight;
+    }
+
+    if (data.type === 'end' && activeEntry) {
+      activeEntry.querySelector('.desc-text').textContent = activeText;
+      activeEntry = null;
+      activeText  = '';
+      // Keep only the last 4 entries
+      const entries = descContent.querySelectorAll('.desc-entry');
+      entries.forEach((el, i) => { if (i < entries.length - 4) el.remove(); });
+    }
+  };
+
+  es.onerror = () => { setTimeout(initDescriptions, 3000); };
+}
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+const chatMessages = document.getElementById('chat-messages');
+const chatInput    = document.getElementById('chat-input');
+const sendBtn      = document.getElementById('send-btn');
+
+async function sendChat() {
+  const prompt = chatInput.value.trim();
+  if (!prompt || sendBtn.disabled) return;
+
+  chatInput.value = '';
+  sendBtn.disabled = true;
+
+  appendMsg('user', prompt);
+
+  const assistantEl = appendMsg('assistant', '');
+  let text = '';
+
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let d;
+        try { d = JSON.parse(line.slice(6)); } catch { continue; }
+        text += d.token;
+        assistantEl.innerHTML = escHtml(text) + (d.done ? '' : '<span class="cursor"></span>');
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+    }
+  } catch (err) {
+    assistantEl.textContent = '(connection error)';
+  }
+
+  sendBtn.disabled = false;
+  chatInput.focus();
+}
+
+function appendMsg(role, text) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  chatMessages.appendChild(el);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return el;
+}
+
+chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+// ── Status polling ────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const data = await fetch('/status').then(r => r.json());
+    setDot('dot-yolo',  data.yolo   === 'ok');
+    setDot('dot-llama', data.ollama === 'ok');
+  } catch {}
+  setTimeout(pollStatus, 5000);
+}
+
+function setDot(id, ok) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'inst-dot' + (ok ? ' live' : ' offline');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+initDescriptions();
+pollStatus();
+</script>
+</body>
+</html>

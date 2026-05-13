@@ -29,7 +29,7 @@ func discover(sysfsRoot string) ([]GPUDevice, error) {
 		devPath := filepath.Join(devicesPath, entry.Name())
 
 		class, err := readSysfsString(filepath.Join(devPath, "class"))
-		if err != nil || !isDisplayClass(class) {
+		if err != nil || !isPassthroughClass(class) {
 			continue
 		}
 
@@ -144,12 +144,13 @@ func enrichNVIDIA(gpu *GPUDevice) {
 	gpu.MemoryMiB = memMiB
 }
 
-// isDisplayClass reports whether a PCI class string (e.g. "0x030200") is a
-// display controller (class byte 0x03).
-func isDisplayClass(class string) bool {
+// isPassthroughClass reports whether a PCI class string identifies a GPU
+// eligible for VFIO passthrough: display controllers (0x03xx) or processing
+// accelerators (0x12xx) such as AMD Instinct compute GPUs.
+func isPassthroughClass(class string) bool {
 	s := strings.ToLower(strings.TrimSpace(class))
 	s = strings.TrimPrefix(s, "0x")
-	return len(s) >= 2 && s[:2] == "03"
+	return len(s) >= 2 && (s[:2] == "03" || s[:2] == "12")
 }
 
 // readIOMMUGroup reads the IOMMU group number from the iommu_group symlink.

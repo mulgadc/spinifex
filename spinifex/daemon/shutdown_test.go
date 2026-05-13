@@ -214,11 +214,9 @@ func startSleepProcess(t *testing.T) int {
 	cmd := exec.Command("sleep", "60")
 	require.NoError(t, cmd.Start())
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_ = cmd.Wait()
-	}()
+	})
 	t.Cleanup(func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
@@ -410,7 +408,7 @@ func TestHandleShutdownDrain(t *testing.T) {
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
 		const vmCount = 3
-		for i := 0; i < vmCount; i++ {
+		for i := range vmCount {
 			daemon.vmMgr.Insert(&vm.VM{ID: fmt.Sprintf("i-drain-%03d", i)})
 		}
 

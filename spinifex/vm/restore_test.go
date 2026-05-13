@@ -674,7 +674,7 @@ func TestRelaunchAll(t *testing.T) {
 		// is skipped — exactly the race the status check is for.
 		release := make(chan struct{})
 		gateReady := make(chan struct{}, maxConcurrentRecovery)
-		for i := 0; i < maxConcurrentRecovery; i++ {
+		for i := range maxConcurrentRecovery {
 			id := instances[i].ID
 			mounter.behavior[id] = func(*VM) error {
 				gateReady <- struct{}{}
@@ -689,7 +689,7 @@ func TestRelaunchAll(t *testing.T) {
 			m.relaunchAll(instances)
 		}()
 
-		for i := 0; i < maxConcurrentRecovery; i++ {
+		for i := range maxConcurrentRecovery {
 			select {
 			case <-gateReady:
 			case <-time.After(5 * time.Second):
@@ -726,6 +726,7 @@ func TestRelaunchAll(t *testing.T) {
 // without leaking the pipe across the test boundary.
 type closeTrackingConn struct {
 	net.Conn
+
 	closed atomic.Bool
 }
 

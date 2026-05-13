@@ -121,6 +121,7 @@ function buildCreateTargetGroupCommands(
   const protocol = asString("protocol") || "HTTP"
   const port = asNumber("port")
   const vpcId = asString("vpcId")
+  const hcProtocol = asString("healthCheck.protocol") || "HTTP"
   const hcPath = asString("healthCheck.path") || "/"
   const hcPort = asString("healthCheck.port") || "traffic-port"
   const hcInterval = asNumber("healthCheck.intervalSeconds")
@@ -151,7 +152,7 @@ function buildCreateTargetGroupCommands(
   }
   parts.push(
     { type: "flag", value: " \\\n  --health-check-protocol" },
-    { type: "value", value: " HTTP" },
+    { type: "value", value: ` ${hcProtocol}` },
     { type: "flag", value: " \\\n  --health-check-path" },
     { type: "value", value: ` ${hcPath}` },
     { type: "flag", value: " \\\n  --health-check-port" },

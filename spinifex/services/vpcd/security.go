@@ -99,10 +99,11 @@ func (h *TopologyHandler) provisionSG(ctx context.Context, groupId string, ingre
 		}
 	}()
 
-	// Default deny ACLs (priority 900, logged for CMMC SC.L1-3.13.1) and
-	// allow rules (priority 1000) go in one OVSDB transaction so a 60-rule
-	// SG creation is one round-trip, not 62.
-	specs := append([]ACLSpec{denyIngressACL(pgName), denyEgressACL(pgName)}, ruleACLSpecs(pgName, ingress, egress)...)
+	// Default deny ACLs (priority 900, logged for CMMC SC.L1-3.13.1),
+	// infrastructure DHCP allows (priority 1050), and tenant allow rules
+	// (priority 1000) go in one OVSDB transaction so a 60-rule SG creation
+	// is one round-trip, not 64.
+	specs := append(infrastructureACLs(pgName), ruleACLSpecs(pgName, ingress, egress)...)
 	if err := h.ovn.AddACLs(ctx, pgName, specs); err != nil {
 		return fmt.Errorf("add ACLs on %s: %w", pgName, err)
 	}
@@ -173,8 +174,8 @@ func (h *TopologyHandler) handleUpdateSG(msg *nats.Msg) {
 		return
 	}
 
-	// Re-add default deny ACLs + current rules in one transaction.
-	specs := append([]ACLSpec{denyIngressACL(pgName), denyEgressACL(pgName)}, ruleACLSpecs(pgName, evt.IngressRules, evt.EgressRules)...)
+	// Re-add default deny + DHCP-infra allow ACLs + current rules in one transaction.
+	specs := append(infrastructureACLs(pgName), ruleACLSpecs(pgName, evt.IngressRules, evt.EgressRules)...)
 	if err := h.ovn.AddACLs(ctx, pgName, specs); err != nil {
 		slog.Error("vpcd: failed to add ACLs for update", "pg", pgName, "err", err)
 		respond(msg, err)
@@ -229,5 +230,55 @@ func denyEgressACL(pgName string) ACLSpec {
 		Name:      pgName + "-deny-egress",
 		Log:       true,
 		Severity:  denyACLSeverity,
+	}
+}
+
+// infrastructureACLs returns the platform-level ACLs that every port group
+// carries regardless of tenant rules: the priority-900 default-deny pair and
+// the priority-1050 DHCPv4 client/server allow pair. OVN's built-in DHCP
+// responder runs inside the LS pipeline *after* the port-group ACL stage, so
+// without these allows a narrow-egress tenant SG (e.g. egress restricted to
+// the VPC CIDR) silently drops the guest's DHCPDISCOVER (dst=255.255.255.255)
+// against the default-deny and the VM never gets an IPv4 lease. AWS users
+// can't write a rule for the limited broadcast address, so the platform must
+// allow DHCP itself — matching AWS's implicit behaviour.
+//
+// Priority 1050 sits above the default-deny (900) and above tenant rules
+// (1000) so DHCP works regardless of tenant configuration; tenants in our
+// model don't write ACLs at >1000, so there is no collision.
+func infrastructureACLs(pgName string) []ACLSpec {
+	return []ACLSpec{
+		denyIngressACL(pgName),
+		denyEgressACL(pgName),
+		dhcpEgressACL(pgName),
+		dhcpIngressACL(pgName),
+	}
+}
+
+// dhcpEgressACL allows the guest's DHCP client traffic (DHCPDISCOVER,
+// DHCPREQUEST: udp.src=68, udp.dst=67) out of the port. Action is plain
+// "allow", not "allow-related" — DHCP is single-shot request/reply and
+// allow-related on broadcast UDP interacts oddly with OVN's CT zones.
+func dhcpEgressACL(pgName string) ACLSpec {
+	return ACLSpec{
+		Direction: "from-lport",
+		Priority:  1050,
+		Match:     fmt.Sprintf("inport == @%s && udp && udp.src == 68 && udp.dst == 67", pgName),
+		Action:    "allow",
+		Name:      pgName + "-allow-dhcp-egress",
+	}
+}
+
+// dhcpIngressACL allows the OVN-generated DHCP server reply (DHCPOFFER,
+// DHCPACK: udp.src=67, udp.dst=68) back to the guest. OVN's DHCP responder
+// emits the reply from inside the LS pipeline, so without this matching
+// to-lport allow the reply hits the priority-900 ingress default-deny.
+func dhcpIngressACL(pgName string) ACLSpec {
+	return ACLSpec{
+		Direction: "to-lport",
+		Priority:  1050,
+		Match:     fmt.Sprintf("outport == @%s && udp && udp.src == 67 && udp.dst == 68", pgName),
+		Action:    "allow",
+		Name:      pgName + "-allow-dhcp-ingress",
 	}
 }

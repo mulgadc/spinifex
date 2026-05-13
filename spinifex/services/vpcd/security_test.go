@@ -39,13 +39,17 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 	assert.True(t, exists, "port group sg_abc123 should exist")
 	assert.NotNil(t, pg)
 
-	// Verify default deny ACLs were created (2 deny ACLs at priority 900)
-	// and that each has logging enabled per CMMC SC.L1-3.13.1.
+	// Verify the infrastructure ACL set was emitted: 2 default-deny at
+	// priority 900 (logged for CMMC SC.L1-3.13.1) plus 2 DHCP-infra allows
+	// at priority 1050 (unlogged — high-volume, low-signal).
 	type aclSnapshot struct {
-		action   string
-		log      bool
-		severity string
-		name     string
+		action    string
+		log       bool
+		severity  string
+		name      string
+		priority  int
+		direction string
+		match     string
 	}
 	var snapshots []aclSnapshot
 	mock.mu.Lock()
@@ -55,7 +59,13 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 		if a == nil {
 			continue
 		}
-		snap := aclSnapshot{action: a.Action, log: a.Log}
+		snap := aclSnapshot{
+			action:    a.Action,
+			log:       a.Log,
+			priority:  a.Priority,
+			direction: a.Direction,
+			match:     a.Match,
+		}
 		if a.Severity != nil {
 			snap.severity = *a.Severity
 		}
@@ -66,18 +76,64 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 	}
 	mock.mu.Unlock()
 
-	assert.Equal(t, 2, aclCount, "should have 2 default deny ACLs (ingress + egress)")
-	denyCount := 0
+	assert.Equal(t, 4, aclCount, "should have 4 infra ACLs (2 deny + 2 DHCP allow)")
+	denyCount, dhcpAllowCount := 0, 0
 	for _, s := range snapshots {
-		if s.action != "drop" {
-			continue
+		switch s.action {
+		case "drop":
+			denyCount++
+			assert.True(t, s.log, "default deny ACL must have log=true for boundary monitoring")
+			assert.Equal(t, "info", s.severity, "default deny ACL must use info severity")
+			assert.Contains(t, s.name, "sg_abc123-deny-", "default deny ACL must have a name for syslog correlation")
+			assert.Equal(t, 900, s.priority, "default deny ACL must be priority 900")
+		case "allow":
+			dhcpAllowCount++
+			assert.False(t, s.log, "DHCP infra allow must not be logged (high-volume, low-signal)")
+			assert.Equal(t, 1050, s.priority, "DHCP infra allow must be priority 1050 (above tenant rules and default-deny)")
+			assert.Contains(t, s.name, "sg_abc123-allow-dhcp-", "DHCP allow must have a name for operator correlation")
 		}
-		denyCount++
-		assert.True(t, s.log, "default deny ACL must have log=true for boundary monitoring")
-		assert.Equal(t, "info", s.severity, "default deny ACL must use info severity")
-		assert.Contains(t, s.name, "sg_abc123-deny-", "default deny ACL must have a name for syslog correlation")
 	}
 	assert.Equal(t, 2, denyCount, "should have 2 drop ACLs")
+	assert.Equal(t, 2, dhcpAllowCount, "should have 2 DHCP allow ACLs (egress client→server, ingress server→client)")
+}
+
+// TestSecurity_DHCPInfraACLs locks the exact shape of the DHCPv4 infra-allow
+// ACLs that vpcd emits on every port group. This is the fix for the
+// "narrow-egress SG silently breaks DHCP" bug: OVN's DHCP responder runs
+// inside the LS pipeline *after* the port-group ACL stage, so without these
+// the guest's DHCPDISCOVER (dst=255.255.255.255) hits the priority-900
+// default-deny under any non-0.0.0.0/0 egress rule and the VM never gets a
+// lease.
+func TestSecurity_DHCPInfraACLs(t *testing.T) {
+	const pg = "sg_dhcp_shape"
+
+	egress := dhcpEgressACL(pg)
+	assert.Equal(t, "from-lport", egress.Direction)
+	assert.Equal(t, 1050, egress.Priority, "must outrank tenant rules (1000) and default-deny (900)")
+	assert.Equal(t, "allow", egress.Action, "plain allow — DHCP is single-shot, no conntrack")
+	assert.Equal(t, "inport == @sg_dhcp_shape && udp && udp.src == 68 && udp.dst == 67", egress.Match)
+	assert.Equal(t, "sg_dhcp_shape-allow-dhcp-egress", egress.Name)
+	assert.False(t, egress.Log)
+
+	ingress := dhcpIngressACL(pg)
+	assert.Equal(t, "to-lport", ingress.Direction)
+	assert.Equal(t, 1050, ingress.Priority)
+	assert.Equal(t, "allow", ingress.Action)
+	assert.Equal(t, "outport == @sg_dhcp_shape && udp && udp.src == 67 && udp.dst == 68", ingress.Match)
+	assert.Equal(t, "sg_dhcp_shape-allow-dhcp-ingress", ingress.Name)
+	assert.False(t, ingress.Log)
+}
+
+// TestSecurity_InfrastructureACLs_Order locks the deny-before-allow ordering
+// that provisionSG/handleUpdateSG rely on when concatenating infrastructure
+// ACLs with tenant rule ACLs.
+func TestSecurity_InfrastructureACLs_Order(t *testing.T) {
+	specs := infrastructureACLs("sg_order")
+	require.Len(t, specs, 4)
+	assert.Equal(t, "sg_order-deny-ingress", specs[0].Name)
+	assert.Equal(t, "sg_order-deny-egress", specs[1].Name)
+	assert.Equal(t, "sg_order-allow-dhcp-egress", specs[2].Name)
+	assert.Equal(t, "sg_order-allow-dhcp-ingress", specs[3].Name)
 }
 
 func TestSecurity_DeletePortGroup(t *testing.T) {
@@ -175,7 +231,7 @@ func TestSecurity_UpdateSGAddRules(t *testing.T) {
 	}
 	mock.mu.Unlock()
 
-	assert.Equal(t, 4, aclCount, "should have 4 ACLs (2 deny + 2 ingress allow)")
+	assert.Equal(t, 6, aclCount, "should have 6 ACLs (2 deny + 2 DHCP infra allow + 2 ingress allow)")
 
 	// Check that at least one match contains tcp.dst == 22. Also verify
 	// logging policy: denies logged, allows not logged (CMMC SC.L1-3.13.1).

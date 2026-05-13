@@ -71,7 +71,7 @@ func TestReconcileSGsOnce_RecreatesMissingPortGroup(t *testing.T) {
 	assert.Equal(t, 1, result.PortGroupsRecreated)
 	pg, err := ovn.GetPortGroup(context.Background(), portGroupName("sg-missing0000000"))
 	require.NoError(t, err)
-	assert.Len(t, pg.ACLs, 4, "deny-ingress + deny-egress + 1 allow ingress + 1 allow egress")
+	assert.Len(t, pg.ACLs, 6, "deny-ingress + deny-egress + dhcp-egress + dhcp-ingress + 1 allow ingress + 1 allow egress")
 }
 
 // TestReconcileSGsOnce_RecreatesPortGroupIdempotent: a second pass on a fresh

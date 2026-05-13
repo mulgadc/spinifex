@@ -539,6 +539,8 @@ func installBootloader(disk string) error {
 		"--boot-directory="+bootDir,
 		"--bootloader-id=spinifex",
 		"--removable",
+		"--no-nvram",
+		"--skip-fs-probe",
 	)
 	if efiErr != nil {
 		slog.Warn("installBootloader: EFI install failed", "err", efiErr)
@@ -546,6 +548,7 @@ func installBootloader(disk string) error {
 	if biosErr := run("grub-install",
 		"--target=i386-pc",
 		"--boot-directory="+bootDir,
+		"--skip-fs-probe",
 		disk,
 	); biosErr != nil {
 		if efiErr != nil {

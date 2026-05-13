@@ -200,10 +200,14 @@ jobs:
     steps:
       - name: Clean Workspace
         run: |
-          ISO_BUILDER="${GITHUB_WORKSPACE}/mulga/scripts/iso-builder"
-          if [ -f "${ISO_BUILDER}/Makefile" ]; then
-            sudo make -C "${ISO_BUILDER}" clean
-          fi
+          ROOTFS="${GITHUB_WORKSPACE}/mulga/scripts/iso-builder/.cache/rootfs"
+          # Mirror make clean's umount sequence unconditionally — lazy unmount
+          # detaches immediately even if the mount is busy, so rm -rf is safe.
+          sudo umount -l -R "${ROOTFS}" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/dev/pts" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/dev" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/sys" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/proc" 2>/dev/null || true
           sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3

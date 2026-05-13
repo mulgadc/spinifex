@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: scripts/check-coverage.sh <coverprofile> [quiet]
 
 PROFILE="${1:?Usage: check-coverage.sh <coverprofile> [quiet]}"
-MIN=65.0
+MIN=70.0
 QUIET="${2:-}"
 
 if [[ ! -s "$PROFILE" ]]; then

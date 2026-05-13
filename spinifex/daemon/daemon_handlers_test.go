@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -4159,4 +4161,78 @@ func TestDelegateHandlers_VPCAttributes(t *testing.T) {
 			assertExpectedResponse(t, reply.Data, tt.expectedCode, tt.allowEmpty)
 		})
 	}
+}
+
+// --- respondWithJSON tests ---
+
+// captureSlogForTest redirects the default slog logger to a buffer for the
+// duration of the test and restores it via t.Cleanup.
+func captureSlogForTest(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestRespondWithJSON_MarshalSuccess(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	want := testOutput{Greeting: "hello world"}
+
+	sub, err := nc.Subscribe("test.respond.ok", func(msg *nats.Msg) {
+		respondWithJSON(msg, want)
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reply, err := nc.Request("test.respond.ok", nil, 5*time.Second)
+	require.NoError(t, err)
+
+	var got testOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &got))
+	assert.Equal(t, want, got)
+}
+
+func TestRespondWithJSON_MarshalFailureReturnsServerInternal(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	buf := captureSlogForTest(t)
+
+	sub, err := nc.Subscribe("test.respond.marshalfail", func(msg *nats.Msg) {
+		// Channels are not marshalable by encoding/json, forcing the
+		// marshal-failure branch.
+		respondWithJSON(msg, make(chan int))
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	reply, err := nc.Request("test.respond.marshalfail", nil, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(reply.Data, &errResp))
+	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
+	assert.Contains(t, buf.String(), "Failed to marshal response")
+}
+
+func TestRespondWithJSON_RespondFailureLogs(t *testing.T) {
+	buf := captureSlogForTest(t)
+
+	// A bare *nats.Msg has no Sub binding; Respond returns ErrMsgNotBound
+	// after a successful marshal, exercising the secondary log-only branch.
+	msg := &nats.Msg{Subject: "test.respond.unbound"}
+
+	assert.NotPanics(t, func() {
+		respondWithJSON(msg, testOutput{Greeting: "ignored"})
+	})
+
+	logged := buf.String()
+	assert.Contains(t, logged, "Failed to respond to NATS request")
+	assert.NotContains(t, logged, "Failed to marshal response")
 }

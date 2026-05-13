@@ -489,3 +489,192 @@ func TestAttachQMP_HandshakeFailure_NoHeartbeatLeak(t *testing.T) {
 	stopListener()
 	goleak.VerifyNone(t)
 }
+
+// stubFindFreePort swaps the package-level findFreePort seam with a
+// scripted result list. Exhausting the list returns a sentinel error so
+// an under-counted test fails fast instead of falling back to the real
+// OS allocator. t.Cleanup restores the original.
+func stubFindFreePort(t *testing.T, results ...struct {
+	addr string
+	err  error
+}) *int {
+	t.Helper()
+	orig := findFreePort
+	idx := 0
+	findFreePort = func() (string, error) {
+		if idx >= len(results) {
+			idx++
+			return "", errors.New("stubFindFreePort: exhausted")
+		}
+		r := results[idx]
+		idx++
+		return r.addr, r.err
+	}
+	t.Cleanup(func() { findFreePort = orig })
+	return &idx
+}
+
+func newDevNICInstance(id string, extra map[int]int) *VM {
+	return &VM{ID: id, ExtraHostfwd: extra}
+}
+
+func TestAppendDevHostfwdNIC_SSHPortFails_NICSkipped(t *testing.T) {
+	calls := stubFindFreePort(t, struct {
+		addr string
+		err  error
+	}{addr: "", err: errors.New("listen failed")})
+
+	m := NewManager()
+	m.SetDeps(Deps{BindHost: "10.0.0.1"})
+	instance := newDevNICInstance("i-ssh-fail", nil)
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 1, *calls, "FindFreePort must be invoked exactly once before bailing")
+	assert.Empty(t, instance.Config.NetDevs, "no NetDev appended when SSH port lookup fails")
+	assert.Empty(t, instance.Config.Devices, "no virtio-net device appended when SSH port lookup fails")
+}
+
+func TestAppendDevHostfwdNIC_SSHAddrUnparsable_NICSkipped(t *testing.T) {
+	calls := stubFindFreePort(t, struct {
+		addr string
+		err  error
+	}{addr: "nocolon", err: nil})
+
+	m := NewManager()
+	instance := newDevNICInstance("i-ssh-bad-addr", nil)
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 1, *calls)
+	assert.Empty(t, instance.Config.NetDevs)
+	assert.Empty(t, instance.Config.Devices)
+}
+
+func TestAppendDevHostfwdNIC_ExtraHostfwdNil_ShortCircuit(t *testing.T) {
+	calls := stubFindFreePort(t, struct {
+		addr string
+		err  error
+	}{addr: "127.0.0.1:2222", err: nil})
+
+	m := NewManager()
+	m.SetDeps(Deps{BindHost: "0.0.0.0"})
+	instance := newDevNICInstance("i-no-extra", nil)
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 1, *calls, "no extra entries means exactly one FindFreePort call")
+	require.Len(t, instance.Config.NetDevs, 1)
+	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value)
+	require.Len(t, instance.Config.Devices, 1)
+	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", GenerateDevMAC("i-no-extra")), instance.Config.Devices[0].Value)
+}
+
+func TestAppendDevHostfwdNIC_ExtraPortFails_WarningContinues(t *testing.T) {
+	calls := stubFindFreePort(t,
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:2222", err: nil},
+		struct {
+			addr string
+			err  error
+		}{addr: "", err: errors.New("listen failed")},
+	)
+
+	m := NewManager()
+	instance := newDevNICInstance("i-extra-fail", map[int]int{8080: 0})
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 2, *calls)
+	require.Len(t, instance.Config.NetDevs, 1)
+	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value, "failed extra entry must not appear in netdev value")
+	assert.Equal(t, 0, instance.ExtraHostfwd[8080], "failed entry must leave the map value at its zero")
+	require.Len(t, instance.Config.Devices, 1)
+}
+
+func TestAppendDevHostfwdNIC_ExtraAddrUnparsable_EntrySkipped(t *testing.T) {
+	calls := stubFindFreePort(t,
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:2222", err: nil},
+		struct {
+			addr string
+			err  error
+		}{addr: "garbage-no-colon", err: nil},
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:9090", err: nil},
+	)
+
+	m := NewManager()
+	instance := newDevNICInstance("i-extra-split", map[int]int{8080: 0, 8443: 0})
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 3, *calls)
+	require.Len(t, instance.Config.NetDevs, 1)
+
+	var goodGuest, badGuest int
+	for g := range instance.ExtraHostfwd {
+		if instance.ExtraHostfwd[g] == 9090 {
+			goodGuest = g
+		} else {
+			badGuest = g
+		}
+	}
+	require.NotZero(t, goodGuest, "exactly one entry must have been populated")
+	assert.Equal(t, 0, instance.ExtraHostfwd[badGuest], "skipped entry must remain at zero")
+	assert.Contains(t, instance.Config.NetDevs[0].Value, fmt.Sprintf("hostfwd=tcp:127.0.0.1:9090-:%d", goodGuest))
+	assert.NotContains(t, instance.Config.NetDevs[0].Value, "garbage")
+}
+
+func TestAppendDevHostfwdNIC_ExtraPortAtoiFails_EntrySkipped(t *testing.T) {
+	calls := stubFindFreePort(t,
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:2222", err: nil},
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:notanumber", err: nil},
+	)
+
+	m := NewManager()
+	instance := newDevNICInstance("i-extra-atoi", map[int]int{8080: 0})
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 2, *calls)
+	require.Len(t, instance.Config.NetDevs, 1)
+	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22", instance.Config.NetDevs[0].Value, "non-numeric extra port must not be appended to netdev value")
+	assert.Equal(t, 0, instance.ExtraHostfwd[8080], "skipped entry must remain at zero")
+}
+
+func TestAppendDevHostfwdNIC_ExtraHostfwd_HappyPath(t *testing.T) {
+	stubFindFreePort(t,
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:2222", err: nil},
+		struct {
+			addr string
+			err  error
+		}{addr: "127.0.0.1:18080", err: nil},
+	)
+
+	m := NewManager()
+	instance := newDevNICInstance("i-extra-ok", map[int]int{8080: 0})
+
+	m.appendDevHostfwdNIC(instance)
+
+	assert.Equal(t, 18080, instance.ExtraHostfwd[8080])
+	require.Len(t, instance.Config.NetDevs, 1)
+	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:18080-:8080", instance.Config.NetDevs[0].Value)
+	require.Len(t, instance.Config.Devices, 1)
+	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", GenerateDevMAC("i-extra-ok")), instance.Config.Devices[0].Value)
+}

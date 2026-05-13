@@ -1,10 +1,13 @@
 package vm
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtractPCIIndex(t *testing.T) {
@@ -187,6 +190,106 @@ func TestExtractPeripheralName(t *testing.T) {
 			assert.Equal(t, tt.want, extractPeripheralName(tt.qdev))
 		})
 	}
+}
+
+// stubDeviceMapRetrySleep replaces the package-level sleep seam with a
+// recorder so retry tests can assert sleep cadence without wall-clock time.
+func stubDeviceMapRetrySleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var sleeps []time.Duration
+	prev := deviceMapRetrySleep
+	deviceMapRetrySleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+	t.Cleanup(func() { deviceMapRetrySleep = prev })
+	return &sleeps
+}
+
+func TestQueryGuestDeviceMapWait(t *testing.T) {
+	const retryDelay = 200 * time.Millisecond
+
+	bootDevice := func(id, qdev string) qmp.BlockDevice {
+		return qmp.BlockDevice{
+			IOStatus: "ok",
+			Device:   id,
+			Inserted: &qmp.BlockInserted{},
+			QDev:     qdev,
+			Type:     "unknown",
+		}
+	}
+
+	t.Run("device present on first attempt makes no extra calls", func(t *testing.T) {
+		sleeps := stubDeviceMapRetrySleep(t)
+		var calls int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			atomic.AddInt32(&calls, 1)
+			require.Equal(t, "query-block", cmd.Execute)
+			return map[string]any{
+				"return": []qmp.BlockDevice{
+					bootDevice("os", "/machine/peripheral-anon/device[0]/virtio-backend"),
+					bootDevice("vdisk-vol-new", "/machine/peripheral/vdisk-vol-new/virtio-backend"),
+				},
+			}
+		})
+		defer cancel()
+
+		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-new")
+
+		require.NoError(t, err)
+		assert.Contains(t, deviceMap, "vdisk-vol-new")
+		assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "exactly one query-block call expected")
+		assert.Empty(t, *sleeps, "no sleep should occur on first-attempt success")
+	})
+
+	t.Run("device missing all 5 attempts invokes final probe and returns last result", func(t *testing.T) {
+		sleeps := stubDeviceMapRetrySleep(t)
+		var calls int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			atomic.AddInt32(&calls, 1)
+			require.Equal(t, "query-block", cmd.Execute)
+			return map[string]any{
+				"return": []qmp.BlockDevice{
+					bootDevice("os", "/machine/peripheral-anon/device[0]/virtio-backend"),
+				},
+			}
+		})
+		defer cancel()
+
+		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-missing")
+
+		require.NoError(t, err)
+		assert.Equal(t, int32(6), atomic.LoadInt32(&calls),
+			"5 retry attempts plus the final fall-through probe must all run")
+		assert.Equal(t, []time.Duration{retryDelay, retryDelay, retryDelay, retryDelay}, *sleeps,
+			"4 sleeps must occur between the 5 in-loop attempts (none after the final fall-through)")
+		assert.NotContains(t, deviceMap, "vdisk-vol-missing",
+			"missing device must be absent from the returned map so callers can detect the failure")
+		assert.Contains(t, deviceMap, "os")
+	})
+
+	t.Run("device appears on third attempt skips remaining retries", func(t *testing.T) {
+		sleeps := stubDeviceMapRetrySleep(t)
+		var calls int32
+		qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+			n := atomic.AddInt32(&calls, 1)
+			require.Equal(t, "query-block", cmd.Execute)
+			devices := []qmp.BlockDevice{
+				bootDevice("os", "/machine/peripheral-anon/device[0]/virtio-backend"),
+			}
+			if n >= 3 {
+				devices = append(devices, bootDevice("vdisk-vol-late", "/machine/peripheral/vdisk-vol-late/virtio-backend"))
+			}
+			return map[string]any{"return": devices}
+		})
+		defer cancel()
+
+		deviceMap, err := queryGuestDeviceMapWait(qmpClient, "i-1", "vdisk-vol-late")
+
+		require.NoError(t, err)
+		assert.Contains(t, deviceMap, "vdisk-vol-late")
+		assert.Equal(t, int32(3), atomic.LoadInt32(&calls),
+			"third-attempt success must not trigger a 4th or 5th probe")
+		assert.Equal(t, []time.Duration{retryDelay, retryDelay}, *sleeps,
+			"exactly 2 sleeps must occur (after attempts 1 and 2); none after the 3rd success")
+	})
 }
 
 func TestExtractHotplugPort(t *testing.T) {

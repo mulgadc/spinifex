@@ -342,12 +342,18 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 	go d.reconcileOnHeal("nats-reconnect")
 }
 
+// execCommand wraps exec.Command so tests can substitute a fake builder.
+// Mirrors the sudoCommand seam in network.go — getSystemMemory shells out to
+// sysctl (darwin) or grep /proc/meminfo (linux), neither of which can be
+// faked without an indirection that the test can swap.
+var execCommand = exec.Command
+
 // getSystemMemory returns the total system memory in GB
 func getSystemMemory() (float64, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		// macOS: use sysctl
-		cmd := exec.Command("sysctl", "-n", "hw.memsize")
+		cmd := execCommand("sysctl", "-n", "hw.memsize")
 		output, err := cmd.Output()
 		if err != nil {
 			return 0, fmt.Errorf("failed to get system memory on macOS: %w", err)
@@ -360,7 +366,7 @@ func getSystemMemory() (float64, error) {
 
 	case "linux":
 		// Linux: read from /proc/meminfo
-		cmd := exec.Command("grep", "MemTotal", "/proc/meminfo")
+		cmd := execCommand("grep", "MemTotal", "/proc/meminfo")
 		output, err := cmd.Output()
 		if err != nil {
 			return 0, fmt.Errorf("failed to read /proc/meminfo: %w", err)
@@ -1359,6 +1365,11 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	}
 }
 
+// initRetrySleep is the sleep seam used by initServiceWithRetry. Tests
+// override it to drive backoff cadence without the real 35s wall-clock
+// budget that 7 doublings (500ms→1s→2s→4s→8s→10s→10s) would impose.
+var initRetrySleep = time.Sleep
+
 // initServiceWithRetry initializes a service using the provided init function,
 // retrying with exponential backoff (500ms→10s) for up to 5 minutes. During
 // cluster restarts, JetStream KV may be temporarily unavailable while NATS
@@ -1386,7 +1397,7 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 		}
 
 		slog.Warn("Failed to init "+name, "error", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second))
-		time.Sleep(retryDelay)
+		initRetrySleep(retryDelay)
 		retryDelay = min(retryDelay*2, 10*time.Second)
 	}
 }

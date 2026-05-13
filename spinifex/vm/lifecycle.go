@@ -393,9 +393,16 @@ func (m *Manager) startQEMU(instance *VM) error {
 	return nil
 }
 
+// findFreePort is bound to a var (not called directly) so tests can swap in
+// a deterministic stub — appendDevHostfwdNIC's failure paths (split error,
+// Atoi error, per-entry failures continuing) are otherwise unreachable
+// because viperblock.FindFreePort always succeeds with a well-formed
+// host:port from the OS.
+var findFreePort = viperblock.FindFreePort
+
 // appendDevHostfwdNIC adds a user-mode NIC with SSH hostfwd for dev access.
 func (m *Manager) appendDevHostfwdNIC(instance *VM) {
-	sshDebugAddr, err := viperblock.FindFreePort()
+	sshDebugAddr, err := findFreePort()
 	if err != nil {
 		slog.Warn("DEV_NETWORKING: failed to find free port for dev NIC", "err", err)
 		return
@@ -413,7 +420,7 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 
 	if instance.ExtraHostfwd != nil {
 		for guestPort := range instance.ExtraHostfwd {
-			fwdAddr, fwdErr := viperblock.FindFreePort()
+			fwdAddr, fwdErr := findFreePort()
 			if fwdErr != nil {
 				slog.Warn("DEV_NETWORKING: failed to find free port for extra hostfwd", "guestPort", guestPort, "err", fwdErr)
 				continue

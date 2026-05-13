@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -148,6 +150,118 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 	assert.NotNil(t, d.natsSubscriptions[keep.ID+".console"])
 	_, dropPresent := d.natsSubscriptions[drop.ID]
 	assert.False(t, dropPresent)
+}
+
+func TestVolumeMounterAdapter_MountOne(t *testing.T) {
+	tests := []struct {
+		name       string
+		responder  func(t *testing.T, msg *nats.Msg)
+		skipSub    bool
+		wantErr    bool
+		wantErrSub string
+		wantErrIs  error
+		wantNBDURI string
+		initialURI string
+	}{
+		{
+			name: "HappyPath_UpdatesNBDURI",
+			responder: func(t *testing.T, msg *nats.Msg) {
+				resp := types.EBSMountResponse{URI: "nbd://mounted-vol"}
+				data, err := json.Marshal(resp)
+				require.NoError(t, err)
+				require.NoError(t, msg.Respond(data))
+			},
+			wantNBDURI: "nbd://mounted-vol",
+		},
+		{
+			name:       "NATSNoResponders_ReturnsError",
+			skipSub:    true,
+			wantErr:    true,
+			wantErrSub: "ebs.mount NATS request",
+		},
+		{
+			name: "UnmarshalFailure_ReturnsError",
+			responder: func(t *testing.T, msg *nats.Msg) {
+				require.NoError(t, msg.Respond([]byte("not json")))
+			},
+			wantErr:    true,
+			wantErrSub: "unmarshal ebs.mount response",
+		},
+		{
+			name: "ResponseError_IncludedInError",
+			responder: func(t *testing.T, msg *nats.Msg) {
+				resp := types.EBSMountResponse{Error: "boom"}
+				data, err := json.Marshal(resp)
+				require.NoError(t, err)
+				require.NoError(t, msg.Respond(data))
+			},
+			wantErr:    true,
+			wantErrSub: "boom",
+		},
+		{
+			name: "EmptyURI_ReturnsErrMountAmbiguous",
+			responder: func(t *testing.T, msg *nats.Msg) {
+				resp := types.EBSMountResponse{URI: ""}
+				data, err := json.Marshal(resp)
+				require.NoError(t, err)
+				require.NoError(t, msg.Respond(data))
+			},
+			wantErr:   true,
+			wantErrIs: vm.ErrMountAmbiguous,
+		},
+		{
+			name: "EmptyURI_PreservesInitialNBDURIOnFailure",
+			responder: func(t *testing.T, msg *nats.Msg) {
+				resp := types.EBSMountResponse{URI: ""}
+				data, err := json.Marshal(resp)
+				require.NoError(t, err)
+				require.NoError(t, msg.Respond(data))
+			},
+			initialURI: "nbd://stale",
+			wantErr:    true,
+			wantErrIs:  vm.ErrMountAmbiguous,
+			wantNBDURI: "nbd://stale",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := createTestDaemon(t, sharedNATSURL)
+			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+
+			if !tt.skipSub {
+				sub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
+					tt.responder(t, msg)
+				})
+				require.NoError(t, err)
+				defer sub.Unsubscribe()
+			}
+
+			req := &types.EBSRequest{
+				Name:       "vol-mountone",
+				DeviceName: "/dev/sdf",
+				NBDURI:     tt.initialURI,
+			}
+
+			err := adapter.MountOne(req)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.wantErrSub != "" {
+					assert.Contains(t, err.Error(), tt.wantErrSub)
+				}
+				if tt.wantErrIs != nil {
+					assert.ErrorIs(t, err, tt.wantErrIs)
+				}
+				assert.Equal(t, tt.wantNBDURI, req.NBDURI,
+					"NBDURI must not be overwritten on failure")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantNBDURI, req.NBDURI,
+				"happy path must write resolved NBDURI back to req")
+		})
+	}
 }
 
 // --- ReleaseGPU ---

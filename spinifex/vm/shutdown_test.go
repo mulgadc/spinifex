@@ -2,12 +2,15 @@ package vm
 
 import (
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/qmp"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -990,3 +993,100 @@ func (s *signalingStore) WriteTerminatedInstance(string, *VM) error { return nil
 func (s *signalingStore) ListTerminatedInstances() ([]*VM, error)   { return nil, nil }
 
 var _ StateStore = (*signalingStore)(nil)
+
+// TestShutdownAndUnmount_NilQMPClient_ProceedsToUnmount covers the QMP-nil
+// branch in shutdownAndUnmount: no powerdown attempt is made, the PID-file
+// wait still runs (returns immediately because no PID file was written),
+// and the unmount step proceeds.
+func TestShutdownAndUnmount_NilQMPClient_ProceedsToUnmount(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+
+	instance := &VM{ID: "i-noqmp", QMPClient: nil}
+
+	require.NotPanics(t, func() {
+		m.shutdownAndUnmount(instance)
+	})
+
+	mounter.mu.Lock()
+	defer mounter.mu.Unlock()
+	assert.Equal(t, []string{"i-noqmp"}, mounter.unmounted,
+		"shutdownAndUnmount must call Unmount even when QMPClient is nil")
+}
+
+// TestShutdownAndUnmount_PowerdownSent_NoForceKill exercises the happy path:
+// QMPClient is wired, system_powerdown is dispatched, the PID-file wait
+// returns immediately (no PID file present), and the unmount step runs.
+// The force-kill branch must not run because WaitForPidFileRemoval returned
+// nil.
+func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+
+	instance := &VM{ID: "i-powerdown", QMPClient: qmpClient}
+
+	m.shutdownAndUnmount(instance)
+
+	assert.Equal(t, []string{"system_powerdown"}, recorder.executes(),
+		"shutdownAndUnmount must dispatch exactly one system_powerdown QMP command")
+
+	mounter.mu.Lock()
+	defer mounter.mu.Unlock()
+	assert.Equal(t, []string{"i-powerdown"}, mounter.unmounted,
+		"unmount must run after the wait returns")
+}
+
+// TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill seeds a
+// real PID file, then concurrently removes it inside the 20s wait window.
+// The wait must return nil (no timeout), so the force-kill branch never
+// runs and the unmount step still fires.
+func TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	require.NoError(t, utils.WritePidFile("i-pid-removed", os.Getpid()))
+
+	mounter := &fakeVolumeMounter{}
+	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = utils.RemovePidFile("i-pid-removed")
+	}()
+
+	instance := &VM{ID: "i-pid-removed", QMPClient: nil}
+
+	start := time.Now()
+	m.shutdownAndUnmount(instance)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, pidFileRemovalTimeout,
+		"wait must return well before the configured timeout when the PID file disappears")
+
+	mounter.mu.Lock()
+	defer mounter.mu.Unlock()
+	assert.Equal(t, []string{"i-pid-removed"}, mounter.unmounted,
+		"unmount must run after PID file disappears")
+}
+
+// TestShutdownAndUnmount_NilVolumeMounter_SkipsUnmount covers the deps.
+// VolumeMounter==nil guard at the unmount step: shutdownAndUnmount must
+// not panic when the mounter is unwired (early-boot construction, partial
+// recovery paths).
+func TestShutdownAndUnmount_NilVolumeMounter_SkipsUnmount(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	m := NewManagerWithDeps(Deps{VolumeMounter: nil})
+
+	instance := &VM{ID: "i-nomounter", QMPClient: nil}
+
+	require.NotPanics(t, func() {
+		m.shutdownAndUnmount(instance)
+	})
+}

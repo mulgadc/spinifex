@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -108,7 +109,7 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	}
 
 	if aws.BoolValue(input.IncludeAllInstances) {
-		if stopped := queryStoppedInstancesForStatus(natsConn, jsonData, accountID, az); len(stopped) > 0 {
+		if stopped := queryStoppedInstancesForStatus(natsConn, input, accountID, az); len(stopped) > 0 {
 			allStatuses = append(allStatuses, stopped...)
 		}
 	}
@@ -123,7 +124,22 @@ func DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput, natsConn *na
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: finalStatuses}, nil
 }
 
-func queryStoppedInstancesForStatus(natsConn *nats.Conn, jsonData []byte, accountID, az string) []*ec2.InstanceStatus {
+// queryStoppedInstancesForStatus projects the input to DescribeInstancesInput
+// before forwarding to the stopped-instance KV handler. The handler unmarshals
+// with DisallowUnknownFields, so IncludeAllInstances must be dropped. Filters
+// only valid for DescribeInstanceStatus (availability-zone, instance-state-code)
+// are stripped because the stopped-instance handler would reject them via its
+// own valid-filter map; these are applied gateway-side after transform.
+func queryStoppedInstancesForStatus(natsConn *nats.Conn, input *ec2.DescribeInstanceStatusInput, accountID, az string) []*ec2.InstanceStatus {
+	projected := &ec2.DescribeInstancesInput{
+		InstanceIds: input.InstanceIds,
+		Filters:     stoppedCompatibleFilters(input.Filters),
+	}
+	jsonData, err := json.Marshal(projected)
+	if err != nil {
+		slog.Error("DescribeInstanceStatus: failed to marshal stopped query", "err", err)
+		return nil
+	}
 	reservations := queryInstanceBucket(natsConn, "ec2.DescribeStoppedInstances", jsonData, accountID)
 	var statuses []*ec2.InstanceStatus
 	for _, res := range reservations {
@@ -137,7 +153,74 @@ func queryStoppedInstancesForStatus(natsConn *nats.Conn, jsonData []byte, accoun
 			statuses = append(statuses, buildInstanceStatusFromInstance(inst, az))
 		}
 	}
-	return statuses
+	return filterStoppedStatuses(statuses, input.Filters, az)
+}
+
+// stoppedCompatibleFilters strips filters the stopped-instance handler would
+// reject (its valid-filter map differs from DescribeInstanceStatus's).
+func stoppedCompatibleFilters(filters []*ec2.Filter) []*ec2.Filter {
+	if len(filters) == 0 {
+		return nil
+	}
+	out := make([]*ec2.Filter, 0, len(filters))
+	for _, f := range filters {
+		if f == nil || f.Name == nil {
+			continue
+		}
+		switch *f.Name {
+		case "availability-zone", "instance-state-code":
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// filterStoppedStatuses applies DescribeInstanceStatus-specific filters that
+// could not be forwarded to the stopped handler.
+func filterStoppedStatuses(in []*ec2.InstanceStatus, filters []*ec2.Filter, az string) []*ec2.InstanceStatus {
+	if len(in) == 0 || len(filters) == 0 {
+		return in
+	}
+	out := in[:0]
+	for _, s := range in {
+		keep := true
+		for _, f := range filters {
+			if f == nil || f.Name == nil {
+				continue
+			}
+			switch *f.Name {
+			case "availability-zone":
+				if !filterValueMatches(f.Values, az) {
+					keep = false
+				}
+			case "instance-state-code":
+				code := ""
+				if s.InstanceState != nil && s.InstanceState.Code != nil {
+					code = strconv.FormatInt(*s.InstanceState.Code, 10)
+				}
+				if !filterValueMatches(f.Values, code) {
+					keep = false
+				}
+			}
+			if !keep {
+				break
+			}
+		}
+		if keep {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func filterValueMatches(values []*string, field string) bool {
+	for _, v := range values {
+		if v != nil && *v == field {
+			return true
+		}
+	}
+	return false
 }
 
 func buildInstanceStatusFromInstance(inst *ec2.Instance, az string) *ec2.InstanceStatus {

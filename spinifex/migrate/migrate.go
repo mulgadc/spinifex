@@ -131,6 +131,15 @@ func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) err
 		return utils.WriteVersion(kv, targetVersion)
 	}
 
+	// Fresh bucket with migrations registered: there is no v0 schema by
+	// convention (BucketVersion constants start at 1). Treat the bucket as
+	// being at the bottom of the registered chain so the chain validation
+	// below accepts the first migration. Without this, every first-ever
+	// KV migration would trip the "chain gap" error on fresh deployments.
+	if current == 0 {
+		current = all[0].FromVersion // sorted ascending by FromVersion
+	}
+
 	// Migrations are registered (or an existing bucket has a missing chain) —
 	// require a complete chain from current to target.
 	var pending []KVMigration

@@ -84,6 +84,28 @@ func TestRunKV_NoPendingMigrations_NoOp(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestRunKV_FreshBucket_WithMigrations(t *testing.T) {
+	ran := false
+	r := NewRegistry()
+	r.RegisterKV("test-bucket", KVMigration{
+		FromVersion: 1, ToVersion: 2, Description: "first kv migration",
+		Run: func(KVContext) error { ran = true; return nil },
+	})
+
+	_, nc := startTestNATS(t)
+	kv := createTestBucket(t, nc, "test-bucket")
+
+	// Fresh bucket (no _version key), targetVersion=2. The chain bottoms at
+	// 1, so RunKV should accept the chain and run it without a "gap" error.
+	err := r.RunKV("test-bucket", kv, 2)
+	require.NoError(t, err)
+	assert.True(t, ran, "migration should run on fresh bucket with registered chain")
+
+	entry, err := kv.Get("_version")
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(entry.Value()))
+}
+
 func TestRunKV_FreshBucket_StampsVersion(t *testing.T) {
 	r := NewRegistry()
 	_, nc := startTestNATS(t)

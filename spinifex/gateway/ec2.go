@@ -317,6 +317,9 @@ var ec2Actions = map[string]EC2Handler{
 	"DescribeSecurityGroups": ec2Handler(func(input *ec2.DescribeSecurityGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.DescribeSecurityGroups(input, gw.NATSConn, accountID)
 	}),
+	"DescribeSecurityGroupRules": ec2Handler(func(input *ec2.DescribeSecurityGroupRulesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_vpc.DescribeSecurityGroupRules(input, gw.NATSConn, accountID)
+	}),
 	"AuthorizeSecurityGroupIngress": ec2Handler(func(input *ec2.AuthorizeSecurityGroupIngressInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.AuthorizeSecurityGroupIngress(input, gw.NATSConn, accountID)
 	}),

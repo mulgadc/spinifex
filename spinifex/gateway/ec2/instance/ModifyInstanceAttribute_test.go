@@ -95,6 +95,24 @@ func TestValidateModifyInstanceAttributeInput_ValidUserData(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestValidateModifyInstanceAttributeInput_ValidDisableApiTermination(t *testing.T) {
+	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String("i-abc123"),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	})
+	assert.NoError(t, err)
+}
+
+func TestValidateModifyInstanceAttributeInput_DisableApiTerminationWithOther(t *testing.T) {
+	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String("i-abc123"),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+		InstanceType:          &ec2.AttributeValue{Value: aws.String("t3.micro")},
+	})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+}
+
 func TestValidateModifyInstanceAttributeInput_ValidSourceDestCheck(t *testing.T) {
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId:      aws.String("i-abc123"),

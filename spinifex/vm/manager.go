@@ -219,6 +219,25 @@ func (m *Manager) UpdateState(id string, fn func(*VM)) bool {
 	return true
 }
 
+// UpdateAndPersist looks up id and runs fn(v) under the manager lock. fn
+// returns true to request a state-store persist after the lock is released
+// (matching the writeRunningState pattern used by AttachVolume / Stop /
+// Terminate); false signals a no-op or early-return mutator and skips the
+// persist entirely. Returns (false, nil) when the VM is not in the running
+// map; fn is not invoked. On persist failure the in-memory mutation has
+// already taken effect — the caller's API-level error masks the drift but
+// memory will be ahead of disk until the next successful persist.
+func (m *Manager) UpdateAndPersist(id string, fn func(*VM) bool) (bool, error) {
+	var changed bool
+	found := m.UpdateState(id, func(v *VM) {
+		changed = fn(v)
+	})
+	if !found || !changed {
+		return found, nil
+	}
+	return true, m.writeRunningState()
+}
+
 // Status returns v.Status under the manager lock. Replaces the dominant
 // "Inspect to read Status" pattern with a typed accessor. Read-only — no
 // membership check, so callers may pass a pointer to an instance no longer

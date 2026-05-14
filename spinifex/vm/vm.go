@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -134,6 +135,17 @@ func (v *VM) ResetNodeLocalState() {
 	v.MetadataServerAddress = ""
 	v.QMPClient = &qmp.QMPClient{}
 	v.EBSRequests.Mu = sync.Mutex{}
+}
+
+// IsTerminationProtected reports whether the instance was launched with
+// DisableApiTermination=true and that value has not been cleared via
+// ModifyInstanceAttribute. Nil-safe for legacy instances missing
+// RunInstancesInput.
+func (v *VM) IsTerminationProtected() bool {
+	if v == nil || v.RunInstancesInput == nil {
+		return false
+	}
+	return aws.BoolValue(v.RunInstancesInput.DisableApiTermination)
 }
 
 type NetDev struct {

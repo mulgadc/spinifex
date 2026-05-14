@@ -12,6 +12,7 @@ type fakeStateStore struct {
 	saved      map[string]map[string]*VM
 	stopped    map[string]*VM
 	terminated map[string]*VM
+	saveErr    error
 }
 
 func newFakeStateStore() *fakeStateStore {
@@ -23,6 +24,9 @@ func newFakeStateStore() *fakeStateStore {
 }
 
 func (f *fakeStateStore) SaveRunningState(nodeID string, snap map[string]*VM) error {
+	if f.saveErr != nil {
+		return f.saveErr
+	}
 	cp := make(map[string]*VM, len(snap))
 	maps.Copy(cp, snap)
 	f.saved[nodeID] = cp

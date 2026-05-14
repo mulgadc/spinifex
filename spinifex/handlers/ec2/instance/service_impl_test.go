@@ -987,6 +987,63 @@ func TestDescribeInstanceAttribute_HiddenForOtherAccount(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
+func TestDescribeInstanceAttribute_DisableApiTermination(t *testing.T) {
+	owner := utils.GlobalAccountID
+
+	tests := []struct {
+		name     string
+		instance *vm.VM
+		want     bool
+	}{
+		{
+			name: "flag true on RunInstancesInput",
+			instance: &vm.VM{
+				ID: "i-prot", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{
+					DisableApiTermination: aws.Bool(true),
+				},
+			},
+			want: true,
+		},
+		{
+			name: "flag false on RunInstancesInput",
+			instance: &vm.VM{
+				ID: "i-noprot", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{
+					DisableApiTermination: aws.Bool(false),
+				},
+			},
+			want: false,
+		},
+		{
+			name: "RunInstancesInput.DisableApiTermination nil",
+			instance: &vm.VM{
+				ID: "i-nilflag", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{},
+			},
+			want: false,
+		},
+		{
+			name:     "RunInstancesInput nil (legacy)",
+			instance: &vm.VM{ID: "i-legacy", AccountID: owner},
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{tc.instance.ID: tc.instance})}
+			out, err := svc.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(tc.instance.ID),
+				Attribute:  aws.String(ec2.InstanceAttributeNameDisableApiTermination),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out.DisableApiTermination)
+			assert.Equal(t, tc.want, *out.DisableApiTermination.Value)
+		})
+	}
+}
+
 func TestDescribeStoppedInstances_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
 	_, err := svc.DescribeStoppedInstances(&ec2.DescribeInstancesInput{}, "")
@@ -1257,6 +1314,81 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 	assert.Nil(t, updated.Instance.StateReason)
 }
 
+func TestModifyInstanceAttribute_DisableApiTermination_Running(t *testing.T) {
+	const owner = "acc"
+	tests := []struct {
+		name     string
+		initial  *ec2.RunInstancesInput
+		setTo    bool
+		wantFlag bool
+	}{
+		{name: "set true on empty input", initial: &ec2.RunInstancesInput{}, setTo: true, wantFlag: true},
+		{name: "set true on nil input (legacy)", initial: nil, setTo: true, wantFlag: true},
+		{name: "clear from true to false", initial: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)}, setTo: false, wantFlag: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-run"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {ID: id, AccountID: owner, Status: vm.StateRunning, RunInstancesInput: tc.initial},
+			})
+			svc := &InstanceServiceImpl{vmMgr: mgr}
+
+			_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+				InstanceId:            aws.String(id),
+				DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(tc.setTo)},
+			}, owner)
+			require.NoError(t, err)
+
+			got, _ := mgr.Get(id)
+			require.NotNil(t, got.RunInstancesInput)
+			require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
+			assert.Equal(t, tc.wantFlag, *got.RunInstancesInput.DisableApiTermination)
+		})
+	}
+}
+
+func TestModifyInstanceAttribute_DisableApiTermination_Running_NotVisible(t *testing.T) {
+	id := "i-run-other"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, AccountID: "owner-acc", Status: vm.StateRunning},
+	})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(id),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
+	id := "i-stop-prot"
+	owner := "acc"
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{
+		id: {
+			ID: id, Status: vm.StateStopped, AccountID: owner,
+			Instance: &ec2.Instance{InstanceId: aws.String(id)},
+		},
+	}}
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: store,
+	}
+
+	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(id),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, owner)
+	require.NoError(t, err)
+
+	updated := store.wroteStopped[id]
+	require.NotNil(t, updated)
+	require.NotNil(t, updated.RunInstancesInput)
+	assert.True(t, *updated.RunInstancesInput.DisableApiTermination)
+}
+
 func TestModifyInstanceAttribute_WriteError(t *testing.T) {
 	id := "i-werr"
 	store := &fakeStoppedStore{
@@ -1405,6 +1537,30 @@ func TestTerminateStoppedInstance_NotVisible(t *testing.T) {
 	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "other-acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
+	id := "i-prot"
+	v := &vm.VM{
+		ID: id, Status: vm.StateStopped, AccountID: "acc",
+		RunInstancesInput: &ec2.RunInstancesInput{
+			DisableApiTermination: aws.Bool(true),
+		},
+	}
+	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+		{Name: "vol-001", DeleteOnTermination: true},
+	}
+	store := &fakeStoppedStore{loadByID: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(&TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
+
+	assert.Empty(t, vd.calls, "volumes must not be deleted when termination protected")
+	assert.Empty(t, store.wroteTerminated, "must not write to terminated bucket when protected")
+	assert.Empty(t, store.deletedStopped, "must not remove from stopped bucket when protected")
 }
 
 func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
@@ -1944,6 +2100,40 @@ func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
+	// DisableApiTermination must block Terminate but never Stop.
+	tests := []struct {
+		name    string
+		attrs   spxtypes.EC2CommandAttributes
+		wantErr string
+	}{
+		{name: "terminate blocked", attrs: spxtypes.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "stop allowed", attrs: spxtypes.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-prot"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {
+					ID: id, Status: vm.StateRunning,
+					RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
+				},
+			})
+			v, _ := mgr.Get(id)
+			svc := &InstanceServiceImpl{vmMgr: mgr}
+
+			err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tc.wantErr, err.Error())
+			assert.Equal(t, vm.StateRunning, v.Status, "VM state must not change when blocked")
+		})
+	}
 }
 
 type fakeENICreator struct {

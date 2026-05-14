@@ -1691,6 +1691,9 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
+	// Smoke test the daemon→service delegate: write a stopped instance with
+	// the protection flag set and confirm the round-trip surfaces the real
+	// value (not the pre-migration hardcoded false).
 	instanceID := "i-describe-def-001"
 	instance := &vm.VM{
 		ID:           instanceID,
@@ -1699,6 +1702,9 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 		AccountID:    testAccountID,
 		Instance: &ec2.Instance{
 			InstanceId: aws.String(instanceID),
+		},
+		RunInstancesInput: &ec2.RunInstancesInput{
+			DisableApiTermination: aws.Bool(true),
 		},
 	}
 	err = daemon.jsManager.WriteStoppedInstance(instanceID, instance)
@@ -1717,7 +1723,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 	err = json.Unmarshal(reply.Data, &output)
 	require.NoError(t, err)
 	require.NotNil(t, output.DisableApiTermination)
-	assert.Equal(t, false, *output.DisableApiTermination.Value)
+	assert.Equal(t, true, *output.DisableApiTermination.Value)
 }
 
 func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t *testing.T) {

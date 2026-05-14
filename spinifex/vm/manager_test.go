@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,7 +100,7 @@ func TestManager_UpdateState(t *testing.T) {
 }
 
 func TestManager_UpdateAndPersist(t *testing.T) {
-	t.Run("persists on hit", func(t *testing.T) {
+	t.Run("persists on hit when mutator reports change", func(t *testing.T) {
 		store := newFakeStateStore()
 		m := NewManagerWithDeps(Deps{NodeID: "node-1", StateStore: store})
 		a := mkVM("i-a")
@@ -107,9 +108,10 @@ func TestManager_UpdateAndPersist(t *testing.T) {
 		m.Insert(a)
 
 		called := false
-		ok, err := m.UpdateAndPersist("i-a", func(v *VM) {
+		ok, err := m.UpdateAndPersist("i-a", func(v *VM) bool {
 			called = true
 			v.Status = StateRunning
+			return true
 		})
 		if !ok {
 			t.Fatal("UpdateAndPersist on existing id: want ok=true")
@@ -132,12 +134,31 @@ func TestManager_UpdateAndPersist(t *testing.T) {
 		}
 	})
 
+	t.Run("mutator returning false skips persist", func(t *testing.T) {
+		store := newFakeStateStore()
+		m := NewManagerWithDeps(Deps{NodeID: "node-1", StateStore: store})
+		a := mkVM("i-a")
+		m.Insert(a)
+
+		ok, err := m.UpdateAndPersist("i-a", func(v *VM) bool { return false })
+		if !ok {
+			t.Fatal("UpdateAndPersist on existing id: want ok=true")
+		}
+		if err != nil {
+			t.Fatalf("UpdateAndPersist err: %v", err)
+		}
+		if len(store.saved) != 0 {
+			t.Fatal("SaveRunningState must not be called when mutator reports no change")
+		}
+	})
+
 	t.Run("missing id is no-op", func(t *testing.T) {
 		store := newFakeStateStore()
 		m := NewManagerWithDeps(Deps{NodeID: "node-1", StateStore: store})
 
-		ok, err := m.UpdateAndPersist("missing", func(*VM) {
+		ok, err := m.UpdateAndPersist("missing", func(*VM) bool {
 			t.Fatal("mutator must not run on missing id")
+			return false
 		})
 		if ok {
 			t.Fatal("UpdateAndPersist on missing id: want ok=false")
@@ -155,12 +176,39 @@ func TestManager_UpdateAndPersist(t *testing.T) {
 		a := mkVM("i-a")
 		m.Insert(a)
 
-		ok, err := m.UpdateAndPersist("i-a", func(v *VM) { v.Status = StateRunning })
+		ok, err := m.UpdateAndPersist("i-a", func(v *VM) bool {
+			v.Status = StateRunning
+			return true
+		})
 		if !ok || err != nil {
 			t.Fatalf("UpdateAndPersist: ok=%v err=%v, want (true, nil)", ok, err)
 		}
 		if a.Status != StateRunning {
 			t.Fatalf("mutation not applied: got %s", a.Status)
+		}
+	})
+
+	t.Run("persist error is surfaced; in-memory mutation retained", func(t *testing.T) {
+		store := newFakeStateStore()
+		want := errors.New("save failed")
+		store.saveErr = want
+		m := NewManagerWithDeps(Deps{NodeID: "node-1", StateStore: store})
+		a := mkVM("i-a")
+		a.Status = StatePending
+		m.Insert(a)
+
+		ok, err := m.UpdateAndPersist("i-a", func(v *VM) bool {
+			v.Status = StateRunning
+			return true
+		})
+		if !ok {
+			t.Fatal("UpdateAndPersist on existing id: want ok=true")
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("UpdateAndPersist err: got %v, want %v", err, want)
+		}
+		if a.Status != StateRunning {
+			t.Fatalf("in-memory mutation must persist past persist failure: got %s", a.Status)
 		}
 	})
 }

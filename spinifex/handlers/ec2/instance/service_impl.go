@@ -738,21 +738,22 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		protected, raced, stateMismatch bool
 		currentState                    vm.InstanceState
 	)
-	ok, persistErr := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) {
+	ok, persistErr := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
 		currentState = v.Status
 		if isTerminate && v.IsTerminationProtected() {
 			protected = true
-			return
+			return false
 		}
 		if isTerminate && v.Status == vm.StateShuttingDown {
 			raced = true
-			return
+			return false
 		}
 		if !vm.IsValidTransition(v.Status, initialState) {
 			stateMismatch = true
-			return
+			return false
 		}
 		v.Attributes = command.Attributes
+		return true
 	})
 	if !ok {
 		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
@@ -777,7 +778,10 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
 	if persistErr != nil {
-		slog.Error("StopOrTerminateInstance: failed to persist running state",
+		// In-memory v.Attributes is already stamped; the next successful
+		// persist will reconcile. The async lifecycle path (Stop/Terminate)
+		// also persists, so drift is short-lived in practice.
+		slog.Error("StopOrTerminateInstance: persist failed after in-memory mutation; state drift until next persist",
 			"instanceId", instance.ID, "err", persistErr)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1688,7 +1692,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	// DisableApiTermination applies to both running and stopped instances.
 	// Try the running map first; fall through to the stopped-store path
 	// only if the instance isn't currently running on this node.
-	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil && s.vmMgr != nil {
+	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
 		if running, ok := s.vmMgr.Get(instanceID); ok {
 			if !IsInstanceVisible(accountID, running.AccountID) {
 				slog.Warn("ModifyInstanceAttribute: instance not visible",
@@ -1696,15 +1700,18 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 			}
 			newVal := input.DisableApiTermination.Value
-			updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) {
+			updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
 				if v.RunInstancesInput == nil {
 					v.RunInstancesInput = &ec2.RunInstancesInput{}
 				}
 				v.RunInstancesInput.DisableApiTermination = newVal
+				return true
 			})
 			if updated {
 				if persistErr != nil {
-					slog.Error("ModifyInstanceAttribute: failed to persist running state",
+					// In-memory flag already flipped; until persist succeeds,
+					// a daemon restart will silently revert the value.
+					slog.Error("ModifyInstanceAttribute: persist failed after in-memory mutation; state drift until next persist",
 						"instanceId", instanceID, "err", persistErr)
 					return nil, errors.New(awserrors.ErrorServerInternal)
 				}

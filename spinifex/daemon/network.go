@@ -157,8 +157,14 @@ func CheckOVNHealth() OVNHealthStatus {
 		status.BrIntExists = true
 	}
 
-	// Check ovn-controller is running via ovs-appctl (more reliable than pgrep)
-	if out, err := sudoCommand("ovs-appctl", "-t", "ovn-controller", "version").CombinedOutput(); err == nil && len(out) > 0 {
+	// Check ovn-controller is running via ovs-appctl. Trixie OVN moved the
+	// pid file to /var/run/ovn/; older installs use /var/run/openvswitch/.
+	// Probe at runtime so the same binary works on both layouts.
+	ovnTarget := "ovn-controller"
+	if _, err := os.Stat("/var/run/ovn/ovn-controller.pid"); err == nil {
+		ovnTarget = "/var/run/ovn/ovn-controller"
+	}
+	if out, err := sudoCommand("ovs-appctl", "-t", ovnTarget, "version").CombinedOutput(); err == nil && len(out) > 0 {
 		status.OVNControllerUp = true
 	}
 

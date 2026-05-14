@@ -151,6 +151,10 @@ func buildConfig() (*install.Config, error) {
 		cfg.JoinAddr = joinAddr
 	}
 
+	if os.Getenv("SPINIFEX_SKIP_FORMATION") == "1" {
+		cfg.SkipFormation = true
+	}
+
 	return cfg, nil
 }
 

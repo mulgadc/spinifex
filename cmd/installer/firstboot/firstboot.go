@@ -52,6 +52,10 @@ type Config struct {
 	// and network failures are swallowed so the install is not gated on
 	// controller reachability.
 	InstallCallback string
+	// SkipFormation skips spx admin init/join. Used when a provisioning
+	// controller (e.g. bm-bootstrap.sh) owns cluster formation and will call
+	// spx admin init/join itself with the correct multi-node parameters.
+	SkipFormation bool
 }
 
 // Write drops the firstboot script and systemd unit into root, which should be
@@ -232,6 +236,9 @@ fi
 }
 
 func buildClusterCmd(cfg Config) string {
+	if cfg.SkipFormation {
+		return `echo "[firstboot] cluster formation skipped — provisioning controller will handle it"`
+	}
 	emailFlag := ""
 	if cfg.Email != "" {
 		// shellEscapeSingle keeps the email safe if it ever contains a

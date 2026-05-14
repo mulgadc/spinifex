@@ -696,6 +696,7 @@ func (c *Config) toFirstbootConfig() firstboot.Config {
 		JoinAddr:        c.JoinAddr,
 		Email:           c.Email,
 		InstallCallback: strings.TrimSpace(os.Getenv("SPINIFEX_INSTALL_CALLBACK")),
+		SkipFormation:   c.SkipFormation,
 	}
 }
 

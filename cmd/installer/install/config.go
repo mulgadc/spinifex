@@ -55,6 +55,10 @@ type Config struct {
 	// JoinAddr is the primary node address (host:port) when ClusterRole is "join".
 	JoinAddr string
 
+	// SkipFormation skips spx admin init/join in firstboot; the provisioning
+	// controller (e.g. bm-bootstrap.sh) owns cluster formation instead.
+	SkipFormation bool
+
 	// CA certificate (PEM), optional.
 	HasCACert bool
 	CACert    string

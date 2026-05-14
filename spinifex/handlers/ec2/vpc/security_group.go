@@ -364,7 +364,7 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 
 // DescribeSecurityGroups lists security groups with optional filters.
 func (s *VPCServiceImpl) DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
-	var groups []*ec2.SecurityGroup
+	groups := []*ec2.SecurityGroup{}
 
 	groupIDs := make(map[string]bool)
 	for _, id := range input.GroupIds {
@@ -523,7 +523,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var rules []*ec2.SecurityGroupRule
+	rules := []*ec2.SecurityGroupRule{}
 	emitted := make(map[string]bool)
 
 	for _, key := range keys {

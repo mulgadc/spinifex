@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,7 @@ func Run(cfg *Config) error {
 	}
 
 	slog.Info("installation complete")
+	fireInstallCallback()
 	promptRemoveUSB()
 	return reboot()
 }
@@ -648,6 +650,26 @@ func promptRemoveUSB() {
 	case <-done:
 	case <-time.After(10 * time.Second):
 	}
+}
+
+// fireInstallCallback notifies the boot controller that installation is done
+// so it clears the PXE install flag before the node reboots. Without this,
+// a PXE-first boot order causes the node to reinstall on every reboot until
+// firstboot fires the callback — which it can never do if it never runs.
+// No-op when SPINIFEX_INSTALL_CALLBACK is not set (ISO/USB installs).
+func fireInstallCallback() {
+	url := strings.TrimSpace(os.Getenv("SPINIFEX_INSTALL_CALLBACK"))
+	if url == "" {
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url) //nolint:noctx // installer has no context; best-effort fire-and-forget
+	if err != nil {
+		slog.Warn("fireInstallCallback: request failed", "url", url, "err", err)
+		return
+	}
+	resp.Body.Close()
+	slog.Info("fireInstallCallback: notified boot controller", "url", url, "status", resp.StatusCode)
 }
 
 func reboot() error {

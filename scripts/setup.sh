@@ -380,11 +380,14 @@ create_directories() {
     # /run is tmpfs — direct mkdir doesn't survive reboot, and units have
     # ReadWritePaths= on these paths which fails namespace setup with ENOENT
     # if the dirs are absent at service start.
-    $SUDO install -m 0644 /dev/stdin /etc/tmpfiles.d/spinifex.conf <<'TMPEOF'
+    _tmpf=$(mktemp)
+    cat > "$_tmpf" <<'TMPEOF'
 # Type  Path               Mode  User                 Group                Age
 d       /run/spinifex      0770  root                 spinifex             -
 d       /run/spinifex/nbd  0770  spinifex-viperblock  spinifex-viperblock  -
 TMPEOF
+    $SUDO install -m 0644 "$_tmpf" /etc/tmpfiles.d/spinifex.conf
+    rm -f "$_tmpf"
     if [ "${ISO_BUILD:-0}" != "1" ]; then
         # Live systems: materialise the runtime dirs immediately so a re-run of
         # setup.sh on an existing host has correct /run state without a reboot.

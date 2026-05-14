@@ -814,6 +814,26 @@ func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 	assert.Len(t, desc.Listeners, 2)
 }
 
+// TestDescribeListeners_AccountIsolation pins the independent account filter
+// in DescribeListeners (service_impl.go:1470). LB-level isolation is tested
+// by TestDescribeLoadBalancers_AccountIsolation, but listener filtering is
+// enforced separately on each ListenerRecord — a regression that drops the
+// listener-side check would not be caught by the LB-level test.
+func TestDescribeListeners_AccountIsolation(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("iso-lb")}, testAccountID)
+	tg, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("iso-tg")}, testAccountID)
+	svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{}, "999999999999")
+	require.NoError(t, err)
+	assert.Empty(t, desc.Listeners)
+}
+
 // --- NLB Listener tests ---
 
 func TestCreateListener_NLB_TCPProtocol(t *testing.T) {
@@ -1076,6 +1096,45 @@ func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err) // No panic, no error — updateStoredConfig skipped gracefully
+}
+
+// TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID pins the nil-safe
+// branch in DeleteLoadBalancer: an LB created without a systemAMI never
+// launched an ALB VM (InstanceID == ""), so DeleteLoadBalancer must skip
+// TerminateSystemInstance rather than call it with an empty string. The
+// positive case (terminate IS called when InstanceID is set) is covered by
+// TestDeleteLoadBalancer_TerminatesVM_WithPublicIP in service_impl_vpc_test.go.
+func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
+	svc := setupTestService(t)
+
+	mock := &mockTerminateLauncher{}
+	svc.InstanceLauncher = mock
+
+	lb, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("del-lb"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, len(mock.terminateCalls), "terminate must not be called when InstanceID is empty")
+}
+
+// mockTerminateLauncher records TerminateSystemInstance calls for testing.
+type mockTerminateLauncher struct {
+	terminateCalls []string
+}
+
+func (m *mockTerminateLauncher) LaunchSystemInstance(_ *SystemInstanceInput) (*SystemInstanceOutput, error) {
+	return &SystemInstanceOutput{InstanceID: "i-mock", PrivateIP: "10.0.0.1"}, nil
+}
+
+func (m *mockTerminateLauncher) TerminateSystemInstance(instanceID string) error {
+	m.terminateCalls = append(m.terminateCalls, instanceID)
+	return nil
 }
 
 // --- Scheme unit tests ---
@@ -1466,6 +1525,35 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 }
 
 // --- Service lifecycle and setter tests ---
+
+// TestGetSystemAMI_ColdStart and TestGetSystemInstanceType_ColdStart pin the
+// no-resolver-wired path. TestGet*_RetryOn{Error,Empty} only exercise paths
+// after a resolver is set, so they don't cover the boot-time race where a
+// caller asks for the system AMI/instance type before LB-image import has
+// installed the resolver. Cold-start must return empty + no error rather
+// than panic on a nil func.
+
+func TestGetSystemAMI_ColdStart(t *testing.T) {
+	svc := setupTestService(t)
+
+	ami, err := svc.getSystemAMI()
+	require.NoError(t, err)
+	assert.Empty(t, ami)
+
+	svc.SetSystemAMIFunc(func() (string, error) { return "ami-system-001", nil })
+	ami, err = svc.getSystemAMI()
+	require.NoError(t, err)
+	assert.Equal(t, "ami-system-001", ami)
+}
+
+func TestGetSystemInstanceType_ColdStart(t *testing.T) {
+	svc := setupTestService(t)
+
+	assert.Empty(t, svc.getSystemInstanceType())
+
+	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
+	assert.Equal(t, "t3.micro", svc.getSystemInstanceType())
+}
 
 func TestGetSystemAMI_RetryOnError(t *testing.T) {
 	svc := setupTestService(t)

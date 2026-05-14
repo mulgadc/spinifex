@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -113,7 +112,11 @@ func backfillSGRuleIDs(ctx KVContext, key string) error {
 			return fmt.Errorf("marshal %s: %w", key, err)
 		}
 		if _, err := ctx.KV.Update(key, data, entry.Revision()); err != nil {
-			if errors.Is(err, nats.ErrKeyExists) || isSGCASConflict(err) {
+			// nats.ErrKeyExists is the sentinel returned by KV.Update on a
+			// revision mismatch: it wraps a JetStream APIError with
+			// ErrorCode JSStreamWrongLastSequence (10071), which APIError.Is
+			// matches on.
+			if errors.Is(err, nats.ErrKeyExists) {
 				ctx.Logger.Warn("SG migration CAS conflict, retrying", "key", key, "attempt", attempt+1)
 				lastErr = err
 				continue
@@ -123,16 +126,4 @@ func backfillSGRuleIDs(ctx KVContext, key string) error {
 		return nil
 	}
 	return fmt.Errorf("backfill rule IDs for %s: exceeded %d CAS retries: %w", key, sgMigrationMaxRetries, lastErr)
-}
-
-// isSGCASConflict detects the nats.go "wrong last sequence" error that
-// nats.KeyValue.Update returns on a revision mismatch. The library surfaces
-// the underlying JetStream APIError text rather than a sentinel; matching on
-// substring keeps the retry behaviour decoupled from that internal shape.
-func isSGCASConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "wrong last sequence") || strings.Contains(msg, "revision mismatch")
 }

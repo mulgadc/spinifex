@@ -139,3 +139,73 @@ func TestSGMigration_EmptyBucket(t *testing.T) {
 	kv := sgMigrationKV(t)
 	runSGMigration(t, kv)
 }
+
+// casConflictKV wraps a nats.KeyValue and forces the next failuresLeft Update
+// calls to return nats.ErrKeyExists, simulating the JetStream
+// wrong-last-sequence response that backfillSGRuleIDs retries on.
+type casConflictKV struct {
+	nats.KeyValue
+
+	failuresLeft int
+}
+
+func (k *casConflictKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	if k.failuresLeft > 0 {
+		k.failuresLeft--
+		return 0, nats.ErrKeyExists
+	}
+	return k.KeyValue.Update(key, value, last)
+}
+
+func seedSGRecord(t *testing.T, kv nats.KeyValue) string {
+	t.Helper()
+	record := sgRecord{
+		GroupId:   "sg-0123456789abcdef0",
+		GroupName: "cas",
+		VpcId:     "vpc-0123456789abcdef0",
+		IngressRules: []sgRule{
+			{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "10.0.0.0/24"},
+		},
+		CreatedAt: time.Now(),
+	}
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	key := utils.AccountKey(sgTestAccountID, record.GroupId)
+	_, err = kv.Put(key, data)
+	require.NoError(t, err)
+	return key
+}
+
+func TestSGMigration_RetriesOnCASConflict(t *testing.T) {
+	kv := sgMigrationKV(t)
+	key := seedSGRecord(t, kv)
+
+	stub := &casConflictKV{KeyValue: kv, failuresLeft: sgMigrationMaxRetries - 1}
+	err := backfillSGRuleIDs(KVContext{KV: stub, Logger: slog.Default()}, key)
+	require.NoError(t, err)
+	assert.Equal(t, 0, stub.failuresLeft, "all injected conflicts must have been consumed")
+
+	entry, err := kv.Get(key)
+	require.NoError(t, err)
+	var got sgRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.Len(t, got.IngressRules, 1)
+	assert.Regexp(t, `^sgr-[0-9a-f]{17}$`, got.IngressRules[0].RuleId)
+}
+
+func TestSGMigration_FailsAfterCASRetryExhaustion(t *testing.T) {
+	kv := sgMigrationKV(t)
+	key := seedSGRecord(t, kv)
+
+	stub := &casConflictKV{KeyValue: kv, failuresLeft: sgMigrationMaxRetries + 1}
+	err := backfillSGRuleIDs(KVContext{KV: stub, Logger: slog.Default()}, key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeded 3 CAS retries")
+	assert.ErrorIs(t, err, nats.ErrKeyExists, "exhaustion error must wrap the underlying CAS conflict")
+
+	entry, err := kv.Get(key)
+	require.NoError(t, err)
+	var got sgRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	assert.Empty(t, got.IngressRules[0].RuleId, "record must be untouched after retry exhaustion")
+}

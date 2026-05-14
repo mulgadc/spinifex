@@ -22,6 +22,11 @@ import (
 // sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
 var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 
+// SGRuleIDRegex must stay in lockstep with utils.GenerateResourceID("sgr").
+// Exported so the EC2 gateway can validate SecurityGroupRuleIds without
+// re-implementing the format check.
+var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
+
 // validateSGRule rejects values that could break out of an OVN ACL match-expression token.
 // CidrIp must be IPv4 and round-trip to canonical form (so "10.0.0.5/8" with host bits set is
 // rejected, as is anything containing operators/whitespace that net.ParseCIDR would not accept).
@@ -495,9 +500,10 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(input *ec2.DescribeSecurityG
 	requested := make(map[string]bool)
 	if input != nil {
 		for _, id := range input.SecurityGroupRuleIds {
-			if id != nil {
-				requested[*id] = true
+			if id == nil || *id == "" {
+				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 			}
+			requested[*id] = true
 		}
 	}
 
@@ -595,6 +601,12 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			// rule.Tags is not yet populated; tag-key excludes every rule.
 			return false
 		default:
+			// Unreachable today because ParseFilters rejects anything not in
+			// describeSecurityGroupRulesValidFilters or starting with "tag:".
+			// If a future change adds a name to that map without adding a case
+			// here, this Error gives a Sentry breadcrumb instead of silently
+			// returning an empty result set for a documented filter.
+			slog.Error("sgRuleMatchesFilters: filter accepted by ParseFilters but no case", "filter", name)
 			return false
 		}
 	}

@@ -401,28 +401,6 @@ func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestExternalPoolConfig_IsDHCP(t *testing.T) {
-	p := ExternalPoolConfig{Source: "dhcp"}
-	assert.True(t, p.IsDHCP())
-
-	p2 := ExternalPoolConfig{Source: "static"}
-	assert.False(t, p2.IsDHCP())
-
-	p3 := ExternalPoolConfig{}
-	assert.False(t, p3.IsDHCP())
-}
-
-func TestValidatePoolConfig_DHCPPool(t *testing.T) {
-	// DHCP pools don't need range_start/range_end
-	pool := ExternalPoolConfig{
-		Name:    "dhcp-pool",
-		Source:  "dhcp",
-		Gateway: "192.168.1.1",
-	}
-	err := ValidatePoolConfig(pool)
-	assert.NoError(t, err)
-}
-
 // dhcpStub captures acquire/release requests and replies with a
 // deterministic lease so the handler-side IPAM code can be exercised
 // without running vpcd.

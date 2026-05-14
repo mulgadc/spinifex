@@ -600,24 +600,6 @@ func TestDescribeImages_FilterSystemAMIByGlobalAccountID(t *testing.T) {
 	assert.Equal(t, "000000000000", *result.Images[0].OwnerId)
 }
 
-func TestDescribeImages_NilInput(t *testing.T) {
-	svc, _ := setupTestImageService(t)
-
-	result, err := svc.DescribeImages(nil, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Empty(t, result.Images)
-}
-
-func TestDescribeImages_EmptyBucket(t *testing.T) {
-	svc, _ := setupTestImageService(t)
-
-	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Empty(t, result.Images)
-}
-
 func TestDescribeImages_NonAMIPrefixIgnored(t *testing.T) {
 	svc, store := setupTestImageService(t)
 

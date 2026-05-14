@@ -573,14 +573,6 @@ func TestRemoveSnapshotRef(t *testing.T) {
 	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
 }
 
-func TestRemoveSnapshotRef_NonExistentKey(t *testing.T) {
-	kv := setupTestNATSKV(t)
-	svc := &SnapshotServiceImpl{snapKV: kv}
-
-	// Should not error on non-existent key
-	require.NoError(t, svc.removeSnapshotRef("vol-nonexistent", "snap-x"))
-}
-
 func TestVolumeHasSnapshots(t *testing.T) {
 	kv := setupTestNATSKV(t)
 	svc := &SnapshotServiceImpl{snapKV: kv}

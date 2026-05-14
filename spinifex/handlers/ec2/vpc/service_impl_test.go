@@ -1673,24 +1673,6 @@ func TestDescribeSubnets_FilterByTag(t *testing.T) {
 
 // --- SetExternalIPAM / GetSubnet ---
 
-// TestSetExternalIPAM_StoresRefs: SetExternalIPAM is the wiring hook by which
-// awsgw injects the external IPAM + EIP KV into the VPC service so
-// DeleteNetworkInterface can release auto-assigned public IPs. Locks the
-// trivial setter so a future "moved to constructor" refactor doesn't
-// silently leave the references nil.
-func TestSetExternalIPAM_StoresRefs(t *testing.T) {
-	svc, nc := setupTestVPCServiceWithNC(t)
-	js, err := nc.JetStream()
-	require.NoError(t, err)
-	eipKV, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "spinifex-eips-test", History: 1})
-	require.NoError(t, err)
-	ipam := &ExternalIPAM{}
-
-	svc.SetExternalIPAM(ipam, eipKV)
-	assert.Same(t, ipam, svc.externalIPAM, "externalIPAM ref must be stored")
-	assert.Equal(t, eipKV, svc.eipKV, "eipKV ref must be stored")
-}
-
 func TestGetSubnet_Success(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

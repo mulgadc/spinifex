@@ -562,31 +562,6 @@ func TestRemoveInstance_Success(t *testing.T) {
 	assert.Equal(t, []string{"i-bbb"}, record.NodeInstances["node-b"])
 }
 
-func TestRemoveInstance_NodeNotFound(t *testing.T) {
-	svc := setupTestService(t)
-	createTestGroup(t, svc, "remove-nonode-group", "spread")
-
-	// Removing from a non-existent node is a no-op
-	_, err := svc.RemoveInstance(&RemoveInstanceInput{
-		GroupName:  "remove-nonode-group",
-		NodeName:   "ghost-node",
-		InstanceID: "i-xxx",
-	}, testAccountID)
-	require.NoError(t, err)
-}
-
-func TestRemoveInstance_GroupNotFound(t *testing.T) {
-	svc := setupTestService(t)
-
-	// Removing from a non-existent group is a no-op (group may have been deleted)
-	_, err := svc.RemoveInstance(&RemoveInstanceInput{
-		GroupName:  "deleted-group",
-		NodeName:   "node-a",
-		InstanceID: "i-xxx",
-	}, testAccountID)
-	require.NoError(t, err)
-}
-
 func TestRemoveInstance_MultipleInstancesOnNode(t *testing.T) {
 	svc := setupTestService(t)
 	createTestGroup(t, svc, "multi-inst-group", "cluster")

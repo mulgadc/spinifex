@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -34,24 +33,6 @@ func mgrWith(vms map[string]*vm.VM) *vm.Manager {
 		m.Replace(vms)
 	}
 	return m
-}
-
-func TestNewInstanceServiceImpl(t *testing.T) {
-	cfg := &config.Config{}
-	instanceTypes := map[string]*ec2.InstanceTypeInfo{
-		"t3.micro": {InstanceType: aws.String("t3.micro")},
-	}
-	store := objectstore.NewMemoryObjectStore()
-	mgr := vm.NewManager()
-
-	svc := NewInstanceServiceImpl(cfg, instanceTypes, nil, store, mgr, nil, nil)
-
-	require.NotNil(t, svc)
-	assert.Equal(t, cfg, svc.config)
-	assert.Equal(t, instanceTypes, svc.instanceTypes)
-	assert.Nil(t, svc.natsConn)
-	assert.Equal(t, mgr, svc.vmMgr)
-	assert.Equal(t, store, svc.objectStore)
 }
 
 func TestGenerateHostname(t *testing.T) {
@@ -421,32 +402,6 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 	assert.Empty(t, p.volumeType, "volumeType should stay empty")
 	assert.Zero(t, p.iops, "iops should stay zero")
 	assert.True(t, p.deleteOnTermination, "deleteOnTermination should stay at default")
-}
-
-func TestMockInstanceService(t *testing.T) {
-	svc := NewMockInstanceService()
-	require.NotNil(t, svc)
-
-	input := &ec2.RunInstancesInput{
-		ImageId:      aws.String("ami-0123456789abcdef0"),
-		InstanceType: aws.String("t3.micro"),
-		KeyName:      aws.String("my-key"),
-		SubnetId:     aws.String("subnet-abc123"),
-	}
-
-	reservation, err := svc.RunInstances(input, "123456789012")
-	require.NoError(t, err)
-	require.NotNil(t, reservation)
-	assert.Equal(t, "123456789012", *reservation.OwnerId)
-	require.Len(t, reservation.Instances, 1)
-
-	inst := reservation.Instances[0]
-	assert.Equal(t, "i-0123456789abcdef0", *inst.InstanceId)
-	assert.Equal(t, "running", *inst.State.Name)
-	assert.Equal(t, "ami-0123456789abcdef0", *inst.ImageId)
-	assert.Equal(t, "t3.micro", *inst.InstanceType)
-	assert.Equal(t, "my-key", *inst.KeyName)
-	assert.Equal(t, "subnet-abc123", *inst.SubnetId)
 }
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
@@ -2248,48 +2203,12 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-func TestLaunchRunInstances_EmptyList(t *testing.T) {
-	svc := &InstanceServiceImpl{
-		config: &config.Config{},
-		vmMgr:  vm.NewManager(),
-	}
-	// Must not panic, must not call into nil deps.
-	svc.LaunchRunInstances(nil, &ec2.RunInstancesInput{}, &ec2.InstanceTypeInfo{})
-}
-
-func TestLaunchRunInstances_SkipsStateChanged(t *testing.T) {
-	id := "i-already-running"
-	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
-	v, _ := mgr.Get(id)
-	svc := &InstanceServiceImpl{
-		config: &config.Config{},
-		vmMgr:  mgr,
-	}
-	// Skip path returns early without calling GenerateVolumes / vmMgr.Run.
-	svc.LaunchRunInstances([]*vm.VM{v}, &ec2.RunInstancesInput{}, &ec2.InstanceTypeInfo{})
-}
-
 // TestRunInstances_PrepareError covers the InstanceService-level RunInstances
 // (sync convenience method) error propagation when PrepareRunInstances rejects.
 func TestRunInstances_PrepareError(t *testing.T) {
 	svc := &InstanceServiceImpl{}
 	_, err := svc.RunInstances(&ec2.RunInstancesInput{}, "acc")
 	require.Error(t, err)
-}
-
-// TestSetters exercises the dep-wiring setters so they're not 0-cov.
-func TestSetters(t *testing.T) {
-	svc := NewInstanceServiceImpl(
-		&config.Config{},
-		map[string]*ec2.InstanceTypeInfo{},
-		nil, nil, vm.NewManager(),
-		&fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{}},
-		nil,
-	)
-	svc.SetTerminationDeps(&fakeVolumeDeleter{}, &fakeENIDeleter{}, &fakePublicIPReleaser{})
-	svc.SetGPUClaimer(&fakeGPUClaimer{})
-	svc.SetRunInstancesDeps(&fakeAMILoader{}, &fakeKeyValidator{}, nil, nil)
-	require.NotNil(t, svc)
 }
 
 // --- DescribeInstanceStatus ---

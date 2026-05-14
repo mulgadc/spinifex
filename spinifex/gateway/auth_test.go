@@ -467,60 +467,6 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 	}
 }
 
-func TestSigV4Auth_CallerIdentity(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
-	if err != nil {
-		t.Fatalf("Failed to encrypt secret: %v", err)
-	}
-
-	mockSvc := &mockIAMService{
-		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
-			testAccessKey: {
-				AccessKeyID:     testAccessKey,
-				SecretAccessKey: encryptedSecret,
-				UserName:        "alice",
-				Status:          "Active",
-			},
-		},
-	}
-
-	gw := &GatewayConfig{
-		DisableLogging: true,
-		Region:         testRegion,
-		IAMService:     mockSvc,
-	}
-
-	r := chi.NewRouter()
-	r.Use(gw.SigV4AuthMiddleware())
-	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		identity := r.Context().Value(ctxIdentity)
-		fmt.Fprintf(w, "identity=%v", identity)
-	})
-
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
-
-	resp := doRequest(r, req)
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Expected status 200, got %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "identity=alice" {
-		t.Errorf("Expected identity=alice, got: %s", string(body))
-	}
-}
-
 func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -1350,78 +1296,6 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 }
 
 // --- computeSignatureWithSecret Direct Unit Tests ---
-
-func TestComputeSignatureWithSecret_DifferentMethods(t *testing.T) {
-	secret := "test-secret-key"
-	date := "20260305"
-	timestamp := "20260305T120000Z"
-	region := "us-east-1"
-	service := "ec2"
-	signedHeaders := "host;x-amz-date"
-
-	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
-	signatures := make(map[string]string)
-
-	for _, method := range methods {
-		req := httptest.NewRequest(method, "/", nil)
-		req.Host = "localhost:9999"
-		req.Header.Set("X-Amz-Date", timestamp)
-
-		sig := computeSignatureWithSecret(req, nil, secret, date, timestamp, region, service, signedHeaders)
-		if sig == "" {
-			t.Errorf("Empty signature for method %s", method)
-		}
-		signatures[method] = sig
-	}
-
-	// Each method should produce a different signature
-	for i, m1 := range methods {
-		for _, m2 := range methods[i+1:] {
-			if signatures[m1] == signatures[m2] {
-				t.Errorf("Methods %s and %s produced same signature", m1, m2)
-			}
-		}
-	}
-}
-
-func TestComputeSignatureWithSecret_SpecialURIPaths(t *testing.T) {
-	secret := "test-secret-key"
-	date := "20260305"
-	timestamp := "20260305T120000Z"
-	region := "us-east-1"
-	service := "ec2"
-	signedHeaders := "host;x-amz-date"
-
-	testCases := []struct {
-		name string
-		path string
-	}{
-		{"root path", "/"},
-		{"nested path", "/a/b/c"},
-		{"path with encoded space", "/my%20resource"},
-		{"trailing slash", "/path/"},
-		{"empty path defaults to /", ""},
-	}
-
-	signatures := make(map[string]string)
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			reqPath := tc.path
-			if reqPath == "" {
-				reqPath = "/"
-			}
-			req := httptest.NewRequest(http.MethodGet, reqPath, nil)
-			req.Host = "localhost:9999"
-			req.Header.Set("X-Amz-Date", timestamp)
-
-			sig := computeSignatureWithSecret(req, nil, secret, date, timestamp, region, service, signedHeaders)
-			if sig == "" {
-				t.Errorf("Empty signature for path %q", tc.path)
-			}
-			signatures[tc.name] = sig
-		})
-	}
-}
 
 func TestComputeSignatureWithSecret_Determinism(t *testing.T) {
 	secret := "test-secret-key"

@@ -1683,50 +1683,55 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	}
 
 	// DisableApiTermination applies to both running and stopped instances.
-	// Try the running map first; fall through to the stopped-store path
-	// only if the instance isn't currently running on this node.
+	// Try the running map first; fall through to the stopped-store path only
+	// if the instance isn't currently running on this node. The ownership
+	// check runs inside the mutator so it stays atomic with the write.
 	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
-		if running, ok := s.vmMgr.Get(instanceID); ok {
-			if !IsInstanceVisible(accountID, running.AccountID) {
-				slog.Warn("ModifyInstanceAttribute: instance not visible",
-					"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", running.AccountID)
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		newVal := input.DisableApiTermination.Value
+		var oldVal *bool
+		var hadInput, notVisible bool
+		ownerAccount := ""
+		updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+			if !IsInstanceVisible(accountID, v.AccountID) {
+				notVisible = true
+				ownerAccount = v.AccountID
+				return false
 			}
-			newVal := input.DisableApiTermination.Value
-			var oldVal *bool
-			var hadInput bool
-			updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
-				if v.RunInstancesInput != nil {
-					hadInput = true
-					oldVal = v.RunInstancesInput.DisableApiTermination
-				} else {
-					v.RunInstancesInput = &ec2.RunInstancesInput{}
-				}
-				v.RunInstancesInput.DisableApiTermination = newVal
-				return true
-			})
-			if updated {
-				if persistErr != nil {
-					// Roll the in-memory mutation back so a 500 response means
-					// the change is not in effect — otherwise a subsequent
-					// Describe or Terminate would honour an unpersisted flip.
-					s.vmMgr.UpdateState(instanceID, func(v *vm.VM) {
-						if hadInput {
-							v.RunInstancesInput.DisableApiTermination = oldVal
-						} else {
-							v.RunInstancesInput = nil
-						}
-					})
-					slog.Error("ModifyInstanceAttribute: persist failed, rolled back in-memory mutation",
-						"instanceId", instanceID, "err", persistErr)
-					return nil, errors.New(awserrors.ErrorServerInternal)
-				}
-				slog.Info("ModifyInstanceAttribute: updated DisableApiTermination on running instance",
-					"instanceId", instanceID, "value", *newVal)
-				return &ec2.ModifyInstanceAttributeOutput{}, nil
+			if v.RunInstancesInput != nil {
+				hadInput = true
+				oldVal = v.RunInstancesInput.DisableApiTermination
+			} else {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
 			}
-			// Instance vanished between Get and UpdateAndPersist; fall through.
+			v.RunInstancesInput.DisableApiTermination = newVal
+			return true
+		})
+		if notVisible {
+			slog.Warn("ModifyInstanceAttribute: instance not visible",
+				"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", ownerAccount)
+			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
+		if updated {
+			if persistErr != nil {
+				// Roll the in-memory mutation back so a 500 response means
+				// the change is not in effect — otherwise a subsequent
+				// Describe or Terminate would honour an unpersisted flip.
+				s.vmMgr.UpdateState(instanceID, func(v *vm.VM) {
+					if hadInput {
+						v.RunInstancesInput.DisableApiTermination = oldVal
+					} else {
+						v.RunInstancesInput = nil
+					}
+				})
+				slog.Error("ModifyInstanceAttribute: persist failed, rolled back in-memory mutation",
+					"instanceId", instanceID, "err", persistErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			slog.Info("ModifyInstanceAttribute: updated DisableApiTermination on running instance",
+				"instanceId", instanceID, "value", *newVal)
+			return &ec2.ModifyInstanceAttributeOutput{}, nil
+		}
+		// Not in running map — fall through to stopped-store path.
 	}
 
 	if s.stoppedStore == nil {

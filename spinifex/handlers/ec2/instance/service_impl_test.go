@@ -1315,44 +1315,37 @@ func TestModifyInstanceAttribute_ClearsStateReason(t *testing.T) {
 }
 
 func TestModifyInstanceAttribute_DisableApiTermination_Running(t *testing.T) {
-	id := "i-run-prot"
-	owner := "acc"
-	mgr := mgrWith(map[string]*vm.VM{
-		id: {
-			ID: id, AccountID: owner, Status: vm.StateRunning,
-			RunInstancesInput: &ec2.RunInstancesInput{},
-		},
-	})
-	svc := &InstanceServiceImpl{vmMgr: mgr}
+	const owner = "acc"
+	tests := []struct {
+		name     string
+		initial  *ec2.RunInstancesInput
+		setTo    bool
+		wantFlag bool
+	}{
+		{name: "set true on empty input", initial: &ec2.RunInstancesInput{}, setTo: true, wantFlag: true},
+		{name: "set true on nil input (legacy)", initial: nil, setTo: true, wantFlag: true},
+		{name: "clear from true to false", initial: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)}, setTo: false, wantFlag: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-run"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {ID: id, AccountID: owner, Status: vm.StateRunning, RunInstancesInput: tc.initial},
+			})
+			svc := &InstanceServiceImpl{vmMgr: mgr}
 
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-		InstanceId:            aws.String(id),
-		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
-	}, owner)
-	require.NoError(t, err)
+			_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+				InstanceId:            aws.String(id),
+				DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(tc.setTo)},
+			}, owner)
+			require.NoError(t, err)
 
-	got, _ := mgr.Get(id)
-	require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
-	assert.True(t, *got.RunInstancesInput.DisableApiTermination)
-}
-
-func TestModifyInstanceAttribute_DisableApiTermination_Running_NilRunInput(t *testing.T) {
-	id := "i-run-nilinput"
-	owner := "acc"
-	mgr := mgrWith(map[string]*vm.VM{
-		id: {ID: id, AccountID: owner, Status: vm.StateRunning},
-	})
-	svc := &InstanceServiceImpl{vmMgr: mgr}
-
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-		InstanceId:            aws.String(id),
-		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
-	}, owner)
-	require.NoError(t, err)
-
-	got, _ := mgr.Get(id)
-	require.NotNil(t, got.RunInstancesInput, "RunInstancesInput must be allocated")
-	assert.True(t, *got.RunInstancesInput.DisableApiTermination)
+			got, _ := mgr.Get(id)
+			require.NotNil(t, got.RunInstancesInput)
+			require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
+			assert.Equal(t, tc.wantFlag, *got.RunInstancesInput.DisableApiTermination)
+		})
+	}
 }
 
 func TestModifyInstanceAttribute_DisableApiTermination_Running_NotVisible(t *testing.T) {
@@ -1394,30 +1387,6 @@ func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
 	require.NotNil(t, updated)
 	require.NotNil(t, updated.RunInstancesInput)
 	assert.True(t, *updated.RunInstancesInput.DisableApiTermination)
-}
-
-func TestModifyInstanceAttribute_DisableApiTermination_Clearing(t *testing.T) {
-	id := "i-run-clear"
-	owner := "acc"
-	mgr := mgrWith(map[string]*vm.VM{
-		id: {
-			ID: id, AccountID: owner, Status: vm.StateRunning,
-			RunInstancesInput: &ec2.RunInstancesInput{
-				DisableApiTermination: aws.Bool(true),
-			},
-		},
-	})
-	svc := &InstanceServiceImpl{vmMgr: mgr}
-
-	_, err := svc.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-		InstanceId:            aws.String(id),
-		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
-	}, owner)
-	require.NoError(t, err)
-
-	got, _ := mgr.Get(id)
-	require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
-	assert.False(t, *got.RunInstancesInput.DisableApiTermination)
 }
 
 func TestModifyInstanceAttribute_WriteError(t *testing.T) {
@@ -2133,46 +2102,38 @@ func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
 
-func TestStopOrTerminateInstance_TerminationProtected(t *testing.T) {
-	id := "i-prot"
-	mgr := mgrWith(map[string]*vm.VM{
-		id: {
-			ID: id, Status: vm.StateRunning,
-			RunInstancesInput: &ec2.RunInstancesInput{
-				DisableApiTermination: aws.Bool(true),
-			},
-		},
-	})
-	v, _ := mgr.Get(id)
-	svc := &InstanceServiceImpl{vmMgr: mgr}
+func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
+	// DisableApiTermination must block Terminate but never Stop.
+	tests := []struct {
+		name    string
+		attrs   spxtypes.EC2CommandAttributes
+		wantErr string
+	}{
+		{name: "terminate blocked", attrs: spxtypes.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "stop allowed", attrs: spxtypes.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-prot"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {
+					ID: id, Status: vm.StateRunning,
+					RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
+				},
+			})
+			v, _ := mgr.Get(id)
+			svc := &InstanceServiceImpl{vmMgr: mgr}
 
-	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
-		ID:         id,
-		Attributes: spxtypes.EC2CommandAttributes{TerminateInstance: true},
-	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
-	assert.Equal(t, vm.StateRunning, v.Status, "VM state must not change when blocked")
-}
-
-func TestStopOrTerminateInstance_StopAllowedWhenProtected(t *testing.T) {
-	id := "i-stop-prot"
-	mgr := mgrWith(map[string]*vm.VM{
-		id: {
-			ID: id, Status: vm.StateRunning,
-			RunInstancesInput: &ec2.RunInstancesInput{
-				DisableApiTermination: aws.Bool(true),
-			},
-		},
-	})
-	v, _ := mgr.Get(id)
-	svc := &InstanceServiceImpl{vmMgr: mgr}
-
-	err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{
-		ID:         id,
-		Attributes: spxtypes.EC2CommandAttributes{StopInstance: true},
-	})
-	require.NoError(t, err)
+			err := svc.StopOrTerminateInstance(v, spxtypes.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tc.wantErr, err.Error())
+			assert.Equal(t, vm.StateRunning, v.Status, "VM state must not change when blocked")
+		})
+	}
 }
 
 type fakeENICreator struct {

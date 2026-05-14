@@ -562,6 +562,36 @@ func TestRemoveInstance_Success(t *testing.T) {
 	assert.Equal(t, []string{"i-bbb"}, record.NodeInstances["node-b"])
 }
 
+// TestRemoveInstance_NodeNotFound / _GroupNotFound pin the idempotency
+// contract in service_impl.go:453-497 — RemoveInstance must succeed when the
+// node or group is missing, since callers (instance Terminate) may race with
+// group deletion or have already moved the instance off the node. Production
+// marks both paths with //nolint:nilerr // intentional; without these tests a
+// future cleanup could remove the annotations and silently flip the contract.
+
+func TestRemoveInstance_NodeNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	createTestGroup(t, svc, "remove-nonode-group", "spread")
+
+	_, err := svc.RemoveInstance(&RemoveInstanceInput{
+		GroupName:  "remove-nonode-group",
+		NodeName:   "ghost-node",
+		InstanceID: "i-xxx",
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestRemoveInstance_GroupNotFound(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.RemoveInstance(&RemoveInstanceInput{
+		GroupName:  "deleted-group",
+		NodeName:   "node-a",
+		InstanceID: "i-xxx",
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
 func TestRemoveInstance_MultipleInstancesOnNode(t *testing.T) {
 	svc := setupTestService(t)
 	createTestGroup(t, svc, "multi-inst-group", "cluster")

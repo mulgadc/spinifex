@@ -2156,7 +2156,6 @@ func TestStopOrTerminateInstance_TerminationProtected(t *testing.T) {
 }
 
 func TestStopOrTerminateInstance_StopAllowedWhenProtected(t *testing.T) {
-	// D9: DisableApiTermination only blocks Terminate. Stop must still proceed.
 	id := "i-stop-prot"
 	mgr := mgrWith(map[string]*vm.VM{
 		id: {

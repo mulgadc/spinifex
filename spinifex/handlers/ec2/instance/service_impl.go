@@ -733,27 +733,28 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 	// Fold the termination-protection check, idempotency check, transition
 	// validation, and attribute stamp into one lock acquisition so a racing
-	// ModifyInstanceAttribute can't clear protection between the gates.
+	// ModifyInstanceAttribute can't clear protection between the gates. The
+	// async lifecycle goroutine below persists on its own state transitions,
+	// so no synchronous persist is needed here.
 	var (
 		protected, raced, stateMismatch bool
 		currentState                    vm.InstanceState
 	)
-	ok, persistErr := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+	ok := s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) {
 		currentState = v.Status
 		if isTerminate && v.IsTerminationProtected() {
 			protected = true
-			return false
+			return
 		}
 		if isTerminate && v.Status == vm.StateShuttingDown {
 			raced = true
-			return false
+			return
 		}
 		if !vm.IsValidTransition(v.Status, initialState) {
 			stateMismatch = true
-			return false
+			return
 		}
 		v.Attributes = command.Attributes
-		return true
 	})
 	if !ok {
 		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
@@ -776,14 +777,6 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		slog.Warn("StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
 			"instanceId", instance.ID, "currentState", string(currentState))
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
-	}
-	if persistErr != nil {
-		// In-memory v.Attributes is already stamped; the next successful
-		// persist will reconcile. The async lifecycle path (Stop/Terminate)
-		// also persists, so drift is short-lived in practice.
-		slog.Error("StopOrTerminateInstance: persist failed after in-memory mutation; state drift until next persist",
-			"instanceId", instance.ID, "err", persistErr)
-		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	go func(id string) {
@@ -1700,8 +1693,13 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 			}
 			newVal := input.DisableApiTermination.Value
+			var oldVal *bool
+			var hadInput bool
 			updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
-				if v.RunInstancesInput == nil {
+				if v.RunInstancesInput != nil {
+					hadInput = true
+					oldVal = v.RunInstancesInput.DisableApiTermination
+				} else {
 					v.RunInstancesInput = &ec2.RunInstancesInput{}
 				}
 				v.RunInstancesInput.DisableApiTermination = newVal
@@ -1709,9 +1707,17 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 			})
 			if updated {
 				if persistErr != nil {
-					// In-memory flag already flipped; until persist succeeds,
-					// a daemon restart will silently revert the value.
-					slog.Error("ModifyInstanceAttribute: persist failed after in-memory mutation; state drift until next persist",
+					// Roll the in-memory mutation back so a 500 response means
+					// the change is not in effect — otherwise a subsequent
+					// Describe or Terminate would honour an unpersisted flip.
+					s.vmMgr.UpdateState(instanceID, func(v *vm.VM) {
+						if hadInput {
+							v.RunInstancesInput.DisableApiTermination = oldVal
+						} else {
+							v.RunInstancesInput = nil
+						}
+					})
+					slog.Error("ModifyInstanceAttribute: persist failed, rolled back in-memory mutation",
 						"instanceId", instanceID, "err", persistErr)
 					return nil, errors.New(awserrors.ErrorServerInternal)
 				}
@@ -2099,7 +2105,14 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInsta
 		output.UserData = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiTermination:
-		val := instance.IsTerminationProtected()
+		// Read under the manager lock so we serialise with a concurrent
+		// ModifyInstanceAttribute writer. Inspect is a no-op race-wise for
+		// stopped instances (no concurrent writers) but keeps the call site
+		// uniform.
+		var val bool
+		s.vmMgr.Inspect(instance, func(v *vm.VM) {
+			val = v.IsTerminationProtected()
+		})
 		output.DisableApiTermination = &ec2.AttributeBooleanValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiStop:

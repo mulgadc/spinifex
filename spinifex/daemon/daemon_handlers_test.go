@@ -364,6 +364,64 @@ func TestHandleEC2RunInstances_InvalidKeyPair(t *testing.T) {
 	assert.Contains(t, string(reply.Data), "InvalidKeyPair.NotFound")
 }
 
+// TestHandleEC2RunInstances_MessageParsing locks the three rejection paths
+// that don't get past initial input validation: malformed JSON, an
+// unrecognised instance type, and a missing ImageId. Each must surface a
+// specific awserrors code on the NATS reply rather than crashing the handler
+// or falling through to ErrorServerInternal.
+func TestHandleEC2RunInstances_MessageParsing(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr string
+	}{
+		{
+			name:    "Malformed JSON",
+			payload: []byte(`{"invalid": json}`),
+			wantErr: awserrors.ErrorValidationError,
+		},
+		{
+			name: "Invalid Instance Type",
+			payload: mustMarshal(t, &ec2.RunInstancesInput{
+				ImageId:      aws.String("ami-0abcdef1234567890"),
+				InstanceType: aws.String("invalid.type"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}),
+			wantErr: awserrors.ErrorInvalidInstanceType,
+		},
+		{
+			name: "Missing ImageId",
+			payload: mustMarshal(t, &ec2.RunInstancesInput{
+				InstanceType: aws.String(getTestInstanceType(t)),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}),
+			wantErr: awserrors.ErrorMissingParameter,
+		},
+	}
+
+	daemon := createFullTestDaemon(t, sharedNATSURL)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", daemon.handleEC2RunInstances)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances", tt.payload, 5*time.Second)
+			require.NoError(t, err)
+			assert.Contains(t, string(reply.Data), tt.wantErr)
+		})
+	}
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
 func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 	natsURL := sharedNATSURL
 

@@ -1297,6 +1297,39 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 
 // --- computeSignatureWithSecret Direct Unit Tests ---
 
+// TestComputeSignatureWithSecret_MethodSensitivity pins the contract that
+// the HTTP method participates in the canonical request: changing the method
+// (with all other inputs fixed) must change the signature. Catches a
+// regression class where method is dropped from the canonical-string
+// composition — signing would silently collapse across methods.
+func TestComputeSignatureWithSecret_MethodSensitivity(t *testing.T) {
+	secret := "test-secret-key"
+	date := "20260305"
+	timestamp := "20260305T120000Z"
+	region := "us-east-1"
+	service := "ec2"
+	signedHeaders := "host;x-amz-date"
+
+	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
+	signatures := make(map[string]string, len(methods))
+
+	for _, method := range methods {
+		req := httptest.NewRequest(method, "/", nil)
+		req.Host = "localhost:9999"
+		req.Header.Set("X-Amz-Date", timestamp)
+
+		signatures[method] = computeSignatureWithSecret(req, nil, secret, date, timestamp, region, service, signedHeaders)
+	}
+
+	for i, m1 := range methods {
+		for _, m2 := range methods[i+1:] {
+			if signatures[m1] == signatures[m2] {
+				t.Errorf("methods %s and %s produced the same signature (method missing from canonical request?)", m1, m2)
+			}
+		}
+	}
+}
+
 func TestComputeSignatureWithSecret_Determinism(t *testing.T) {
 	secret := "test-secret-key"
 	date := "20260305"

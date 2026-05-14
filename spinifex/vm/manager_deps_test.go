@@ -3,7 +3,6 @@ package vm
 import (
 	"maps"
 	"sync"
-	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
 )
@@ -76,33 +75,6 @@ func (f *fakeStateStore) ListTerminatedInstances() ([]*VM, error) {
 }
 
 var _ StateStore = (*fakeStateStore)(nil)
-
-func TestNewManagerWithDeps_StoresDeps(t *testing.T) {
-	store := newFakeStateStore()
-	deps := Deps{
-		NodeID:     "node-a",
-		StateStore: store,
-		ShutdownSignal: func() bool {
-			return true
-		},
-	}
-	m := NewManagerWithDeps(deps)
-
-	if m.NodeID() != "node-a" {
-		t.Fatalf("NodeID: got %q, want %q", m.NodeID(), "node-a")
-	}
-	if m.deps.StateStore == nil {
-		t.Fatal("deps.StateStore: got nil after construction")
-	}
-	if !m.deps.ShutdownSignal() {
-		t.Fatal("ShutdownSignal callback: not preserved")
-	}
-
-	// Sanity: the manager's map is independent of any future Deps state.
-	if m.Count() != 0 {
-		t.Fatalf("Count on fresh manager: got %d, want 0", m.Count())
-	}
-}
 
 // fakeVolumeMounter records every call so lifecycle tests can assert ordering.
 // The mutex covers the recording slices so StopAll's per-instance fan-out

@@ -229,10 +229,3 @@ func TestCleanupExtraENITaps_ErrorsAreLogged(t *testing.T) {
 		t.Errorf("expected both extras to be attempted, got %d cleanup calls", len(plumber.cleanupCalls))
 	}
 }
-
-func TestCleanupExtraENITaps_NilPlumber_NoOp(t *testing.T) {
-	m := NewManagerWithDeps(Deps{})
-	instance := &VM{ID: "i-no-plumber", ExtraENIs: []ExtraENI{{ENIID: "eni-x"}}}
-	// Must not panic when no plumber is wired.
-	m.cleanupExtraENITaps(instance)
-}

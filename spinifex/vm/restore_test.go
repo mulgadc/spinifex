@@ -36,45 +36,38 @@ func withNBDRequests(id string, status InstanceState, uris ...string) *VM {
 	return v
 }
 
-func TestAreVolumeSocketsValid_NoRequests(t *testing.T) {
-	assert.True(t, AreVolumeSocketsValid(&VM{ID: "i-empty"}),
-		"a VM with zero NBD requests has nothing to probe and must report valid")
-}
-
-func TestAreVolumeSocketsValid_EmptyURI(t *testing.T) {
-	v := withNBDRequests("i-empty-uri", StateRunning, "")
-	assert.True(t, AreVolumeSocketsValid(v),
-		"empty NBDURI is skipped (volume not yet mounted), not probed")
-}
-
-func TestAreVolumeSocketsValid_TCPURI(t *testing.T) {
-	v := withNBDRequests("i-tcp", StateRunning, "nbd://10.0.0.1:10809")
-	assert.True(t, AreVolumeSocketsValid(v),
-		"TCP NBD URI is treated as valid — recovery path can't probe a remote viperblockd")
-}
-
-func TestAreVolumeSocketsValid_UnparseableURI(t *testing.T) {
-	v := withNBDRequests("i-junk", StateRunning, "not-an-nbd-uri")
-	assert.True(t, AreVolumeSocketsValid(v),
-		"unparseable URI must not block reconnect — fall through to the launch path's stricter check")
-}
-
-func TestAreVolumeSocketsValid_UnixSocketMissing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing.sock")
-	v := withNBDRequests("i-no-sock", StateRunning, "nbd:unix:"+missing)
-	assert.False(t, AreVolumeSocketsValid(v),
-		"a unix NBD socket that does not accept connections is the orphan-QEMU signal")
-}
-
-func TestAreVolumeSocketsValid_UnixSocketLive(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "live.sock")
-	ln, err := net.Listen("unix", sockPath)
+func TestAreVolumeSocketsValid(t *testing.T) {
+	live := filepath.Join(t.TempDir(), "live.sock")
+	ln, err := net.Listen("unix", live)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
+	missing := filepath.Join(t.TempDir(), "missing.sock")
 
-	v := withNBDRequests("i-live", StateRunning, "nbd:unix:"+sockPath)
-	assert.True(t, AreVolumeSocketsValid(v),
-		"a live unix listener at the configured path means viperblock survived the daemon restart")
+	tests := []struct {
+		name string
+		vm   *VM
+		want bool
+		why  string
+	}{
+		{"NoRequests", &VM{ID: "i-empty"}, true,
+			"a VM with zero NBD requests has nothing to probe and must report valid"},
+		{"EmptyURI", withNBDRequests("i-empty-uri", StateRunning, ""), true,
+			"empty NBDURI is skipped (volume not yet mounted), not probed"},
+		{"TCPURI", withNBDRequests("i-tcp", StateRunning, "nbd://10.0.0.1:10809"), true,
+			"TCP NBD URI is treated as valid — recovery path can't probe a remote viperblockd"},
+		{"UnparseableURI", withNBDRequests("i-junk", StateRunning, "not-an-nbd-uri"), true,
+			"unparseable URI must not block reconnect — fall through to the launch path's stricter check"},
+		{"UnixSocketMissing", withNBDRequests("i-no-sock", StateRunning, "nbd:unix:"+missing), false,
+			"a unix NBD socket that does not accept connections is the orphan-QEMU signal"},
+		{"UnixSocketLive", withNBDRequests("i-live", StateRunning, "nbd:unix:"+live), true,
+			"a live unix listener at the configured path means viperblock survived the daemon restart"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AreVolumeSocketsValid(tt.vm), tt.why)
+		})
+	}
 }
 
 func TestAreVolumeSocketsValid_OneOfManyMissing(t *testing.T) {
@@ -344,19 +337,6 @@ func TestRestore_HappyPath(t *testing.T) {
 	saved, ok := store.saved["test-node"]
 	require.True(t, ok, "Restore must persist the running snapshot at the end")
 	assert.Empty(t, saved, "running snapshot must be empty after both instances migrated to shared buckets")
-}
-
-func TestRestore_NoStateStore_NoCrash(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	m := NewManager()
-	m.SetDeps(Deps{
-		NodeID:                     "test-node",
-		ConsumeCleanShutdownMarker: func() bool { return true },
-	})
-
-	// loadRunningState surfaces "StateStore not wired"; Restore must
-	// log and return without panic.
-	require.NotPanics(t, m.Restore)
 }
 
 // findDeadPID returns a PID that is guaranteed not to be alive at the

@@ -326,7 +326,7 @@ if [ -n "$WAN_BRIDGE" ]; then
                    /etc/systemd/network/15-spinifex-veth-wan.network \
                    /etc/systemd/network/16-spinifex-veth-wan-ovs.network
         sudo networkctl reload 2>/dev/null || true
-        sudo ovs-vsctl --if-exists del-port "$WAN_BRIDGE" veth-wan-ovs
+        sudo ovs-vsctl --if-exists del-port veth-wan-ovs 2>/dev/null || true
         sudo ip link del veth-wan-br 2>/dev/null || true
     fi
 

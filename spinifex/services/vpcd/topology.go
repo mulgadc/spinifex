@@ -187,12 +187,6 @@ func WithNATSConn(nc *nats.Conn) TopologyOption {
 	}
 }
 
-// isMacvlanMode returns true if the external bridge uses a macvlan interface.
-// This is the default when bridgeMode is unset for backward compatibility.
-func (h *TopologyHandler) isMacvlanMode() bool {
-	return h.bridgeMode == BridgeModeMacvlan || h.bridgeMode == ""
-}
-
 // useCentralizedNAT returns true if the bridge mode requires centralized NAT.
 // Macvlan and veth modes both need centralized NAT — macvlan because of MAC
 // filtering, veth because the Linux bridge intermediary breaks distributed NAT

@@ -787,20 +787,6 @@ func TestStopInstance_Deallocation(t *testing.T) {
 	assert.Equal(t, 0, daemon.resourceMgr.allocatedVCPU)
 }
 
-// createValidRunInstancesInput creates a valid RunInstancesInput for testing
-func createValidRunInstancesInput(t *testing.T) *ec2.RunInstancesInput {
-	t.Helper()
-	return &ec2.RunInstancesInput{
-		ImageId:      aws.String("ami-0abcdef1234567890"),
-		InstanceType: aws.String(getTestInstanceType(t)),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-		KeyName:      aws.String("test-key"),
-		SubnetId:     aws.String("subnet-test"),
-		UserData:     aws.String(""), // Empty UserData to bypass cloud-init requirements
-	}
-}
-
 // TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {

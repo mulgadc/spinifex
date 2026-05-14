@@ -43,7 +43,6 @@ func TestNamedUUID(t *testing.T) {
 	}
 }
 
-
 func TestMockOVNClient_DeleteAllNATsByExternalIP(t *testing.T) {
 	mock := NewMockOVNClient()
 	_ = mock.Connect(context.Background())
@@ -97,7 +96,6 @@ func TestMockOVNClient_DeleteAllNATsByExternalIP(t *testing.T) {
 		t.Errorf("expected 0 removed on second call, got %d", removed)
 	}
 }
-
 
 // --- SetGatewayChassis idempotency (mulga-999) ---
 

@@ -1684,23 +1684,16 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	// DisableApiTermination applies to both running and stopped instances.
 	// Try the running map first; fall through to the stopped-store path only
-	// if the instance isn't currently running on this node. The ownership
-	// check runs inside the mutator so it stays atomic with the write.
+	// if the instance isn't currently running on this node.
 	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
 		newVal := input.DisableApiTermination.Value
-		var oldVal *bool
-		var hadInput, notVisible bool
-		ownerAccount := ""
+		var notVisible bool
 		updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
 			if !IsInstanceVisible(accountID, v.AccountID) {
 				notVisible = true
-				ownerAccount = v.AccountID
 				return false
 			}
-			if v.RunInstancesInput != nil {
-				hadInput = true
-				oldVal = v.RunInstancesInput.DisableApiTermination
-			} else {
+			if v.RunInstancesInput == nil {
 				v.RunInstancesInput = &ec2.RunInstancesInput{}
 			}
 			v.RunInstancesInput.DisableApiTermination = newVal
@@ -1708,22 +1701,12 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 		})
 		if notVisible {
 			slog.Warn("ModifyInstanceAttribute: instance not visible",
-				"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", ownerAccount)
+				"instanceId", instanceID, "callerAccount", accountID)
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 		if updated {
 			if persistErr != nil {
-				// Roll the in-memory mutation back so a 500 response means
-				// the change is not in effect — otherwise a subsequent
-				// Describe or Terminate would honour an unpersisted flip.
-				s.vmMgr.UpdateState(instanceID, func(v *vm.VM) {
-					if hadInput {
-						v.RunInstancesInput.DisableApiTermination = oldVal
-					} else {
-						v.RunInstancesInput = nil
-					}
-				})
-				slog.Error("ModifyInstanceAttribute: persist failed, rolled back in-memory mutation",
+				slog.Error("ModifyInstanceAttribute: persist failed",
 					"instanceId", instanceID, "err", persistErr)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}

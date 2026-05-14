@@ -19,6 +19,8 @@ import (
 	"syscall"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
+
+	_ "github.com/mulgadc/spinifex/internal/fipsboot"
 )
 
 func main() {

@@ -63,15 +63,15 @@ LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSI
 
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"
-	go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
+	GOFIPS140=v1.0.0 go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
 
 build-installer:
 	@echo -e "\n....Building spinifex-installer"
-	go build -ldflags "-s -w" -o ./bin/spinifex-installer cmd/installer/main.go
+	GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/spinifex-installer cmd/installer/main.go
 
 build-lb-agent:
 	@echo -e "\n....Building lb-agent (static)"
-	CGO_ENABLED=0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
+	CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
 
 build-system-image: ## Build a system image from manifest (use IMAGE=lb)
 ifndef IMAGE

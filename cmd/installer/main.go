@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/cmd/installer/autoinstall"
 	"github.com/mulgadc/spinifex/cmd/installer/install"
 	"github.com/mulgadc/spinifex/cmd/installer/ui"
+	_ "github.com/mulgadc/spinifex/internal/fipsboot"
 )
 
 func main() {

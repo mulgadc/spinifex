@@ -16,7 +16,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 package main
 
-import "github.com/mulgadc/spinifex/cmd/spinifex/cmd"
+import (
+	"github.com/mulgadc/spinifex/cmd/spinifex/cmd"
+	_ "github.com/mulgadc/spinifex/internal/fipsboot"
+)
 
 func main() {
 	cmd.Execute()

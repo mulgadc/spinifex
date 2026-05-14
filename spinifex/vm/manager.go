@@ -219,6 +219,27 @@ func (m *Manager) UpdateState(id string, fn func(*VM)) bool {
 	return true
 }
 
+// UpdateAndPersist looks up id and, if found, runs fn(v) under the manager
+// lock then persists the running-VM snapshot before releasing. Returns
+// (false, nil) when the VM is not in the running map; fn is not invoked and
+// no persist happens. Returns any error from the state store as the second
+// value. Calls StateStore.SaveRunningState directly so the put happens under
+// the same lock as the mutation; splitting marshal from put is deferred
+// (see writeRunningState in shutdown.go).
+func (m *Manager) UpdateAndPersist(id string, fn func(*VM)) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.vms[id]
+	if !ok {
+		return false, nil
+	}
+	fn(v)
+	if m.deps.StateStore == nil {
+		return true, nil
+	}
+	return true, m.deps.StateStore.SaveRunningState(m.deps.NodeID, m.vms)
+}
+
 // Status returns v.Status under the manager lock. Replaces the dominant
 // "Inspect to read Status" pattern with a typed accessor. Read-only — no
 // membership check, so callers may pass a pointer to an instance no longer

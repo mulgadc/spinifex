@@ -38,6 +38,9 @@ func ValidateModifyInstanceAttributeInput(input *ec2.ModifyInstanceAttributeInpu
 	if input.SourceDestCheck != nil {
 		count++
 	}
+	if input.DisableApiTermination != nil {
+		count++
+	}
 	if count != 1 {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}

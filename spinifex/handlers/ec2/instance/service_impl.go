@@ -731,28 +731,56 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 	slog.Info("StopOrTerminateInstance: "+action, "id", command.ID)
 
-	currentState := s.vmMgr.Status(instance)
-
-	// Idempotent: a concurrent terminate goroutine is already cleaning up.
-	if isTerminate && currentState == vm.StateShuttingDown {
+	// Fold the termination-protection check, idempotency check, transition
+	// validation, and attribute stamp into one lock acquisition so a racing
+	// ModifyInstanceAttribute can't clear protection between the gates.
+	var (
+		protected, raced, stateMismatch bool
+		currentState                    vm.InstanceState
+	)
+	ok, persistErr := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) {
+		currentState = v.Status
+		if isTerminate && v.IsTerminationProtected() {
+			protected = true
+			return
+		}
+		if isTerminate && v.Status == vm.StateShuttingDown {
+			raced = true
+			return
+		}
+		if !vm.IsValidTransition(v.Status, initialState) {
+			stateMismatch = true
+			return
+		}
+		v.Attributes = command.Attributes
+	})
+	if !ok {
+		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
+			"instanceId", instance.ID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if protected {
+		slog.Warn("StopOrTerminateInstance: instance has termination protection",
+			"instanceId", instance.ID)
+		return errors.New(awserrors.ErrorOperationNotPermitted)
+	}
+	if raced {
+		// Idempotent: a concurrent terminate goroutine is already cleaning up.
 		slog.Info("StopOrTerminateInstance: instance already shutting down, terminate is idempotent", "instanceId", instance.ID)
 		return nil
 	}
-
-	// Validate the transition synchronously before dispatching so the AWS
-	// SDK sees IncorrectInstanceState (400) instead of a stale 200. The
-	// async Stop/Terminate path re-validates and surfaces vm.ErrInvalidTransition
-	// on a racing transition; we map that into the same AWS error below.
-	if !vm.IsValidTransition(currentState, initialState) {
+	if stateMismatch {
+		// Surface IncorrectInstanceState synchronously so the AWS SDK sees
+		// 400 instead of a stale 200. The async path re-validates.
 		slog.Warn("StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
 			"instanceId", instance.ID, "currentState", string(currentState))
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
-
-	// Stamp command attributes onto the VM before dispatch so the persisted
-	// state reflects the user-stop / user-terminate intent (e.g. for the
-	// recovery path that distinguishes user-stopped from crash-stopped).
-	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Attributes = command.Attributes })
+	if persistErr != nil {
+		slog.Error("StopOrTerminateInstance: failed to persist running state",
+			"instanceId", instance.ID, "err", persistErr)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
 
 	go func(id string) {
 		var err error
@@ -1641,11 +1669,11 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstanc
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// ModifyInstanceAttribute applies a single attribute change to a stopped instance.
-// All supported attributes (InstanceType, UserData) require the instance to be
-// stopped. SourceDestCheck is a networking concept that does not apply to
-// bare-metal VMs; it is accepted as a no-op on any instance state so Terraform
-// and the AWS CLI do not error out.
+// ModifyInstanceAttribute applies a single attribute change. InstanceType and
+// UserData require the instance to be stopped. DisableApiTermination works on
+// both running and stopped instances. SourceDestCheck is a networking concept
+// that does not apply to bare-metal VMs; it is accepted as a no-op on any
+// instance state so Terraform and the AWS CLI do not error out.
 func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1655,6 +1683,37 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	if input.SourceDestCheck != nil {
 		slog.Info("ModifyInstanceAttribute: accepting SourceDestCheck (no-op on bare metal)", "instanceId", instanceID)
 		return &ec2.ModifyInstanceAttributeOutput{}, nil
+	}
+
+	// DisableApiTermination applies to both running and stopped instances.
+	// Try the running map first; fall through to the stopped-store path
+	// only if the instance isn't currently running on this node.
+	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil && s.vmMgr != nil {
+		if running, ok := s.vmMgr.Get(instanceID); ok {
+			if !IsInstanceVisible(accountID, running.AccountID) {
+				slog.Warn("ModifyInstanceAttribute: instance not visible",
+					"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", running.AccountID)
+				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			}
+			newVal := input.DisableApiTermination.Value
+			updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) {
+				if v.RunInstancesInput == nil {
+					v.RunInstancesInput = &ec2.RunInstancesInput{}
+				}
+				v.RunInstancesInput.DisableApiTermination = newVal
+			})
+			if updated {
+				if persistErr != nil {
+					slog.Error("ModifyInstanceAttribute: failed to persist running state",
+						"instanceId", instanceID, "err", persistErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
+				slog.Info("ModifyInstanceAttribute: updated DisableApiTermination on running instance",
+					"instanceId", instanceID, "value", *newVal)
+				return &ec2.ModifyInstanceAttributeOutput{}, nil
+			}
+			// Instance vanished between Get and UpdateAndPersist; fall through.
+		}
 	}
 
 	if s.stoppedStore == nil {
@@ -1709,6 +1768,15 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 		if instance.RunInstancesInput != nil {
 			instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
 		}
+	}
+
+	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
+		slog.Info("ModifyInstanceAttribute: changing DisableApiTermination on stopped instance",
+			"instanceId", instanceID, "value", *input.DisableApiTermination.Value)
+		if instance.RunInstancesInput == nil {
+			instance.RunInstancesInput = &ec2.RunInstancesInput{}
+		}
+		instance.RunInstancesInput.DisableApiTermination = input.DisableApiTermination.Value
 	}
 
 	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
@@ -1854,6 +1922,12 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(input *TerminateStoppedIn
 		slog.Warn("TerminateStoppedInstance: instance not visible",
 			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if instance.IsTerminationProtected() {
+		slog.Warn("TerminateStoppedInstance: instance has termination protection",
+			"instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
 	}
 
 	s.deleteInstanceVolumes(instance, input.InstanceID)
@@ -2018,7 +2092,7 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInsta
 		output.UserData = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiTermination:
-		val := false
+		val := instance.IsTerminationProtected()
 		output.DisableApiTermination = &ec2.AttributeBooleanValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiStop:

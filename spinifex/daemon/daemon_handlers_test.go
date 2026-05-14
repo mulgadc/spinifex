@@ -1915,7 +1915,8 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, errResp["Code"])
+	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
+	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
 // --- Delegate handler round-trip tests (table-driven) ---

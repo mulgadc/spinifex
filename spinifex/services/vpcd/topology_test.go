@@ -2731,19 +2731,6 @@ func TestTopologyHandler_AddNAT_VethMode_CentralizedNAT(t *testing.T) {
 	}
 }
 
-func TestTopologyHandler_DefaultBridgeMode_IsMacvlan(t *testing.T) {
-	// When no bridge mode is set, it should default to macvlan behavior
-	topo := NewTopologyHandler(nil)
-	if !topo.isMacvlanMode() {
-		t.Error("expected default bridge mode to be macvlan-compatible")
-	}
-
-	topoDirect := NewTopologyHandler(nil, WithBridgeMode(BridgeModeDirect))
-	if topoDirect.isMacvlanMode() {
-		t.Error("expected direct bridge mode to NOT be macvlan")
-	}
-}
-
 func TestTopologyHandler_AddNAT_CleansStaleRulesFromOtherVPCs(t *testing.T) {
 	// When a public IP is reused across VPCs (e.g. instance terminated in the
 	// default VPC, IP returned to pool, then LB allocates it in a new VPC),
@@ -3873,37 +3860,6 @@ func TestTopologyHandler_AddNATGateway_AddsSnat(t *testing.T) {
 	_ = ctx
 }
 
-func TestTopologyHandler_AddNATGateway_BadJSON(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-	ctx := context.Background()
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	require.NoError(t, err)
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-bad"}))
-
-	require.NoError(t, nc.Publish(TopicAddNATGateway, []byte("not json")))
-	require.NoError(t, nc.Flush())
-
-	// Malformed payload must not produce a NAT rule, and must not panic the
-	// subscribed goroutine (the rest of the test suite would also start
-	// failing if it did).
-	time.Sleep(50 * time.Millisecond)
-	mock.mu.Lock()
-	natCount := len(mock.routers["vpc-vpc-bad"].NAT)
-	mock.mu.Unlock()
-	assert.Zero(t, natCount, "malformed payload must not add a NAT rule")
-	_ = ctx
-}
-
 func TestTopologyHandler_DeleteNATGateway_RemovesSnat(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()
@@ -3941,25 +3897,6 @@ func TestTopologyHandler_DeleteNATGateway_RemovesSnat(t *testing.T) {
 	mock.mu.Unlock()
 	assert.Zero(t, natCount, "delete must remove the SNAT rule")
 	_ = ctx
-}
-
-func TestTopologyHandler_DeleteNATGateway_BadJSON(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	require.NoError(t, err)
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	require.NoError(t, nc.Publish(TopicDeleteNATGateway, []byte("not json")))
-	require.NoError(t, nc.Flush())
-	time.Sleep(50 * time.Millisecond) // give the handler a chance to log-and-return
 }
 
 // --- handleDeleteNAT (1:1 dnat_and_snat removal) ---

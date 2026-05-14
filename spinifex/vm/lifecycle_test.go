@@ -14,56 +14,21 @@ import (
 	"go.uber.org/goleak"
 )
 
+// TestBuildBaseVMConfig pins the non-pass-through invariants buildBaseVMConfig
+// must enforce: KVM + no-graphic, q35 + host CPU regardless of arch, and 11
+// pre-allocated PCIe root ports for hot-plug (Linux's PCIe hot-plug requires
+// pre-allocated ports — removing one silently breaks AttachVolume/AttachENI).
 func TestBuildBaseVMConfig(t *testing.T) {
-	tests := []struct {
-		name         string
-		instanceID   string
-		pidFile      string
-		consolePath  string
-		serialSocket string
-		architecture string
-		vCPUs        int
-		memoryMiB    int
-	}{
-		{
-			name:         "x86_64 instance",
-			instanceID:   "i-abc123",
-			pidFile:      "/tmp/qemu-i-abc123.pid",
-			consolePath:  "/run/console-i-abc123.log",
-			serialSocket: "/run/serial-i-abc123.sock",
-			architecture: "x86_64",
-			vCPUs:        4,
-			memoryMiB:    8192,
-		},
-		{
-			name:         "arm64 instance",
-			instanceID:   "i-def456",
-			pidFile:      "/tmp/qemu-i-def456.pid",
-			consolePath:  "/run/console-i-def456.log",
-			serialSocket: "/run/serial-i-def456.sock",
-			architecture: "arm64",
-			vCPUs:        2,
-			memoryMiB:    4096,
-		},
-	}
+	for _, arch := range []string{"x86_64", "arm64"} {
+		t.Run(arch, func(t *testing.T) {
+			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, 2, 4096)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := buildBaseVMConfig(tt.instanceID, tt.pidFile, tt.consolePath, tt.serialSocket, tt.architecture, tt.vCPUs, tt.memoryMiB)
-
-			assert.Equal(t, tt.instanceID, cfg.Name)
-			assert.Equal(t, tt.pidFile, cfg.PIDFile)
-			assert.Equal(t, tt.consolePath, cfg.ConsoleLogPath)
-			assert.Equal(t, tt.serialSocket, cfg.SerialSocket)
-			assert.Equal(t, tt.architecture, cfg.Architecture)
-			assert.Equal(t, tt.vCPUs, cfg.CPUCount)
-			assert.Equal(t, tt.memoryMiB, cfg.Memory)
 			assert.True(t, cfg.EnableKVM)
 			assert.True(t, cfg.NoGraphic)
 			assert.Equal(t, "q35", cfg.MachineType)
 			assert.Equal(t, "host", cfg.CPUType)
 
-			require.Len(t, cfg.Devices, 11)
+			require.Len(t, cfg.Devices, 11, "PCIe hot-plug requires 11 pre-allocated root ports")
 			for i, dev := range cfg.Devices {
 				expected := fmt.Sprintf("pcie-root-port,id=hotplug%d,chassis=%d,slot=0", i+1, i+1)
 				assert.Equal(t, expected, dev.Value)
@@ -77,9 +42,9 @@ func TestBuildDrives(t *testing.T) {
 		name          string
 		requests      []types.EBSRequest
 		cpuCount      int
-		wantDrives    int
-		wantIOThreads int
-		wantDevices   int
+		wantDrives    []Drive
+		wantIOThreads []IOThread
+		wantDevices   []Device
 		wantErr       string
 	}{
 		{
@@ -87,30 +52,31 @@ func TestBuildDrives(t *testing.T) {
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
-			cpuCount:      4,
-			wantDrives:    1,
-			wantIOThreads: 1,
-			wantDevices:   1,
+			cpuCount: 4,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
+			},
+			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
+			},
 		},
 		{
 			name: "cloud-init volume",
 			requests: []types.EBSRequest{
 				{Name: "vol-ci", NBDURI: "nbd:unix:/tmp/ci.sock", CloudInit: true},
 			},
-			cpuCount:      2,
-			wantDrives:    1,
-			wantIOThreads: 0,
-			wantDevices:   0,
+			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/ci.sock", Format: "raw", If: "virtio", Media: "cdrom", ID: "cloudinit"},
+			},
 		},
 		{
 			name: "EFI volume skipped",
 			requests: []types.EBSRequest{
 				{Name: "vol-efi", EFI: true},
 			},
-			cpuCount:      2,
-			wantDrives:    0,
-			wantIOThreads: 0,
-			wantDevices:   0,
+			cpuCount: 2,
 		},
 		{
 			name: "missing NBDURI returns error",
@@ -127,18 +93,20 @@ func TestBuildDrives(t *testing.T) {
 				{Name: "vol-ci", NBDURI: "nbd:unix:/tmp/ci.sock", CloudInit: true},
 				{Name: "vol-efi", EFI: true},
 			},
-			cpuCount:      4,
-			wantDrives:    2,
-			wantIOThreads: 1,
-			wantDevices:   1,
+			cpuCount: 4,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
+				{File: "nbd:unix:/tmp/ci.sock", Format: "raw", If: "virtio", Media: "cdrom", ID: "cloudinit"},
+			},
+			wantIOThreads: []IOThread{{ID: "ioth-os"}},
+			wantDevices: []Device{
+				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1"},
+			},
 		},
 		{
-			name:          "empty requests",
-			requests:      []types.EBSRequest{},
-			cpuCount:      2,
-			wantDrives:    0,
-			wantIOThreads: 0,
-			wantDevices:   0,
+			name:     "empty requests",
+			requests: []types.EBSRequest{},
+			cpuCount: 2,
 		},
 	}
 
@@ -153,52 +121,11 @@ func TestBuildDrives(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Len(t, drives, tt.wantDrives)
-			assert.Len(t, iothreads, tt.wantIOThreads)
-			assert.Len(t, devices, tt.wantDevices)
+			assert.Equal(t, tt.wantDrives, drives)
+			assert.Equal(t, tt.wantIOThreads, iothreads)
+			assert.Equal(t, tt.wantDevices, devices)
 		})
 	}
-}
-
-func TestBuildDrives_BootVolume(t *testing.T) {
-	requests := []types.EBSRequest{
-		{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
-	}
-
-	drives, iothreads, devices, err := buildDrives(requests, 4)
-	require.NoError(t, err)
-
-	require.Len(t, drives, 1)
-	d := drives[0]
-	assert.Equal(t, "nbd:unix:/tmp/boot.sock", d.File)
-	assert.Equal(t, "raw", d.Format)
-	assert.Equal(t, "none", d.If)
-	assert.Equal(t, "disk", d.Media)
-	assert.Equal(t, "os", d.ID)
-	assert.Equal(t, "none", d.Cache)
-
-	require.Len(t, iothreads, 1)
-	assert.Equal(t, "ioth-os", iothreads[0].ID)
-
-	require.Len(t, devices, 1)
-	assert.Equal(t, "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=4,bootindex=1", devices[0].Value)
-}
-
-func TestBuildDrives_CloudInitVolume(t *testing.T) {
-	requests := []types.EBSRequest{
-		{Name: "vol-ci", NBDURI: "nbd:unix:/tmp/ci.sock", CloudInit: true},
-	}
-
-	drives, _, _, err := buildDrives(requests, 2)
-	require.NoError(t, err)
-
-	require.Len(t, drives, 1)
-	d := drives[0]
-	assert.Equal(t, "nbd:unix:/tmp/ci.sock", d.File)
-	assert.Equal(t, "raw", d.Format)
-	assert.Equal(t, "virtio", d.If)
-	assert.Equal(t, "cdrom", d.Media)
-	assert.Equal(t, "cloudinit", d.ID)
 }
 
 func TestTapDeviceName(t *testing.T) {

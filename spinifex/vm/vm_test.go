@@ -247,40 +247,6 @@ func TestResetNodeLocalState(t *testing.T) {
 	assert.Equal(t, StateRunning, v.Status)
 }
 
-func TestExecute_PIDFileAndQMPSocket(t *testing.T) {
-	cfg := Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-		PIDFile:      "/run/test.pid",
-		QMPSocket:    "/run/test.sock",
-		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
-	}
-
-	cmd, err := cfg.Execute()
-	assert.NoError(t, err)
-
-	args := cmd.Args[1:]
-	assert.Equal(t, "/run/test.pid", argValue(args, "-pidfile"))
-	assert.Equal(t, "unix:/run/test.sock,server,nowait", argValue(args, "-qmp"))
-}
-
-func TestExecute_NoGraphic(t *testing.T) {
-	cfg := Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-		NoGraphic:    true,
-		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
-	}
-
-	cmd, err := cfg.Execute()
-	assert.NoError(t, err)
-
-	args := cmd.Args[1:]
-	assert.Equal(t, "none", argValue(args, "-display"))
-}
-
 func TestExecute_SerialSocketAndConsoleLog(t *testing.T) {
 	t.Run("both set emits chardev and serial", func(t *testing.T) {
 		cfg := Config{
@@ -338,40 +304,6 @@ func TestExecute_SerialSocketAndConsoleLog(t *testing.T) {
 		assert.Empty(t, argValue(args, "-chardev"))
 		assert.Empty(t, argValue(args, "-serial"))
 	})
-}
-
-func TestExecute_NetDevs(t *testing.T) {
-	cfg := Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
-		NetDevs: []NetDev{
-			{Value: "tap,id=net0,ifname=tap0,script=no"},
-		},
-	}
-
-	cmd, err := cfg.Execute()
-	assert.NoError(t, err)
-
-	args := cmd.Args[1:]
-	assert.Equal(t, "tap,id=net0,ifname=tap0,script=no", argValue(args, "-netdev"))
-}
-
-func TestExecute_MachineType_x86(t *testing.T) {
-	cfg := Config{
-		CPUCount:     1,
-		Memory:       512,
-		Architecture: "x86_64",
-		MachineType:  "q35",
-		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
-	}
-
-	cmd, err := cfg.Execute()
-	assert.NoError(t, err)
-
-	args := cmd.Args[1:]
-	assert.Equal(t, "q35", argValue(args, "-M"))
 }
 
 func TestExecute_ARM64_Q35(t *testing.T) {

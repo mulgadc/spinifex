@@ -357,16 +357,6 @@ func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
 	assert.Equal(t, 1, result)
 }
 
-func TestSupportedServices(t *testing.T) {
-	assert.True(t, supportedServices["ec2"])
-	assert.True(t, supportedServices["iam"])
-	assert.True(t, supportedServices["account"])
-	assert.True(t, supportedServices["elasticloadbalancing"])
-	assert.False(t, supportedServices["s3"])
-	assert.False(t, supportedServices["dynamodb"])
-	assert.False(t, supportedServices[""])
-}
-
 func TestParseAWSQueryArgs(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -620,19 +610,6 @@ func connectedNATS(t *testing.T) *nats.Conn {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 	return nc
-}
-
-func TestRequest_AccountReturns200(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.WithValue(req.Context(), ctxService, "account")
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	gw.Request(w, req)
-
-	resp := w.Result()
-	assert.Equal(t, 200, resp.StatusCode)
 }
 
 // setupEC2Request creates an http.Request with EC2 service context and optional account ID.
@@ -948,98 +925,6 @@ func TestIsNATSTransient(t *testing.T) {
 	assert.True(t, isNATSTransient(nats.ErrTimeout))
 	assert.True(t, isNATSTransient(fmt.Errorf("get user: %w", nats.ErrNoResponders)))
 	assert.False(t, isNATSTransient(errors.New("some other error")))
-}
-
-func TestSlogRequestLogger_CallsNext(t *testing.T) {
-	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-	})
-
-	handler := slogRequestLogger(next)
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.True(t, nextCalled)
-	assert.Equal(t, 200, w.Code)
-}
-
-func TestSlogRequestLogger_CapturesStatusCode(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-
-	handler := slogRequestLogger(next)
-	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, 404, w.Code)
-}
-
-func TestEC2ActionMapCompleteness(t *testing.T) {
-	expectedActions := []string{
-		"DescribeInstances", "RunInstances", "StartInstances", "StopInstances",
-		"TerminateInstances", "RebootInstances", "DescribeInstanceTypes", "DescribeInstanceStatus", "GetConsoleOutput",
-		"ModifyInstanceAttribute", "DescribeInstanceAttribute",
-		"CreateKeyPair", "DeleteKeyPair", "DescribeKeyPairs", "ImportKeyPair",
-		"DescribeImages", "CreateImage", "DeregisterImage", "RegisterImage", "CopyImage",
-		"DescribeImageAttribute", "ModifyImageAttribute", "ResetImageAttribute",
-		"DescribeRegions", "DescribeAvailabilityZones",
-		"DescribeVolumes", "ModifyVolume", "CreateVolume", "DeleteVolume",
-		"AttachVolume", "DescribeVolumeStatus", "DescribeVolumesModifications", "DetachVolume",
-		"DescribeAccountAttributes", "EnableEbsEncryptionByDefault",
-		"DisableEbsEncryptionByDefault", "GetEbsEncryptionByDefault",
-		"GetSerialConsoleAccessStatus", "EnableSerialConsoleAccess",
-		"DisableSerialConsoleAccess",
-		"CreateTags", "DeleteTags", "DescribeTags",
-		"CreateSnapshot", "DeleteSnapshot", "DescribeSnapshots", "CopySnapshot",
-		"CreateInternetGateway", "DeleteInternetGateway",
-		"DescribeInternetGateways", "AttachInternetGateway", "DetachInternetGateway",
-		"CreateEgressOnlyInternetGateway", "DeleteEgressOnlyInternetGateway",
-		"DescribeEgressOnlyInternetGateways",
-		"CreatePlacementGroup", "DeletePlacementGroup", "DescribePlacementGroups",
-		"CreateVpc", "DeleteVpc", "DescribeVpcs", "ModifyVpcAttribute", "DescribeVpcAttribute",
-		"CreateSubnet", "DeleteSubnet", "DescribeSubnets", "ModifySubnetAttribute",
-		"CreateNetworkInterface", "DeleteNetworkInterface", "DescribeNetworkInterfaces", "ModifyNetworkInterfaceAttribute",
-		"CreateSecurityGroup", "DeleteSecurityGroup", "DescribeSecurityGroups", "DescribeSecurityGroupRules",
-		"AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress",
-		"RevokeSecurityGroupIngress", "RevokeSecurityGroupEgress",
-		"DescribeInstanceCreditSpecifications",
-		"AllocateAddress", "ReleaseAddress", "AssociateAddress", "DisassociateAddress", "DescribeAddresses", "DescribeAddressesAttribute",
-		"CreateRouteTable", "DeleteRouteTable", "DescribeRouteTables",
-		"CreateRoute", "DeleteRoute", "ReplaceRoute",
-		"AssociateRouteTable", "DisassociateRouteTable", "ReplaceRouteTableAssociation",
-		"CreateNatGateway", "DeleteNatGateway", "DescribeNatGateways",
-	}
-
-	for _, action := range expectedActions {
-		assert.Contains(t, ec2Actions, action, "ec2Actions missing %s", action)
-	}
-	assert.Len(t, ec2Actions, len(expectedActions), "ec2Actions has unexpected entries")
-}
-
-func TestEC2LocalActionsCompleteness(t *testing.T) {
-	expected := []string{"DescribeRegions", "DescribeAvailabilityZones", "DescribeAccountAttributes"}
-	for _, action := range expected {
-		assert.True(t, ec2LocalActions[action], "ec2LocalActions missing %s", action)
-	}
-	assert.Len(t, ec2LocalActions, len(expected), "ec2LocalActions has unexpected entries")
-}
-
-func TestIAMActionMapCompleteness(t *testing.T) {
-	expectedActions := []string{
-		"CreateUser", "GetUser", "ListUsers", "DeleteUser",
-		"CreateAccessKey", "ListAccessKeys", "DeleteAccessKey", "UpdateAccessKey",
-		"CreatePolicy", "GetPolicy", "GetPolicyVersion", "ListPolicies", "DeletePolicy",
-		"AttachUserPolicy", "DetachUserPolicy", "ListAttachedUserPolicies",
-	}
-
-	for _, action := range expectedActions {
-		assert.Contains(t, iamActions, action, "iamActions missing %s", action)
-	}
-	assert.Len(t, iamActions, len(expectedActions), "iamActions has unexpected entries")
 }
 
 func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {

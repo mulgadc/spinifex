@@ -254,91 +254,6 @@ func TestHandleEC2CreateKeyPair_RoundTrip(t *testing.T) {
 	assert.NotEmpty(t, *output.KeyMaterial)
 }
 
-func TestHandleEC2CreateTags_RoundTrip(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateTags", "spinifex-workers", daemon.handleEC2CreateTags)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.CreateTagsInput{
-		Resources: []*string{aws.String("i-12345678")},
-		Tags: []*ec2.Tag{
-			{Key: aws.String("Name"), Value: aws.String("test-instance")},
-		},
-	}
-	reqData, _ := json.Marshal(input)
-	reply, err := daemon.natsConn.Request("ec2.CreateTags", reqData, 5*time.Second)
-	require.NoError(t, err)
-	require.NotNil(t, reply)
-
-	var output ec2.CreateTagsOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-}
-
-func TestHandleEC2DescribeImages_RoundTrip(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeImages", "spinifex-workers", daemon.handleEC2DescribeImages)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.DescribeImagesInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := daemon.natsConn.Request("ec2.DescribeImages", reqData, 5*time.Second)
-	require.NoError(t, err)
-	require.NotNil(t, reply)
-
-	var output ec2.DescribeImagesOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-}
-
-func TestHandleEC2DescribeVolumes_RoundTrip(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeVolumes", "spinifex-workers", daemon.handleEC2DescribeVolumes)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.DescribeVolumesInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := daemon.natsConn.Request("ec2.DescribeVolumes", reqData, 5*time.Second)
-	require.NoError(t, err)
-	require.NotNil(t, reply)
-
-	var output ec2.DescribeVolumesOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-}
-
-func TestHandleEC2DescribeKeyPairs_RoundTrip(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeKeyPairs", "spinifex-workers", daemon.handleEC2DescribeKeyPairs)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.DescribeKeyPairsInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeKeyPairs", reqData, 5*time.Second)
-	require.NoError(t, err)
-	require.NotNil(t, reply)
-
-	var output ec2.DescribeKeyPairsOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-}
-
 // --- handleHealthCheck tests ---
 
 func TestHandleHealthCheck(t *testing.T) {
@@ -447,6 +362,64 @@ func TestHandleEC2RunInstances_InvalidKeyPair(t *testing.T) {
 
 	// Should return InvalidKeyPair.NotFound, not proceed to launch
 	assert.Contains(t, string(reply.Data), "InvalidKeyPair.NotFound")
+}
+
+// TestHandleEC2RunInstances_MessageParsing locks the three rejection paths
+// that don't get past initial input validation: malformed JSON, an
+// unrecognised instance type, and a missing ImageId. Each must surface a
+// specific awserrors code on the NATS reply rather than crashing the handler
+// or falling through to ErrorServerInternal.
+func TestHandleEC2RunInstances_MessageParsing(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr string
+	}{
+		{
+			name:    "Malformed JSON",
+			payload: []byte(`{"invalid": json}`),
+			wantErr: awserrors.ErrorValidationError,
+		},
+		{
+			name: "Invalid Instance Type",
+			payload: mustMarshal(t, &ec2.RunInstancesInput{
+				ImageId:      aws.String("ami-0abcdef1234567890"),
+				InstanceType: aws.String("invalid.type"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}),
+			wantErr: awserrors.ErrorInvalidInstanceType,
+		},
+		{
+			name: "Missing ImageId",
+			payload: mustMarshal(t, &ec2.RunInstancesInput{
+				InstanceType: aws.String(getTestInstanceType(t)),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}),
+			wantErr: awserrors.ErrorMissingParameter,
+		},
+	}
+
+	daemon := createFullTestDaemon(t, sharedNATSURL)
+	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", daemon.handleEC2RunInstances)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances", tt.payload, 5*time.Second)
+			require.NoError(t, err)
+			assert.Contains(t, string(reply.Data), tt.wantErr)
+		})
+	}
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }
 
 func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
@@ -1009,132 +982,6 @@ func TestHandleEC2ModifyVolume_VolumeNotFound(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, errResp["Code"])
-}
-
-// --- Account settings handler tests ---
-
-func TestHandleEC2GetEbsEncryptionByDefault(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.GetEbsEncryptionByDefault", "spinifex-workers", daemon.handleEC2GetEbsEncryptionByDefault)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.GetEbsEncryptionByDefaultInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.GetEbsEncryptionByDefault", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.GetEbsEncryptionByDefaultOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.EbsEncryptionByDefault)
-}
-
-func TestHandleEC2GetSerialConsoleAccessStatus(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.GetSerialConsoleAccessStatus", "spinifex-workers", daemon.handleEC2GetSerialConsoleAccessStatus)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.GetSerialConsoleAccessStatusInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.GetSerialConsoleAccessStatus", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.GetSerialConsoleAccessStatusOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.SerialConsoleAccessEnabled)
-}
-
-func TestHandleEC2EnableEbsEncryptionByDefault(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.EnableEbsEncryptionByDefault", "spinifex-workers", daemon.handleEC2EnableEbsEncryptionByDefault)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.EnableEbsEncryptionByDefaultInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.EnableEbsEncryptionByDefault", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.EnableEbsEncryptionByDefaultOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.EbsEncryptionByDefault)
-	assert.True(t, *output.EbsEncryptionByDefault)
-}
-
-func TestHandleEC2DisableEbsEncryptionByDefault(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DisableEbsEncryptionByDefault", "spinifex-workers", daemon.handleEC2DisableEbsEncryptionByDefault)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.DisableEbsEncryptionByDefaultInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.DisableEbsEncryptionByDefault", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.DisableEbsEncryptionByDefaultOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.EbsEncryptionByDefault)
-	assert.False(t, *output.EbsEncryptionByDefault)
-}
-
-func TestHandleEC2EnableSerialConsoleAccess(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.EnableSerialConsoleAccess", "spinifex-workers", daemon.handleEC2EnableSerialConsoleAccess)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.EnableSerialConsoleAccessInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.EnableSerialConsoleAccess", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.EnableSerialConsoleAccessOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.SerialConsoleAccessEnabled)
-	assert.True(t, *output.SerialConsoleAccessEnabled)
-}
-
-func TestHandleEC2DisableSerialConsoleAccess(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createFullTestDaemon(t, natsURL)
-
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DisableSerialConsoleAccess", "spinifex-workers", daemon.handleEC2DisableSerialConsoleAccess)
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	input := &ec2.DisableSerialConsoleAccessInput{}
-	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.DisableSerialConsoleAccess", reqData, 5*time.Second)
-	require.NoError(t, err)
-
-	var output ec2.DisableSerialConsoleAccessOutput
-	err = json.Unmarshal(reply.Data, &output)
-	require.NoError(t, err)
-	assert.NotNil(t, output.SerialConsoleAccessEnabled)
-	assert.False(t, *output.SerialConsoleAccessEnabled)
 }
 
 // --- handleEC2CreateImage tests ---

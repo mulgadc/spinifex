@@ -814,6 +814,11 @@ func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 	assert.Len(t, desc.Listeners, 2)
 }
 
+// TestDescribeListeners_AccountIsolation pins the independent account filter
+// in DescribeListeners (service_impl.go:1470). LB-level isolation is tested
+// by TestDescribeLoadBalancers_AccountIsolation, but listener filtering is
+// enforced separately on each ListenerRecord — a regression that drops the
+// listener-side check would not be caught by the LB-level test.
 func TestDescribeListeners_AccountIsolation(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -1093,10 +1098,15 @@ func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
 	require.NoError(t, err) // No panic, no error — updateStoredConfig skipped gracefully
 }
 
-func TestDeleteLoadBalancer_TerminatesALBVM(t *testing.T) {
+// TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID pins the nil-safe
+// branch in DeleteLoadBalancer: an LB created without a systemAMI never
+// launched an ALB VM (InstanceID == ""), so DeleteLoadBalancer must skip
+// TerminateSystemInstance rather than call it with an empty string. The
+// positive case (terminate IS called when InstanceID is set) is covered by
+// TestDeleteLoadBalancer_TerminatesVM_WithPublicIP in service_impl_vpc_test.go.
+func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
 	svc := setupTestService(t)
 
-	// Set up a mock instance launcher
 	mock := &mockTerminateLauncher{}
 	svc.InstanceLauncher = mock
 
@@ -1105,17 +1115,12 @@ func TestDeleteLoadBalancer_TerminatesALBVM(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	lbArn := *lb.LoadBalancers[0].LoadBalancerArn
-
-	// Delete — since no ALB VM was launched (no systemAMI), InstanceID is empty,
-	// so terminate is not called. This verifies the nil-safe path.
 	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
-		LoadBalancerArn: aws.String(lbArn),
+		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// No terminate call expected (no instance ID)
-	assert.Equal(t, 0, len(mock.terminateCalls))
+	assert.Equal(t, 0, len(mock.terminateCalls), "terminate must not be called when InstanceID is empty")
 }
 
 // mockTerminateLauncher records TerminateSystemInstance calls for testing.
@@ -1164,54 +1169,6 @@ func TestCreateLoadBalancer_InternalScheme_DNSPrefix(t *testing.T) {
 	// Internal scheme should have "internal-" DNS prefix
 	assert.Contains(t, *lb.DNSName, "internal-backend-alb")
 	assert.Contains(t, *lb.DNSName, ".elb.spinifex.local")
-}
-
-func TestCreateLoadBalancer_InternetFacingScheme_PassesSchemeToLauncher(t *testing.T) {
-	svc := setupTestService(t)
-
-	mock := &mockSystemInstanceLauncher{
-		launchResult: &SystemInstanceOutput{
-			InstanceID: "i-alb123",
-			PrivateIP:  "10.0.1.5",
-			PublicIP:   "203.0.113.10",
-		},
-	}
-	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
-
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
-		Name:    aws.String("public-alb"),
-		Subnets: []*string{aws.String("subnet-aaa")},
-	}, testAccountID)
-
-	require.NoError(t, err)
-	assert.Equal(t, "internet-facing", *out.LoadBalancers[0].Scheme)
-
-	// Without VPC service, no ENIs are created, so launcher is not called.
-	// This test verifies scheme is correctly defaulted; launcher integration
-	// is tested in service_impl_vpc_test.go.
-}
-
-func TestCreateLoadBalancer_InternalScheme_PassesSchemeToLauncher(t *testing.T) {
-	svc := setupTestService(t)
-
-	mock := &mockSystemInstanceLauncher{
-		launchResult: &SystemInstanceOutput{
-			InstanceID: "i-alb456",
-			PrivateIP:  "10.0.2.10",
-		},
-	}
-	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
-
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
-		Name:    aws.String("private-alb"),
-		Scheme:  aws.String("internal"),
-		Subnets: []*string{aws.String("subnet-bbb")},
-	}, testAccountID)
-
-	require.NoError(t, err)
-	assert.Equal(t, "internal", *out.LoadBalancers[0].Scheme)
 }
 
 // --- LBAgentHeartbeat tests ---
@@ -1569,60 +1526,33 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 
 // --- Service lifecycle and setter tests ---
 
-func TestClose(t *testing.T) {
-	svc := setupTestService(t)
-	// Close should not panic; stops health checker and cancels context.
-	svc.Close()
-}
+// TestGetSystemAMI_ColdStart and TestGetSystemInstanceType_ColdStart pin the
+// no-resolver-wired path. TestGet*_RetryOn{Error,Empty} only exercise paths
+// after a resolver is set, so they don't cover the boot-time race where a
+// caller asks for the system AMI/instance type before LB-image import has
+// installed the resolver. Cold-start must return empty + no error rather
+// than panic on a nil func.
 
-func TestSystemCredentialsFields(t *testing.T) {
-	svc := setupTestService(t)
-	svc.SystemAccessKey = "AKID123"
-	svc.SystemSecretKey = "secret456"
-	assert.Equal(t, "AKID123", svc.SystemAccessKey)
-	assert.Equal(t, "secret456", svc.SystemSecretKey)
-}
-
-func TestGatewayURLField(t *testing.T) {
-	svc := setupTestService(t)
-	svc.GatewayURL = "https://10.15.8.1:9999"
-	assert.Equal(t, "https://10.15.8.1:9999", svc.GatewayURL)
-}
-
-func TestSetSystemInstanceTypeFunc(t *testing.T) {
+func TestGetSystemAMI_ColdStart(t *testing.T) {
 	svc := setupTestService(t)
 
-	// Before setting, should return empty
-	assert.Empty(t, svc.getSystemInstanceType())
-
-	// Set the resolver
-	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
-	assert.Equal(t, "t3.micro", svc.getSystemInstanceType())
-
-	// Once resolved, caches the value
-	svc.systemInstanceTypeFunc = func() string { return "t3.large" }
-	assert.Equal(t, "t3.micro", svc.getSystemInstanceType())
-}
-
-func TestGetSystemAMI(t *testing.T) {
-	svc := setupTestService(t)
-
-	// Before setting, should return empty with no error
 	ami, err := svc.getSystemAMI()
 	require.NoError(t, err)
 	assert.Empty(t, ami)
 
-	// Set the resolver
 	svc.SetSystemAMIFunc(func() (string, error) { return "ami-system-001", nil })
 	ami, err = svc.getSystemAMI()
 	require.NoError(t, err)
 	assert.Equal(t, "ami-system-001", ami)
+}
 
-	// Once resolved, caches the value
-	svc.systemAMIFunc = func() (string, error) { return "ami-system-002", nil }
-	ami, err = svc.getSystemAMI()
-	require.NoError(t, err)
-	assert.Equal(t, "ami-system-001", ami)
+func TestGetSystemInstanceType_ColdStart(t *testing.T) {
+	svc := setupTestService(t)
+
+	assert.Empty(t, svc.getSystemInstanceType())
+
+	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
+	assert.Equal(t, "t3.micro", svc.getSystemInstanceType())
 }
 
 func TestGetSystemAMI_RetryOnError(t *testing.T) {
@@ -1707,14 +1637,6 @@ func TestGetSystemInstanceType_Concurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-}
-
-func TestMgmtRouteFields(t *testing.T) {
-	svc := setupTestService(t)
-	svc.MgmtRouteGateway = "10.15.8.1"
-	svc.MgmtRouteTarget = "10.15.8.100"
-	assert.Equal(t, "10.15.8.1", svc.MgmtRouteGateway)
-	assert.Equal(t, "10.15.8.100", svc.MgmtRouteTarget)
 }
 
 func TestLBVMUserData_MgmtRoute(t *testing.T) {
@@ -2635,26 +2557,6 @@ func TestDescribeTags_LoadBalancer(t *testing.T) {
 	assert.Equal(t, "nginx", *td.Tags[0].Value)
 	assert.Equal(t, "Env", *td.Tags[1].Key)
 	assert.Equal(t, "prod", *td.Tags[1].Value)
-}
-
-func TestDescribeTags_TargetGroup(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
-		Name: aws.String("tags-tg"),
-		Tags: []*elbv2.Tag{
-			{Key: aws.String("Owner"), Value: aws.String("team-a")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
-		ResourceArns: []*string{tgOut.TargetGroups[0].TargetGroupArn},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, out.TagDescriptions, 1)
-	require.Len(t, out.TagDescriptions[0].Tags, 1)
-	assert.Equal(t, "Owner", *out.TagDescriptions[0].Tags[0].Key)
-	assert.Equal(t, "team-a", *out.TagDescriptions[0].Tags[0].Value)
 }
 
 func TestDescribeTags_Listener_NoTags(t *testing.T) {

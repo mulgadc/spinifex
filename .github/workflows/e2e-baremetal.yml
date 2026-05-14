@@ -12,9 +12,9 @@ env:
 
 jobs:
   e2e_baremetal:
-    name: Bare-Metal Single-Node E2E
+    name: Bare-Metal Multi-Node E2E
     runs-on: [ self-hosted, ci-baremetal ]
-    timeout-minutes: 60
+    timeout-minutes: 120
     concurrency:
       group: e2e-baremetal-cluster
       cancel-in-progress: false

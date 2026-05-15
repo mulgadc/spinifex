@@ -113,9 +113,13 @@ func TestLbVMUserData_Structural(t *testing.T) {
 		assert.NotContains(t, k, "NATS", "NATS URL must not leak into agent config")
 	}
 
-	// Agent is launched via OpenRC, never as a bare binary path.
-	require.Len(t, runcmd, 1)
-	assert.Contains(t, runcmd[0], `[ "rc-service", "lb-agent", "start" ]`)
+	// Agent is launched via OpenRC, never as a bare binary path. The
+	// rc-update line enables the service in the default runlevel so OpenRC
+	// auto-starts it on subsequent boots after a host reboot (cloud-init
+	// runcmd is PER_INSTANCE and won't re-run).
+	require.Len(t, runcmd, 2)
+	assert.Contains(t, runcmd[0], `[ "rc-update", "add", "lb-agent", "default" ]`)
+	assert.Contains(t, runcmd[1], `[ "rc-service", "lb-agent", "start" ]`)
 	assert.NotContains(t, ud, "/usr/local/bin/lb-agent")
 
 	// CA cert is injected upstream by the instance service's template.

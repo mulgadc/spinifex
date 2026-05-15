@@ -70,7 +70,10 @@ func validateHealthCheckMatcher(m string) error {
 // by the instance service's cloud-init template (same as regular EC2 VMs).
 // Cloud-init guarantees write_files runs before runcmd. The service is NOT
 // enabled at boot in the image — cloud-init is the sole trigger so the env
-// vars are always present before the agent starts.
+// vars are always present before the agent starts. runcmd also `rc-update`s
+// the service into the default runlevel so OpenRC auto-starts it on
+// subsequent boots after a host reboot (cloud-init runcmd is PER_INSTANCE
+// and won't re-run; the env file persists on disk).
 func (s *ELBv2ServiceImpl) lbVMUserData(lbID, scheme string) (string, error) {
 	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
 		return "", fmt.Errorf("missing system credentials: gatewayURL=%q accessKey=%q secretKey-set=%t",
@@ -96,6 +99,7 @@ write_files:
 	}
 
 	cfg += `runcmd:
+  - [ "rc-update", "add", "lb-agent", "default" ]
   - [ "rc-service", "lb-agent", "start" ]
 `
 	return cfg, nil

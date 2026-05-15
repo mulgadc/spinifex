@@ -80,6 +80,10 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	instance.Reservation.SetReservationId(utils.GenerateResourceID("r"))
 	instance.Reservation.SetOwnerId(accountID)
 	instance.Reservation.Instances = []*ec2.Instance{ec2Instance}
+	// Mirror the customer-instance path (handlers/ec2/instance/service_impl.go:334)
+	// so consumers reading instance.Instance (e.g. onInstanceUpHook's NAT
+	// republish, device_map, volumes) see the same metadata for system VMs.
+	instance.Instance = ec2Instance
 
 	// Attach ENI — either use pre-created one or auto-create
 	privateIP := ""

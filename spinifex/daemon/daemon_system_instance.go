@@ -109,6 +109,17 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		if input.SubnetID != "" {
 			ec2Instance.SetSubnetId(input.SubnetID)
 		}
+		// The auto-create-ENI branch below populates VpcId from the freshly
+		// created ENI; do the same for pre-created ENIs so consumers reading
+		// instance.Instance.VpcId (notably onInstanceUpHook's NAT republish)
+		// work uniformly across both paths.
+		if d.vpcService != nil {
+			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+				NetworkInterfaceIds: []*string{aws.String(input.ENIID)},
+			}, eniAccountID); descErr == nil && len(eniOut.NetworkInterfaces) > 0 && eniOut.NetworkInterfaces[0].VpcId != nil {
+				ec2Instance.SetVpcId(*eniOut.NetworkInterfaces[0].VpcId)
+			}
+		}
 		// Mark ENI as attached to this instance
 		if d.vpcService != nil {
 			if _, attachErr := d.vpcService.AttachENI(eniAccountID, instance.ENIId, instance.ID, 0); attachErr != nil {

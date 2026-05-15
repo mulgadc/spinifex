@@ -545,21 +545,34 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB post-reboot" "$LB_RECOVER_SECS" || true
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" || true
 
 # 8.6: re-run the traffic burst
-# Flush ARP for the ALB EIP on the spinifex node and probe with arping so the
-# log shows whether ARP resolution works post-reboot before we conclude curl
-# itself is broken. The host reboot wipes its ARP cache, but OVN gateway-router
-# ARP-responder state can lag the chassis re-claim — if arping fails here, the
-# 0/20 burst result is downstream of ARP, not the L7 path.
+# Diagnose the post-reboot 0/20 burst BEFORE running it. run_http_burst parses
+# instance_id from a JSON body and counts anything else (502/503, timeout,
+# refused) as 0, so we can't tell L2-fail from L7-fail. Probe the EIP with
+# verbose curl + a brief br-wan tcpdump + ip neigh, then run a histogram of
+# HTTP status codes alongside the burst.
 echo ""
-log "Pre-burst ARP diagnostics for ALB EIP ${ALB_PUBLIC_IP}..."
+log "Pre-burst connectivity probe for ALB EIP ${ALB_PUBLIC_IP}..."
 node_ssh "sudo ip neigh flush ${ALB_PUBLIC_IP} 2>/dev/null || true"
-ARP_OUT=$(node_ssh "sudo arping -c 3 -w 5 -I br-wan ${ALB_PUBLIC_IP} 2>&1" || true)
-log "arping result:"
-printf '%s\n' "$ARP_OUT" | sed 's/^/    /'
-log "ip neigh post-arping:"
-node_ssh "ip neigh show ${ALB_PUBLIC_IP} 2>/dev/null" | sed 's/^/    /' || true
+TCPDUMP_PID_OUT=$(node_ssh "sudo timeout 6 tcpdump -i br-wan -nn -c 30 'host ${ALB_PUBLIC_IP} or (arp and host ${ALB_PUBLIC_IP})' >/tmp/probe-tcpdump.log 2>&1 & echo \$!" || true)
+sleep 1
+PROBE_OUT=$(node_ssh "curl -sv --connect-timeout 3 --max-time 5 -o /tmp/probe-body.txt -w 'HTTP=%{http_code} CONNECT=%{time_connect} TOTAL=%{time_total} EXIT_AFTER\n' 'http://${ALB_PUBLIC_IP}:80/' 2>&1; echo CURL_EXIT=\$?" || true)
+log "curl -v probe result:"
+printf '%s\n' "$PROBE_OUT" | sed 's/^/    /'
+log "probe response body (head):"
+node_ssh "head -c 400 /tmp/probe-body.txt 2>/dev/null; echo" | sed 's/^/    /' || true
+sleep 5
+log "tcpdump on br-wan during probe:"
+node_ssh "cat /tmp/probe-tcpdump.log 2>/dev/null" | sed 's/^/    /' || true
+log "ip neigh for EIP after probe:"
+node_ssh "ip neigh show ${ALB_PUBLIC_IP} 2>/dev/null; ip neigh show dev br-wan 2>/dev/null | head -10" | sed 's/^/    /' || true
 
-log "Re-running traffic burst against same ALB..."
+log "Re-running traffic burst against same ALB (with HTTP status histogram)..."
+# Run a parallel curl that captures just status codes so we can distinguish
+# "ALB returned 5xx" from "connect timeout / refused".
+STATUS_HIST=$(node_ssh "for i in \$(seq 1 20); do curl -s -o /dev/null -w '%{http_code} %{exitcode}\n' --connect-timeout 3 --max-time 5 'http://${ALB_PUBLIC_IP}:80/' 2>/dev/null; done | sort | uniq -c" 2>/dev/null || true)
+log "HTTP status / curl exit histogram (20 reqs):"
+printf '%s\n' "$STATUS_HIST" | sed 's/^/    /'
+
 PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"
 if [ "$FAILED" -gt "$PRE_BURST_FAILED" ]; then

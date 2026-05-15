@@ -497,10 +497,10 @@ echo "Checking spx get nodes..."
 GET_NODES_OUTPUT=$($SPINIFEX_BIN get nodes --timeout 5s 2>/dev/null)
 echo "$GET_NODES_OUTPUT"
 READY_COUNT=$(echo "$GET_NODES_OUTPUT" | grep -c "Ready" || true)
-if [ "$READY_COUNT" -ge 3 ]; then
+if [ "$READY_COUNT" -ge "$NODE_COUNT" ]; then
     pass_test "spx get nodes ($READY_COUNT Ready)"
 else
-    echo "  WARNING: spx get nodes shows $READY_COUNT Ready nodes (expected 3)"
+    echo "  WARNING: spx get nodes shows $READY_COUNT Ready nodes (expected $NODE_COUNT)"
     fail_test "spx get nodes"
 fi
 
@@ -983,7 +983,7 @@ REFORMED=false
 while [ $ATTEMPT -lt 60 ]; do
     NATS_RECOVER=$(curl -s "http://127.0.0.1:${NATS_MONITOR_PORT}/routez" 2>/dev/null)
     RECOVER_PEERS=$(echo "$NATS_RECOVER" | jq -r '[.routes[].remote_name] | unique | length' 2>/dev/null || echo "0")
-    if [ "$RECOVER_PEERS" -ge 2 ]; then
+    if [ "$RECOVER_PEERS" -ge "$((NODE_COUNT - 1))" ]; then
         echo "  NATS cluster reformed ($RECOVER_PEERS peers)"
         REFORMED=true
         break
@@ -1020,15 +1020,15 @@ else
     fail_test "Node2 gateway recovery"
 fi
 
-# Verify spx get nodes shows 3 Ready again
+# Verify spx get nodes shows all nodes Ready again
 echo "  Checking spx get nodes after recovery..."
 GET_NODES_RECOVER=$($SPINIFEX_BIN get nodes --timeout 10s 2>/dev/null || echo "")
 echo "$GET_NODES_RECOVER"
 READY_RECOVER=$(echo "$GET_NODES_RECOVER" | grep -c "Ready" || true)
-if [ "$READY_RECOVER" -ge 3 ]; then
+if [ "$READY_RECOVER" -ge "$NODE_COUNT" ]; then
     pass_test "All nodes Ready after recovery"
 else
-    echo "  WARNING: Only $READY_RECOVER Ready nodes after recovery (expected 3)"
+    echo "  WARNING: Only $READY_RECOVER Ready nodes after recovery (expected $NODE_COUNT)"
     fail_test "All nodes Ready after recovery"
 fi
 
@@ -1380,18 +1380,18 @@ else
     }
 
     echo ""
-    echo "Step 3: Creating spread placement group + launching 3 private VMs..."
+    echo "Step 3: Creating spread placement group + launching $NODE_COUNT private VMs..."
     $AWS_EC2 create-placement-group --group-name nat-spread --strategy spread > /dev/null
     echo "  Placement group: nat-spread (spread)"
 
-    # Launch 3 instances in private subnet with spread placement
+    # Launch NODE_COUNT instances in private subnet with spread placement
     NATGW_PRIV_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
         --subnet-id "$NATGW_PRIV_SUBNET" --key-name spinifex-key \
         --security-group-ids "$NATGW_PRIV_SG" \
-        --count 3 --placement "GroupName=nat-spread" --output json)
+        --count "$NODE_COUNT" --placement "GroupName=nat-spread" --output json)
     NATGW_PRIV_IDS=()
-    for i in 0 1 2; do
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
         NATGW_PRIV_IDS+=("$(echo "$NATGW_PRIV_OUTPUT" | jq -r ".Instances[$i].InstanceId")")
     done
     echo "  Private instances: ${NATGW_PRIV_IDS[*]}"
@@ -1427,13 +1427,13 @@ else
         # Count unique nodes
         UNIQUE_NODES=$(printf '%s\n' "${SPREAD_NODES[@]}" | sort -u | wc -l)
         echo "  Unique hosting nodes: $UNIQUE_NODES / ${#SPREAD_NODES[@]}"
-        if [ "$UNIQUE_NODES" -ge 3 ]; then
-            pass_test "Spread placement (3 instances on 3 nodes)"
-        elif [ "$UNIQUE_NODES" -ge 2 ]; then
-            echo "  WARN: Only $UNIQUE_NODES unique nodes (expected 3) — spread best-effort"
+        if [ "$UNIQUE_NODES" -ge "$NODE_COUNT" ]; then
+            pass_test "Spread placement ($NODE_COUNT instances on $NODE_COUNT nodes)"
+        elif [ "$UNIQUE_NODES" -ge "$((NODE_COUNT - 1))" ]; then
+            echo "  WARN: Only $UNIQUE_NODES unique nodes (expected $NODE_COUNT) — spread best-effort"
             pass_test "Spread placement (best-effort: $UNIQUE_NODES nodes)"
         else
-            fail_test "Spread placement ($UNIQUE_NODES unique nodes, expected 3)"
+            fail_test "Spread placement ($UNIQUE_NODES unique nodes, expected $NODE_COUNT)"
         fi
 
         # Get private IPs for SSH hop
@@ -1527,7 +1527,7 @@ else
                 fi
 
                 echo ""
-                echo "Step 7: Verify internet via NAT Gateway (all 3 nodes)..."
+                echo "Step 7: Verify internet via NAT Gateway (all $NODE_COUNT nodes)..."
                 NAT_GW_ALL_OK=true
                 for idx in "${!NATGW_PRIV_IDS[@]}"; do
                     priv_ip="${NATGW_PRIV_PRIVATE_IPS[$idx]}"
@@ -1549,7 +1549,7 @@ else
                 done
 
                 if [ "$NAT_GW_ALL_OK" = true ]; then
-                    pass_test "NAT Gateway multi-node connectivity (all 3 nodes)"
+                    pass_test "NAT Gateway multi-node connectivity (all $NODE_COUNT nodes)"
                 else
                     fail_test "NAT Gateway multi-node connectivity"
                     echo "  Dumping OVN NAT rules for debugging:"

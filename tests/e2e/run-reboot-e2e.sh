@@ -69,6 +69,7 @@ APP_INSTANCE_IDS=()
 ALB_LISTENER_ARN=""
 ALB_LB_ARN=""
 ALB_TG_ARN=""
+ALB_SG_ID=""
 
 cleanup() {
     local exit_code=$?
@@ -85,6 +86,7 @@ cleanup() {
     [ -n "$ALB_LISTENER_ARN" ] && node_aws_elbv2 "delete-listener --listener-arn $ALB_LISTENER_ARN" >/dev/null 2>&1 || true
     [ -n "$ALB_LB_ARN" ] && node_aws_elbv2 "delete-load-balancer --load-balancer-arn $ALB_LB_ARN" >/dev/null 2>&1 || true
     [ -n "$ALB_TG_ARN" ] && node_aws_elbv2 "delete-target-group --target-group-arn $ALB_TG_ARN" >/dev/null 2>&1 || true
+    [ -n "$ALB_SG_ID" ] && node_aws_ec2 "delete-security-group --group-id $ALB_SG_ID" >/dev/null 2>&1 || true
 
     for inst_id in "${APP_INSTANCE_IDS[@]}"; do
         [ -n "$inst_id" ] && node_aws_ec2 "terminate-instances --instance-ids $inst_id" >/dev/null 2>&1 || true
@@ -313,6 +315,19 @@ pass "all instances have private IPs"
 # ==========================================================================
 # Phase 3: ALB (internet-facing)
 # ==========================================================================
+log "Creating ALB security group (port 80 inbound)..."
+ALB_SG_ID=$(node_aws_ec2 "create-security-group \
+    --group-name reboot-e2e-alb-sg \
+    --description 'Reboot E2E ALB' \
+    --vpc-id $VPC_ID \
+    --output json" | jq -r '.GroupId')
+if [ -z "$ALB_SG_ID" ] || [ "$ALB_SG_ID" = "null" ]; then fail "create-security-group (ALB)"; exit 1; fi
+node_aws_ec2 "authorize-security-group-ingress \
+    --group-id $ALB_SG_ID \
+    --protocol tcp --port 80 --cidr 0.0.0.0/0" >/dev/null \
+    || { fail "authorize-security-group-ingress port 80"; exit 1; }
+pass "ALB security group: $ALB_SG_ID"
+
 log "Creating HTTP target group..."
 ALB_TG_ARN=$(node_aws_elbv2 "create-target-group \
     --name reboot-e2e-tg \
@@ -336,6 +351,7 @@ ALB_LB_ARN=$(node_aws_elbv2 "create-load-balancer \
     --name reboot-e2e-alb \
     --scheme internet-facing \
     --subnets $SUBNET_ID \
+    --security-groups $ALB_SG_ID \
     --output json" | jq -r '.LoadBalancers[0].LoadBalancerArn')
 if [ -z "$ALB_LB_ARN" ] || [ "$ALB_LB_ARN" = "null" ]; then fail "create-load-balancer"; exit 1; fi
 pass "ALB: $ALB_LB_ARN"

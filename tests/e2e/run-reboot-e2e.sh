@@ -545,7 +545,20 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB post-reboot" "$LB_RECOVER_SECS" || true
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" || true
 
 # 8.6: re-run the traffic burst
+# Flush ARP for the ALB EIP on the spinifex node and probe with arping so the
+# log shows whether ARP resolution works post-reboot before we conclude curl
+# itself is broken. The host reboot wipes its ARP cache, but OVN gateway-router
+# ARP-responder state can lag the chassis re-claim — if arping fails here, the
+# 0/20 burst result is downstream of ARP, not the L7 path.
 echo ""
+log "Pre-burst ARP diagnostics for ALB EIP ${ALB_PUBLIC_IP}..."
+node_ssh "sudo ip neigh flush ${ALB_PUBLIC_IP} 2>/dev/null || true"
+ARP_OUT=$(node_ssh "sudo arping -c 3 -w 5 -I br-wan ${ALB_PUBLIC_IP} 2>&1" || true)
+log "arping result:"
+printf '%s\n' "$ARP_OUT" | sed 's/^/    /'
+log "ip neigh post-arping:"
+node_ssh "ip neigh show ${ALB_PUBLIC_IP} 2>/dev/null" | sed 's/^/    /' || true
+
 log "Re-running traffic burst against same ALB..."
 PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"

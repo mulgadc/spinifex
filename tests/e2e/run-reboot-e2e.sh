@@ -69,7 +69,7 @@ APP_INSTANCE_IDS=()
 ALB_LISTENER_ARN=""
 ALB_LB_ARN=""
 ALB_TG_ARN=""
-ALB_SG_ID=""
+E2E_SG_ID=""
 
 cleanup() {
     local exit_code=$?
@@ -86,7 +86,7 @@ cleanup() {
     [ -n "$ALB_LISTENER_ARN" ] && node_aws_elbv2 "delete-listener --listener-arn $ALB_LISTENER_ARN" >/dev/null 2>&1 || true
     [ -n "$ALB_LB_ARN" ] && node_aws_elbv2 "delete-load-balancer --load-balancer-arn $ALB_LB_ARN" >/dev/null 2>&1 || true
     [ -n "$ALB_TG_ARN" ] && node_aws_elbv2 "delete-target-group --target-group-arn $ALB_TG_ARN" >/dev/null 2>&1 || true
-    [ -n "$ALB_SG_ID" ] && node_aws_ec2 "delete-security-group --group-id $ALB_SG_ID" >/dev/null 2>&1 || true
+    # SG can't be deleted while ENIs reference it; delete after instances + ALB are gone (below).
 
     for inst_id in "${APP_INSTANCE_IDS[@]}"; do
         [ -n "$inst_id" ] && node_aws_ec2 "terminate-instances --instance-ids $inst_id" >/dev/null 2>&1 || true
@@ -107,6 +107,9 @@ cleanup() {
 
     node_aws_ec2 "delete-key-pair --key-name reboot-e2e-key" >/dev/null 2>&1 || true
     node_ssh "rm -f $NODE_KEY_PATH $NODE_USERDATA_PATH" >/dev/null 2>&1 || true
+
+    # SG must come after instances + ALB ENIs are gone (it can't be deleted while referenced).
+    [ -n "$E2E_SG_ID" ] && node_aws_ec2 "delete-security-group --group-id $E2E_SG_ID" >/dev/null 2>&1 || true
 
     if [ -n "$IGW_ID" ] && [ -n "$VPC_ID" ]; then
         node_aws_ec2 "detach-internet-gateway --internet-gateway-id $IGW_ID --vpc-id $VPC_ID" >/dev/null 2>&1 || true
@@ -274,6 +277,19 @@ if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "null" ]; then fail "create-subnet"; 
 pass "create-subnet: $SUBNET_ID"
 node_aws_ec2 "modify-subnet-attribute --subnet-id $SUBNET_ID --map-public-ip-on-launch" >/dev/null || true
 
+log "Creating shared security group (port 80 inbound)..."
+E2E_SG_ID=$(node_aws_ec2 "create-security-group \
+    --group-name reboot-e2e-sg \
+    --description 'Reboot E2E shared SG (ALB + app instances)' \
+    --vpc-id $VPC_ID \
+    --output json" | jq -r '.GroupId')
+if [ -z "$E2E_SG_ID" ] || [ "$E2E_SG_ID" = "null" ]; then fail "create-security-group"; exit 1; fi
+node_aws_ec2 "authorize-security-group-ingress \
+    --group-id $E2E_SG_ID \
+    --protocol tcp --port 80 --cidr 0.0.0.0/0" >/dev/null \
+    || { fail "authorize-security-group-ingress port 80"; exit 1; }
+pass "security group: $E2E_SG_ID"
+
 # ==========================================================================
 # Phase 2: Launch app EC2 instances
 # ==========================================================================
@@ -284,6 +300,7 @@ for i in 1 2; do
         --instance-type $INSTANCE_TYPE \
         --key-name reboot-e2e-key \
         --subnet-id $SUBNET_ID \
+        --security-group-ids $E2E_SG_ID \
         --user-data file://$NODE_USERDATA_PATH \
         --output json" | jq -r '.Instances[0].InstanceId')
     if [ -z "$INST" ] || [ "$INST" = "null" ]; then fail "run-instances (app $i)"; exit 1; fi
@@ -315,19 +332,6 @@ pass "all instances have private IPs"
 # ==========================================================================
 # Phase 3: ALB (internet-facing)
 # ==========================================================================
-log "Creating ALB security group (port 80 inbound)..."
-ALB_SG_ID=$(node_aws_ec2 "create-security-group \
-    --group-name reboot-e2e-alb-sg \
-    --description 'Reboot E2E ALB' \
-    --vpc-id $VPC_ID \
-    --output json" | jq -r '.GroupId')
-if [ -z "$ALB_SG_ID" ] || [ "$ALB_SG_ID" = "null" ]; then fail "create-security-group (ALB)"; exit 1; fi
-node_aws_ec2 "authorize-security-group-ingress \
-    --group-id $ALB_SG_ID \
-    --protocol tcp --port 80 --cidr 0.0.0.0/0" >/dev/null \
-    || { fail "authorize-security-group-ingress port 80"; exit 1; }
-pass "ALB security group: $ALB_SG_ID"
-
 log "Creating HTTP target group..."
 ALB_TG_ARN=$(node_aws_elbv2 "create-target-group \
     --name reboot-e2e-tg \
@@ -351,7 +355,7 @@ ALB_LB_ARN=$(node_aws_elbv2 "create-load-balancer \
     --name reboot-e2e-alb \
     --scheme internet-facing \
     --subnets $SUBNET_ID \
-    --security-groups $ALB_SG_ID \
+    --security-groups $E2E_SG_ID \
     --output json" | jq -r '.LoadBalancers[0].LoadBalancerArn')
 if [ -z "$ALB_LB_ARN" ] || [ "$ALB_LB_ARN" = "null" ]; then fail "create-load-balancer"; exit 1; fi
 pass "ALB: $ALB_LB_ARN"

@@ -181,8 +181,7 @@ dump_guest_ssh_diagnostics() {
     fi
 
     echo "  --- cloud-init / sshd from hosting node (via QEMU console log if available) ---"
-    peer_ssh "$host_ip" "ls -la /var/log/libvirt/qemu/ 2>/dev/null | head -20; \
-        for f in /tmp/spinifex/vms/${instance_id}/console.log /var/log/libvirt/qemu/${instance_id}.log; do \
+    peer_ssh "$host_ip" "for f in /run/spinifex/console-${instance_id}.log /tmp/spinifex/vms/${instance_id}/console.log; do \
           [ -f \"\$f\" ] && echo \"--- \$f (tail 50) ---\" && sudo tail -50 \"\$f\"; \
         done" 2>&1 || true
 
@@ -664,10 +663,12 @@ for idx in "${!INSTANCE_IDS[@]}"; do
     fi
 
     # Wait for SSH to be ready (VM boot + cloud-init)
+    # Bare-metal NBD-backed VMs take longer than tofu-cluster VMs to boot.
+    SSH_MAX_ATTEMPTS=120
     echo "  Waiting for SSH to be ready..."
     ATTEMPT=0
     SSH_READY=false
-    while [ $ATTEMPT -lt 60 ]; do
+    while [ $ATTEMPT -lt $SSH_MAX_ATTEMPTS ]; do
         if ssh -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=2 \
@@ -680,12 +681,12 @@ for idx in "${!INSTANCE_IDS[@]}"; do
             break
         fi
         ATTEMPT=$((ATTEMPT + 1))
-        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/60)"
+        [ $((ATTEMPT % 10)) -eq 0 ] && echo "  Waiting for SSH... ($ATTEMPT/$SSH_MAX_ATTEMPTS)"
         sleep 1
     done
 
     if [ "$SSH_READY" = false ]; then
-        echo "  ERROR: SSH not ready after 60 attempts"
+        echo "  ERROR: SSH not ready after $SSH_MAX_ATTEMPTS attempts"
         dump_guest_ssh_diagnostics "$instance_id" "$host_ip" "$SSH_HOST" "$SSH_PORT"
         fail_test "Guest SSH ($instance_id)"
         continue

@@ -258,13 +258,10 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		instance.DevMAC = vm.GenerateDevMAC(instance.ID)
 	}
 
-	// Management NIC: allocate IP, generate MAC, create TAP on br-mgmt
+	// Management NIC: allocate IP, generate MAC. The tap itself is created
+	// by vm.Manager.Run via lifecycle.go so the same plumbing happens on
+	// recovery after a host reboot (where kernel taps don't survive).
 	if d.mgmtIPAllocator != nil && d.mgmtBridgeIP != "" {
-		mgmtBridge := "br-mgmt"
-		if d.config.Daemon.MgmtBridge != "" {
-			mgmtBridge = d.config.Daemon.MgmtBridge
-		}
-
 		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
 		if allocErr != nil {
 			if input.Scheme == handlers_elbv2.SchemeInternal {
@@ -275,22 +272,8 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		} else {
 			instance.MgmtMAC = generateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
-
-			tapName := vm.MgmtTapName(instance.ID)
-			tapErr := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
-			if tapErr != nil {
-				d.mgmtIPAllocator.Release(instance.ID)
-				instance.MgmtMAC = ""
-				instance.MgmtIP = ""
-				if input.Scheme == handlers_elbv2.SchemeInternal {
-					d.cleanupFailedSystemInstance(instance, instanceType)
-					return nil, fmt.Errorf("setup mgmt tap for internal-scheme ALB: %w", tapErr)
-				}
-				slog.Error("LaunchSystemInstance: failed to setup mgmt tap", "instanceId", instance.ID, "err", tapErr)
-			} else {
-				slog.Info("LaunchSystemInstance: mgmt NIC configured",
-					"instanceId", instance.ID, "mgmtIP", mgmtIP, "mgmtMAC", instance.MgmtMAC, "mgmtTap", tapName)
-			}
+			slog.Info("LaunchSystemInstance: mgmt NIC allocated",
+				"instanceId", instance.ID, "mgmtIP", mgmtIP, "mgmtMAC", instance.MgmtMAC)
 		}
 	}
 

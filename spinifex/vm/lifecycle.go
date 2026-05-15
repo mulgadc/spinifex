@@ -252,6 +252,12 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	if instance.MgmtMAC != "" {
 		mgmtTap := MgmtTapName(instance.ID)
+		if m.deps.NetworkPlumber != nil && m.deps.MgmtBridge != "" {
+			if err := m.deps.NetworkPlumber.SetupTap(TapSpec{Name: mgmtTap, Bridge: m.deps.MgmtBridge}); err != nil {
+				slog.Error("Failed to set up mgmt tap", "tap", mgmtTap, "bridge", m.deps.MgmtBridge, "instanceId", instance.ID, "err", err)
+				return fmt.Errorf("setup mgmt tap %s on %s: %w", mgmtTap, m.deps.MgmtBridge, err)
+			}
+		}
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 		})

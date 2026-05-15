@@ -446,6 +446,10 @@ func (d *Daemon) onInstanceDownHook() func(string) {
 // All collaborators must already be initialized; callers are expected to
 // invoke this from Daemon.Start after services and JetStream are ready.
 func (d *Daemon) buildVMManagerDeps() vm.Deps {
+	mgmtBridge := d.config.Daemon.MgmtBridge
+	if mgmtBridge == "" {
+		mgmtBridge = "br-mgmt"
+	}
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
@@ -465,6 +469,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		TransitionState:            d.TransitionState,
 		DevNetworking:              d.config.Daemon.DevNetworking,
 		BindHost:                   d.config.Host,
+		MgmtBridge:                 mgmtBridge,
 		DetachDelay:                d.detachDelay,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 	}

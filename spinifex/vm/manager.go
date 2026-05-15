@@ -59,6 +59,11 @@ type Deps struct {
 	// BindHost is the daemon's listen IP, used when wiring user-mode
 	// hostfwd rules. Empty / "0.0.0.0" falls back to 127.0.0.1.
 	BindHost string
+	// MgmtBridge is the OVS bridge for system-instance management NICs
+	// (default "br-mgmt"). Lifecycle creates the mgmt tap here on every
+	// launch — including recovery, where kernel taps don't survive a host
+	// reboot. Empty disables the mgmt-tap plumbing (tests).
+	MgmtBridge string
 
 	// DetachDelay is the pause between QMP device_del and blockdev-del
 	// during DetachVolume, and the polling interval for blockdev-del retry.

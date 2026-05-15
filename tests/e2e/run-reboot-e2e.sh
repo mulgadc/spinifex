@@ -544,34 +544,30 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB post-reboot" "$LB_RECOVER_SECS" || true
 # 8.5: targets healthy again
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" || true
 
-# 8.6: re-run the traffic burst
-# Diagnose the post-reboot 0/20 burst BEFORE running it. run_http_burst parses
-# instance_id from a JSON body and counts anything else (502/503, timeout,
-# refused) as 0, so we can't tell L2-fail from L7-fail. Probe the EIP with
-# verbose curl + a brief br-wan tcpdump + ip neigh, then run a histogram of
-# HTTP status codes alongside the burst.
-echo ""
-log "Pre-burst connectivity probe for ALB EIP ${ALB_PUBLIC_IP}..."
-node_ssh "sudo ip neigh flush ${ALB_PUBLIC_IP} 2>/dev/null || true"
-TCPDUMP_PID_OUT=$(node_ssh "sudo timeout 6 tcpdump -i br-wan -nn -c 30 'host ${ALB_PUBLIC_IP} or (arp and host ${ALB_PUBLIC_IP})' >/tmp/probe-tcpdump.log 2>&1 & echo \$!" || true)
-sleep 1
-PROBE_OUT=$(node_ssh "curl -sv --connect-timeout 3 --max-time 5 -o /tmp/probe-body.txt -w 'HTTP=%{http_code} CONNECT=%{time_connect} TOTAL=%{time_total} EXIT_AFTER\n' 'http://${ALB_PUBLIC_IP}:80/' 2>&1; echo CURL_EXIT=\$?" || true)
-log "curl -v probe result:"
-printf '%s\n' "$PROBE_OUT" | sed 's/^/    /'
-log "probe response body (head):"
-node_ssh "head -c 400 /tmp/probe-body.txt 2>/dev/null; echo" | sed 's/^/    /' || true
-sleep 5
-log "tcpdump on br-wan during probe:"
-node_ssh "cat /tmp/probe-tcpdump.log 2>/dev/null" | sed 's/^/    /' || true
-log "ip neigh for EIP after probe:"
-node_ssh "ip neigh show ${ALB_PUBLIC_IP} 2>/dev/null; ip neigh show dev br-wan 2>/dev/null | head -10" | sed 's/^/    /' || true
+# 8.6: wait for the ALB to *actually* serve traffic before the burst.
+# `wait_for_targets_healthy` reads cached state from spinifex's TG store —
+# post-reboot the cache still shows pre-reboot "healthy" until the lb-agent
+# inside the ALB system VM sends a fresh report. Without this wait, the burst
+# fires while the VM is still booting (HAProxy not yet bound to :80), the
+# guest kernel sends RST for every SYN, and the test sees 0/20 even though
+# OVN is fine — see histogram diagnosis on run 25899285589.
+log "Waiting for ALB to actually serve HTTP (up to 90s)..."
+ALB_READY=0
+for attempt in $(seq 1 45); do
+    BODY=$(node_ssh "curl -s --connect-timeout 2 --max-time 3 'http://${ALB_PUBLIC_IP}:80/' 2>/dev/null" || true)
+    if echo "$BODY" | jq -e '.instance_id' >/dev/null 2>&1; then
+        log "  ALB serving HTTP at attempt ${attempt}"
+        ALB_READY=1
+        break
+    fi
+    sleep 2
+done
+if [ "$ALB_READY" -ne 1 ]; then
+    fail "ALB did not begin serving HTTP within 90s post-reboot"
+    dump_diagnostics
+fi
 
-log "Re-running traffic burst against same ALB (with HTTP status histogram)..."
-# Run a parallel curl that captures just status codes so we can distinguish
-# "ALB returned 5xx" from "connect timeout / refused".
-STATUS_HIST=$(node_ssh "for i in \$(seq 1 20); do curl -s -o /dev/null -w '%{http_code} %{exitcode}\n' --connect-timeout 3 --max-time 5 'http://${ALB_PUBLIC_IP}:80/' 2>/dev/null; done | sort | uniq -c" 2>/dev/null || true)
-log "HTTP status / curl exit histogram (20 reqs):"
-printf '%s\n' "$STATUS_HIST" | sed 's/^/    /'
+log "Re-running traffic burst against same ALB..."
 
 PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"

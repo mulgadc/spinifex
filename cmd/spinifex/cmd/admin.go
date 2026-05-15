@@ -993,8 +993,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	var predastoreNodeID int
 	if predastoreNodesStr != "" {
 		ips := strings.Split(predastoreNodesStr, ",")
-		if len(ips) < 3 {
-			fmt.Fprintf(os.Stderr, "❌ Error: --predastore-nodes requires at least 3 IPs, got %d\n", len(ips))
+		if len(ips) < 2 {
+			fmt.Fprintf(os.Stderr, "❌ Error: --predastore-nodes requires at least 2 IPs, got %d\n", len(ips))
 			os.Exit(1)
 		}
 
@@ -1283,7 +1283,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	// Generate multi-node predastore config
 	var predastoreNodeID int
-	hasPredastoreConfig := len(predastoreNodes) >= 3
+	hasPredastoreConfig := len(predastoreNodes) >= 2
 	if hasPredastoreConfig {
 		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, bindIP)
 		if err != nil {
@@ -1696,7 +1696,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 
 	// Generate multi-node predastore config
 	var predastoreNodeID int
-	hasPredastoreConfig := len(predastoreNodes) >= 3
+	hasPredastoreConfig := len(predastoreNodes) >= 2
 
 	if hasPredastoreConfig {
 		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, bindIP)

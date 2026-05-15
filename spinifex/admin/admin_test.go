@@ -738,10 +738,9 @@ func TestGenerateMultiNodePredastoreConfig_MinimumNodes(t *testing.T) {
 
 	_, err := GenerateMultiNodePredastoreConfig(tmpl, []PredastoreNodeConfig{
 		{ID: 1, Host: "10.0.0.1"},
-		{ID: 2, Host: "10.0.0.2"},
 	}, "AK", "SK", "us-east-1", "nats-token", "/config", "10.0.0.1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "at least 3 nodes")
+	assert.Contains(t, err.Error(), "at least 2 nodes")
 }
 
 func TestGenerateMultiNodePredastoreConfig_InvalidTemplate(t *testing.T) {

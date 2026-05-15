@@ -886,8 +886,8 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP, wanIP s
 // multi-node Predastore cluster. Each node gets its own DB entry (port 6660)
 // and shard entry (port 9991) on a distinct IP. Node ID 1 is the bootstrap leader.
 func GenerateMultiNodePredastoreConfig(templateStr string, nodes []PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, bindIP string) (string, error) {
-	if len(nodes) < 3 {
-		return "", fmt.Errorf("multi-node predastore requires at least 3 nodes, got %d", len(nodes))
+	if len(nodes) < 2 {
+		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
 	}
 
 	data := struct {

@@ -120,7 +120,7 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 		// when MarkRecoveryFailed fired on the previous daemon run.
 		if instance.Status == StateError {
 			slog.Warn("Instance in error state; skipping recovery relaunch (operator must retry or terminate)",
-				"instance", instance.ID)
+				"instance", instance.ID, "managedBy", instance.ManagedBy, "instanceType", instance.InstanceType)
 			continue
 		}
 
@@ -300,9 +300,11 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 					"instanceId", inst.ID, "status", string(status))
 				return
 			}
-			slog.Info("Launching instance (recovery)", "instance", inst.ID)
+			slog.Info("Launching instance (recovery)",
+				"instance", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType)
 			if err := m.Run(inst); err != nil {
-				slog.Error("Failed to launch instance during recovery", "instanceId", inst.ID, "err", err)
+				slog.Error("Failed to launch instance during recovery",
+					"instanceId", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType, "err", err)
 				m.MarkRecoveryFailed(inst, "recovery_launch_failed")
 			}
 		}(instance)

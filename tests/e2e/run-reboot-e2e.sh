@@ -129,12 +129,22 @@ cleanup() {
 trap cleanup EXIT
 
 dump_diagnostics() {
-    log "--- spinifex service journals (last 100 lines each) ---"
+    # Window from reboot onwards so recovery failure logs aren't scrolled out
+    # by NATS warm-up / per-instance state-transition spam.
+    local mode label
+    if [ -n "${REBOOT_START:-}" ]; then
+        mode="--since=@${REBOOT_START}"
+        label="since reboot (@${REBOOT_START})"
+    else
+        mode="-n 200"
+        label="last 200 lines each"
+    fi
+    log "--- spinifex service journals (${label}) ---"
     for svc in spinifex-nats spinifex-predastore spinifex-viperblock \
                spinifex-daemon spinifex-awsgw spinifex-vpcd \
                ovn-controller ovs-vswitchd; do
         echo "=== ${svc} ==="
-        node_ssh "sudo journalctl -u ${svc} --no-pager -n 100 2>/dev/null || true"
+        node_ssh "sudo journalctl -u ${svc} --no-pager ${mode} 2>/dev/null || true"
     done
 }
 
@@ -537,7 +547,12 @@ wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" ||
 # 8.6: re-run the traffic burst
 echo ""
 log "Re-running traffic burst against same ALB..."
+PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"
+if [ "$FAILED" -gt "$PRE_BURST_FAILED" ]; then
+    log "Post-reboot traffic failed — dumping journals from reboot onwards before cleanup overwrites them."
+    dump_diagnostics
+fi
 
 # 8.7: ovn-nbctl diff (this is where the known persistence bug lands)
 log "Diffing ovn-nbctl show against pre-reboot snapshot..."

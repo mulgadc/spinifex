@@ -437,8 +437,9 @@ NATS_INFO=$(curl -s "http://127.0.0.1:${NATS_MONITOR_PORT}/routez" 2>/dev/null) 
     exit 1
 }
 UNIQUE_PEERS=$(echo "$NATS_INFO" | jq -r '[.routes[].remote_name] | unique | length')
-echo "  NATS unique peers: $UNIQUE_PEERS (expected: 2)"
-if [ "$UNIQUE_PEERS" -ge 2 ]; then
+EXPECTED_PEERS=$((NODE_COUNT - 1))
+echo "  NATS unique peers: $UNIQUE_PEERS (expected: $EXPECTED_PEERS)"
+if [ "$UNIQUE_PEERS" -ge "$EXPECTED_PEERS" ]; then
     pass_test "NATS quorum"
 else
     echo "  ERROR: NATS cluster not fully formed"

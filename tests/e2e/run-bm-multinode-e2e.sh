@@ -409,7 +409,7 @@ fi
 
 # Verify SSH to peer nodes
 echo "Verifying SSH connectivity to peer nodes..."
-for i in 1 2; do
+for i in $(seq 1 $((NODE_COUNT - 1))); do
     local_idx=$((i))
     ip="${NODE_IPS[$local_idx]}"
     echo -n "  SSH to node$((local_idx + 1)) ($ip)..."
@@ -837,7 +837,7 @@ BASELINE_COUNT=$($AWS_EC2 describe-instances \
     --query 'length(Reservations[*].Instances[*][])' --output text)
 echo "  Baseline (node1): $BASELINE_COUNT instances"
 
-for i in 1 2; do
+for i in $(seq 1 $((NODE_COUNT - 1))); do
     ip="${NODE_IPS[$i]}"
     COUNT=$(aws_via "$ip" ec2 describe-instances \
         --query 'length(Reservations[*].Instances[*][])' --output text 2>/dev/null || echo "0")

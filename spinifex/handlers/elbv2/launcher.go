@@ -49,6 +49,16 @@ type SystemInstanceInput struct {
 	// via the QEMU user-mode dev NIC (dev_networking mode only).
 	// Each entry is a guest port (e.g. 80, 443). The host port is auto-assigned.
 	HostfwdPorts []int
+
+	// DirectBoot skips AMI/volume setup and uses direct kernel boot instead.
+	// When true, ImageID and volume attachment are ignored; the kernel and
+	// initrd are sourced from the configured microvm image path.
+	DirectBoot bool
+
+	// NICs defines the network interfaces for a direct-boot microVM launch.
+	// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
+	// Ignored when DirectBoot is false.
+	NICs []NICConfig
 }
 
 // ExtraENIInput describes an additional pre-created ENI to attach to a
@@ -58,6 +68,17 @@ type ExtraENIInput struct {
 	ENIMac   string
 	ENIIP    string
 	SubnetID string
+}
+
+// NICConfig describes a single network interface for a microVM direct-boot launch.
+// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
+type NICConfig struct {
+	MAC       string // e.g. "02:0a:01:23:45:67"
+	CIDR      string // e.g. "10.0.1.5/24"
+	Gateway   string // e.g. "10.0.1.1"; empty for mgmt NIC
+	IsDefault bool   // true for exactly one NIC (primary VPC ENI)
+	RouteDst  string // specific host route dst, e.g. "10.20.0.5/32"
+	RouteVia  string // next-hop for RouteDst
 }
 
 // SystemInstanceOutput contains the result of a successful launch.

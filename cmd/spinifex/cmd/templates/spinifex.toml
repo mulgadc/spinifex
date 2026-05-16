@@ -72,6 +72,10 @@ dev_networking = true
 gpu_passthrough = true
 {{- end}}
 
+# [nodes.{{.Node}}.daemon.microvm]
+# elbv2_enabled = false
+# image_path = "/usr/share/spinifex/microvm"
+
 [nodes.{{.Node}}.awsgw]
 host = "{{.BindIP}}:9999"
 tlskey = "config/server.key"

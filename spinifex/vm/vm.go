@@ -195,6 +195,17 @@ type Config struct {
 	// UseUEFI requests OVMF firmware instead of the default SeaBIOS for x86_64 VMs.
 	// Falls back silently to SeaBIOS if OVMF is not installed on the host.
 	UseUEFI bool `json:"use_uefi,omitempty"`
+
+	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set
+	Initrd        string       `json:"initrd,omitempty"`         // path to initramfs; emits -initrd when set
+	KernelCmdline string       `json:"kernel_cmdline,omitempty"` // emits -append when set
+	FwCfg         []FwCfgEntry `json:"fw_cfg,omitempty"`         // each emits -fw_cfg name=<name>,file=<path>
+}
+
+// FwCfgEntry describes a single QEMU firmware configuration file entry.
+type FwCfgEntry struct {
+	Name string `json:"name"`
+	File string `json:"file"`
 }
 
 func (cfg *Config) Execute() (*exec.Cmd, error) {
@@ -252,8 +263,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-object", fmt.Sprintf("iothread,id=%s", iot.ID))
 	}
 
-	if len(cfg.Drives) == 0 {
-		return nil, fmt.Errorf("at least one drive is required")
+	if len(cfg.Drives) == 0 && cfg.KernelImage == "" {
+		return nil, fmt.Errorf("at least one drive or a kernel image is required")
 	}
 
 	for _, drive := range cfg.Drives {
@@ -294,6 +305,22 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 	for _, netdev := range cfg.NetDevs {
 		args = append(args, "-netdev", netdev.Value)
+	}
+
+	if cfg.KernelImage != "" {
+		args = append(args, "-kernel", cfg.KernelImage)
+	}
+
+	if cfg.Initrd != "" {
+		args = append(args, "-initrd", cfg.Initrd)
+	}
+
+	if cfg.KernelCmdline != "" {
+		args = append(args, "-append", cfg.KernelCmdline)
+	}
+
+	for _, fw := range cfg.FwCfg {
+		args = append(args, "-fw_cfg", fmt.Sprintf("name=%s,file=%s", fw.Name, fw.File))
 	}
 
 	var qemuArchitecture string

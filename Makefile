@@ -82,6 +82,9 @@ endif
 build-lb-image: ## Build LB Alpine image
 	$(MAKE) build-system-image IMAGE=lb
 
+build-microvm-image: ## Build microVM kernel + initramfs
+	./scripts/build-microvm-image.sh
+
 go_run:
 	@echo -e "\n....Running $(GO_PROJECT_NAME)...."
 	$(GOPATH)/bin/$(GO_PROJECT_NAME)
@@ -238,7 +241,7 @@ ansible-dev-install:
 ansible-dev-reset:
 	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-lb-image go_build go_run preflight test test-cover test-race diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-lb-image build-microvm-image go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

@@ -1,0 +1,4 @@
+::sysinit:/etc/rc.local
+::respawn:/usr/local/bin/lb-agent
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

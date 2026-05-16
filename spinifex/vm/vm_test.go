@@ -34,9 +34,9 @@ func TestExecute(t *testing.T) {
 
 	cmd, err = cfg.Execute()
 
-	// Expect error, at least one drive required
+	// Expect error, at least one drive or kernel image required
 	assert.Error(t, err)
-	assert.ErrorContains(t, err, "at least one drive is required")
+	assert.ErrorContains(t, err, "at least one drive or a kernel image is required")
 	assert.Nil(t, cmd)
 
 	cfg.Drives = []Drive{
@@ -229,6 +229,38 @@ func argValue(args []string, flag string) string {
 
 func argExists(args []string, flag string) bool {
 	return slices.Contains(args, flag)
+}
+
+func TestExecute_DriveAndKernelInvariant(t *testing.T) {
+	base := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+	}
+
+	t.Run("drives-only is OK", func(t *testing.T) {
+		cfg := base
+		cfg.Drives = []Drive{{File: "disk.img", Format: "raw"}}
+		cmd, err := cfg.Execute()
+		assert.NoError(t, err)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("kernel-only is OK", func(t *testing.T) {
+		cfg := base
+		cfg.KernelImage = "/boot/vmlinuz"
+		cmd, err := cfg.Execute()
+		assert.NoError(t, err)
+		assert.NotNil(t, cmd)
+	})
+
+	t.Run("both-empty returns error", func(t *testing.T) {
+		cfg := base
+		cmd, err := cfg.Execute()
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "at least one drive or a kernel image")
+		assert.Nil(t, cmd)
+	})
 }
 
 func TestResetNodeLocalState(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -194,7 +195,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
 
 	instance.EBSRequests.Mu.Lock()
-	drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs)
+	drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
 	instance.EBSRequests.Mu.Unlock()
 	if err != nil {
 		return err
@@ -214,9 +215,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", instance.ENIMac),
-		})
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
 		slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
 
 		if err := m.setupExtraENINICs(instance); err != nil {
@@ -245,9 +244,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
 		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: "virtio-net-pci,netdev=net0",
-		})
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", ""))
 	}
 
 	if instance.MgmtMAC != "" {
@@ -255,13 +252,11 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
 		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("virtio-net-pci,netdev=mgmt0,mac=%s", instance.MgmtMAC),
-		})
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
 		slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 	}
 
-	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})
+	instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
 
 	for i, addr := range instance.GPUPCIAddresses {
 		xvga := "off"
@@ -416,7 +411,8 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 	if bindIP == "" || bindIP == "0.0.0.0" {
 		bindIP = "127.0.0.1"
 	}
-	netdevVal := fmt.Sprintf("user,id=dev0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort)
+	var nb strings.Builder
+	fmt.Fprintf(&nb, "user,id=dev0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort)
 
 	if instance.ExtraHostfwd != nil {
 		for guestPort := range instance.ExtraHostfwd {
@@ -435,17 +431,15 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 				slog.Warn("DEV_NETWORKING: failed to convert extra hostfwd port", "hostPort", hostPort, "err", convErr)
 				continue
 			}
-			netdevVal += fmt.Sprintf(",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
+			fmt.Fprintf(&nb, ",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
 			instance.ExtraHostfwd[guestPort] = hostPortInt
 			slog.Info("DEV_NETWORKING: extra hostfwd", "guestPort", guestPort, "hostPort", hostPort, "instanceId", instance.ID)
 		}
 	}
 
-	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: netdevVal})
+	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: nb.String()})
 	devMac := GenerateDevMAC(instance.ID)
-	instance.Config.Devices = append(instance.Config.Devices, Device{
-		Value: fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", devMac),
-	})
+	instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "dev0", devMac))
 	slog.Info("DEV_NETWORKING: added dev NIC with SSH hostfwd",
 		"bindIP", bindIP, "port", sshDebugPort, "mac", devMac, "instanceId", instance.ID)
 }
@@ -586,7 +580,7 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and
 // device configurations. Returns an error if any non-EFI volume is missing
 // its NBDURI.
-func buildDrives(requests []types.EBSRequest, cpuCount int) ([]Drive, []IOThread, []Device, error) {
+func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread
 	var devices []Device
@@ -611,10 +605,7 @@ func buildDrives(requests []types.EBSRequest, cpuCount int) ([]Drive, []IOThread
 
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})
-			devices = append(devices, Device{
-				Value: fmt.Sprintf("virtio-blk-pci,drive=%s,iothread=%s,num-queues=%d,bootindex=1",
-					drive.ID, iothreadID, cpuCount),
-			})
+			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
 		}
 
 		if v.CloudInit {

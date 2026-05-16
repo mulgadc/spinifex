@@ -42,6 +42,7 @@ func TestBuildDrives(t *testing.T) {
 		name          string
 		requests      []types.EBSRequest
 		cpuCount      int
+		machineType   string
 		wantDrives    []Drive
 		wantIOThreads []IOThread
 		wantDevices   []Device
@@ -112,7 +113,11 @@ func TestBuildDrives(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			drives, iothreads, devices, err := buildDrives(tt.requests, tt.cpuCount)
+			machineType := tt.machineType
+			if machineType == "" {
+				machineType = "q35"
+			}
+			drives, iothreads, devices, err := buildDrives(tt.requests, tt.cpuCount, machineType)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)

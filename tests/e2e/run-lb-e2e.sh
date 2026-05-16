@@ -12,6 +12,21 @@ set -e
 #   ./tests/e2e/run-lb-e2e.sh                         # internal-only (single-node)
 #   ./tests/e2e/run-lb-e2e.sh --peer <ip>             # all 4 variants (multi-node, legacy)
 #   ./tests/e2e/run-lb-e2e.sh --nodes <ip1> <ip2> ... # all 4 variants (multi-node, preferred)
+#   ./tests/e2e/run-lb-e2e.sh --microvm               # same as above but with microvm.elbv2_enabled=true
+#
+# CI dual-path: this script is run twice in CI for microvm validation:
+#   1. Default (microvm.elbv2_enabled=false) — baseline PC-machine path
+#   2. With --microvm flag                   — direct-boot microvm path
+# Both runs must pass identical assertions.
+#
+# Density test (manual, not CI-automated):
+#   LB_COUNT=50 ./tests/e2e/run-lb-e2e.sh --microvm
+# Launches 50 LBs; asserts all reach Active; total QEMU fleet RSS logged.
+#
+# Customer-VM regression: run-e2e.sh (RunInstances + SSH) is run separately
+# with microvm.elbv2_enabled=true to confirm customer VMs are unaffected.
+# LaunchSystemInstance with DirectBoot=true is only reached by the ELBv2
+# service; RunInstances takes the PC-machine path unconditionally.
 
 cd "$(dirname "$0")/../.."
 
@@ -31,13 +46,20 @@ fi
 # ==========================================================================
 PEER_NODE_IP=""
 ALL_NODE_IPS=()
+MICROVM_MODE=false
 while [ $# -gt 0 ]; do
     case "$1" in
-        --peer) PEER_NODE_IP="$2"; shift 2 ;;
-        --nodes) shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do ALL_NODE_IPS+=("$1"); shift; done ;;
-        *) echo "Unknown arg: $1"; exit 1 ;;
+        --peer)    PEER_NODE_IP="$2"; shift 2 ;;
+        --nodes)   shift; while [ $# -gt 0 ] && [[ "$1" != --* ]]; do ALL_NODE_IPS+=("$1"); shift; done ;;
+        --microvm) MICROVM_MODE=true; shift ;;
+        *)         echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
+
+if [ "$MICROVM_MODE" = true ]; then
+    export SPINIFEX_MICROVM_ELBV2_ENABLED=true
+    echo "[run-lb-e2e] microvm mode: SPINIFEX_MICROVM_ELBV2_ENABLED=true"
+fi
 # --nodes supersedes --peer; fall back to --peer for backwards compat
 if [ ${#ALL_NODE_IPS[@]} -gt 0 ] && [ -z "$PEER_NODE_IP" ]; then
     PEER_NODE_IP="${ALL_NODE_IPS[1]:-}"

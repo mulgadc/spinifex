@@ -347,9 +347,15 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	}
 
 	// Launch QEMU VM
+	t1 := time.Now()
 	if err := d.vmMgr.Run(instance); err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("launch instance: %w", err)
+	}
+	if input.DirectBoot {
+		slog.Info("direct-boot timing",
+			"instanceId", instance.ID,
+			"t1_to_t2_ms", time.Since(t1).Milliseconds())
 	}
 
 	slog.Info("LaunchSystemInstance completed",

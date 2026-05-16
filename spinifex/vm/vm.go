@@ -119,6 +119,12 @@ type VM struct {
 	// filters out tagged VMs from customer-facing listings.
 	ManagedBy string `json:"managed_by,omitempty"`
 
+	// DirectBoot signals that this VM was configured with a pre-built
+	// vm.Config by the launcher (microvm direct-boot path). When true,
+	// startQEMU skips buildBaseVMConfig and uses the existing Config
+	// instead. False for all PC-machine VMs.
+	DirectBoot bool `json:"direct_boot,omitempty"`
+
 	// GPUPCIAddresses holds the PCI addresses of all GPUs bound to this instance via
 	// VFIO (e.g. ["0000:03:00.0"]). Empty for non-GPU instances. Single-GPU instances
 	// have one entry; multi-GPU instances have one per assigned GPU.

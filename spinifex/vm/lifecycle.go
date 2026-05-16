@@ -192,71 +192,109 @@ func (m *Manager) startQEMU(instance *VM) error {
 	consoleLogPath := filepath.Join(runtimeDir, fmt.Sprintf("console-%s.log", instance.ID))
 	serialSocket := filepath.Join(runtimeDir, fmt.Sprintf("serial-%s.sock", instance.ID))
 
-	instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
+	if instance.DirectBoot {
+		// Direct-boot (microvm) path: vm.Config was pre-built by the launcher.
+		// Only fill in the runtime-generated paths that are not known until now.
+		instance.Config.PIDFile = pidFile
+		instance.Config.ConsoleLogPath = consoleLogPath
+		instance.Config.SerialSocket = serialSocket
+	} else {
+		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
 
-	instance.EBSRequests.Mu.Lock()
-	drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
-	instance.EBSRequests.Mu.Unlock()
-	if err != nil {
-		return err
-	}
-	instance.Config.Drives = append(instance.Config.Drives, drives...)
-	instance.Config.IOThreads = append(instance.Config.IOThreads, iothreads...)
-	instance.Config.Devices = append(instance.Config.Devices, devices...)
-
-	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
-		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
-			slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
-			return fmt.Errorf("setup tap device: %w", err)
-		}
-		tapName := spec.Name
-
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
-		slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
-
-		if err := m.setupExtraENINICs(instance); err != nil {
+		instance.EBSRequests.Mu.Lock()
+		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
+		instance.EBSRequests.Mu.Unlock()
+		if err != nil {
 			return err
 		}
+		instance.Config.Drives = append(instance.Config.Drives, drives...)
+		instance.Config.IOThreads = append(instance.Config.IOThreads, iothreads...)
+		instance.Config.Devices = append(instance.Config.Devices, devices...)
+	}
 
-		if m.deps.DevNetworking {
-			m.appendDevHostfwdNIC(instance)
+	if instance.DirectBoot {
+		// Direct-boot (microvm) path: NetDevs and Devices are already set in
+		// the pre-built Config. Only create host-side tap devices for VPC ENIs
+		// so the kernel tap interfaces exist before QEMU opens them.
+		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+			tapSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
+				slog.Error("Failed to set up tap device (direct-boot)", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("setup tap device: %w", err)
+			}
+			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "eni", instance.ENIId, "mac", instance.ENIMac)
+			for _, extra := range instance.ExtraENIs {
+				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac)
+				if err := m.deps.NetworkPlumber.SetupTap(extraSpec); err != nil {
+					slog.Error("Failed to set up extra ENI tap (direct-boot)", "eni", extra.ENIID, "err", err)
+					return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
+				}
+			}
+		}
+		if instance.MgmtMAC != "" && m.deps.NetworkPlumber != nil {
+			mgmtTap := MgmtTapName(instance.ID)
+			mgmtBridge := "br-mgmt"
+			if err := m.deps.NetworkPlumber.SetupTap(TapSpec{Name: mgmtTap, Bridge: mgmtBridge}); err != nil {
+				slog.Error("Failed to set up mgmt tap (direct-boot)", "tap", mgmtTap, "err", err)
+				return fmt.Errorf("setup mgmt tap: %w", err)
+			}
+			slog.Info("Mgmt tap configured (direct-boot)", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 	} else {
-		sshDebugAddr, err := viperblock.FindFreePort()
-		if err != nil {
-			slog.Error("Failed to find free port", "err", err)
-			return err
-		}
-		_, sshDebugPort, err := net.SplitHostPort(sshDebugAddr)
-		if err != nil {
-			slog.Error("Failed to parse port from address", "addr", sshDebugAddr, "err", err)
-			return fmt.Errorf("parse port from %s: %w", sshDebugAddr, err)
+		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+			spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
+				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("setup tap device: %w", err)
+			}
+			tapName := spec.Name
+
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
+			slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
+
+			if err := m.setupExtraENINICs(instance); err != nil {
+				return err
+			}
+
+			if m.deps.DevNetworking {
+				m.appendDevHostfwdNIC(instance)
+			}
+		} else {
+			sshDebugAddr, err := viperblock.FindFreePort()
+			if err != nil {
+				slog.Error("Failed to find free port", "err", err)
+				return err
+			}
+			_, sshDebugPort, err := net.SplitHostPort(sshDebugAddr)
+			if err != nil {
+				slog.Error("Failed to parse port from address", "addr", sshDebugAddr, "err", err)
+				return fmt.Errorf("parse port from %s: %w", sshDebugAddr, err)
+			}
+
+			bindIP := m.deps.BindHost
+			if bindIP == "" || bindIP == "0.0.0.0" {
+				bindIP = "127.0.0.1"
+			}
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", ""))
 		}
 
-		bindIP := m.deps.BindHost
-		if bindIP == "" || bindIP == "0.0.0.0" {
-			bindIP = "127.0.0.1"
+		if instance.MgmtMAC != "" {
+			mgmtTap := MgmtTapName(instance.ID)
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
+			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", ""))
+
+		instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
 	}
-
-	if instance.MgmtMAC != "" {
-		mgmtTap := MgmtTapName(instance.ID)
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
-		slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
-	}
-
-	instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
 
 	for i, addr := range instance.GPUPCIAddresses {
 		xvga := "off"

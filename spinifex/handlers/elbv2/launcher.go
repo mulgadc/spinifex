@@ -59,6 +59,14 @@ type SystemInstanceInput struct {
 	// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
 	// Ignored when DirectBoot is false.
 	NICs []NICConfig
+
+	// LBAgentEnv is a KEY=value blob written to /etc/conf.d/lb-agent inside
+	// the guest via fw_cfg on the direct-boot path. Ignored when DirectBoot is false.
+	LBAgentEnv string
+
+	// CACert holds PEM-encoded CA certificate bytes delivered to the guest via
+	// fw_cfg on the direct-boot path. Ignored when DirectBoot is false.
+	CACert string
 }
 
 // ExtraENIInput describes an additional pre-created ENI to attach to a

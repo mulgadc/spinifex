@@ -4,6 +4,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,6 +129,259 @@ func TestLbVMUserData_Structural(t *testing.T) {
 
 	// Single-node default: no MgmtRoute set means no bootcmd.
 	assert.NotContains(t, ud, "bootcmd:")
+}
+
+// TestBuildLBAgentEnv verifies that buildLBAgentEnv produces a KEY=value blob
+// containing all five env vars with the correct values.
+func TestBuildLBAgentEnv(t *testing.T) {
+	svc := &ELBv2ServiceImpl{
+		GatewayURL:      "https://10.0.0.1:9999",
+		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
+		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		region:          "ap-southeast-2",
+	}
+	env := svc.buildLBAgentEnv("lb-abc123")
+
+	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
+	kvs := make(map[string]string, len(lines))
+	for _, l := range lines {
+		k, v, ok := strings.Cut(l, "=")
+		require.True(t, ok, "env line missing '=': %q", l)
+		kvs[k] = v
+	}
+
+	assert.Equal(t, "lb-abc123", kvs["LB_LB_ID"])
+	assert.Equal(t, "https://10.0.0.1:9999", kvs["LB_GATEWAY_URL"])
+	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", kvs["LB_ACCESS_KEY"])
+	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", kvs["LB_SECRET_KEY"])
+	assert.Equal(t, "ap-southeast-2", kvs["LB_REGION"])
+}
+
+// TestSubnetCIDRForIP and TestSubnetGatewayIP cover the CIDR helpers.
+func TestSubnetCIDRForIP(t *testing.T) {
+	assert.Equal(t, "10.0.1.5/24", subnetCIDRForIP("10.0.1.5", "10.0.1.0/24"))
+	assert.Equal(t, "172.16.2.10/20", subnetCIDRForIP("172.16.2.10", "172.16.0.0/20"))
+	assert.Equal(t, "", subnetCIDRForIP("10.0.1.5", "bad-cidr"))
+}
+
+func TestSubnetGatewayIP(t *testing.T) {
+	assert.Equal(t, "10.0.1.1", subnetGatewayIP("10.0.1.0/24"))
+	assert.Equal(t, "172.16.0.1", subnetGatewayIP("172.16.0.0/20"))
+	assert.Equal(t, "", subnetGatewayIP("not-a-cidr"))
+}
+
+// setupMicrovmTestService creates an ELBv2 service with ELBv2Enabled=true wired
+// to a real VPC service. The VPC has one subnet (10.0.1.0/24) pre-created.
+func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, string) {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		Daemon: config.DaemonConfig{
+			DevNetworking: true,
+			Microvm:       config.MicrovmConfig{ELBv2Enabled: true},
+		},
+	}
+	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
+	require.NoError(t, err)
+	elbv2Svc.VPCService = vpcSvc
+	elbv2Svc.GatewayURL = "https://10.20.0.5:9999"
+	elbv2Svc.SystemAccessKey = "AKID"
+	elbv2Svc.SystemSecretKey = "SECRET"
+	elbv2Svc.region = "us-east-1"
+	elbv2Svc.CACert = "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n"
+
+	vpcOut, err := vpcSvc.CreateVpc(&ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.0.0.0/16"),
+	}, testAccountID)
+	require.NoError(t, err)
+	vpcID := *vpcOut.Vpc.VpcId
+
+	subnetOut, err := vpcSvc.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:            aws.String(vpcID),
+		CidrBlock:        aws.String("10.0.1.0/24"),
+		AvailabilityZone: aws.String("us-east-1a"),
+	}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnetOut.Subnet.SubnetId
+
+	return elbv2Svc, vpcSvc, subnetID
+}
+
+// TestCreateLoadBalancer_Microvm_DirectBoot asserts the microvm launch path
+// sets DirectBoot=true, leaves ImageID empty, and delivers lb-agent env vars.
+func TestCreateLoadBalancer_Microvm_DirectBoot(t *testing.T) {
+	svc, _, subnetID := setupMicrovmTestService(t)
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{
+			InstanceID: "i-microvm-test",
+			PrivateIP:  "10.0.1.5",
+		},
+	}
+	svc.InstanceLauncher = mock
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("mv-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.Len(t, mock.launchCalls, 1)
+	inp := mock.launchCalls[0]
+
+	assert.True(t, inp.DirectBoot, "DirectBoot must be true in microvm mode")
+	assert.Equal(t, "", inp.ImageID, "ImageID must be empty in microvm mode")
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n", inp.CACert)
+}
+
+// TestCreateLoadBalancer_Microvm_LBAgentEnv asserts all five lb-agent env vars
+// appear in LBAgentEnv with correct values.
+func TestCreateLoadBalancer_Microvm_LBAgentEnv(t *testing.T) {
+	svc, _, subnetID := setupMicrovmTestService(t)
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-env-test", PrivateIP: "10.0.1.6"},
+	}
+	svc.InstanceLauncher = mock
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("env-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, mock.launchCalls, 1)
+
+	envBlob := mock.launchCalls[0].LBAgentEnv
+	kvs := parseEnvBlob(t, envBlob)
+
+	assert.NotEmpty(t, kvs["LB_LB_ID"])
+	assert.Equal(t, "https://10.20.0.5:9999", kvs["LB_GATEWAY_URL"])
+	assert.Equal(t, "AKID", kvs["LB_ACCESS_KEY"])
+	assert.Equal(t, "SECRET", kvs["LB_SECRET_KEY"])
+	assert.Equal(t, "us-east-1", kvs["LB_REGION"])
+}
+
+// TestCreateLoadBalancer_Microvm_NICs asserts NIC[0].IsDefault=true and
+// NIC[1].IsDefault=false, and that CIDR/Gateway are derived from the subnet.
+func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
+	svc, _, subnetID := setupMicrovmTestService(t)
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-nic-test", PrivateIP: "10.0.1.7"},
+	}
+	svc.InstanceLauncher = mock
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("nic-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, mock.launchCalls, 1)
+
+	nics := mock.launchCalls[0].NICs
+	require.GreaterOrEqual(t, len(nics), 2, "must have at least primary ENI NIC and mgmt NIC")
+
+	// NIC[0]: primary VPC ENI — must be the default route owner.
+	assert.True(t, nics[0].IsDefault, "NIC[0] must have IsDefault=true")
+	assert.NotEmpty(t, nics[0].MAC, "NIC[0] MAC must be populated from ENI")
+	assert.Contains(t, nics[0].CIDR, "/24", "NIC[0] CIDR must include prefix from subnet")
+	assert.Equal(t, "10.0.1.1", nics[0].Gateway, "NIC[0] gateway must be subnet .1 address")
+
+	// NIC[1]: management NIC — daemon allocates IP/MAC.
+	assert.False(t, nics[1].IsDefault, "NIC[1] must have IsDefault=false")
+}
+
+// TestCreateLoadBalancer_Microvm_MissingCredentials_SetsStateFailed verifies
+// that missing system credentials on the microvm path result in StateFailed.
+func TestCreateLoadBalancer_Microvm_MissingCredentials_SetsStateFailed(t *testing.T) {
+	svc, _, subnetID := setupMicrovmTestService(t)
+	// Clear credentials to trigger the failure path.
+	svc.GatewayURL = ""
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-should-not-launch"},
+	}
+	svc.InstanceLauncher = mock
+
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("mv-nocreds-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, StateFailed, *out.LoadBalancers[0].State.Code)
+	assert.Empty(t, mock.launchCalls, "launcher must not be invoked when credentials are missing")
+}
+
+// TestCreateLoadBalancer_PCMachine_Unchanged verifies that when ELBv2Enabled=false
+// the existing PC-machine cloud-config path is used and DirectBoot is not set.
+func TestCreateLoadBalancer_PCMachine_Unchanged(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+
+	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		Daemon: config.DaemonConfig{
+			DevNetworking: true,
+			Microvm:       config.MicrovmConfig{ELBv2Enabled: false},
+		},
+	}
+	svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
+	require.NoError(t, err)
+	svc.VPCService = vpcSvc
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+	svc.SetSystemAMIFunc(func() (string, error) { return "ami-lb-test", nil })
+
+	vpcOut, err := vpcSvc.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")}, testAccountID)
+	require.NoError(t, err)
+	subnetOut, err := vpcSvc.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:            vpcOut.Vpc.VpcId,
+		CidrBlock:        aws.String("10.0.2.0/24"),
+		AvailabilityZone: aws.String("us-east-1a"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-pc-test", PrivateIP: "10.0.2.5"},
+	}
+	svc.InstanceLauncher = mock
+
+	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("pc-alb"),
+		Subnets: []*string{subnetOut.Subnet.SubnetId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, mock.launchCalls, 1)
+
+	inp := mock.launchCalls[0]
+	assert.False(t, inp.DirectBoot, "DirectBoot must be false on PC-machine path")
+	assert.Equal(t, "ami-lb-test", inp.ImageID, "ImageID must be set on PC-machine path")
+	assert.NotEmpty(t, inp.UserData, "UserData (cloud-config) must be set on PC-machine path")
+	assert.True(t, strings.HasPrefix(inp.UserData, "#cloud-config\n"),
+		"UserData must be cloud-config on PC-machine path")
+}
+
+// parseEnvBlob parses a KEY=value newline-separated blob into a map.
+func parseEnvBlob(t *testing.T, blob string) map[string]string {
+	t.Helper()
+	kvs := make(map[string]string)
+	for line := range strings.SplitSeq(strings.TrimRight(blob, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		require.True(t, ok, "env blob line missing '=': %q", line)
+		kvs[k] = v
+	}
+	return kvs
 }
 
 // TestLbVMUserData_MissingCredentials covers the three required-field error

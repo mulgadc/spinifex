@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -141,6 +142,7 @@ type ELBv2ServiceImpl struct {
 	MgmtRouteTarget            string                           // AWSGW bind IP to route via mgmt NIC
 	MgmtBridgeIP               string                           // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
 	AdvertiseIP                string                           // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
+	CACert                     string                           // PEM-encoded CA certificate delivered to microvm guests via fw_cfg (direct-boot path only)
 	nodeID                     string
 	region                     string
 	systemAMI                  string                 // AMI ID for system VMs (ALB VMs); resolved lazily via systemAMIFunc
@@ -253,6 +255,109 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 		s.systemInstanceTypeResolved = true
 	}
 	return s.systemInstanceType
+}
+
+// buildLBAgentEnv returns the KEY=value blob written to /etc/conf.d/lb-agent
+// via fw_cfg on the direct-boot path.
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
+	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
+		lbID, s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
+}
+
+// subnetCIDRForIP computes "ip/prefixlen" given a host IP and the subnet's
+// CIDR block (e.g. "10.0.1.0/24" → "10.0.1.5/24"). Returns empty string on
+// parse failure so the caller can log and continue without panicking.
+func subnetCIDRForIP(hostIP, subnetCIDR string) string {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return ""
+	}
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", hostIP, ones)
+}
+
+// subnetGatewayIP derives the gateway IP (network address +1) from a subnet
+// CIDR block. Returns empty string on parse failure.
+func subnetGatewayIP(subnetCIDR string) string {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return ""
+	}
+	gw := ipNet.IP.To4()
+	if gw == nil {
+		return ""
+	}
+	gwCopy := make(net.IP, len(gw))
+	copy(gwCopy, gw)
+	gwCopy[3]++
+	return gwCopy.String()
+}
+
+// buildMicrovmNICs constructs the NIC slice for a direct-boot microvm launch.
+//
+// NIC[0] is the primary VPC ENI (IsDefault=true): MAC/IP from the ENI record,
+// CIDR from ip+subnet prefix, gateway = subnet network address +1.
+//
+// NIC[1] is the management NIC (IsDefault=false): MAC and CIDR are left empty
+// here — the daemon injects them after allocating the per-instance mgmt IP.
+// RouteDst/RouteVia encode the host route the lb-agent needs to reach AWSGW
+// via the management interface (same logic as resolveMgmtRoute).
+//
+// NIC[2+] are extra VPC ENIs for multi-subnet ALBs.
+func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnetID, _, scheme string, extraENIs []ExtraENIInput, accountID string) []NICConfig {
+	// Resolve primary subnet CIDR for NIC[0] prefix and gateway.
+	primaryCIDR := ""
+	primaryGateway := ""
+	if s.VPCService != nil && primarySubnetID != "" {
+		if subnet, err := s.VPCService.GetSubnet(accountID, primarySubnetID); err == nil && subnet != nil {
+			primaryCIDR = subnetCIDRForIP(primaryIP, subnet.CidrBlock)
+			primaryGateway = subnetGatewayIP(subnet.CidrBlock)
+		} else {
+			slog.Warn("buildMicrovmNICs: could not look up primary subnet", "subnetId", primarySubnetID, "err", err)
+		}
+	}
+
+	nics := []NICConfig{
+		// NIC[0]: primary VPC ENI — default route owner.
+		{
+			MAC:       primaryMAC,
+			CIDR:      primaryCIDR,
+			Gateway:   primaryGateway,
+			IsDefault: true,
+		},
+	}
+
+	// NIC[1]: management NIC — daemon allocates IP/MAC; we provide routing only.
+	// RouteDst and RouteVia reproduce the bootcmd host route from the PC-machine
+	// cloud-config path (resolveMgmtRoute) so lb-agent can reach AWSGW.
+	mgmtRouteDst, mgmtRouteVia := s.resolveMgmtRoute(scheme)
+	nics = append(nics, NICConfig{
+		IsDefault: false,
+		RouteDst:  mgmtRouteDst,
+		RouteVia:  mgmtRouteVia,
+	})
+
+	// NIC[2+]: extra ENIs for multi-subnet ALBs.
+	for _, extra := range extraENIs {
+		extraCIDR := ""
+		extraGateway := ""
+		if s.VPCService != nil && extra.SubnetID != "" {
+			if subnet, err := s.VPCService.GetSubnet(accountID, extra.SubnetID); err == nil && subnet != nil {
+				extraCIDR = subnetCIDRForIP(extra.ENIIP, subnet.CidrBlock)
+				extraGateway = subnetGatewayIP(subnet.CidrBlock)
+			} else {
+				slog.Warn("buildMicrovmNICs: could not look up extra subnet", "subnetId", extra.SubnetID, "err", err)
+			}
+		}
+		nics = append(nics, NICConfig{
+			MAC:       extra.ENIMac,
+			CIDR:      extraCIDR,
+			Gateway:   extraGateway,
+			IsDefault: false,
+		})
+	}
+
+	return nics
 }
 
 // resolveENIBindAddr looks up the private IP of the first ENI belonging to the ALB.
@@ -671,15 +776,24 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var hostPorts map[int]int
 	var launchFailed bool
 	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		systemAMI, amiErr := s.getSystemAMI()
-		if amiErr != nil {
-			slog.Error("CreateLoadBalancer: cannot resolve LB system AMI", "lbId", lbID, "err", amiErr)
-			return nil, errors.New(awserrors.ErrorServerInternal)
+		microvmEnabled := s.config != nil && s.config.Daemon.Microvm.ELBv2Enabled
+
+		// For the PC-machine path, AMI must be resolved before continuing.
+		// The microvm (direct-boot) path skips AMI entirely.
+		var systemAMI string
+		if !microvmEnabled {
+			var amiErr error
+			systemAMI, amiErr = s.getSystemAMI()
+			if amiErr != nil {
+				slog.Error("CreateLoadBalancer: cannot resolve LB system AMI", "lbId", lbID, "err", amiErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if systemAMI == "" {
+				slog.Error("CreateLoadBalancer: LB system AMI not resolved", "lbId", lbID)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
 		}
-		if systemAMI == "" {
-			slog.Error("CreateLoadBalancer: LB system AMI not resolved", "lbId", lbID)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
+
 		// Resolve MAC/IP for every ENI in one describe call.
 		eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
 		if s.VPCService != nil {
@@ -721,23 +835,51 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			})
 		}
 
-		userData, udErr := s.lbVMUserData(lbID, scheme)
-		if udErr != nil {
-			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID, "err", udErr)
-			launchFailed = true
-		} else {
-			launchInput := &SystemInstanceInput{
-				InstanceType: s.getSystemInstanceType(),
-				ImageID:      systemAMI,
-				SubnetID:     subnets[0],
-				UserData:     userData,
-				ENIID:        eniIDs[0],
-				ENIMac:       primaryMAC,
-				ENIIP:        primaryIP,
-				ExtraENIs:    extraENIInputs,
-				Scheme:       scheme,
-				AccountID:    accountID,
+		var launchInput *SystemInstanceInput
+		if microvmEnabled {
+			// Direct-boot microvm path: skip AMI/volumes, deliver config via fw_cfg.
+			if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
+				slog.Error("CreateLoadBalancer: system credentials not configured for microvm path — cannot launch ALB VM", "lbId", lbID)
+				launchFailed = true
+			} else {
+				nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
+				launchInput = &SystemInstanceInput{
+					InstanceType: s.getSystemInstanceType(),
+					SubnetID:     subnets[0],
+					ENIID:        eniIDs[0],
+					ENIMac:       primaryMAC,
+					ENIIP:        primaryIP,
+					ExtraENIs:    extraENIInputs,
+					Scheme:       scheme,
+					AccountID:    accountID,
+					DirectBoot:   true,
+					NICs:         nics,
+					LBAgentEnv:   s.buildLBAgentEnv(lbID),
+					CACert:       s.CACert,
+				}
 			}
+		} else {
+			// PC-machine path: cloud-init user-data carries the lb-agent config.
+			userData, udErr := s.lbVMUserData(lbID, scheme)
+			if udErr != nil {
+				slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID, "err", udErr)
+				launchFailed = true
+			} else {
+				launchInput = &SystemInstanceInput{
+					InstanceType: s.getSystemInstanceType(),
+					ImageID:      systemAMI,
+					SubnetID:     subnets[0],
+					UserData:     userData,
+					ENIID:        eniIDs[0],
+					ENIMac:       primaryMAC,
+					ENIIP:        primaryIP,
+					ExtraENIs:    extraENIInputs,
+					Scheme:       scheme,
+					AccountID:    accountID,
+				}
+			}
+		}
+		if !launchFailed && launchInput != nil {
 			// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
 			// In production (VPC networking), traffic reaches the ALB VM's VPC IP directly.
 			if s.config != nil && s.config.Daemon.DevNetworking {

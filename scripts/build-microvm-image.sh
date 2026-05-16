@@ -59,7 +59,6 @@ apk add \
     --allow-untrusted \
     --initdb \
     busybox \
-    busybox-initscripts \
     linux-virt \
     haproxy \
     iproute2 \

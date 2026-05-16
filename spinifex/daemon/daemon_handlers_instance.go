@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -14,6 +15,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 )
+
+// startStoppedForwardTimeout is how long the queue-group handler waits for the
+// node-targeted ec2.start.{nodeId} response before falling back to a local launch.
+const startStoppedForwardTimeout = 5 * time.Second
 
 // handleEC2RunInstances orchestrates the RunInstances flow across
 // InstanceService.PrepareRunInstances (validation + ENI creation),
@@ -318,8 +323,53 @@ func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.DescribeInstanceStatus)
 }
 
-// startStoppedInstanceRequest is the payload for ec2.start topic
+// handleEC2StartStoppedInstance handles the generic ec2.start queue-group topic.
+// It reads the stopped instance's LastNode from shared KV and forwards the
+// request to ec2.start.{lastNode} when the instance last ran on a different
+// node. This keeps instances on their original node so the per-node resource
+// manager sees the correct allocation. If the target node does not respond
+// within startStoppedForwardTimeout (node down, not yet recovered), the handler
+// falls back to starting the instance locally on whatever node picked this up.
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
+	// Peek at the instance ID without full unmarshal — we only need it for the
+	// LastNode lookup. The full unmarshal happens inside StartStoppedInstance.
+	var peek struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal(msg.Data, &peek); err != nil || peek.InstanceID == "" {
+		// Can't determine target node — fall through to local start which will
+		// return the appropriate error (missing parameter / unmarshal failure).
+		handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
+		return
+	}
+
+	lastNode := d.instanceService.StoppedInstanceNode(peek.InstanceID)
+	if lastNode != "" && lastNode != d.node {
+		targetTopic := fmt.Sprintf("ec2.start.%s", lastNode)
+		forwardMsg := nats.NewMsg(targetTopic)
+		forwardMsg.Data = msg.Data
+		forwardMsg.Header.Set(utils.AccountIDHeader, utils.AccountIDFromMsg(msg))
+
+		resp, err := d.natsConn.RequestMsg(forwardMsg, startStoppedForwardTimeout)
+		if err == nil {
+			if relayErr := msg.Respond(resp.Data); relayErr != nil {
+				slog.Error("ec2.start: failed to relay response from original node",
+					"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
+			}
+			return
+		}
+		slog.Warn("ec2.start: original node unreachable, starting locally",
+			"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
+	}
+
+	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
+}
+
+// handleEC2StartStoppedInstanceDirect handles ec2.start.{nodeId} — the
+// node-targeted topic used by handleEC2StartStoppedInstance to forward start
+// requests back to the original node. Always starts locally; never forwards
+// further, preventing routing loops.
+func (d *Daemon) handleEC2StartStoppedInstanceDirect(msg *nats.Msg) {
 	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)
 }
 

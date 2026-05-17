@@ -33,40 +33,6 @@ for tool in cpio gzip find; do
     fi
 done
 
-# --- Bootstrap apk.static when host has no Alpine tooling ---
-# Self-hosted CI runners and the GitHub-hosted ubuntu-24.04 image often ship
-# neither apk nor docker/podman. apk-tools is not packaged on Debian 13
-# (trixie). Fetch apk-tools-static directly from the Alpine mirror so the
-# native-apk strategy below works without any host package install or
-# container runtime. No-op when apk, docker, or podman is already present.
-if ! command -v apk >/dev/null 2>&1 \
-        && ! { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; } \
-        && ! command -v podman >/dev/null 2>&1; then
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "ERROR: no rootfs build tool (apk/docker/podman) and curl unavailable to bootstrap apk.static" >&2
-        exit 1
-    fi
-    echo "[build-microvm-image] no host apk/docker/podman — bootstrapping apk.static from $ALPINE_MIRROR"
-    APK_STATIC_DIR=$(mktemp -d)
-    APK_STATIC_PKG=$(curl -fsSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/" \
-        | grep -oE 'apk-tools-static-[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+\.apk' \
-        | sort -uV | tail -1)
-    if [ -z "$APK_STATIC_PKG" ]; then
-        echo "ERROR: could not discover apk-tools-static package at ${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/" >&2
-        exit 1
-    fi
-    curl -fsSL "${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/x86_64/${APK_STATIC_PKG}" \
-        | tar -xz -C "$APK_STATIC_DIR" 2>/dev/null || true
-    if [ ! -x "$APK_STATIC_DIR/sbin/apk.static" ]; then
-        echo "ERROR: apk.static not found after extracting $APK_STATIC_PKG" >&2
-        exit 1
-    fi
-    # The native-apk strategy below invokes plain `apk` — symlink so it
-    # resolves to the static binary without further branching.
-    ln -sf apk.static "$APK_STATIC_DIR/sbin/apk"
-    export PATH="$APK_STATIC_DIR/sbin:$PATH"
-fi
-
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
 cleanup() {

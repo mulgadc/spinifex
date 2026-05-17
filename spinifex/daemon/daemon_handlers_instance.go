@@ -352,14 +352,27 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 
 		resp, err := d.natsConn.RequestMsg(forwardMsg, startStoppedForwardTimeout)
 		if err == nil {
-			if relayErr := msg.Respond(resp.Data); relayErr != nil {
-				slog.Error("ec2.start: failed to relay response from original node",
-					"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
+			// ValidateErrorPayload returns a non-nil error when the payload IS an
+			// AWS error response; nil means it is a success payload.
+			errPayload, isErrPayload := utils.ValidateErrorPayload(resp.Data)
+			isCapacity := isErrPayload != nil &&
+				errPayload.Code != nil &&
+				*errPayload.Code == awserrors.ErrorInsufficientInstanceCapacity
+
+			if !isCapacity {
+				// Relay success or any non-capacity error as-is.
+				if relayErr := msg.Respond(resp.Data); relayErr != nil {
+					slog.Error("ec2.start: failed to relay response from original node",
+						"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
+				}
+				return
 			}
-			return
+			slog.Warn("ec2.start: original node at capacity, starting locally",
+				"instanceId", peek.InstanceID, "lastNode", lastNode)
+		} else {
+			slog.Warn("ec2.start: original node unreachable, starting locally",
+				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
 		}
-		slog.Warn("ec2.start: original node unreachable, starting locally",
-			"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
 	}
 
 	handleNATSRequest(msg, d.instanceService.StartStoppedInstance)

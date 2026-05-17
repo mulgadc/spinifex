@@ -6,7 +6,10 @@
 #   $REPO_ROOT/build/microvm/vmlinuz
 #   $REPO_ROOT/build/microvm/initramfs.cpio.gz
 #
-# Requirements: apk (Alpine package manager), cpio, gzip, find
+# Rootfs strategy (first match wins):
+#   1. apk available on host → install directly into a temp chroot (Alpine CI/CD)
+#   2. docker available      → run alpine container, export filesystem
+#   3. podman available      → same via podman
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,13 +19,14 @@ INITTAB="$BUILD_DIR/inittab"
 
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
+ALPINE_PACKAGES="busybox linux-virt haproxy iproute2 ca-certificates"
 
 echo "[build-microvm-image] repo root: $REPO_ROOT"
 echo "[build-microvm-image] build dir: $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-# --- Verify tooling ---
-for tool in apk cpio gzip find; do
+# --- Verify non-negotiable tools ---
+for tool in cpio gzip find; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required tool not found: $tool" >&2
         exit 1
@@ -37,32 +41,54 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[build-microvm-image] creating Alpine chroot in $CHROOT_DIR"
-
-# Seed the Alpine package database
-mkdir -p \
-    "$CHROOT_DIR/etc/apk" \
-    "$CHROOT_DIR/lib/apk/db" \
-    "$CHROOT_DIR/var/cache/apk"
-
-cat > "$CHROOT_DIR/etc/apk/repositories" <<EOF
+# --- Populate rootfs ---
+# Strategy 1: native apk (Alpine hosts, CI)
+if command -v apk >/dev/null 2>&1; then
+    echo "[build-microvm-image] rootfs: native apk"
+    mkdir -p \
+        "$CHROOT_DIR/etc/apk" \
+        "$CHROOT_DIR/lib/apk/db" \
+        "$CHROOT_DIR/var/cache/apk"
+    cat > "$CHROOT_DIR/etc/apk/repositories" <<EOF
 ${ALPINE_MIRROR}/v${ALPINE_VERSION}/main
 ${ALPINE_MIRROR}/v${ALPINE_VERSION}/community
 EOF
+    apk add \
+        --root "$CHROOT_DIR" \
+        --arch x86_64 \
+        --no-cache \
+        --allow-untrusted \
+        --initdb \
+        $ALPINE_PACKAGES
 
-# --- Install packages ---
-echo "[build-microvm-image] installing Alpine packages (busybox, linux-virt, haproxy)..."
-apk add \
-    --root "$CHROOT_DIR" \
-    --arch x86_64 \
-    --no-cache \
-    --allow-untrusted \
-    --initdb \
-    busybox \
-    linux-virt \
-    haproxy \
-    iproute2 \
-    ca-certificates
+# Strategy 2/3: container runtime (dev machines)
+else
+    CONTAINER_TOOL=""
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        CONTAINER_TOOL=docker
+    elif command -v podman >/dev/null 2>&1; then
+        CONTAINER_TOOL=podman
+    else
+        echo "ERROR: no rootfs build tool available." >&2
+        echo "       Install one of: apk (Alpine), docker, podman" >&2
+        exit 1
+    fi
+
+    echo "[build-microvm-image] rootfs: $CONTAINER_TOOL export (alpine:${ALPINE_VERSION})"
+    cid=$($CONTAINER_TOOL run -d \
+        "alpine:${ALPINE_VERSION}" \
+        sh -c "apk add --no-cache ${ALPINE_PACKAGES}")
+
+    exit_code=$($CONTAINER_TOOL wait "$cid")
+    if [ "$exit_code" != "0" ]; then
+        echo "ERROR: package installation failed in container (exit $exit_code)" >&2
+        $CONTAINER_TOOL rm "$cid" >/dev/null 2>&1 || true
+        exit 1
+    fi
+
+    $CONTAINER_TOOL export "$cid" | tar -x -C "$CHROOT_DIR"
+    $CONTAINER_TOOL rm "$cid" >/dev/null 2>&1
+fi
 
 # --- Place init script ---
 echo "[build-microvm-image] installing init.sh as /init..."
@@ -104,7 +130,6 @@ if [ -z "$KERNEL_IMG" ]; then
 fi
 echo "[build-microvm-image] kernel image: $KERNEL_IMG"
 
-# Locate kernel config (may be absent for built-in-only configs)
 KERNEL_VER=$(basename "$KERNEL_IMG" | sed 's/vmlinuz-//')
 KERNEL_CONFIG="$CHROOT_DIR/boot/config-${KERNEL_VER}"
 

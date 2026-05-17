@@ -327,14 +327,19 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 		},
 	}
 
-	// NIC[1]: management NIC — daemon allocates IP/MAC; we provide routing only.
-	// RouteDst and RouteVia reproduce the bootcmd host route from the PC-machine
-	// cloud-config path (resolveMgmtRoute) so lb-agent can reach AWSGW.
-	mgmtRouteDst, mgmtRouteVia := s.resolveMgmtRoute(scheme)
+	// NIC[1]: management NIC — daemon fills MAC/CIDR after IP allocation.
+	// RouteDst = AWSGW IP (destination), RouteVia = br-mgmt IP (next-hop).
+	// Microvm always uses mgmt for heartbeats regardless of scheme; VPC SNAT
+	// is not reliable across all topologies for control-plane traffic.
+	mgmtRouteGW, mgmtRouteTarget := s.resolveMgmtRoute(scheme)
+	if mgmtRouteGW == "" && s.MgmtBridgeIP != "" && s.AdvertiseIP != "" {
+		mgmtRouteGW = s.MgmtBridgeIP
+		mgmtRouteTarget = s.AdvertiseIP
+	}
 	nics = append(nics, NICConfig{
 		IsDefault: false,
-		RouteDst:  mgmtRouteDst,
-		RouteVia:  mgmtRouteVia,
+		RouteDst:  mgmtRouteTarget, // AWSGW IP — destination to reach
+		RouteVia:  mgmtRouteGW,     // br-mgmt IP — next-hop
 	})
 
 	// NIC[2+]: extra ENIs for multi-subnet ALBs.

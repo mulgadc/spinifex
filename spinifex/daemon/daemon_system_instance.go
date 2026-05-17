@@ -288,6 +288,14 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			instance.MgmtMAC = generateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
 
+			// For direct-boot microvms, inject the allocated MAC and CIDR into
+			// NIC[1] so writeFwCfgBlobs carries real values — the ELBv2 service
+			// leaves them blank because MAC/IP are only known after daemon allocation.
+			if input.DirectBoot && len(input.NICs) > 1 && input.NICs[1].MAC == "" {
+				input.NICs[1].MAC = instance.MgmtMAC
+				input.NICs[1].CIDR = instance.MgmtIP + "/24"
+			}
+
 			tapName := vm.MgmtTapName(instance.ID)
 			tapErr := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
 			if tapErr != nil {

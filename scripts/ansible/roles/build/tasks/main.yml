@@ -11,6 +11,18 @@
     chdir: "{{ mulga_root }}/viperblock"
   changed_when: true
 
+- name: build — detect microVM build script (present only on direct-boot branches)
+  ansible.builtin.stat:
+    path: "{{ spinifex_root }}/scripts/build-microvm-image.sh"
+  register: build_microvm_script
+
+- name: build — microVM kernel + initramfs (direct-boot LBs)
+  ansible.builtin.command:
+    cmd: make build-microvm-image
+    chdir: "{{ spinifex_root }}"
+  changed_when: true
+  when: build_microvm_script.stat.exists
+
 - name: build — verify build artifacts present
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -40,9 +52,15 @@
     mkdir -p "$STAGING/scripts"
     cp "{{ spinifex_root }}/build/scripts/"* "$STAGING/scripts/"
     cp "{{ spinifex_root }}/build/logrotate/spinifex" "$STAGING/logrotate-spinifex"
+    # microVM artifacts ship only when the branch built them.
+    if [ -f "{{ spinifex_root }}/build/microvm/vmlinuz" ] && [ -f "{{ spinifex_root }}/build/microvm/initramfs.cpio.gz" ]; then
+        mkdir -p "$STAGING/microvm"
+        cp "{{ spinifex_root }}/build/microvm/vmlinuz" "$STAGING/microvm/"
+        cp "{{ spinifex_root }}/build/microvm/initramfs.cpio.gz" "$STAGING/microvm/"
+    fi
     tar czf "{{ build_tarball_path }}" -C "$STAGING" .
   changed_when: true
 
 - name: build — summary
   ansible.builtin.debug:
-    msg: "Built spx + nbdkit plugin, tarball at {{ build_tarball_path }}"
+    msg: "Built spx + nbdkit plugin{{ ' + microvm artifacts' if build_microvm_script.stat.exists else '' }}, tarball at {{ build_tarball_path }}"

@@ -72,8 +72,10 @@ dev_networking = true
 gpu_passthrough = true
 {{- end}}
 
-# [nodes.{{.Node}}.daemon.microvm]
-# elbv2_enabled = false
+[nodes.{{.Node}}.daemon.microvm]
+# New LBs use the direct-boot microvm path on Linux/x86 hosts.
+# Flip to false to fall back to the legacy PC-machine path.
+elbv2_enabled = true
 # image_path = "/usr/share/spinifex/microvm"
 # isa_serial = true   # set false only after measuring boot savings; disables per-VM console log
 

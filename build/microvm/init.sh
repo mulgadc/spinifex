@@ -3,14 +3,15 @@ mount -t proc  proc  /proc
 mount -t sysfs sys   /sys
 mount -t devtmpfs dev /dev
 
+# virtio_mmio is built-in (CONFIG_VIRTIO_MMIO=y) so virtio-net devices are
+# already enumerated by the time PID 1 runs — no modprobe needed.
+# qemu_fw_cfg and virtio_net are =m in stock Alpine linux-virt, so load them.
 modprobe qemu_fw_cfg 2>/dev/null || modprobe fw_cfg_sysfs 2>/dev/null || true
-modprobe virtio_mmio 2>/dev/null || true
 modprobe virtio_net 2>/dev/null || true
 
-echo "[init] waiting for fw_cfg sysfs..."
-for i in $(seq 1 10); do
+for i in 1 2 3 4 5; do
     [ -f /sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw ] && break
-    sleep 0.2
+    sleep 0.02
 done
 
 if [ ! -f /sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw ]; then
@@ -20,19 +21,15 @@ fi
 
 . /sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw
 
-echo "[init] network interfaces:"
-ip -o link show
-
 for n in 0 1 2 3 4 5; do
     eval mac=\$NIC${n}_MAC
     [ -z "$mac" ] && continue
 
-    # Retry finding the interface by MAC — virtio-mmio may take a moment to appear.
     iface=""
-    for attempt in $(seq 1 10); do
+    for attempt in 1 2 3 4 5; do
         iface=$(ip -o link | awk -v m="$mac" 'tolower($0) ~ tolower(m) {print $2}' | tr -d :)
         [ -n "$iface" ] && break
-        sleep 0.2
+        sleep 0.02
     done
 
     if [ -z "$iface" ]; then
@@ -46,7 +43,6 @@ for n in 0 1 2 3 4 5; do
     eval rdst=\$NIC${n}_ROUTE_DST
     eval rvia=\$NIC${n}_ROUTE_VIA
 
-    echo "[init] configuring NIC$n: iface=$iface cidr=$cidr gw=$gw default=$default"
     ip link set "$iface" up
     [ -n "$cidr" ] && ip addr add "$cidr" dev "$iface"
     [ "$default" = "1" ] && [ -n "$gw" ] && ip route add default via "$gw" dev "$iface"

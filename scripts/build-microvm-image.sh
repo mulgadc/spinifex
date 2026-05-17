@@ -219,6 +219,19 @@ find "$CHROOT_DIR/usr/sbin" "$CHROOT_DIR/usr/bin" \
     strip --strip-all "$bin" 2>/dev/null || true
 done
 
+# --- Copy vmlinuz out before stripping /boot from chroot ---
+VMLINUZ_OUT="$BUILD_DIR/vmlinuz"
+echo "[build-microvm-image] copying kernel: $VMLINUZ_OUT"
+cp "$KERNEL_IMG" "$VMLINUZ_OUT"
+
+# Drop /boot from the chroot — vmlinuz, Alpine's stock initramfs-virt, System.map
+# and kernel config all live here (~25 MiB). None are needed at runtime: the
+# guest already has the kernel loaded by QEMU's -kernel, and Alpine's initramfs
+# is unused because we replace it with our own /init. Leaving /boot in the cpio
+# nearly doubles uncompressed initramfs size and forces a 512 MiB guest just to
+# survive decompression.
+rm -rf "$CHROOT_DIR/boot"
+
 # --- Build initramfs ---
 INITRAMFS_OUT="$BUILD_DIR/initramfs.cpio.gz"
 echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
@@ -226,11 +239,6 @@ echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
     cd "$CHROOT_DIR"
     find . | cpio --quiet -o -H newc | gzip -9 > "$INITRAMFS_OUT"
 )
-
-# --- Copy vmlinuz ---
-VMLINUZ_OUT="$BUILD_DIR/vmlinuz"
-echo "[build-microvm-image] copying kernel: $VMLINUZ_OUT"
-cp "$KERNEL_IMG" "$VMLINUZ_OUT"
 
 # --- Log artifact sizes ---
 echo ""

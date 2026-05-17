@@ -171,6 +171,28 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
+// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU to
+// give nbdkit time to bind its sockets. Direct-boot instances have no drives
+// and no nbdkit, so the wait collapses to zero and the boot-time budget is
+// preserved.
+func nbdkitPreExecWait(directBoot bool) time.Duration {
+	if directBoot {
+		return 0
+	}
+	return 2 * time.Second
+}
+
+// qemuStartSettleWait returns the post-fork sleep that lets QEMU surface an
+// immediate-start crash (bad cmdline, missing kernel) before we attempt QMP.
+// Direct-boot binds the QMP socket within a few ms because there is no
+// firmware, ROM, or block layer setup, so a full second is unnecessary.
+func qemuStartSettleWait(directBoot bool) time.Duration {
+	if directBoot {
+		return 50 * time.Millisecond
+	}
+	return time.Second
+}
+
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
 func (m *Manager) startQEMU(instance *VM) error {
@@ -318,7 +340,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	// Wait briefly for nbdkit to start.
 	// TODO: Improve, confirm nbdkit started for each volume.
-	time.Sleep(2 * time.Second)
+	time.Sleep(nbdkitPreExecWait(instance.DirectBoot))
 
 	processChan := make(chan int, 1)
 	exitChan := make(chan int, 1)
@@ -402,7 +424,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return fmt.Errorf("failed to start qemu")
 	}
 
-	time.Sleep(1 * time.Second)
+	// Catch immediate-start crashes (bad cmdline, missing kernel, etc.) before
+	// attempting QMP.
+	time.Sleep(qemuStartSettleWait(instance.DirectBoot))
 
 	select {
 	case exitErr := <-exitChan:

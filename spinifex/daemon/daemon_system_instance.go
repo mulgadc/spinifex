@@ -488,12 +488,26 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
 	}
 
-	// Build kernel cmdline: serial console + virtio-mmio device descriptors.
+	// Build kernel cmdline.
+	//
 	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
-	// Without these params the kernel never discovers the devices (auto-kernel-cmdline
-	// does not append when -append is specified).
+	// Without virtio_mmio.device params the kernel never discovers the devices
+	// (auto-kernel-cmdline does not append when -append is specified).
+	//
+	// Boot-time perf flags (Phase 2):
+	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
+	//                             writes dominate boot time; warnings+errors only)
+	//   mitigations=off         — skip spectre/meltdown microcode patching at
+	//                             boot. Safe here: KVM guest on trusted host CPU,
+	//                             single-tenant LB workload, no untrusted code in
+	//                             the VM. Saves ~200-500ms.
+	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
+	//                             vouched for invariant TSC)
+	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
+	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
+	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
 	var sb strings.Builder
-	sb.WriteString("console=ttyS0")
+	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
 	for i := range input.NICs {
 		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
 			0xfeb00000+i*0x200, 5+i)

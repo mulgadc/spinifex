@@ -160,8 +160,9 @@ fi
 
 # --- Strip kernel modules (Phase 2 keep-list approach) ---
 # Only modules needed by a virtio-mmio microvm guest are kept:
-#   virtio*.ko*   — virtio bus, net, blk, rng, console, and helpers
-#   *fw_cfg*.ko*  — QEMU fw_cfg sysfs driver (delivers boot blobs)
+#   virtio*.ko*    — virtio bus, net, blk, rng, console, and helpers
+#   *fw_cfg*.ko*   — QEMU fw_cfg sysfs driver (delivers boot blobs)
+#   *failover*.ko* — net_failover + failover (virtio_net deps for live migration)
 # All other loadable modules are removed. Drivers compiled into the kernel
 # (CONFIG_VIRTIO_MMIO=y etc.) are unaffected — they live in vmlinuz, not here.
 echo "[build-microvm-image] stripping kernel modules to virtio+fw_cfg only..."
@@ -174,6 +175,7 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     tmp_keep=$(mktemp -d)
     find "$kernel_dir" -name "virtio*.ko.gz" -o -name "virtio*.ko" \
                        -o -name "*fw_cfg*.ko.gz" -o -name "*fw_cfg*.ko" \
+                       -o -name "*failover*.ko.gz" -o -name "*failover*.ko" \
         2>/dev/null | while read -r mod; do
         rel="${mod#"$kernel_dir/"}"
         dest_dir="$tmp_keep/$(dirname "$rel")"

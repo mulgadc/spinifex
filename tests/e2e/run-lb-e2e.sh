@@ -798,7 +798,7 @@ if [ "$PEER_AVAILABLE" = true ]; then
     # test_http_from <node_ip> <url> <label>
     test_http_from() {
         local node_ip="$1" url="$2" label="$3"
-        echo "Testing $label at $url from $node_ip..."
+        echo "Testing $label at $url from $node_ip..." >&2
         local ok=false
         for attempt in $(seq 1 20); do
             local result
@@ -810,17 +810,16 @@ if [ "$PEER_AVAILABLE" = true ]; then
             if echo "$result" | grep -q "instance_id"; then
                 ok=true; break
             fi
-            echo "  Attempt $attempt/20: not yet responding..."
+            echo "  Attempt $attempt/20: not yet responding..." >&2
             sleep 5
         done
-        if [ "$ok" = true ]; then pass "$label reachable"; else fail "$label unreachable at $url from $node_ip"; fi
         echo "$ok"
     }
 
     # test_tcp_from <node_ip> <ip> <port> <label>
     test_tcp_from() {
         local node_ip="$1" target_ip="$2" port="$3" label="$4"
-        echo "Testing $label at ${target_ip}:${port} from $node_ip..."
+        echo "Testing $label at ${target_ip}:${port} from $node_ip..." >&2
         local ok=false
         for attempt in $(seq 1 20); do
             local probe
@@ -830,16 +829,16 @@ if [ "$PEER_AVAILABLE" = true ]; then
                 probe=$(peer_ssh "$node_ip" "echo '' | nc -w5 '$target_ip' '$port'" 2>/dev/null || true)
             fi
             if [ -n "$probe" ]; then ok=true; break; fi
-            echo "  Attempt $attempt/20..."
+            echo "  Attempt $attempt/20..." >&2
             sleep 5
         done
-        if [ "$ok" = true ]; then pass "$label reachable"; else fail "$label unreachable at ${target_ip}:${port} from $node_ip"; fi
         echo "$ok"
     }
 
     # --- ALB: local connectivity (from hosting node) ---
     ALB_URL="http://${ALB_PUBLIC_IP}:80"
     ALB_LOCAL_OK=$(test_http_from "$ALB_HOST" "$ALB_URL" "ALB inet (local)")
+    if [ "$ALB_LOCAL_OK" = "true" ]; then pass "ALB inet (local) reachable"; else fail "ALB inet (local) unreachable at $ALB_URL from $ALB_HOST"; fi
 
     # ALB traffic test from hosting node
     if [ "$ALB_LOCAL_OK" = "true" ]; then
@@ -867,6 +866,7 @@ if [ "$PEER_AVAILABLE" = true ]; then
     # --- NLB: local connectivity (from hosting node) ---
     if [ -n "$NLB_PUBLIC_IP" ] && [ "$NLB_PUBLIC_IP" != "null" ]; then
         NLB_LOCAL_OK=$(test_tcp_from "$NLB_HOST" "$NLB_PUBLIC_IP" 9000 "NLB inet (local)")
+        if [ "$NLB_LOCAL_OK" = "true" ]; then pass "NLB inet (local) reachable"; else fail "NLB inet (local) unreachable at ${NLB_PUBLIC_IP}:9000 from $NLB_HOST"; fi
         if [ "$NLB_LOCAL_OK" = "true" ]; then
             if [ "$NLB_HOST" = "$LOCAL_IP" ]; then
                 run_tcp_traffic_test "$NLB_PUBLIC_IP" 9000 "NLB inet (local)"
@@ -892,6 +892,7 @@ if [ "$PEER_AVAILABLE" = true ]; then
     # --- ALB: remote connectivity (from a different node) ---
     if [ -n "$ALB_REMOTE" ]; then
         ALB_REMOTE_OK=$(test_http_from "$ALB_REMOTE" "$ALB_URL" "ALB inet (remote)")
+        if [ "$ALB_REMOTE_OK" = "true" ]; then pass "ALB inet (remote) reachable"; else fail "ALB inet (remote) unreachable at $ALB_URL from $ALB_REMOTE"; fi
         if [ "$ALB_REMOTE_OK" = "true" ]; then
             declare -A ALB_REMOTE_COUNTS
             ALB_REMOTE_TOTAL=0
@@ -913,6 +914,7 @@ if [ "$PEER_AVAILABLE" = true ]; then
     # --- NLB: remote connectivity (from a different node) ---
     if [ -n "$NLB_REMOTE" ] && [ -n "$NLB_PUBLIC_IP" ] && [ "$NLB_PUBLIC_IP" != "null" ]; then
         NLB_REMOTE_OK=$(test_tcp_from "$NLB_REMOTE" "$NLB_PUBLIC_IP" 9000 "NLB inet (remote)")
+        if [ "$NLB_REMOTE_OK" = "true" ]; then pass "NLB inet (remote) reachable"; else fail "NLB inet (remote) unreachable at ${NLB_PUBLIC_IP}:9000 from $NLB_REMOTE"; fi
         if [ "$NLB_REMOTE_OK" = "true" ]; then
             declare -A NLB_REMOTE_COUNTS
             NLB_REMOTE_TOTAL=0

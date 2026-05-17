@@ -158,6 +158,31 @@ else
     echo "[build-microvm-image] fw_cfg: module found in lib/modules"
 fi
 
+# --- Strip unused kernel modules (Phase 2) ---
+# Remove driver categories not present on a virtio-only microvm guest.
+# linux-virt may include some of these as loadable modules; stripping them
+# here reduces initramfs size without rebuilding the kernel from source.
+echo "[build-microvm-image] stripping unused kernel modules..."
+for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
+    [ -d "$kver_dir/kernel" ] || continue
+    rm -rf \
+        "$kver_dir/kernel/drivers/usb" \
+        "$kver_dir/kernel/drivers/ide" \
+        "$kver_dir/kernel/drivers/ata" \
+        "$kver_dir/kernel/drivers/gpu" \
+        "$kver_dir/kernel/drivers/video" \
+        "$kver_dir/kernel/drivers/media" \
+        "$kver_dir/kernel/drivers/input" \
+        "$kver_dir/kernel/drivers/hid" \
+        "$kver_dir/kernel/drivers/bluetooth" \
+        "$kver_dir/kernel/drivers/staging" \
+        "$kver_dir/kernel/sound" \
+        "$kver_dir/kernel/net/wireless" \
+        "$kver_dir/kernel/net/bluetooth"
+    # Regenerate module dependency map after stripping.
+    depmod -b "$CHROOT_DIR" "$(basename "$kver_dir")" 2>/dev/null || true
+done
+
 # --- Build initramfs ---
 INITRAMFS_OUT="$BUILD_DIR/initramfs.cpio.gz"
 echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
@@ -175,5 +200,18 @@ cp "$KERNEL_IMG" "$VMLINUZ_OUT"
 echo ""
 echo "[build-microvm-image] artifacts:"
 ls -lh "$VMLINUZ_OUT" "$INITRAMFS_OUT"
+echo ""
+
+# --- Phase 2 artifact size gate (50 MiB total) ---
+ARTIFACT_MAX_MiB="${MICROVM_ARTIFACT_MAX_MiB:-50}"
+total_bytes=$(( $(stat -c %s "$VMLINUZ_OUT") + $(stat -c %s "$INITRAMFS_OUT") ))
+max_bytes=$(( ARTIFACT_MAX_MiB * 1024 * 1024 ))
+total_mib=$(( (total_bytes + 1048575) / 1048576 ))
+if [ "$total_bytes" -gt "$max_bytes" ]; then
+    echo "ERROR: artifact size ${total_mib} MiB exceeds ${ARTIFACT_MAX_MiB} MiB gate" >&2
+    echo "       Set MICROVM_ARTIFACT_MAX_MiB=N to override during development." >&2
+    exit 1
+fi
+echo "[build-microvm-image] artifact size gate: PASS (${total_mib} MiB / ${ARTIFACT_MAX_MiB} MiB)"
 echo ""
 echo "[build-microvm-image] done."

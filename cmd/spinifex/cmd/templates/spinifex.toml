@@ -75,6 +75,7 @@ gpu_passthrough = true
 # [nodes.{{.Node}}.daemon.microvm]
 # elbv2_enabled = false
 # image_path = "/usr/share/spinifex/microvm"
+# isa_serial = true   # set false only after measuring boot savings; disables per-VM console log
 
 [nodes.{{.Node}}.awsgw]
 host = "{{.BindIP}}:9999"

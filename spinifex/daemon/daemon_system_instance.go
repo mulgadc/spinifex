@@ -492,21 +492,25 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
 	// Without these params the kernel never discovers the devices (auto-kernel-cmdline
 	// does not append when -append is specified).
-	cmdline := "console=ttyS0"
+	var sb strings.Builder
+	sb.WriteString("console=ttyS0")
 	for i := range input.NICs {
-		cmdline += fmt.Sprintf(" virtio_mmio.device=0x200@0x%x:%d",
+		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
 			0xfeb00000+i*0x200, 5+i)
 	}
+	cmdline := sb.String()
+
+	machineType := microvmMachineType(d.config.Daemon.Microvm.IsaSerial)
 
 	cfg := vm.Config{
 		Name:          instanceID,
 		EnableKVM:     true,
 		NoGraphic:     true,
 		Architecture:  architecture,
-		CPUType:       "host",
+		CPUType:       "host,-pmu",
 		CPUCount:      vcpus,
 		Memory:        memMiB,
-		MachineType:   "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on",
+		MachineType:   machineType,
 		KernelImage:   filepath.Join(imagePath, "vmlinuz"),
 		Initrd:        filepath.Join(imagePath, "initramfs.cpio.gz"),
 		KernelCmdline: cmdline,
@@ -515,7 +519,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 
 	// Wire netdevs and devices for each NIC in declaration order.
 	// Tap device creation happens later in startQEMU (host-side only here).
-	allNICs := buildNICNetdevs(instanceID, input)
+	allNICs := buildNICNetdevs(instanceID, input, machineType)
 	cfg.NetDevs = append(cfg.NetDevs, allNICs.netdevs...)
 	cfg.Devices = append(cfg.Devices, allNICs.devices...)
 
@@ -528,13 +532,22 @@ type nicNetdevResult struct {
 	devices []vm.Device
 }
 
+// microvmMachineType returns the QEMU -M string for the microvm machine.
+// isaSerial nil or true keeps isa-serial=on for console log access.
+func microvmMachineType(isaSerial *bool) string {
+	serial := "on"
+	if isaSerial != nil && !*isaSerial {
+		serial = "off"
+	}
+	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=" + serial
+}
+
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in
 // input. The NIC order determines the netdev IDs: net0 = primary ENI,
 // net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
 // are only included when corresponding ExtraENIs entries exist.
-func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput) nicNetdevResult {
+func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string) nicNetdevResult {
 	var res nicNetdevResult
-	machineType := "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
 
 	for i, nic := range input.NICs {
 		netID := fmt.Sprintf("net%d", i)

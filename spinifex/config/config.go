@@ -142,6 +142,10 @@ type GPUModelOverride struct {
 type MicrovmConfig struct {
 	ELBv2Enabled bool   `json:"ELBv2Enabled" mapstructure:"elbv2_enabled"`
 	ImagePath    string `json:"ImagePath" mapstructure:"image_path"`
+	// IsaSerial controls the isa-serial device on the microvm machine. Default
+	// true keeps the console log path working. Set false only after measuring
+	// boot-time savings and accepting loss of per-VM console output.
+	IsaSerial *bool `json:"IsaSerial" mapstructure:"isa_serial"`
 }
 
 // DaemonConfig holds the daemon configuration
@@ -251,6 +255,11 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 		}
 		if local.Daemon.Microvm.ImagePath == "" {
 			local.Daemon.Microvm.ImagePath = "/usr/share/spinifex/microvm"
+			config.Nodes[config.Node] = local
+		}
+		if local.Daemon.Microvm.IsaSerial == nil {
+			t := true
+			local.Daemon.Microvm.IsaSerial = &t
 			config.Nodes[config.Node] = local
 		}
 	}

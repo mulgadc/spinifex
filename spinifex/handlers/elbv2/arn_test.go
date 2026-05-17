@@ -412,3 +412,27 @@ func TestLbVMUserData_MissingCredentials(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildMicrovmNICs_NilVPC verifies buildMicrovmNICs works when VPCService
+// is nil — CIDR and gateway remain empty, NIC structure is still correct.
+func TestBuildMicrovmNICs_NilVPC(t *testing.T) {
+	svc := &ELBv2ServiceImpl{VPCService: nil}
+	nics := svc.buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternal, nil, testAccountID)
+	require.Len(t, nics, 2, "primary ENI NIC + mgmt NIC")
+	assert.True(t, nics[0].IsDefault)
+	assert.Equal(t, "02:aa:bb:cc:dd:01", nics[0].MAC)
+	assert.Empty(t, nics[0].CIDR, "CIDR unknown when VPC service unavailable")
+	assert.False(t, nics[1].IsDefault)
+}
+
+// TestBuildMicrovmNICs_ExtraENIs verifies NIC[2+] are appended for multi-subnet ALBs.
+func TestBuildMicrovmNICs_ExtraENIs(t *testing.T) {
+	svc := &ELBv2ServiceImpl{VPCService: nil}
+	extras := []ExtraENIInput{
+		{ENIID: "eni-extra1", ENIMac: "02:aa:bb:cc:dd:02", ENIIP: "10.0.2.5", SubnetID: "subnet-extra1"},
+	}
+	nics := svc.buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternal, extras, testAccountID)
+	require.Len(t, nics, 3, "primary ENI + mgmt + 1 extra")
+	assert.Equal(t, "02:aa:bb:cc:dd:02", nics[2].MAC)
+	assert.False(t, nics[2].IsDefault)
+}

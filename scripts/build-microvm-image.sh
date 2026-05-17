@@ -158,29 +158,63 @@ else
     echo "[build-microvm-image] fw_cfg: module found in lib/modules"
 fi
 
-# --- Strip unused kernel modules (Phase 2) ---
-# Remove driver categories not present on a virtio-only microvm guest.
-# linux-virt may include some of these as loadable modules; stripping them
-# here reduces initramfs size without rebuilding the kernel from source.
-echo "[build-microvm-image] stripping unused kernel modules..."
+# --- Strip kernel modules (Phase 2 keep-list approach) ---
+# Only modules needed by a virtio-mmio microvm guest are kept:
+#   virtio*.ko*   — virtio bus, net, blk, rng, console, and helpers
+#   *fw_cfg*.ko*  — QEMU fw_cfg sysfs driver (delivers boot blobs)
+# All other loadable modules are removed. Drivers compiled into the kernel
+# (CONFIG_VIRTIO_MMIO=y etc.) are unaffected — they live in vmlinuz, not here.
+echo "[build-microvm-image] stripping kernel modules to virtio+fw_cfg only..."
 for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
-    [ -d "$kver_dir/kernel" ] || continue
-    rm -rf \
-        "$kver_dir/kernel/drivers/usb" \
-        "$kver_dir/kernel/drivers/ide" \
-        "$kver_dir/kernel/drivers/ata" \
-        "$kver_dir/kernel/drivers/gpu" \
-        "$kver_dir/kernel/drivers/video" \
-        "$kver_dir/kernel/drivers/media" \
-        "$kver_dir/kernel/drivers/input" \
-        "$kver_dir/kernel/drivers/hid" \
-        "$kver_dir/kernel/drivers/bluetooth" \
-        "$kver_dir/kernel/drivers/staging" \
-        "$kver_dir/kernel/sound" \
-        "$kver_dir/kernel/net/wireless" \
-        "$kver_dir/kernel/net/bluetooth"
-    # Regenerate module dependency map after stripping.
-    depmod -b "$CHROOT_DIR" "$(basename "$kver_dir")" 2>/dev/null || true
+    kver="$(basename "$kver_dir")"
+    kernel_dir="$kver_dir/kernel"
+    [ -d "$kernel_dir" ] || continue
+
+    # Collect keeper modules and their relative paths from the kernel/ tree.
+    tmp_keep=$(mktemp -d)
+    find "$kernel_dir" -name "virtio*.ko.gz" -o -name "virtio*.ko" \
+                       -o -name "*fw_cfg*.ko.gz" -o -name "*fw_cfg*.ko" \
+        2>/dev/null | while read -r mod; do
+        rel="${mod#"$kernel_dir/"}"
+        dest_dir="$tmp_keep/$(dirname "$rel")"
+        mkdir -p "$dest_dir"
+        cp "$mod" "$dest_dir/"
+    done
+
+    # Replace kernel module tree with the keeper set.
+    rm -rf "$kernel_dir"
+    mkdir -p "$kernel_dir"
+    # Restore each kept file into the same relative path.
+    (cd "$tmp_keep" && find . -name "*.ko*" | while read -r f; do
+        dest_dir="$kernel_dir/$(dirname "${f#./}")"
+        mkdir -p "$dest_dir"
+        cp "$f" "$dest_dir/"
+    done)
+    rm -rf "$tmp_keep"
+
+    # Regenerate module dependency map from the surviving modules.
+    depmod -b "$CHROOT_DIR" "$kver" 2>/dev/null || true
+done
+
+# --- Strip package-manager artifacts (not needed at runtime) ---
+echo "[build-microvm-image] stripping package manager artifacts..."
+rm -rf \
+    "$CHROOT_DIR/lib/apk" \
+    "$CHROOT_DIR/var/cache/apk" \
+    "$CHROOT_DIR/etc/apk" \
+    "$CHROOT_DIR/usr/share/man" \
+    "$CHROOT_DIR/usr/share/doc" \
+    "$CHROOT_DIR/usr/share/apk" \
+    "$CHROOT_DIR/usr/include" \
+    "$CHROOT_DIR/usr/lib/pkgconfig"
+
+# --- Strip debug symbols from binaries ---
+echo "[build-microvm-image] stripping debug symbols from binaries..."
+find "$CHROOT_DIR/usr/sbin" "$CHROOT_DIR/usr/bin" \
+     "$CHROOT_DIR/sbin" "$CHROOT_DIR/bin" \
+     "$CHROOT_DIR/usr/local/bin" \
+    -type f 2>/dev/null | while read -r bin; do
+    strip --strip-all "$bin" 2>/dev/null || true
 done
 
 # --- Build initramfs ---

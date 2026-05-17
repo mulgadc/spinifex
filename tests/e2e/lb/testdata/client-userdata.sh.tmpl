@@ -1,0 +1,36 @@
+#!/bin/bash
+# Client VM user-data template for internal LB suites. Generates probes
+# against both ALB (HTTP) and NLB (TCP) private IPs, then publishes results
+# over an HTTP server on port 80 for the test driver to fetch.
+ALB_IP="{{.ALBPrivateIP}}"
+NLB_IP="{{.NLBPrivateIP}}"
+NUM_REQUESTS={{.NumRequests}}
+
+mkdir -p /tmp/httpd && cd /tmp/httpd
+echo "waiting" > status.txt
+nohup python3 -m http.server 80 --bind 0.0.0.0 > /dev/null 2>&1 &
+
+for i in $(seq 1 60); do
+    if curl -s --max-time 3 "http://${ALB_IP}:80/" 2>/dev/null | grep -q instance_id; then break; fi
+    sleep 5
+done
+
+> alb_results.txt
+for i in $(seq 1 $NUM_REQUESTS); do
+    curl -s --max-time 5 "http://${ALB_IP}:80/" >> alb_results.txt 2>/dev/null
+    echo "" >> alb_results.txt
+done
+
+for i in $(seq 1 60); do
+    PROBE=$(echo "" | nc -w3 ${NLB_IP} 9000 2>/dev/null || true)
+    if [ -n "$PROBE" ]; then break; fi
+    sleep 5
+done
+
+> nlb_results.txt
+for i in $(seq 1 $NUM_REQUESTS); do
+    RESP=$(echo "" | nc -w2 ${NLB_IP} 9000 2>/dev/null || true)
+    echo "$RESP" >> nlb_results.txt
+done
+
+echo "done" > status.txt

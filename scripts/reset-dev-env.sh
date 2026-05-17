@@ -273,5 +273,9 @@ echo "==> Building and importing LB image"
 cd "$PROJECT_ROOT" && make build-lb-agent
 "$PROJECT_ROOT/scripts/build-system-image.sh" "$PROJECT_ROOT/scripts/images/lb.conf" --import --quiet
 
+# --- Build + install microVM artifacts (kernel + initramfs for direct-boot LBs) ---
+echo "==> Building and installing microVM artifacts"
+cd "$PROJECT_ROOT" && make install-microvm
+
 # --- Smoke test ---
 sudo -u "$INVOKING_USER" "$SCRIPT_DIR/smoke-test.sh"

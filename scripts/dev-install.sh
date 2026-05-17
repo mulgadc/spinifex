@@ -95,6 +95,9 @@ echo "=== Building and importing LB image ==="
 cd "$PROJECT_ROOT" && make build-lb-agent
 "$PROJECT_ROOT/scripts/build-system-image.sh" "$PROJECT_ROOT/scripts/images/lb.conf" --import --quiet
 
+echo "=== Building and installing microVM artifacts ==="
+cd "$PROJECT_ROOT" && make install-microvm
+
 echo "=== Done ==="
 echo "Services: sudo systemctl status spinifex.target"
 echo "Logs:     journalctl -u 'spinifex-*' -f"

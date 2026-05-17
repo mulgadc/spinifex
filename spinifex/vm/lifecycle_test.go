@@ -654,10 +654,11 @@ func TestStartQEMU_DirectBoot_PrimaryTapError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setup tap device")
-	// PIDFile / ConsoleLogPath / SerialSocket are set before the tap call.
+	// PIDFile and ConsoleLogPath are set before the tap call.
+	// SerialSocket is intentionally empty for direct-boot (file chardev used instead).
 	assert.NotEmpty(t, instance.Config.PIDFile)
 	assert.NotEmpty(t, instance.Config.ConsoleLogPath)
-	assert.NotEmpty(t, instance.Config.SerialSocket)
+	assert.Empty(t, instance.Config.SerialSocket)
 	// Exactly one SetupTap call (the primary ENI tap).
 	require.Len(t, plumber.setupCalls, 1)
 }

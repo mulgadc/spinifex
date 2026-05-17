@@ -2144,6 +2144,19 @@ func (d *Daemon) wireLBAgentConfig() {
 	// provisioning forever.
 	d.elbv2Service.MgmtBridgeIP = d.mgmtBridgeIP
 	d.elbv2Service.AdvertiseIP = advertiseIP
+
+	// Read CA cert so direct-boot microvm guests can verify AWSGW TLS.
+	// The NATS CA cert signs the AWSGW server cert (same local CA).
+	if d.config.NATS.CACert != "" {
+		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
+			d.elbv2Service.CACert = string(caBytes)
+			slog.Info("CA cert loaded for LB agent TLS", "path", d.config.NATS.CACert)
+		} else {
+			slog.Warn("Failed to read CA cert for LB agent TLS", "path", d.config.NATS.CACert, "err", err)
+		}
+	} else {
+		slog.Warn("NATS CACert not configured — direct-boot LB VMs will not verify AWSGW TLS")
+	}
 }
 
 // resolveGPUModel maps a discovered GPU to an instance type model.

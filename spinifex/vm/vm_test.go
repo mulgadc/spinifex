@@ -3,6 +3,7 @@ package vm
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -231,6 +232,17 @@ func argExists(args []string, flag string) bool {
 	return slices.Contains(args, flag)
 }
 
+// allArgValues returns all values following flag (every occurrence).
+func allArgValues(args []string, flag string) []string {
+	var out []string
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
 func TestExecute_DriveAndKernelInvariant(t *testing.T) {
 	base := Config{
 		CPUCount:     2,
@@ -336,6 +348,30 @@ func TestExecute_SerialSocketAndConsoleLog(t *testing.T) {
 		assert.Empty(t, argValue(args, "-chardev"))
 		assert.Empty(t, argValue(args, "-serial"))
 	})
+}
+
+func TestExecute_MicrovmFileChardev(t *testing.T) {
+	cfg := Config{
+		CPUCount:       1,
+		Memory:         512,
+		Architecture:   "x86_64",
+		MachineType:    "microvm,x-option-roms=off",
+		ConsoleLogPath: "/var/log/console.log",
+		KernelImage:    "/boot/vmlinuz",
+	}
+
+	cmd, err := cfg.Execute()
+	assert.NoError(t, err)
+	require.NotNil(t, cmd)
+
+	args := cmd.Args[1:]
+	chardev := argValue(args, "-chardev")
+	assert.Equal(t, "file,id=console0,path=/var/log/console.log", chardev)
+	// -serial chardev:console0 attaches to the isa-serial=on device (ttyS0).
+	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
+	// No explicit isa-serial device addition (would create ttyS1, not ttyS0).
+	devs := strings.Join(allArgValues(args, "-device"), " ")
+	assert.NotContains(t, devs, "isa-serial")
 }
 
 func TestExecute_ARM64_Q35(t *testing.T) {

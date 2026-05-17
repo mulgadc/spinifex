@@ -1,4 +1,4 @@
 ::sysinit:/etc/rc.local
-::respawn:/usr/local/bin/lb-agent
+::respawn:/bin/sh -c 'set -a; . /etc/conf.d/lb-agent; set +a; exec /usr/local/bin/lb-agent'
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r

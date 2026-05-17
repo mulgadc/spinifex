@@ -195,9 +195,10 @@ func (m *Manager) startQEMU(instance *VM) error {
 	if instance.DirectBoot {
 		// Direct-boot (microvm) path: vm.Config was pre-built by the launcher.
 		// Only fill in the runtime-generated paths that are not known until now.
+		// SerialSocket is intentionally omitted: microvm uses a file chardev
+		// so kernel output is captured without a socket client.
 		instance.Config.PIDFile = pidFile
 		instance.Config.ConsoleLogPath = consoleLogPath
-		instance.Config.SerialSocket = serialSocket
 	} else {
 		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
 

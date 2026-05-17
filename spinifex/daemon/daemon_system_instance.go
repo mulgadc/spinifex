@@ -480,6 +480,16 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
 	}
 
+	// Build kernel cmdline: serial console + virtio-mmio device descriptors.
+	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
+	// Without these params the kernel never discovers the devices (auto-kernel-cmdline
+	// does not append when -append is specified).
+	cmdline := "console=ttyS0"
+	for i := range input.NICs {
+		cmdline += fmt.Sprintf(" virtio_mmio.device=0x200@0x%x:%d",
+			0xfeb00000+i*0x200, 5+i)
+	}
+
 	cfg := vm.Config{
 		Name:          instanceID,
 		EnableKVM:     true,
@@ -488,10 +498,10 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 		CPUType:       "host",
 		CPUCount:      vcpus,
 		Memory:        memMiB,
-		MachineType:   "microvm,x-option-roms=off,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on",
+		MachineType:   "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on",
 		KernelImage:   filepath.Join(imagePath, "vmlinuz"),
 		Initrd:        filepath.Join(imagePath, "initramfs.cpio.gz"),
-		KernelCmdline: "console=ttyS0 quiet",
+		KernelCmdline: cmdline,
 		FwCfg:         fwCfg,
 	}
 
@@ -516,7 +526,7 @@ type nicNetdevResult struct {
 // are only included when corresponding ExtraENIs entries exist.
 func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput) nicNetdevResult {
 	var res nicNetdevResult
-	machineType := "microvm,x-option-roms=off,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
+	machineType := "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
 
 	for i, nic := range input.NICs {
 		netID := fmt.Sprintf("net%d", i)

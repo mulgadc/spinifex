@@ -46,7 +46,7 @@ func TestGenerateSystemTypes(t *testing.T) {
 	sysMicro, ok := types["sys.micro"]
 	require.True(t, ok, "sys.micro must exist")
 	assert.Equal(t, int64(1), *sysMicro.VCpuInfo.DefaultVCpus, "sys.micro should have 1 vCPU")
-	assert.Equal(t, int64(128), *sysMicro.MemoryInfo.SizeInMiB, "sys.micro should have 128 MiB")
+	assert.Equal(t, int64(512), *sysMicro.MemoryInfo.SizeInMiB, "sys.micro should have 512 MiB")
 	assert.False(t, *sysMicro.BurstablePerformanceSupported, "sys.micro should not be burstable")
 }
 

@@ -247,10 +247,19 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-display", "none")
 	}
 
-	if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
+	if IsMMIO(cfg.MachineType) && cfg.ConsoleLogPath != "" {
+		// microvm with isa-serial=on: the machine creates the ISA serial device.
+		// Use -chardev file so output is captured without a socket client, then
+		// -serial chardev:console0 wires it to the existing device (not a new one).
+		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
+		// while the kernel talks to ttyS0.
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s", cfg.ConsoleLogPath))
+		args = append(args, "-serial", "chardev:console0")
+	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
 		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s",
 			cfg.SerialSocket, cfg.ConsoleLogPath)
-		args = append(args, "-chardev", chardevOpts, "-serial", "chardev:console0")
+		args = append(args, "-chardev", chardevOpts)
+		args = append(args, "-serial", "chardev:console0")
 	}
 
 	if cfg.CPUCount > 0 {

@@ -680,6 +680,12 @@ func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFi
 	userData, err := renderClientUserData(albIP, nlbIP, probesPerRun)
 	require.NoError(t, err)
 
+	t.Logf("client launch: type=%q ami=%q subnet=%q key=%q userdata=%dB",
+		f.InstanceType, f.AMIID, f.SubnetID, lbKeyName, len(userData))
+
+	artifacts := harness.ArtifactDir(t, harness.LoadEnv(t))
+	harness.OnFailure(t, func() { dumpDaemonLogs(t, artifacts, "client-launch") })
+
 	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(f.AMIID),
 		InstanceType: aws.String(f.InstanceType),
@@ -689,7 +695,7 @@ func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFi
 		MaxCount:     aws.Int64(1),
 		UserData:     aws.String(base64Encode(userData)),
 	})
-	require.NoError(t, err, "run-instances client")
+	require.NoErrorf(t, err, "run-instances client (type=%q ami=%q)", f.InstanceType, f.AMIID)
 	clientID := aws.StringValue(out.Instances[0].InstanceId)
 	t.Cleanup(func() { terminateInstances(t, c, []string{clientID}) })
 	t.Logf("client VM: %s", clientID)

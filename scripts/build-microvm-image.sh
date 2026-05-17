@@ -90,6 +90,17 @@ else
     $CONTAINER_TOOL rm "$cid" >/dev/null 2>&1
 fi
 
+# --- Fix /dev device nodes ---
+# tar extraction without root silently creates 0-byte regular files for device
+# nodes (mknod requires CAP_MKNOD). The kernel opens /dev/console to wire
+# init's stdio to the serial console; a regular file there causes all init
+# output to be silently discarded. Recreate the two nodes needed before
+# devtmpfs mounts (which provides the rest at runtime).
+rm -rf "$CHROOT_DIR/dev"
+mkdir "$CHROOT_DIR/dev"
+sudo mknod -m 600 "$CHROOT_DIR/dev/console" c 5 1
+sudo mknod -m 666 "$CHROOT_DIR/dev/null"    c 1 3
+
 # --- Place init script ---
 echo "[build-microvm-image] installing init.sh as /init..."
 if [ ! -f "$INIT_SH" ]; then

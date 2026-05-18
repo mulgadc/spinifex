@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,45 +65,10 @@ func validateHealthCheckMatcher(m string) error {
 	return nil
 }
 
-// lbVMUserData generates cloud-config user data for a load balancer VM.
-// Uses write_files to populate /etc/conf.d/lb-agent with the lb-id, gateway
-// URL, and system credentials for SigV4 auth. The CA cert is already injected
-// by the instance service's cloud-init template (same as regular EC2 VMs).
-// Cloud-init guarantees write_files runs before runcmd. The service is NOT
-// enabled at boot in the image — cloud-init is the sole trigger so the env
-// vars are always present before the agent starts.
-func (s *ELBv2ServiceImpl) lbVMUserData(lbID, scheme string) (string, error) {
-	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
-		return "", fmt.Errorf("missing system credentials: gatewayURL=%q accessKey=%q secretKey-set=%t",
-			s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey != "")
-	}
-
-	cfg := fmt.Sprintf(`#cloud-config
-write_files:
-  - path: /etc/conf.d/lb-agent
-    content: |
-      LB_LB_ID=%s
-      LB_GATEWAY_URL=%s
-      LB_ACCESS_KEY=%s
-      LB_SECRET_KEY=%s
-      LB_REGION=%s
-`, lbID, s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
-
-	mgmtGW, mgmtTarget := s.resolveMgmtRoute(scheme)
-	if mgmtGW != "" && mgmtTarget != "" {
-		cfg += fmt.Sprintf(`bootcmd:
-  - [ "ip", "route", "add", "%s/32", "via", "%s" ]
-`, mgmtTarget, mgmtGW)
-	}
-
-	cfg += `runcmd:
-  - [ "rc-service", "lb-agent", "start" ]
-`
-	return cfg, nil
-}
-
-// resolveMgmtRoute returns the (gateway, target) pair for the bootcmd host
-// route the lb-agent uses to reach AWSGW, or empty strings to skip the route.
+// resolveMgmtRoute returns the (gateway, target) pair for the host route the
+// lb-agent uses to reach AWSGW from inside the LB microVM, or empty strings
+// to skip the route. Consumed by buildMicrovmNICs to populate NIC[1]'s
+// RouteDst/RouteVia for the netcfg fw_cfg blob.
 //
 // Multi-node (AWSGW on dedicated mgmt IP): MgmtRoute{Gateway,Target} are set
 // by the daemon for both schemes — return them.
@@ -141,16 +107,13 @@ type ELBv2ServiceImpl struct {
 	MgmtRouteTarget            string                           // AWSGW bind IP to route via mgmt NIC
 	MgmtBridgeIP               string                           // br-mgmt IP, populated whenever br-mgmt exists (single + multi node) for the internal-scheme fallback route
 	AdvertiseIP                string                           // AdvertiseIP / WAN gateway, populated whenever set; used as the internal-scheme fallback route target on single-node
+	CACert                     string                           // PEM-encoded CA certificate delivered to microvm guests via fw_cfg
 	nodeID                     string
 	region                     string
-	systemAMI                  string                 // AMI ID for system VMs (ALB VMs); resolved lazily via systemAMIFunc
-	systemAMIFunc              func() (string, error) // returns the current system AMI ID (queries image store)
-	systemAMIMu                sync.Mutex             // guards lazy resolution of systemAMI
-	systemAMIResolved          bool                   // true once systemAMI has been resolved to a non-empty value
-	systemInstanceType         string                 // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
-	systemInstanceTypeFunc     func() string          // returns the smallest available instance type
-	systemInstanceTypeMu       sync.Mutex             // guards lazy resolution of systemInstanceType
-	systemInstanceTypeResolved bool                   // true once systemInstanceType has been resolved to a non-empty value
+	systemInstanceType         string        // instance type for system VMs; resolved lazily via systemInstanceTypeFunc
+	systemInstanceTypeFunc     func() string // returns the smallest available instance type
+	systemInstanceTypeMu       sync.Mutex    // guards lazy resolution of systemInstanceType
+	systemInstanceTypeResolved bool          // true once systemInstanceType has been resolved to a non-empty value
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
@@ -194,39 +157,6 @@ func (s *ELBv2ServiceImpl) Close() {
 	}
 }
 
-// SetSystemAMIFunc sets a function that resolves the current system AMI ID.
-// This is called at request time so the AMI is discovered even if imported
-// after the daemon starts.
-func (s *ELBv2ServiceImpl) SetSystemAMIFunc(fn func() (string, error)) {
-	s.systemAMIMu.Lock()
-	defer s.systemAMIMu.Unlock()
-	s.systemAMIFunc = fn
-	s.systemAMI = ""
-	s.systemAMIResolved = false
-}
-
-// getSystemAMI returns the system AMI ID, resolving it lazily if needed.
-// Caches only successful resolutions so the resolver retries after errors.
-func (s *ELBv2ServiceImpl) getSystemAMI() (string, error) {
-	s.systemAMIMu.Lock()
-	defer s.systemAMIMu.Unlock()
-	if s.systemAMIResolved {
-		return s.systemAMI, nil
-	}
-	if s.systemAMIFunc == nil {
-		return "", nil
-	}
-	ami, err := s.systemAMIFunc()
-	if err != nil {
-		return "", err
-	}
-	if ami != "" {
-		s.systemAMI = ami
-		s.systemAMIResolved = true
-	}
-	return ami, nil
-}
-
 // SetSystemInstanceTypeFunc sets a function that resolves the smallest available
 // instance type. Called at request time so it adapts to node capacity.
 func (s *ELBv2ServiceImpl) SetSystemInstanceTypeFunc(fn func() string) {
@@ -253,6 +183,111 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 		s.systemInstanceTypeResolved = true
 	}
 	return s.systemInstanceType
+}
+
+// buildLBAgentEnv returns the KEY=value blob written to /etc/conf.d/lb-agent
+// via fw_cfg on the direct-boot path.
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
+	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
+		lbID, s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
+}
+
+// subnetCIDRForIP computes "ip/prefixlen" given a host IP and the subnet's
+// CIDR block (e.g. "10.0.1.0/24" → "10.0.1.5/24"). Returns empty string on
+// parse failure so the caller can log and continue without panicking.
+func subnetCIDRForIP(hostIP, subnetCIDR string) string {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return ""
+	}
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", hostIP, ones)
+}
+
+// subnetGatewayIP derives the gateway IP (network address +1) from a subnet
+// CIDR block. Returns empty string on parse failure.
+func subnetGatewayIP(subnetCIDR string) string {
+	_, ipNet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return ""
+	}
+	gw := ipNet.IP.To4()
+	if gw == nil {
+		return ""
+	}
+	gwCopy := make(net.IP, len(gw))
+	copy(gwCopy, gw)
+	gwCopy[3]++
+	return gwCopy.String()
+}
+
+// buildMicrovmNICs constructs the NIC slice for a direct-boot microvm launch.
+//
+// NIC[0] is the primary VPC ENI (IsDefault=true): MAC/IP from the ENI record,
+// CIDR from ip+subnet prefix, gateway = subnet network address +1.
+//
+// NIC[1] is the management NIC (IsDefault=false): MAC and CIDR are left empty
+// here — the daemon injects them after allocating the per-instance mgmt IP.
+// RouteDst/RouteVia encode the host route the lb-agent needs to reach AWSGW
+// via the management interface (same logic as resolveMgmtRoute).
+//
+// NIC[2+] are extra VPC ENIs for multi-subnet ALBs.
+func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnetID, _, scheme string, extraENIs []ExtraENIInput, accountID string) []NICConfig {
+	// Resolve primary subnet CIDR for NIC[0] prefix and gateway.
+	primaryCIDR := ""
+	primaryGateway := ""
+	if s.VPCService != nil && primarySubnetID != "" {
+		if subnet, err := s.VPCService.GetSubnet(accountID, primarySubnetID); err == nil && subnet != nil {
+			primaryCIDR = subnetCIDRForIP(primaryIP, subnet.CidrBlock)
+			primaryGateway = subnetGatewayIP(subnet.CidrBlock)
+		} else {
+			slog.Warn("buildMicrovmNICs: could not look up primary subnet", "subnetId", primarySubnetID, "err", err)
+		}
+	}
+
+	nics := []NICConfig{
+		// NIC[0]: primary VPC ENI — default route owner.
+		{
+			MAC:       primaryMAC,
+			CIDR:      primaryCIDR,
+			Gateway:   primaryGateway,
+			IsDefault: true,
+		},
+	}
+
+	// NIC[1]: management NIC — daemon fills MAC/CIDR after IP allocation.
+	// RouteDst = AWSGW IP (destination), RouteVia = br-mgmt IP (next-hop).
+	// Honor resolveMgmtRoute's deliberate empty return for single-node
+	// internet-facing: adding a /32 to AdvertiseIP via mgmt steals the host's
+	// WAN return path for reply traffic, breaking same-chassis ingress.
+	mgmtRouteGW, mgmtRouteTarget := s.resolveMgmtRoute(scheme)
+	nics = append(nics, NICConfig{
+		IsDefault: false,
+		RouteDst:  mgmtRouteTarget, // AWSGW IP — destination to reach
+		RouteVia:  mgmtRouteGW,     // br-mgmt IP — next-hop
+	})
+
+	// NIC[2+]: extra ENIs for multi-subnet ALBs.
+	for _, extra := range extraENIs {
+		extraCIDR := ""
+		extraGateway := ""
+		if s.VPCService != nil && extra.SubnetID != "" {
+			if subnet, err := s.VPCService.GetSubnet(accountID, extra.SubnetID); err == nil && subnet != nil {
+				extraCIDR = subnetCIDRForIP(extra.ENIIP, subnet.CidrBlock)
+				extraGateway = subnetGatewayIP(subnet.CidrBlock)
+			} else {
+				slog.Warn("buildMicrovmNICs: could not look up extra subnet", "subnetId", extra.SubnetID, "err", err)
+			}
+		}
+		nics = append(nics, NICConfig{
+			MAC:       extra.ENIMac,
+			CIDR:      extraCIDR,
+			Gateway:   extraGateway,
+			IsDefault: false,
+		})
+	}
+
+	return nics
 }
 
 // resolveENIBindAddr looks up the private IP of the first ENI belonging to the ALB.
@@ -671,15 +706,6 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var hostPorts map[int]int
 	var launchFailed bool
 	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		systemAMI, amiErr := s.getSystemAMI()
-		if amiErr != nil {
-			slog.Error("CreateLoadBalancer: cannot resolve LB system AMI", "lbId", lbID, "err", amiErr)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		if systemAMI == "" {
-			slog.Error("CreateLoadBalancer: LB system AMI not resolved", "lbId", lbID)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
 		// Resolve MAC/IP for every ENI in one describe call.
 		eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
 		if s.VPCService != nil {
@@ -721,23 +747,27 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			})
 		}
 
-		userData, udErr := s.lbVMUserData(lbID, scheme)
-		if udErr != nil {
-			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID, "err", udErr)
+		var launchInput *SystemInstanceInput
+		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
+			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID)
 			launchFailed = true
 		} else {
-			launchInput := &SystemInstanceInput{
+			nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
+			launchInput = &SystemInstanceInput{
 				InstanceType: s.getSystemInstanceType(),
-				ImageID:      systemAMI,
 				SubnetID:     subnets[0],
-				UserData:     userData,
 				ENIID:        eniIDs[0],
 				ENIMac:       primaryMAC,
 				ENIIP:        primaryIP,
 				ExtraENIs:    extraENIInputs,
 				Scheme:       scheme,
 				AccountID:    accountID,
+				NICs:         nics,
+				LBAgentEnv:   s.buildLBAgentEnv(lbID),
+				CACert:       s.CACert,
 			}
+		}
+		if !launchFailed && launchInput != nil {
 			// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
 			// In production (VPC networking), traffic reaches the ALB VM's VPC IP directly.
 			if s.config != nil && s.config.Daemon.DevNetworking {

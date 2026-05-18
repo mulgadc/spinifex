@@ -60,7 +60,6 @@ spx admin images list
 NAME                    | DISTRO | VERSION | ARCH   | BOOT
 debian-13-arm64         | debian | 13      | arm64  | bios
 debian-13-x86_64        | debian | 13      | x86_64 | bios
-lb-alpine-3.21.6-x86_64 | alpine | 3.21.6  | x86_64 | bios
 ubuntu-26.04-arm64      | ubuntu | 26.04   | arm64  | bios
 ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | bios
 ```

@@ -1,9 +1,11 @@
 package daemon
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,13 +19,11 @@ import (
 // Compile-time check that Daemon implements SystemInstanceLauncher.
 var _ handlers_elbv2.SystemInstanceLauncher = (*Daemon)(nil)
 
-// LaunchSystemInstance creates and starts a system-managed VM. The VM is owned
-// by the system account (GlobalAccountID) and is not visible to customer
-// DescribeInstances calls.
-//
-// This is the internal equivalent of RunInstances — it reuses the same
-// instance service, resource manager, volume preparation, and QEMU launch
-// path, but skips the NATS request/response envelope and key pair validation.
+// LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
+// The VM is owned by the system account (GlobalAccountID), is not visible to
+// customer DescribeInstances calls, and always boots via direct kernel boot
+// (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
+// volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
 	accountID := utils.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -39,14 +39,6 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
 	}
 
-	// Validate AMI
-	if d.imageService == nil {
-		return nil, fmt.Errorf("image service not initialized")
-	}
-	if _, err := d.imageService.GetAMIConfig(input.ImageID); err != nil {
-		return nil, fmt.Errorf("AMI %s not found: %w", input.ImageID, err)
-	}
-
 	// Allocate resources
 	if err := d.resourceMgr.allocate(instanceType); err != nil {
 		return nil, fmt.Errorf("insufficient capacity for %s: %w", input.InstanceType, err)
@@ -57,7 +49,6 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	// customer-facing listings (Nodes page).
 	runInput := &ec2.RunInstancesInput{
 		InstanceType: aws.String(input.InstanceType),
-		ImageId:      aws.String(input.ImageID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
 		TagSpecifications: []*ec2.TagSpecification{
@@ -71,10 +62,6 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	}
 	if input.SubnetID != "" {
 		runInput.SubnetId = aws.String(input.SubnetID)
-	}
-	if input.UserData != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(input.UserData))
-		runInput.UserData = aws.String(encoded)
 	}
 
 	// Create VM via instance service
@@ -276,6 +263,14 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			instance.MgmtMAC = generateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
 
+			// Inject the allocated MAC and CIDR into NIC[1] so writeFwCfgBlobs
+			// carries real values — the ELBv2 service leaves them blank because
+			// MAC/IP are only known after daemon allocation.
+			if len(input.NICs) > 1 && input.NICs[1].MAC == "" {
+				input.NICs[1].MAC = instance.MgmtMAC
+				input.NICs[1].CIDR = instance.MgmtIP + "/24"
+			}
+
 			tapName := vm.MgmtTapName(instance.ID)
 			tapErr := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
 			if tapErr != nil {
@@ -302,30 +297,25 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		}
 	}
 
-	// Prepare volumes (root volume clone from AMI, cloud-init ISO, etc.)
-	volumeInfos, err := d.instanceService.GenerateVolumes(runInput, instance)
+	// Direct-boot (microvm) path: build the vm.Config directly with microvm
+	// machine settings and fw_cfg blobs for network, lb-agent env, and CA cert.
+	cfg, err := d.buildDirectBootConfig(instance.ID, input)
 	if err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
-		return nil, fmt.Errorf("generate volumes: %w", err)
+		return nil, fmt.Errorf("build direct-boot config: %w", err)
 	}
-
-	instance.Instance.BlockDeviceMappings = make([]*ec2.InstanceBlockDeviceMapping, 0, len(volumeInfos))
-	for _, vi := range volumeInfos {
-		mapping := &ec2.InstanceBlockDeviceMapping{}
-		mapping.SetDeviceName(vi.DeviceName)
-		mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
-		mapping.Ebs.SetVolumeId(vi.VolumeId)
-		mapping.Ebs.SetAttachTime(vi.AttachTime)
-		mapping.Ebs.SetDeleteOnTermination(vi.DeleteOnTermination)
-		mapping.Ebs.SetStatus("attached")
-		instance.Instance.BlockDeviceMappings = append(instance.Instance.BlockDeviceMappings, mapping)
-	}
+	instance.Config = cfg
+	instance.DirectBoot = true
 
 	// Launch QEMU VM
+	t1 := time.Now()
 	if err := d.vmMgr.Run(instance); err != nil {
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("launch instance: %w", err)
 	}
+	slog.Info("direct-boot timing",
+		"instanceId", instance.ID,
+		"t1_to_t2_ms", time.Since(t1).Milliseconds())
 
 	slog.Info("LaunchSystemInstance completed",
 		"instanceId", instance.ID,
@@ -417,4 +407,216 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
+}
+
+// buildDirectBootConfig constructs a vm.Config for a direct-boot microVM
+// launch. It does not call buildBaseVMConfig — the microvm machine type
+// requires no PCIe root ports, no UEFI/BIOS, and no drives. Runtime paths
+// (PID file, console log, serial socket) are filled in later by startQEMU.
+//
+// Network topology from input.NICs is serialised to three fw_cfg tmpfiles
+// (netcfg, lb-agent-env, ca-cert) under utils.RuntimeDir().
+func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.SystemInstanceInput) (vm.Config, error) {
+	it := d.resourceMgr.instanceTypes[input.InstanceType]
+	architecture := "x86_64"
+	if it != nil && it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 && it.ProcessorInfo.SupportedArchitectures[0] != nil {
+		architecture = *it.ProcessorInfo.SupportedArchitectures[0]
+	}
+	vcpus := 1
+	memMiB := 128
+	if it != nil {
+		vcpus = int(instanceTypeVCPUs(it))
+		memMiB = int(instanceTypeMemoryMiB(it))
+	}
+
+	const imagePath = "/usr/share/spinifex/microvm"
+
+	fwCfg, err := d.writeFwCfgBlobs(instanceID, input)
+	if err != nil {
+		return vm.Config{}, fmt.Errorf("write fw_cfg blobs: %w", err)
+	}
+
+	// Build kernel cmdline.
+	//
+	// QEMU microvm maps virtio-mmio slots at 0xfeb00000 + n*0x200 with IRQ 5+n.
+	// Without virtio_mmio.device params the kernel never discovers the devices
+	// (auto-kernel-cmdline does not append when -append is specified).
+	//
+	// Boot-time perf flags (Phase 2):
+	//   quiet loglevel=3        — suppress printk to ttyS0 (115200 baud serial
+	//                             writes dominate boot time; warnings+errors only)
+	//   mitigations=off         — skip spectre/meltdown microcode patching at
+	//                             boot. Safe here: KVM guest on trusted host CPU,
+	//                             single-tenant LB workload, no untrusted code in
+	//                             the VM. Saves ~200-500ms.
+	//   tsc=reliable            — skip TSC calibration loop on KVM (host already
+	//                             vouched for invariant TSC)
+	//   no_timer_check          — skip APIC/PIT cross-check; microvm has no PIT
+	//   reboot=t                — triple-fault reboot; skip ACPI/keyboard probes
+	//   i8042.no{pnp,aux,kbd}   — microvm has no PS/2; skip i8042 probe timeouts
+	var sb strings.Builder
+	sb.WriteString("console=ttyS0 quiet loglevel=3 mitigations=off tsc=reliable no_timer_check reboot=t i8042.nopnp i8042.noaux i8042.nokbd")
+	for i := range input.NICs {
+		fmt.Fprintf(&sb, " virtio_mmio.device=0x200@0x%x:%d",
+			0xfeb00000+i*0x200, 5+i)
+	}
+	cmdline := sb.String()
+
+	machineType := microvmMachineType()
+
+	cfg := vm.Config{
+		Name:          instanceID,
+		EnableKVM:     true,
+		NoGraphic:     true,
+		Architecture:  architecture,
+		CPUType:       "host,-pmu",
+		CPUCount:      vcpus,
+		Memory:        memMiB,
+		MachineType:   machineType,
+		KernelImage:   filepath.Join(imagePath, "vmlinuz"),
+		Initrd:        filepath.Join(imagePath, "initramfs.cpio.gz"),
+		KernelCmdline: cmdline,
+		FwCfg:         fwCfg,
+	}
+
+	// Wire netdevs and devices for each NIC in declaration order.
+	// Tap device creation happens later in startQEMU (host-side only here).
+	allNICs := buildNICNetdevs(instanceID, input, machineType)
+	cfg.NetDevs = append(cfg.NetDevs, allNICs.netdevs...)
+	cfg.Devices = append(cfg.Devices, allNICs.devices...)
+
+	return cfg, nil
+}
+
+// nicNetdevResult holds the QEMU netdev and device entries for all NICs.
+type nicNetdevResult struct {
+	netdevs []vm.NetDev
+	devices []vm.Device
+}
+
+// microvmMachineType returns the QEMU -M string for the microvm machine.
+// isa-serial is kept on permanently for per-VM console log access — the
+// boot-time saving from turning it off is not worth losing console output.
+func microvmMachineType() string {
+	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
+}
+
+// buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in
+// input. The NIC order determines the netdev IDs: net0 = primary ENI,
+// net1 = mgmt (if present), net2+ = extra ENIs. Extra ENIs beyond the primary
+// are only included when corresponding ExtraENIs entries exist.
+func buildNICNetdevs(instanceID string, input *handlers_elbv2.SystemInstanceInput, machineType string) nicNetdevResult {
+	var res nicNetdevResult
+
+	for i, nic := range input.NICs {
+		netID := fmt.Sprintf("net%d", i)
+		// Resolve the tap name from the corresponding ENI.
+		tapName := tapNameForNIC(i, nic, instanceID, input)
+		res.netdevs = append(res.netdevs, vm.NetDev{
+			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, tapName),
+		})
+		res.devices = append(res.devices, vm.NetDevice(machineType, netID, nic.MAC))
+	}
+
+	return res
+}
+
+// tapNameForNIC returns the Linux tap device name for a NIC at the given index.
+// Index 0 → primary ENI tap, index 1 → mgmt tap, index 2+ → extra ENI taps.
+func tapNameForNIC(idx int, _ handlers_elbv2.NICConfig, instanceID string, input *handlers_elbv2.SystemInstanceInput) string {
+	switch idx {
+	case 0:
+		return vm.TapDeviceName(input.ENIID)
+	case 1:
+		return vm.MgmtTapName(instanceID)
+	default:
+		extraIdx := idx - 2
+		if extraIdx < len(input.ExtraENIs) {
+			return vm.TapDeviceName(input.ExtraENIs[extraIdx].ENIID)
+		}
+		return fmt.Sprintf("tap-unknown-%d", idx)
+	}
+}
+
+// writeFwCfgBlobs serialises NIC configuration, lb-agent env, and CA cert to
+// per-VM tmpfiles under utils.RuntimeDir(). Returns the fw_cfg entries for the
+// three blobs and an error if any write fails or the NIC default invariant is
+// violated.
+func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
+	runtimeDir := utils.RuntimeDir()
+
+	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
+	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))
+	cacertPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-cacert.tmp", instanceID))
+
+	netcfg, err := buildNetcfgBlob(input.NICs)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(netcfgPath, []byte(netcfg), 0600); err != nil {
+		return nil, fmt.Errorf("write netcfg blob: %w", err)
+	}
+
+	if err := os.WriteFile(lbenvPath, []byte(input.LBAgentEnv), 0600); err != nil {
+		_ = os.Remove(netcfgPath)
+		return nil, fmt.Errorf("write lb-agent-env blob: %w", err)
+	}
+
+	if err := os.WriteFile(cacertPath, []byte(input.CACert), 0600); err != nil {
+		_ = os.Remove(netcfgPath)
+		_ = os.Remove(lbenvPath)
+		return nil, fmt.Errorf("write ca-cert blob: %w", err)
+	}
+
+	slog.Debug("wrote fw_cfg blobs",
+		"instanceId", instanceID,
+		"netcfg", netcfgPath,
+		"lbenv", lbenvPath,
+		"cacert", cacertPath,
+	)
+
+	return []vm.FwCfgEntry{
+		{Name: "opt/spinifex/netcfg", File: netcfgPath},
+		{Name: "opt/spinifex/lb-agent-env", File: lbenvPath},
+		{Name: "opt/spinifex/ca-cert", File: cacertPath},
+	}, nil
+}
+
+// buildNetcfgBlob serialises a slice of NICConfig entries to the shell KEY=value
+// format consumed by the initramfs init script. Exactly one NIC must have
+// IsDefault=true; returns an error otherwise.
+func buildNetcfgBlob(nics []handlers_elbv2.NICConfig) (string, error) {
+	defaultCount := 0
+	for _, n := range nics {
+		if n.IsDefault {
+			defaultCount++
+		}
+	}
+	if defaultCount != 1 {
+		return "", fmt.Errorf("netcfg: exactly one NIC must have IsDefault=true, got %d", defaultCount)
+	}
+
+	var sb strings.Builder
+	for i, n := range nics {
+		prefix := fmt.Sprintf("NIC%d", i)
+		fmt.Fprintf(&sb, "%s_MAC=%s\n", prefix, n.MAC)
+		if n.CIDR != "" {
+			fmt.Fprintf(&sb, "%s_CIDR=%s\n", prefix, n.CIDR)
+		}
+		if n.Gateway != "" {
+			fmt.Fprintf(&sb, "%s_GW=%s\n", prefix, n.Gateway)
+		}
+		if n.IsDefault {
+			fmt.Fprintf(&sb, "%s_DEFAULT=1\n", prefix)
+		} else {
+			fmt.Fprintf(&sb, "%s_DEFAULT=0\n", prefix)
+		}
+		if n.RouteDst != "" {
+			fmt.Fprintf(&sb, "%s_ROUTE_DST=%s\n", prefix, n.RouteDst)
+		}
+		if n.RouteVia != "" {
+			fmt.Fprintf(&sb, "%s_ROUTE_VIA=%s\n", prefix, n.RouteVia)
+		}
+	}
+	return sb.String(), nil
 }

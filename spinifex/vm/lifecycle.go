@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -170,6 +171,28 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
+// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU to
+// give nbdkit time to bind its sockets. Direct-boot instances have no drives
+// and no nbdkit, so the wait collapses to zero and the boot-time budget is
+// preserved.
+func nbdkitPreExecWait(directBoot bool) time.Duration {
+	if directBoot {
+		return 0
+	}
+	return 2 * time.Second
+}
+
+// qemuStartSettleWait returns the post-fork sleep that lets QEMU surface an
+// immediate-start crash (bad cmdline, missing kernel) before we attempt QMP.
+// Direct-boot binds the QMP socket within a few ms because there is no
+// firmware, ROM, or block layer setup, so a full second is unnecessary.
+func qemuStartSettleWait(directBoot bool) time.Duration {
+	if directBoot {
+		return 50 * time.Millisecond
+	}
+	return time.Second
+}
+
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
 func (m *Manager) startQEMU(instance *VM) error {
@@ -191,77 +214,110 @@ func (m *Manager) startQEMU(instance *VM) error {
 	consoleLogPath := filepath.Join(runtimeDir, fmt.Sprintf("console-%s.log", instance.ID))
 	serialSocket := filepath.Join(runtimeDir, fmt.Sprintf("serial-%s.sock", instance.ID))
 
-	instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
+	if instance.DirectBoot {
+		// Direct-boot (microvm) path: vm.Config was pre-built by the launcher.
+		// Only fill in the runtime-generated paths that are not known until now.
+		// SerialSocket is intentionally omitted: microvm uses a file chardev
+		// so kernel output is captured without a socket client.
+		instance.Config.PIDFile = pidFile
+		instance.Config.ConsoleLogPath = consoleLogPath
+	} else {
+		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
 
-	instance.EBSRequests.Mu.Lock()
-	drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs)
-	instance.EBSRequests.Mu.Unlock()
-	if err != nil {
-		return err
-	}
-	instance.Config.Drives = append(instance.Config.Drives, drives...)
-	instance.Config.IOThreads = append(instance.Config.IOThreads, iothreads...)
-	instance.Config.Devices = append(instance.Config.Devices, devices...)
-
-	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
-		spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
-		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
-			slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
-			return fmt.Errorf("setup tap device: %w", err)
-		}
-		tapName := spec.Name
-
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", instance.ENIMac),
-		})
-		slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
-
-		if err := m.setupExtraENINICs(instance); err != nil {
+		instance.EBSRequests.Mu.Lock()
+		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
+		instance.EBSRequests.Mu.Unlock()
+		if err != nil {
 			return err
 		}
+		instance.Config.Drives = append(instance.Config.Drives, drives...)
+		instance.Config.IOThreads = append(instance.Config.IOThreads, iothreads...)
+		instance.Config.Devices = append(instance.Config.Devices, devices...)
+	}
 
-		if m.deps.DevNetworking {
-			m.appendDevHostfwdNIC(instance)
+	if instance.DirectBoot {
+		// Direct-boot (microvm) path: NetDevs and Devices are already set in
+		// the pre-built Config. Only create host-side tap devices for VPC ENIs
+		// so the kernel tap interfaces exist before QEMU opens them.
+		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+			tapSpec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			if err := m.deps.NetworkPlumber.SetupTap(tapSpec); err != nil {
+				slog.Error("Failed to set up tap device (direct-boot)", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("setup tap device: %w", err)
+			}
+			slog.Info("VPC tap configured (direct-boot)", "tap", tapSpec.Name, "eni", instance.ENIId, "mac", instance.ENIMac)
+			for _, extra := range instance.ExtraENIs {
+				extraSpec := VPCTapSpec(extra.ENIID, extra.ENIMac)
+				if err := m.deps.NetworkPlumber.SetupTap(extraSpec); err != nil {
+					slog.Error("Failed to set up extra ENI tap (direct-boot)", "eni", extra.ENIID, "err", err)
+					return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
+				}
+			}
+		}
+		if instance.MgmtMAC != "" && m.deps.NetworkPlumber != nil {
+			mgmtTap := MgmtTapName(instance.ID)
+			mgmtBridge := "br-mgmt"
+			if err := m.deps.NetworkPlumber.SetupTap(TapSpec{Name: mgmtTap, Bridge: mgmtBridge}); err != nil {
+				slog.Error("Failed to set up mgmt tap (direct-boot)", "tap", mgmtTap, "err", err)
+				return fmt.Errorf("setup mgmt tap: %w", err)
+			}
+			slog.Info("Mgmt tap configured (direct-boot)", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
 	} else {
-		sshDebugAddr, err := viperblock.FindFreePort()
-		if err != nil {
-			slog.Error("Failed to find free port", "err", err)
-			return err
-		}
-		_, sshDebugPort, err := net.SplitHostPort(sshDebugAddr)
-		if err != nil {
-			slog.Error("Failed to parse port from address", "addr", sshDebugAddr, "err", err)
-			return fmt.Errorf("parse port from %s: %w", sshDebugAddr, err)
+		if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+			spec := VPCTapSpec(instance.ENIId, instance.ENIMac)
+			if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
+				slog.Error("Failed to set up tap device", "eni", instance.ENIId, "err", err)
+				return fmt.Errorf("setup tap device: %w", err)
+			}
+			tapName := spec.Name
+
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", instance.ENIMac))
+			slog.Info("VPC networking configured", "tap", tapName, "eni", instance.ENIId, "mac", instance.ENIMac)
+
+			if err := m.setupExtraENINICs(instance); err != nil {
+				return err
+			}
+
+			if m.deps.DevNetworking {
+				m.appendDevHostfwdNIC(instance)
+			}
+		} else {
+			sshDebugAddr, err := viperblock.FindFreePort()
+			if err != nil {
+				slog.Error("Failed to find free port", "err", err)
+				return err
+			}
+			_, sshDebugPort, err := net.SplitHostPort(sshDebugAddr)
+			if err != nil {
+				slog.Error("Failed to parse port from address", "addr", sshDebugAddr, "err", err)
+				return fmt.Errorf("parse port from %s: %w", sshDebugAddr, err)
+			}
+
+			bindIP := m.deps.BindHost
+			if bindIP == "" || bindIP == "0.0.0.0" {
+				bindIP = "127.0.0.1"
+			}
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "net0", ""))
 		}
 
-		bindIP := m.deps.BindHost
-		if bindIP == "" || bindIP == "0.0.0.0" {
-			bindIP = "127.0.0.1"
+		if instance.MgmtMAC != "" {
+			mgmtTap := MgmtTapName(instance.ID)
+			instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
+				Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
+			})
+			instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "mgmt0", instance.MgmtMAC))
+			slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
 		}
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("user,id=net0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: "virtio-net-pci,netdev=net0",
-		})
+
+		instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
 	}
-
-	if instance.MgmtMAC != "" {
-		mgmtTap := MgmtTapName(instance.ID)
-		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
-			Value: fmt.Sprintf("tap,id=mgmt0,ifname=%s,script=no,downscript=no", mgmtTap),
-		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("virtio-net-pci,netdev=mgmt0,mac=%s", instance.MgmtMAC),
-		})
-		slog.Info("Management NIC configured", "tap", mgmtTap, "mac", instance.MgmtMAC, "ip", instance.MgmtIP, "instanceId", instance.ID)
-	}
-
-	instance.Config.Devices = append(instance.Config.Devices, Device{Value: "virtio-rng-pci"})
 
 	for i, addr := range instance.GPUPCIAddresses {
 		xvga := "off"
@@ -284,7 +340,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	// Wait briefly for nbdkit to start.
 	// TODO: Improve, confirm nbdkit started for each volume.
-	time.Sleep(2 * time.Second)
+	time.Sleep(nbdkitPreExecWait(instance.DirectBoot))
 
 	processChan := make(chan int, 1)
 	exitChan := make(chan int, 1)
@@ -368,7 +424,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return fmt.Errorf("failed to start qemu")
 	}
 
-	time.Sleep(1 * time.Second)
+	// Catch immediate-start crashes (bad cmdline, missing kernel, etc.) before
+	// attempting QMP.
+	time.Sleep(qemuStartSettleWait(instance.DirectBoot))
 
 	select {
 	case exitErr := <-exitChan:
@@ -416,7 +474,8 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 	if bindIP == "" || bindIP == "0.0.0.0" {
 		bindIP = "127.0.0.1"
 	}
-	netdevVal := fmt.Sprintf("user,id=dev0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort)
+	var nb strings.Builder
+	fmt.Fprintf(&nb, "user,id=dev0,hostfwd=tcp:%s:%s-:22", bindIP, sshDebugPort)
 
 	if instance.ExtraHostfwd != nil {
 		for guestPort := range instance.ExtraHostfwd {
@@ -435,17 +494,15 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 				slog.Warn("DEV_NETWORKING: failed to convert extra hostfwd port", "hostPort", hostPort, "err", convErr)
 				continue
 			}
-			netdevVal += fmt.Sprintf(",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
+			fmt.Fprintf(&nb, ",hostfwd=tcp:%s:%s-:%d", bindIP, hostPort, guestPort)
 			instance.ExtraHostfwd[guestPort] = hostPortInt
 			slog.Info("DEV_NETWORKING: extra hostfwd", "guestPort", guestPort, "hostPort", hostPort, "instanceId", instance.ID)
 		}
 	}
 
-	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: netdevVal})
+	instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{Value: nb.String()})
 	devMac := GenerateDevMAC(instance.ID)
-	instance.Config.Devices = append(instance.Config.Devices, Device{
-		Value: fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", devMac),
-	})
+	instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, "dev0", devMac))
 	slog.Info("DEV_NETWORKING: added dev NIC with SSH hostfwd",
 		"bindIP", bindIP, "port", sshDebugPort, "mac", devMac, "instanceId", instance.ID)
 }
@@ -586,7 +643,7 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and
 // device configurations. Returns an error if any non-EFI volume is missing
 // its NBDURI.
-func buildDrives(requests []types.EBSRequest, cpuCount int) ([]Drive, []IOThread, []Device, error) {
+func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread
 	var devices []Device
@@ -611,10 +668,7 @@ func buildDrives(requests []types.EBSRequest, cpuCount int) ([]Drive, []IOThread
 
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})
-			devices = append(devices, Device{
-				Value: fmt.Sprintf("virtio-blk-pci,drive=%s,iothread=%s,num-queues=%d,bootindex=1",
-					drive.ID, iothreadID, cpuCount),
-			})
+			devices = append(devices, BlkDevice(machineType, drive.ID, iothreadID, cpuCount, 1))
 		}
 
 		if v.CloudInit {

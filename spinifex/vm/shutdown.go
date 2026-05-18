@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -331,6 +332,12 @@ func (m *Manager) shutdownAndUnmount(instance *VM) {
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(instance); err != nil {
 			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
+		}
+	}
+
+	for _, fw := range instance.Config.FwCfg {
+		if err := os.Remove(fw.File); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
 		}
 	}
 }

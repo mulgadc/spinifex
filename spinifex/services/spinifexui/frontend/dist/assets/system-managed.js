@@ -1,1 +1,1 @@
-var e=`lb-alpine-3.21.6-x86_64`;function t(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}function n(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`&&e.Value===`elbv2`)??!1}function r(e){return e.some(n)}export{r as n,t as r,e as t};
+function e(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}export{e as t};

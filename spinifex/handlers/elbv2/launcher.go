@@ -19,15 +19,15 @@ type SystemInstanceLauncher interface {
 	TerminateSystemInstance(instanceID string) error
 }
 
-// SystemInstanceInput describes the VM to launch.
+// SystemInstanceInput describes the direct-boot microVM to launch for an
+// ELBv2 load balancer. There is no AMI or cloud-init path — kernel and
+// initrd come from the bundled spinifex package and per-VM config is
+// delivered via QEMU fw_cfg blobs.
 type SystemInstanceInput struct {
-	InstanceType string // e.g. "t3.nano"
-	ImageID      string // AMI ID
+	InstanceType string // e.g. "sys.micro"
 	SubnetID     string // VPC subnet for networking
-	UserData     string // Cloud-init user data (plain text, will be base64-encoded)
 
-	// ENI fields — if ENIID is set, the VM uses this pre-created ENI instead
-	// of auto-creating one. Used for ALB VMs that reuse the ALB's ENI.
+	// ENI fields — the VM always uses a pre-created ENI (the ALB's primary ENI).
 	ENIID  string
 	ENIMac string
 	ENIIP  string
@@ -49,6 +49,17 @@ type SystemInstanceInput struct {
 	// via the QEMU user-mode dev NIC (dev_networking mode only).
 	// Each entry is a guest port (e.g. 80, 443). The host port is auto-assigned.
 	HostfwdPorts []int
+
+	// NICs defines the network interfaces for the microVM.
+	// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
+	NICs []NICConfig
+
+	// LBAgentEnv is a KEY=value blob written to /etc/conf.d/lb-agent inside
+	// the guest via fw_cfg.
+	LBAgentEnv string
+
+	// CACert holds PEM-encoded CA certificate bytes delivered to the guest via fw_cfg.
+	CACert string
 }
 
 // ExtraENIInput describes an additional pre-created ENI to attach to a
@@ -58,6 +69,17 @@ type ExtraENIInput struct {
 	ENIMac   string
 	ENIIP    string
 	SubnetID string
+}
+
+// NICConfig describes a single network interface for a microVM direct-boot launch.
+// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
+type NICConfig struct {
+	MAC       string // e.g. "02:0a:01:23:45:67"
+	CIDR      string // e.g. "10.0.1.5/24"
+	Gateway   string // e.g. "10.0.1.1"; empty for mgmt NIC
+	IsDefault bool   // true for exactly one NIC (primary VPC ENI)
+	RouteDst  string // specific host route dst, e.g. "10.20.0.5/32"
+	RouteVia  string // next-hop for RouteDst
 }
 
 // SystemInstanceOutput contains the result of a successful launch.

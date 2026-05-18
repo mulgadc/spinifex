@@ -17,6 +17,8 @@ go.work.sum
 # Build outputs
 bin/
 dist/
+build/microvm/vmlinuz
+build/microvm/initramfs.cpio.gz
 !spinifex/services/spinifexui/frontend/dist/
 tmp/
 *.test

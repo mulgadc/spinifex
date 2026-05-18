@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"sort"
 	"strings"
 
@@ -48,7 +49,20 @@ func (p *OVSNetworkPlumber) SetupTap(spec vm.TapSpec) error {
 		}
 	}
 
-	if out, err := sudoCommand("ip", "tuntap", "add", "dev", spec.Name, "mode", "tap").CombinedOutput(); err != nil {
+	// When the daemon runs non-root (production: User=spinifex-daemon), child
+	// QEMU processes inherit that uid without CAP_NET_ADMIN. The kernel's tun
+	// attach check then requires the tap to be owned by the calling euid
+	// (drivers/net/tun.c: tun_chr_open + TUNSETIFF perm check). Without the
+	// `user` flag the tap defaults to root:root and qemu's TUNSETIFF fails
+	// with EPERM ("could not configure /dev/net/tun: Operation not permitted").
+	// Root daemons skip this — they have CAP_NET_ADMIN ambient.
+	addArgs := []string{"tuntap", "add", "dev", spec.Name, "mode", "tap"}
+	if os.Geteuid() != 0 {
+		if u, err := user.Current(); err == nil {
+			addArgs = append(addArgs, "user", u.Username, "group", u.Gid)
+		}
+	}
+	if out, err := sudoCommand("ip", addArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("create tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)
 	}
 

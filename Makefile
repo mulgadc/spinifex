@@ -79,8 +79,25 @@ ifndef IMAGE
 endif
 	./scripts/build-system-image.sh scripts/images/$(IMAGE).conf
 
-build-lb-image: ## Build LB Alpine image
-	$(MAKE) build-system-image IMAGE=lb
+MICROVM_OUT_DIR := build/microvm
+MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
+MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
+
+# Grouped target — script writes both files in one run.
+$(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
+	./scripts/build-microvm-image.sh
+
+# Only triggers when bin/lb-agent is missing; preserves the artifact's mtime so
+# build-microvm-image stays correctly stale-aware.
+bin/lb-agent:
+	$(MAKE) build-lb-agent
+
+build-microvm-image: $(MICROVM_ARTIFACTS) ## Build microVM kernel + initramfs (incremental — skips when up to date)
+
+install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
+	sudo install -d /usr/share/spinifex/microvm
+	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
+	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
 go_run:
 	@echo -e "\n....Running $(GO_PROJECT_NAME)...."
@@ -122,9 +139,18 @@ run:
 	$(MAKE) go_build
 	$(MAKE) go_run
 
-# Fast iteration: build + install binary + restart all services
+# Fast iteration: build + install binary + restart all services.
+# Microvm artifacts are reinstalled when they already exist on disk — the rule's
+# input timestamps drive a rebuild only if anything actually changed. On a fresh
+# checkout (no build/microvm/vmlinuz yet) the install step is skipped; run
+# `make install-microvm` explicitly the first time.
 deploy: build
 	sudo install -m 755 bin/spx /usr/local/bin/spx
+	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
+		$(MAKE) install-microvm; \
+	else \
+		echo "[deploy] microvm artifacts absent — run 'make install-microvm' for first-time setup"; \
+	fi
 	sudo systemctl daemon-reload
 	sudo systemctl restart spinifex.target
 
@@ -206,6 +232,14 @@ distro-amd64:
 		-f build/Dockerfile.distro \
 		--output type=local,dest=dist/amd64/ \
 		../
+	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ] && [ -f $(MICROVM_OUT_DIR)/initramfs.cpio.gz ]; then \
+		echo "[distro-amd64] staging microvm artifacts into tarball"; \
+		mkdir -p dist/amd64/microvm; \
+		cp $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz dist/amd64/microvm/; \
+	else \
+		echo "[distro-amd64] WARNING: microvm artifacts missing — tarball will not include them"; \
+		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \
+	fi
 	tar -czf dist/spinifex-$(VERSION)-linux-amd64.tar.gz -C dist/amd64 .
 	sha256sum dist/spinifex-$(VERSION)-linux-amd64.tar.gz > dist/spinifex-$(VERSION)-linux-amd64.tar.gz.sha256
 
@@ -238,9 +272,12 @@ ansible-dev-install:
 ansible-dev-reset:
 	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-lb-image go_build go_run preflight test test-cover test-race diff-coverage bench run \
+ansible-dev-deploy:
+	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
+
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \
 	distro distro-amd64 distro-arm64 distro-clean \
-	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset
+	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy

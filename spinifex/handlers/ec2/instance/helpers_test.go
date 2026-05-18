@@ -67,5 +67,5 @@ func TestGenerateNetworkConfig_MgmtIPWithoutMAC(t *testing.T) {
 	assert.NotContains(t, cfg, "mgmt0:", "mgmt NIC should not appear without MAC")
 }
 
-// Route for multi-node is handled via bootcmd in lbVMUserData, not
-// in the network-config (Alpine cloud-init doesn't support v2 routes).
+// Route for multi-node LB mgmt traffic is handled via the fw_cfg netcfg
+// blob delivered to the LB microVM, not in the network-config.

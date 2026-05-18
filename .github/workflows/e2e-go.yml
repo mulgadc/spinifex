@@ -1,0 +1,217 @@
+name: E2E (Go)
+
+# Standalone workflow for the Go E2E harness (tests/e2e/{cert,lb,...}).
+# Mirrors e2e.yml's single-node provisioning chain but runs `go test` via
+# gotestsum so we get JUnit XML + per-test artifact directories surfaced to
+# GitHub Actions. Gated to the feature branch + manual dispatch while the
+# conversion lands; promote to broader triggers once green.
+
+on:
+  push:
+    branches:
+      - feat/e2e-go-harness
+    paths:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+      - Makefile
+      - tests/e2e/**
+      - .github/workflows/e2e-go.yml
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "PR head SHA to report status on"
+        required: false
+      suites:
+        description: "Space-separated Make targets to run (e.g. 'e2e-cert e2e-lb')"
+        required: false
+        default: "e2e-cert e2e-lb"
+
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  GIT_BRANCH: ${{ github.ref_name }}
+  SUITES: ${{ inputs.suites || 'e2e-cert e2e-lb' }}
+
+jobs:
+  e2e_go_single:
+    name: Single-Node E2E (Go)
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 45
+    env:
+      TOFU_LOG: /tmp/e2e-go-tofu-single-${{ github.run_id }}.log
+      ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
+    steps:
+      - name: Clean Workspace
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/tofu-cluster
+          path: mulga
+
+      - name: Build Install Artifacts
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          ./build-install-artifacts.sh "${GIT_BRANCH}" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Provision VM
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          export TF_VAR_git_branch="${GIT_BRANCH}"
+          tofu init -input=false >> "$TOFU_LOG" 2>&1
+          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
+          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
+          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+
+      - name: Bootstrap via Binary Install
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
+          ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Resolve VM SSH details
+        id: vm
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
+          echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Install gotestsum on VM
+        run: |
+          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            'command -v gotestsum >/dev/null 2>&1 || \
+              GOBIN=$HOME/go/bin go install gotest.tools/gotestsum@v1.12.0'
+
+      - name: Run Go E2E suites
+        id: e2e
+        run: |
+          set +e
+          # Suites are make targets in tests/e2e/Makefile (e2e-cert, e2e-lb, ...).
+          # GOTESTSUM=1 makes the Makefile run gotestsum and write junit-<suite>.xml
+          # + gotest-<suite>.json into ARTIFACT_DIR.
+          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; \
+             cd \$HOME/Development/mulga/spinifex && \
+             export PATH=\$HOME/go/bin:\$PATH && \
+             FAIL=0; \
+             for SUITE in ${SUITES}; do \
+               echo \"===> \$SUITE\"; \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' GOTESTSUM=1 \
+                 make -C tests/e2e \$SUITE \
+                 || { echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; }; \
+             done; \
+             exit \$FAIL"
+          E2E_RC=$?
+          echo "rc=${E2E_RC}" >> "$GITHUB_OUTPUT"
+          exit 0  # don't fail the step — artifact upload + final gate happen below
+
+      - name: Collect artifacts from VM
+        if: always()
+        run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }}:${ARTIFACT_DIR}/ "${ARTIFACT_DIR}/" || true
+          # Pull daemon journal + spinifex config snapshot for the same run window
+          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            'sudo journalctl -u "spinifex-*" --no-pager --since "60 min ago"' \
+            > "${ARTIFACT_DIR}/spinifex-journal.log" || true
+
+      - name: Publish test summary
+        if: always()
+        run: |
+          {
+            echo "# Go E2E results"
+            echo
+            for J in "${ARTIFACT_DIR}"/junit-*.xml; do
+              [ -f "$J" ] || continue
+              echo "## $(basename "$J" .xml)"
+              python3 -c "
+          import sys, xml.etree.ElementTree as ET
+          t = ET.parse('$J').getroot()
+          tests = sum(int(s.get('tests', 0)) for s in t.iter('testsuite'))
+          fails = sum(int(s.get('failures', 0)) for s in t.iter('testsuite'))
+          errs  = sum(int(s.get('errors',   0)) for s in t.iter('testsuite'))
+          skips = sum(int(s.get('skipped',  0)) for s in t.iter('testsuite'))
+          print(f'- total: {tests}, failed: {fails}, errors: {errs}, skipped: {skips}')
+          for tc in t.iter('testcase'):
+              for f in tc.findall('failure'):
+                  print(f'  - FAIL: {tc.get(\"classname\")}.{tc.get(\"name\")}')
+                  print('    ::error file=' + tc.get('classname','').replace('.', '/') + '::' + (f.get('message') or 'failed'))
+          "
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-go-artifacts-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Teardown
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
+          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+
+      - name: Fail job if any suite failed
+        if: always()
+        run: |
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ] || [ -s "${ARTIFACT_DIR}/suite-status.txt" ]; then
+            echo "::error::Go E2E suites failed (rc=${{ steps.e2e.outputs.rc }})"
+            cat "${ARTIFACT_DIR}/suite-status.txt" 2>/dev/null || true
+            exit 1
+          fi
+
+  e2e_go_status:
+    name: Report E2E (Go) Status
+    if: always() && inputs.sha
+    needs: [ e2e_go_single ]
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 5
+    steps:
+      - name: Report Status to PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ needs.e2e_go_single.result }}" == "success" ]]; then
+            STATE="success"
+            DESC="Go E2E suites passed"
+          else
+            STATE="failure"
+            DESC="Go E2E failed: single=${{ needs.e2e_go_single.result }}"
+          fi
+          gh api "repos/${{ github.repository }}/statuses/${{ inputs.sha }}" \
+            -f state="$STATE" \
+            -f context=e2e-go \
+            -f description="$DESC" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

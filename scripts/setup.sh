@@ -346,6 +346,13 @@ install_files() {
         $SUDO install -m 0755 "$EXTRACT_DIR/setup.sh" /usr/local/share/spinifex/setup.sh
         info "  /usr/local/share/spinifex/setup.sh"
     fi
+
+    # microVM kernel + initramfs
+    $SUDO install -d /usr/share/spinifex/microvm
+    if [ -d "$EXTRACT_DIR/microvm" ]; then
+        $SUDO cp "$EXTRACT_DIR/microvm/"* /usr/share/spinifex/microvm/
+        info "  /usr/share/spinifex/microvm/*"
+    fi
 }
 
 # --- Create directories ---

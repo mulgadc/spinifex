@@ -12,7 +12,6 @@ import {
   type CliCommand,
   type CommandPart,
 } from "@/components/cli-command-panel"
-import { LbImageMissingBanner } from "@/components/elbv2/lb-image-missing-banner"
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -27,14 +26,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { hasLbImage } from "@/lib/system-managed"
 import { getNameTag } from "@/lib/utils"
 import {
   type LbWizardResult,
   useCreateLoadBalancerWizard,
 } from "@/mutations/elbv2"
 import {
-  ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -85,10 +82,8 @@ export function CreateLoadBalancerPage() {
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: tgsData } = useSuspenseQuery(elbv2TargetGroupsQueryOptions)
-  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const wizardMutation = useCreateLoadBalancerWizard()
 
-  const lbImageImported = hasLbImage(imagesData.Images ?? [])
   const [wizardResult, setWizardResult] = useState<LbWizardResult | null>(null)
 
   const vpcs = vpcsData.Vpcs ?? []
@@ -222,18 +217,6 @@ export function CreateLoadBalancerPage() {
   }
 
   const groupedSubnets = groupSubnetsByAz(vpcSubnets)
-
-  if (!lbImageImported) {
-    return (
-      <>
-        <BackLink to="/ec2/describe-load-balancers">
-          Back to load balancers
-        </BackLink>
-        <PageHeading title="Create load balancer" />
-        <LbImageMissingBanner />
-      </>
-    )
-  }
 
   return (
     <>

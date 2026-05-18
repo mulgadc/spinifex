@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -16,9 +17,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// startStoppedForwardTimeout is how long the queue-group handler waits for the
-// node-targeted ec2.start.{nodeId} response before falling back to a local launch.
-const startStoppedForwardTimeout = 5 * time.Second
+// startStoppedForwardTimeout bounds the wait for ec2.start.{nodeId} to respond.
+// StartStoppedInstance does volume rehydrate + QEMU launch + QMP handshake,
+// which can take 10-20s on a cold start. Match the awsgw upstream 30s budget
+// so a slow-but-alive target node never trips the fallback path — falling back
+// while the target is still launching causes a duplicate Run that collides on
+// the deterministic tap name (TUNSETIFF: Device or resource busy).
+const startStoppedForwardTimeout = 30 * time.Second
 
 // handleEC2RunInstances orchestrates the RunInstances flow across
 // InstanceService.PrepareRunInstances (validation + ENI creation),
@@ -327,9 +332,12 @@ func (d *Daemon) handleEC2DescribeInstanceStatus(msg *nats.Msg) {
 // It reads the stopped instance's LastNode from shared KV and forwards the
 // request to ec2.start.{lastNode} when the instance last ran on a different
 // node. This keeps instances on their original node so the per-node resource
-// manager sees the correct allocation. If the target node does not respond
-// within startStoppedForwardTimeout (node down, not yet recovered), the handler
-// falls back to starting the instance locally on whatever node picked this up.
+// manager sees the correct allocation. Local fallback fires only when the
+// targeted node has no active subscriber (ErrNoResponders — node down or not
+// yet recovered) or returns InsufficientInstanceCapacity. A timeout from a
+// reachable-but-slow target is surfaced as ServerInternal so the caller can
+// retry; falling back in that case races the still-running launch on the
+// target and collides on the deterministic tap name.
 func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 	// Peek at the instance ID without full unmarshal — we only need it for the
 	// LastNode lookup. The full unmarshal happens inside StartStoppedInstance.
@@ -350,6 +358,8 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 		forwardMsg.Data = msg.Data
 		forwardMsg.Header.Set(utils.AccountIDHeader, utils.AccountIDFromMsg(msg))
 
+		slog.Info("ec2.start: forwarding to original node",
+			"instanceId", peek.InstanceID, "lastNode", lastNode)
 		resp, err := d.natsConn.RequestMsg(forwardMsg, startStoppedForwardTimeout)
 		if err == nil {
 			// ValidateErrorPayload returns a non-nil error when the payload IS an
@@ -369,9 +379,19 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) {
 			}
 			slog.Warn("ec2.start: original node at capacity, starting locally",
 				"instanceId", peek.InstanceID, "lastNode", lastNode)
-		} else {
-			slog.Warn("ec2.start: original node unreachable, starting locally",
+		} else if errors.Is(err, nats.ErrNoResponders) {
+			// Target node has no active subscription — down or restarting. Fall
+			// back to local start so the instance can resume somewhere.
+			slog.Warn("ec2.start: original node has no subscriber, starting locally",
 				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
+		} else {
+			// Timeout or other transport error from a node whose subscription
+			// did exist. Do NOT fall back — the target may still be launching
+			// the VM, and a duplicate Run here would collide on tap setup.
+			slog.Error("ec2.start: forward to original node failed, not falling back",
+				"instanceId", peek.InstanceID, "lastNode", lastNode, "err", err)
+			respondWithError(msg, awserrors.ErrorServerInternal)
+			return
 		}
 	}
 

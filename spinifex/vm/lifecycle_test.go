@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
@@ -42,6 +43,7 @@ func TestBuildDrives(t *testing.T) {
 		name          string
 		requests      []types.EBSRequest
 		cpuCount      int
+		machineType   string
 		wantDrives    []Drive
 		wantIOThreads []IOThread
 		wantDevices   []Device
@@ -112,7 +114,11 @@ func TestBuildDrives(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			drives, iothreads, devices, err := buildDrives(tt.requests, tt.cpuCount)
+			machineType := tt.machineType
+			if machineType == "" {
+				machineType = "q35"
+			}
+			drives, iothreads, devices, err := buildDrives(tt.requests, tt.cpuCount, machineType)
 
 			if tt.wantErr != "" {
 				require.Error(t, err)
@@ -604,4 +610,171 @@ func TestAppendDevHostfwdNIC_ExtraHostfwd_HappyPath(t *testing.T) {
 	assert.Equal(t, "user,id=dev0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:18080-:8080", instance.Config.NetDevs[0].Value)
 	require.Len(t, instance.Config.Devices, 1)
 	assert.Equal(t, fmt.Sprintf("virtio-net-pci,netdev=dev0,mac=%s", GenerateDevMAC("i-extra-ok")), instance.Config.Devices[0].Value)
+}
+
+// ---------------------------------------------------------------------------
+// startQEMU — DirectBoot branch
+//
+// We call startQEMU directly (same package) and force early returns via tap
+// errors so we cover the DirectBoot config-assignment lines and the tap setup
+// paths without spawning a real QEMU process or sleeping 2 s.
+// ---------------------------------------------------------------------------
+
+// directBootManager wires the minimum Deps for startQEMU to reach the
+// DirectBoot tap-setup block: InstanceTypes resolver + NetworkPlumber.
+func directBootManager(t *testing.T, plumber NetworkPlumber) *Manager {
+	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	resolver := fakeInstanceTypeResolver{
+		"t3.nano": {Architecture: "x86_64", VCPUs: 1, MemoryMiB: 512},
+	}
+	return NewManagerWithDeps(Deps{
+		InstanceTypes:  resolver,
+		NetworkPlumber: plumber,
+	})
+}
+
+// TestStartQEMU_DirectBoot_PrimaryTapError verifies that when the
+// NetworkPlumber fails to set up the primary ENI tap, startQEMU returns a
+// wrapped error. This also drives the DirectBoot config-assignment block
+// (PIDFile / ConsoleLogPath / SerialSocket) before the early return.
+func TestStartQEMU_DirectBoot_PrimaryTapError(t *testing.T) {
+	tapErr := errors.New("tap setup failed")
+	plumber := &fakeNetworkPlumber{setupErr: tapErr}
+	m := directBootManager(t, plumber)
+
+	instance := &VM{
+		ID:           "i-db-tap-err",
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		ENIId:        "eni-000000000000aaaa",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "setup tap device")
+	// PIDFile and ConsoleLogPath are set before the tap call.
+	// SerialSocket is intentionally empty for direct-boot (file chardev used instead).
+	assert.NotEmpty(t, instance.Config.PIDFile)
+	assert.NotEmpty(t, instance.Config.ConsoleLogPath)
+	assert.Empty(t, instance.Config.SerialSocket)
+	// Exactly one SetupTap call (the primary ENI tap).
+	require.Len(t, plumber.setupCalls, 1)
+}
+
+// TestStartQEMU_DirectBoot_ExtraENITapError verifies that a tap failure on a
+// secondary ENI returns an error without starting QEMU.
+func TestStartQEMU_DirectBoot_ExtraENITapError(t *testing.T) {
+	callCount := 0
+	plumber := &fakeNetworkPlumber{}
+	// Override SetupTap to fail only on the second call (extra ENI).
+	realSetupCalls := &plumber.setupCalls
+	_ = realSetupCalls
+
+	// Use a scripted plumber: success for primary, error for extra.
+	scriptedPlumber := &scriptedNetworkPlumber{
+		errs: []error{nil, errors.New("extra tap failed")},
+	}
+	m := directBootManager(t, scriptedPlumber)
+	_ = callCount
+
+	instance := &VM{
+		ID:           "i-db-extra-tap-err",
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		ENIId:        "eni-000000000000bbbb",
+		ENIMac:       "02:aa:bb:cc:dd:02",
+		ExtraENIs: []ExtraENI{
+			{ENIID: "eni-000000000000cccc", ENIMac: "02:aa:bb:cc:dd:03"},
+		},
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extra ENI")
+	assert.Len(t, scriptedPlumber.calls, 2)
+}
+
+// TestStartQEMU_DirectBoot_MgmtTapError verifies that a tap failure on the
+// management NIC returns a wrapped error.
+func TestStartQEMU_DirectBoot_MgmtTapError(t *testing.T) {
+	// No primary ENI → skips the ENI tap block; MgmtMAC set → enters mgmt block.
+	plumber := &fakeNetworkPlumber{setupErr: errors.New("mgmt tap failed")}
+	m := directBootManager(t, plumber)
+
+	instance := &VM{
+		ID:           "i-db-mgmt-err",
+		InstanceType: "t3.nano",
+		DirectBoot:   true,
+		MgmtMAC:      "02:aa:bb:cc:dd:ff",
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mgmt tap")
+	require.Len(t, plumber.setupCalls, 1)
+	assert.Equal(t, MgmtTapName("i-db-mgmt-err"), plumber.setupCalls[0].Name)
+	assert.Equal(t, "br-mgmt", plumber.setupCalls[0].Bridge)
+}
+
+// TestStartQEMU_DirectBoot_NoENI_NoMgmt_InstanceTypeNotFound verifies that
+// startQEMU returns an error when the instance type is absent from the resolver,
+// exercising the early-return before any DirectBoot config is written.
+func TestStartQEMU_DirectBoot_InstanceTypeNotFound(t *testing.T) {
+	plumber := &fakeNetworkPlumber{}
+	m := directBootManager(t, plumber)
+
+	instance := &VM{
+		ID:           "i-db-unknown-type",
+		InstanceType: "x9.enormous",
+		DirectBoot:   true,
+	}
+
+	err := m.startQEMU(instance)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x9.enormous")
+	assert.Empty(t, plumber.setupCalls)
+}
+
+// scriptedNetworkPlumber returns errors from a pre-loaded slice, one per call.
+type scriptedNetworkPlumber struct {
+	calls []TapSpec
+	errs  []error
+	idx   int
+}
+
+func (p *scriptedNetworkPlumber) SetupTap(spec TapSpec) error {
+	p.calls = append(p.calls, spec)
+	if p.idx < len(p.errs) {
+		err := p.errs[p.idx]
+		p.idx++
+		return err
+	}
+	return nil
+}
+
+func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
+
+var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
+
+// TestNbdkitPreExecWait locks in the per-mode pre-exec sleep budget: direct-boot
+// is zero (no drives, no nbdkit) and the PC-machine path keeps the 2 s wait that
+// the rest of the launch flow depends on.
+func TestNbdkitPreExecWait(t *testing.T) {
+	assert.Equal(t, time.Duration(0), nbdkitPreExecWait(true))
+	assert.Equal(t, 2*time.Second, nbdkitPreExecWait(false))
+}
+
+// TestQemuStartSettleWait locks in the per-mode post-fork settle: direct-boot
+// trims to 50 ms (QMP socket binds within a few ms when there is no firmware,
+// ROM, or block layer setup) and the PC-machine path retains the historical
+// 1 s buffer that catches bad-cmdline crashes before the QMP dial.
+func TestQemuStartSettleWait(t *testing.T) {
+	assert.Equal(t, 50*time.Millisecond, qemuStartSettleWait(true))
+	assert.Equal(t, time.Second, qemuStartSettleWait(false))
 }

@@ -86,9 +86,7 @@ func (m *Manager) setupExtraENINICs(instance *VM) error {
 		instance.Config.NetDevs = append(instance.Config.NetDevs, NetDev{
 			Value: fmt.Sprintf("tap,id=%s,ifname=%s,script=no,downscript=no", netID, extraTapName),
 		})
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("virtio-net-pci,netdev=%s,mac=%s", netID, extra.ENIMac),
-		})
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, netID, extra.ENIMac))
 		slog.Info("Extra VPC NIC configured",
 			"tap", extraTapName, "eni", extra.ENIID, "mac", extra.ENIMac, "subnet", extra.SubnetID)
 	}

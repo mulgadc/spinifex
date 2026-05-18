@@ -1,13 +1,11 @@
 package handlers_elbv2
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -160,7 +158,6 @@ func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -281,7 +278,6 @@ func TestCreateLoadBalancer_InternetFacing_AllocatesPublicIP(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -330,7 +326,6 @@ func TestCreateLoadBalancer_Internal_NoPublicIP(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -371,7 +366,6 @@ func TestCreateLoadBalancer_NLB_Internal_NoPublicIP(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-nlb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -420,7 +414,6 @@ func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
 		terminateDone: make(chan struct{}),
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -468,7 +461,6 @@ func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -518,7 +510,6 @@ func TestDescribeLoadBalancers_Internal_NoPublicIP(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -557,7 +548,6 @@ func TestCreateLoadBalancer_LaunchFailure_SetsStateFailed(t *testing.T) {
 		launchErr: assert.AnError,
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	svc.GatewayURL = "https://10.0.0.1:9999"
 	svc.SystemAccessKey = "AKID"
 	svc.SystemSecretKey = "SECRET"
@@ -586,7 +576,6 @@ func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
 		},
 	}
 	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-alb-test", nil })
 	// Deliberately NOT setting credentials
 
 	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
@@ -641,43 +630,6 @@ func TestENI_RequesterManagedFlag(t *testing.T) {
 			assert.True(t, *eni.RequesterManaged, "managed ENI should be RequesterManaged")
 		}
 	}
-}
-
-// TestCreateLoadBalancer_AMIResolverError_ReturnsServerInternal verifies that
-// when the launch path would fire (launcher + networking present) but the LB
-// system AMI cannot be resolved, CreateLoadBalancer returns ServerInternal and
-// does not persist a record or invoke the launcher.
-func TestCreateLoadBalancer_AMIResolverError_ReturnsServerInternal(t *testing.T) {
-	svc, vpcSvc := setupTestServiceWithVPC(t)
-
-	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
-	require.NoError(t, err)
-	subnetID := *subnets.Subnets[0].SubnetId
-
-	mock := &mockSystemInstanceLauncher{
-		launchResult: &SystemInstanceOutput{InstanceID: "i-should-not-launch"},
-	}
-	svc.InstanceLauncher = mock
-	svc.SetSystemAMIFunc(func() (string, error) {
-		return "", errors.New("LB system image not imported")
-	})
-	svc.GatewayURL = "https://10.0.0.1:9999"
-	svc.SystemAccessKey = "AKID"
-	svc.SystemSecretKey = "SECRET"
-
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
-		Name:    aws.String("ami-err-alb"),
-		Subnets: []*string{aws.String(subnetID)},
-	}, testAccountID)
-
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-	assert.Nil(t, out)
-	assert.Empty(t, mock.launchCalls, "launcher must not be invoked when AMI resolver errors")
-
-	lbs, err := svc.store.ListLoadBalancers()
-	require.NoError(t, err)
-	assert.Empty(t, lbs, "no LB record should be persisted when AMI resolver errors")
 }
 
 // TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies that

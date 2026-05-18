@@ -74,19 +74,6 @@
   delay: 2
   changed_when: false
 
-- name: init — build LB agent
-  ansible.builtin.command:
-    cmd: make build-lb-agent
-    chdir: "{{ spinifex_root }}"
-  changed_when: true
-  when: spinifex_build_lb_image | bool
-
-- name: init — import LB system image
-  ansible.builtin.command:
-    cmd: "{{ spinifex_root }}/scripts/build-system-image.sh {{ spinifex_lb_image_conf }} --import --quiet"
-  changed_when: true
-  when: spinifex_build_lb_image | bool
-
 - name: init — summary
   ansible.builtin.debug:
     msg: |
@@ -95,4 +82,3 @@
         external_mode={{ spinifex_external_mode }}
         spinifex.target: started
         CA: {{ spinifex_ca_trust_path }}
-        LB image: {{ 'imported' if spinifex_build_lb_image else 'skipped' }}

@@ -149,8 +149,8 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
       addresses:
         - "%s/24"
 `, mgmtMAC, mgmtIP)
-		// Route for multi-node is added via bootcmd in lbVMUserData (Alpine
-		// cloud-init does not support v2 routes under ethernets).
+		// Route for multi-node LB mgmt traffic is delivered to the LB microVM
+		// via the fw_cfg netcfg blob, not here.
 	}
 
 	return cfg
@@ -877,7 +877,20 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 		VolumeConfig: volumeConfig,
 	}
 
-	return viperblock.New(&vbconfig, "s3", cfg)
+	vb, err := viperblock.New(&vbconfig, "s3", cfg)
+	restoreSlogDefault()
+	return vb, err
+}
+
+// restoreSlogDefault re-installs the daemon's Info-level slog handler after
+// viperblock.New mutates the global slog default via its SetDebug method
+// (see viperblock.go SetDebug — it calls slog.SetDefault with LevelError,
+// silencing every Info/Warn in the entire process). Tracked for proper fix
+// in viperblock as mulga-siv-70.
+func restoreSlogDefault() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
 }
 
 // prepareRootVolume handles creation/cloning of the root volume
@@ -887,8 +900,6 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 		slog.Error("Failed to connect to Viperblock store", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-
-	vb.SetDebug(false)
 
 	// Initialize the backend
 	err = vb.Backend.Init()
@@ -996,8 +1007,6 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	efiVb.SetDebug(false)
-
 	// Initialize the backend
 	slog.Debug("Initializing EFI Viperblock store backend")
 	err = efiVb.Backend.Init()
@@ -1082,8 +1091,6 @@ func (s *InstanceServiceImpl) prepareCloudInitVolume(input *ec2.RunInstancesInpu
 		slog.Error("Could not create cloudinit viperblock", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-
-	cloudInitVb.SetDebug(false)
 
 	// Initialize the backend
 	slog.Debug("Initializing cloud-init Viperblock store backend")

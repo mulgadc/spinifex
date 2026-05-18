@@ -1,0 +1,14 @@
+---
+# In-place artifact swap: rebuilds + replaces binaries/microvm artifacts on
+# an already-installed node, then restarts spinifex.target. Use when iterating
+# on code without altering systemd units, users, dirs, or running the full
+# smoketest. For first-time or unit/script changes use dev-install / dev-reset.
+- name: Dev deploy — build + swap binaries + restart (no setup.sh, no smoketest)
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../vars/defaults.yml
+
+  roles:
+    - build
+    - deploy

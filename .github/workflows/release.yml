@@ -31,6 +31,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+
+      - name: Build microVM artifacts (lb-agent + kernel + initramfs)
+        run: cd spinifex && make build-microvm-image
+
       - name: Build amd64 Tarball
         env:
           VERSION: ${{ github.ref_name }}

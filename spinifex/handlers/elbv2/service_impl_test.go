@@ -1,7 +1,6 @@
 package handlers_elbv2
 
 import (
-	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -1526,26 +1525,8 @@ func TestUpdateStoredConfig_SkipsWhenNoInstance(t *testing.T) {
 
 // --- Service lifecycle and setter tests ---
 
-// TestGetSystemAMI_ColdStart and TestGetSystemInstanceType_ColdStart pin the
-// no-resolver-wired path. TestGet*_RetryOn{Error,Empty} only exercise paths
-// after a resolver is set, so they don't cover the boot-time race where a
-// caller asks for the system AMI/instance type before LB-image import has
-// installed the resolver. Cold-start must return empty + no error rather
-// than panic on a nil func.
-
-func TestGetSystemAMI_ColdStart(t *testing.T) {
-	svc := setupTestService(t)
-
-	ami, err := svc.getSystemAMI()
-	require.NoError(t, err)
-	assert.Empty(t, ami)
-
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-system-001", nil })
-	ami, err = svc.getSystemAMI()
-	require.NoError(t, err)
-	assert.Equal(t, "ami-system-001", ami)
-}
-
+// TestGetSystemInstanceType_ColdStart pins the no-resolver-wired path —
+// cold-start must return empty rather than panic on a nil func.
 func TestGetSystemInstanceType_ColdStart(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -1553,38 +1534,6 @@ func TestGetSystemInstanceType_ColdStart(t *testing.T) {
 
 	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
 	assert.Equal(t, "t3.micro", svc.getSystemInstanceType())
-}
-
-func TestGetSystemAMI_RetryOnError(t *testing.T) {
-	svc := setupTestService(t)
-
-	calls := 0
-	svc.SetSystemAMIFunc(func() (string, error) {
-		calls++
-		if calls < 3 {
-			return "", errors.New("LB system image not imported")
-		}
-		return "ami-system-001", nil
-	})
-
-	// First two calls error — must NOT be cached
-	_, err := svc.getSystemAMI()
-	require.Error(t, err)
-	_, err = svc.getSystemAMI()
-	require.Error(t, err)
-	assert.Equal(t, 2, calls)
-
-	// Third call succeeds — cached from now on
-	ami, err := svc.getSystemAMI()
-	require.NoError(t, err)
-	assert.Equal(t, "ami-system-001", ami)
-	assert.Equal(t, 3, calls)
-
-	// Subsequent calls return cached value without re-invoking
-	ami, err = svc.getSystemAMI()
-	require.NoError(t, err)
-	assert.Equal(t, "ami-system-001", ami)
-	assert.Equal(t, 3, calls)
 }
 
 func TestGetSystemInstanceType_RetryOnEmpty(t *testing.T) {
@@ -1610,21 +1559,6 @@ func TestGetSystemInstanceType_RetryOnEmpty(t *testing.T) {
 	assert.Equal(t, 2, calls)
 }
 
-func TestGetSystemAMI_Concurrent(t *testing.T) {
-	svc := setupTestService(t)
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-system-001", nil })
-
-	var wg sync.WaitGroup
-	for range 50 {
-		wg.Go(func() {
-			got, err := svc.getSystemAMI()
-			assert.NoError(t, err)
-			assert.Equal(t, "ami-system-001", got)
-		})
-	}
-	wg.Wait()
-}
-
 func TestGetSystemInstanceType_Concurrent(t *testing.T) {
 	svc := setupTestService(t)
 	svc.SetSystemInstanceTypeFunc(func() string { return "t3.micro" })
@@ -1637,54 +1571,6 @@ func TestGetSystemInstanceType_Concurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-}
-
-func TestLBVMUserData_MgmtRoute(t *testing.T) {
-	svc := setupTestService(t)
-	svc.MgmtRouteGateway = "10.15.8.1"
-	svc.MgmtRouteTarget = "10.15.8.100"
-	svc.GatewayURL = "https://10.15.8.100:9999"
-	svc.SystemAccessKey = "AK"
-	svc.SystemSecretKey = "SK"
-
-	data, err := svc.lbVMUserData("lb-test1", SchemeInternetFacing)
-	require.NoError(t, err)
-	assert.Contains(t, data, "bootcmd:")
-	assert.Contains(t, data, `"10.15.8.100/32"`)
-	assert.Contains(t, data, `"10.15.8.1"`)
-}
-
-// TestLBVMUserData_InternalSingleNodeFallback covers the single-node case
-// where MgmtRoute{Gateway,Target} are empty (AWSGW reachable on advertiseIP
-// via VPC for internet-facing LBs) but an internal LB has no EIP and so
-// needs a forced mgmt-NIC route to AWSGW. Internet-facing in the same setup
-// must still get no bootcmd (would steal the host's WAN return path).
-func TestLBVMUserData_InternalSingleNodeFallback(t *testing.T) {
-	mkSvc := func() *ELBv2ServiceImpl {
-		svc := setupTestService(t)
-		svc.GatewayURL = "https://192.168.1.33:9999"
-		svc.SystemAccessKey = "AK"
-		svc.SystemSecretKey = "SK"
-		svc.MgmtBridgeIP = "10.15.8.1"
-		svc.AdvertiseIP = "192.168.1.33"
-		return svc
-	}
-
-	internal, err := mkSvc().lbVMUserData("lb-int", SchemeInternal)
-	require.NoError(t, err)
-	assert.Contains(t, internal, "bootcmd:")
-	assert.Contains(t, internal, `"192.168.1.33/32"`)
-	assert.Contains(t, internal, `"10.15.8.1"`)
-
-	inetFacing, err := mkSvc().lbVMUserData("lb-inet", SchemeInternetFacing)
-	require.NoError(t, err)
-	assert.NotContains(t, inetFacing, "bootcmd:", "internet-facing single-node must not get a /32 mgmt route")
-
-	noBridge := mkSvc()
-	noBridge.MgmtBridgeIP = ""
-	out, err := noBridge.lbVMUserData("lb-int", SchemeInternal)
-	require.NoError(t, err)
-	assert.NotContains(t, out, "bootcmd:", "no fallback when br-mgmt is absent")
 }
 
 func TestIsCompatibleProtocol_UnknownListenerProtocol(t *testing.T) {

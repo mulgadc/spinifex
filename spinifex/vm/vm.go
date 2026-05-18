@@ -119,6 +119,12 @@ type VM struct {
 	// filters out tagged VMs from customer-facing listings.
 	ManagedBy string `json:"managed_by,omitempty"`
 
+	// DirectBoot signals that this VM was configured with a pre-built
+	// vm.Config by the launcher (microvm direct-boot path). When true,
+	// startQEMU skips buildBaseVMConfig and uses the existing Config
+	// instead. False for all PC-machine VMs.
+	DirectBoot bool `json:"direct_boot,omitempty"`
+
 	// GPUPCIAddresses holds the PCI addresses of all GPUs bound to this instance via
 	// VFIO (e.g. ["0000:03:00.0"]). Empty for non-GPU instances. Single-GPU instances
 	// have one entry; multi-GPU instances have one per assigned GPU.
@@ -195,6 +201,17 @@ type Config struct {
 	// UseUEFI requests OVMF firmware instead of the default SeaBIOS for x86_64 VMs.
 	// Falls back silently to SeaBIOS if OVMF is not installed on the host.
 	UseUEFI bool `json:"use_uefi,omitempty"`
+
+	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set
+	Initrd        string       `json:"initrd,omitempty"`         // path to initramfs; emits -initrd when set
+	KernelCmdline string       `json:"kernel_cmdline,omitempty"` // emits -append when set
+	FwCfg         []FwCfgEntry `json:"fw_cfg,omitempty"`         // each emits -fw_cfg name=<name>,file=<path>
+}
+
+// FwCfgEntry describes a single QEMU firmware configuration file entry.
+type FwCfgEntry struct {
+	Name string `json:"name"`
+	File string `json:"file"`
 }
 
 func (cfg *Config) Execute() (*exec.Cmd, error) {
@@ -230,10 +247,19 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-display", "none")
 	}
 
-	if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
+	if IsMMIO(cfg.MachineType) && cfg.ConsoleLogPath != "" {
+		// microvm with isa-serial=on: the machine creates the ISA serial device.
+		// Use -chardev file so output is captured without a socket client, then
+		// -serial chardev:console0 wires it to the existing device (not a new one).
+		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
+		// while the kernel talks to ttyS0.
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s", cfg.ConsoleLogPath))
+		args = append(args, "-serial", "chardev:console0")
+	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
 		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s",
 			cfg.SerialSocket, cfg.ConsoleLogPath)
-		args = append(args, "-chardev", chardevOpts, "-serial", "chardev:console0")
+		args = append(args, "-chardev", chardevOpts)
+		args = append(args, "-serial", "chardev:console0")
 	}
 
 	if cfg.CPUCount > 0 {
@@ -252,8 +278,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-object", fmt.Sprintf("iothread,id=%s", iot.ID))
 	}
 
-	if len(cfg.Drives) == 0 {
-		return nil, fmt.Errorf("at least one drive is required")
+	if len(cfg.Drives) == 0 && cfg.KernelImage == "" {
+		return nil, fmt.Errorf("at least one drive or a kernel image is required")
 	}
 
 	for _, drive := range cfg.Drives {
@@ -294,6 +320,22 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 	for _, netdev := range cfg.NetDevs {
 		args = append(args, "-netdev", netdev.Value)
+	}
+
+	if cfg.KernelImage != "" {
+		args = append(args, "-kernel", cfg.KernelImage)
+	}
+
+	if cfg.Initrd != "" {
+		args = append(args, "-initrd", cfg.Initrd)
+	}
+
+	if cfg.KernelCmdline != "" {
+		args = append(args, "-append", cfg.KernelCmdline)
+	}
+
+	for _, fw := range cfg.FwCfg {
+		args = append(args, "-fw_cfg", fmt.Sprintf("name=%s,file=%s", fw.Name, fw.File))
 	}
 
 	var qemuArchitecture string

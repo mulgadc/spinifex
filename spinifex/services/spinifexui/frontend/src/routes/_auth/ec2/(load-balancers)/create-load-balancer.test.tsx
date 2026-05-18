@@ -1,4 +1,4 @@
-import type { Image, SecurityGroup, Subnet, Vpc } from "@aws-sdk/client-ec2"
+import type { SecurityGroup, Subnet, Vpc } from "@aws-sdk/client-ec2"
 import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -90,22 +90,12 @@ const EXISTING_TG: TargetGroup = {
   Port: 80,
   VpcId: VPC_ID,
 }
-const LB_IMAGE: Image = {
-  ImageId: "ami-lb",
-  Name: "lb-alpine-3.21.6-x86_64",
-  Tags: [{ Key: "spinifex:managed-by", Value: "elbv2" }],
-}
-
-function seedClient(options: { lbImageImported?: boolean } = {}) {
-  const { lbImageImported = true } = options
+function seedClient() {
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
   qc.setQueryData(["ec2", "subnets"], { Subnets: SUBNETS })
   qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: SGS })
   qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [EXISTING_TG] })
-  qc.setQueryData(["ec2", "images"], {
-    Images: lbImageImported ? [LB_IMAGE] : [],
-  })
   return qc
 }
 
@@ -267,23 +257,5 @@ describe("create-load-balancer route", () => {
     expect(screen.getByText(/Target Group:/)).toBeInTheDocument()
     expect(screen.getByText(/arn:tg:new/)).toBeInTheDocument()
     expect(routerState.navigate).not.toHaveBeenCalled()
-  })
-
-  it("blocks form render with import banner when LB AMI missing", () => {
-    renderWithClient(
-      <CreateLoadBalancerPage />,
-      seedClient({ lbImageImported: false }),
-    )
-
-    expect(
-      screen.getByText("Load balancer image not imported"),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/spx admin images import --name lb-alpine/),
-    ).toBeInTheDocument()
-    // Form inputs must not render
-    expect(
-      screen.queryByLabelText("Name", { selector: "#lb-name" }),
-    ).not.toBeInTheDocument()
   })
 })

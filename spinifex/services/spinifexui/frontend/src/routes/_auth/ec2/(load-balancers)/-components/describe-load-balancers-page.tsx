@@ -2,12 +2,9 @@ import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 
-import { LbImageMissingBanner } from "@/components/elbv2/lb-image-missing-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
-import { hasLbImage } from "@/lib/system-managed"
-import { ec2ImagesQueryOptions } from "@/queries/ec2"
 import { elbv2LoadBalancersQueryOptions } from "@/queries/elbv2"
 
 function formatCreatedAt(createdAt: Date | undefined): string {
@@ -20,17 +17,14 @@ function formatCreatedAt(createdAt: Date | undefined): string {
 export function DescribeLoadBalancersPage() {
   const navigate = useNavigate()
   const { data } = useSuspenseQuery(elbv2LoadBalancersQueryOptions)
-  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
 
   const loadBalancers = data.LoadBalancers ?? []
-  const lbImageImported = hasLbImage(imagesData.Images ?? [])
 
   return (
     <>
       <PageHeading
         actions={
           <Button
-            disabled={!lbImageImported}
             onClick={async () =>
               await navigate({ to: "/ec2/create-load-balancer" })
             }
@@ -40,8 +34,6 @@ export function DescribeLoadBalancersPage() {
         }
         title="Load Balancers"
       />
-
-      {!lbImageImported && <LbImageMissingBanner />}
 
       {loadBalancers.length > 0 ? (
         <div className="overflow-x-auto rounded-lg border bg-card">

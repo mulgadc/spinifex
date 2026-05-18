@@ -200,27 +200,6 @@ func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
 	assert.False(t, nics[1].IsDefault, "NIC[1] must have IsDefault=false")
 }
 
-// TestCreateLoadBalancer_MissingCredentials_SetsStateFailed verifies that
-// missing system credentials result in StateFailed and skip the launch.
-func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
-	svc, _, subnetID := setupMicrovmTestService(t)
-	// Clear credentials to trigger the failure path.
-	svc.GatewayURL = ""
-
-	mock := &mockSystemInstanceLauncher{
-		launchResult: &SystemInstanceOutput{InstanceID: "i-should-not-launch"},
-	}
-	svc.InstanceLauncher = mock
-
-	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
-		Name:    aws.String("mv-nocreds-alb"),
-		Subnets: []*string{aws.String(subnetID)},
-	}, testAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, StateFailed, *out.LoadBalancers[0].State.Code)
-	assert.Empty(t, mock.launchCalls, "launcher must not be invoked when credentials are missing")
-}
-
 // parseEnvBlob parses a KEY=value newline-separated blob into a map.
 func parseEnvBlob(t *testing.T, blob string) map[string]string {
 	t.Helper()

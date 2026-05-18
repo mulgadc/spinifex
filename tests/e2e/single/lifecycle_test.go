@@ -367,5 +367,5 @@ func waitForSSHReady(t *testing.T, host string, port int) {
 		}
 		_ = conn.Close()
 		return true
-	}, 60*time.Second, 2*time.Second, fmt.Sprintf("SSH port %s never became reachable", addr))
+	}, 3*time.Minute, 2*time.Second, fmt.Sprintf("SSH port %s never became reachable", addr))
 }

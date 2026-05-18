@@ -140,7 +140,7 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 		}
 		_ = conn.Close()
 		return true
-	}, 2*time.Minute, 2*time.Second, "bastion SSH never reachable")
+	}, 3*time.Minute, 2*time.Second, "bastion SSH never reachable")
 
 	bastionTgt := harness.SSHTarget{User: "ec2-user", Host: bastionPubIP, Port: 22, KeyPath: fix.KeyPath}
 

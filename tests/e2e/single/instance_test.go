@@ -136,7 +136,7 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 		}
 		_ = conn.Close()
 		return true
-	}, 60*time.Second, 2*time.Second, "SSH port "+addr+" never became reachable")
+	}, 3*time.Minute, 2*time.Second, "SSH port "+addr+" never became reachable")
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
 

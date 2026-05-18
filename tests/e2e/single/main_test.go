@@ -88,8 +88,19 @@ func TestSingleNode(t *testing.T) {
 	t.Run("Phase5c_Snapshot", func(t *testing.T) { phase5c_SnapshotLifecycle(t, fix) })
 	t.Run("Phase5d_SnapshotBackedLaunch", func(t *testing.T) { phase5d_SnapshotBackedLaunch(t, fix) })
 	t.Run("Phase5e_CreateImage", func(t *testing.T) { phase5e_CreateImage(t, fix) })
+	t.Run("Phase5f_SecurityGroupEgress", func(t *testing.T) { phase5f_SecurityGroupEgress(t, fix) })
 
-	// Stages D–G will append more t.Run calls here.
+	t.Run("Phase6_TagManagement", func(t *testing.T) { phase6_TagManagement(t, fix) })
+
+	t.Run("Phase7_StopStart", func(t *testing.T) { phase7_StopStart(t, fix) })
+	t.Run("Phase7a_AttachToStoppedError", func(t *testing.T) { phase7a_AttachToStoppedError(t, fix) })
+	t.Run("Phase7b_ModifyInstanceAttribute", func(t *testing.T) { phase7b_ModifyInstanceAttribute(t, fix) })
+	t.Run("Phase7c_pre_Reboot", func(t *testing.T) { phase7cPre_Reboot(t, fix) })
+	t.Run("Phase7c_RunInstancesMultiCount", func(t *testing.T) { phase7c_RunInstancesMultiCount(t, fix) })
+
+	t.Run("Phase8_NegativeErrorPaths", func(t *testing.T) { phase8_NegativeErrorPaths(t, fix) })
+
+	// Stages E–G will append more t.Run calls here.
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "ec2-describe-instances.txt",

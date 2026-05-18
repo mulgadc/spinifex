@@ -121,7 +121,12 @@ func TestSingleNode(t *testing.T) {
 
 	t.Run("Phase8Acct_AccountScoping", func(t *testing.T) { phase8Acct_AccountScoping(t, fix) })
 
-	// Stages F–G will append more t.Run calls here.
+	t.Run("Phase8b_VPCSubnetE2E", func(t *testing.T) { phase8b_VPCSubnetE2E(t, fix) })
+	t.Run("Phase8c_RouteTableValidation", func(t *testing.T) { phase8c_RouteTableValidation(t, fix) })
+	t.Run("Phase8d_NATGateway", func(t *testing.T) { phase8d_NATGateway(t, fix) })
+	t.Run("Phase8e_SGToSGDatapath", func(t *testing.T) { phase8e_SGToSGDatapath(t, fix) })
+
+	// Stage G will append teardown t.Run calls here.
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "ec2-describe-instances.txt",

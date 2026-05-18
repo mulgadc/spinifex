@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: deploy
+  description: In-place binary + microvm artifact swap for a running Spinifex node (parity with `make deploy`).
+  license: BSD-3-Clause
+  min_ansible_version: "2.14"
+dependencies: []

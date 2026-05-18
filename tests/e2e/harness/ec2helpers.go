@@ -158,7 +158,7 @@ func DisableSerialConsoleAccess(t *testing.T, c *AWSClient) bool {
 func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID string) {
 	t.Helper()
 	vpcs, err := c.EC2.DescribeVpcs(&ec2.DescribeVpcsInput{
-		Filters: []*ec2.Filter{{Name: aws.String("isDefault"), Values: []*string{aws.String("true")}}},
+		Filters: []*ec2.Filter{{Name: aws.String("is-default"), Values: []*string{aws.String("true")}}},
 	})
 	if err != nil {
 		t.Fatalf("describe-vpcs: %v", err)

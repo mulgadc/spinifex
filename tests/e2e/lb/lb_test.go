@@ -116,24 +116,29 @@ type sharedFixture struct {
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
 	t.Helper()
 	f := &sharedFixture{}
+
+	harness.Phase(t, "Discovering cluster capacity")
 	f.InstanceType = discoverNanoInstanceType(t, c)
 	f.AMIID = discoverAMI(t, c)
+
+	harness.Phase(t, "Ensuring SSH key pair %q", lbKeyName)
 	ensureKeyPair(t, c)
 	t.Cleanup(func() { deleteKeyPair(t, c) })
 
+	harness.Phase(t, "Creating shared VPC topology (%s)", lbVPCCIDR)
 	createVPC(t, c, f)
 	t.Cleanup(func() { deleteVPC(t, c, f) })
-
 	createIGW(t, c, f)
 	t.Cleanup(func() { deleteIGW(t, c, f) })
-
 	createSubnet(t, c, f)
 	t.Cleanup(func() { deleteSubnet(t, c, f) })
-
 	configureDefaultSG(t, c, f)
+
+	harness.Phase(t, "Launching app instances (2× %s)", f.InstanceType)
 	launchAppInstances(t, c, f)
 	t.Cleanup(func() { terminateInstances(t, c, f.AppInstanceIDs) })
 
+	harness.Phase(t, "Launching probe client")
 	launchSharedProbeClient(t, c, f)
 	t.Cleanup(func() { terminateInstances(t, c, []string{f.ClientID}) })
 

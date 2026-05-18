@@ -31,6 +31,7 @@ inventory and roles relative to CWD.
 | `playbooks/dev-teardown.yml` | Wipe state only (no reinstall) | `reset-dev-env.sh` §teardown |
 | `playbooks/dev-install.yml` | Build + install + init + smoketest on clean box | `dev-install.sh` |
 | `playbooks/dev-reset.yml` | Capture settings → teardown → build → install → init → smoketest | `reset-dev-env.sh` (full) |
+| `playbooks/dev-deploy.yml` | Rebuild + swap binaries/microvm artifacts + restart (no setup.sh, no smoketest) | `make deploy` |
 
 Upcoming (not yet implemented):
 
@@ -44,6 +45,7 @@ ansible-playbook playbooks/dev-preflight.yml
 ansible-playbook playbooks/dev-teardown.yml
 ansible-playbook playbooks/dev-install.yml
 ansible-playbook playbooks/dev-reset.yml
+ansible-playbook playbooks/dev-deploy.yml
 ```
 
 Or via `make` (from `spinifex/`):
@@ -53,7 +55,15 @@ make ansible-dev-preflight
 make ansible-dev-teardown
 make ansible-dev-install
 make ansible-dev-reset
+make ansible-dev-deploy
 ```
+
+### When to use which
+
+- First-time / clean box → `ansible-dev-install`
+- Iterate on Go code, microvm initramfs, lb-agent → `ansible-dev-deploy` (fast)
+- Changed systemd units, helper scripts, logrotate, setup.sh → `ansible-dev-reset` (slow, full rebuild)
+- Need a clean slate without reinstall → `ansible-dev-teardown`
 
 ## Variable overrides
 

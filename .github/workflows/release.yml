@@ -270,6 +270,7 @@ jobs:
         run: |
           mkdir -p viperblock/lib
           cd viperblock/nbd && GOWORK=off CGO_ENABLED=1 go build \
+            -mod=mod \
             -buildmode=c-shared \
             -o ../lib/nbdkit-viperblock-plugin.so \
             .

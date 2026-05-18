@@ -1,0 +1,282 @@
+---
+# Read-only health snapshot. NEVER mutates state. Every probe must use
+# `changed_when: false` and `failed_when: false` so the role always reaches
+# the summary task even when the node is half-broken — surfacing brokenness
+# is the whole point.
+
+- name: status — spinifex.target activation
+  ansible.builtin.command: systemctl is-active spinifex.target
+  register: status_target
+  changed_when: false
+  failed_when: false
+
+- name: status — list spinifex-* units (active + failed)
+  ansible.builtin.shell: |
+    systemctl list-units 'spinifex-*' --all --no-legend --plain \
+      --output=json 2>/dev/null || \
+      systemctl list-units 'spinifex-*' --all --no-legend --plain
+  register: status_units
+  changed_when: false
+  failed_when: false
+
+- name: status — failed spinifex-* units (one line per)
+  ansible.builtin.shell: |
+    systemctl list-units 'spinifex-*' --state=failed --no-legend --plain \
+      | awk '{print $1}'
+  register: status_failed_units
+  changed_when: false
+  failed_when: false
+
+- name: status — port listeners (which process holds each spinifex port)
+  ansible.builtin.shell: |
+    ss -tlnpH 'sport = :{{ item.port }}' | head -1
+  register: status_ports
+  loop: "{{ spinifex_ports }}"
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.service }} ({{ item.port }})"
+
+- name: status — OVS tooling present?
+  ansible.builtin.command: which ovs-vsctl
+  register: status_ovs_which
+  changed_when: false
+  failed_when: false
+
+- name: status — OVS bridges
+  become: true
+  ansible.builtin.command: ovs-vsctl list-br
+  register: status_ovs_brs
+  changed_when: false
+  failed_when: false
+  when: status_ovs_which.rc == 0
+
+- name: status — br-int exists?
+  become: true
+  ansible.builtin.command: ovs-vsctl br-exists br-int
+  register: status_brint
+  changed_when: false
+  failed_when: false
+  when: status_ovs_which.rc == 0
+
+- name: status — ovn-controller active?
+  ansible.builtin.command: systemctl is-active ovn-controller
+  register: status_ovn_ctrl
+  changed_when: false
+  failed_when: false
+
+- name: status — ovn-central active?
+  ansible.builtin.command: systemctl is-active ovn-central
+  register: status_ovn_central
+  changed_when: false
+  failed_when: false
+
+- name: status — OVN NB/SB DB files present?
+  become: true
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: status_ovn_dbs
+  loop:
+    - "{{ ovn_nb_db }}"
+    - "{{ ovn_sb_db }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: status — spinifex.toml present?
+  become: true
+  ansible.builtin.stat:
+    path: "{{ spinifex_config_file }}"
+  register: status_config
+
+- name: status — CA trust present?
+  become: true
+  ansible.builtin.stat:
+    path: "{{ spinifex_ca_trust_path }}"
+  register: status_ca
+
+- name: status — AWS gateway round-trip (describe-regions)
+  become: true
+  become_user: "{{ spinifex_invoking_user }}"
+  environment:
+    AWS_PROFILE: spinifex
+  ansible.builtin.command: aws ec2 describe-regions --output text
+  register: status_awsgw
+  changed_when: false
+  failed_when: false
+
+- name: status — installed spx binary
+  become: true
+  ansible.builtin.stat:
+    path: /usr/local/bin/spx
+    checksum_algorithm: sha256
+  register: status_spx_installed
+
+- name: status — built spx binary
+  ansible.builtin.stat:
+    path: "{{ spinifex_root }}/bin/spx"
+    checksum_algorithm: sha256
+  register: status_spx_built
+
+- name: status — spx version (installed)
+  ansible.builtin.shell: |
+    /usr/local/bin/spx version 2>/dev/null | grep -vE '^[0-9]{4}/' | head -1
+  register: status_spx_version
+  changed_when: false
+  failed_when: false
+  when: status_spx_installed.stat.exists
+
+- name: status — installed nbdkit plugin
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    pdir=$(nbdkit --dump-config | awk -F= '/^plugindir=/{print $2; exit}')
+    [ -f "$pdir/nbdkit-viperblock-plugin.so" ] && \
+      sha256sum "$pdir/nbdkit-viperblock-plugin.so" | awk '{print $1}'
+  register: status_plugin_installed_sha
+  changed_when: false
+  failed_when: false
+
+- name: status — built nbdkit plugin
+  ansible.builtin.stat:
+    path: "{{ mulga_root }}/viperblock/lib/nbdkit-viperblock-plugin.so"
+    checksum_algorithm: sha256
+  register: status_plugin_built
+
+- name: status — microvm artifacts (built)
+  ansible.builtin.stat:
+    path: "{{ spinifex_root }}/build/microvm/{{ item }}"
+    checksum_algorithm: sha256
+  register: status_microvm_built
+  loop:
+    - vmlinuz
+    - initramfs.cpio.gz
+
+- name: status — microvm artifacts (installed)
+  become: true
+  ansible.builtin.stat:
+    path: /usr/share/spinifex/microvm/{{ item }}
+    checksum_algorithm: sha256
+  register: status_microvm_installed
+  loop:
+    - vmlinuz
+    - initramfs.cpio.gz
+
+- name: status — running QEMU VMs
+  ansible.builtin.shell: pgrep -fa 'qemu-system-' | wc -l
+  register: status_qemu_count
+  changed_when: false
+  failed_when: false
+
+- name: status — count AMIs
+  become: true
+  become_user: "{{ spinifex_invoking_user }}"
+  environment:
+    AWS_PROFILE: spinifex
+  ansible.builtin.shell: |
+    aws ec2 describe-images --query 'length(Images)' --output text 2>/dev/null
+  register: status_ami_count
+  changed_when: false
+  failed_when: false
+
+- name: status — count keypairs
+  become: true
+  become_user: "{{ spinifex_invoking_user }}"
+  environment:
+    AWS_PROFILE: spinifex
+  ansible.builtin.shell: |
+    aws ec2 describe-key-pairs --query 'length(KeyPairs)' --output text 2>/dev/null
+  register: status_key_count
+  changed_when: false
+  failed_when: false
+
+- name: status — count volumes
+  become: true
+  become_user: "{{ spinifex_invoking_user }}"
+  environment:
+    AWS_PROFILE: spinifex
+  ansible.builtin.shell: |
+    aws ec2 describe-volumes --query 'length(Volumes)' --output text 2>/dev/null
+  register: status_vol_count
+  changed_when: false
+  failed_when: false
+
+- name: status — count running instances
+  become: true
+  become_user: "{{ spinifex_invoking_user }}"
+  environment:
+    AWS_PROFILE: spinifex
+  ansible.builtin.shell: |
+    aws ec2 describe-instances \
+      --filters Name=instance-state-name,Values=running \
+      --query 'length(Reservations[].Instances[])' --output text 2>/dev/null
+  register: status_instance_count
+  changed_when: false
+  failed_when: false
+
+- name: status — compute drift facts
+  ansible.builtin.set_fact:
+    status_spx_drift: >-
+      {{ status_spx_installed.stat.exists and status_spx_built.stat.exists and
+         (status_spx_installed.stat.checksum | default('')) !=
+         (status_spx_built.stat.checksum  | default('')) }}
+    status_plugin_drift: >-
+      {{ status_plugin_built.stat.exists and
+         (status_plugin_installed_sha.stdout | default('') | trim) !=
+         (status_plugin_built.stat.checksum | default('')) }}
+    status_microvm_built_present: "{{ status_microvm_built.results
+      | map(attribute='stat.exists') | min }}"
+
+- name: status — render port lines
+  ansible.builtin.set_fact:
+    status_port_lines: >-
+      {{ status_port_lines | default([]) +
+         [('%-24s' | format(item.item.service ~ ' (' ~ item.item.port ~ ')'))
+          ~ ': '
+          ~ ('listening' if (item.stdout | length) > 0 else 'free')] }}
+  loop: "{{ status_ports.results }}"
+  loop_control:
+    label: "{{ item.item.service }}"
+
+- name: status — assemble summary
+  ansible.builtin.set_fact:
+    status_summary_lines: >-
+      {{
+        [
+          '── Spinifex dev-node status ──────────────────────────────────────────────',
+          'target           : ' ~ (status_target.stdout | trim),
+          'failed units     : ' ~ (status_failed_units.stdout_lines | length)
+            ~ ((' → ' ~ (status_failed_units.stdout_lines | join(', '))) if (status_failed_units.stdout_lines | length) > 0 else ''),
+          '── Ports ──'
+        ]
+        + status_port_lines
+        + [
+          '── Networking ──',
+          'ovs-vsctl        : ' ~ ('present' if status_ovs_which.rc == 0 else 'MISSING'),
+          'ovs bridges      : ' ~ ((status_ovs_brs.stdout_lines | default([]) | join(', ')) or '(none)'),
+          'br-int           : ' ~ ('present' if (status_brint.rc | default(1)) == 0 else 'MISSING'),
+          'ovn-controller   : ' ~ (status_ovn_ctrl.stdout | trim),
+          'ovn-central      : ' ~ (status_ovn_central.stdout | trim),
+          'ovn NB DB        : ' ~ ('present' if status_ovn_dbs.results[0].stat.exists else 'absent'),
+          'ovn SB DB        : ' ~ ('present' if status_ovn_dbs.results[1].stat.exists else 'absent'),
+          '── Config / trust ──',
+          'spinifex.toml    : ' ~ ('present' if status_config.stat.exists else 'MISSING') ~ ' (' ~ spinifex_config_file ~ ')',
+          'CA trust         : ' ~ ('present' if status_ca.stat.exists else 'MISSING') ~ ' (' ~ spinifex_ca_trust_path ~ ')',
+          '── AWS gateway ──',
+          'describe-regions : ' ~ ('OK' if status_awsgw.rc == 0 else 'FAIL (rc=' ~ status_awsgw.rc ~ ')'),
+          'AMIs             : ' ~ (status_ami_count.stdout | default('?') | trim),
+          'keypairs         : ' ~ (status_key_count.stdout | default('?') | trim),
+          'volumes          : ' ~ (status_vol_count.stdout | default('?') | trim),
+          'running instances: ' ~ (status_instance_count.stdout | default('?') | trim),
+          'running QEMU     : ' ~ (status_qemu_count.stdout | default('?') | trim),
+          '── Versions / drift ──',
+          'spx (installed)  : ' ~ ((status_spx_version.stdout | default('') | trim) or '(not installed)'),
+          'spx drift        : ' ~ ('YES (built ≠ installed) — run ansible-dev-deploy' if status_spx_drift else 'no'),
+          'plugin drift     : ' ~ ('YES (built ≠ installed) — run ansible-dev-deploy' if status_plugin_drift else 'no'),
+          'microvm built    : ' ~ ('present' if status_microvm_built_present else 'not built on this branch'),
+          '──────────────────────────────────────────────────────────────────────────'
+        ]
+      }}
+
+- name: status — summary
+  ansible.builtin.debug:
+    msg: "{{ status_summary_lines }}"

@@ -32,6 +32,7 @@ inventory and roles relative to CWD.
 | `playbooks/dev-install.yml` | Build + install + init + smoketest on clean box | `dev-install.sh` |
 | `playbooks/dev-reset.yml` | Capture settings → teardown → build → install → init → smoketest | `reset-dev-env.sh` (full) |
 | `playbooks/dev-deploy.yml` | Rebuild + swap binaries/microvm artifacts + restart (no setup.sh, no smoketest) | `make deploy` |
+| `playbooks/dev-status.yml` | Read-only health snapshot (units, ports, OVN/OVS, gateway, counts, drift) | none |
 
 Upcoming (not yet implemented):
 
@@ -46,6 +47,7 @@ ansible-playbook playbooks/dev-teardown.yml
 ansible-playbook playbooks/dev-install.yml
 ansible-playbook playbooks/dev-reset.yml
 ansible-playbook playbooks/dev-deploy.yml
+ansible-playbook playbooks/dev-status.yml
 ```
 
 Or via `make` (from `spinifex/`):
@@ -56,6 +58,7 @@ make ansible-dev-teardown
 make ansible-dev-install
 make ansible-dev-reset
 make ansible-dev-deploy
+make ansible-dev-status
 ```
 
 ### When to use which
@@ -64,6 +67,7 @@ make ansible-dev-deploy
 - Iterate on Go code, microvm initramfs, lb-agent → `ansible-dev-deploy` (fast)
 - Changed systemd units, helper scripts, logrotate, setup.sh → `ansible-dev-reset` (slow, full rebuild)
 - Need a clean slate without reinstall → `ansible-dev-teardown`
+- "Is my dev box healthy?" → `ansible-dev-status` (read-only, never mutates)
 
 ## Variable overrides
 

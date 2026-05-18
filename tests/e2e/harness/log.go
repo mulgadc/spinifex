@@ -40,23 +40,21 @@ func Phase(t *testing.T, format string, args ...any) {
 	fmt.Fprintf(os.Stdout, "\n%s%s━━ %s ━━%s\n", colorBold, colorCyan, fmt.Sprintf(format, args...), colorReset)
 }
 
-// Step emits a single-line sub-phase marker. Dual-emits to os.Stdout so
-// long-running subtests stream progress live in CI (the testing framework
-// buffers t.Logf output per-test and releases only on PASS/FAIL), and to
-// t.Logf so JUnit XML still attributes the line to the owning test.
-// Duplicate output in the failure case is acceptable — both copies carry
-// the same content; the stdout copy gives a triager live signal, the
-// t.Logf copy keeps the per-test bucketing intact.
+// Step emits a single-line sub-phase marker directly to os.Stdout so it
+// streams live in CI. Bypasses t.Logf because the testing framework
+// buffers per-test and releases only on PASS/FAIL — long subtests
+// (lb's Internal_NLB ~60s, Phase8Acct_AccountScoping ~115s) would
+// otherwise go silent for the whole subtest. go-junit-report parses
+// stdout between `=== RUN` and `--- PASS/FAIL` markers, so per-test
+// attribution is preserved without the buffered duplicate.
 func Step(t *testing.T, format string, args ...any) {
 	t.Helper()
-	line := fmt.Sprintf("%s· %s%s", colorDim, fmt.Sprintf(format, args...), colorReset)
-	fmt.Fprintln(os.Stdout, line)
-	t.Logf("%s", line)
+	fmt.Fprintf(os.Stdout, "%s· %s%s\n", colorDim, fmt.Sprintf(format, args...), colorReset)
 }
 
-// Detail emits a key=value line. Same dual-emit rationale as Step. Pass
-// alternating key, value, key, value …; mismatched lengths panic so the
-// bug surfaces at the test boundary.
+// Detail emits a key=value line. Same direct-stdout rationale as Step.
+// Pass alternating key, value, key, value …; mismatched lengths panic so
+// the bug surfaces at the test boundary.
 func Detail(t *testing.T, kvs ...any) {
 	t.Helper()
 	if len(kvs)%2 != 0 {
@@ -66,7 +64,5 @@ func Detail(t *testing.T, kvs ...any) {
 	for i := 0; i < len(kvs); i += 2 {
 		parts = append(parts, fmt.Sprintf("%s%v%s=%v", colorDim, kvs[i], colorReset, kvs[i+1]))
 	}
-	line := strings.Join(parts, " ")
-	fmt.Fprintln(os.Stdout, line)
-	t.Logf("%s", line)
+	fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
 }

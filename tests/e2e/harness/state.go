@@ -16,7 +16,7 @@ import (
 func LocalStateRevision(ctx context.Context, d *DaemonClient, node Node) (uint64, error) {
 	s, err := d.Status(ctx, node)
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: local state revision %s: %w", node.Name, err)
+		return 0, fmt.Errorf("e2e harness: local state revision %s: %w", node.Name, err)
 	}
 	return s.Revision, nil
 }
@@ -28,6 +28,6 @@ func LocalStateRevision(ctx context.Context, d *DaemonClient, node Node) (uint64
 func AssertMonotonic(t *testing.T, before, after uint64) {
 	t.Helper()
 	if after < before {
-		t.Fatalf("ddil harness: local state revision regressed: before=%d after=%d", before, after)
+		t.Fatalf("e2e harness: local state revision regressed: before=%d after=%d", before, after)
 	}
 }

@@ -16,6 +16,45 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
+// WaitForMode polls the daemon's /local/status until it reports the expected
+// mode or timeout expires. Poll interval is 1s — fast enough that a
+// 30-second timeout sees ~30 attempts, slow enough not to flood a recovering
+// daemon.
+//
+// Depends on daemon-local-autonomy §1b. Until that endpoint ships, this
+// function will time out; callers gate on t.Skip.
+func WaitForMode(ctx context.Context, dc *DaemonClient, node Node, want DaemonMode, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	const interval = 1 * time.Second
+
+	var lastErr error
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		status, err := dc.Status(ctx, node)
+		if err == nil && status.Mode == want {
+			return nil
+		}
+		lastErr = err
+
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("e2e harness: wait for mode %s on %s: timed out after %s: last error: %w",
+					want, node.Name, timeout, lastErr)
+			}
+			return fmt.Errorf("e2e harness: wait for mode %s on %s: timed out after %s (still reporting another mode)",
+				want, node.Name, timeout)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
 // daemonPort is the cluster-manager HTTPS port the daemon binds for /health
 // and /local/* (see spinifex/daemon/daemon.go ClusterManager, configured via
 // [nodes.<id>.daemon].host). 4432 is the deployed default; 8443 is predastore.
@@ -84,21 +123,21 @@ func (d *DaemonClient) url(node Node, path string) string {
 func (d *DaemonClient) getJSON(ctx context.Context, node Node, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url(node, path), nil)
 	if err != nil {
-		return fmt.Errorf("ddil harness: daemon %s %s: %w", node.Name, path, err)
+		return fmt.Errorf("e2e harness: daemon %s %s: %w", node.Name, path, err)
 	}
 	resp, err := d.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("ddil harness: daemon %s %s: %w", node.Name, path, err)
+		return fmt.Errorf("e2e harness: daemon %s %s: %w", node.Name, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("ddil harness: daemon %s %s: status %d: %s",
+		return fmt.Errorf("e2e harness: daemon %s %s: status %d: %s",
 			node.Name, path, resp.StatusCode, string(body))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("ddil harness: daemon %s %s decode: %w", node.Name, path, err)
+		return fmt.Errorf("e2e harness: daemon %s %s decode: %w", node.Name, path, err)
 	}
 	return nil
 }

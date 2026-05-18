@@ -75,10 +75,10 @@ type Witness struct {
 func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
-		return nil, errors.New("ddil harness: NewWitness requires AWS_REGION")
+		return nil, errors.New("e2e harness: NewWitness requires AWS_REGION")
 	}
 	if len(cluster.Nodes) == 0 {
-		return nil, errors.New("ddil harness: NewWitness requires a non-empty cluster")
+		return nil, errors.New("e2e harness: NewWitness requires a non-empty cluster")
 	}
 
 	endpoint := "https://" + net.JoinHostPort(cluster.Nodes[0].Addr, strconv.Itoa(gatewayPort))
@@ -93,21 +93,21 @@ func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: aws session: %w", err)
+		return nil, fmt.Errorf("e2e harness: aws session: %w", err)
 	}
 
 	hostSigner, err := loadSigner(cluster.SSHKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: host ssh key: %w", err)
+		return nil, fmt.Errorf("e2e harness: host ssh key: %w", err)
 	}
 
 	guestKeyPath := os.Getenv("DDIL_GUEST_SSH_KEY")
 	if guestKeyPath == "" {
-		return nil, errors.New("ddil harness: NewWitness requires DDIL_GUEST_SSH_KEY (path to the private key paired with DDIL_WITNESS_KEY_NAME's registered material)")
+		return nil, errors.New("e2e harness: NewWitness requires DDIL_GUEST_SSH_KEY (path to the private key paired with DDIL_WITNESS_KEY_NAME's registered material)")
 	}
 	guestSigner, err := loadSigner(guestKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: guest ssh key: %w", err)
+		return nil, fmt.Errorf("e2e harness: guest ssh key: %w", err)
 	}
 
 	return &Witness{
@@ -170,10 +170,10 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 			UserData:     aws.String(userData),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("ddil harness: RunInstances: %w", err)
+			return nil, fmt.Errorf("e2e harness: RunInstances: %w", err)
 		}
 		if len(out.Instances) == 0 || out.Instances[0].InstanceId == nil {
-			return nil, errors.New("ddil harness: RunInstances returned no instance")
+			return nil, errors.New("e2e harness: RunInstances returned no instance")
 		}
 		id := aws.StringValue(out.Instances[0].InstanceId)
 
@@ -197,7 +197,7 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 			baseline, err := awaitBaseline(ctx, w, placed, publicIP, 2*time.Minute)
 			if err != nil {
 				_ = w.terminate(ctx, id)
-				return nil, fmt.Errorf("ddil harness: witness baseline read: %w", err)
+				return nil, fmt.Errorf("e2e harness: witness baseline read: %w", err)
 			}
 			return &WitnessVM{
 				InstanceID:      id,
@@ -212,7 +212,7 @@ func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, er
 		lastErr = fmt.Errorf("witness landed on %s, wanted %s", placed.Name, host.Name)
 		_ = w.terminate(ctx, id)
 	}
-	return nil, fmt.Errorf("ddil harness: LaunchWitnessVM: %w after %d attempts", lastErr, maxPlacementAttempts)
+	return nil, fmt.Errorf("e2e harness: LaunchWitnessVM: %w after %d attempts", lastErr, maxPlacementAttempts)
 }
 
 // ReadCounter SSHes the guest at its public IP (tunnelled through the
@@ -235,10 +235,10 @@ func AssertProgressed(ctx context.Context, t *testing.T, v *WitnessVM) {
 	t.Helper()
 	current, err := v.ReadCounter(ctx)
 	if err != nil {
-		t.Fatalf("ddil harness: read witness counter on %s (%s): %v", v.HostNode.Name, v.InstanceID, err)
+		t.Fatalf("e2e harness: read witness counter on %s (%s): %v", v.HostNode.Name, v.InstanceID, err)
 	}
 	if current <= v.BaselineCounter {
-		t.Fatalf("ddil harness: witness %s on %s did not progress: baseline=%d current=%d",
+		t.Fatalf("e2e harness: witness %s on %s did not progress: baseline=%d current=%d",
 			v.InstanceID, v.HostNode.Name, v.BaselineCounter, current)
 	}
 	t.Logf("witness %s on %s progressed %d → %d", v.InstanceID, v.HostNode.Name, v.BaselineCounter, current)
@@ -257,10 +257,10 @@ func (w *Witness) resolveAMI(ctx context.Context) (string, error) {
 		}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("ddil harness: DescribeImages: %w", err)
+		return "", fmt.Errorf("e2e harness: DescribeImages: %w", err)
 	}
 	if len(out.Images) == 0 || out.Images[0].ImageId == nil {
-		return "", errors.New("ddil harness: no ami-ubuntu-* images registered in the cluster")
+		return "", errors.New("e2e harness: no ami-ubuntu-* images registered in the cluster")
 	}
 	w.ami = aws.StringValue(out.Images[0].ImageId)
 	return w.ami, nil
@@ -279,10 +279,10 @@ func (w *Witness) resolveInstanceType(ctx context.Context) (string, error) {
 	}
 	out, err := w.ec2.DescribeInstanceTypesWithContext(ctx, &ec2.DescribeInstanceTypesInput{})
 	if err != nil {
-		return "", fmt.Errorf("ddil harness: DescribeInstanceTypes: %w", err)
+		return "", fmt.Errorf("e2e harness: DescribeInstanceTypes: %w", err)
 	}
 	if len(out.InstanceTypes) == 0 {
-		return "", errors.New("ddil harness: cluster registered no instance types")
+		return "", errors.New("e2e harness: cluster registered no instance types")
 	}
 	sort.Slice(out.InstanceTypes, func(i, j int) bool {
 		a, b := out.InstanceTypes[i], out.InstanceTypes[j]
@@ -307,7 +307,7 @@ func (w *Witness) resolveInstanceType(ctx context.Context) (string, error) {
 	})
 	w.instanceType = aws.StringValue(out.InstanceTypes[0].InstanceType)
 	if w.instanceType == "" {
-		return "", errors.New("ddil harness: smallest instance type has empty name")
+		return "", errors.New("e2e harness: smallest instance type has empty name")
 	}
 	return w.instanceType, nil
 }
@@ -332,7 +332,7 @@ func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Du
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("ddil harness: instance %s did not reach running within %s", id, timeout)
+			return fmt.Errorf("e2e harness: instance %s did not reach running within %s", id, timeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -348,7 +348,7 @@ func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Du
 // exactly one process per cluster regardless of net mode (user-hostfwd vs
 // tap-mode bridge).
 func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, error) {
-	cmd := fmt.Sprintf("ps auxw | grep %s | grep qemu-system | grep -v grep", shellQuote(instanceID))
+	cmd := fmt.Sprintf("ps auxw | grep %s | grep qemu-system | grep -v grep", ShellQuote(instanceID))
 	// Give the daemon a short window to actually spawn QEMU after the
 	// EC2 state flip to running, since /aws/ec2 reports "running" before
 	// the daemon has finished forking the process on some nodes.
@@ -367,7 +367,7 @@ func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, error)
 			}
 		}
 		if time.Now().After(deadline) {
-			return Node{}, fmt.Errorf("ddil harness: could not locate QEMU host for %s across %d nodes", instanceID, len(w.cluster.Nodes))
+			return Node{}, fmt.Errorf("e2e harness: could not locate QEMU host for %s across %d nodes", instanceID, len(w.cluster.Nodes))
 		}
 		select {
 		case <-ctx.Done():
@@ -400,7 +400,7 @@ func (w *Witness) resolvePublicIP(ctx context.Context, instanceID string) (strin
 			}
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("ddil harness: instance %s has no PublicIpAddress after %s (default subnet MapPublicIpOnLaunch may be off)", instanceID, 30*time.Second)
+			return "", fmt.Errorf("e2e harness: instance %s has no PublicIpAddress after %s (default subnet MapPublicIpOnLaunch may be off)", instanceID, 30*time.Second)
 		}
 		select {
 		case <-ctx.Done():
@@ -415,7 +415,7 @@ func (w *Witness) terminate(ctx context.Context, id string) error {
 		InstanceIds: []*string{aws.String(id)},
 	})
 	if err != nil {
-		return fmt.Errorf("ddil harness: TerminateInstances %s: %w", id, err)
+		return fmt.Errorf("e2e harness: TerminateInstances %s: %w", id, err)
 	}
 	return nil
 }
@@ -435,7 +435,7 @@ func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (i
 	guestAddr := net.JoinHostPort(publicIP, "22")
 	tunnel, err := hostClient.DialContext(ctx, "tcp", guestAddr)
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: tunnel %s → %s: %w", host.Name, guestAddr, err)
+		return 0, fmt.Errorf("e2e harness: tunnel %s → %s: %w", host.Name, guestAddr, err)
 	}
 
 	guestCfg := &ssh.ClientConfig{
@@ -447,20 +447,20 @@ func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (i
 	c, chans, reqs, err := ssh.NewClientConn(tunnel, guestAddr, guestCfg)
 	if err != nil {
 		_ = tunnel.Close()
-		return 0, fmt.Errorf("ddil harness: guest ssh handshake on %s: %w", guestAddr, err)
+		return 0, fmt.Errorf("e2e harness: guest ssh handshake on %s: %w", guestAddr, err)
 	}
 	guestClient := ssh.NewClient(c, chans, reqs)
 	defer func() { _ = guestClient.Close() }()
 
 	session, err := guestClient.NewSession()
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: guest ssh session: %w", err)
+		return 0, fmt.Errorf("e2e harness: guest ssh session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
 	raw, err := session.CombinedOutput("cat /var/lib/counter")
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: read /var/lib/counter: %w (output: %s)", err, strings.TrimSpace(string(raw)))
+		return 0, fmt.Errorf("e2e harness: read /var/lib/counter: %w (output: %s)", err, strings.TrimSpace(string(raw)))
 	}
 	s := strings.TrimSpace(string(raw))
 	if s == "" {
@@ -468,7 +468,7 @@ func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (i
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("ddil harness: parse /var/lib/counter %q: %w", s, err)
+		return 0, fmt.Errorf("e2e harness: parse /var/lib/counter %q: %w", s, err)
 	}
 	return n, nil
 }
@@ -509,7 +509,7 @@ func awaitBaseline(ctx context.Context, w *Witness, host Node, publicIP string, 
 			return 0, err
 		}
 		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("ddil harness: %s baseline not ready after %s: %w", publicIP, timeout, lastErr)
+			return 0, fmt.Errorf("e2e harness: %s baseline not ready after %s: %w", publicIP, timeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -529,12 +529,12 @@ func dialHost(ctx context.Context, node Node, user string, signer ssh.Signer) (*
 	d := net.Dialer{Timeout: cfg.Timeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(node.Addr, "22"))
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: dial host %s: %w", node.Name, err)
+		return nil, fmt.Errorf("e2e harness: dial host %s: %w", node.Name, err)
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, node.Addr, cfg)
 	if err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("ddil harness: host ssh handshake %s: %w", node.Name, err)
+		return nil, fmt.Errorf("e2e harness: host ssh handshake %s: %w", node.Name, err)
 	}
 	return ssh.NewClient(c, chans, reqs), nil
 }

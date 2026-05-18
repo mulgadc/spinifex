@@ -49,7 +49,7 @@ func resetNode(ctx context.Context, ssh SSH, n Node) error {
 	// iptables -X removes any transient user chains a scenario happens to
 	// leave behind. This matches HealNode's teardown.
 	if _, err := ssh.Run(ctx, n, "sudo iptables -F && sudo iptables -X"); err != nil {
-		return fmt.Errorf("ddil harness: reset iptables on %s: %w", n.Name, err)
+		return fmt.Errorf("e2e harness: reset iptables on %s: %w", n.Name, err)
 	}
 
 	// Remove netem qdiscs only on interfaces that actually carry one.
@@ -60,15 +60,15 @@ func resetNode(ctx context.Context, ssh SSH, n Node) error {
 		return err
 	}
 	for _, iface := range ifaces {
-		cmd := fmt.Sprintf("sudo tc qdisc del dev %s root 2>/dev/null || true", shellQuote(iface))
+		cmd := fmt.Sprintf("sudo tc qdisc del dev %s root 2>/dev/null || true", ShellQuote(iface))
 		if _, err := ssh.Run(ctx, n, cmd); err != nil {
-			return fmt.Errorf("ddil harness: clear netem on %s (%s): %w", n.Name, iface, err)
+			return fmt.Errorf("e2e harness: clear netem on %s (%s): %w", n.Name, iface, err)
 		}
 	}
 
 	// Start services — noop if already active (systemd returns 0).
 	if _, err := ssh.Run(ctx, n, "sudo systemctl start spinifex-nats spinifex-daemon"); err != nil {
-		return fmt.Errorf("ddil harness: start services on %s: %w", n.Name, err)
+		return fmt.Errorf("e2e harness: start services on %s: %w", n.Name, err)
 	}
 	return nil
 }
@@ -81,7 +81,7 @@ func netemIfaces(ctx context.Context, ssh SSH, n Node) ([]string, error) {
 	// root ...` → awk $5 yields the interface name.
 	out, err := ssh.Run(ctx, n, "tc qdisc show | awk '/qdisc netem/ {print $5}' | sort -u")
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: list netem qdiscs on %s: %w", n.Name, err)
+		return nil, fmt.Errorf("e2e harness: list netem qdiscs on %s: %w", n.Name, err)
 	}
 	return strings.Fields(string(out)), nil
 }
@@ -104,7 +104,7 @@ func waitClusterHealthy(ctx context.Context, c *Cluster, ssh SSH, timeout time.D
 			lastErr = err
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("ddil harness: cluster did not reach healthy within %s: %w", timeout, lastErr)
+			return fmt.Errorf("e2e harness: cluster did not reach healthy within %s: %w", timeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -164,11 +164,11 @@ func AssertCleanState(ctx context.Context, t *testing.T, c *Cluster, ssh SSH) {
 	for _, n := range c.Nodes {
 		drops, err := countDropRules(ctx, ssh, n)
 		if err != nil {
-			t.Fatalf("ddil harness: inspect iptables on %s: %v", n.Name, err)
+			t.Fatalf("e2e harness: inspect iptables on %s: %v", n.Name, err)
 		}
 		ifaces, err := netemIfaces(ctx, ssh, n)
 		if err != nil {
-			t.Fatalf("ddil harness: inspect netem on %s: %v", n.Name, err)
+			t.Fatalf("e2e harness: inspect netem on %s: %v", n.Name, err)
 		}
 		if drops > 0 {
 			dirty = append(dirty, fmt.Sprintf("%s: %d iptables DROP rules", n.Name, drops))
@@ -181,9 +181,9 @@ func AssertCleanState(ctx context.Context, t *testing.T, c *Cluster, ssh SSH) {
 	if len(dirty) == 0 {
 		return
 	}
-	t.Logf("ddil harness: dirty baseline before scenario — %s; running ResetAllNodes", strings.Join(dirty, "; "))
+	t.Logf("e2e harness: dirty baseline before scenario — %s; running ResetAllNodes", strings.Join(dirty, "; "))
 	if err := ResetAllNodes(ctx, c, ssh); err != nil {
-		t.Fatalf("ddil harness: reset after dirty baseline: %v", err)
+		t.Fatalf("e2e harness: reset after dirty baseline: %v", err)
 	}
 }
 

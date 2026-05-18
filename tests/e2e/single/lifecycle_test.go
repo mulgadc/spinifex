@@ -383,3 +383,32 @@ func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 func waitForSSHHandshake(t *testing.T, host string, port int, keyPath string) {
 	waitForSSHReady(t, host, port, keyPath)
 }
+
+// trySSHReady mirrors waitForSSHReady but returns reachability as a bool
+// instead of t.Fatal-ing on timeout. Matches run-e2e.sh ~2850–2860, which
+// treats SSH-via-public-IP timeout as a WARN ("macvlan isolation or bridge
+// not ready") rather than a hard test failure — new-subnet IGW SNAT/DNAT
+// flow installation is timing-sensitive on shared CI runners and not part
+// of the EC2 surface contract this test exists to validate.
+func trySSHReady(host string, port int, keyPath string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		cmd := exec.Command("ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "LogLevel=ERROR",
+			"-o", "ConnectTimeout=3",
+			"-o", "BatchMode=yes",
+			"-p", strconv.Itoa(port),
+			"-i", keyPath,
+			"ec2-user@"+host,
+			"true")
+		if cmd.Run() == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Second)
+	}
+}

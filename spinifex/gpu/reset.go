@@ -22,12 +22,9 @@ import (
 // Returns nil when the reset attribute is absent so callers treat this as
 // best-effort.
 func resetPCI(sysfsRoot, addr string) error {
-	vendorBytes, err := os.ReadFile(filepath.Join(sysfsRoot, "bus/pci/devices", addr, "vendor"))
-	if err != nil {
-		return nil // unreadable vendor; treat as non-AMD, unbind/rebind is sufficient
-	}
+	vendorBytes, _ := os.ReadFile(filepath.Join(sysfsRoot, "bus/pci/devices", addr, "vendor"))
 	if strings.TrimSpace(string(vendorBytes)) != "0x1002" {
-		return nil // not AMD; unbind/rebind is sufficient
+		return nil // not AMD (or unreadable vendor); unbind/rebind is sufficient
 	}
 
 	resetPath := filepath.Join(sysfsRoot, "bus/pci/devices", addr, "reset")

@@ -52,6 +52,17 @@ type Fixture struct {
 
 	OVNAvailable bool // gates 8b-e
 	PoolMode     bool // gates 8b / 8d
+
+	// IAM phase state (Stage E). Threaded between IAM Phase 1–7 so
+	// Phase 7's cleanup can defensively delete keys/users created
+	// earlier even when an intermediate phase short-circuits.
+	IAMAdminAccount  string // account ID extracted from CreatePolicy ARN
+	IAMAliceKeyID    string
+	IAMAliceSecret   string
+	IAMBobKeyID      string
+	IAMBobSecret     string
+	IAMCharlieKeyID  string
+	IAMCharlieSecret string
 }
 
 // TestSingleNode is the Go port of run-e2e.sh. Phases run as sequential
@@ -100,7 +111,17 @@ func TestSingleNode(t *testing.T) {
 
 	t.Run("Phase8_NegativeErrorPaths", func(t *testing.T) { phase8_NegativeErrorPaths(t, fix) })
 
-	// Stages E–G will append more t.Run calls here.
+	t.Run("IAM1_UserCRUD", func(t *testing.T) { phaseIAM1_UserCRUD(t, fix) })
+	t.Run("IAM2_AccessKeyLifecycle", func(t *testing.T) { phaseIAM2_AccessKeyLifecycle(t, fix) })
+	t.Run("IAM3_UserAuthentication", func(t *testing.T) { phaseIAM3_UserAuthentication(t, fix) })
+	t.Run("IAM4_PolicyCRUD", func(t *testing.T) { phaseIAM4_PolicyCRUD(t, fix) })
+	t.Run("IAM5_PolicyAttachmentEnforcement", func(t *testing.T) { phaseIAM5_PolicyAttachmentEnforcement(t, fix) })
+	t.Run("IAM6_PolicyLifecycle", func(t *testing.T) { phaseIAM6_PolicyLifecycle(t, fix) })
+	t.Run("IAM7_Cleanup", func(t *testing.T) { phaseIAM7_Cleanup(t, fix) })
+
+	t.Run("Phase8Acct_AccountScoping", func(t *testing.T) { phase8Acct_AccountScoping(t, fix) })
+
+	// Stages F–G will append more t.Run calls here.
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "ec2-describe-instances.txt",

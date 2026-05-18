@@ -37,6 +37,7 @@ inventory and roles relative to CWD.
 | `playbooks/dev-snapshot.yml` | Quiesce spinifex+OVN+OVS, tar state paths to a named bundle, restart | none |
 | `playbooks/dev-restore.yml` | Stop services, wipe + untar a named bundle, refresh CA, restart | none |
 | `playbooks/dev-version.yml` | Build-vs-install drift report (spx, plugin, microvm) + sub-repo HEADs | none |
+| `playbooks/dev-vpc.yml` | Idempotent dev VPC fixture (VPC + public subnet + IGW + default route); `-e dev_vpc_state=absent` tears down | partial overlap with `scripts/iac/examples/*` |
 
 Upcoming (not yet implemented):
 
@@ -56,6 +57,7 @@ ansible-playbook playbooks/dev-logs.yml
 ansible-playbook playbooks/dev-snapshot.yml -e snapshot_name=before-merge
 ansible-playbook playbooks/dev-restore.yml  -e snapshot_name=before-merge
 ansible-playbook playbooks/dev-version.yml
+ansible-playbook playbooks/dev-vpc.yml
 ```
 
 Or via `make` (from `spinifex/`):
@@ -71,6 +73,8 @@ make ansible-dev-logs
 make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'
 make ansible-dev-restore  ANSIBLE_EXTRA='-e snapshot_name=before-merge'
 make ansible-dev-version
+make ansible-dev-vpc
+make ansible-dev-vpc ANSIBLE_EXTRA='-e dev_vpc_state=absent'
 ```
 
 ### When to use which
@@ -83,6 +87,7 @@ make ansible-dev-version
 - Filing a bug / capturing the state of a broken box → `ansible-dev-logs` (writes `/tmp/spinifex-logs-<host>-<ts>.tar.gz`; override `-e logs_since=10min` or `-e logs_include_dmesg=false`)
 - Checkpoint before a risky op (branch switch, viperblock surgery, ovn restart cycle) → `ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=<name>'`; roll back via `ansible-dev-restore` instead of a full `dev-reset`. Bundles live in `/var/lib/spinifex-snapshots/<name>.tar.gz` (root-owned, survives `dev-teardown`).
 - "Do I need to `ansible-dev-deploy`?" → `ansible-dev-version` (drift-only check; faster than `dev-status`)
+- Want a known-good VPC/subnet for manual EC2 testing without writing tofu → `ansible-dev-vpc` (smoketest will then find and use it automatically). Tear down with `ANSIBLE_EXTRA='-e dev_vpc_state=absent'`.
 
 ## Variable overrides
 

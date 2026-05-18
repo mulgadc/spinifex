@@ -84,6 +84,16 @@ mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }
 spinifex_aws_cli: "{{ playbook_dir }}/../scripts/aws-as-spinifex.sh"
 spinifex_spx_cli: "{{ playbook_dir }}/../scripts/spx-as-spinifex.sh"
 
+# dev-vpc fixture. Deterministic VPC + public subnet + IGW + default
+# route. Idempotent: re-running detects existing resources by Name tag.
+# Used by smoketest's launch path (which looks for any
+# map-public-ip-on-launch=true subnet).
+dev_vpc_name: spinifex-dev-vpc
+dev_vpc_cidr: 10.99.0.0/16
+dev_vpc_subnet_cidr: 10.99.1.0/24
+dev_vpc_subnet_az: "{{ spinifex_az }}"
+dev_vpc_state: present  # present | absent
+
 # Build output.
 build_tarball_path: /tmp/spinifex-local.tar.gz
 

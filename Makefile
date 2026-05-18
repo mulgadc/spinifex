@@ -293,9 +293,12 @@ ansible-dev-restore:
 ansible-dev-version:
 	cd scripts/ansible && ansible-playbook playbooks/dev-version.yml
 
+ansible-dev-vpc:
+	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
+
 .PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \
 	distro distro-amd64 distro-arm64 distro-clean \
-	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore ansible-dev-version
+	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore ansible-dev-version ansible-dev-vpc

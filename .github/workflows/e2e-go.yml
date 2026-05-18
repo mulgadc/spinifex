@@ -271,6 +271,14 @@ jobs:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "Go E2E results"
 
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./spinifex/.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "E2E failure analysis"
+
       - uses: actions/upload-artifact@v7
         if: always()
         with:

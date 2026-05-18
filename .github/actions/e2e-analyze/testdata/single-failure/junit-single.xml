@@ -1,0 +1,993 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="79" failures="2" skipped="6">
+	<testsuite name="" tests="79" failures="2" errors="0" id="0" hostname="banksia" skipped="6" time="1708.140" timestamp="2026-05-19T00:19:45+10:00">
+		<testcase name="TestSingleNode" classname="" time="800.320">
+			<failure message="Failed"></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase1_Environment" classname="" time="0.300">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 1 — Environment ━━�[0m
+�[2m· checking /dev/kvm�[0m
+    discovery_test.go:29: �[2m· checking /dev/kvm�[0m
+�[2mkvm�[0m=writable
+    discovery_test.go:38: �[2mkvm�[0m=writable
+�[2m· waiting for AWS gateway�[0m
+    discovery_test.go:45: �[2m· waiting for AWS gateway�[0m
+�[2mgateway�[0m=https://192.168.0.10:9999/
+    discovery_test.go:55: �[2mgateway�[0m=https://192.168.0.10:9999/
+�[2m· waiting for daemon NATS subscriptions�[0m
+    discovery_test.go:60: �[2m· waiting for daemon NATS subscriptions�[0m
+�[2m· describe-regions / describe-availability-zones�[0m
+    discovery_test.go:73: �[2m· describe-regions / describe-availability-zones�[0m
+�[2maz�[0m=ap-southeast-2a �[2mregion�[0m=ap-southeast-2
+    discovery_test.go:84: �[2maz�[0m=ap-southeast-2a �[2mregion�[0m=ap-southeast-2]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase1b_ClusterStats" classname="" time="9.200">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 1b — Cluster Stats CLI ━━�[0m
+�[2m· spx get nodes�[0m
+    discovery_test.go:101: �[2m· spx get nodes�[0m
+�[2m· spx top nodes�[0m
+    discovery_test.go:105: �[2m· spx top nodes�[0m
+�[2m· spx get vms (empty before any launches)�[0m
+    discovery_test.go:112: �[2m· spx get vms (empty before any launches)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase2_Discovery" classname="" time="0.010">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 2 — Discovery & Metadata ━━�[0m
+�[2m· discovering nano instance type�[0m
+    discovery_test.go:133: �[2m· discovering nano instance type�[0m
+�[2minstance_type�[0m=t3.nano �[2march�[0m=x86_64 �[2maz�[0m=ap-southeast-2a
+    discovery_test.go:159: �[2minstance_type�[0m=t3.nano �[2march�[0m=x86_64 �[2maz�[0m=ap-southeast-2a]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase2b_SerialConsole" classname="" time="0.020">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 2b — Serial Console Access ━━�[0m
+�[2m· default state should be disabled�[0m
+    discovery_test.go:168: �[2m· default state should be disabled�[0m
+�[2m· enable�[0m
+    discovery_test.go:173: �[2m· enable�[0m
+�[2mstate�[0m=enabled
+    discovery_test.go:180: �[2mstate�[0m=enabled
+�[2m· disable�[0m
+    discovery_test.go:182: �[2m· disable�[0m
+�[2mstate�[0m=disabled
+    discovery_test.go:189: �[2mstate�[0m=disabled]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase3_KeyPairs" classname="" time="0.540">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 3 — SSH Key Management ━━�[0m
+�[2m· create-key-pair "test-key-1"�[0m
+    keypair_test.go:37: �[2m· create-key-pair "test-key-1"�[0m
+�[2mkey�[0m=test-key-1 �[2mpem�[0m=/tmp/TestSingleNode1289015487/001/test-key-1.pem
+    keypair_test.go:51: �[2mkey�[0m=test-key-1 �[2mpem�[0m=/tmp/TestSingleNode1289015487/001/test-key-1.pem
+�[2m· import-key-pair "test-key-2" (local-generated RSA)�[0m
+    keypair_test.go:58: �[2m· import-key-pair "test-key-2" (local-generated RSA)�[0m
+�[2mimported�[0m=test-key-2
+    keypair_test.go:65: �[2mimported�[0m=test-key-2
+�[2m· describe-key-pairs (both present)�[0m
+    keypair_test.go:67: �[2m· describe-key-pairs (both present)�[0m
+�[2m· delete "test-key-2"�[0m
+    keypair_test.go:72: �[2m· delete "test-key-2"�[0m
+�[2m· describe-key-pairs (only test-key-1 remains)�[0m
+    keypair_test.go:76: �[2m· describe-key-pairs (only test-key-1 remains)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase4_Image" classname="" time="0.060">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 4 — Image Management ━━�[0m
+�[2mimage�[0m=ubuntu-24.04-x86_64 �[2march�[0m=x86_64
+    image_test.go:33: �[2mimage�[0m=ubuntu-24.04-x86_64 �[2march�[0m=x86_64
+�[2m· spx admin images import --name ubuntu-24.04-x86_64�[0m
+    image_test.go:35: �[2m· spx admin images import --name ubuntu-24.04-x86_64�[0m
+�[2m· spx import did not yield AMI ID; falling back to describe-images�[0m
+    image_test.go:48: �[2m· spx import did not yield AMI ID; falling back to describe-images�[0m
+�[2m· describe-images by AMI ID (verify exactly one match)�[0m
+    image_test.go:78: �[2m· describe-images by AMI ID (verify exactly one match)�[0m
+�[2mami�[0m=ami-6f60f2b3bf04b5453 �[2mname�[0m=ami-ubuntu-24.04-x86_64
+    image_test.go:86: �[2mami�[0m=ami-6f60f2b3bf04b5453 �[2mname�[0m=ami-ubuntu-24.04-x86_64]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5_LaunchInstance" classname="" time="10.830">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5 — Instance Lifecycle ━━�[0m
+�[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2msg�[0m=sg-764a7fa2a39577204 �[2msubnet�[0m=subnet-cd62e4c1c3cb50c63
+    instance_test.go:31: �[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2msg�[0m=sg-764a7fa2a39577204 �[2msubnet�[0m=subnet-cd62e4c1c3cb50c63
+�[2m· run-instances ami=ami-6f60f2b3bf04b5453 type=t3.nano key=test-key-1�[0m
+    instance_test.go:35: �[2m· run-instances ami=ami-6f60f2b3bf04b5453 type=t3.nano key=test-key-1�[0m
+�[2minstance�[0m=i-0c615e5dd74050f53
+    instance_test.go:48: �[2minstance�[0m=i-0c615e5dd74050f53
+    instance_test.go:50: instance i-0c615e5dd74050f53 reached state running
+�[2mroot_volume�[0m=vol-2230138124fb51ee2 �[2mroot_device�[0m=
+    instance_test.go:70: �[2mroot_volume�[0m=vol-2230138124fb51ee2 �[2mroot_device�[0m=]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_pre_ClusterStats" classname="" time="3.040">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5a-pre — Cluster Stats CLI (with running VM) ━━�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_Metadata" classname="" time="0.510">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5a — Instance Metadata Validation ━━�[0m
+�[2mtype�[0m=t3.nano �[2mkey�[0m=test-key-1 �[2mimage�[0m=ami-6f60f2b3bf04b5453 �[2mbdms�[0m=1
+    instance_test.go:108: �[2mtype�[0m=t3.nano �[2mkey�[0m=test-key-1 �[2mimage�[0m=ami-6f60f2b3bf04b5453 �[2mbdms�[0m=1]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_ii_SSH" classname="" time="49.450">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5a-ii — SSH Connectivity & Volume Verification ━━�[0m
+�[2mssh_host�[0m=192.168.0.201 �[2mssh_port�[0m=22
+    instance_test.go:127: �[2mssh_host�[0m=192.168.0.201 �[2mssh_port�[0m=22
+�[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+    instance_test.go:130: �[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+�[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+    lifecycle_test.go:384: �[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+�[2m· ssh id�[0m
+    instance_test.go:136: �[2m· ssh id�[0m
+�[2m· lsblk root-volume cross-check vs API�[0m
+    instance_test.go:140: �[2m· lsblk root-volume cross-check vs API�[0m
+�[2mguest_gib�[0m=4 �[2mapi_gib�[0m=4
+    instance_test.go:159: �[2mguest_gib�[0m=4 �[2mapi_gib�[0m=4
+�[2m· ssh hostname�[0m
+    instance_test.go:161: �[2m· ssh hostname�[0m
+�[2mhostname�[0m=spinifex-vm-0c615e5d �[2mmatches_short_id�[0m=0c615e5d
+    instance_test.go:172: �[2mhostname�[0m=spinifex-vm-0c615e5d �[2mmatches_short_id�[0m=0c615e5d]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_iii_Console" classname="" time="0.010">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5a-iii — Console Output ━━�[0m
+�[2minstance�[0m=i-0c615e5dd74050f53 �[2mhas_output�[0m=true
+    instance_test.go:191: �[2minstance�[0m=i-0c615e5dd74050f53 �[2mhas_output�[0m=true]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5b_Volume" classname="" time="4.540">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5b — Volume Lifecycle (Attach/Detach) ━━�[0m
+�[2m· create-volume size=10 az=ap-southeast-2a�[0m
+    volume_test.go:26: �[2m· create-volume size=10 az=ap-southeast-2a�[0m
+�[2mvolume�[0m=vol-a885f79173e0a8030
+    volume_test.go:34: �[2mvolume�[0m=vol-a885f79173e0a8030
+    volume_test.go:39: volume vol-a885f79173e0a8030 reached state available
+�[2m· modify-volume size=20�[0m
+    volume_test.go:42: �[2m· modify-volume size=20�[0m
+�[2mresized_gib�[0m=20
+    volume_test.go:66: �[2mresized_gib�[0m=20
+�[2m· attach-volume vol-a885f79173e0a8030 -> i-0c615e5dd74050f53 as /dev/sdf�[0m
+    volume_test.go:68: �[2m· attach-volume vol-a885f79173e0a8030 -> i-0c615e5dd74050f53 as /dev/sdf�[0m
+    volume_test.go:76: volume vol-a885f79173e0a8030 reached state in-use
+�[2m· detach-volume vol-a885f79173e0a8030�[0m
+    volume_test.go:90: �[2m· detach-volume vol-a885f79173e0a8030�[0m
+    volume_test.go:96: volume vol-a885f79173e0a8030 reached state available
+�[2m· delete-volume vol-a885f79173e0a8030�[0m
+    volume_test.go:98: �[2m· delete-volume vol-a885f79173e0a8030�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5b_ii_VolumeStatus" classname="" time="0.000">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5b-ii — DescribeVolumeStatus ━━�[0m
+�[2mvolume�[0m=vol-2230138124fb51ee2 �[2mstatus�[0m=ok
+    volume_test.go:158: �[2mvolume�[0m=vol-2230138124fb51ee2 �[2mstatus�[0m=ok]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5c_Snapshot" classname="" time="0.190">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5c — Snapshot Lifecycle ━━�[0m
+�[2m· create-snapshot volume=vol-2230138124fb51ee2�[0m
+    snapshot_test.go:34: �[2m· create-snapshot volume=vol-2230138124fb51ee2�[0m
+�[2msnapshot�[0m=snap-1188f92980e6470aa �[2msize�[0m=4 �[2mstate�[0m=completed �[2mprogress�[0m=100%
+    snapshot_test.go:50: �[2msnapshot�[0m=snap-1188f92980e6470aa �[2msize�[0m=4 �[2mstate�[0m=completed �[2mprogress�[0m=100%
+    snapshot_test.go:59: snapshot snap-1188f92980e6470aa reached state completed
+�[2m· describe-snapshots snap-1188f92980e6470aa�[0m
+    snapshot_test.go:61: �[2m· describe-snapshots snap-1188f92980e6470aa�[0m
+�[2m· copy-snapshot src=snap-1188f92980e6470aa region=ap-southeast-2�[0m
+    snapshot_test.go:76: �[2m· copy-snapshot src=snap-1188f92980e6470aa region=ap-southeast-2�[0m
+�[2mcopy_snapshot�[0m=snap-cde6b5ddf467e2c0f
+    snapshot_test.go:86: �[2mcopy_snapshot�[0m=snap-cde6b5ddf467e2c0f
+    snapshot_test.go:88: snapshot snap-cde6b5ddf467e2c0f reached state completed
+�[2m· describe-snapshots snap-1188f92980e6470aa,snap-cde6b5ddf467e2c0f (both visible)�[0m
+    snapshot_test.go:90: �[2m· describe-snapshots snap-1188f92980e6470aa,snap-cde6b5ddf467e2c0f (both visible)�[0m
+�[2m· delete-snapshot snap-1188f92980e6470aa (original)�[0m
+    snapshot_test.go:107: �[2m· delete-snapshot snap-1188f92980e6470aa (original)�[0m
+�[2m· verify copy snap-cde6b5ddf467e2c0f still completed�[0m
+    snapshot_test.go:135: �[2m· verify copy snap-cde6b5ddf467e2c0f still completed�[0m
+�[2m· delete-snapshot snap-cde6b5ddf467e2c0f (copy)�[0m
+    snapshot_test.go:144: �[2m· delete-snapshot snap-cde6b5ddf467e2c0f (copy)�[0m
+�[2mdeleted_original�[0m=snap-1188f92980e6470aa
+    snapshot_test.go:151: �[2mdeleted_original�[0m=snap-1188f92980e6470aa]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5d_SnapshotBackedLaunch" classname="" time="0.010">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5d — Snapshot-Backed Instance Launch ━━�[0m
+�[2mami�[0m=ami-6f60f2b3bf04b5453 �[2msnapshot�[0m=snap-ami-6f60f2b3bf04b5453
+    snapshot_test.go:182: �[2mami�[0m=ami-6f60f2b3bf04b5453 �[2msnapshot�[0m=snap-ami-6f60f2b3bf04b5453]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5e_CreateImage" classname="" time="0.660">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 5e — CreateImage Lifecycle ━━�[0m
+�[2m· create-image instance=i-0c615e5dd74050f53 name=e2e-custom-ami (no-reboot)�[0m
+    createimage_test.go:26: �[2m· create-image instance=i-0c615e5dd74050f53 name=e2e-custom-ami (no-reboot)�[0m
+�[2mcustom_ami�[0m=ami-7dcf263a412dd14c6
+    createimage_test.go:36: �[2mcustom_ami�[0m=ami-7dcf263a412dd14c6
+    createimage_test.go:38: image ami-7dcf263a412dd14c6 reached state available
+�[2m· describe-images ami-7dcf263a412dd14c6�[0m
+    createimage_test.go:40: �[2m· describe-images ami-7dcf263a412dd14c6�[0m
+�[2mcustom_ami_snapshot�[0m=snap-dde89b9ea2ef2e05a
+    createimage_test.go:67: �[2mcustom_ami_snapshot�[0m=snap-dde89b9ea2ef2e05a]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5f_SecurityGroupEgress" classname="" time="4.880">
+			<skipped message="Skipped"><![CDATA[
+�[1m�[36m━━ Phase 5f — Security Group Enforcement (egress ACL) ━━�[0m
+�[2m· discover default gateway inside VM�[0m
+    securitygroup_test.go:53: �[2m· discover default gateway inside VM�[0m
+�[2mprobe_gateway�[0m=172.31.0.1
+    securitygroup_test.go:66: �[2mprobe_gateway�[0m=172.31.0.1
+�[2m· 5f-1 baseline egress (allow-all)�[0m
+    securitygroup_test.go:77: �[2m· 5f-1 baseline egress (allow-all)�[0m
+    securitygroup_test.go:80: Phase 5f: baseline ICMP did not succeed; env may block ICMP regardless of SG
+        Output:
+        PING 172.31.0.1 (172.31.0.1) 56(84) bytes of data.
+        
+        --- 172.31.0.1 ping statistics ---
+        3 packets transmitted, 0 received, 100% packet loss, time 2044ms
+        ]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/Phase6_TagManagement" classname="" time="0.380">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 6 — Tag Management ━━�[0m
+�[2m· 6a create-tags instance=i-0c615e5dd74050f53 (Name, Environment, DeleteMe)�[0m
+    tags_test.go:41: �[2m· 6a create-tags instance=i-0c615e5dd74050f53 (Name, Environment, DeleteMe)�[0m
+�[2m· 6b describe-tags resource-id=i-0c615e5dd74050f53 want=3�[0m
+    tags_test.go:53: �[2m· 6b describe-tags resource-id=i-0c615e5dd74050f53 want=3�[0m
+�[2m· 6c create-tags volume=vol-2230138124fb51ee2 (Name, Environment)�[0m
+    tags_test.go:65: �[2m· 6c create-tags volume=vol-2230138124fb51ee2 (Name, Environment)�[0m
+�[2m· 6d describe-tags key=Environment want=2�[0m
+    tags_test.go:76: �[2m· 6d describe-tags key=Environment want=2�[0m
+�[2m· 6e describe-tags resource-type=instance want=3�[0m
+    tags_test.go:85: �[2m· 6e describe-tags resource-type=instance want=3�[0m
+�[2m· 6f overwrite instance Name -> e2e-test-updated�[0m
+    tags_test.go:95: �[2m· 6f overwrite instance Name -> e2e-test-updated�[0m
+�[2m· 6g delete-tags Key=DeleteMe (no value)�[0m
+    tags_test.go:114: �[2m· 6g delete-tags Key=DeleteMe (no value)�[0m
+�[2m· 6h delete-tags Key=Environment,Value=production (no-op)�[0m
+    tags_test.go:130: �[2m· 6h delete-tags Key=Environment,Value=production (no-op)�[0m
+�[2m· 6i delete-tags Key=Environment,Value=testing (instance only)�[0m
+    tags_test.go:148: �[2m· 6i delete-tags Key=Environment,Value=testing (instance only)�[0m
+�[2m· 6j final describe-tags resource-id=i-0c615e5dd74050f53 want=1�[0m
+    tags_test.go:171: �[2m· 6j final describe-tags resource-id=i-0c615e5dd74050f53 want=1�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7_StopStart" classname="" time="8.090">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 7 — Instance State Transitions (Stop) ━━�[0m
+�[2m· stop-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:30: �[2m· stop-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:36: instance i-0c615e5dd74050f53 reached state stopped
+�[2m· reboot-instances on stopped instance (should fail)�[0m
+    lifecycle_test.go:40: �[2m· reboot-instances on stopped instance (should fail)�[0m
+�[2mstopped_reject�[0m=IncorrectInstanceState
+    lifecycle_test.go:47: �[2mstopped_reject�[0m=IncorrectInstanceState]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7a_AttachToStoppedError" classname="" time="0.300">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 7a — Attach Volume to Stopped Instance (Error Path) ━━�[0m
+�[2m· create-volume size=10 az=ap-southeast-2a�[0m
+    lifecycle_test.go:60: �[2m· create-volume size=10 az=ap-southeast-2a�[0m
+�[2mtest_volume�[0m=vol-8d3e1335938a378cd
+    lifecycle_test.go:68: �[2mtest_volume�[0m=vol-8d3e1335938a378cd
+    lifecycle_test.go:82: volume vol-8d3e1335938a378cd reached state available
+�[2m· attach-volume vol-8d3e1335938a378cd -> i-0c615e5dd74050f53 (should fail)�[0m
+    lifecycle_test.go:84: �[2m· attach-volume vol-8d3e1335938a378cd -> i-0c615e5dd74050f53 (should fail)�[0m
+�[2m· delete-volume vol-8d3e1335938a378cd�[0m
+    lifecycle_test.go:94: �[2m· delete-volume vol-8d3e1335938a378cd�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7b_ModifyInstanceAttribute" classname="" time="55.620">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 7b — ModifyInstanceAttribute ━━�[0m
+�[2mfrom_type�[0m=t3.nano �[2mto_type�[0m=t3.small
+    lifecycle_test.go:120: �[2mfrom_type�[0m=t3.nano �[2mto_type�[0m=t3.small
+�[2mexpected_vcpus�[0m=2 �[2mexpected_mem_mib�[0m=2048
+    lifecycle_test.go:142: �[2mexpected_vcpus�[0m=2 �[2mexpected_mem_mib�[0m=2048
+�[2m· modify-instance-attribute i-0c615e5dd74050f53 type=t3.small�[0m
+    lifecycle_test.go:144: �[2m· modify-instance-attribute i-0c615e5dd74050f53 type=t3.small�[0m
+�[2m· start-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:165: �[2m· start-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:171: instance i-0c615e5dd74050f53 reached state running
+�[2mssh_host�[0m=192.168.0.201 �[2mssh_port�[0m=22
+    lifecycle_test.go:177: �[2mssh_host�[0m=192.168.0.201 �[2mssh_port�[0m=22
+�[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+    lifecycle_test.go:179: �[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+�[2m· ssh nproc�[0m
+    lifecycle_test.go:182: �[2m· ssh nproc�[0m
+�[2mvm_vcpus�[0m=2
+    lifecycle_test.go:188: �[2mvm_vcpus�[0m=2
+�[2m· ssh MemTotal�[0m
+    lifecycle_test.go:190: �[2m· ssh MemTotal�[0m
+�[2mvm_mem_mib�[0m=1967 �[2mthreshold_mib�[0m=1740
+    lifecycle_test.go:200: �[2mvm_mem_mib�[0m=1967 �[2mthreshold_mib�[0m=1740
+�[2m· stop-instances i-0c615e5dd74050f53 (end of 7b)�[0m
+    lifecycle_test.go:206: �[2m· stop-instances i-0c615e5dd74050f53 (end of 7b)�[0m
+    lifecycle_test.go:211: instance i-0c615e5dd74050f53 reached state stopped]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7c_pre_Reboot" classname="" time="83.480">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 7c-pre — Reboot Running Instance ━━�[0m
+�[2m· start-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:226: �[2m· start-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:231: instance i-0c615e5dd74050f53 reached state running
+�[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+    lifecycle_test.go:236: �[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+�[2mpre_reboot_private_ip�[0m=172.31.0.4
+    lifecycle_test.go:246: �[2mpre_reboot_private_ip�[0m=172.31.0.4
+�[2m· reboot-instances i-0c615e5dd74050f53�[0m
+    lifecycle_test.go:248: �[2m· reboot-instances i-0c615e5dd74050f53�[0m
+�[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+    lifecycle_test.go:279: �[2m· waiting for SSH handshake 192.168.0.201:22�[0m
+�[2m· ssh uptime�[0m
+    lifecycle_test.go:282: �[2m· ssh uptime�[0m
+�[2muptime_secs�[0m=25
+    lifecycle_test.go:288: �[2muptime_secs�[0m=25]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7c_RunInstancesMultiCount" classname="" time="47.560">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 7c — RunInstances with MinCount/MaxCount > 1 ━━�[0m
+�[2m· run-instances ami=ami-6f60f2b3bf04b5453 type=t3.small count=2�[0m
+    lifecycle_test.go:309: �[2m· run-instances ami=ami-6f60f2b3bf04b5453 type=t3.small count=2�[0m
+�[2msibling_1�[0m=i-9bfadd8ebd378f846 �[2msibling_2�[0m=i-448a9e2bf45c58658
+    lifecycle_test.go:327: �[2msibling_1�[0m=i-9bfadd8ebd378f846 �[2msibling_2�[0m=i-448a9e2bf45c58658
+    lifecycle_test.go:342: instance i-9bfadd8ebd378f846 reached state running
+    lifecycle_test.go:342: instance i-448a9e2bf45c58658 reached state running
+�[2m· terminate-instances i-9bfadd8ebd378f846 i-448a9e2bf45c58658�[0m
+    lifecycle_test.go:345: �[2m· terminate-instances i-9bfadd8ebd378f846 i-448a9e2bf45c58658�[0m
+    lifecycle_test.go:352: instance i-9bfadd8ebd378f846 reached state terminated
+    lifecycle_test.go:352: instance i-448a9e2bf45c58658 reached state terminated]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths" classname="" time="0.000">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 8 — Negative / Error Path Tests ━━�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8a_InvalidAMIIDMalformed" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· run-instances image-id=notanami�[0m
+    negative_test.go:55: �[2m· run-instances image-id=notanami�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8b_InvalidInstanceType" classname="" time="0.210">
+			<system-out><![CDATA[�[2m· run-instances instance-type=x99.superlarge�[0m
+    negative_test.go:70: �[2m· run-instances instance-type=x99.superlarge�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8c_VolumeInUse" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· attach-volume vol-2230138124fb51ee2 (root, in-use)�[0m
+    negative_test.go:85: �[2m· attach-volume vol-2230138124fb51ee2 (root, in-use)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8d_DetachRootForbidden" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· detach-volume vol-2230138124fb51ee2 (root)�[0m
+    negative_test.go:97: �[2m· detach-volume vol-2230138124fb51ee2 (root)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8e_DeleteSnapshotNotFound" classname="" time="0.030">
+			<system-out><![CDATA[�[2m· delete-snapshot snap-nonexistent000000�[0m
+    negative_test.go:108: �[2m· delete-snapshot snap-nonexistent000000�[0m
+�[2m· describe-volumes vol-0000000000000dead�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8f_InvalidActionRawHTTP" classname="" time="0.040">
+			<system-out><![CDATA[�[2m· POST Action=DescribeFakeThings�[0m
+    negative_test.go:122: �[2m· POST Action=DescribeFakeThings�[0m
+    negative_test.go:125: �[2mstatus�[0m=400 �[2mcode�[0m=InvalidAction]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8g_InvalidAMIIDNotFound" classname="" time="0.240">
+			<system-out><![CDATA[�[2m· reboot-instances i-nonexistent�[0m
+�[2m· run-instances image-id=ami-0000000000000dead�[0m
+    negative_test.go:138: �[2m· run-instances image-id=ami-0000000000000dead�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8h_InvalidKeyPairNotFound" classname="" time="0.260">
+			<system-out><![CDATA[�[2m· run-instances key-name=nonexistent-key-xyz�[0m
+    negative_test.go:153: �[2m· run-instances key-name=nonexistent-key-xyz�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8i_DeleteVolumeNotFound" classname="" time="0.040">
+			<system-out><![CDATA[�[2m· delete-volume vol-0000000000000dead�[0m
+    negative_test.go:168: �[2m· delete-volume vol-0000000000000dead�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8j_CreateKeyPairDuplicate" classname="" time="0.040">
+			<system-out><![CDATA[    negative_test.go:178: �[2m· create-key-pair test-key-1 (duplicate)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8k_ImportKeyPairDuplicate" classname="" time="0.040">
+			<system-out><![CDATA[�[2m· import-key-pair test-key-1 (duplicate)�[0m
+    negative_test.go:198: �[2m· import-key-pair test-key-1 (duplicate)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8l_InvalidKeyFormat" classname="" time="0.040">
+			<system-out><![CDATA[    negative_test.go:210: �[2m· import-key-pair bad-format-key (bad material)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8m_DescribeVolumesNotFound" classname="" time="0.040">
+			<system-out><![CDATA[    negative_test.go:230: �[2m· describe-volumes vol-0000000000000dead�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8n_DescribeImagesNotFound" classname="" time="0.040">
+			<system-out><![CDATA[�[2m· describe-images ami-0000000000000dead�[0m
+    negative_test.go:240: �[2m· describe-images ami-0000000000000dead�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8o_CreateImageDuplicateName" classname="" time="0.560">
+			<system-out><![CDATA[�[2m· create-key-pair test-key-1 (duplicate)�[0m
+�[2m· create-image name=e2e-custom-ami (duplicate)�[0m
+�[2m· import-key-pair bad-format-key (bad material)�[0m
+    negative_test.go:252: �[2m· create-image name=e2e-custom-ami (duplicate)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8p_DeleteKeyPairIdempotent" classname="" time="0.020">
+			<system-out><![CDATA[�[2m· delete-key-pair nonexistent-key-99999 (idempotent)�[0m
+    negative_test.go:276: �[2m· delete-key-pair nonexistent-key-99999 (idempotent)�[0m
+�[2mstatus�[0m=400 �[2mcode�[0m=InvalidAction]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8q_ModifyAttributeOnRunning" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· modify-instance-attribute i-0c615e5dd74050f53 (running)�[0m
+    negative_test.go:289: �[2m· modify-instance-attribute i-0c615e5dd74050f53 (running)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NegativeErrorPaths/8r_RebootInstanceNotFound" classname="" time="0.040">
+			<system-out><![CDATA[    negative_test.go:302: �[2m· reboot-instances i-nonexistent�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM1_UserCRUD" classname="" time="0.070">
+			<system-out><![CDATA[
+�[1m�[36m━━ IAM Phase 1 — User CRUD ━━�[0m
+�[2m· list-users (root auth sanity)�[0m
+    iam_test.go:109: �[2m· list-users (root auth sanity)�[0m
+�[2m· create-user "alice"�[0m
+    iam_test.go:114: �[2m· create-user "alice"�[0m
+�[2muser�[0m=alice �[2marn�[0m=arn:aws:iam::000000000001:user/alice
+    iam_test.go:120: �[2muser�[0m=alice �[2marn�[0m=arn:aws:iam::000000000001:user/alice
+�[2m· create-user "bob" path="/engineering/"�[0m
+    iam_test.go:122: �[2m· create-user "bob" path="/engineering/"�[0m
+�[2m· create-user "alice" again (expect EntityAlreadyExists)�[0m
+    iam_test.go:131: �[2m· create-user "alice" again (expect EntityAlreadyExists)�[0m
+�[2m· get-user "alice"�[0m
+    iam_test.go:137: �[2m· get-user "alice"�[0m
+�[2m· get-user nonexistent (expect NoSuchEntity)�[0m
+    iam_test.go:142: �[2m· get-user nonexistent (expect NoSuchEntity)�[0m
+�[2m· list-users (>=3 root+alice+bob)�[0m
+    iam_test.go:148: �[2m· list-users (>=3 root+alice+bob)�[0m
+�[2m· list-users --path-prefix "/engineering/" (expect 1)�[0m
+    iam_test.go:154: �[2m· list-users --path-prefix "/engineering/" (expect 1)�[0m
+    iam_test.go:193: �[2m· create-user "iam-phase1-ephemeral" (delete idempotency probe)�[0m
+�[2m· delete-user "iam-phase1-ephemeral"�[0m
+    iam_test.go:197: �[2m· delete-user "iam-phase1-ephemeral"�[0m
+�[2m· delete-user "iam-phase1-ephemeral" again (expect NoSuchEntity)�[0m
+    iam_test.go:201: �[2m· delete-user "iam-phase1-ephemeral" again (expect NoSuchEntity)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM1_UserCRUD/UpdateUser" classname="" time="0.000">
+			<skipped message="Skipped"><![CDATA[    iam_test.go:165: daemon UpdateUser handler not implemented — InvalidAction
+�[2m· create-user "iam-phase1-ephemeral" (delete idempotency probe)�[0m]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/IAM2_AccessKeyLifecycle" classname="" time="0.040">
+			<system-out><![CDATA[
+�[1m�[36m━━ IAM Phase 2 — Access Key Lifecycle ━━�[0m
+�[2m· create-access-key user=alice (key 1)�[0m
+    iam_test.go:218: �[2m· create-access-key user=alice (key 1)�[0m
+�[2mkey1�[0m=AKIA4984AE57CF8D721A879A
+    iam_test.go:227: �[2mkey1�[0m=AKIA4984AE57CF8D721A879A
+�[2m· create-access-key user=alice (key 2)�[0m
+    iam_test.go:229: �[2m· create-access-key user=alice (key 2)�[0m
+�[2mkey2�[0m=AKIAA1CD38D4F0E573216E11
+    iam_test.go:236: �[2mkey2�[0m=AKIAA1CD38D4F0E573216E11
+�[2m· create-access-key user=alice key 3 (expect LimitExceeded)�[0m
+    iam_test.go:238: �[2m· create-access-key user=alice key 3 (expect LimitExceeded)�[0m
+�[2m· create-access-key user=ghost (expect NoSuchEntity)�[0m
+    iam_test.go:246: �[2m· create-access-key user=ghost (expect NoSuchEntity)�[0m
+�[2m· list-access-keys user=alice (expect 2)�[0m
+    iam_test.go:254: �[2m· list-access-keys user=alice (expect 2)�[0m
+�[2m· list-access-keys user=bob (expect 0)�[0m
+    iam_test.go:261: �[2m· list-access-keys user=bob (expect 0)�[0m
+�[2m· update-access-key AKIA4984AE57CF8D721A879A -> Inactive�[0m
+    iam_test.go:268: �[2m· update-access-key AKIA4984AE57CF8D721A879A -> Inactive�[0m
+�[2m· update-access-key AKIA4984AE57CF8D721A879A -> Active�[0m
+    iam_test.go:279: �[2m· update-access-key AKIA4984AE57CF8D721A879A -> Active�[0m
+�[2m· delete-access-key AKIAA1CD38D4F0E573216E11 (key 2)�[0m
+    iam_test.go:287: �[2m· delete-access-key AKIAA1CD38D4F0E573216E11 (key 2)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM3_UserAuthentication" classname="" time="0.000">
+			<skipped message="Skipped"><![CDATA[
+�[1m�[36m━━ IAM Phase 3 — User Authentication ━━�[0m
+    iam_test.go:311: daemon IAM signature/principal lookup not implemented — mulga-siv-100]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD" classname="" time="0.040">
+			<system-out><![CDATA[
+�[1m�[36m━━ IAM Phase 4 — Policy CRUD ━━�[0m
+�[2m· create-policy EC2ReadOnly�[0m
+    iam_test.go:384: �[2m· create-policy EC2ReadOnly�[0m
+�[2mpolicy�[0m=EC2ReadOnly �[2marn�[0m=arn:aws:iam::000000000001:policy/EC2ReadOnly �[2maccount�[0m=000000000001
+    iam_test.go:393: �[2mpolicy�[0m=EC2ReadOnly �[2marn�[0m=arn:aws:iam::000000000001:policy/EC2ReadOnly �[2maccount�[0m=000000000001
+    iam_test.go:440: �[2m· create-policy duplicate (expect EntityAlreadyExists)�[0m
+�[2m· create-policy malformed (expect MalformedPolicyDocument)�[0m
+    iam_test.go:449: �[2m· create-policy malformed (expect MalformedPolicyDocument)�[0m
+�[2m· get-policy EC2ReadOnly�[0m
+    iam_test.go:458: �[2m· get-policy EC2ReadOnly�[0m
+�[2m· get-policy nonexistent (expect NoSuchEntity)�[0m
+    iam_test.go:463: �[2m· get-policy nonexistent (expect NoSuchEntity)�[0m
+�[2m· get-policy-version EC2ReadOnly v1�[0m
+    iam_test.go:470: �[2m· get-policy-version EC2ReadOnly v1�[0m
+    iam_test.go:519: �[2m· list-policies (>=5)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/create_policies_parallel" classname="" time="0.000"></testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/create_policies_parallel/FullAdmin" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· create-policy FullAdmin path=/admin/�[0m
+    iam_test.go:402: �[2m· create-policy FullAdmin path=/admin/�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/create_policies_parallel/DenyTerminate" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· create-policy DenyTerminate (mixed Allow+Deny)�[0m
+    iam_test.go:413: �[2m· create-policy DenyTerminate (mixed Allow+Deny)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/create_policies_parallel/IAMReadOnly" classname="" time="0.020">
+			<system-out><![CDATA[�[2m· create-policy IAMReadOnly�[0m
+    iam_test.go:422: �[2m· create-policy IAMReadOnly�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/create_policies_parallel/EC2DescribeAll" classname="" time="0.020">
+			<system-out><![CDATA[�[2m· create-policy EC2DescribeAll (wildcard)�[0m
+    iam_test.go:431: �[2m· create-policy EC2DescribeAll (wildcard)�[0m
+�[2m· create-policy duplicate (expect EntityAlreadyExists)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/IAM4_PolicyCRUD/PolicyVersionLifecycle" classname="" time="0.000">
+			<skipped message="Skipped"><![CDATA[    iam_test.go:484: daemon CreatePolicyVersion handler not implemented — InvalidAction
+�[2m· list-policies (>=5)�[0m]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/IAM5_PolicyAttachmentEnforcement" classname="" time="0.000">
+			<skipped message="Skipped"><![CDATA[
+�[1m�[36m━━ IAM Phase 5 — Policy Attachment & Enforcement ━━�[0m
+    iam_test.go:535: daemon IAM scoped-credential enforcement not implemented — mulga-siv-100]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/IAM6_PolicyLifecycle" classname="" time="0.000">
+			<skipped message="Skipped"><![CDATA[
+�[1m�[36m━━ IAM Phase 6 — Policy Lifecycle (Detach & Delete) ━━�[0m
+    iam_test.go:718: daemon DetachUserPolicy not implemented — mulga-siv-100]]></skipped>
+		</testcase>
+		<testcase name="TestSingleNode/IAM7_Cleanup" classname="" time="0.050">
+			<system-out><![CDATA[
+�[1m�[36m━━ IAM Phase 7 — Cleanup ━━�[0m
+�[2m· cleanup user alice�[0m
+    iam_test.go:770: �[2m· cleanup user alice�[0m
+�[2m· cleanup user bob�[0m
+    iam_test.go:770: �[2m· cleanup user bob�[0m
+�[2m· cleanup user charlie�[0m
+    iam_test.go:770: �[2m· cleanup user charlie�[0m
+�[2mremaining_users�[0m=1 �[2mnames�[0m=[admin]
+    iam_test.go:779: �[2mremaining_users�[0m=1 �[2mnames�[0m=[admin]
+�[2m· cleanup policy arn:aws:iam::000000000001:policy/EC2ReadOnly�[0m
+    iam_test.go:806: �[2m· cleanup policy arn:aws:iam::000000000001:policy/EC2ReadOnly�[0m
+�[2m· cleanup policy arn:aws:iam::000000000001:policy/admin/FullAdmin�[0m
+    iam_test.go:806: �[2m· cleanup policy arn:aws:iam::000000000001:policy/admin/FullAdmin�[0m
+�[2m· cleanup policy arn:aws:iam::000000000001:policy/IAMReadOnly�[0m
+    iam_test.go:806: �[2m· cleanup policy arn:aws:iam::000000000001:policy/IAMReadOnly�[0m
+�[2m· cleanup policy arn:aws:iam::000000000001:policy/EC2DescribeAll�[0m
+    iam_test.go:806: �[2m· cleanup policy arn:aws:iam::000000000001:policy/EC2DescribeAll�[0m
+�[2m· cleanup policy arn:aws:iam::000000000001:policy/DenyTerminate�[0m
+    iam_test.go:806: �[2m· cleanup policy arn:aws:iam::000000000001:policy/DenyTerminate�[0m
+�[2mremaining_policies�[0m=1 �[2mnames�[0m=[AdministratorAccess]
+    iam_test.go:812: �[2mremaining_policies�[0m=1 �[2mnames�[0m=[AdministratorAccess]]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping" classname="" time="114.890">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 8 (acct) — EC2 Account Scoping ━━�[0m
+    account_test.go:75: �[2m· Phase 8 acct cleanup (deferred)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step1_AccountSetup" classname="" time="1.220">
+			<system-out><![CDATA[�[2m· create account 'Team Alpha'�[0m
+    account_test.go:206: �[2m· create account 'Team Alpha'�[0m
+�[2malpha_account�[0m=000000000002 �[2malpha_key�[0m=AKIA374CBBB2A15D3E2EE822
+    account_test.go:211: �[2malpha_account�[0m=000000000002 �[2malpha_key�[0m=AKIA374CBBB2A15D3E2EE822
+�[2m· create account 'Team Beta'�[0m
+    account_test.go:213: �[2m· create account 'Team Beta'�[0m
+�[2mbeta_account�[0m=000000000003 �[2mbeta_key�[0m=AKIA0AA0B2845E3BD5A26D01
+    account_test.go:218: �[2mbeta_account�[0m=000000000003 �[2mbeta_key�[0m=AKIA0AA0B2845E3BD5A26D01]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step2_InstanceScoping" classname="" time="52.380">
+			<system-out><![CDATA[�[2m· create per-account key pairs�[0m
+    account_test.go:242: �[2m· create per-account key pairs�[0m
+�[2m· alpha run-instances�[0m
+    account_test.go:250: �[2m· alpha run-instances�[0m
+�[2malpha_instance�[0m=i-a3072c2387630b8ee
+    account_test.go:262: �[2malpha_instance�[0m=i-a3072c2387630b8ee
+�[2m· beta run-instances�[0m
+    account_test.go:264: �[2m· beta run-instances�[0m
+�[2mbeta_instance�[0m=i-ad32cbb0afaee5eee
+    account_test.go:276: �[2mbeta_instance�[0m=i-ad32cbb0afaee5eee
+    account_test.go:278: instance i-a3072c2387630b8ee reached state running
+    account_test.go:279: instance i-ad32cbb0afaee5eee reached state running
+�[2m· alpha sees only own instances�[0m
+    account_test.go:281: �[2m· alpha sees only own instances�[0m
+�[2m· beta sees only own instances�[0m
+    account_test.go:285: �[2m· beta sees only own instances�[0m
+�[2m· alpha OwnerId matches alpha account�[0m
+    account_test.go:289: �[2m· alpha OwnerId matches alpha account�[0m
+�[2m· cross-account stop alpha->beta blocked�[0m
+    account_test.go:296: �[2m· cross-account stop alpha->beta blocked�[0m
+�[2m· cross-account terminate beta->alpha blocked�[0m
+    account_test.go:304: �[2m· cross-account terminate beta->alpha blocked�[0m
+�[2m· cross-account reboot alpha->beta blocked�[0m
+    account_test.go:312: �[2m· cross-account reboot alpha->beta blocked�[0m
+�[2m· stop alpha instance for cross-account start/modify/console tests�[0m
+    account_test.go:321: �[2m· stop alpha instance for cross-account start/modify/console tests�[0m
+    account_test.go:326: instance i-a3072c2387630b8ee reached state stopped
+�[2m· cross-account start beta->alpha blocked�[0m
+    account_test.go:328: �[2m· cross-account start beta->alpha blocked�[0m
+�[2m· cross-account modify-instance-attribute beta->alpha blocked�[0m
+    account_test.go:336: �[2m· cross-account modify-instance-attribute beta->alpha blocked�[0m
+�[2m· cross-account get-console-output beta->alpha blocked�[0m
+    account_test.go:345: �[2m· cross-account get-console-output beta->alpha blocked�[0m
+�[2m· restart alpha instance�[0m
+    account_test.go:354: �[2m· restart alpha instance�[0m
+    account_test.go:359: instance i-a3072c2387630b8ee reached state running]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step3_VolumeScoping" classname="" time="24.140">
+			<system-out><![CDATA[�[2m· alpha create-volume�[0m
+    account_test.go:366: �[2m· alpha create-volume�[0m
+�[2malpha_vol�[0m=vol-ceef82652369780af
+    account_test.go:375: �[2malpha_vol�[0m=vol-ceef82652369780af
+�[2m· beta create-volume�[0m
+    account_test.go:377: �[2m· beta create-volume�[0m
+�[2mbeta_vol�[0m=vol-08024f32d23d9e18c
+    account_test.go:386: �[2mbeta_vol�[0m=vol-08024f32d23d9e18c
+    account_test.go:388: volume vol-ceef82652369780af reached state available
+    account_test.go:389: volume vol-08024f32d23d9e18c reached state available
+�[2m· alpha sees only own volumes�[0m
+    account_test.go:391: �[2m· alpha sees only own volumes�[0m
+�[2m· cross-account describe-volume by id blocked�[0m
+    account_test.go:395: �[2m· cross-account describe-volume by id blocked�[0m
+�[2m· cross-account delete-volume blocked�[0m
+    account_test.go:403: �[2m· cross-account delete-volume blocked�[0m
+�[2m· cross-account attach-volume (beta attaches alpha's vol) blocked�[0m
+    account_test.go:411: �[2m· cross-account attach-volume (beta attaches alpha's vol) blocked�[0m
+�[2m· alpha attach-volume to own instance�[0m
+    account_test.go:422: �[2m· alpha attach-volume to own instance�[0m
+    account_test.go:429: volume vol-ceef82652369780af reached state in-use
+�[2m· cross-account detach-volume blocked�[0m
+    account_test.go:431: �[2m· cross-account detach-volume blocked�[0m
+�[2m· cross-account modify-volume blocked�[0m
+    account_test.go:439: �[2m· cross-account modify-volume blocked�[0m
+�[2m· alpha detach own volume�[0m
+    account_test.go:449: �[2m· alpha detach own volume�[0m
+    account_test.go:454: volume vol-ceef82652369780af reached state available]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step4_KeyPairScoping" classname="" time="0.370">
+			<system-out><![CDATA[�[2m· alpha create-key-pair alpha-key�[0m
+    account_test.go:466: �[2m· alpha create-key-pair alpha-key�[0m
+�[2m· beta create-key-pair beta-key�[0m
+    account_test.go:473: �[2m· beta create-key-pair beta-key�[0m
+�[2m· alpha sees only own keys�[0m
+    account_test.go:478: �[2m· alpha sees only own keys�[0m
+�[2m· namespace isolation: shared-name in both accounts�[0m
+    account_test.go:483: �[2m· namespace isolation: shared-name in both accounts�[0m
+�[2m· beta deletes alpha-key (idempotent, no cross-account effect)�[0m
+    account_test.go:497: �[2m· beta deletes alpha-key (idempotent, no cross-account effect)�[0m
+�[2m· alpha import-key-pair imported-key�[0m
+    account_test.go:503: �[2m· alpha import-key-pair imported-key�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step5_SnapshotScoping" classname="" time="0.060">
+			<system-out><![CDATA[�[2m· alpha create-snapshot�[0m
+    account_test.go:522: �[2m· alpha create-snapshot�[0m
+�[2malpha_snap�[0m=snap-2a47896f4304d805c
+    account_test.go:530: �[2malpha_snap�[0m=snap-2a47896f4304d805c
+�[2m· beta create-snapshot�[0m
+    account_test.go:532: �[2m· beta create-snapshot�[0m
+�[2mbeta_snap�[0m=snap-bf5744e78bd7c6908
+    account_test.go:540: �[2mbeta_snap�[0m=snap-bf5744e78bd7c6908
+�[2m· alpha sees only own snapshots (owner-ids=self)�[0m
+    account_test.go:542: �[2m· alpha sees only own snapshots (owner-ids=self)�[0m
+�[2m· cross-account delete-snapshot blocked (UnauthorizedOperation)�[0m
+    account_test.go:560: �[2m· cross-account delete-snapshot blocked (UnauthorizedOperation)�[0m
+�[2m· cross-account create-snapshot of alpha's volume blocked�[0m
+    account_test.go:568: �[2m· cross-account create-snapshot of alpha's volume blocked�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step6_VPCSubnetScoping" classname="" time="0.030">
+			<system-out><![CDATA[�[2m· alpha create-vpc 10.0.0.0/16�[0m
+    account_test.go:582: �[2m· alpha create-vpc 10.0.0.0/16�[0m
+�[2malpha_vpc�[0m=vpc-7f60df5e87183fb59
+    account_test.go:589: �[2malpha_vpc�[0m=vpc-7f60df5e87183fb59
+�[2m· beta create-vpc 10.0.0.0/16 (same CIDR, no conflict)�[0m
+    account_test.go:591: �[2m· beta create-vpc 10.0.0.0/16 (same CIDR, no conflict)�[0m
+�[2mbeta_vpc�[0m=vpc-7e8c859d3985c8218
+    account_test.go:598: �[2mbeta_vpc�[0m=vpc-7e8c859d3985c8218
+�[2m· alpha describe-vpcs isolation�[0m
+    account_test.go:600: �[2m· alpha describe-vpcs isolation�[0m
+�[2m· cross-account describe-vpc by id blocked�[0m
+    account_test.go:605: �[2m· cross-account describe-vpc by id blocked�[0m
+�[2m· cross-account delete-vpc blocked�[0m
+    account_test.go:613: �[2m· cross-account delete-vpc blocked�[0m
+�[2m· alpha create-subnet 10.0.1.0/24�[0m
+    account_test.go:621: �[2m· alpha create-subnet 10.0.1.0/24�[0m
+�[2m· beta create-subnet 10.0.1.0/24�[0m
+    account_test.go:630: �[2m· beta create-subnet 10.0.1.0/24�[0m
+�[2m· alpha describe-subnets isolation�[0m
+    account_test.go:639: �[2m· alpha describe-subnets isolation�[0m
+�[2m· cross-account create-subnet in other VPC blocked�[0m
+    account_test.go:648: �[2m· cross-account create-subnet in other VPC blocked�[0m
+�[2m· cross-account delete-subnet blocked�[0m
+    account_test.go:657: �[2m· cross-account delete-subnet blocked�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step7_IGWEIGWScoping" classname="" time="0.030">
+			<system-out><![CDATA[�[2m· alpha create-internet-gateway�[0m
+    account_test.go:673: �[2m· alpha create-internet-gateway�[0m
+�[2malpha_igw�[0m=igw-ee966e3e923caf630
+    account_test.go:678: �[2malpha_igw�[0m=igw-ee966e3e923caf630
+�[2m· beta create-internet-gateway�[0m
+    account_test.go:680: �[2m· beta create-internet-gateway�[0m
+�[2mbeta_igw�[0m=igw-b46e66f2065889bb9
+    account_test.go:685: �[2mbeta_igw�[0m=igw-b46e66f2065889bb9
+�[2m· alpha describe-internet-gateways isolation�[0m
+    account_test.go:687: �[2m· alpha describe-internet-gateways isolation�[0m
+�[2m· cross-account describe IGW by id blocked�[0m
+    account_test.go:696: �[2m· cross-account describe IGW by id blocked�[0m
+�[2m· cross-account delete IGW blocked�[0m
+    account_test.go:704: �[2m· cross-account delete IGW blocked�[0m
+�[2m· cross-account attach IGW (alpha attaches beta's IGW) blocked�[0m
+    account_test.go:712: �[2m· cross-account attach IGW (alpha attaches beta's IGW) blocked�[0m
+�[2m· alpha attach own IGW to own VPC�[0m
+    account_test.go:722: �[2m· alpha attach own IGW to own VPC�[0m
+�[2m· cross-account detach IGW blocked�[0m
+    account_test.go:729: �[2m· cross-account detach IGW blocked�[0m
+�[2m· alpha create-egress-only-internet-gateway�[0m
+    account_test.go:739: �[2m· alpha create-egress-only-internet-gateway�[0m
+�[2malpha_eigw�[0m=eigw-51ba82da927e49393
+    account_test.go:746: �[2malpha_eigw�[0m=eigw-51ba82da927e49393
+�[2m· beta create-egress-only-internet-gateway�[0m
+    account_test.go:748: �[2m· beta create-egress-only-internet-gateway�[0m
+�[2mbeta_eigw�[0m=eigw-e88d642e78ab4fe5a
+    account_test.go:755: �[2mbeta_eigw�[0m=eigw-e88d642e78ab4fe5a
+�[2m· alpha describe-eigws isolation�[0m
+    account_test.go:757: �[2m· alpha describe-eigws isolation�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step8_AccountSettings" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· alpha enable-ebs-encryption-by-default�[0m
+    account_test.go:794: �[2m· alpha enable-ebs-encryption-by-default�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step9_GlobalResources" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· describe-regions identical across accounts�[0m
+    account_test.go:829: �[2m· describe-regions identical across accounts�[0m
+�[2m· describe-availability-zones identical across accounts�[0m
+    account_test.go:834: �[2m· describe-availability-zones identical across accounts�[0m
+�[2m· describe-instance-types identical across accounts�[0m
+    account_test.go:839: �[2m· describe-instance-types identical across accounts�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step10_EdgeCases" classname="" time="1.200">
+			<system-out><![CDATA[�[2m· create empty Gamma account�[0m
+    account_test.go:849: �[2m· create empty Gamma account�[0m
+�[2mgamma_account�[0m=000000000004
+    account_test.go:852: �[2mgamma_account�[0m=000000000004
+�[2m· root create-key-pair root-scoping-key�[0m
+    account_test.go:879: �[2m· root create-key-pair root-scoping-key�[0m
+�[2m· non-existent volume id -> InvalidVolume.NotFound�[0m
+    account_test.go:895: �[2m· non-existent volume id -> InvalidVolume.NotFound�[0m
+�[2m· non-existent snapshot id -> InvalidSnapshot.NotFound�[0m
+    account_test.go:903: �[2m· non-existent snapshot id -> InvalidSnapshot.NotFound�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8Acct_AccountScoping/Step11_Cleanup" classname="" time="32.440">
+			<system-out><![CDATA[�[2m· terminate alpha instance�[0m
+    account_test.go:920: �[2m· terminate alpha instance�[0m
+�[2m· terminate beta instance�[0m
+    account_test.go:926: �[2m· terminate beta instance�[0m
+�[2m· delete snapshots�[0m
+    account_test.go:939: �[2m· delete snapshots�[0m
+�[2m· delete volumes�[0m
+    account_test.go:955: �[2m· delete volumes�[0m
+�[2m· delete key pairs�[0m
+    account_test.go:969: �[2m· delete key pairs�[0m
+�[2m· delete EIGWs�[0m
+    account_test.go:979: �[2m· delete EIGWs�[0m
+�[2m· detach + delete IGWs�[0m
+    account_test.go:993: �[2m· detach + delete IGWs�[0m
+�[2m· delete subnets�[0m
+    account_test.go:1013: �[2m· delete subnets�[0m
+�[2m· delete VPCs�[0m
+    account_test.go:1027: �[2m· delete VPCs�[0m
+�[2m· Phase 8 acct cleanup (deferred)�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8b_VPCSubnetE2E" classname="" time="200.480">
+			<failure message="Failed"><![CDATA[
+�[1m�[36m━━ Phase 8b — VPC Public/Private Subnet E2E ━━�[0m
+�[2m· create-vpc 10.99.0.0/16�[0m
+    vpc_test.go:56: �[2m· create-vpc 10.99.0.0/16�[0m
+�[2mvpc�[0m=vpc-39eff985799c43069 �[2mcidr�[0m=10.99.0.0/16
+    vpc_test.go:67: �[2mvpc�[0m=vpc-39eff985799c43069 �[2mcidr�[0m=10.99.0.0/16
+�[2m· create-subnet 10.99.1.0/24 (public)�[0m
+    vpc_test.go:70: �[2m· create-subnet 10.99.1.0/24 (public)�[0m
+�[2m· modify-subnet-attribute MapPublicIpOnLaunch=true subnet-22aba054e10588254�[0m
+    vpc_test.go:87: �[2m· modify-subnet-attribute MapPublicIpOnLaunch=true subnet-22aba054e10588254�[0m
+�[2mpub_subnet�[0m=subnet-22aba054e10588254 �[2mmap_public_ip�[0m=true
+    vpc_test.go:93: �[2mpub_subnet�[0m=subnet-22aba054e10588254 �[2mmap_public_ip�[0m=true
+�[2m· create-subnet 10.99.2.0/24 (private)�[0m
+    vpc_test.go:96: �[2m· create-subnet 10.99.2.0/24 (private)�[0m
+�[2mpriv_subnet�[0m=subnet-f53aeddb73c134696 �[2mmap_public_ip�[0m=false
+    vpc_test.go:111: �[2mpriv_subnet�[0m=subnet-f53aeddb73c134696 �[2mmap_public_ip�[0m=false
+�[2m· create-internet-gateway�[0m
+    vpc_test.go:114: �[2m· create-internet-gateway�[0m
+�[2m· attach-internet-gateway igw-1520b5a34480da982 -> vpc-39eff985799c43069�[0m
+    vpc_test.go:133: �[2m· attach-internet-gateway igw-1520b5a34480da982 -> vpc-39eff985799c43069�[0m
+�[2migw�[0m=igw-1520b5a34480da982
+    vpc_test.go:139: �[2migw�[0m=igw-1520b5a34480da982
+�[2m· create-route-table (vpc=vpc-39eff985799c43069)�[0m
+    vpc_test.go:142: �[2m· create-route-table (vpc=vpc-39eff985799c43069)�[0m
+�[2m· associate-route-table rtb-662df5e424cbdb60c <- subnet-22aba054e10588254�[0m
+    vpc_test.go:159: �[2m· associate-route-table rtb-662df5e424cbdb60c <- subnet-22aba054e10588254�[0m
+�[2m· create-route 0.0.0.0/0 -> igw-1520b5a34480da982�[0m
+    vpc_test.go:176: �[2m· create-route 0.0.0.0/0 -> igw-1520b5a34480da982�[0m
+�[2mrtb�[0m=rtb-662df5e424cbdb60c �[2massoc�[0m=rtbassoc-5510bf1dc6924eb0b �[2mroute�[0m=0.0.0.0/0->igw-1520b5a34480da982
+    vpc_test.go:192: �[2mrtb�[0m=rtb-662df5e424cbdb60c �[2massoc�[0m=rtbassoc-5510bf1dc6924eb0b �[2mroute�[0m=0.0.0.0/0->igw-1520b5a34480da982
+�[2m· run-instances ami=ami-6f60f2b3bf04b5453 subnet=subnet-22aba054e10588254�[0m
+    vpc_test.go:195: �[2m· run-instances ami=ami-6f60f2b3bf04b5453 subnet=subnet-22aba054e10588254�[0m
+�[2minstance�[0m=i-3177888cba3796d42
+    vpc_test.go:216: �[2minstance�[0m=i-3177888cba3796d42
+    vpc_test.go:218: instance i-3177888cba3796d42 reached state running
+�[2mpublic_ip�[0m=192.168.0.202 �[2mprivate_ip�[0m=10.99.1.4
+    vpc_test.go:224: �[2mpublic_ip�[0m=192.168.0.202 �[2mprivate_ip�[0m=10.99.1.4
+�[2m· waiting for SSH handshake 192.168.0.202:22�[0m
+    vpc_test.go:227: �[2m· waiting for SSH handshake 192.168.0.202:22�[0m
+    vpc_test.go:227: Eventually: condition not met within 3m0s: [SSH handshake 192.168.0.202:22 never completed]]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8c_RouteTableValidation" classname="" time="0.030">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 8c — Route Table Validation ━━�[0m
+�[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2msubnet�[0m=subnet-cd62e4c1c3cb50c63
+    vpc_test.go:292: �[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2msubnet�[0m=subnet-cd62e4c1c3cb50c63]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8c_RouteTableValidation/Step1_DefaultMainRouteTable" classname="" time="0.000">
+			<system-out><![CDATA[�[2m· describe-route-tables filter=vpc-id,association.main�[0m
+    vpc_test.go:297: �[2m· describe-route-tables filter=vpc-id,association.main�[0m
+�[2mmain_rtb�[0m=rtb-e42012569f92f7184
+    vpc_test.go:309: �[2mmain_rtb�[0m=rtb-e42012569f92f7184
+�[2mlocal_route�[0m=172.31.0.0/16
+    vpc_test.go:332: �[2mlocal_route�[0m=172.31.0.0/16
+�[2mdefault_route�[0m=0.0.0.0/0->igw-79c2e643660b4b7e3
+    vpc_test.go:350: �[2mdefault_route�[0m=0.0.0.0/0->igw-79c2e643660b4b7e3]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8c_RouteTableValidation/Step2_CustomRouteTableLifecycle" classname="" time="0.020">
+			<system-out><![CDATA[�[2m· create-route-table (vpc=vpc-531252db3b4e1fc08)�[0m
+    vpc_test.go:363: �[2m· create-route-table (vpc=vpc-531252db3b4e1fc08)�[0m
+�[2mcustom_rtb�[0m=rtb-5e6c46936f3e44167
+    vpc_test.go:379: �[2mcustom_rtb�[0m=rtb-5e6c46936f3e44167
+�[2mcustom_local_route�[0m=172.31.0.0/16
+    vpc_test.go:396: �[2mcustom_local_route�[0m=172.31.0.0/16
+�[2mvpc_igw�[0m=igw-79c2e643660b4b7e3
+    vpc_test.go:410: �[2mvpc_igw�[0m=igw-79c2e643660b4b7e3
+�[2m· create-route 0.0.0.0/0 -> igw-79c2e643660b4b7e3�[0m
+    vpc_test.go:415: �[2m· create-route 0.0.0.0/0 -> igw-79c2e643660b4b7e3�[0m
+�[2m· associate-route-table rtb-5e6c46936f3e44167 <- subnet-cd62e4c1c3cb50c63�[0m
+    vpc_test.go:434: �[2m· associate-route-table rtb-5e6c46936f3e44167 <- subnet-cd62e4c1c3cb50c63�[0m
+�[2mcustom_assoc�[0m=rtbassoc-da6377d37847d3d4a
+    vpc_test.go:450: �[2mcustom_assoc�[0m=rtbassoc-da6377d37847d3d4a
+�[2m· disassociate-route-table rtbassoc-da6377d37847d3d4a�[0m
+    vpc_test.go:452: �[2m· disassociate-route-table rtbassoc-da6377d37847d3d4a�[0m
+�[2m· delete-route 0.0.0.0/0�[0m
+    vpc_test.go:460: �[2m· delete-route 0.0.0.0/0�[0m
+�[2m· delete-route-table rtb-5e6c46936f3e44167�[0m
+    vpc_test.go:468: �[2m· delete-route-table rtb-5e6c46936f3e44167�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8c_RouteTableValidation/Step3_ErrorPaths" classname="" time="0.010">
+			<system-out><![CDATA[�[2m· create-route-table (scratch for error paths)�[0m
+    vpc_test.go:481: �[2m· create-route-table (scratch for error paths)�[0m
+�[2m· delete-route local=172.31.0.0/16 (must fail)�[0m
+    vpc_test.go:517: �[2m· delete-route local=172.31.0.0/16 (must fail)�[0m
+�[2mdelete_local_err�[0m=InvalidParameterValue
+    vpc_test.go:529: �[2mdelete_local_err�[0m=InvalidParameterValue
+�[2m· delete-route-table rtb-e42012569f92f7184 (main, must fail)�[0m
+    vpc_test.go:533: �[2m· delete-route-table rtb-e42012569f92f7184 (main, must fail)�[0m
+�[2mdelete_main_err�[0m=DependencyViolation
+    vpc_test.go:540: �[2mdelete_main_err�[0m=DependencyViolation]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8d_NATGateway" classname="" time="106.010">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 8d — NAT Gateway E2E ━━�[0m
+�[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2mpub_subnet�[0m=subnet-cd62e4c1c3cb50c63 �[2msg�[0m=sg-764a7fa2a39577204
+    natgw_test.go:54: �[2mvpc�[0m=vpc-531252db3b4e1fc08 �[2mpub_subnet�[0m=subnet-cd62e4c1c3cb50c63 �[2msg�[0m=sg-764a7fa2a39577204
+�[2m· create-subnet 172.31.16.0/20 (private)�[0m
+    natgw_test.go:58: �[2m· create-subnet 172.31.16.0/20 (private)�[0m
+�[2mpriv_subnet�[0m=subnet-2360a40e28371e214
+    natgw_test.go:71: �[2mpriv_subnet�[0m=subnet-2360a40e28371e214
+�[2m· run-instances bastion (default subnet)�[0m
+    natgw_test.go:74: �[2m· run-instances bastion (default subnet)�[0m
+�[2m· run-instances private (private subnet)�[0m
+    natgw_test.go:98: �[2m· run-instances private (private subnet)�[0m
+    natgw_test.go:118: instance i-268402f0e28b5e477 reached state running
+    natgw_test.go:119: instance i-db7f3ed6e4cdaa5aa reached state running
+�[2mbastion�[0m=i-268402f0e28b5e477 �[2mbastion_ip�[0m=192.168.0.202 �[2mprivate�[0m=i-db7f3ed6e4cdaa5aa �[2mprivate_ip�[0m=172.31.16.4
+    natgw_test.go:128: �[2mbastion�[0m=i-268402f0e28b5e477 �[2mbastion_ip�[0m=192.168.0.202 �[2mprivate�[0m=i-db7f3ed6e4cdaa5aa �[2mprivate_ip�[0m=172.31.16.4
+�[2m· waiting for SSH handshake 192.168.0.202:22�[0m
+    natgw_test.go:133: �[2m· waiting for SSH handshake 192.168.0.202:22�[0m
+�[2m· scp keypair -> bastion:/tmp/key.pem�[0m
+    natgw_test.go:139: �[2m· scp keypair -> bastion:/tmp/key.pem�[0m
+�[2m· wait for private SSH via bastion�[0m
+    natgw_test.go:151: �[2m· wait for private SSH via bastion�[0m
+�[2m· baseline: private VM has no internet�[0m
+    natgw_test.go:172: �[2m· baseline: private VM has no internet�[0m
+�[2m· allocate-address (NAT EIP)�[0m
+    natgw_test.go:178: �[2m· allocate-address (NAT EIP)�[0m
+�[2meip�[0m=192.168.0.203 �[2malloc�[0m=eipalloc-2d81753157cd62a50
+    natgw_test.go:195: �[2meip�[0m=192.168.0.203 �[2malloc�[0m=eipalloc-2d81753157cd62a50
+�[2m· create-nat-gateway in subnet-cd62e4c1c3cb50c63�[0m
+    natgw_test.go:197: �[2m· create-nat-gateway in subnet-cd62e4c1c3cb50c63�[0m
+�[2mnat_gw�[0m=nat-812216dd5105180c5
+    natgw_test.go:216: �[2mnat_gw�[0m=nat-812216dd5105180c5
+    natgw_test.go:218: nat gateway nat-812216dd5105180c5 reached state available
+�[2m· create-route-table�[0m
+    natgw_test.go:223: �[2m· create-route-table�[0m
+�[2m· associate-route-table rtb-8d6a4abd5f666ec13 <- subnet-2360a40e28371e214�[0m
+    natgw_test.go:241: �[2m· associate-route-table rtb-8d6a4abd5f666ec13 <- subnet-2360a40e28371e214�[0m
+�[2m· create-route 0.0.0.0/0 -> nat-812216dd5105180c5�[0m
+    natgw_test.go:259: �[2m· create-route 0.0.0.0/0 -> nat-812216dd5105180c5�[0m
+�[2m· verify private VM reaches 8.8.8.8 via NAT GW�[0m
+    natgw_test.go:279: �[2m· verify private VM reaches 8.8.8.8 via NAT GW�[0m
+�[2m· delete-nat-gateway nat-812216dd5105180c5�[0m
+    natgw_test.go:293: �[2m· delete-nat-gateway nat-812216dd5105180c5�[0m
+    natgw_test.go:318: nat gateway nat-812216dd5105180c5 reached state deleted
+�[2m· verify private VM lost internet after NAT GW teardown�[0m
+    natgw_test.go:329: �[2m· verify private VM lost internet after NAT GW teardown�[0m]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8e_SGToSGDatapath" classname="" time="80.940">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 8e — Security Group SG-to-SG Datapath (OVN) ━━�[0m
+�[2m· 8e-1 create sge-client + sge-target security groups�[0m
+    datapath_test.go:61: �[2m· 8e-1 create sge-client + sge-target security groups�[0m
+�[2mclient_sg�[0m=sg-56e73c764a649f7ff �[2mtarget_sg�[0m=sg-67ad5efaa8be83b79
+    datapath_test.go:83: �[2mclient_sg�[0m=sg-56e73c764a649f7ff �[2mtarget_sg�[0m=sg-67ad5efaa8be83b79
+�[2m· 8e-1 authorize target-sg ingress tcp/8080 from sg-56e73c764a649f7ff�[0m
+    datapath_test.go:91: �[2m· 8e-1 authorize target-sg ingress tcp/8080 from sg-56e73c764a649f7ff�[0m
+�[2m· 8e-2 launch client-vm + target-vm�[0m
+    datapath_test.go:109: �[2m· 8e-2 launch client-vm + target-vm�[0m
+    datapath_test.go:132: instance i-eae6263d9b9fda069 reached state running
+    datapath_test.go:133: instance i-9d9411a83549d34e3 reached state running
+�[2mclient_priv�[0m=172.31.0.5 �[2mclient_eni�[0m=eni-0f878da0143028915 �[2mtarget_priv�[0m=172.31.0.6 �[2mtarget_eni�[0m=eni-3bd355e19c7fdd45c
+    datapath_test.go:142: �[2mclient_priv�[0m=172.31.0.5 �[2mclient_eni�[0m=eni-0f878da0143028915 �[2mtarget_priv�[0m=172.31.0.6 �[2mtarget_eni�[0m=eni-3bd355e19c7fdd45c
+�[2m· 8e-3 ovn-nbctl port_group membership�[0m
+    datapath_test.go:151: �[2m· 8e-3 ovn-nbctl port_group membership�[0m
+�[2mclient_pg�[0m=sg_56e73c764a649f7ff �[2mtarget_pg�[0m=sg_67ad5efaa8be83b79
+    datapath_test.go:163: �[2mclient_pg�[0m=sg_56e73c764a649f7ff �[2mtarget_pg�[0m=sg_67ad5efaa8be83b79
+�[2m· 8e-3 ovn-sbctl address_set sg_56e73c764a649f7ff_ip4 contains 172.31.0.5�[0m
+    datapath_test.go:170: �[2m· 8e-3 ovn-sbctl address_set sg_56e73c764a649f7ff_ip4 contains 172.31.0.5�[0m
+�[2m· 8e-3 wait for client-vm SSH at 192.168.0.202:22�[0m
+    datapath_test.go:188: �[2m· 8e-3 wait for client-vm SSH at 192.168.0.202:22�[0m
+�[2m· 8e-4 allowed traffic client -> target:172.31.0.6:8080�[0m
+    datapath_test.go:199: �[2m· 8e-4 allowed traffic client -> target:172.31.0.6:8080�[0m
+�[2mstep4�[0m=allowed_traffic_ok
+    datapath_test.go:208: �[2mstep4�[0m=allowed_traffic_ok
+�[2m· 8e-5 denied traffic client -> target:22 (no SSH ingress)�[0m
+    datapath_test.go:213: �[2m· 8e-5 denied traffic client -> target:22 (no SSH ingress)�[0m
+�[2mstep5�[0m=denied_traffic_ok
+    datapath_test.go:217: �[2mstep5�[0m=denied_traffic_ok
+�[2m· 8e-6 revoke target-sg ingress, retest (sync RequestEvent contract)�[0m
+    datapath_test.go:222: �[2m· 8e-6 revoke target-sg ingress, retest (sync RequestEvent contract)�[0m
+�[2m· 8e-6 verify client -> target:8080 now blocked�[0m
+    datapath_test.go:240: �[2m· 8e-6 verify client -> target:8080 now blocked�[0m
+�[2mstep6�[0m=revoke_blocked_ok
+    datapath_test.go:244: �[2mstep6�[0m=revoke_blocked_ok
+�[2m· 8e-7 re-authorize target-sg ingress, verify traffic restored�[0m
+    datapath_test.go:250: �[2m· 8e-7 re-authorize target-sg ingress, verify traffic restored�[0m
+�[2mstep7�[0m=restore_ok
+    datapath_test.go:271: �[2mstep7�[0m=restore_ok
+    datapath_test.go:127: instance i-eae6263d9b9fda069 reached state terminated
+    datapath_test.go:127: instance i-9d9411a83549d34e3 reached state terminated]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase9_Teardown" classname="" time="8.300">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 9 — Teardown ━━�[0m
+�[2m· delete-snapshot snap-dde89b9ea2ef2e05a (custom AMI backing)�[0m
+    teardown_test.go:33: �[2m· delete-snapshot snap-dde89b9ea2ef2e05a (custom AMI backing)�[0m
+�[2mdeleted_snapshot�[0m=snap-dde89b9ea2ef2e05a
+    teardown_test.go:39: �[2mdeleted_snapshot�[0m=snap-dde89b9ea2ef2e05a
+�[2m· deregister-image ami-7dcf263a412dd14c6�[0m
+    teardown_test.go:51: �[2m· deregister-image ami-7dcf263a412dd14c6�[0m
+�[2mderegistered_ami�[0m=ami-7dcf263a412dd14c6
+    teardown_test.go:57: �[2mderegistered_ami�[0m=ami-7dcf263a412dd14c6
+�[2m· terminate-instances i-0c615e5dd74050f53�[0m
+    teardown_test.go:74: �[2m· terminate-instances i-0c615e5dd74050f53�[0m
+�[2mterminated_instance�[0m=i-0c615e5dd74050f53
+    teardown_test.go:81: �[2mterminated_instance�[0m=i-0c615e5dd74050f53
+�[2m· delete-key-pair test-key-1�[0m
+    teardown_test.go:94: �[2m· delete-key-pair test-key-1�[0m
+�[2mdeleted_keypair�[0m=test-key-1
+    teardown_test.go:100: �[2mdeleted_keypair�[0m=test-key-1]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase9a_VerifyTeardown" classname="" time="0.560">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 9a — Verify Teardown ━━�[0m
+�[2m· describe-instances i-0c615e5dd74050f53�[0m
+    teardown_test.go:123: �[2m· describe-instances i-0c615e5dd74050f53�[0m
+�[2minstance_state�[0m=terminated
+    teardown_test.go:135: �[2minstance_state�[0m=terminated
+�[2m· describe-images ami-7dcf263a412dd14c6�[0m
+    teardown_test.go:147: �[2m· describe-images ami-7dcf263a412dd14c6�[0m
+�[2mami_reaped�[0m=ami-7dcf263a412dd14c6
+    teardown_test.go:159: �[2mami_reaped�[0m=ami-7dcf263a412dd14c6
+�[2m· describe-key-pairs (must not contain test-key-1)�[0m
+    teardown_test.go:167: �[2m· describe-key-pairs (must not contain test-key-1)�[0m
+�[2mkeypairs_listed�[0m=1
+    teardown_test.go:176: �[2mkeypairs_listed�[0m=1]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase9b_FinalClusterStats" classname="" time="3.070">
+			<system-out><![CDATA[
+�[1m�[36m━━ Phase 9b — Final Cluster Stats ━━�[0m
+�[2mspx_get_vms_bytes�[0m=118
+    teardown_test.go:208: �[2mspx_get_vms_bytes�[0m=118]]></system-out>
+		</testcase>
+	</testsuite>
+</testsuites>

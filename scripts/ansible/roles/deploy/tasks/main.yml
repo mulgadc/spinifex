@@ -127,11 +127,7 @@
     state: started
 
 - name: deploy — wait for awsgw to respond
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-regions
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions"
   register: deploy_awsgw
   retries: 15
   delay: 2

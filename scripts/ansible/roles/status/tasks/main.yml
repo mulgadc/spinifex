@@ -95,11 +95,7 @@
   register: status_ca
 
 - name: status — AWS gateway round-trip (describe-regions)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-regions --output text
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions --output text"
   register: status_awsgw
   changed_when: false
   failed_when: false
@@ -168,47 +164,28 @@
   failed_when: false
 
 - name: status — count AMIs
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.shell: |
-    aws ec2 describe-images --query 'length(Images)' --output text 2>/dev/null
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-images --query length(Images) --output text"
   register: status_ami_count
   changed_when: false
   failed_when: false
 
 - name: status — count keypairs
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.shell: |
-    aws ec2 describe-key-pairs --query 'length(KeyPairs)' --output text 2>/dev/null
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-key-pairs --query length(KeyPairs) --output text"
   register: status_key_count
   changed_when: false
   failed_when: false
 
 - name: status — count volumes
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.shell: |
-    aws ec2 describe-volumes --query 'length(Volumes)' --output text 2>/dev/null
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-volumes --query length(Volumes) --output text"
   register: status_vol_count
   changed_when: false
   failed_when: false
 
 - name: status — count running instances
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.shell: |
-    aws ec2 describe-instances \
-      --filters Name=instance-state-name,Values=running \
-      --query 'length(Reservations[].Instances[])' --output text 2>/dev/null
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-instances
+    --filters Name=instance-state-name,Values=running
+    --query length(Reservations[].Instances[]) --output text
   register: status_instance_count
   changed_when: false
   failed_when: false

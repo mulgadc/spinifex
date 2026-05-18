@@ -121,11 +121,7 @@
   failed_when: false
 
 - name: restore — wait for AWS gateway readiness
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-regions
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions"
   register: restore_gw_ready
   retries: 30
   delay: 2

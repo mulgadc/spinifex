@@ -76,6 +76,14 @@ teardown_process_wait_seconds: 30
 spinifex_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../..') }}"
 mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }}"
 
+# Wrappers around `aws` and `spx` that re-enter a shell with the
+# `spinifex` supplementary group active. Needed because ansible's
+# `become_user` is a no-op when target user equals current user, so
+# supplementary groups are never re-initialised and /etc/spinifex/ca.pem
+# (drwxr-x--- root:spinifex) is unreadable. See mulga-siv-92.
+spinifex_aws_cli: "{{ playbook_dir }}/../scripts/aws-as-spinifex.sh"
+spinifex_spx_cli: "{{ playbook_dir }}/../scripts/spx-as-spinifex.sh"
+
 # Build output.
 build_tarball_path: /tmp/spinifex-local.tar.gz
 

@@ -16,12 +16,8 @@
     creates: "{{ smoketest_user_home }}/.ssh/spinifex-key"
 
 - name: smoketest — import SSH key to spinifex
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    aws ec2 import-key-pair
+    {{ spinifex_aws_cli }} ec2 import-key-pair
     --key-name spinifex-key
     --public-key-material fileb://{{ smoketest_user_home }}/.ssh/spinifex-key.pub
   register: smoketest_keypair
@@ -51,12 +47,8 @@
   register: smoketest_local_img
 
 - name: smoketest — import AMI from local file
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    spx admin images import
+    {{ spinifex_spx_cli }} admin images import
     --file {{ smoketest_local_image_path }}
     --distro {{ spinifex_smoketest_distro }}
     --version {{ spinifex_smoketest_version }}
@@ -74,12 +66,8 @@
   when: smoketest_local_img.stat.exists
 
 - name: smoketest — import AMI by name (fallback)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    spx admin images import
+    {{ spinifex_spx_cli }} admin images import
     --name {{ spinifex_smoketest_distro }}-{{ spinifex_smoketest_version }}-{{ smoketest_arch }}
   register: smoketest_import_remote
   until: >-
@@ -104,11 +92,7 @@
     smoketest_instance_type: "{{ 't3a.small' if smoketest_amd.rc == 0 else 't3.small' }}"
 
 - name: smoketest — find AMI ID
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-images --query "Images[0].ImageId" --output text
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-images --query Images[0].ImageId --output text"
   register: smoketest_ami
   until: smoketest_ami.rc == 0
   retries: 10
@@ -116,12 +100,8 @@
   changed_when: false
 
 - name: smoketest — find public subnet (best-effort)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    aws ec2 describe-subnets
+    {{ spinifex_aws_cli }} ec2 describe-subnets
     --filters Name=map-public-ip-on-launch,Values=true
     --query Subnets[0].SubnetId
     --output text
@@ -130,11 +110,7 @@
   failed_when: false
 
 - name: smoketest — fallback to first subnet (best-effort)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-subnets --query "Subnets[0].SubnetId" --output text
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-subnets --query Subnets[0].SubnetId --output text"
   register: smoketest_subnet_any
   changed_when: false
   failed_when: false
@@ -160,12 +136,8 @@
   when: smoketest_subnet_id | trim == ''
 
 - name: smoketest — launch instance
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    aws ec2 run-instances
+    {{ spinifex_aws_cli }} ec2 run-instances
     --image-id {{ smoketest_ami.stdout }}
     --instance-type {{ smoketest_instance_type }}
     --key-name spinifex-key
@@ -181,12 +153,8 @@
   when: smoketest_subnet_id | trim != ''
 
 - name: smoketest — wait for instance running (proves launch path works)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    aws ec2 describe-instances
+    {{ spinifex_aws_cli }} ec2 describe-instances
     --instance-ids {{ smoketest_instance.stdout }}
     --query Reservations[0].Instances[0].State.Name
     --output text
@@ -202,12 +170,8 @@
     - smoketest_instance.stdout | trim != ''
 
 - name: smoketest — terminate instance (cleanup)
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
   ansible.builtin.command: >-
-    aws ec2 terminate-instances
+    {{ spinifex_aws_cli }} ec2 terminate-instances
     --instance-ids {{ smoketest_instance.stdout }}
   register: smoketest_terminate
   until: smoketest_terminate.rc == 0

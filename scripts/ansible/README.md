@@ -105,6 +105,23 @@ pool range, gateway, prefix-len, nat gateway_ip from the existing
 `/etc/spinifex/spinifex.toml` before teardown and replays them into
 `init`. Use `-e` to override.
 
+## Helper scripts
+
+`scripts/aws-as-spinifex.sh` and `scripts/spx-as-spinifex.sh` wrap `aws`
+and `spx` invocations in `sg spinifex -c '...'` so they run with the
+`spinifex` supplementary group active. Both helpers preset
+`AWS_PROFILE=spinifex`. All AWS-calling tasks in the roles use these
+via `spinifex_aws_cli` / `spinifex_spx_cli` from `vars/defaults.yml`.
+
+Background: `/etc/spinifex/ca.pem` lives under `drwxr-x--- root:spinifex`,
+so the AWS CLI needs `spinifex` group membership to read the CA bundle.
+Ansible's `become_user` is a no-op when the target user equals the
+calling user (no `sudo -u` invoked → no `initgroups(3)` → supplementary
+groups inherited from the operator's shell). On a fresh login the
+operator's shell would have `spinifex` (added by `setup.sh`); on shells
+that predate the group add it does not. The helpers sidestep this
+entirely. See bead `mulga-siv-92`.
+
 ## Leak catalog
 
 `roles/teardown/README.md` tracks every known state source. When teardown

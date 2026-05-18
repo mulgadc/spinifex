@@ -13,7 +13,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -28,9 +27,6 @@ import (
 //go:embed testdata/app-userdata.sh
 var appUserData string
 
-//go:embed testdata/client-userdata.sh.tmpl
-var clientUserDataTmpl string
-
 const (
 	lbVPCCIDR    = "10.200.0.0/16"
 	lbSubnetCIDR = "10.200.1.0/24"
@@ -40,10 +36,20 @@ const (
 	probesPerRun = 20
 )
 
-// TestLoadBalancer ports run-lb-e2e.sh. Exercises all 4 LB variants (ALB
-// internet-facing, ALB internal, NLB internet-facing, NLB internal) against
-// a shared VPC + app instance pool. Internet-facing phase requires a peer
-// node (set SPINIFEX_NODE_IPS to enable); internal phase always runs.
+// LB kind: ALB or NLB. Used to parameterise the per-suite path.
+type lbKind string
+
+const (
+	kindALB lbKind = "ALB"
+	kindNLB lbKind = "NLB"
+)
+
+// TestLoadBalancer ports run-lb-e2e.sh. Each of the 4 LB variants (ALB/NLB ×
+// internet-facing/internal) runs as its own sequential subtest with its own
+// LB, listener, target group, and (for internal) client VM. Sequential
+// scheduling keeps peak instance count low (2 app + 1 LB + 1 client = 4) so
+// the suite passes on capacity-constrained dev nodes — see mulga-siv-77 for
+// the underlying placement bug.
 func TestLoadBalancer(t *testing.T) {
 	env := harness.LoadEnv(t)
 	skipIfDevNetworking(t, env)
@@ -52,22 +58,36 @@ func TestLoadBalancer(t *testing.T) {
 	client := harness.NewAWSClient(t, env)
 	fixture := setupSharedFixture(t, client, artifacts)
 
-	t.Run("InternetFacing", func(t *testing.T) {
-		peer := pickPeer(env)
-		if peer == "" {
-			t.Skip("SPINIFEX_NODE_IPS has no peer node; skipping internet-facing suite")
-		}
-		ssh := harness.NewPeerSSH()
+	peer := pickPeer(env)
+	var ssh *harness.PeerSSH
+	if peer != "" {
+		ssh = harness.NewPeerSSH()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := ssh.Ping(ctx, peer); err != nil {
-			t.Skipf("cannot SSH to peer %s: %v", peer, err)
+			t.Logf("cannot SSH to peer %s: %v (internet-facing suites will skip)", peer, err)
+			peer = ""
+			ssh = nil
 		}
-		runLBPhase(t, client, fixture, ssh, peer, "internet-facing")
-	})
+	}
 
-	t.Run("Internal", func(t *testing.T) {
-		runLBPhase(t, client, fixture, nil, "", "internal")
+	t.Run("InternetFacing_ALB", func(t *testing.T) {
+		if peer == "" {
+			t.Skip("no peer node available")
+		}
+		runLBSuite(t, client, fixture, kindALB, "internet-facing", ssh, peer)
+	})
+	t.Run("InternetFacing_NLB", func(t *testing.T) {
+		if peer == "" {
+			t.Skip("no peer node available")
+		}
+		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
+	})
+	t.Run("Internal_ALB", func(t *testing.T) {
+		runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
+	})
+	t.Run("Internal_NLB", func(t *testing.T) {
+		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
 }
 
@@ -81,6 +101,8 @@ type sharedFixture struct {
 	AMIID          string
 	InstanceType   string
 	AppInstanceIDs []string
+	ClientID       string
+	ClientPublicIP string
 }
 
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
@@ -104,10 +126,49 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	launchAppInstances(t, c, f)
 	t.Cleanup(func() { terminateInstances(t, c, f.AppInstanceIDs) })
 
+	launchProbeClient(t, c, f)
+	t.Cleanup(func() { terminateInstances(t, c, []string{f.ClientID}) })
+
 	harness.OnFailure(t, func() {
 		dumpDaemonLogs(t, artifacts, "setup")
 	})
 	return f
+}
+
+//go:embed testdata/probe-server-userdata.sh
+var probeServerUserData string
+
+// launchProbeClient runs a single long-lived client VM whose user-data brings
+// up an HTTP probe server (see testdata/probe-server-userdata.sh). Per-suite
+// internal traffic tests then GET /probe?ip=...&proto=... against this one
+// client instead of launching their own — keeps peak instance count at 4
+// (2 app + 1 LB + 1 client) on capacity-constrained dev nodes.
+func launchProbeClient(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(f.AMIID),
+		InstanceType: aws.String(f.InstanceType),
+		KeyName:      aws.String(lbKeyName),
+		SubnetId:     aws.String(f.SubnetID),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		UserData:     aws.String(base64Encode(probeServerUserData)),
+	})
+	require.NoError(t, err, "run-instances probe client")
+	f.ClientID = aws.StringValue(out.Instances[0].InstanceId)
+	t.Logf("probe client: %s", f.ClientID)
+
+	harness.WaitForInstanceRunning(t, c, f.ClientID, 120*time.Second)
+	eni := harness.InstanceENI(t, c, f.ClientID)
+	f.ClientPublicIP = publicIP(eni)
+	require.NotEmpty(t, f.ClientPublicIP, "probe client needs public IP")
+
+	statusURL := fmt.Sprintf("http://%s:%d/status", f.ClientPublicIP, httpPort)
+	harness.Eventually(t, func() bool {
+		body, err := plainHTTPGet(statusURL, 5*time.Second)
+		return err == nil && strings.TrimSpace(body) == "ready"
+	}, 5*time.Minute, 5*time.Second, "probe server did not become ready")
+	t.Logf("probe client ready at %s", f.ClientPublicIP)
 }
 
 // --- Discovery helpers ---------------------------------------------------
@@ -339,65 +400,69 @@ func terminateInstances(t *testing.T, c *harness.AWSClient, ids []string) {
 	harness.WaitForInstanceTerminated(t, c, ids, 60*time.Second)
 }
 
-// --- LB phase: scheme = internet-facing | internal ----------------------
+// --- LB suite: one LB (ALB or NLB) × one scheme (internet-facing/internal)
 
-func runLBPhase(t *testing.T, c *harness.AWSClient, f *sharedFixture, ssh *harness.PeerSSH, peer, scheme string) {
+// runLBSuite creates one TG + LB + listener, asserts scheme/DNS/ENI
+// invariants, runs the traffic test (local + remote for internet-facing,
+// client-VM for internal), then tears it all down before returning. Each
+// suite is fully self-contained so the 4 subtests run sequentially without
+// piling up LB system instances on capacity-constrained dev nodes.
+func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKind, scheme string, ssh *harness.PeerSSH, peer string) {
 	t.Helper()
 	suffix := "int"
 	if scheme == "internet-facing" {
 		suffix = "inet"
 	}
+	lbName := strings.ToLower(string(kind))
+	label := fmt.Sprintf("%s %s", kind, scheme)
 
-	albTG := createTargetGroup(t, c, f, fmt.Sprintf("lb-e2e-alb-%s-tg", suffix), "HTTP", httpPort, "/index.html")
-	t.Cleanup(func() { deleteTargetGroup(t, c, albTG) })
-	nlbTG := createTargetGroup(t, c, f, fmt.Sprintf("lb-e2e-nlb-%s-tg", suffix), "TCP", tcpPort, "")
-	t.Cleanup(func() { deleteTargetGroup(t, c, nlbTG) })
+	var proto, hcPath, eniDescPrefix, lbType string
+	var port int64
+	if kind == kindALB {
+		proto, port, hcPath, eniDescPrefix, lbType = "HTTP", httpPort, "/index.html", "app", "application"
+	} else {
+		proto, port, hcPath, eniDescPrefix, lbType = "TCP", tcpPort, "", "net", "network"
+	}
 
-	registerTargets(t, c, albTG, f.AppInstanceIDs)
-	registerTargets(t, c, nlbTG, f.AppInstanceIDs)
-	t.Cleanup(func() {
-		deregisterTargets(t, c, albTG, f.AppInstanceIDs)
-		deregisterTargets(t, c, nlbTG, f.AppInstanceIDs)
-	})
+	tgArn := createTargetGroup(t, c, f, fmt.Sprintf("lb-e2e-%s-%s-tg", lbName, suffix), proto, port, hcPath)
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgArn) })
 
-	albLB := createLB(t, c, f, fmt.Sprintf("lb-e2e-alb-%s", suffix), "application", scheme)
-	nlbLB := createLB(t, c, f, fmt.Sprintf("lb-e2e-nlb-%s", suffix), "network", scheme)
-	t.Cleanup(func() { deleteLB(t, c, albLB) })
-	t.Cleanup(func() { deleteLB(t, c, nlbLB) })
+	registerTargets(t, c, tgArn, f.AppInstanceIDs)
+	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
 
-	assert.Equal(t, scheme, albLB.Scheme, "ALB scheme")
-	assert.Equal(t, scheme, nlbLB.Scheme, "NLB scheme")
-	assert.Equal(t, "network", nlbLB.Type, "NLB type")
-	assert.Contains(t, nlbLB.ARN, "/net/", "NLB ARN must contain /net/")
+	lb := createLB(t, c, f, fmt.Sprintf("lb-e2e-%s-%s", lbName, suffix), lbType, scheme)
+	t.Cleanup(func() { deleteLB(t, c, lb) })
 
-	albListener := createListener(t, c, albLB.ARN, "HTTP", httpPort, albTG)
-	t.Cleanup(func() { deleteListener(t, c, albListener) })
-	nlbListener := createListener(t, c, nlbLB.ARN, "TCP", tcpPort, nlbTG)
-	t.Cleanup(func() { deleteListener(t, c, nlbListener) })
+	listener := createListener(t, c, lb.ARN, proto, port, tgArn)
+	t.Cleanup(func() { deleteListener(t, c, listener) })
 
-	harness.WaitForLBActive(t, c, albLB.ARN, "ALB "+scheme, 5*time.Minute)
-	harness.WaitForLBActive(t, c, nlbLB.ARN, "NLB "+scheme, 5*time.Minute)
+	assert.Equal(t, scheme, lb.Scheme, label+" scheme")
+	assert.Equal(t, lbType, lb.Type, label+" type")
+	if kind == kindNLB {
+		assert.Contains(t, lb.ARN, "/net/", label+" ARN must contain /net/")
+	}
 
-	harness.WaitForTargetsHealthy(t, c, albTG, 2, "ALB "+scheme, 2*time.Minute)
-	harness.WaitForTargetsHealthy(t, c, nlbTG, 2, "NLB "+scheme, 2*time.Minute)
+	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
 
-	albENI := lbENI(t, c, scheme, "app", albLB.ID)
-	nlbENI := lbENI(t, c, scheme, "net", nlbLB.ID)
+	eni := lbENI(t, c, scheme, eniDescPrefix, lb.ID)
 
 	if scheme == "internet-facing" {
-		require.NotEmpty(t, publicIP(albENI), "ALB internet-facing needs public IP")
-		require.NotEmpty(t, publicIP(nlbENI), "NLB internet-facing needs public IP")
-		runInternetFacingTraffic(t, ssh, peer, publicIP(albENI), publicIP(nlbENI))
-		runNLBDeregisterDraining(t, c, nlbTG, f.AppInstanceIDs[0])
-	} else {
-		assert.Empty(t, publicIP(albENI), "ALB internal must not have public IP")
-		assert.Empty(t, publicIP(nlbENI), "NLB internal must not have public IP")
-		require.NotEmpty(t, privateIP(albENI), "ALB internal needs private IP")
-		require.NotEmpty(t, privateIP(nlbENI), "NLB internal needs private IP")
-		assertInternalDNS(t, c, albLB.ARN, "ALB")
-		assertInternalDNS(t, c, nlbLB.ARN, "NLB")
-		runInternalTrafficViaClient(t, c, f, privateIP(albENI), privateIP(nlbENI))
+		ip := publicIP(eni)
+		require.NotEmpty(t, ip, label+" needs public IP")
+		runInternetFacingTrafficSingle(t, kind, ssh, peer, ip)
+		if kind == kindNLB {
+			runNLBDeregisterDraining(t, c, tgArn, f.AppInstanceIDs[0])
+		}
+		return
 	}
+
+	// internal
+	assert.Empty(t, publicIP(eni), label+" must not have public IP")
+	priv := privateIP(eni)
+	require.NotEmpty(t, priv, label+" needs private IP")
+	assertInternalDNS(t, c, lb.ARN, label)
+	runInternalTrafficViaClient(t, c, f, kind, priv)
 }
 
 // --- LB CRUD helpers -----------------------------------------------------
@@ -600,27 +665,34 @@ func assertInternalDNS(t *testing.T, c *harness.AWSClient, lbArn, label string) 
 
 // --- Internet-facing traffic ---------------------------------------------
 
-func runInternetFacingTraffic(t *testing.T, ssh *harness.PeerSSH, peer, albIP, nlbIP string) {
+// runInternetFacingTrafficSingle drives one LB (ALB or NLB) over its public
+// IP. Runs probes locally from the test driver, and if a peer node is wired
+// up, also runs the same probes from there to exercise inter-node routing.
+func runInternetFacingTrafficSingle(t *testing.T, kind lbKind, ssh *harness.PeerSSH, peer, ip string) {
 	t.Helper()
-	albURL := fmt.Sprintf("http://%s:%d", albIP, httpPort)
-	r := harness.HTTPRoundRobin(albURL, probesPerRun, 5*time.Second)
-	harness.AssertRoundRobin(t, r, 2, probesPerRun/2, "ALB inet (local)")
-
-	if ssh != nil && peer != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		r := remoteHTTPRoundRobin(t, ctx, ssh, peer, albURL, probesPerRun)
-		harness.AssertRoundRobin(t, r, 2, probesPerRun/2, "ALB inet (remote)")
+	if kind == kindALB {
+		url := fmt.Sprintf("http://%s:%d", ip, httpPort)
+		harness.AssertRoundRobin(t,
+			harness.HTTPRoundRobin(url, probesPerRun, 5*time.Second),
+			2, probesPerRun/2, "ALB inet (local)")
+		if ssh != nil && peer != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			harness.AssertRoundRobin(t,
+				remoteHTTPRoundRobin(t, ctx, ssh, peer, url, probesPerRun),
+				2, probesPerRun/2, "ALB inet (remote)")
+		}
+		return
 	}
-
-	rTCP := harness.TCPRoundRobin(nlbIP, tcpPort, probesPerRun, 5*time.Second)
-	harness.AssertRoundRobin(t, rTCP, 1, probesPerRun/2, "NLB inet (local)")
-
+	harness.AssertRoundRobin(t,
+		harness.TCPRoundRobin(ip, tcpPort, probesPerRun, 5*time.Second),
+		1, probesPerRun/2, "NLB inet (local)")
 	if ssh != nil && peer != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		r := remoteTCPRoundRobin(t, ctx, ssh, peer, nlbIP, tcpPort, probesPerRun)
-		harness.AssertRoundRobin(t, r, 1, probesPerRun/2, "NLB inet (remote)")
+		harness.AssertRoundRobin(t,
+			remoteTCPRoundRobin(t, ctx, ssh, peer, ip, tcpPort, probesPerRun),
+			1, probesPerRun/2, "NLB inet (remote)")
 	}
 }
 
@@ -673,54 +745,25 @@ func runNLBDeregisterDraining(t *testing.T, c *harness.AWSClient, tgArn, targetI
 	assert.True(t, remaining == 1 || draining >= 1, "NLB deregister: expected 1 remaining or >=1 draining")
 }
 
-// --- Internal traffic via client VM --------------------------------------
+// --- Internal traffic via shared probe client ----------------------------
 
-func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFixture, albIP, nlbIP string) {
+// runInternalTrafficViaClient hits the persistent probe client launched in
+// setupSharedFixture. The client runs curl/nc inside the VPC against the
+// requested LB private IP and returns the raw responses, one per line.
+func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKind, lbIP string) {
 	t.Helper()
-	userData, err := renderClientUserData(albIP, nlbIP, probesPerRun)
-	require.NoError(t, err)
-
-	t.Logf("client launch: type=%q ami=%q subnet=%q key=%q userdata=%dB",
-		f.InstanceType, f.AMIID, f.SubnetID, lbKeyName, len(userData))
-
-	artifacts := harness.ArtifactDir(t, harness.LoadEnv(t))
-	harness.OnFailure(t, func() { dumpDaemonLogs(t, artifacts, "client-launch") })
-
-	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(f.AMIID),
-		InstanceType: aws.String(f.InstanceType),
-		KeyName:      aws.String(lbKeyName),
-		SubnetId:     aws.String(f.SubnetID),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-		UserData:     aws.String(base64Encode(userData)),
-	})
-	require.NoErrorf(t, err, "run-instances client (type=%q ami=%q)", f.InstanceType, f.AMIID)
-	clientID := aws.StringValue(out.Instances[0].InstanceId)
-	t.Cleanup(func() { terminateInstances(t, c, []string{clientID}) })
-	t.Logf("client VM: %s", clientID)
-
-	harness.WaitForInstanceRunning(t, c, clientID, 120*time.Second)
-	eni := harness.InstanceENI(t, c, clientID)
-	clientPubIP := publicIP(eni)
-	require.NotEmpty(t, clientPubIP, "client VM needs public IP")
-
-	harness.Eventually(t, func() bool {
-		body, err := plainHTTPGet(fmt.Sprintf("http://%s:%d/status.txt", clientPubIP, httpPort), 5*time.Second)
-		if err != nil {
-			return false
-		}
-		return strings.TrimSpace(body) == "done"
-	}, 5*time.Minute, 5*time.Second, "client probe did not complete")
-
-	albResults := fetchClientFile(t, clientPubIP, "alb_results.txt")
-	nlbResults := fetchClientFile(t, clientPubIP, "nlb_results.txt")
-
-	harness.AssertRoundRobin(t, harness.VerifyResultsLines(albResults, "http"), 1, probesPerRun/2, "ALB internal")
-	harness.AssertRoundRobin(t, harness.VerifyResultsLines(nlbResults, "tcp"), 1, probesPerRun/2, "NLB internal")
+	proto := "http"
+	if kind == kindNLB {
+		proto = "tcp"
+	}
+	probeURL := fmt.Sprintf("http://%s:%d/probe?ip=%s&proto=%s&n=%d",
+		f.ClientPublicIP, httpPort, lbIP, proto, probesPerRun)
+	body, err := plainHTTPGet(probeURL, 5*time.Minute)
+	require.NoErrorf(t, err, "probe %s %s via client %s", kind, lbIP, f.ClientPublicIP)
+	harness.AssertRoundRobin(t, harness.VerifyResultsLines(body, proto), 1, probesPerRun/2, string(kind)+" internal")
 }
 
-// plainHTTPGet fetches a plain-HTTP URL (no TLS). Client VM serves results
+// plainHTTPGet fetches a plain-HTTP URL (no TLS). The probe client serves
 // over port 80 with no cert, so the harness HTTPSGet helper would refuse.
 func plainHTTPGet(url string, timeout time.Duration) (string, error) {
 	client := &http.Client{Timeout: timeout}
@@ -737,29 +780,6 @@ func plainHTTPGet(url string, timeout time.Duration) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
-}
-
-func renderClientUserData(albIP, nlbIP string, n int) (string, error) {
-	tmpl, err := template.New("client").Parse(clientUserDataTmpl)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, map[string]any{
-		"ALBPrivateIP": albIP,
-		"NLBPrivateIP": nlbIP,
-		"NumRequests":  n,
-	}); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
-func fetchClientFile(t *testing.T, ip, name string) string {
-	t.Helper()
-	body, err := plainHTTPGet(fmt.Sprintf("http://%s:%d/%s", ip, httpPort, name), 10*time.Second)
-	require.NoErrorf(t, err, "fetch %s from %s", name, ip)
-	return body
 }
 
 func dumpDaemonLogs(t *testing.T, dir, label string) {

@@ -169,10 +169,11 @@ jobs:
              for SUITE in ${SUITES_RUN}; do \
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
-               SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=30m \
-                 2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log'; \
+                 2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \
+                      | sed -E 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
                rc=\${PIPESTATUS[0]}; \
                echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then \

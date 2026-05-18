@@ -61,6 +61,14 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
+      # Spinifex source is shipped to the VM (rsync below) so go test can
+      # compile + run there. Future work (mulga-siv-79 follow-up): pre-build
+      # the test binaries here and ship those instead — drops the go/source
+      # dependency on the VM.
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -98,6 +106,22 @@ jobs:
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Ship spinifex source to VM
+        run: |
+          # Interim: rsync the runner's spinifex checkout to ~/Development/mulga/
+          # so `make -C tests/e2e <suite>` can compile + run on the VM. Future
+          # work — see follow-up bead — replaces this with pre-built test
+          # binaries shipped from the runner, dropping the source + go toolchain
+          # dependency from the VM entirely.
+          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            "mkdir -p \$HOME/Development/mulga"
+          rsync -az --delete \
+            --exclude='.git' --exclude='build/' --exclude='bin/' \
+            --exclude='ui/node_modules/' --exclude='*.test' \
+            -e "ssh -o StrictHostKeyChecking=no -i ${{ steps.vm.outputs.ssh_key }}" \
+            spinifex/ tf-user@${{ steps.vm.outputs.wan_ip }}:Development/mulga/spinifex/
 
       - name: Install Go + gotestsum on VM
         env:

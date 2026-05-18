@@ -68,7 +68,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: spinifex/go.mod
-          cache-dependency-path: spinifex/go.sum
+          # Self-hosted runner; the cache upload to GitHub blob storage
+          # dominates total job time and the local Go module cache already
+          # warms across runs.
+          cache: false
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

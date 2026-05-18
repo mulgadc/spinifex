@@ -408,11 +408,12 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, gpuMgr *gpu.Manager)
 		return nil, fmt.Errorf("detect system memory: %w", err)
 	}
 
-	reservedVCPU, reservedMem, err := applyHostReserve(defaultHostReserve, numCPU, totalMemGB)
+	reserve := resolveHostReserve(os.Getenv)
+	reservedVCPU, reservedMem, err := applyHostReserve(reserve, numCPU, totalMemGB)
 	if err != nil {
 		slog.Error("host below minimum reserve — daemon refuses to start",
 			"err", err, "hostVCPU", numCPU, "hostMemGB", totalMemGB,
-			"reserveVCPU", defaultHostReserve.vCPU, "reserveMemGB", defaultHostReserve.memGB)
+			"reserveVCPU", reserve.vCPU, "reserveMemGB", reserve.memGB)
 		return nil, fmt.Errorf("validate host reserve: %w", err)
 	}
 

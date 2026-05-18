@@ -269,7 +269,7 @@ jobs:
       - name: Build nbdkit viperblock plugin
         run: |
           mkdir -p viperblock/lib
-          cd viperblock/nbd && CGO_ENABLED=1 go build \
+          cd viperblock/nbd && GOWORK=off CGO_ENABLED=1 go build \
             -buildmode=c-shared \
             -o ../lib/nbdkit-viperblock-plugin.so \
             .

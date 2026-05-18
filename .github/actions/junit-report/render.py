@@ -21,9 +21,37 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+
+
+# Strip ANSI SGR escapes from skipped/failure CDATA so the rendered reason is
+# plain text (CDATA preserves the colour codes Go emits via harness.Phase).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+# Last `<file>.go:<line>: <reason>` line in a CDATA block is the t.Skipf /
+# t.Fatal call site — that's the actionable signal. Phase banners and probe
+# logs above it are noise for the summary view.
+_SKIP_REASON_RE = re.compile(r"([A-Za-z0-9_.\-/]+\.go:\d+:\s*.+)$")
+
+
+def _extract_skip_reason(cdata: str) -> str:
+    cdata = _strip_ansi(cdata).strip()
+    if not cdata:
+        return ""
+    for line in reversed(cdata.splitlines()):
+        line = line.strip()
+        m = _SKIP_REASON_RE.search(line)
+        if m:
+            return m.group(1).strip()
+    return cdata.splitlines()[-1].strip()
 
 
 # Workflow commands carry their payload on one line; literal newlines must
@@ -83,8 +111,15 @@ def _parse_file(path: str) -> FileTotals:
                     message = (node.get("message") or "").strip()
                     detail = (node.text or "").strip()
                     break
-            if tc.find("skipped") is not None and status == "pass":
+            skip_node = tc.find("skipped")
+            if skip_node is not None and status == "pass":
                 status = "skip"
+                # Skipped reason: prefer the CDATA call-site line, fall back
+                # to the @message attribute if CDATA is empty.
+                cdata = (skip_node.text or "").strip()
+                message = _extract_skip_reason(cdata) or (
+                    skip_node.get("message") or ""
+                ).strip()
             cases.append(
                 Case(
                     suite=suite_name,
@@ -97,14 +132,35 @@ def _parse_file(path: str) -> FileTotals:
                 )
             )
 
+    # Drop container test cases: any case whose name is a strict prefix of
+    # another case's name (with "/" separator) is a parent t.Run wrapper.
+    # Go reports the parent's status as a rollup of its children, so counting
+    # both double-tallies the same outcome (e.g. TestSingleNode failing
+    # because Phase8b_VPCSubnetE2E failed would show as 2 failures, not 1).
+    names = {c.name for c in cases}
+    prefixes = {n.rsplit("/", 1)[0] for n in names if "/" in n}
+    # A name is a container if some other name starts with "<name>/".
+    # Use the prefixes set rather than O(n^2) scanning.
+    def _is_container(name: str) -> bool:
+        return name in prefixes
+
+    leaf_cases = [c for c in cases if not _is_container(c.name)]
+
+    # Recompute totals from leaf cases so the per-file counts in the summary
+    # table match the de-duplicated failure list below it.
+    leaf_tests = len(leaf_cases)
+    leaf_failures = sum(1 for c in leaf_cases if c.status == "fail")
+    leaf_errors = sum(1 for c in leaf_cases if c.status == "error")
+    leaf_skipped = sum(1 for c in leaf_cases if c.status == "skip")
+
     return FileTotals(
         path=path,
-        tests=tests,
-        failures=failures,
-        errors=errors,
-        skipped=skipped,
+        tests=leaf_tests,
+        failures=leaf_failures,
+        errors=leaf_errors,
+        skipped=leaf_skipped,
         time=time,
-        cases=cases,
+        cases=leaf_cases,
     )
 
 
@@ -197,6 +253,23 @@ def main() -> int:
                 msg = c.message or f"{c.status}: {header}"
                 print(f"::error file={file_hint},title={header}::{_esc(msg)}")
             summary.write("\n")
+
+        skipped_cases = [
+            c for f in totals_by_file for c in f.cases if c.status == "skip"
+        ]
+        if skipped_cases:
+            summary.write("---\n\n<details><summary><b>Skipped</b> ")
+            summary.write(f"({len(skipped_cases)})</summary>\n\n")
+            for c in skipped_cases:
+                header = f"{c.classname}.{c.name}" if c.classname else c.name
+                reason = (c.message or "").splitlines()[0] if c.message else ""
+                if len(reason) > 160:
+                    reason = reason[:157] + "…"
+                line = f"- ⏭️ `{header}`"
+                if reason:
+                    line += f" — {reason}"
+                summary.write(line + "\n")
+            summary.write("\n</details>\n\n")
 
         outputs.write(f"failures={grand_fail}\n")
         outputs.write(f"total={grand_total}\n")

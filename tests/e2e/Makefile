@@ -11,9 +11,9 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # named suite into BIN_DIR/<suite>.test so CI can ship binaries (not source +
 # go toolchain) to the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb
+SUITES_BUILD ?= cert lb single
 
-.PHONY: e2e e2e-cert e2e-lb e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-all clean e2e-build
+.PHONY: e2e e2e-cert e2e-lb e2e-single e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-all clean e2e-build
 
 ifeq ($(GOTESTSUM),1)
 E2E_CMD = gotestsum \
@@ -34,6 +34,7 @@ e2e:
 
 e2e-cert:       ; $(MAKE) e2e PKG=./cert/...
 e2e-lb:         ; $(MAKE) e2e PKG=./lb/...
+e2e-single:     ; $(MAKE) e2e PKG=./single/...
 e2e-multinode:  ; $(MAKE) e2e PKG=./multinode/...
 e2e-bm:         ; $(MAKE) e2e PKG=./baremetal/... MODE=baremetal
 e2e-reboot:     ; $(MAKE) e2e PKG=./reboot/...

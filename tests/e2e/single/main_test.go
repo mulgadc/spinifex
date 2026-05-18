@@ -27,6 +27,7 @@ type Fixture struct {
 	Env       *harness.Env
 	AWS       *harness.AWSClient
 	Artifacts string
+	TmpDir    string // TestSingleNode-scoped scratch dir; survives until the whole test exits, unlike subtest t.TempDir().
 
 	Arch         string // x86_64 | arm64
 	AMIID        string // Phase 4
@@ -78,6 +79,7 @@ func TestSingleNode(t *testing.T) {
 		Env:       env,
 		AWS:       harness.NewAWSClient(t, env),
 		Artifacts: harness.ArtifactDir(t, env),
+		TmpDir:    t.TempDir(),
 	}
 	fix.PoolMode = detectPoolMode(env)
 

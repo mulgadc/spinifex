@@ -44,7 +44,7 @@ func phase3_KeyPairs(t *testing.T, fix *Fixture) {
 	require.True(t, strings.HasPrefix(material, "-----BEGIN"),
 		"KeyMaterial must be a PEM block (got prefix %q)", firstN(material, 32))
 
-	pemPath := filepath.Join(t.TempDir(), key1+".pem")
+	pemPath := filepath.Join(fix.TmpDir, key1+".pem")
 	require.NoError(t, os.WriteFile(pemPath, []byte(material), 0o600), "write PEM")
 	fix.KeyName = key1
 	fix.KeyPath = pemPath

@@ -253,9 +253,7 @@ jobs:
           cache-dependency-path: spinifex/go.sum
 
       - name: Configure Go workspace
-        run: |
-          go work init ./spinifex ./predastore ./viperblock \
-            ./viperblock/nbd ./viperblock/nbd/libguestfs.org/nbdkit
+        run: go work init ./spinifex ./predastore ./viperblock
 
       - name: Install ISO builder dependencies
         run: |

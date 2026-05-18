@@ -19,15 +19,15 @@ type SystemInstanceLauncher interface {
 	TerminateSystemInstance(instanceID string) error
 }
 
-// SystemInstanceInput describes the VM to launch.
+// SystemInstanceInput describes the direct-boot microVM to launch for an
+// ELBv2 load balancer. There is no AMI or cloud-init path — kernel and
+// initrd come from the bundled spinifex package and per-VM config is
+// delivered via QEMU fw_cfg blobs.
 type SystemInstanceInput struct {
-	InstanceType string // e.g. "t3.nano"
-	ImageID      string // AMI ID
+	InstanceType string // e.g. "sys.micro"
 	SubnetID     string // VPC subnet for networking
-	UserData     string // Cloud-init user data (plain text, will be base64-encoded)
 
-	// ENI fields — if ENIID is set, the VM uses this pre-created ENI instead
-	// of auto-creating one. Used for ALB VMs that reuse the ALB's ENI.
+	// ENI fields — the VM always uses a pre-created ENI (the ALB's primary ENI).
 	ENIID  string
 	ENIMac string
 	ENIIP  string
@@ -50,22 +50,15 @@ type SystemInstanceInput struct {
 	// Each entry is a guest port (e.g. 80, 443). The host port is auto-assigned.
 	HostfwdPorts []int
 
-	// DirectBoot skips AMI/volume setup and uses direct kernel boot instead.
-	// When true, ImageID and volume attachment are ignored; the kernel and
-	// initrd are sourced from the configured microvm image path.
-	DirectBoot bool
-
-	// NICs defines the network interfaces for a direct-boot microVM launch.
+	// NICs defines the network interfaces for the microVM.
 	// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
-	// Ignored when DirectBoot is false.
 	NICs []NICConfig
 
 	// LBAgentEnv is a KEY=value blob written to /etc/conf.d/lb-agent inside
-	// the guest via fw_cfg on the direct-boot path. Ignored when DirectBoot is false.
+	// the guest via fw_cfg.
 	LBAgentEnv string
 
-	// CACert holds PEM-encoded CA certificate bytes delivered to the guest via
-	// fw_cfg on the direct-boot path. Ignored when DirectBoot is false.
+	// CACert holds PEM-encoded CA certificate bytes delivered to the guest via fw_cfg.
 	CACert string
 }
 

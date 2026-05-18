@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,18 +19,11 @@ import (
 // Compile-time check that Daemon implements SystemInstanceLauncher.
 var _ handlers_elbv2.SystemInstanceLauncher = (*Daemon)(nil)
 
-// LaunchSystemInstance creates and starts a system-managed VM. The VM is owned
-// by the system account (GlobalAccountID) and is not visible to customer
-// DescribeInstances calls.
-//
-// This is the internal equivalent of RunInstances — it reuses the same
-// instance service, resource manager, volume preparation, and QEMU launch
-// path, but skips the NATS request/response envelope and key pair validation.
-//
-// When input.DirectBoot is true the PC-machine path (AMI lookup, volume
-// generation, cloud-init) is bypassed entirely: the VM boots a bundled
-// vmlinuz+initramfs via direct kernel boot with network and lb-agent
-// configuration delivered through QEMU fw_cfg blobs.
+// LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
+// The VM is owned by the system account (GlobalAccountID), is not visible to
+// customer DescribeInstances calls, and always boots via direct kernel boot
+// (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
+// volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
 	accountID := utils.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
@@ -45,16 +37,6 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	instanceType, exists := d.resourceMgr.instanceTypes[input.InstanceType]
 	if !exists {
 		return nil, fmt.Errorf("unknown instance type: %s", input.InstanceType)
-	}
-
-	if !input.DirectBoot {
-		// Validate AMI — only needed for the PC-machine path.
-		if d.imageService == nil {
-			return nil, fmt.Errorf("image service not initialized")
-		}
-		if _, err := d.imageService.GetAMIConfig(input.ImageID); err != nil {
-			return nil, fmt.Errorf("AMI %s not found: %w", input.ImageID, err)
-		}
 	}
 
 	// Allocate resources
@@ -78,15 +60,8 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			},
 		},
 	}
-	if !input.DirectBoot && input.ImageID != "" {
-		runInput.ImageId = aws.String(input.ImageID)
-	}
 	if input.SubnetID != "" {
 		runInput.SubnetId = aws.String(input.SubnetID)
-	}
-	if input.UserData != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(input.UserData))
-		runInput.UserData = aws.String(encoded)
 	}
 
 	// Create VM via instance service
@@ -288,10 +263,10 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			instance.MgmtMAC = generateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
 
-			// For direct-boot microvms, inject the allocated MAC and CIDR into
-			// NIC[1] so writeFwCfgBlobs carries real values — the ELBv2 service
-			// leaves them blank because MAC/IP are only known after daemon allocation.
-			if input.DirectBoot && len(input.NICs) > 1 && input.NICs[1].MAC == "" {
+			// Inject the allocated MAC and CIDR into NIC[1] so writeFwCfgBlobs
+			// carries real values — the ELBv2 service leaves them blank because
+			// MAC/IP are only known after daemon allocation.
+			if len(input.NICs) > 1 && input.NICs[1].MAC == "" {
 				input.NICs[1].MAC = instance.MgmtMAC
 				input.NICs[1].CIDR = instance.MgmtIP + "/24"
 			}
@@ -322,37 +297,15 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		}
 	}
 
-	if input.DirectBoot {
-		// Direct-boot (microvm) path: skip volume generation and cloud-init.
-		// Build the vm.Config directly with microvm machine settings and
-		// fw_cfg blobs for network, lb-agent env, and CA cert.
-		cfg, err := d.buildDirectBootConfig(instance.ID, input)
-		if err != nil {
-			d.cleanupFailedSystemInstance(instance, instanceType)
-			return nil, fmt.Errorf("build direct-boot config: %w", err)
-		}
-		instance.Config = cfg
-		instance.DirectBoot = true
-	} else {
-		// PC-machine path: clone root volume, generate cloud-init ISO.
-		volumeInfos, err := d.instanceService.GenerateVolumes(runInput, instance)
-		if err != nil {
-			d.cleanupFailedSystemInstance(instance, instanceType)
-			return nil, fmt.Errorf("generate volumes: %w", err)
-		}
-
-		instance.Instance.BlockDeviceMappings = make([]*ec2.InstanceBlockDeviceMapping, 0, len(volumeInfos))
-		for _, vi := range volumeInfos {
-			mapping := &ec2.InstanceBlockDeviceMapping{}
-			mapping.SetDeviceName(vi.DeviceName)
-			mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
-			mapping.Ebs.SetVolumeId(vi.VolumeId)
-			mapping.Ebs.SetAttachTime(vi.AttachTime)
-			mapping.Ebs.SetDeleteOnTermination(vi.DeleteOnTermination)
-			mapping.Ebs.SetStatus("attached")
-			instance.Instance.BlockDeviceMappings = append(instance.Instance.BlockDeviceMappings, mapping)
-		}
+	// Direct-boot (microvm) path: build the vm.Config directly with microvm
+	// machine settings and fw_cfg blobs for network, lb-agent env, and CA cert.
+	cfg, err := d.buildDirectBootConfig(instance.ID, input)
+	if err != nil {
+		d.cleanupFailedSystemInstance(instance, instanceType)
+		return nil, fmt.Errorf("build direct-boot config: %w", err)
 	}
+	instance.Config = cfg
+	instance.DirectBoot = true
 
 	// Launch QEMU VM
 	t1 := time.Now()
@@ -360,11 +313,9 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		d.cleanupFailedSystemInstance(instance, instanceType)
 		return nil, fmt.Errorf("launch instance: %w", err)
 	}
-	if input.DirectBoot {
-		slog.Info("direct-boot timing",
-			"instanceId", instance.ID,
-			"t1_to_t2_ms", time.Since(t1).Milliseconds())
-	}
+	slog.Info("direct-boot timing",
+		"instanceId", instance.ID,
+		"t1_to_t2_ms", time.Since(t1).Milliseconds())
 
 	slog.Info("LaunchSystemInstance completed",
 		"instanceId", instance.ID,
@@ -478,10 +429,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 		memMiB = int(instanceTypeMemoryMiB(it))
 	}
 
-	imagePath := d.config.Daemon.Microvm.ImagePath
-	if imagePath == "" {
-		imagePath = "/usr/share/spinifex/microvm"
-	}
+	const imagePath = "/usr/share/spinifex/microvm"
 
 	fwCfg, err := d.writeFwCfgBlobs(instanceID, input)
 	if err != nil {
@@ -514,7 +462,7 @@ func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.
 	}
 	cmdline := sb.String()
 
-	machineType := microvmMachineType(d.config.Daemon.Microvm.IsaSerial)
+	machineType := microvmMachineType()
 
 	cfg := vm.Config{
 		Name:          instanceID,
@@ -547,13 +495,10 @@ type nicNetdevResult struct {
 }
 
 // microvmMachineType returns the QEMU -M string for the microvm machine.
-// isaSerial nil or true keeps isa-serial=on for console log access.
-func microvmMachineType(isaSerial *bool) string {
-	serial := "on"
-	if isaSerial != nil && !*isaSerial {
-		serial = "off"
-	}
-	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=" + serial
+// isa-serial is kept on permanently for per-VM console log access — the
+// boot-time saving from turning it off is not worth losing console output.
+func microvmMachineType() string {
+	return "microvm,pic=off,pit=off,rtc=on,acpi=on,isa-serial=on"
 }
 
 // buildNICNetdevs produces QEMU -netdev and -device entries for each NIC in

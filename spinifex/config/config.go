@@ -138,16 +138,6 @@ type GPUModelOverride struct {
 	XVGAOff bool `json:"XVGAOff" mapstructure:"xvga_off"`
 }
 
-// MicrovmConfig holds configuration for microVM (Firecracker/QEMU microvm) support.
-type MicrovmConfig struct {
-	ELBv2Enabled bool   `json:"ELBv2Enabled" mapstructure:"elbv2_enabled"`
-	ImagePath    string `json:"ImagePath" mapstructure:"image_path"`
-	// IsaSerial controls the isa-serial device on the microvm machine. Default
-	// true keeps the console log path working. Set false only after measuring
-	// boot-time savings and accepting loss of per-VM console output.
-	IsaSerial *bool `json:"IsaSerial" mapstructure:"isa_serial"`
-}
-
 // DaemonConfig holds the daemon configuration
 type DaemonConfig struct {
 	Host              string             `json:"Host" mapstructure:"host"`
@@ -157,7 +147,6 @@ type DaemonConfig struct {
 	MgmtBridge        string             `json:"MgmtBridge" mapstructure:"mgmt_bridge"`                // Linux bridge for system instance control plane (default "br-mgmt")
 	GPUPassthrough    bool               `json:"GPUPassthrough" mapstructure:"gpu_passthrough"`        // Enable VFIO GPU passthrough for g5.* instance types
 	GPUModelOverrides []GPUModelOverride `json:"GPUModelOverrides" mapstructure:"gpu_model_overrides"` // Dev/test GPU mappings not in the production model list
-	Microvm           MicrovmConfig      `json:"Microvm" mapstructure:"microvm"`
 }
 
 // NATSConfig holds the NATS configuration
@@ -251,15 +240,6 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	if local, ok := config.Nodes[config.Node]; ok {
 		if strings.HasPrefix(local.Predastore.Host, "0.0.0.0") {
 			local.Predastore.Host = strings.Replace(local.Predastore.Host, "0.0.0.0", "127.0.0.1", 1)
-			config.Nodes[config.Node] = local
-		}
-		if local.Daemon.Microvm.ImagePath == "" {
-			local.Daemon.Microvm.ImagePath = "/usr/share/spinifex/microvm"
-			config.Nodes[config.Node] = local
-		}
-		if local.Daemon.Microvm.IsaSerial == nil {
-			t := true
-			local.Daemon.Microvm.IsaSerial = &t
 			config.Nodes[config.Node] = local
 		}
 	}

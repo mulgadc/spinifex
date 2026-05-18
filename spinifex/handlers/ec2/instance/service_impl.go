@@ -149,8 +149,8 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
       addresses:
         - "%s/24"
 `, mgmtMAC, mgmtIP)
-		// Route for multi-node is added via bootcmd in lbVMUserData (Alpine
-		// cloud-init does not support v2 routes under ethernets).
+		// Route for multi-node LB mgmt traffic is delivered to the LB microVM
+		// via the fw_cfg netcfg blob, not here.
 	}
 
 	return cfg

@@ -49,7 +49,6 @@ import (
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1186,29 +1185,6 @@ func (d *Daemon) startCluster() error {
 	// Wire system credentials + gateway URL for LB agent SigV4 auth.
 	d.wireLBAgentConfig()
 
-	// Set up lazy system AMI discovery for LB VMs. The image may not exist
-	// at daemon startup (imported later), so we resolve it at request time.
-	if d.imageService != nil {
-		imgSvc := d.imageService
-		d.elbv2Service.SetSystemAMIFunc(func() (string, error) {
-			imagesOut, imgErr := imgSvc.DescribeImages(&ec2.DescribeImagesInput{
-				Filters: []*ec2.Filter{{
-					Name:   aws.String("tag:" + tags.ManagedByKey),
-					Values: []*string{aws.String(tags.ManagedByELBv2)},
-				}},
-			}, utils.GlobalAccountID)
-			if imgErr != nil {
-				return "", fmt.Errorf("describe LB system images: %w", imgErr)
-			}
-			if len(imagesOut.Images) == 0 {
-				return "", errors.New("LB system image not imported; run: spx admin images import --name lb-alpine-3.21.6-x86_64")
-			}
-			amiID := aws.StringValue(imagesOut.Images[0].ImageId)
-			slog.Info("System AMI resolved for LB VMs", "amiId", amiID, "name", aws.StringValue(imagesOut.Images[0].Name))
-			return amiID, nil
-		})
-	}
-
 	// System VMs (LB, NAT GW) use the dedicated sys.micro instance type.
 	d.elbv2Service.SetSystemInstanceTypeFunc(func() string {
 		return "sys.micro"
@@ -2129,19 +2105,19 @@ func (d *Daemon) wireLBAgentConfig() {
 			"awsgwBindIP", awsgwBindIP, "mgmtBridgeIP", d.mgmtBridgeIP, "advertiseIP", advertiseIP)
 	}
 
-	// Pass mgmt route info so lbVMUserData can add a bootcmd route for
+	// Pass mgmt route info so buildMicrovmNICs can add a host route for
 	// internal LBs that reach the AWSGW via the management NIC.
 	if d.mgmtRouteVia != "" {
 		d.elbv2Service.MgmtRouteGateway = d.mgmtBridgeIP
 		d.elbv2Service.MgmtRouteTarget = d.mgmtRouteVia
 	}
 
-	// Always expose mgmtBridgeIP and advertiseIP so lbVMUserData can synthesize
-	// a mgmt-NIC fallback route for internal-scheme LBs on single-node setups
-	// (where MgmtRoute{Gateway,Target} stay empty because internet-facing LBs
-	// reach AWSGW via VPC + EIP SNAT). Internal LBs have no EIP, so without
-	// this fallback the agent has no return path and the LB stays in
-	// provisioning forever.
+	// Always expose mgmtBridgeIP and advertiseIP so buildMicrovmNICs can
+	// synthesize a mgmt-NIC fallback route for internal-scheme LBs on
+	// single-node setups (where MgmtRoute{Gateway,Target} stay empty because
+	// internet-facing LBs reach AWSGW via VPC + EIP SNAT). Internal LBs have
+	// no EIP, so without this fallback the agent has no return path and the
+	// LB stays in provisioning forever.
 	d.elbv2Service.MgmtBridgeIP = d.mgmtBridgeIP
 	d.elbv2Service.AdvertiseIP = advertiseIP
 

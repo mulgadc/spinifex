@@ -14,59 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// extractAgentEnv parses the cloud-config user-data into the env-var map that
-// cloud-init will write to /etc/conf.d/lb-agent. We don't pull in a YAML
-// dependency just for tests — the format is stable enough that line-based
-// parsing catches the things substring matching misses (misplaced keys,
-// broken indentation, content that escaped the agent-conf block).
-//
-// Returns the parsed env map plus the `runcmd:` section's body (raw lines)
-// so callers can assert on the launch command shape.
-func extractAgentEnv(t *testing.T, ud string) (envs map[string]string, runcmd []string) {
-	t.Helper()
-	require.True(t, strings.HasPrefix(ud, "#cloud-config\n"),
-		"user-data must start with #cloud-config directive")
-
-	envs = map[string]string{}
-	const agentPathMarker = "  - path: /etc/conf.d/lb-agent"
-	const contentMarker = "    content: |"
-	const envIndent = "      " // 6 spaces under `content: |`
-
-	lines := strings.Split(ud, "\n")
-	inAgentEnv := false
-	inRuncmd := false
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		switch {
-		case line == agentPathMarker:
-			require.Less(t, i+1, len(lines), "agent path entry truncated")
-			require.Equal(t, contentMarker, lines[i+1],
-				"agent path must be followed by `content: |` block")
-			inAgentEnv = true
-			i++ // skip the content marker
-		case inAgentEnv:
-			if !strings.HasPrefix(line, envIndent) {
-				inAgentEnv = false
-				i-- // re-process this line in case it starts another section
-				continue
-			}
-			kv := strings.TrimPrefix(line, envIndent)
-			k, v, ok := strings.Cut(kv, "=")
-			require.True(t, ok, "agent env line missing '=': %q", line)
-			envs[k] = v
-		case line == "runcmd:":
-			inRuncmd = true
-		case inRuncmd:
-			if !strings.HasPrefix(line, "  ") {
-				inRuncmd = false
-				continue
-			}
-			runcmd = append(runcmd, line)
-		}
-	}
-	return envs, runcmd
-}
-
 func TestBuildLBArn(t *testing.T) {
 	arn := buildLBArn("us-east-1", "123456789012", "my-alb", "50dc6c495c0c9188", LoadBalancerTypeApplication)
 	assert.Equal(t, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188", arn)
@@ -90,45 +37,6 @@ func TestBuildListenerArn(t *testing.T) {
 func TestBuildListenerArn_NLB(t *testing.T) {
 	arn := buildListenerArn("eu-west-1", "999888777666", "my-nlb", "lbid123", "listener456", LoadBalancerTypeNetwork)
 	assert.Equal(t, "arn:aws:elasticloadbalancing:eu-west-1:999888777666:listener/net/my-nlb/lbid123/listener456", arn)
-}
-
-// TestLbVMUserData_Structural parses the generated cloud-config and asserts
-// the structure: agent env vars land in /etc/conf.d/lb-agent, runcmd starts
-// lb-agent via OpenRC (not the bare binary), the CA cert section — owned by
-// the instance service's cloud-init template — is absent, and no bootcmd is
-// emitted in the single-node default.
-func TestLbVMUserData_Structural(t *testing.T) {
-	svc := &ELBv2ServiceImpl{
-		GatewayURL:      "https://192.168.1.33:9999",
-		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
-		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		region:          "ap-southeast-2",
-	}
-	ud, err := svc.lbVMUserData("lb-abc123", SchemeInternetFacing)
-	require.NoError(t, err)
-
-	envs, runcmd := extractAgentEnv(t, ud)
-	assert.Equal(t, map[string]string{
-		"LB_LB_ID":       "lb-abc123",
-		"LB_GATEWAY_URL": "https://192.168.1.33:9999",
-		"LB_ACCESS_KEY":  "AKIAIOSFODNN7EXAMPLE",
-		"LB_SECRET_KEY":  "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"LB_REGION":      "ap-southeast-2",
-	}, envs)
-	for k := range envs {
-		assert.NotContains(t, k, "NATS", "NATS URL must not leak into agent config")
-	}
-
-	// Agent is launched via OpenRC, never as a bare binary path.
-	require.Len(t, runcmd, 1)
-	assert.Contains(t, runcmd[0], `[ "rc-service", "lb-agent", "start" ]`)
-	assert.NotContains(t, ud, "/usr/local/bin/lb-agent")
-
-	// CA cert is injected upstream by the instance service's template.
-	assert.NotContains(t, ud, "ca_certs:")
-
-	// Single-node default: no MgmtRoute set means no bootcmd.
-	assert.NotContains(t, ud, "bootcmd:")
 }
 
 // TestBuildLBAgentEnv verifies that buildLBAgentEnv produces a KEY=value blob
@@ -170,8 +78,8 @@ func TestSubnetGatewayIP(t *testing.T) {
 	assert.Equal(t, "", subnetGatewayIP("not-a-cidr"))
 }
 
-// setupMicrovmTestService creates an ELBv2 service with ELBv2Enabled=true wired
-// to a real VPC service. The VPC has one subnet (10.0.1.0/24) pre-created.
+// setupMicrovmTestService creates an ELBv2 service wired to a real VPC
+// service. The VPC has one subnet (10.0.1.0/24) pre-created.
 func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, string) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -183,7 +91,6 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{
 			DevNetworking: true,
-			Microvm:       config.MicrovmConfig{ELBv2Enabled: true},
 		},
 	}
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
@@ -212,9 +119,9 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 	return elbv2Svc, vpcSvc, subnetID
 }
 
-// TestCreateLoadBalancer_Microvm_DirectBoot asserts the microvm launch path
-// sets DirectBoot=true, leaves ImageID empty, and delivers lb-agent env vars.
-func TestCreateLoadBalancer_Microvm_DirectBoot(t *testing.T) {
+// TestCreateLoadBalancer_DeliversCACert asserts the CACert plumbed into the
+// service is forwarded to the launcher for fw_cfg delivery.
+func TestCreateLoadBalancer_DeliversCACert(t *testing.T) {
 	svc, _, subnetID := setupMicrovmTestService(t)
 
 	mock := &mockSystemInstanceLauncher{
@@ -232,11 +139,8 @@ func TestCreateLoadBalancer_Microvm_DirectBoot(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, mock.launchCalls, 1)
-	inp := mock.launchCalls[0]
-
-	assert.True(t, inp.DirectBoot, "DirectBoot must be true in microvm mode")
-	assert.Equal(t, "", inp.ImageID, "ImageID must be empty in microvm mode")
-	assert.Equal(t, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n", inp.CACert)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n",
+		mock.launchCalls[0].CACert)
 }
 
 // TestCreateLoadBalancer_Microvm_LBAgentEnv asserts all five lb-agent env vars
@@ -296,9 +200,9 @@ func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
 	assert.False(t, nics[1].IsDefault, "NIC[1] must have IsDefault=false")
 }
 
-// TestCreateLoadBalancer_Microvm_MissingCredentials_SetsStateFailed verifies
-// that missing system credentials on the microvm path result in StateFailed.
-func TestCreateLoadBalancer_Microvm_MissingCredentials_SetsStateFailed(t *testing.T) {
+// TestCreateLoadBalancer_MissingCredentials_SetsStateFailed verifies that
+// missing system credentials result in StateFailed and skip the launch.
+func TestCreateLoadBalancer_MissingCredentials_SetsStateFailed(t *testing.T) {
 	svc, _, subnetID := setupMicrovmTestService(t)
 	// Clear credentials to trigger the failure path.
 	svc.GatewayURL = ""
@@ -317,58 +221,6 @@ func TestCreateLoadBalancer_Microvm_MissingCredentials_SetsStateFailed(t *testin
 	assert.Empty(t, mock.launchCalls, "launcher must not be invoked when credentials are missing")
 }
 
-// TestCreateLoadBalancer_PCMachine_Unchanged verifies that when ELBv2Enabled=false
-// the existing PC-machine cloud-config path is used and DirectBoot is not set.
-func TestCreateLoadBalancer_PCMachine_Unchanged(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	testutil.StubVpcdSGResponder(t, nc)
-
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(nil, nc)
-	require.NoError(t, err)
-
-	cfg := &config.Config{
-		Daemon: config.DaemonConfig{
-			DevNetworking: true,
-			Microvm:       config.MicrovmConfig{ELBv2Enabled: false},
-		},
-	}
-	svc, err := NewELBv2ServiceImplWithNATS(cfg, nc)
-	require.NoError(t, err)
-	svc.VPCService = vpcSvc
-	svc.GatewayURL = "https://10.0.0.1:9999"
-	svc.SystemAccessKey = "AKID"
-	svc.SystemSecretKey = "SECRET"
-	svc.SetSystemAMIFunc(func() (string, error) { return "ami-lb-test", nil })
-
-	vpcOut, err := vpcSvc.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")}, testAccountID)
-	require.NoError(t, err)
-	subnetOut, err := vpcSvc.CreateSubnet(&ec2.CreateSubnetInput{
-		VpcId:            vpcOut.Vpc.VpcId,
-		CidrBlock:        aws.String("10.0.2.0/24"),
-		AvailabilityZone: aws.String("us-east-1a"),
-	}, testAccountID)
-	require.NoError(t, err)
-
-	mock := &mockSystemInstanceLauncher{
-		launchResult: &SystemInstanceOutput{InstanceID: "i-pc-test", PrivateIP: "10.0.2.5"},
-	}
-	svc.InstanceLauncher = mock
-
-	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
-		Name:    aws.String("pc-alb"),
-		Subnets: []*string{subnetOut.Subnet.SubnetId},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, mock.launchCalls, 1)
-
-	inp := mock.launchCalls[0]
-	assert.False(t, inp.DirectBoot, "DirectBoot must be false on PC-machine path")
-	assert.Equal(t, "ami-lb-test", inp.ImageID, "ImageID must be set on PC-machine path")
-	assert.NotEmpty(t, inp.UserData, "UserData (cloud-config) must be set on PC-machine path")
-	assert.True(t, strings.HasPrefix(inp.UserData, "#cloud-config\n"),
-		"UserData must be cloud-config on PC-machine path")
-}
-
 // parseEnvBlob parses a KEY=value newline-separated blob into a map.
 func parseEnvBlob(t *testing.T, blob string) map[string]string {
 	t.Helper()
@@ -382,35 +234,6 @@ func parseEnvBlob(t *testing.T, blob string) map[string]string {
 		kvs[k] = v
 	}
 	return kvs
-}
-
-// TestLbVMUserData_MissingCredentials covers the three required-field error
-// paths (gateway URL, access key, secret key) in one table-driven test.
-func TestLbVMUserData_MissingCredentials(t *testing.T) {
-	tests := []struct {
-		name string
-		svc  *ELBv2ServiceImpl
-	}{
-		{
-			name: "missing GatewayURL",
-			svc:  &ELBv2ServiceImpl{SystemAccessKey: "AKID", SystemSecretKey: "SECRET"},
-		},
-		{
-			name: "missing SystemAccessKey",
-			svc:  &ELBv2ServiceImpl{GatewayURL: "https://10.0.0.1:9999", SystemSecretKey: "SECRET"},
-		},
-		{
-			name: "missing SystemSecretKey",
-			svc:  &ELBv2ServiceImpl{GatewayURL: "https://10.0.0.1:9999", SystemAccessKey: "AKID"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := tt.svc.lbVMUserData("lb-test", SchemeInternetFacing)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "missing system credentials")
-		})
-	}
 }
 
 // TestBuildMicrovmNICs_NilVPC verifies buildMicrovmNICs works when VPCService

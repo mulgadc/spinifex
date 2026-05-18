@@ -197,7 +197,7 @@ func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		},
 	}
-	res := buildNICNetdevs("i-test", input, microvmMachineType(nil))
+	res := buildNICNetdevs("i-test", input, microvmMachineType())
 	require.Len(t, res.netdevs, 1)
 	require.Len(t, res.devices, 1)
 	assert.Contains(t, res.netdevs[0].Value, "tap,id=net0,")
@@ -214,7 +214,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 			{MAC: "02:aa:bb:cc:dd:02", IsDefault: false},
 		},
 	}
-	res := buildNICNetdevs("i-test2", input, microvmMachineType(nil))
+	res := buildNICNetdevs("i-test2", input, microvmMachineType())
 	require.Len(t, res.netdevs, 2)
 	require.Len(t, res.devices, 2)
 	assert.Contains(t, res.netdevs[0].Value, "id=net0,")
@@ -225,7 +225,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 
 func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 	input := &handlers_elbv2.SystemInstanceInput{ENIID: "eni-empty"}
-	res := buildNICNetdevs("i-empty", input, microvmMachineType(nil))
+	res := buildNICNetdevs("i-empty", input, microvmMachineType())
 	assert.Empty(t, res.netdevs)
 	assert.Empty(t, res.devices)
 }
@@ -234,23 +234,10 @@ func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 // microvmMachineType
 // ---------------------------------------------------------------------------
 
-func TestMicrovmMachineType_DefaultNil(t *testing.T) {
-	mt := microvmMachineType(nil)
-	assert.Contains(t, mt, "isa-serial=on")
+func TestMicrovmMachineType(t *testing.T) {
+	mt := microvmMachineType()
 	assert.Contains(t, mt, "microvm,")
-}
-
-func TestMicrovmMachineType_ExplicitTrue(t *testing.T) {
-	v := true
-	mt := microvmMachineType(&v)
 	assert.Contains(t, mt, "isa-serial=on")
-}
-
-func TestMicrovmMachineType_ExplicitFalse(t *testing.T) {
-	v := false
-	mt := microvmMachineType(&v)
-	assert.Contains(t, mt, "isa-serial=off")
-	assert.NotContains(t, mt, "isa-serial=on")
 }
 
 // ---------------------------------------------------------------------------

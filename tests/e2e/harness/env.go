@@ -8,7 +8,11 @@
 package harness
 
 import (
+	"bufio"
+	"net"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -42,14 +46,6 @@ func LoadEnv(t *testing.T) *Env {
 	}
 
 	mode := Mode(getenv("SPINIFEX_MODE", string(ModeSingle)))
-	nodeIPs := splitCSV(os.Getenv("SPINIFEX_NODE_IPS"))
-	if len(nodeIPs) == 0 {
-		nodeIPs = []string{"127.0.0.1"}
-	}
-	serviceIPs := splitCSV(os.Getenv("SPINIFEX_SERVICE_IPS"))
-	if len(serviceIPs) == 0 {
-		serviceIPs = nodeIPs
-	}
 
 	configDir := getenv("SPINIFEX_CONFIG_DIR", "")
 	if configDir == "" {
@@ -58,6 +54,28 @@ func LoadEnv(t *testing.T) *Env {
 				configDir = c
 				break
 			}
+		}
+	}
+
+	nodeIPs := splitCSV(os.Getenv("SPINIFEX_NODE_IPS"))
+	if len(nodeIPs) == 0 {
+		// Single-node parity with run-cert-e2e.sh: loopback + every
+		// non-loopback global IPv4 so SAN checks see all addresses the
+		// cert is expected to cover.
+		if mode == ModeSingle {
+			nodeIPs = discoverSingleNodeIPs()
+		} else {
+			nodeIPs = []string{"127.0.0.1"}
+		}
+	}
+	serviceIPs := splitCSV(os.Getenv("SPINIFEX_SERVICE_IPS"))
+	if len(serviceIPs) == 0 {
+		// awsgw.host in spinifex.toml is the only IP the gateway actually
+		// listens on; cert TLS checks must hit that IP, not the loopback.
+		if bind := awsgwBindIP(configDir); bind != "" && bind != "0.0.0.0" {
+			serviceIPs = []string{bind}
+		} else {
+			serviceIPs = nodeIPs
 		}
 	}
 
@@ -120,4 +138,54 @@ func durationOr(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func discoverSingleNodeIPs() []string {
+	ips := []string{"127.0.0.1"}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ips
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+			continue
+		}
+		ips = append(ips, ip4.String())
+	}
+	return ips
+}
+
+var awsgwHostLine = regexp.MustCompile(`(?i)^\s*host\s*=\s*"([^":]+)`)
+
+func awsgwBindIP(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(configDir, "spinifex.toml"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	inAwsgw := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			inAwsgw = strings.Contains(line, ".awsgw]") || line == "[awsgw]"
+			continue
+		}
+		if !inAwsgw {
+			continue
+		}
+		if m := awsgwHostLine.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }

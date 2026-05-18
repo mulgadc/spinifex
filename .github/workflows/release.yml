@@ -266,14 +266,8 @@ jobs:
       - name: Build spinifex binaries
         run: cd spinifex && make build
 
-      - name: Build nbdkit viperblock plugin
-        run: |
-          mkdir -p viperblock/lib
-          cd viperblock/nbd && GOWORK=off CGO_ENABLED=1 go build \
-            -mod=mod \
-            -buildmode=c-shared \
-            -o ../lib/nbdkit-viperblock-plugin.so \
-            .
+      - name: Build viperblock
+        run: cd viperblock && make build
 
       - name: Build release ISO
         id: build-iso

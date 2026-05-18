@@ -14,9 +14,11 @@ import (
 
 // WaitForLBActive polls describe-load-balancers until state=active. Bails
 // immediately if the LB enters a terminal failure state — no point waiting
-// the full timeout when provisioning has already given up.
+// the full timeout when provisioning has already given up. Progress emits
+// via Step so long polls don't go silent in CI between subtest boundaries.
 func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout time.Duration) {
 	t.Helper()
+	Step(t, "%s: waiting for state=active (timeout %s)", label, timeout)
 	var lastState, lastReason string
 	deadline := time.Now().Add(timeout)
 	nextLog := time.Now().Add(15 * time.Second)
@@ -28,7 +30,7 @@ func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout ti
 			lastState = aws.StringValue(out.LoadBalancers[0].State.Code)
 			lastReason = aws.StringValue(out.LoadBalancers[0].State.Reason)
 			if lastState == "active" {
-				t.Logf("%s active", label)
+				Step(t, "%s active", label)
 				return
 			}
 			if lastState == "failed" || lastState == "provisioning_failed" {
@@ -39,7 +41,7 @@ func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout ti
 			t.Fatalf("%s did not become active within %s (last state=%s reason=%s)", label, timeout, lastState, lastReason)
 		}
 		if time.Now().After(nextLog) {
-			t.Logf("%s: state=%s, still waiting...", label, lastState)
+			Step(t, "%s: state=%s, still waiting...", label, lastState)
 			nextLog = time.Now().Add(30 * time.Second)
 		}
 		time.Sleep(3 * time.Second)
@@ -50,6 +52,7 @@ func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout ti
 // report state=healthy or timeout. Returns the final health output for logging.
 func WaitForTargetsHealthy(t *testing.T, c *AWSClient, tgArn string, expected int, label string, timeout time.Duration) {
 	t.Helper()
+	Step(t, "%s: waiting for %d targets healthy (timeout %s)", label, expected, timeout)
 	var lastHealthy int
 	EventuallyErr(t, func() error {
 		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
@@ -69,13 +72,14 @@ func WaitForTargetsHealthy(t *testing.T, c *AWSClient, tgArn string, expected in
 		}
 		return fmt.Errorf("%s: %d/%d healthy", label, lastHealthy, expected)
 	}, timeout, 5*time.Second)
-	t.Logf("%s: %d targets healthy", label, lastHealthy)
+	Step(t, "%s: %d targets healthy", label, lastHealthy)
 }
 
 // WaitForENICleanup polls describe-network-interfaces until no ENIs match the
 // description filter, confirming the LB VM tore down cleanly.
 func WaitForENICleanup(t *testing.T, c *AWSClient, descFilter, label string, timeout time.Duration) {
 	t.Helper()
+	Step(t, "%s: waiting for ENIs to drain (timeout %s)", label, timeout)
 	EventuallyErr(t, func() error {
 		out, err := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
 			Filters: []*ec2.Filter{{
@@ -91,13 +95,14 @@ func WaitForENICleanup(t *testing.T, c *AWSClient, descFilter, label string, tim
 		}
 		return fmt.Errorf("%s: %d ENIs still present", label, len(out.NetworkInterfaces))
 	}, timeout, 3*time.Second)
-	t.Logf("%s ENIs cleaned up", label)
+	Step(t, "%s ENIs cleaned up", label)
 }
 
 // WaitForInstanceRunning polls describe-instances until state=running.
 // Logs the StateReason on failure to aid debugging stuck launches.
 func WaitForInstanceRunning(t *testing.T, c *AWSClient, instanceID string, timeout time.Duration) {
 	t.Helper()
+	Step(t, "%s: waiting for state=running (timeout %s)", instanceID, timeout)
 	var lastState string
 	EventuallyErr(t, func() error {
 		out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -120,7 +125,7 @@ func WaitForInstanceRunning(t *testing.T, c *AWSClient, instanceID string, timeo
 		}
 		return fmt.Errorf("%s state=%s", instanceID, lastState)
 	}, timeout, 2*time.Second)
-	t.Logf("%s running", instanceID)
+	Step(t, "%s running", instanceID)
 }
 
 // WaitForInstanceTerminated polls describe-instances until state=terminated.

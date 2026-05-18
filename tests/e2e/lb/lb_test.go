@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -101,8 +102,6 @@ type sharedFixture struct {
 	AMIID          string
 	InstanceType   string
 	AppInstanceIDs []string
-	ClientID       string
-	ClientPublicIP string
 }
 
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
@@ -126,50 +125,14 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	launchAppInstances(t, c, f)
 	t.Cleanup(func() { terminateInstances(t, c, f.AppInstanceIDs) })
 
-	launchProbeClient(t, c, f)
-	t.Cleanup(func() { terminateInstances(t, c, []string{f.ClientID}) })
-
 	harness.OnFailure(t, func() {
 		dumpDaemonLogs(t, artifacts, "setup")
 	})
 	return f
 }
 
-//go:embed testdata/probe-server-userdata.sh
-var probeServerUserData string
-
-// launchProbeClient runs a single long-lived client VM whose user-data brings
-// up an HTTP probe server (see testdata/probe-server-userdata.sh). Per-suite
-// internal traffic tests then GET /probe?ip=...&proto=... against this one
-// client instead of launching their own — keeps peak instance count at 4
-// (2 app + 1 LB + 1 client) on capacity-constrained dev nodes.
-func launchProbeClient(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
-	t.Helper()
-	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(f.AMIID),
-		InstanceType: aws.String(f.InstanceType),
-		KeyName:      aws.String(lbKeyName),
-		SubnetId:     aws.String(f.SubnetID),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-		UserData:     aws.String(base64Encode(probeServerUserData)),
-	})
-	require.NoError(t, err, "run-instances probe client")
-	f.ClientID = aws.StringValue(out.Instances[0].InstanceId)
-	t.Logf("probe client: %s", f.ClientID)
-
-	harness.WaitForInstanceRunning(t, c, f.ClientID, 120*time.Second)
-	eni := harness.InstanceENI(t, c, f.ClientID)
-	f.ClientPublicIP = publicIP(eni)
-	require.NotEmpty(t, f.ClientPublicIP, "probe client needs public IP")
-
-	statusURL := fmt.Sprintf("http://%s:%d/status", f.ClientPublicIP, httpPort)
-	harness.Eventually(t, func() bool {
-		body, err := plainHTTPGet(statusURL, 5*time.Second)
-		return err == nil && strings.TrimSpace(body) == "ready"
-	}, 5*time.Minute, 5*time.Second, "probe server did not become ready")
-	t.Logf("probe client ready at %s", f.ClientPublicIP)
-}
+//go:embed testdata/client-userdata.sh.tmpl
+var clientUserDataTmpl string
 
 // --- Discovery helpers ---------------------------------------------------
 
@@ -745,22 +708,69 @@ func runNLBDeregisterDraining(t *testing.T, c *harness.AWSClient, tgArn, targetI
 	assert.True(t, remaining == 1 || draining >= 1, "NLB deregister: expected 1 remaining or >=1 draining")
 }
 
-// --- Internal traffic via shared probe client ----------------------------
+// --- Internal traffic via per-suite client VM -----------------------------
 
-// runInternalTrafficViaClient hits the persistent probe client launched in
-// setupSharedFixture. The client runs curl/nc inside the VPC against the
-// requested LB private IP and returns the raw responses, one per line.
+// runInternalTrafficViaClient launches a fresh client VM whose user-data
+// probes the supplied LB private IP from inside the VPC, then fetches the
+// results file from the client's public-port-80 server. One client per
+// suite (ALB OR NLB) keeps peak instance count at 4 (2 app + 1 LB +
+// 1 client) on capacity-constrained dev nodes.
 func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKind, lbIP string) {
 	t.Helper()
-	proto := "http"
-	if kind == kindNLB {
-		proto = "tcp"
+	var albIP, nlbIP, resultsFile, proto string
+	if kind == kindALB {
+		albIP, resultsFile, proto = lbIP, "alb_results.txt", "http"
+	} else {
+		nlbIP, resultsFile, proto = lbIP, "nlb_results.txt", "tcp"
 	}
-	probeURL := fmt.Sprintf("http://%s:%d/probe?ip=%s&proto=%s&n=%d",
-		f.ClientPublicIP, httpPort, lbIP, proto, probesPerRun)
-	body, err := plainHTTPGet(probeURL, 5*time.Minute)
-	require.NoErrorf(t, err, "probe %s %s via client %s", kind, lbIP, f.ClientPublicIP)
-	harness.AssertRoundRobin(t, harness.VerifyResultsLines(body, proto), 1, probesPerRun/2, string(kind)+" internal")
+
+	userData, err := renderClientUserData(albIP, nlbIP, probesPerRun)
+	require.NoError(t, err)
+
+	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
+		ImageId:      aws.String(f.AMIID),
+		InstanceType: aws.String(f.InstanceType),
+		KeyName:      aws.String(lbKeyName),
+		SubnetId:     aws.String(f.SubnetID),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		UserData:     aws.String(base64Encode(userData)),
+	})
+	require.NoErrorf(t, err, "run-instances client (%s)", kind)
+	clientID := aws.StringValue(out.Instances[0].InstanceId)
+	t.Cleanup(func() { terminateInstances(t, c, []string{clientID}) })
+	t.Logf("%s client: %s", kind, clientID)
+
+	harness.WaitForInstanceRunning(t, c, clientID, 120*time.Second)
+	eni := harness.InstanceENI(t, c, clientID)
+	clientIP := publicIP(eni)
+	require.NotEmpty(t, clientIP, "client VM needs public IP")
+
+	statusURL := fmt.Sprintf("http://%s:%d/status.txt", clientIP, httpPort)
+	harness.Eventually(t, func() bool {
+		body, err := plainHTTPGet(statusURL, 5*time.Second)
+		return err == nil && strings.TrimSpace(body) == "done"
+	}, 5*time.Minute, 5*time.Second, "client probe did not complete")
+
+	results, err := plainHTTPGet(fmt.Sprintf("http://%s:%d/%s", clientIP, httpPort, resultsFile), 10*time.Second)
+	require.NoErrorf(t, err, "fetch %s", resultsFile)
+	harness.AssertRoundRobin(t, harness.VerifyResultsLines(results, proto), 1, probesPerRun/2, string(kind)+" internal")
+}
+
+func renderClientUserData(albIP, nlbIP string, n int) (string, error) {
+	tmpl, err := template.New("client").Parse(clientUserDataTmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]any{
+		"ALBPrivateIP": albIP,
+		"NLBPrivateIP": nlbIP,
+		"NumRequests":  n,
+	}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // plainHTTPGet fetches a plain-HTTP URL (no TLS). The probe client serves

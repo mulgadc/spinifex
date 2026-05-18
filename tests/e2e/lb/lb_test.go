@@ -7,13 +7,13 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -34,6 +34,7 @@ const (
 	lbKeyName    = "lb-e2e-key"
 	httpPort     = 80
 	tcpPort      = 9000
+	triggerPort  = 9090
 	probesPerRun = 20
 )
 
@@ -88,6 +89,12 @@ func TestLoadBalancer(t *testing.T) {
 		runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
 	})
 	t.Run("Internal_NLB", func(t *testing.T) {
+		// DescribeLoadBalancers reports the ALB gone before the sys.micro VM's
+		// vCPU/memory allocation is actually reclaimed. Without this settle,
+		// NLB's createLB races the deallocate on capacity-tight dev hosts and
+		// trips the sys.micro reserve, ending up in terminal state=failed.
+		// Cheaper than cold-booting a fresh probe client per suite.
+		time.Sleep(15 * time.Second)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
 }
@@ -102,6 +109,8 @@ type sharedFixture struct {
 	AMIID          string
 	InstanceType   string
 	AppInstanceIDs []string
+	ClientID       string
+	ClientPublicIP string
 }
 
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
@@ -125,14 +134,17 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	launchAppInstances(t, c, f)
 	t.Cleanup(func() { terminateInstances(t, c, f.AppInstanceIDs) })
 
+	launchSharedProbeClient(t, c, f)
+	t.Cleanup(func() { terminateInstances(t, c, []string{f.ClientID}) })
+
 	harness.OnFailure(t, func() {
 		dumpDaemonLogs(t, artifacts, "setup")
 	})
 	return f
 }
 
-//go:embed testdata/client-userdata.sh.tmpl
-var clientUserDataTmpl string
+//go:embed testdata/client-userdata.sh
+var clientUserData string
 
 // --- Discovery helpers ---------------------------------------------------
 
@@ -304,13 +316,19 @@ func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	f.SecurityGroup = aws.StringValue(out.SecurityGroups[0].GroupId)
 	t.Logf("default SG: %s", f.SecurityGroup)
 
-	for _, port := range []int64{httpPort, tcpPort} {
+	// Use structured IpPermissions form — spinifex's vpcd ignores the
+	// top-level IpProtocol/FromPort/ToPort/CidrIp shortcut and silently
+	// returns newRules=0, so the OVN ACL is never installed and ingress
+	// drops at the port group. Filed as a separate bead on the daemon side.
+	for _, port := range []int64{httpPort, tcpPort, triggerPort} {
 		_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-			GroupId:    aws.String(f.SecurityGroup),
-			IpProtocol: aws.String("tcp"),
-			FromPort:   aws.Int64(port),
-			ToPort:     aws.Int64(port),
-			CidrIp:     aws.String("0.0.0.0/0"),
+			GroupId: aws.String(f.SecurityGroup),
+			IpPermissions: []*ec2.IpPermission{{
+				IpProtocol: aws.String("tcp"),
+				FromPort:   aws.Int64(port),
+				ToPort:     aws.Int64(port),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+			}},
 		})
 		if err != nil {
 			var aerr awserr.Error
@@ -526,12 +544,6 @@ func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 	if lb.ARN == "" {
 		return
 	}
-	if _, err := c.ELBv2.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
-		LoadBalancerArn: aws.String(lb.ARN),
-	}); err != nil {
-		t.Logf("delete LB %s: %v", lb.ARN, err)
-		return
-	}
 	prefix, lbName := "app", "alb"
 	if lb.Type == "network" {
 		prefix, lbName = "net", "nlb"
@@ -541,7 +553,68 @@ func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 		suffix = "inet"
 	}
 	filter := fmt.Sprintf("ELB %s/lb-e2e-%s-%s/%s", prefix, lbName, suffix, lb.ID)
+
+	// Capture the underlying sys.micro VM id before deleting so we can wait
+	// for it to actually terminate. ELBv2.DeleteLoadBalancer returns once
+	// the LB resource is gone, but the system VM termination is async and
+	// holds the vCPU/memory allocation until reaped — without this wait,
+	// the next suite's createLB can race the capacity reclaim and trip the
+	// reserve, ending up in terminal state=failed.
+	var sysInstanceID string
+	if eniOut, err := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("description"),
+			Values: []*string{aws.String(filter)},
+		}},
+	}); err == nil && len(eniOut.NetworkInterfaces) > 0 && eniOut.NetworkInterfaces[0].Attachment != nil {
+		sysInstanceID = aws.StringValue(eniOut.NetworkInterfaces[0].Attachment.InstanceId)
+	}
+
+	if _, err := c.ELBv2.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(lb.ARN),
+	}); err != nil {
+		t.Logf("delete LB %s: %v", lb.ARN, err)
+		return
+	}
+	// Block until describe reports LoadBalancerNotFound — the daemon doesn't
+	// mark the LB gone until the underlying sys.micro VM has been torn down
+	// and its vCPU/memory deallocated. Polling this avoids the capacity race
+	// where the next LB createLB fires before deallocation completes (sys
+	// instances are filtered from DescribeInstances so WaitForInstanceTerminated
+	// is a no-op for them).
+	waitForLBGone(t, c, lb.ARN, 60*time.Second)
 	harness.WaitForENICleanup(t, c, filter, lb.ARN, 30*time.Second)
+	if sysInstanceID != "" {
+		harness.WaitForInstanceTerminated(t, c, []string{sysInstanceID}, 60*time.Second)
+	}
+}
+
+// waitForLBGone polls DescribeLoadBalancers until the daemon reports
+// LoadBalancerNotFound (or the LB no longer appears in the result), which
+// in spinifex corresponds to the underlying system VM having finished
+// terminating and released its capacity.
+func waitForLBGone(t *testing.T, c *harness.AWSClient, arn string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.ELBv2.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+			LoadBalancerArns: []*string{aws.String(arn)},
+		})
+		if err != nil {
+			var aerr awserr.Error
+			if errors.As(err, &aerr) && aerr.Code() == "LoadBalancerNotFound" {
+				return
+			}
+		}
+		if err == nil && len(out.LoadBalancers) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Logf("waitForLBGone: %s still visible after %s (continuing)", arn, timeout)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func createListener(t *testing.T, c *harness.AWSClient, lbArn, proto string, port int64, tgArn string) string {
@@ -708,25 +781,14 @@ func runNLBDeregisterDraining(t *testing.T, c *harness.AWSClient, tgArn, targetI
 	assert.True(t, remaining == 1 || draining >= 1, "NLB deregister: expected 1 remaining or >=1 draining")
 }
 
-// --- Internal traffic via per-suite client VM -----------------------------
+// --- Shared probe client + per-suite trigger ----------------------------
 
-// runInternalTrafficViaClient launches a fresh client VM whose user-data
-// probes the supplied LB private IP from inside the VPC, then fetches the
-// results file from the client's public-port-80 server. One client per
-// suite (ALB OR NLB) keeps peak instance count at 4 (2 app + 1 LB +
-// 1 client) on capacity-constrained dev nodes.
-func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKind, lbIP string) {
+// launchSharedProbeClient launches one client VM whose user-data exposes
+// http.server on :80 (results dir) and a JSON trigger endpoint on :9090.
+// Both internal suites hit the same client — avoids the ~60s second cold
+// boot of a per-suite client.
+func launchSharedProbeClient(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
-	var albIP, nlbIP, resultsFile, proto string
-	if kind == kindALB {
-		albIP, resultsFile, proto = lbIP, "alb_results.txt", "http"
-	} else {
-		nlbIP, resultsFile, proto = lbIP, "nlb_results.txt", "tcp"
-	}
-
-	userData, err := renderClientUserData(albIP, nlbIP, probesPerRun)
-	require.NoError(t, err)
-
 	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:      aws.String(f.AMIID),
 		InstanceType: aws.String(f.InstanceType),
@@ -734,43 +796,69 @@ func runInternalTrafficViaClient(t *testing.T, c *harness.AWSClient, f *sharedFi
 		SubnetId:     aws.String(f.SubnetID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
-		UserData:     aws.String(base64Encode(userData)),
+		UserData:     aws.String(base64Encode(clientUserData)),
 	})
-	require.NoErrorf(t, err, "run-instances client (%s)", kind)
-	clientID := aws.StringValue(out.Instances[0].InstanceId)
-	t.Cleanup(func() { terminateInstances(t, c, []string{clientID}) })
-	t.Logf("%s client: %s", kind, clientID)
+	require.NoError(t, err, "run-instances probe client")
+	f.ClientID = aws.StringValue(out.Instances[0].InstanceId)
+	t.Logf("probe client: %s", f.ClientID)
 
-	harness.WaitForInstanceRunning(t, c, clientID, 120*time.Second)
-	eni := harness.InstanceENI(t, c, clientID)
-	clientIP := publicIP(eni)
-	require.NotEmpty(t, clientIP, "client VM needs public IP")
+	harness.WaitForInstanceRunning(t, c, f.ClientID, 120*time.Second)
+	eni := harness.InstanceENI(t, c, f.ClientID)
+	f.ClientPublicIP = publicIP(eni)
+	require.NotEmpty(t, f.ClientPublicIP, "probe client needs public IP")
+	t.Logf("probe client public IP: %s", f.ClientPublicIP)
 
-	statusURL := fmt.Sprintf("http://%s:%d/status.txt", clientIP, httpPort)
+	// Wait until the trigger server is accepting connections before the
+	// first suite starts firing probes at it.
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
 	harness.Eventually(t, func() bool {
-		body, err := plainHTTPGet(statusURL, 5*time.Second)
-		return err == nil && strings.TrimSpace(body) == "done"
-	}, 5*time.Minute, 5*time.Second, "client probe did not complete")
-
-	results, err := plainHTTPGet(fmt.Sprintf("http://%s:%d/%s", clientIP, httpPort, resultsFile), 10*time.Second)
-	require.NoErrorf(t, err, "fetch %s", resultsFile)
-	harness.AssertRoundRobin(t, harness.VerifyResultsLines(results, proto), 1, probesPerRun/2, string(kind)+" internal")
+		req, _ := http.NewRequest(http.MethodGet, triggerURL, nil)
+		client := &http.Client{Timeout: 3 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return true
+	}, 5*time.Minute, 5*time.Second, "probe client trigger server not ready")
 }
 
-func renderClientUserData(albIP, nlbIP string, n int) (string, error) {
-	tmpl, err := template.New("client").Parse(clientUserDataTmpl)
-	if err != nil {
-		return "", err
+// runInternalTrafficViaClient POSTs a probe order to the shared client's
+// trigger server, then fetches the results file it wrote and parses it.
+func runInternalTrafficViaClient(t *testing.T, _ *harness.AWSClient, f *sharedFixture, kind lbKind, lbIP string) {
+	t.Helper()
+	var proto, resultsFile string
+	if kind == kindALB {
+		proto, resultsFile = "http", fmt.Sprintf("alb-%d.txt", time.Now().UnixNano())
+	} else {
+		proto, resultsFile = "tcp", fmt.Sprintf("nlb-%d.txt", time.Now().UnixNano())
 	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, map[string]any{
-		"ALBPrivateIP": albIP,
-		"NLBPrivateIP": nlbIP,
-		"NumRequests":  n,
-	}); err != nil {
-		return "", err
+
+	order := map[string]any{
+		"proto":     proto,
+		"ip":        lbIP,
+		"count":     probesPerRun,
+		"outfile":   resultsFile,
+		"http_port": httpPort,
+		"tcp_port":  tcpPort,
 	}
-	return buf.String(), nil
+	body, err := json.Marshal(order)
+	require.NoError(t, err)
+
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	require.NoErrorf(t, err, "trigger %s probe", kind)
+	resp.Body.Close()
+	require.Equalf(t, 200, resp.StatusCode, "trigger %s probe HTTP status", kind)
+
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	require.NoErrorf(t, err, "fetch %s", resultsFile)
+	harness.AssertRoundRobin(t,
+		harness.VerifyResultsLines(results, proto),
+		1, probesPerRun/2, string(kind)+" internal")
 }
 
 // plainHTTPGet fetches a plain-HTTP URL (no TLS). The probe client serves

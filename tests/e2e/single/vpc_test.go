@@ -234,7 +234,7 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 		}
 		_ = conn.Close()
 		return true
-	}, 2*time.Minute, 2*time.Second, "SSH on "+addr+" never became reachable")
+	}, 3*time.Minute, 2*time.Second, "SSH on "+addr+" never became reachable")
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: fix.KeyPath}
 

@@ -36,6 +36,7 @@ inventory and roles relative to CWD.
 | `playbooks/dev-logs.yml` | Dump journald + `/var/log/spinifex/*` + status/networking/versions into a tarball | none |
 | `playbooks/dev-snapshot.yml` | Quiesce spinifex+OVN+OVS, tar state paths to a named bundle, restart | none |
 | `playbooks/dev-restore.yml` | Stop services, wipe + untar a named bundle, refresh CA, restart | none |
+| `playbooks/dev-version.yml` | Build-vs-install drift report (spx, plugin, microvm) + sub-repo HEADs | none |
 
 Upcoming (not yet implemented):
 
@@ -54,6 +55,7 @@ ansible-playbook playbooks/dev-status.yml
 ansible-playbook playbooks/dev-logs.yml
 ansible-playbook playbooks/dev-snapshot.yml -e snapshot_name=before-merge
 ansible-playbook playbooks/dev-restore.yml  -e snapshot_name=before-merge
+ansible-playbook playbooks/dev-version.yml
 ```
 
 Or via `make` (from `spinifex/`):
@@ -68,6 +70,7 @@ make ansible-dev-status
 make ansible-dev-logs
 make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'
 make ansible-dev-restore  ANSIBLE_EXTRA='-e snapshot_name=before-merge'
+make ansible-dev-version
 ```
 
 ### When to use which
@@ -79,6 +82,7 @@ make ansible-dev-restore  ANSIBLE_EXTRA='-e snapshot_name=before-merge'
 - "Is my dev box healthy?" → `ansible-dev-status` (read-only, never mutates)
 - Filing a bug / capturing the state of a broken box → `ansible-dev-logs` (writes `/tmp/spinifex-logs-<host>-<ts>.tar.gz`; override `-e logs_since=10min` or `-e logs_include_dmesg=false`)
 - Checkpoint before a risky op (branch switch, viperblock surgery, ovn restart cycle) → `ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=<name>'`; roll back via `ansible-dev-restore` instead of a full `dev-reset`. Bundles live in `/var/lib/spinifex-snapshots/<name>.tar.gz` (root-owned, survives `dev-teardown`).
+- "Do I need to `ansible-dev-deploy`?" → `ansible-dev-version` (drift-only check; faster than `dev-status`)
 
 ## Variable overrides
 

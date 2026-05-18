@@ -1,0 +1,161 @@
+---
+# Detailed build-vs-install drift report for the four artifacts that
+# `ansible-dev-deploy` swaps: spx, the nbdkit viperblock plugin, and the
+# two microvm artifacts (kernel + initramfs). Pure read-only; faster
+# than dev-status (no AWS / OVN / port probing).
+
+- name: version — built spx
+  ansible.builtin.stat:
+    path: "{{ spinifex_root }}/bin/spx"
+    checksum_algorithm: sha256
+  register: ver_spx_built
+
+- name: version — installed spx
+  become: true
+  ansible.builtin.stat:
+    path: /usr/local/bin/spx
+    checksum_algorithm: sha256
+  register: ver_spx_installed
+
+- name: version — installed spx version string
+  ansible.builtin.shell: |
+    /usr/local/bin/spx version 2>/dev/null | grep -vE '^[0-9]{4}/' | head -1
+  register: ver_spx_version
+  changed_when: false
+  failed_when: false
+  when: ver_spx_installed.stat.exists
+
+- name: version — built plugin
+  ansible.builtin.stat:
+    path: "{{ mulga_root }}/viperblock/lib/nbdkit-viperblock-plugin.so"
+    checksum_algorithm: sha256
+  register: ver_plugin_built
+
+- name: version — nbdkit plugin dir
+  ansible.builtin.shell: |
+    nbdkit --dump-config 2>/dev/null | awk -F= '/^plugindir=/{print $2; exit}'
+  register: ver_plugindir
+  changed_when: false
+  failed_when: false
+
+- name: version — installed plugin
+  become: true
+  ansible.builtin.stat:
+    path: "{{ ver_plugindir.stdout | trim }}/nbdkit-viperblock-plugin.so"
+    checksum_algorithm: sha256
+  register: ver_plugin_installed
+  when: ver_plugindir.stdout | trim | length > 0
+
+- name: version — built microvm artifacts
+  ansible.builtin.stat:
+    path: "{{ spinifex_root }}/build/microvm/{{ item }}"
+    checksum_algorithm: sha256
+  register: ver_microvm_built
+  loop:
+    - vmlinuz
+    - initramfs.cpio.gz
+
+- name: version — installed microvm artifacts
+  become: true
+  ansible.builtin.stat:
+    path: /usr/share/spinifex/microvm/{{ item }}
+    checksum_algorithm: sha256
+  register: ver_microvm_installed
+  loop:
+    - vmlinuz
+    - initramfs.cpio.gz
+
+- name: version — sub-repo HEAD short-rev (spinifex)
+  ansible.builtin.command: git -C {{ spinifex_root | quote }} rev-parse --short HEAD
+  register: ver_spinifex_head
+  changed_when: false
+  failed_when: false
+
+- name: version — sub-repo HEAD short-rev (viperblock)
+  ansible.builtin.command: git -C {{ mulga_root }}/viperblock rev-parse --short HEAD
+  register: ver_viperblock_head
+  changed_when: false
+  failed_when: false
+
+- name: version — sub-repo HEAD short-rev (predastore)
+  ansible.builtin.command: git -C {{ mulga_root }}/predastore rev-parse --short HEAD
+  register: ver_predastore_head
+  changed_when: false
+  failed_when: false
+
+- name: version — assemble per-artifact rows
+  ansible.builtin.set_fact:
+    ver_artifact_rows: >-
+      {{
+        [
+          ('%-18s built=%s  installed=%s  drift=%s' | format(
+            'spx',
+            (ver_spx_built.stat.checksum     | default('-') | truncate(13, true, ''))
+              if ver_spx_built.stat.exists     else 'MISSING',
+            (ver_spx_installed.stat.checksum | default('-') | truncate(13, true, ''))
+              if ver_spx_installed.stat.exists else 'MISSING',
+            ('YES' if ver_spx_built.stat.exists and ver_spx_installed.stat.exists
+                  and ver_spx_built.stat.checksum != ver_spx_installed.stat.checksum
+                  else 'no')
+          )),
+          ('%-18s built=%s  installed=%s  drift=%s' | format(
+            'plugin (nbdkit)',
+            (ver_plugin_built.stat.checksum    | default('-') | truncate(13, true, ''))
+              if ver_plugin_built.stat.exists    else 'MISSING',
+            (ver_plugin_installed.stat.checksum | default('-') | truncate(13, true, ''))
+              if (ver_plugin_installed.stat | default({})).get('exists', false) else 'MISSING',
+            ('YES' if ver_plugin_built.stat.exists
+                  and (ver_plugin_installed.stat | default({})).get('exists', false)
+                  and ver_plugin_built.stat.checksum != ver_plugin_installed.stat.checksum
+                  else 'no')
+          )),
+          ('%-18s built=%s  installed=%s  drift=%s' | format(
+            'microvm vmlinuz',
+            (ver_microvm_built.results[0].stat.checksum     | default('-') | truncate(13, true, ''))
+              if ver_microvm_built.results[0].stat.exists     else 'MISSING',
+            (ver_microvm_installed.results[0].stat.checksum | default('-') | truncate(13, true, ''))
+              if ver_microvm_installed.results[0].stat.exists else 'MISSING',
+            ('YES' if ver_microvm_built.results[0].stat.exists
+                  and ver_microvm_installed.results[0].stat.exists
+                  and ver_microvm_built.results[0].stat.checksum
+                      != ver_microvm_installed.results[0].stat.checksum
+                  else 'no')
+          )),
+          ('%-18s built=%s  installed=%s  drift=%s' | format(
+            'microvm initramfs',
+            (ver_microvm_built.results[1].stat.checksum     | default('-') | truncate(13, true, ''))
+              if ver_microvm_built.results[1].stat.exists     else 'MISSING',
+            (ver_microvm_installed.results[1].stat.checksum | default('-') | truncate(13, true, ''))
+              if ver_microvm_installed.results[1].stat.exists else 'MISSING',
+            ('YES' if ver_microvm_built.results[1].stat.exists
+                  and ver_microvm_installed.results[1].stat.exists
+                  and ver_microvm_built.results[1].stat.checksum
+                      != ver_microvm_installed.results[1].stat.checksum
+                  else 'no')
+          ))
+        ]
+      }}
+
+- name: version — compute any-drift flag
+  ansible.builtin.set_fact:
+    ver_any_drift: "{{ 'YES' in (ver_artifact_rows | join(' ')) }}"
+
+- name: version — summary
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          '── Spinifex build vs install ─────────────────────────────────────────────',
+          'spx (installed): ' ~ ((ver_spx_version.stdout | default('') | trim) or '(not installed)')
+        ]
+        + ver_artifact_rows
+        + [
+          '── Sub-repo HEADs ──',
+          'spinifex   : ' ~ ((ver_spinifex_head.stdout | default('') | trim) or '(not a git repo)'),
+          'viperblock : ' ~ ((ver_viperblock_head.stdout | default('') | trim) or '(missing)'),
+          'predastore : ' ~ ((ver_predastore_head.stdout | default('') | trim) or '(missing)'),
+          '──────────────────────────────────────────────────────────────────────────',
+          ('DRIFT detected — run: make ansible-dev-deploy' if ver_any_drift
+           else 'No drift; built = installed for all artifacts.')
+        ]
+      }}

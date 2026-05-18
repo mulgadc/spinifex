@@ -1790,6 +1790,21 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
+// StoppedInstanceNode returns the LastNode field stored in the shared KV for a
+// stopped instance. Returns "" when the store is unavailable, the instance is
+// not found, or the entry has no LastNode set. Used by the daemon's ec2.start
+// handler to route start requests back to the original node when possible.
+func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {
+	if s.stoppedStore == nil {
+		return ""
+	}
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil || instance == nil {
+		return ""
+	}
+	return instance.LastNode
+}
+
 // StartStoppedInstance picks up a stopped instance from shared KV, re-launches
 // it on this daemon node, then removes it from shared KV.
 func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {

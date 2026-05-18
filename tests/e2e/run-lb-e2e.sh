@@ -48,7 +48,8 @@ export AWS_PROFILE=spinifex
 AWS_EC2="aws --endpoint-url ${ENDPOINT} ec2"
 AWS_ELBV2="aws --endpoint-url ${ENDPOINT} elbv2"
 
-SSH_KEY_PATH="$HOME/.ssh/tf-user-ap-southeast-2"
+SSH_KEY_PATH="${PEER_SSH_KEY:-$HOME/.ssh/tf-user-ap-southeast-2}"
+PEER_USER="${PEER_SSH_USER:-tf-user}"
 
 PASSED=0
 FAILED=0
@@ -70,7 +71,7 @@ peer_ssh() {
         -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=10 \
         -o LogLevel=ERROR \
-        "tf-user@${ip}" "$@"
+        "${PEER_USER}@${ip}" "$@"
 }
 
 # find_lb_host <eni_id> — discover which node hosts the LB system instance by

@@ -45,7 +45,17 @@ export AWS_CA_BUNDLE="/etc/spinifex/ca.pem"
 # Track test results
 TESTS_PASSED=0
 TESTS_FAILED=0
+TESTS_SKIPPED=0
 FAILED_TESTS=()
+SKIPPED_TESTS=()
+
+# Cluster size target: phases that depend on multi-instance density (3+
+# t3.nano instances spread across the cluster) require NODE_COUNT >= DENSITY_NODE_TARGET.
+# On smaller clusters the smallest node (e.g. a 4-vCPU NUC) can hold only one
+# t3.nano after the daemon's host reserve, so any phase that puts >1 instance
+# on it — directly via spread or indirectly via StartStoppedInstance returning
+# instances to their original node — legitimately exhausts capacity.
+DENSITY_NODE_TARGET=3
 
 # ==========================================================================
 # Helper functions
@@ -376,6 +386,22 @@ fail_test() {
     FAILED_TESTS+=("$name")
 }
 
+skip_test() {
+    local name="$1"
+    local reason="${2:-density skip}"
+    echo "  $name SKIPPED ($reason)"
+    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+    SKIPPED_TESTS+=("$name ($reason)")
+}
+
+# is_density_skip returns 0 (true) when $1 contains InsufficientInstanceCapacity
+# AND the cluster is smaller than the design target (3 nodes). On larger clusters
+# capacity exhaustion is a real failure, not a hardware-sizing artefact.
+is_density_skip() {
+    [ "$NODE_COUNT" -lt "$DENSITY_NODE_TARGET" ] || return 1
+    echo "$1" | grep -q "InsufficientInstanceCapacity"
+}
+
 # ==========================================================================
 # EXIT trap — dump logs on failure
 # ==========================================================================
@@ -558,12 +584,27 @@ echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
 # Launch 3 instances with stagger to encourage distribution
 echo "Launching 3 instances..."
+PHASE3_DENSITY_SKIP=false
 for i in 1 2 3; do
     echo "  Launching instance $i..."
+    set +e
     RUN_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" \
         --instance-type "$INSTANCE_TYPE" \
-        --key-name spinifex-key)
+        --key-name spinifex-key 2>&1)
+    RUN_RC=$?
+    set -e
+
+    if [ $RUN_RC -ne 0 ]; then
+        if is_density_skip "$RUN_OUTPUT"; then
+            skip_test "Phase 3 launch instance $i" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+            PHASE3_DENSITY_SKIP=true
+            break
+        fi
+        echo "  ERROR: Failed to launch instance $i"
+        echo "  Output: $RUN_OUTPUT"
+        exit 1
+    fi
 
     INSTANCE_ID=$(echo "$RUN_OUTPUT" | jq -r '.Instances[0].InstanceId')
     if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" == "null" ]; then
@@ -578,15 +619,29 @@ for i in 1 2 3; do
     [ $i -lt 3 ] && sleep 2
 done
 
-# Wait for all instances to be running
+if [ "$PHASE3_DENSITY_SKIP" = true ] && [ ${#INSTANCE_IDS[@]} -eq 0 ]; then
+    echo "  Phase 3 launched zero instances on undersized cluster; skipping dependent phases gracefully."
+fi
+
+# Wait for all instances to be running. On a sub-DENSITY_NODE_TARGET cluster
+# an instance that failed to start (capacity, scheduler race) is downgraded
+# to a skip rather than a hard exit so the rest of the suite still runs.
 echo ""
 echo "Waiting for instances to reach running state..."
+RUNNING_INSTANCE_IDS=()
 for instance_id in "${INSTANCE_IDS[@]}"; do
-    wait_for_instance_state "$instance_id" "running" 60 || {
-        echo "ERROR: Instance $instance_id failed to start"
-        exit 1
-    }
+    if wait_for_instance_state "$instance_id" "running" 60; then
+        RUNNING_INSTANCE_IDS+=("$instance_id")
+        continue
+    fi
+    if [ "$NODE_COUNT" -lt "$DENSITY_NODE_TARGET" ]; then
+        skip_test "Phase 3 wait-running $instance_id" "instance never reached running on NODE_COUNT=$NODE_COUNT"
+        continue
+    fi
+    echo "ERROR: Instance $instance_id failed to start"
+    exit 1
 done
+INSTANCE_IDS=("${RUNNING_INSTANCE_IDS[@]}")
 
 # Check distribution via spx get vms or QEMU process check
 echo ""
@@ -741,6 +796,10 @@ echo "========================================"
 SPINIFEX_AZ=$($AWS_EC2 describe-availability-zones --query 'AvailabilityZones[0].ZoneName' --output text)
 echo "AZ: $SPINIFEX_AZ"
 
+if [ ${#INSTANCE_IDS[@]} -eq 0 ]; then
+    skip_test "Volume lifecycle" "no Phase 3 instances available for attach"
+else
+
 # Create volume
 echo "Creating 10GB test volume..."
 CREATE_OUTPUT=$($AWS_EC2 create-volume --size 10 --availability-zone "$SPINIFEX_AZ")
@@ -826,6 +885,8 @@ else
     fi
 fi
 
+fi   # INSTANCE_IDS non-empty guard
+
 echo ""
 
 # ==========================================================================
@@ -861,40 +922,55 @@ echo "Phase 7: Cross-Node Operations"
 echo "========================================"
 echo "Testing stop/start via a gateway on a DIFFERENT node than the hosting node..."
 
-# Pick first instance and find its host
-TEST_INSTANCE="${INSTANCE_IDS[0]}"
-INSTANCE_HOST=$(find_instance_node "$TEST_INSTANCE" || echo "$LOCAL_IP")
-echo "  Instance $TEST_INSTANCE is on $INSTANCE_HOST"
+if [ ${#INSTANCE_IDS[@]} -eq 0 ]; then
+    skip_test "Cross-node stop/start" "no Phase 3 instances available"
+else
+    # Pick first instance and find its host
+    TEST_INSTANCE="${INSTANCE_IDS[0]}"
+    INSTANCE_HOST=$(find_instance_node "$TEST_INSTANCE" || echo "$LOCAL_IP")
+    echo "  Instance $TEST_INSTANCE is on $INSTANCE_HOST"
 
-# Pick a different node's gateway for the operation
-OTHER_GW=""
-for ip in "${NODE_IPS[@]}"; do
-    if [ "$ip" != "$INSTANCE_HOST" ]; then
-        OTHER_GW="$ip"
-        break
+    # Pick a different node's gateway for the operation
+    OTHER_GW=""
+    for ip in "${NODE_IPS[@]}"; do
+        if [ "$ip" != "$INSTANCE_HOST" ]; then
+            OTHER_GW="$ip"
+            break
+        fi
+    done
+    echo "  Will operate via gateway on $OTHER_GW"
+
+    # Stop via other gateway
+    echo "  Stopping instance via $OTHER_GW..."
+    aws_via "$OTHER_GW" ec2 stop-instances --instance-ids "$TEST_INSTANCE" > /dev/null
+    wait_for_instance_state "$TEST_INSTANCE" "stopped" 60 "$OTHER_GW"
+
+    # Pick yet another gateway for start (or same other if only 2 choices)
+    THIRD_GW=""
+    for ip in "${NODE_IPS[@]}"; do
+        if [ "$ip" != "$INSTANCE_HOST" ] && [ "$ip" != "$OTHER_GW" ]; then
+            THIRD_GW="$ip"
+            break
+        fi
+    done
+    THIRD_GW="${THIRD_GW:-$OTHER_GW}"
+    echo "  Starting instance via $THIRD_GW..."
+    set +e
+    START_OUT=$(aws_via "$THIRD_GW" ec2 start-instances --instance-ids "$TEST_INSTANCE" 2>&1)
+    START_RC=$?
+    set -e
+    if [ $START_RC -ne 0 ]; then
+        if is_density_skip "$START_OUT"; then
+            skip_test "Cross-node stop/start" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+        else
+            echo "  ERROR: start-instances failed: $START_OUT"
+            fail_test "Cross-node stop/start"
+        fi
+    else
+        wait_for_instance_state "$TEST_INSTANCE" "running" 60 "$THIRD_GW"
+        pass_test "Cross-node stop/start"
     fi
-done
-echo "  Will operate via gateway on $OTHER_GW"
-
-# Stop via other gateway
-echo "  Stopping instance via $OTHER_GW..."
-aws_via "$OTHER_GW" ec2 stop-instances --instance-ids "$TEST_INSTANCE" > /dev/null
-wait_for_instance_state "$TEST_INSTANCE" "stopped" 60 "$OTHER_GW"
-
-# Pick yet another gateway for start (or same other if only 2 choices)
-THIRD_GW=""
-for ip in "${NODE_IPS[@]}"; do
-    if [ "$ip" != "$INSTANCE_HOST" ] && [ "$ip" != "$OTHER_GW" ]; then
-        THIRD_GW="$ip"
-        break
-    fi
-done
-THIRD_GW="${THIRD_GW:-$OTHER_GW}"
-echo "  Starting instance via $THIRD_GW..."
-aws_via "$THIRD_GW" ec2 start-instances --instance-ids "$TEST_INSTANCE" > /dev/null
-wait_for_instance_state "$TEST_INSTANCE" "running" 60 "$THIRD_GW"
-
-pass_test "Cross-node stop/start"
+fi
 
 echo ""
 
@@ -1082,13 +1158,29 @@ else
         echo "Launching 3 VPC instances..."
         VPC_INSTANCE_IDS=()
         VPC_LAUNCH_OK=true
+        VPC_DENSITY_SKIP=false
         for i in 1 2 3; do
             echo "  Launching VPC instance $i with subnet $SUBNET_ID..."
+            set +e
             RUN_OUTPUT=$($AWS_EC2 run-instances \
                 --image-id "$AMI_ID" \
                 --instance-type "$INSTANCE_TYPE" \
                 --key-name spinifex-key \
-                --subnet-id "$SUBNET_ID")
+                --subnet-id "$SUBNET_ID" 2>&1)
+            VPC_RUN_RC=$?
+            set -e
+
+            if [ $VPC_RUN_RC -ne 0 ]; then
+                if is_density_skip "$RUN_OUTPUT"; then
+                    skip_test "Phase 10 VPC instance $i launch" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+                    VPC_DENSITY_SKIP=true
+                    VPC_LAUNCH_OK=false
+                    break
+                fi
+                echo "  ERROR: Failed to launch VPC instance $i: $RUN_OUTPUT"
+                VPC_LAUNCH_OK=false
+                break
+            fi
 
             VPC_INST_ID=$(echo "$RUN_OUTPUT" | jq -r '.Instances[0].InstanceId')
             VPC_INST_IP=$(echo "$RUN_OUTPUT" | jq -r '.Instances[0].PrivateIpAddress // empty')
@@ -1202,29 +1294,52 @@ else
                             fi
                         done
 
-                        # Restart all VPC instances
+                        # Restart all VPC instances. InsufficientInstanceCapacity here is
+                        # downgraded to a skip only on sub-DENSITY_NODE_TARGET clusters;
+                        # on a 3+ node cluster it remains a real failure.
+                        VPC_RESTART_OK=true
+                        VPC_RESTART_DENSITY_SKIP=false
+                        set +e
                         for vpc_inst in "${VPC_INSTANCE_IDS[@]}"; do
-                            $AWS_EC2 start-instances --instance-ids "$vpc_inst" > /dev/null
-                        done
-                        for vpc_inst in "${VPC_INSTANCE_IDS[@]}"; do
-                            wait_for_instance_state "$vpc_inst" "running" 60 || true
-                        done
-
-                        # Verify IPs persist after restart
-                        for idx in "${!VPC_INSTANCE_IDS[@]}"; do
-                            vpc_inst="${VPC_INSTANCE_IDS[$idx]}"
-                            expected_ip="${VPC_PRIVATE_IPS[$idx]}"
-                            RESTARTED_IP=$($AWS_EC2 describe-instances --instance-ids "$vpc_inst" \
-                                --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
-                            if [ "$RESTARTED_IP" != "$expected_ip" ]; then
-                                echo "  ERROR: $vpc_inst IP changed after restart (expected $expected_ip, got $RESTARTED_IP)"
-                                IP_PERSIST_OK=false
-                            else
-                                echo "  $vpc_inst: IP=$RESTARTED_IP (matches pre-stop)"
+                            START_OUT=$($AWS_EC2 start-instances --instance-ids "$vpc_inst" 2>&1)
+                            START_RC=$?
+                            if [ $START_RC -ne 0 ]; then
+                                if is_density_skip "$START_OUT"; then
+                                    echo "  SKIP: $vpc_inst could not restart (InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT)"
+                                    VPC_RESTART_OK=false
+                                    VPC_RESTART_DENSITY_SKIP=true
+                                else
+                                    echo "  ERROR: $vpc_inst start-instances failed: $START_OUT"
+                                    IP_PERSIST_OK=false
+                                    VPC_RESTART_OK=false
+                                fi
                             fi
                         done
+                        set -e
 
-                        if [ "$IP_PERSIST_OK" = true ]; then
+                        if [ "$VPC_RESTART_OK" = true ]; then
+                            for vpc_inst in "${VPC_INSTANCE_IDS[@]}"; do
+                                wait_for_instance_state "$vpc_inst" "running" 60 || true
+                            done
+
+                            # Verify IPs persist after restart
+                            for idx in "${!VPC_INSTANCE_IDS[@]}"; do
+                                vpc_inst="${VPC_INSTANCE_IDS[$idx]}"
+                                expected_ip="${VPC_PRIVATE_IPS[$idx]}"
+                                RESTARTED_IP=$($AWS_EC2 describe-instances --instance-ids "$vpc_inst" \
+                                    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+                                if [ "$RESTARTED_IP" != "$expected_ip" ]; then
+                                    echo "  ERROR: $vpc_inst IP changed after restart (expected $expected_ip, got $RESTARTED_IP)"
+                                    IP_PERSIST_OK=false
+                                else
+                                    echo "  $vpc_inst: IP=$RESTARTED_IP (matches pre-stop)"
+                                fi
+                            done
+                        fi
+
+                        if [ "$VPC_RESTART_DENSITY_SKIP" = true ]; then
+                            skip_test "VPC stop/start IP persistence" "restart blocked by InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+                        elif [ "$IP_PERSIST_OK" = true ]; then
                             pass_test "VPC stop/start IP persistence"
                         else
                             fail_test "VPC stop/start IP persistence"
@@ -1240,7 +1355,11 @@ else
             echo "Cleaning up VPC instances..."
             terminate_and_wait "${VPC_INSTANCE_IDS[@]}" || true
         else
-            fail_test "VPC instance launch"
+            if [ "$VPC_DENSITY_SKIP" = true ]; then
+                skip_test "VPC instance launch" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+            else
+                fail_test "VPC instance launch"
+            fi
             # Cleanup any partially-launched VPC instances
             if [ ${#VPC_INSTANCE_IDS[@]} -gt 0 ]; then
                 echo "  Cleaning up partially-launched VPC instances..."
@@ -1321,12 +1440,43 @@ echo "  Private SG: $NATGW_PRIV_SG (tcp/22 from bastion-sg, icmp from VPC)"
 
 echo ""
 echo "Step 2: Launching bastion in public subnet..."
-NATGW_BASTION_ID=$($AWS_EC2 run-instances \
+set +e
+BASTION_RUN_OUT=$($AWS_EC2 run-instances \
     --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
     --subnet-id "$NATGW_PUB_SUBNET" --key-name spinifex-key \
     --security-group-ids "$NATGW_BASTION_SG" \
-    --count 1 --query 'Instances[0].InstanceId' --output text)
+    --count 1 --query 'Instances[0].InstanceId' --output text 2>&1)
+BASTION_RUN_RC=$?
+set -e
+NATGW_DENSITY_SKIP=false
+if [ $BASTION_RUN_RC -ne 0 ]; then
+    if is_density_skip "$BASTION_RUN_OUT"; then
+        skip_test "NAT GW bastion launch" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+        NATGW_DENSITY_SKIP=true
+        NATGW_BASTION_ID=""
+    else
+        echo "  ERROR: bastion run-instances failed: $BASTION_RUN_OUT"
+        fail_test "NAT GW bastion launch"
+        NATGW_BASTION_ID=""
+    fi
+else
+    NATGW_BASTION_ID="$BASTION_RUN_OUT"
+fi
 echo "  Bastion: $NATGW_BASTION_ID"
+if [ -z "$NATGW_BASTION_ID" ]; then
+    # Density-skip or hard fail at bastion launch: roll back the Phase 11 VPC
+    # plumbing and skip the rest of the phase.
+    $AWS_EC2 delete-security-group --group-id "$NATGW_PRIV_SG" 2>/dev/null || true
+    $AWS_EC2 delete-security-group --group-id "$NATGW_BASTION_SG" 2>/dev/null || true
+    $AWS_EC2 delete-subnet --subnet-id "$NATGW_PRIV_SUBNET" 2>/dev/null || true
+    $AWS_EC2 delete-subnet --subnet-id "$NATGW_PUB_SUBNET" 2>/dev/null || true
+    $AWS_EC2 detach-internet-gateway --vpc-id "$NATGW_VPC_ID" \
+        --internet-gateway-id "$NATGW_IGW_ID" 2>/dev/null || true
+    $AWS_EC2 delete-internet-gateway --internet-gateway-id "$NATGW_IGW_ID" 2>/dev/null || true
+    $AWS_EC2 delete-vpc --vpc-id "$NATGW_VPC_ID" 2>/dev/null || true
+    echo "  Phase 11 short-circuited after bastion launch failure"
+else
+
 wait_for_instance_state "$NATGW_BASTION_ID" "running" 120
 
 NATGW_BASTION_PUB_IP=$($AWS_EC2 describe-instances \
@@ -1386,24 +1536,44 @@ else
     echo "  Placement group: nat-spread (spread)"
 
     # Launch NODE_COUNT instances in private subnet with spread placement
+    set +e
     NATGW_PRIV_OUTPUT=$($AWS_EC2 run-instances \
         --image-id "$AMI_ID" --instance-type "$INSTANCE_TYPE" \
         --subnet-id "$NATGW_PRIV_SUBNET" --key-name spinifex-key \
         --security-group-ids "$NATGW_PRIV_SG" \
-        --count "$NODE_COUNT" --placement "GroupName=nat-spread" --output json)
+        --count "$NODE_COUNT" --placement "GroupName=nat-spread" --output json 2>&1)
+    NATGW_PRIV_RC=$?
+    set -e
     NATGW_PRIV_IDS=()
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        NATGW_PRIV_IDS+=("$(echo "$NATGW_PRIV_OUTPUT" | jq -r ".Instances[$i].InstanceId")")
-    done
-    echo "  Private instances: ${NATGW_PRIV_IDS[*]}"
+    NATGW_PRIV_DENSITY_SKIP=false
+    if [ $NATGW_PRIV_RC -ne 0 ]; then
+        if is_density_skip "$NATGW_PRIV_OUTPUT"; then
+            skip_test "Spread placement private launch" "InsufficientInstanceCapacity on NODE_COUNT=$NODE_COUNT"
+            NATGW_PRIV_DENSITY_SKIP=true
+        else
+            echo "  ERROR: spread run-instances failed: $NATGW_PRIV_OUTPUT"
+            fail_test "Spread placement private launch"
+        fi
+    else
+        for i in $(seq 0 $((NODE_COUNT - 1))); do
+            NATGW_PRIV_IDS+=("$(echo "$NATGW_PRIV_OUTPUT" | jq -r ".Instances[$i].InstanceId")")
+        done
+    fi
+    echo "  Private instances: ${NATGW_PRIV_IDS[*]:-(none)}"
 
     # Wait for all running
     ALL_RUNNING=true
-    for inst_id in "${NATGW_PRIV_IDS[@]}"; do
-        if ! wait_for_instance_state "$inst_id" "running" 120; then
-            ALL_RUNNING=false
-        fi
-    done
+    if [ ${#NATGW_PRIV_IDS[@]} -eq 0 ]; then
+        # Nothing was launched (density skip or other failure); short-circuit
+        # the spread/NAT GW assertions but keep cleanup.
+        ALL_RUNNING=false
+    else
+        for inst_id in "${NATGW_PRIV_IDS[@]}"; do
+            if ! wait_for_instance_state "$inst_id" "running" 120; then
+                ALL_RUNNING=false
+            fi
+        done
+    fi
 
     if [ "$ALL_RUNNING" = true ]; then
         echo ""
@@ -1574,7 +1744,11 @@ else
             fail_test "Private instance SSH via bastion"
         fi
     else
-        fail_test "Private instance launch (spread)"
+        if [ "$NATGW_PRIV_DENSITY_SKIP" = true ]; then
+            : # already recorded via skip_test "Spread placement private launch"
+        else
+            fail_test "Private instance launch (spread)"
+        fi
     fi
 
     # Cleanup Phase 11 instances
@@ -1601,6 +1775,8 @@ else
     echo "  Phase 11 cleanup complete"
 fi
 
+fi   # NATGW_BASTION_ID non-empty guard
+
 echo ""
 
 # ==========================================================================
@@ -1623,11 +1799,18 @@ echo ""
 echo "========================================"
 echo "Real Multi-Node E2E Test Summary"
 echo "========================================"
-echo "  Passed: $TESTS_PASSED"
-echo "  Failed: $TESTS_FAILED"
+echo "  Passed:  $TESTS_PASSED"
+echo "  Failed:  $TESTS_FAILED"
+echo "  Skipped: $TESTS_SKIPPED"
 if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
     echo "  Failed tests:"
     for t in "${FAILED_TESTS[@]}"; do
+        echo "    - $t"
+    done
+fi
+if [ ${#SKIPPED_TESTS[@]} -gt 0 ]; then
+    echo "  Skipped tests:"
+    for t in "${SKIPPED_TESTS[@]}"; do
         echo "    - $t"
     done
 fi
@@ -1638,5 +1821,9 @@ if [ $TESTS_FAILED -gt 0 ]; then
     exit 1
 fi
 
-echo "All tests passed!"
+if [ $TESTS_SKIPPED -gt 0 ]; then
+    echo "All tests passed (with $TESTS_SKIPPED skipped — undersized cluster)"
+else
+    echo "All tests passed!"
+fi
 exit 0

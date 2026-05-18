@@ -9,8 +9,13 @@ port = 8443
 debug = false
 
 [rs]
+{{- if eq (len .Nodes) 2}}
+data = 1
+parity = 1
+{{- else}}
 data = 2
 parity = 1
+{{- end}}
 {{- range .Nodes}}
 
 [[db]]

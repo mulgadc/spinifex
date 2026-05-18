@@ -4,7 +4,6 @@ package single
 
 import (
 	"fmt"
-	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -130,17 +129,8 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 		"private", privID, "private_ip", privIP)
 
 	// --- SSH plumbing ------------------------------------------------------
-	// Wait for bastion SSH so the SCP below has somewhere to land.
-	bastionAddr := net.JoinHostPort(bastionPubIP, "22")
-	harness.Step(t, "wait for bastion SSH %s", bastionAddr)
-	harness.Eventually(t, func() bool {
-		conn, derr := net.DialTimeout("tcp", bastionAddr, 2*time.Second)
-		if derr != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, 3*time.Minute, 2*time.Second, "bastion SSH never reachable")
+	// Wait for bastion SSH handshake so the SCP below has somewhere to land.
+	waitForSSHReady(t, bastionPubIP, 22, fix.KeyPath)
 
 	bastionTgt := harness.SSHTarget{User: "ec2-user", Host: bastionPubIP, Port: 22, KeyPath: fix.KeyPath}
 

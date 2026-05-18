@@ -5,6 +5,7 @@ package single
 import (
 	"fmt"
 	"net"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -175,7 +176,7 @@ func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 	fix.SSHHost, fix.SSHPort = host, port
 	harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
-	waitForSSHReady(t, host, port)
+	waitForSSHReady(t, host, port, fix.KeyPath)
 	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
 
 	harness.Step(t, "ssh nproc")
@@ -232,7 +233,7 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	fix.SSHHost, fix.SSHPort = host, port
-	waitForSSHReady(t, host, port)
+	waitForSSHReady(t, host, port, fix.KeyPath)
 
 	// Capture pre-reboot private IP for the post-reboot identity check.
 	preDesc, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -275,7 +276,7 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 	fix.Instance = postInst
 	host, port = harness.InstancePublicSSHHost(t, postInst)
 	fix.SSHHost, fix.SSHPort = host, port
-	waitForSSHReady(t, host, port)
+	waitForSSHReady(t, host, port, fix.KeyPath)
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
 	harness.Step(t, "ssh uptime")
@@ -353,19 +354,32 @@ func phase7c_RunInstancesMultiCount(t *testing.T, fix *Fixture) {
 	terminated = true
 }
 
-// waitForSSHReady polls tcp/22 (or the discovered hostfwd port) until a
-// dial succeeds, matching the 60s/2s loop in phase5aii_SSHProbe and the
-// bash wait_for_ssh helper.
-func waitForSSHReady(t *testing.T, host string, port int) {
+// waitForSSHReady probes a full SSH handshake (BatchMode + ConnectTimeout)
+// against host:port, retrying until the daemon completes banner exchange.
+// TCP-port reachability alone is insufficient — sshd accepts the connect
+// while pam/cloud-init are still finishing, and the first real runSSH then
+// hits "Connection timed out during banner exchange" (CI run 26034322018).
+// Proper hoist to harness.WaitForSSH is tracked under mulga-siv-101.
+func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 	t.Helper()
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	harness.Step(t, "waiting for SSH port %s", addr)
+	harness.Step(t, "waiting for SSH handshake %s", addr)
 	harness.Eventually(t, func() bool {
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, 3*time.Minute, 2*time.Second, fmt.Sprintf("SSH port %s never became reachable", addr))
+		cmd := exec.Command("ssh",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "LogLevel=ERROR",
+			"-o", "ConnectTimeout=5",
+			"-o", "BatchMode=yes",
+			"-p", strconv.Itoa(port),
+			"-i", keyPath,
+			"ec2-user@"+host,
+			"true")
+		return cmd.Run() == nil
+	}, 3*time.Minute, 3*time.Second, fmt.Sprintf("SSH handshake %s never completed", addr))
+}
+
+// waitForSSHHandshake is an alias kept for instance_test.go's call site.
+func waitForSSHHandshake(t *testing.T, host string, port int, keyPath string) {
+	waitForSSHReady(t, host, port, keyPath)
 }

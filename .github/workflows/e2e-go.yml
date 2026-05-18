@@ -61,13 +61,14 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      # Spinifex source is shipped to the VM (rsync below) so go test can
-      # compile + run there. Future work (mulga-siv-79 follow-up): pre-build
-      # the test binaries here and ship those instead — drops the go/source
-      # dependency on the VM.
       - uses: actions/checkout@v6
         with:
           path: spinifex
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spinifex/go.mod
+          cache-dependency-path: spinifex/go.sum
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -107,59 +108,56 @@ jobs:
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Ship spinifex source to VM
+      - name: Build E2E test binaries on runner
+        working-directory: spinifex/tests/e2e
         run: |
-          # Interim: stream a tarball of the runner's spinifex checkout to
-          # the VM (no rsync available there) so `make -C tests/e2e <suite>`
-          # can compile + run there. Future work — see follow-up bead —
-          # replaces this with pre-built test binaries shipped from the
-          # runner, dropping the source + go toolchain dependency from the
-          # VM entirely.
+          # SUITES is in make-target form (e.g. "e2e-cert e2e-lb"); strip the
+          # "e2e-" prefix to get package directory names for `go test -c`.
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g')
+          make e2e-build SUITES_BUILD="${SUITES_BUILD}"
+          ls -lh _bin/
+
+      - name: Install go-junit-report on runner
+        run: |
+          # Converts `go test -v` text output (from the pre-built binaries on
+          # the VM) into the junit-*.xml that "Publish test summary" expects.
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Ship test binaries to VM
+        run: |
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
-            "rm -rf \$HOME/Development/mulga/spinifex && mkdir -p \$HOME/Development/mulga/spinifex"
-          tar --exclude='.git' --exclude='build' --exclude='bin' \
-              --exclude='ui/node_modules' --exclude='*.test' \
-              -C spinifex -cf - . \
+            "rm -rf \$HOME/spinifex-e2e-bin && mkdir -p \$HOME/spinifex-e2e-bin"
+          tar -C spinifex/tests/e2e/_bin -cf - . \
             | ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
                 tf-user@${{ steps.vm.outputs.wan_ip }} \
-                "tar -xf - -C \$HOME/Development/mulga/spinifex"
-
-      - name: Install Go + gotestsum on VM
-        env:
-          GO_VERSION: "1.26.3"
-        run: |
-          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
-            tf-user@${{ steps.vm.outputs.wan_ip }} \
-            "set -eu; \
-             if ! /usr/local/go/bin/go version >/dev/null 2>&1; then \
-               curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
-                 | sudo tar -C /usr/local -xz; \
-             fi; \
-             /usr/local/go/bin/go version; \
-             export PATH=/usr/local/go/bin:\$HOME/go/bin:\$PATH; \
-             command -v gotestsum >/dev/null 2>&1 \
-               || GOBIN=\$HOME/go/bin /usr/local/go/bin/go install gotest.tools/gotestsum@latest; \
-             \$HOME/go/bin/gotestsum --version"
+                "tar -xf - -C \$HOME/spinifex-e2e-bin"
 
       - name: Run Go E2E suites
         id: e2e
         run: |
           set +e
-          # Suites are make targets in tests/e2e/Makefile (e2e-cert, e2e-lb, ...).
-          # GOTESTSUM=1 makes the Makefile run gotestsum and write junit-<suite>.xml
-          # + gotest-<suite>.json into ARTIFACT_DIR.
+          # SUITES are make-target names ("e2e-cert" → cert.test). Each
+          # pre-built binary is self-contained (testdata //go:embed'd) so the
+          # VM needs no go toolchain, no source tree, no gotestsum.
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g')
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; \
-             cd \$HOME/Development/mulga/spinifex && \
-             export PATH=/usr/local/go/bin:\$HOME/go/bin:\$PATH && \
+             cd \$HOME/spinifex-e2e-bin && \
              FAIL=0; \
-             for SUITE in ${SUITES}; do \
+             for SUITE in ${SUITES_RUN}; do \
                echo \"===> \$SUITE\"; \
-               ARTIFACT_DIR='${ARTIFACT_DIR}' GOTESTSUM=1 \
-                 make -C tests/e2e \$SUITE \
-                 || { echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; }; \
+               SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+                 ARTIFACT_DIR='${ARTIFACT_DIR}' \
+                 ./\$SUITE.test -test.v -test.timeout=30m \
+                 2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log'; \
+               rc=\${PIPESTATUS[0]}; \
+               if [ \$rc -ne 0 ]; then \
+                 echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; \
+                 FAIL=1; \
+               fi; \
              done; \
              exit \$FAIL"
           E2E_RC=$?
@@ -181,6 +179,20 @@ jobs:
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             'sudo journalctl -u "spinifex-*" --no-pager --since "60 min ago"' \
             > "${ARTIFACT_DIR}/spinifex-journal.log" || true
+
+      - name: Convert test logs to JUnit XML
+        if: always()
+        run: |
+          # VM runs the pre-built test binaries with `-test.v` and tees plain
+          # text logs (no Go toolchain on the VM to emit test2json). Convert
+          # each log to the junit-<suite>.xml shape "Publish test summary"
+          # already parses.
+          shopt -s nullglob
+          for LOG in "${ARTIFACT_DIR}"/test-*.log; do
+            BASE=$(basename "$LOG" .log)
+            SUITE=${BASE#test-}
+            go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-${SUITE}.xml" || true
+          done
 
       - name: Publish test summary
         if: always()

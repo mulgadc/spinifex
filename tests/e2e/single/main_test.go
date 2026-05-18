@@ -78,7 +78,18 @@ func TestSingleNode(t *testing.T) {
 	t.Run("Phase3_KeyPairs", func(t *testing.T) { phase3_KeyPairs(t, fix) })
 	t.Run("Phase4_Image", func(t *testing.T) { phase4_Image(t, fix) })
 
-	// Stages C–G will append more t.Run calls here.
+	t.Run("Phase5_LaunchInstance", func(t *testing.T) { phase5_LaunchInstance(t, fix) })
+	t.Run("Phase5a_pre_ClusterStats", func(t *testing.T) { phase5aPre_ClusterStats(t, fix) })
+	t.Run("Phase5a_Metadata", func(t *testing.T) { phase5a_Metadata(t, fix) })
+	t.Run("Phase5a_ii_SSH", func(t *testing.T) { phase5aii_SSHProbe(t, fix) })
+	t.Run("Phase5a_iii_Console", func(t *testing.T) { phase5aiii_ConsoleOutput(t, fix) })
+	t.Run("Phase5b_Volume", func(t *testing.T) { phase5b_VolumeLifecycle(t, fix) })
+	t.Run("Phase5b_ii_VolumeStatus", func(t *testing.T) { phase5bii_VolumeStatus(t, fix) })
+	t.Run("Phase5c_Snapshot", func(t *testing.T) { phase5c_SnapshotLifecycle(t, fix) })
+	t.Run("Phase5d_SnapshotBackedLaunch", func(t *testing.T) { phase5d_SnapshotBackedLaunch(t, fix) })
+	t.Run("Phase5e_CreateImage", func(t *testing.T) { phase5e_CreateImage(t, fix) })
+
+	// Stages D–G will append more t.Run calls here.
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "ec2-describe-instances.txt",

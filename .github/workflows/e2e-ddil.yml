@@ -87,12 +87,24 @@ jobs:
       - name: Provision VMs
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          set -euo pipefail
           export TF_VAR_git_branch="${GIT_BRANCH}"
-          tofu init -input=false >> "$TOFU_LOG" 2>&1
-          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
-          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # Each phase wrapped in ::group:: so the Actions UI collapses the
+          # noisy tofu output by default but the human can expand the
+          # failing phase without downloading $TOFU_LOG.
+          run() {
+            local label="$1"; shift
+            echo "::group::${label}"
+            "$@" 2>&1 | tee -a "$TOFU_LOG"
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            return "$rc"
+          }
+          run "tofu init"                tofu init -input=false
+          run "tofu workspace select"    tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          run "tofu destroy (pre-clean)" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
+          run "scrub-env (pre-clean)"    ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          run "tofu apply"               tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
 
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
@@ -147,8 +159,11 @@ jobs:
 
           mkdir -p "${RUNNER_TEMP}/ddil-results"
           cd "${GITHUB_WORKSPACE}/spinifex"
-          # gotestsum: human-readable PASS/FAIL/SKIP lines in Actions stdout
-          # while still emitting the machine-readable jsonfile artifact.
+          # gotestsum: human-readable PASS/FAIL/SKIP lines in Actions stdout,
+          # plus machine-readable jsonfile + JUnit XML artifacts. The JUnit
+          # file feeds the junit-report composite action below so failures
+          # become summary table rows + workflow annotations.
+          echo "::group::gotestsum scenarios"
           DDIL_NODES="${NODE_IPS}" \
           DDIL_SSH_USER="${SSH_USER}" \
           DDIL_SSH_KEY="${SSH_KEY}" \
@@ -158,8 +173,19 @@ jobs:
           AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
           AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
             gotestsum --jsonfile "${RUNNER_TEMP}/ddil-results/results.json" \
+                      --junitfile "${RUNNER_TEMP}/ddil-results/junit-ddil.xml" \
                       --format testname \
                       -- -tags=e2e -timeout 45m ./tests/e2e/ddil/scenarios/...
+          rc=$?
+          echo "::endgroup::"
+          exit $rc
+
+      - name: Publish test summary
+        if: always()
+        uses: ./spinifex/.github/actions/junit-report
+        with:
+          junit-glob: ${{ runner.temp }}/ddil-results/junit-*.xml
+          title: "DDIL scenario results"
 
       - name: Collect Cluster Logs
         if: failure()
@@ -179,11 +205,14 @@ jobs:
 
           mapfile -t NODE_IPS < <(echo "$INVENTORY" | jq -r '.nodes[].wan_ip')
           for ip in "${NODE_IPS[@]}"; do
-            echo "=== collecting ${ip} ==="
+            echo "::group::collect ${ip}"
             SSH="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${SSH_USER}@${ip}"
             ${SSH} 'sudo journalctl -u "spinifex-*" --no-pager -n 5000' > "${LOG_DIR}/${ip}-spinifex.log" 2>&1
             ${SSH} 'ps auxw | grep -E "qemu-system|spinifex" | grep -v grep' > "${LOG_DIR}/${ip}-procs.txt" 2>&1
             ${SSH} 'ls -la /var/lib/spinifex 2>/dev/null; ls -la /var/log/spinifex 2>/dev/null' > "${LOG_DIR}/${ip}-state.txt" 2>&1
+            echo "  spinifex.log: $(wc -l < "${LOG_DIR}/${ip}-spinifex.log") lines"
+            echo "  procs.txt:    $(wc -l < "${LOG_DIR}/${ip}-procs.txt") lines"
+            echo "::endgroup::"
           done
 
       - name: Upload DDIL Results
@@ -198,6 +227,15 @@ jobs:
         if: always()
         working-directory: mulga/scripts/tofu-cluster
         run: |
-          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
-          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+          set -euo pipefail
+          run() {
+            local label="$1"; shift
+            echo "::group::${label}"
+            "$@" 2>&1 | tee -a "$TOFU_LOG"
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            return "$rc"
+          }
+          run "tofu workspace select" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          run "tofu destroy"          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          run "scrub-env"             ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true

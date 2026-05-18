@@ -84,12 +84,24 @@ jobs:
       - name: Provision VM
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          set -euo pipefail
           export TF_VAR_git_branch="${GIT_BRANCH}"
-          tofu init -input=false >> "$TOFU_LOG" 2>&1
-          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
-          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
-          tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          # Each phase wrapped in ::group:: so the Actions UI collapses
+          # the noisy tofu output by default but the human can expand the
+          # failing phase without downloading $TOFU_LOG.
+          run() {
+            local label="$1"; shift
+            echo "::group::${label}"
+            "$@" 2>&1 | tee -a "$TOFU_LOG"
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            return "$rc"
+          }
+          run "tofu init"                tofu init -input=false
+          run "tofu workspace select"    tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          run "tofu destroy (pre-clean)" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
+          run "scrub-env (pre-clean)"    ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          run "tofu apply"               tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
 
       - name: Bootstrap via Binary Install
         working-directory: mulga/scripts/tofu-cluster
@@ -114,11 +126,14 @@ jobs:
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e
         run: |
+          set -euo pipefail
           # SUITES is in make-target form (e.g. "e2e-cert e2e-lb"); strip the
           # "e2e-" prefix to get package directory names for `go test -c`.
           SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g')
+          echo "::group::go test -c (build ${SUITES_BUILD// /, })"
           make e2e-build SUITES_BUILD="${SUITES_BUILD}"
           ls -lh _bin/
+          echo "::endgroup::"
 
       - name: Install go-junit-report on runner
         run: |
@@ -129,6 +144,8 @@ jobs:
 
       - name: Ship test binaries to VM
         run: |
+          set -euo pipefail
+          echo "::group::tar-over-ssh: prep remote dir + stream binaries"
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             "rm -rf \$HOME/spinifex-e2e-bin && mkdir -p \$HOME/spinifex-e2e-bin"
@@ -136,6 +153,7 @@ jobs:
             | ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
                 tf-user@${{ steps.vm.outputs.wan_ip }} \
                 "tar -xf - -C \$HOME/spinifex-e2e-bin"
+          echo "::endgroup::"
 
       - name: Run Go E2E suites
         id: e2e
@@ -144,6 +162,8 @@ jobs:
           # SUITES are make-target names ("e2e-cert" → cert.test). Each
           # pre-built binary is self-contained (testdata //go:embed'd) so the
           # VM needs no go toolchain, no source tree, no gotestsum.
+          # Each suite is wrapped in its own ::group:: so the Actions UI
+          # gives the human one collapsible block per suite.
           SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g')
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
@@ -151,13 +171,15 @@ jobs:
              cd \$HOME/spinifex-e2e-bin && \
              FAIL=0; \
              for SUITE in ${SUITES_RUN}; do \
-               echo \"===> \$SUITE\"; \
+               echo \"::group::suite \$SUITE\"; \
                SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=30m \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log'; \
                rc=\${PIPESTATUS[0]}; \
+               echo \"::endgroup::\"; \
                if [ \$rc -ne 0 ]; then \
+                 echo \"::error::suite \$SUITE failed (exit \$rc)\"; \
                  echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; \
                  FAIL=1; \
                fi; \
@@ -171,17 +193,21 @@ jobs:
         if: always()
         run: |
           mkdir -p "${ARTIFACT_DIR}"
-          # tar-over-ssh (VM has no rsync). `|| true` so a missing dir on
-          # an early failure doesn't mask the original error.
+          echo "::group::tar-over-ssh: pull artifact dir"
+          # `|| true` so a missing dir on an early failure doesn't mask the
+          # original error.
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
             | tar -C "${ARTIFACT_DIR}" -xf - || true
-          # Pull daemon journal + spinifex config snapshot for the same run window
+          echo "::endgroup::"
+          echo "::group::journalctl snapshot (spinifex-*)"
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             'sudo journalctl -u "spinifex-*" --no-pager --since "60 min ago"' \
             > "${ARTIFACT_DIR}/spinifex-journal.log" || true
+          echo "wrote ${ARTIFACT_DIR}/spinifex-journal.log ($(wc -l < "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || echo 0) lines)"
+          echo "::endgroup::"
 
       - name: Convert test logs to JUnit XML
         if: always()
@@ -199,28 +225,10 @@ jobs:
 
       - name: Publish test summary
         if: always()
-        run: |
-          {
-            echo "# Go E2E results"
-            echo
-            for J in "${ARTIFACT_DIR}"/junit-*.xml; do
-              [ -f "$J" ] || continue
-              echo "## $(basename "$J" .xml)"
-              python3 -c "
-          import sys, xml.etree.ElementTree as ET
-          t = ET.parse('$J').getroot()
-          tests = sum(int(s.get('tests', 0)) for s in t.iter('testsuite'))
-          fails = sum(int(s.get('failures', 0)) for s in t.iter('testsuite'))
-          errs  = sum(int(s.get('errors',   0)) for s in t.iter('testsuite'))
-          skips = sum(int(s.get('skipped',  0)) for s in t.iter('testsuite'))
-          print(f'- total: {tests}, failed: {fails}, errors: {errs}, skipped: {skips}')
-          for tc in t.iter('testcase'):
-              for f in tc.findall('failure'):
-                  print(f'  - FAIL: {tc.get(\"classname\")}.{tc.get(\"name\")}')
-                  print('    ::error file=' + tc.get('classname','').replace('.', '/') + '::' + (f.get('message') or 'failed'))
-          "
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./spinifex/.github/actions/junit-report
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          title: "Go E2E results"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -234,9 +242,18 @@ jobs:
         if: always()
         working-directory: mulga/scripts/tofu-cluster
         run: |
-          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
-          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+          set -euo pipefail
+          run() {
+            local label="$1"; shift
+            echo "::group::${label}"
+            "$@" 2>&1 | tee -a "$TOFU_LOG"
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            return "$rc"
+          }
+          run "tofu workspace select" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          run "tofu destroy"          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          run "scrub-env"             ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
 
       - name: Fail job if any suite failed
         if: always()

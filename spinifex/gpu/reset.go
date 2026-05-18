@@ -23,7 +23,10 @@ import (
 // best-effort.
 func resetPCI(sysfsRoot, addr string) error {
 	vendorBytes, err := os.ReadFile(filepath.Join(sysfsRoot, "bus/pci/devices", addr, "vendor"))
-	if err != nil || strings.TrimSpace(string(vendorBytes)) != "0x1002" {
+	if err != nil {
+		return nil // unreadable vendor; treat as non-AMD, unbind/rebind is sufficient
+	}
+	if strings.TrimSpace(string(vendorBytes)) != "0x1002" {
 		return nil // not AMD; unbind/rebind is sufficient
 	}
 

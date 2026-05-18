@@ -126,7 +126,9 @@ func TestSingleNode(t *testing.T) {
 	t.Run("Phase8d_NATGateway", func(t *testing.T) { phase8d_NATGateway(t, fix) })
 	t.Run("Phase8e_SGToSGDatapath", func(t *testing.T) { phase8e_SGToSGDatapath(t, fix) })
 
-	// Stage G will append teardown t.Run calls here.
+	t.Run("Phase9_Teardown", func(t *testing.T) { phase9_Teardown(t, fix) })
+	t.Run("Phase9a_VerifyTeardown", func(t *testing.T) { phase9a_VerifyTeardown(t, fix) })
+	t.Run("Phase9b_FinalClusterStats", func(t *testing.T) { phase9b_FinalClusterStats(t, fix) })
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "ec2-describe-instances.txt",

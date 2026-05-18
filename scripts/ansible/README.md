@@ -33,6 +33,7 @@ inventory and roles relative to CWD.
 | `playbooks/dev-reset.yml` | Capture settings → teardown → build → install → init → smoketest | `reset-dev-env.sh` (full) |
 | `playbooks/dev-deploy.yml` | Rebuild + swap binaries/microvm artifacts + restart (no setup.sh, no smoketest) | `make deploy` |
 | `playbooks/dev-status.yml` | Read-only health snapshot (units, ports, OVN/OVS, gateway, counts, drift) | none |
+| `playbooks/dev-logs.yml` | Dump journald + `/var/log/spinifex/*` + status/networking/versions into a tarball | none |
 
 Upcoming (not yet implemented):
 
@@ -48,6 +49,7 @@ ansible-playbook playbooks/dev-install.yml
 ansible-playbook playbooks/dev-reset.yml
 ansible-playbook playbooks/dev-deploy.yml
 ansible-playbook playbooks/dev-status.yml
+ansible-playbook playbooks/dev-logs.yml
 ```
 
 Or via `make` (from `spinifex/`):
@@ -59,6 +61,7 @@ make ansible-dev-install
 make ansible-dev-reset
 make ansible-dev-deploy
 make ansible-dev-status
+make ansible-dev-logs
 ```
 
 ### When to use which
@@ -68,6 +71,7 @@ make ansible-dev-status
 - Changed systemd units, helper scripts, logrotate, setup.sh → `ansible-dev-reset` (slow, full rebuild)
 - Need a clean slate without reinstall → `ansible-dev-teardown`
 - "Is my dev box healthy?" → `ansible-dev-status` (read-only, never mutates)
+- Filing a bug / capturing the state of a broken box → `ansible-dev-logs` (writes `/tmp/spinifex-logs-<host>-<ts>.tar.gz`; override `-e logs_since=10min` or `-e logs_include_dmesg=false`)
 
 ## Variable overrides
 

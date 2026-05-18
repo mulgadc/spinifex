@@ -79,6 +79,24 @@ mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }
 # Build output.
 build_tarball_path: /tmp/spinifex-local.tar.gz
 
+# Snapshot / restore. Snapshots quiesce the full spinifex+ovn+ovs stack,
+# tar these paths, then restart services. Restore wipes + untars + restarts.
+# Default snapshot dir is root-owned so it survives `dev-teardown`
+# (teardown only removes the four spinifex_*_dir paths above).
+snapshot_dir: /var/lib/spinifex-snapshots
+snapshot_paths:
+    - "{{ spinifex_etc_dir }}"
+    - "{{ spinifex_data_dir }}"
+    - "{{ ovn_db_dir }}"
+    - /etc/openvswitch/conf.db
+# Order matters: stop spinifex first (depends on OVN/OVS), then OVN, then OVS.
+# Restart in reverse.
+snapshot_services_stop_order:
+    - spinifex.target
+    - ovn-controller
+    - ovn-central
+    - openvswitch-switch
+
 # Smoketest image — parameterised so tofu examples can share the same base.
 spinifex_smoketest_distro: debian
 spinifex_smoketest_version: "13"

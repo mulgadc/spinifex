@@ -281,9 +281,18 @@ ansible-dev-status:
 ansible-dev-logs:
 	cd scripts/ansible && ansible-playbook playbooks/dev-logs.yml
 
+# Snapshot / restore require an explicit -e snapshot_name=<name>. The
+# wrapper passes ANSIBLE_EXTRA through so devs can run
+# `make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'`.
+ansible-dev-snapshot:
+	cd scripts/ansible && ansible-playbook playbooks/dev-snapshot.yml $(ANSIBLE_EXTRA)
+
+ansible-dev-restore:
+	cd scripts/ansible && ansible-playbook playbooks/dev-restore.yml $(ANSIBLE_EXTRA)
+
 .PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \
 	distro distro-amd64 distro-arm64 distro-clean \
-	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs
+	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore

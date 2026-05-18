@@ -34,6 +34,8 @@ inventory and roles relative to CWD.
 | `playbooks/dev-deploy.yml` | Rebuild + swap binaries/microvm artifacts + restart (no setup.sh, no smoketest) | `make deploy` |
 | `playbooks/dev-status.yml` | Read-only health snapshot (units, ports, OVN/OVS, gateway, counts, drift) | none |
 | `playbooks/dev-logs.yml` | Dump journald + `/var/log/spinifex/*` + status/networking/versions into a tarball | none |
+| `playbooks/dev-snapshot.yml` | Quiesce spinifex+OVN+OVS, tar state paths to a named bundle, restart | none |
+| `playbooks/dev-restore.yml` | Stop services, wipe + untar a named bundle, refresh CA, restart | none |
 
 Upcoming (not yet implemented):
 
@@ -50,6 +52,8 @@ ansible-playbook playbooks/dev-reset.yml
 ansible-playbook playbooks/dev-deploy.yml
 ansible-playbook playbooks/dev-status.yml
 ansible-playbook playbooks/dev-logs.yml
+ansible-playbook playbooks/dev-snapshot.yml -e snapshot_name=before-merge
+ansible-playbook playbooks/dev-restore.yml  -e snapshot_name=before-merge
 ```
 
 Or via `make` (from `spinifex/`):
@@ -62,6 +66,8 @@ make ansible-dev-reset
 make ansible-dev-deploy
 make ansible-dev-status
 make ansible-dev-logs
+make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'
+make ansible-dev-restore  ANSIBLE_EXTRA='-e snapshot_name=before-merge'
 ```
 
 ### When to use which
@@ -72,6 +78,7 @@ make ansible-dev-logs
 - Need a clean slate without reinstall → `ansible-dev-teardown`
 - "Is my dev box healthy?" → `ansible-dev-status` (read-only, never mutates)
 - Filing a bug / capturing the state of a broken box → `ansible-dev-logs` (writes `/tmp/spinifex-logs-<host>-<ts>.tar.gz`; override `-e logs_since=10min` or `-e logs_include_dmesg=false`)
+- Checkpoint before a risky op (branch switch, viperblock surgery, ovn restart cycle) → `ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=<name>'`; roll back via `ansible-dev-restore` instead of a full `dev-reset`. Bundles live in `/var/lib/spinifex-snapshots/<name>.tar.gz` (root-owned, survives `dev-teardown`).
 
 ## Variable overrides
 

@@ -148,22 +148,28 @@ def main() -> int:
         grand_total = sum(f.tests for f in totals_by_file)
         grand_fail = sum(f.failures + f.errors for f in totals_by_file)
         grand_skip = sum(f.skipped for f in totals_by_file)
+        grand_pass = grand_total - grand_fail - grand_skip
         grand_time = sum(f.time for f in totals_by_file)
 
-        verdict = ":white_check_mark: pass" if grand_fail == 0 else f":x: {grand_fail} failed"
-        summary.write(
-            f"**{verdict}** &middot; {grand_total} tests &middot; "
-            f"{grand_skip} skipped &middot; {grand_time:.1f}s total\n\n"
-        )
+        if grand_fail == 0:
+            verdict = f"✅ **pass** — {grand_pass} / {grand_total}"
+        else:
+            verdict = f"❌ **{grand_fail} failed** — {grand_pass} / {grand_total} pass"
+        skip_part = f", {grand_skip} skipped" if grand_skip else ""
+        summary.write(f"{verdict}{skip_part} &nbsp; · &nbsp; {grand_time:.1f}s\n\n")
 
-        summary.write("| Suite | Tests | Pass | Fail | Err | Skip | Time |\n")
-        summary.write("|---|---:|---:|---:|---:|---:|---:|\n")
+        # Compact table — single status column, shorter headers. Drops
+        # separate err column (errors fold into fail count) so narrow
+        # screens don't wrap.
+        summary.write("| | Suite | Pass | Fail | Skip | Time |\n")
+        summary.write("|:-:|---|---:|---:|---:|---:|\n")
         for f in totals_by_file:
-            passed = f.tests - f.failures - f.errors - f.skipped
-            icon = ":white_check_mark:" if (f.failures + f.errors) == 0 else ":x:"
+            fails = f.failures + f.errors
+            passed = f.tests - fails - f.skipped
+            icon = "✅" if fails == 0 else "❌"
             summary.write(
-                f"| {icon} `{_file_label(f.path)}` | {f.tests} | {passed} | "
-                f"{f.failures} | {f.errors} | {f.skipped} | {f.time:.1f}s |\n"
+                f"| {icon} | `{_file_label(f.path)}` | {passed} | {fails} | "
+                f"{f.skipped} | {f.time:.1f}s |\n"
             )
         summary.write("\n")
 
@@ -171,21 +177,26 @@ def main() -> int:
             c for f in totals_by_file for c in f.cases if c.status in ("fail", "error")
         ]
         if failed_cases:
-            summary.write("### Failures\n\n")
+            summary.write("---\n\n**Failures**\n\n")
             for c in failed_cases:
                 header = f"{c.classname}.{c.name}" if c.classname else c.name
-                summary.write(f"<details><summary><code>{header}</code></summary>\n\n")
-                if c.message:
-                    summary.write(f"**{c.message}**\n\n")
-                if c.detail:
-                    summary.write("```\n" + c.detail + "\n```\n\n")
-                summary.write("</details>\n\n")
+                # One line per failure: name + truncated message. Full
+                # detail lives in the test artifact log; deep nesting and
+                # long messages wrap badly on narrow screens.
+                msg_short = (c.message or "").splitlines()[0] if c.message else ""
+                if len(msg_short) > 120:
+                    msg_short = msg_short[:117] + "…"
+                line = f"- ❌ `{header}`"
+                if msg_short:
+                    line += f" — {msg_short}"
+                summary.write(line + "\n")
 
                 # Workflow annotation — surfaces in run header + Files-changed view.
                 # classname for Go tests is the package path; map to a file when we can.
                 file_hint = c.classname.replace(".", "/")
                 msg = c.message or f"{c.status}: {header}"
                 print(f"::error file={file_hint},title={header}::{_esc(msg)}")
+            summary.write("\n")
 
         outputs.write(f"failures={grand_fail}\n")
         outputs.write(f"total={grand_total}\n")

@@ -12,28 +12,38 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 )
 
-// WaitForLBActive polls describe-load-balancers until state=active or timeout.
-// Mirrors the wait_for_lb_active bash helper.
+// WaitForLBActive polls describe-load-balancers until state=active. Bails
+// immediately if the LB enters a terminal failure state — no point waiting
+// the full timeout when provisioning has already given up.
 func WaitForLBActive(t *testing.T, c *AWSClient, lbArn, label string, timeout time.Duration) {
 	t.Helper()
-	var lastState string
-	EventuallyErr(t, func() error {
+	var lastState, lastReason string
+	deadline := time.Now().Add(timeout)
+	nextLog := time.Now().Add(15 * time.Second)
+	for {
 		out, err := c.ELBv2.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
 			LoadBalancerArns: []*string{aws.String(lbArn)},
 		})
-		if err != nil {
-			return fmt.Errorf("describe %s: %w", label, err)
+		if err == nil && len(out.LoadBalancers) > 0 {
+			lastState = aws.StringValue(out.LoadBalancers[0].State.Code)
+			lastReason = aws.StringValue(out.LoadBalancers[0].State.Reason)
+			if lastState == "active" {
+				t.Logf("%s active", label)
+				return
+			}
+			if lastState == "failed" || lastState == "provisioning_failed" {
+				t.Fatalf("%s entered terminal state %s: %s", label, lastState, lastReason)
+			}
 		}
-		if len(out.LoadBalancers) == 0 {
-			return fmt.Errorf("%s not found", label)
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not become active within %s (last state=%s reason=%s)", label, timeout, lastState, lastReason)
 		}
-		lastState = aws.StringValue(out.LoadBalancers[0].State.Code)
-		if lastState == "active" {
-			return nil
+		if time.Now().After(nextLog) {
+			t.Logf("%s: state=%s, still waiting...", label, lastState)
+			nextLog = time.Now().Add(30 * time.Second)
 		}
-		return fmt.Errorf("%s state=%s, want active", label, lastState)
-	}, timeout, 3*time.Second)
-	t.Logf("%s active", label)
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // WaitForTargetsHealthy polls describe-target-health until expected targets

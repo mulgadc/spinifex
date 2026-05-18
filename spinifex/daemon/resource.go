@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -26,6 +27,30 @@ type hostReserve struct {
 // defaultHostReserve is sized to cover predastore + viperblock under load;
 // the daemon itself needs little.
 var defaultHostReserve = hostReserve{vCPU: 2, memGB: 2.0}
+
+// resolveHostReserve returns defaultHostReserve, with vCPU/memGB overridden
+// when SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB are set to valid
+// non-negative values. Invalid values are logged and ignored — keeps a
+// typo'd env from silently widening the reserve. Intended as a stop-gap
+// until the planned operator-tunable [capacity] config lands.
+func resolveHostReserve(getenv func(string) string) hostReserve {
+	r := defaultHostReserve
+	if v := getenv("SPINIFEX_RESERVED_VCPU"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			r.vCPU = n
+		} else {
+			slog.Warn("ignoring SPINIFEX_RESERVED_VCPU", "value", v, "err", err)
+		}
+	}
+	if v := getenv("SPINIFEX_RESERVED_MEM_GB"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			r.memGB = f
+		} else {
+			slog.Warn("ignoring SPINIFEX_RESERVED_MEM_GB", "value", v, "err", err)
+		}
+	}
+	return r
+}
 
 // minHostMemHeadroomGB is the minimum schedulable memory we require above
 // the reserve, so a host that just meets the reserve still has a small

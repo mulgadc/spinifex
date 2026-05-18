@@ -109,19 +109,21 @@ jobs:
 
       - name: Ship spinifex source to VM
         run: |
-          # Interim: rsync the runner's spinifex checkout to ~/Development/mulga/
-          # so `make -C tests/e2e <suite>` can compile + run on the VM. Future
-          # work — see follow-up bead — replaces this with pre-built test
-          # binaries shipped from the runner, dropping the source + go toolchain
-          # dependency from the VM entirely.
+          # Interim: stream a tarball of the runner's spinifex checkout to
+          # the VM (no rsync available there) so `make -C tests/e2e <suite>`
+          # can compile + run there. Future work — see follow-up bead —
+          # replaces this with pre-built test binaries shipped from the
+          # runner, dropping the source + go toolchain dependency from the
+          # VM entirely.
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
-            "mkdir -p \$HOME/Development/mulga"
-          rsync -az --delete \
-            --exclude='.git' --exclude='build/' --exclude='bin/' \
-            --exclude='ui/node_modules/' --exclude='*.test' \
-            -e "ssh -o StrictHostKeyChecking=no -i ${{ steps.vm.outputs.ssh_key }}" \
-            spinifex/ tf-user@${{ steps.vm.outputs.wan_ip }}:Development/mulga/spinifex/
+            "rm -rf \$HOME/Development/mulga/spinifex && mkdir -p \$HOME/Development/mulga/spinifex"
+          tar --exclude='.git' --exclude='build' --exclude='bin' \
+              --exclude='ui/node_modules' --exclude='*.test' \
+              -C spinifex -cf - . \
+            | ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+                tf-user@${{ steps.vm.outputs.wan_ip }} \
+                "tar -xf - -C \$HOME/Development/mulga/spinifex"
 
       - name: Install Go + gotestsum on VM
         env:
@@ -168,8 +170,12 @@ jobs:
         if: always()
         run: |
           mkdir -p "${ARTIFACT_DIR}"
-          rsync -az --delete -e "ssh -o StrictHostKeyChecking=no -i ${{ steps.vm.outputs.ssh_key }}" \
-            tf-user@${{ steps.vm.outputs.wan_ip }}:${ARTIFACT_DIR}/ "${ARTIFACT_DIR}/" || true
+          # tar-over-ssh (VM has no rsync). `|| true` so a missing dir on
+          # an early failure doesn't mask the original error.
+          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
+            tf-user@${{ steps.vm.outputs.wan_ip }} \
+            "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
+            | tar -C "${ARTIFACT_DIR}" -xf - || true
           # Pull daemon journal + spinifex config snapshot for the same run window
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \

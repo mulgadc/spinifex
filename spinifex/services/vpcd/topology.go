@@ -526,6 +526,12 @@ func (h *TopologyHandler) handleVPCCreate(msg *nats.Msg) {
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": evt.VpcId,
 			"spinifex:vni":    strconv.FormatInt(evt.VNI, 10),
+			// Cleanup paths (handleIGWDetach, NAT sweeps) read this to scope
+			// their SNAT removal to the VPC's own CIDR. When unset, those
+			// paths fall back to an overbroad 10.0.0.0/8 and emit noisy
+			// "VPC CIDR missing from router metadata" WARNs. reconcileVPC
+			// stores the same key on startup; keep parity here.
+			"spinifex:cidr": evt.CidrBlock,
 		},
 	}
 
@@ -535,7 +541,7 @@ func (h *TopologyHandler) handleVPCCreate(msg *nats.Msg) {
 		return
 	}
 
-	slog.Info("vpcd: created logical router for VPC", "router", routerName, "vpc_id", evt.VpcId)
+	slog.Info("vpcd: created logical router for VPC", "router", routerName, "vpc_id", evt.VpcId, "cidr", evt.CidrBlock)
 	respond(msg, nil)
 }
 

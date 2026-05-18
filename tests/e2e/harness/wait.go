@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -43,4 +44,27 @@ func EventuallyErr(t *testing.T, cond func() error, timeout, interval time.Durat
 		}
 		time.Sleep(interval)
 	}
+}
+
+// RetryWithReset runs fn as an "attempt-1" subtest; on failure it calls
+// ResetAllNodes and retries fn as "attempt-2". Both attempts surface in the
+// test output so CI logs preserve the transient-vs-deterministic signal —
+// the retry is a diagnostic aid, not a way to mask flakes.
+//
+// Used by DDIL's quarantine wrapper (ddil/harness.Run) and any other scenario
+// that wants the same retry-after-reset shape without taking on DDIL's
+// quarantine semantics.
+func RetryWithReset(t *testing.T, c *Cluster, ssh SSH, label string, fn func(*testing.T)) {
+	t.Helper()
+	if t.Run("attempt-1", fn) {
+		return
+	}
+	t.Logf("e2e harness: %s failed first attempt, resetting cluster and retrying", label)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := ResetAllNodes(ctx, c, ssh); err != nil {
+		t.Errorf("e2e harness: reset before retry of %s: %v", label, err)
+		return
+	}
+	t.Run("attempt-2", fn)
 }

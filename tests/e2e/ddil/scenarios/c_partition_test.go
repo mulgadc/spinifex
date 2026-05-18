@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/ddil/fault"
 )
 
 // TestScenarioC_CleanPartition — iptables-DROP node3 away from node1 and
@@ -19,7 +21,7 @@ func TestScenarioC_CleanPartition(t *testing.T) {
 	deps := requireLiveCluster(t)
 	c, ssh, dc, w := deps.cluster, deps.ssh, deps.dc, deps.witness
 
-	harness.Run(t, c, ssh, "C", func(t *testing.T) {
+	ddilh.Run(t, c, ssh, "C", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
@@ -31,12 +33,12 @@ func TestScenarioC_CleanPartition(t *testing.T) {
 		// only node-3.
 		witnesses := launchWitnesses(ctx, t, w, node3)
 
-		pre, err := harness.TakeSnapshot(ctx, dc, node3)
+		pre, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("pre-fault snapshot on %s: %v", node3.Name, err)
 		}
 
-		if err := harness.PartitionNode(ctx, ssh, node3, c.Peers(node3)); err != nil {
+		if err := fault.PartitionNode(ctx, ssh, node3, c.Peers(node3)); err != nil {
 			t.Fatalf("partition %s: %v", node3.Name, err)
 		}
 		// HealNode flushes node3's iptables on cleanup; safe even if a later
@@ -44,7 +46,7 @@ func TestScenarioC_CleanPartition(t *testing.T) {
 		t.Cleanup(func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer ccancel()
-			_ = harness.HealNode(cctx, ssh, node3)
+			_ = fault.HealNode(cctx, ssh, node3)
 		})
 
 		// The orchestrator dials peers directly from outside the cluster
@@ -74,14 +76,14 @@ func TestScenarioC_CleanPartition(t *testing.T) {
 		// proving QEMU on node3 kept executing despite the network split.
 		harness.AssertProgressed(ctx, t, witnesses[0])
 
-		if err := harness.HealNode(ctx, ssh, node3); err != nil {
+		if err := fault.HealNode(ctx, ssh, node3); err != nil {
 			t.Fatalf("heal %s: %v", node3.Name, err)
 		}
 		if err := harness.WaitForMode(ctx, dc, node3, harness.ModeCluster, 60*time.Second); err != nil {
 			t.Fatalf("%s did not return to cluster mode after heal: %v", node3.Name, err)
 		}
 
-		post, err := harness.TakeSnapshot(ctx, dc, node3)
+		post, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("post-heal snapshot on %s: %v", node3.Name, err)
 		}

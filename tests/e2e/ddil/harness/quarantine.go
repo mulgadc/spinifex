@@ -1,13 +1,18 @@
 //go:build e2e
 
+// Package harness is DDIL's thin shim over the shared
+// github.com/mulgadc/spinifex/tests/e2e/harness primitives. It hosts only the
+// quarantine + retry wrapper that DDIL scenarios use; everything generic
+// (Cluster, SSH, DaemonClient, ResetAllNodes, Witness, etc.) lives in the
+// shared harness package.
 package harness
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
 // Run wraps a scenario with reset-and-retry plus quarantine handling. It is
@@ -20,14 +25,9 @@ import (
 // a linked bead tracking its fix; the live status is tracked in
 // tests/e2e/TEST_COVERAGE.md.
 //
-// Retry: a first-attempt failure runs ResetAllNodes and invokes fn once more
-// as a fresh subtest. Both attempts appear in the test output so CI logs
-// preserve the transient-vs-deterministic signal. The first-attempt failure
-// is not hidden — Go's testing package propagates subtest failures to the
-// parent — which is intentional: the retry is a diagnostic aid, not a way
-// to mask flakes. Scenarios crossing the 5% nightly flake threshold are
-// moved to DDIL_QUARANTINED instead.
-func Run(t *testing.T, c *Cluster, ssh SSH, letter string, fn func(*testing.T)) {
+// Retry: delegates to harness.RetryWithReset so the shared package owns the
+// reset-and-rerun mechanics; only quarantine policy stays DDIL-specific.
+func Run(t *testing.T, c *harness.Cluster, ssh harness.SSH, letter string, fn func(*testing.T)) {
 	t.Helper()
 
 	if IsQuarantined(letter) {
@@ -35,18 +35,7 @@ func Run(t *testing.T, c *Cluster, ssh SSH, letter string, fn func(*testing.T)) 
 		return
 	}
 
-	if t.Run("attempt-1", fn) {
-		return
-	}
-
-	t.Logf("ddil harness: scenario %s failed first attempt, resetting cluster and retrying", letter)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if err := ResetAllNodes(ctx, c, ssh); err != nil {
-		t.Errorf("ddil harness: reset before retry of %s: %v", letter, err)
-		return
-	}
-	t.Run("attempt-2", fn)
+	harness.RetryWithReset(t, c, ssh, "scenario "+letter, fn)
 }
 
 // IsQuarantined reports whether letter appears in DDIL_QUARANTINED.

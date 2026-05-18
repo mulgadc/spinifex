@@ -1,10 +1,5 @@
 //go:build e2e
 
-// Package harness exports the DDIL E2E test primitives: typed cluster/node
-// descriptors, an SSH transport, fault-injection helpers, witness-VM helpers,
-// snapshot/state assertions, and the daemon HTTP client used by scenarios.
-//
-// See docs/development/improvements/ddil-e2e-test-harness.md for the design.
 package harness
 
 import (
@@ -16,7 +11,7 @@ import (
 
 // Node identifies a single cluster member addressable over SSH and HTTPS.
 //
-// Index is the 1-based position the node occupies in the DDIL_NODES list;
+// Index is the 1-based position the node occupies in the SPINIFEX_NODES list;
 // scenarios reference nodes by index (node1, node2, node3) so a fixed
 // ordering is required.
 type Node struct {
@@ -37,7 +32,7 @@ type Cluster struct {
 }
 
 // Peers returns every node in the cluster except target. The result is used
-// by PartitionNode to build per-peer iptables DROP rules.
+// by fault.PartitionNode to build per-peer iptables DROP rules.
 func (c *Cluster) Peers(target Node) []Node {
 	out := make([]Node, 0, len(c.Nodes)-1)
 	for _, n := range c.Nodes {
@@ -49,29 +44,29 @@ func (c *Cluster) Peers(target Node) []Node {
 	return out
 }
 
-// ClusterFromEnv builds a Cluster from DDIL_NODES / DDIL_SSH_USER /
-// DDIL_SSH_KEY. Nodes are named node1..nodeN in list order.
+// ClusterFromEnv builds a Cluster from SPINIFEX_NODES / SPINIFEX_SSH_USER /
+// SPINIFEX_SSH_KEY. Nodes are named node1..nodeN in list order.
 //
-// Returns an error if any required variable is missing or if DDIL_NODES
+// Returns an error if any required variable is missing or if SPINIFEX_NODES
 // contains no non-empty entries. main_test.go is expected to call this once
 // and pass the result into every scenario.
 func ClusterFromEnv() (*Cluster, error) {
-	nodesRaw := os.Getenv("DDIL_NODES")
-	user := os.Getenv("DDIL_SSH_USER")
-	key := os.Getenv("DDIL_SSH_KEY")
+	nodesRaw := envWithLegacy("SPINIFEX_NODES", "DDIL_NODES")
+	user := envWithLegacy("SPINIFEX_SSH_USER", "DDIL_SSH_USER")
+	key := envWithLegacy("SPINIFEX_SSH_KEY", "DDIL_SSH_KEY")
 
 	var missing []string
 	if nodesRaw == "" {
-		missing = append(missing, "DDIL_NODES")
+		missing = append(missing, "SPINIFEX_NODES")
 	}
 	if user == "" {
-		missing = append(missing, "DDIL_SSH_USER")
+		missing = append(missing, "SPINIFEX_SSH_USER")
 	}
 	if key == "" {
-		missing = append(missing, "DDIL_SSH_KEY")
+		missing = append(missing, "SPINIFEX_SSH_KEY")
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("ddil harness: missing required env: %s", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("e2e harness: missing required env: %s", strings.Join(missing, ", "))
 	}
 
 	var nodes []Node
@@ -87,7 +82,7 @@ func ClusterFromEnv() (*Cluster, error) {
 		})
 	}
 	if len(nodes) == 0 {
-		return nil, errors.New("ddil harness: DDIL_NODES contained no addresses")
+		return nil, errors.New("e2e harness: SPINIFEX_NODES contained no addresses")
 	}
 
 	return &Cluster{
@@ -98,7 +93,7 @@ func ClusterFromEnv() (*Cluster, error) {
 }
 
 // NodeFromEnv returns the Nth node (1-based) from the cluster defined by
-// DDIL_NODES. Convenience wrapper for single-node helpers; most scenarios
+// SPINIFEX_NODES. Convenience wrapper for single-node helpers; most scenarios
 // should call ClusterFromEnv once and index c.Nodes directly.
 func NodeFromEnv(index int) (Node, error) {
 	c, err := ClusterFromEnv()
@@ -106,7 +101,22 @@ func NodeFromEnv(index int) (Node, error) {
 		return Node{}, err
 	}
 	if index < 1 || index > len(c.Nodes) {
-		return Node{}, fmt.Errorf("ddil harness: node index %d out of range (have %d nodes)", index, len(c.Nodes))
+		return Node{}, fmt.Errorf("e2e harness: node index %d out of range (have %d nodes)", index, len(c.Nodes))
 	}
 	return c.Nodes[index-1], nil
+}
+
+// envWithLegacy returns os.Getenv(canonical), falling back to legacy on miss.
+// DDIL_* names are accepted for back-compat; rename to SPINIFEX_* once all
+// CI workflows are migrated. A one-line stderr note flags the deprecation
+// so leftover callers surface in CI logs.
+func envWithLegacy(canonical, legacy string) string {
+	if v := os.Getenv(canonical); v != "" {
+		return v
+	}
+	if v := os.Getenv(legacy); v != "" {
+		fmt.Fprintf(os.Stderr, "e2e harness: %s is deprecated; set %s instead\n", legacy, canonical)
+		return v
+	}
+	return ""
 }

@@ -1,11 +1,13 @@
 //go:build e2e
 
-package harness
+package fault
 
 import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
 // InstanceSnapshot captures a point-in-time view of a single daemon's locally
@@ -13,11 +15,11 @@ import (
 // second snapshot after the cluster heals, then call AssertPreserved to prove
 // the daemon did not lose or regress any instance it had been tracking.
 //
-// Reuses the LocalInstance type from daemon_client.go. Once daemon-local-
-// autonomy §1a lands, that placeholder will be replaced by the daemon's
-// authoritative struct and this alias will pick up the real schema without
-// scenario changes.
-type InstanceSnapshot []LocalInstance
+// Reuses the LocalInstance type from harness/daemon_client.go. Once
+// daemon-local-autonomy §1a lands, that placeholder will be replaced by the
+// daemon's authoritative struct and this alias will pick up the real schema
+// without scenario changes.
+type InstanceSnapshot []harness.LocalInstance
 
 // TakeSnapshot reads /local/instances on the given node and returns the
 // response as an InstanceSnapshot.
@@ -25,10 +27,10 @@ type InstanceSnapshot []LocalInstance
 // The DaemonClient is passed explicitly (rather than through a package-level
 // singleton) so each scenario owns its connection reuse and so dry-run
 // scenarios can stub with a fake client once the endpoint exists.
-func TakeSnapshot(ctx context.Context, d *DaemonClient, node Node) (InstanceSnapshot, error) {
+func TakeSnapshot(ctx context.Context, d *harness.DaemonClient, node harness.Node) (InstanceSnapshot, error) {
 	xs, err := d.Instances(ctx, node)
 	if err != nil {
-		return nil, fmt.Errorf("ddil harness: snapshot %s: %w", node.Name, err)
+		return nil, fmt.Errorf("ddil fault: snapshot %s: %w", node.Name, err)
 	}
 	return InstanceSnapshot(xs), nil
 }
@@ -46,7 +48,7 @@ func TakeSnapshot(ctx context.Context, d *DaemonClient, node Node) (InstanceSnap
 func (pre InstanceSnapshot) AssertPreserved(t *testing.T, post InstanceSnapshot) {
 	t.Helper()
 
-	postByID := make(map[string]LocalInstance, len(post))
+	postByID := make(map[string]harness.LocalInstance, len(post))
 	for _, p := range post {
 		postByID[p.InstanceID] = p
 	}
@@ -68,10 +70,10 @@ func (pre InstanceSnapshot) AssertPreserved(t *testing.T, post InstanceSnapshot)
 		return
 	}
 	if len(missing) > 0 {
-		t.Errorf("ddil harness: instances disappeared from snapshot: %v", missing)
+		t.Errorf("ddil fault: instances disappeared from snapshot: %v", missing)
 	}
 	if len(regressed) > 0 {
-		t.Errorf("ddil harness: instances regressed to a terminal state: %v", regressed)
+		t.Errorf("ddil fault: instances regressed to a terminal state: %v", regressed)
 	}
 	t.FailNow()
 }

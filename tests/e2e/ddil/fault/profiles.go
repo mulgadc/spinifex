@@ -1,6 +1,6 @@
 //go:build e2e
 
-package harness
+package fault
 
 import "time"
 

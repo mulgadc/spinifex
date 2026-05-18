@@ -33,7 +33,10 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, fix.VolumeID, "create-volume returned empty VolumeId")
 	harness.Detail(t, "volume", fix.VolumeID)
 
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available")
+	// Local QEMU finishes volume state transitions in <1s; the default
+	// 2s polling adds avoidable wall-clock per phase. Tighten to 500ms
+	// for the fast paths (create→available, attach→in-use, detach→available).
+	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available", harness.WithPoll(500*time.Millisecond))
 
 	const newSize int64 = 20
 	harness.Step(t, "modify-volume size=%d", newSize)
@@ -70,7 +73,7 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	})
 	require.NoError(t, err, "attach-volume")
 
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, ec2.VolumeStateInUse)
+	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, ec2.VolumeStateInUse, harness.WithPoll(500*time.Millisecond))
 
 	// Once the volume is in-use, the attachment record should be populated.
 	descAttached, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
@@ -90,7 +93,7 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	})
 	require.NoError(t, err, "detach-volume")
 
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available")
+	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available", harness.WithPoll(500*time.Millisecond))
 
 	harness.Step(t, "delete-volume %s", fix.VolumeID)
 	_, err = fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{

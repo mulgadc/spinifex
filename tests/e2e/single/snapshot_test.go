@@ -54,7 +54,9 @@ func phase5c_SnapshotLifecycle(t *testing.T, fix *Fixture) {
 		"progress", aws.StringValue(snap.Progress),
 	)
 
-	harness.WaitForSnapshotState(t, fix.AWS, fix.SnapshotID, "completed")
+	// Local QEMU finishes snapshot state transitions in <1s; tighten the
+	// default 2s polling to 500ms for the fast paths.
+	harness.WaitForSnapshotState(t, fix.AWS, fix.SnapshotID, "completed", harness.WithPoll(500*time.Millisecond))
 
 	harness.Step(t, "describe-snapshots %s", fix.SnapshotID)
 	desc, err := fix.AWS.EC2.DescribeSnapshots(&ec2.DescribeSnapshotsInput{
@@ -83,7 +85,7 @@ func phase5c_SnapshotLifecycle(t *testing.T, fix *Fixture) {
 	require.NotEqual(t, fix.SnapshotID, fix.CopySnapshotID, "copy snapshot ID should differ from original")
 	harness.Detail(t, "copy_snapshot", fix.CopySnapshotID)
 
-	harness.WaitForSnapshotState(t, fix.AWS, fix.CopySnapshotID, "completed")
+	harness.WaitForSnapshotState(t, fix.AWS, fix.CopySnapshotID, "completed", harness.WithPoll(500*time.Millisecond))
 
 	harness.Step(t, "describe-snapshots %s,%s (both visible)", fix.SnapshotID, fix.CopySnapshotID)
 	both, err := fix.AWS.EC2.DescribeSnapshots(&ec2.DescribeSnapshotsInput{

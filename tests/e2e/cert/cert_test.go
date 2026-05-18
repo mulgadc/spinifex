@@ -37,6 +37,7 @@ func TestCertIssuance(t *testing.T) {
 		for _, ip := range env.NodeIPs {
 			ip := ip
 			t.Run(ip, func(t *testing.T) {
+				t.Parallel()
 				cert := loadCert(t, env, ip, artifacts)
 				assert.True(t, harness.CertHasIPSAN(cert, ip),
 					"cert for %s missing IP SAN %s (got IPs=%v DNS=%v)",
@@ -69,6 +70,7 @@ func TestCertIssuance(t *testing.T) {
 		for _, ip := range env.ServiceIPs {
 			ip := ip
 			t.Run(ip, func(t *testing.T) {
+				t.Parallel()
 				url := fmt.Sprintf("https://%s:%d/", ip, env.AWSGWPort)
 				code, _, err := harness.HTTPSGet(url, pool, env.DefaultTimeout)
 				require.NoError(t, err, "TLS handshake to %s", url)
@@ -103,6 +105,7 @@ func TestCertIssuance(t *testing.T) {
 		for _, ip := range env.ServiceIPs {
 			ip := ip
 			t.Run(ip, func(t *testing.T) {
+				t.Parallel()
 				require.NoError(t, harness.OpenSSLVerify(t, caPath, ip, env.AWSGWPort))
 			})
 		}
@@ -152,6 +155,7 @@ func TestCertIssuance(t *testing.T) {
 		for _, ip := range env.ServiceIPs {
 			ip := ip
 			t.Run(ip, func(t *testing.T) {
+				t.Parallel()
 				served, err := harness.FetchServedCert(ip, env.AWSGWPort, env.DefaultTimeout)
 				require.NoError(t, err)
 				assert.Contains(t, served.Issuer.CommonName, "Spinifex Local CA",

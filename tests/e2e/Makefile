@@ -7,7 +7,13 @@ MODE        ?= single
 GOTESTSUM   ?=
 SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 
-.PHONY: e2e e2e-cert e2e-lb e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-all clean
+# Pre-built test binaries — see mulga-siv-80. `e2e-build` cross-compiles each
+# named suite into BIN_DIR/<suite>.test so CI can ship binaries (not source +
+# go toolchain) to the remote VM.
+BIN_DIR      ?= $(CURDIR)/_bin
+SUITES_BUILD ?= cert lb
+
+.PHONY: e2e e2e-cert e2e-lb e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-all clean e2e-build
 
 ifeq ($(GOTESTSUM),1)
 E2E_CMD = gotestsum \
@@ -34,5 +40,12 @@ e2e-reboot:     ; $(MAKE) e2e PKG=./reboot/...
 e2e-tofu:       ; $(MAKE) e2e PKG=./tofu/...
 e2e-all:        ; $(MAKE) e2e
 
+e2e-build:
+	@mkdir -p $(BIN_DIR)
+	@for s in $(SUITES_BUILD); do \
+	    echo "==> building $$s.test"; \
+	    go test -c -tags=e2e -o $(BIN_DIR)/$$s.test ./$$s/ || exit 1; \
+	done
+
 clean:
-	rm -rf $(ARTIFACT_DIR)
+	rm -rf $(ARTIFACT_DIR) $(BIN_DIR)

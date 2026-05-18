@@ -79,9 +79,6 @@ ifndef IMAGE
 endif
 	./scripts/build-system-image.sh scripts/images/$(IMAGE).conf
 
-build-lb-image: ## Build LB Alpine image
-	$(MAKE) build-system-image IMAGE=lb
-
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
 MICROVM_INPUTS := scripts/build-microvm-image.sh $(MICROVM_OUT_DIR)/init.sh $(MICROVM_OUT_DIR)/inittab bin/lb-agent
@@ -278,7 +275,7 @@ ansible-dev-reset:
 ansible-dev-deploy:
 	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-lb-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

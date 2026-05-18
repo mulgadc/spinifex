@@ -84,7 +84,6 @@ Useful overrides:
 | `spinifex_region` | `ap-southeast-2` | Region passed to `spx admin init` |
 | `spinifex_az` | `{{ region }}a` | AZ passed to `spx admin init` |
 | `spinifex_external_mode` | `pool` | `pool` \| `nat` external networking |
-| `spinifex_build_lb_image` | `true` | Build + import LB system image after init |
 
 `dev-reset.yml` automatically captures `region`, `az`, `external_mode`,
 pool range, gateway, prefix-len, nat gateway_ip from the existing

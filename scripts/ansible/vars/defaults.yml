@@ -79,10 +79,6 @@ mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }
 # Build output.
 build_tarball_path: /tmp/spinifex-local.tar.gz
 
-# LB system image (built + imported at end of init).
-spinifex_build_lb_image: true
-spinifex_lb_image_conf: "{{ spinifex_root }}/scripts/images/lb.conf"
-
 # Smoketest image — parameterised so tofu examples can share the same base.
 spinifex_smoketest_distro: debian
 spinifex_smoketest_version: "13"

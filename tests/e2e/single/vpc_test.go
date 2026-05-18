@@ -5,7 +5,6 @@ package single
 import (
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -225,16 +224,7 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "public_ip", pubIP, "private_ip", privIP)
 
 	// --- SSH + external connectivity ---------------------------------------
-	addr := net.JoinHostPort(pubIP, "22")
-	harness.Step(t, "wait for SSH %s", addr)
-	harness.Eventually(t, func() bool {
-		conn, derr := net.DialTimeout("tcp", addr, 2*time.Second)
-		if derr != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, 3*time.Minute, 2*time.Second, "SSH on "+addr+" never became reachable")
+	waitForSSHReady(t, pubIP, 22, fix.KeyPath)
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: fix.KeyPath}
 

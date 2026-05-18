@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -128,15 +127,9 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	harness.Step(t, "waiting for SSH port %s", addr)
-	harness.Eventually(t, func() bool {
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, 3*time.Minute, 2*time.Second, "SSH port "+addr+" never became reachable")
+	harness.Step(t, "waiting for SSH handshake %s", addr)
+	waitForSSHHandshake(t, host, port, fix.KeyPath)
+	_ = addr
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
 

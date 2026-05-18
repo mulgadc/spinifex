@@ -436,3 +436,35 @@ func TestBuildMicrovmNICs_ExtraENIs(t *testing.T) {
 	assert.Equal(t, "02:aa:bb:cc:dd:02", nics[2].MAC)
 	assert.False(t, nics[2].IsDefault)
 }
+
+// TestBuildMicrovmNICs_MgmtRoute covers the same single-node/multi-node matrix
+// as TestLBVMUserData_InternalSingleNodeFallback: internet-facing single-node
+// must NOT emit a /32 via mgmt to AdvertiseIP because that steals the host's
+// WAN return path for reply traffic, breaking same-chassis ingress.
+func TestBuildMicrovmNICs_MgmtRoute(t *testing.T) {
+	mk := func() *ELBv2ServiceImpl {
+		return &ELBv2ServiceImpl{
+			VPCService:   nil,
+			MgmtBridgeIP: "10.15.8.1",
+			AdvertiseIP:  "192.168.1.33",
+		}
+	}
+
+	internal := mk().buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternal, nil, testAccountID)
+	require.Len(t, internal, 2)
+	assert.Equal(t, "192.168.1.33", internal[1].RouteDst, "internal single-node forces /32 via mgmt")
+	assert.Equal(t, "10.15.8.1", internal[1].RouteVia)
+
+	inet := mk().buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternetFacing, nil, testAccountID)
+	require.Len(t, inet, 2)
+	assert.Empty(t, inet[1].RouteDst, "internet-facing single-node must not /32 AdvertiseIP via mgmt")
+	assert.Empty(t, inet[1].RouteVia)
+
+	multi := mk()
+	multi.MgmtRouteGateway = "10.15.8.1"
+	multi.MgmtRouteTarget = "10.15.8.100"
+	nics := multi.buildMicrovmNICs("10.0.1.5", "02:aa:bb:cc:dd:01", "subnet-abc", "eni-abc", SchemeInternetFacing, nil, testAccountID)
+	require.Len(t, nics, 2)
+	assert.Equal(t, "10.15.8.100", nics[1].RouteDst, "multi-node uses explicit MgmtRouteTarget")
+	assert.Equal(t, "10.15.8.1", nics[1].RouteVia)
+}

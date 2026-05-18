@@ -329,13 +329,10 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 
 	// NIC[1]: management NIC — daemon fills MAC/CIDR after IP allocation.
 	// RouteDst = AWSGW IP (destination), RouteVia = br-mgmt IP (next-hop).
-	// Microvm always uses mgmt for heartbeats regardless of scheme; VPC SNAT
-	// is not reliable across all topologies for control-plane traffic.
+	// Honor resolveMgmtRoute's deliberate empty return for single-node
+	// internet-facing: adding a /32 to AdvertiseIP via mgmt steals the host's
+	// WAN return path for reply traffic, breaking same-chassis ingress.
 	mgmtRouteGW, mgmtRouteTarget := s.resolveMgmtRoute(scheme)
-	if mgmtRouteGW == "" && s.MgmtBridgeIP != "" && s.AdvertiseIP != "" {
-		mgmtRouteGW = s.MgmtBridgeIP
-		mgmtRouteTarget = s.AdvertiseIP
-	}
 	nics = append(nics, NICConfig{
 		IsDefault: false,
 		RouteDst:  mgmtRouteTarget, // AWSGW IP — destination to reach

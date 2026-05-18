@@ -154,9 +154,3 @@ func phase5bii_VolumeStatus(t *testing.T, fix *Fixture) {
 		fix.RootVolumeID, len(out.VolumeStatuses))
 	harness.Detail(t, "volume", fix.RootVolumeID, "status", status)
 }
-
-// phase7a_AttachToStoppedError is owned by Stage D — Phase 7 stops the
-// instance first, so this negative test logically belongs with the rest of
-// the lifecycle suite.
-// TODO(stage-D): implement attach-to-stopped-instance error assertion.
-func phase7a_AttachToStoppedError(_ *testing.T, _ *Fixture) {}

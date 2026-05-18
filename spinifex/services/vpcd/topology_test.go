@@ -73,6 +73,9 @@ func TestTopologyHandler_VPCCreate(t *testing.T) {
 	if lr.ExternalIDs["spinifex:vni"] != "100" {
 		t.Errorf("expected vni external_id=100, got %v", lr.ExternalIDs["spinifex:vni"])
 	}
+	if lr.ExternalIDs["spinifex:cidr"] != "10.0.0.0/16" {
+		t.Errorf("expected cidr external_id=10.0.0.0/16, got %v", lr.ExternalIDs["spinifex:cidr"])
+	}
 }
 
 func TestTopologyHandler_VPCDelete(t *testing.T) {

@@ -388,35 +388,50 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 	fix.IAMAdminAccount = iamAccountFromARN(t, ec2roArn)
 	harness.Detail(t, "policy", iamPolicyEC2ReadOnly, "arn", ec2roArn, "account", fix.IAMAdminAccount)
 
-	harness.Step(t, "create-policy %s path=%s", iamPolicyFullAdmin, iamPolicyFullAdminPath)
-	_, err = fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(iamPolicyFullAdmin),
-		Path:           aws.String(iamPolicyFullAdminPath),
-		Description:    aws.String("Full access to all services"),
-		PolicyDocument: aws.String(iamDocFullAdmin),
+	// EC2ReadOnly is seeded sequentially above because it populates
+	// fix.IAMAdminAccount (read by Phase 5). The remaining four policies
+	// have no cross-dependency, so fan them out in parallel under a
+	// wrapping t.Run that blocks until all four complete.
+	t.Run("create_policies_parallel", func(t *testing.T) {
+		t.Run(iamPolicyFullAdmin, func(t *testing.T) {
+			t.Parallel()
+			harness.Step(t, "create-policy %s path=%s", iamPolicyFullAdmin, iamPolicyFullAdminPath)
+			_, err := fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
+				PolicyName:     aws.String(iamPolicyFullAdmin),
+				Path:           aws.String(iamPolicyFullAdminPath),
+				Description:    aws.String("Full access to all services"),
+				PolicyDocument: aws.String(iamDocFullAdmin),
+			})
+			require.NoError(t, err, "create-policy %s", iamPolicyFullAdmin)
+		})
+		t.Run(iamPolicyDenyTerminate, func(t *testing.T) {
+			t.Parallel()
+			harness.Step(t, "create-policy %s (mixed Allow+Deny)", iamPolicyDenyTerminate)
+			_, err := fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
+				PolicyName:     aws.String(iamPolicyDenyTerminate),
+				PolicyDocument: aws.String(iamDocDenyTerminate),
+			})
+			require.NoError(t, err, "create-policy %s", iamPolicyDenyTerminate)
+		})
+		t.Run(iamPolicyIAMReadOnly, func(t *testing.T) {
+			t.Parallel()
+			harness.Step(t, "create-policy %s", iamPolicyIAMReadOnly)
+			_, err := fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
+				PolicyName:     aws.String(iamPolicyIAMReadOnly),
+				PolicyDocument: aws.String(iamDocIAMReadOnly),
+			})
+			require.NoError(t, err, "create-policy %s", iamPolicyIAMReadOnly)
+		})
+		t.Run(iamPolicyEC2DescribeAll, func(t *testing.T) {
+			t.Parallel()
+			harness.Step(t, "create-policy %s (wildcard)", iamPolicyEC2DescribeAll)
+			_, err := fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
+				PolicyName:     aws.String(iamPolicyEC2DescribeAll),
+				PolicyDocument: aws.String(iamDocEC2DescribeAll),
+			})
+			require.NoError(t, err, "create-policy %s", iamPolicyEC2DescribeAll)
+		})
 	})
-	require.NoError(t, err, "create-policy %s", iamPolicyFullAdmin)
-
-	harness.Step(t, "create-policy %s (mixed Allow+Deny)", iamPolicyDenyTerminate)
-	_, err = fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(iamPolicyDenyTerminate),
-		PolicyDocument: aws.String(iamDocDenyTerminate),
-	})
-	require.NoError(t, err, "create-policy %s", iamPolicyDenyTerminate)
-
-	harness.Step(t, "create-policy %s", iamPolicyIAMReadOnly)
-	_, err = fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(iamPolicyIAMReadOnly),
-		PolicyDocument: aws.String(iamDocIAMReadOnly),
-	})
-	require.NoError(t, err, "create-policy %s", iamPolicyIAMReadOnly)
-
-	harness.Step(t, "create-policy %s (wildcard)", iamPolicyEC2DescribeAll)
-	_, err = fix.AWS.IAM.CreatePolicy(&iam.CreatePolicyInput{
-		PolicyName:     aws.String(iamPolicyEC2DescribeAll),
-		PolicyDocument: aws.String(iamDocEC2DescribeAll),
-	})
-	require.NoError(t, err, "create-policy %s", iamPolicyEC2DescribeAll)
 
 	harness.Step(t, "create-policy duplicate (expect EntityAlreadyExists)")
 	harness.ExpectError(t, "EntityAlreadyExists", func() error {

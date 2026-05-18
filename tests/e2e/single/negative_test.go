@@ -51,6 +51,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8a: RunInstances with malformed AMI ID (missing ami- prefix).
 	t.Run("8a_InvalidAMIIDMalformed", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "run-instances image-id=notanami")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String("notanami"),
@@ -65,6 +66,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8b: RunInstances with invalid instance type.
 	t.Run("8b_InvalidInstanceType", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "run-instances instance-type=x99.superlarge")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String(fix.AMIID),
@@ -79,6 +81,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8c: AttachVolume on the already-attached root volume.
 	t.Run("8c_VolumeInUse", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "attach-volume %s (root, in-use)", fix.RootVolumeID)
 		_, err := fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
 			VolumeId:   aws.String(fix.RootVolumeID),
@@ -90,6 +93,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8d: DetachVolume against the boot/root volume — explicitly disallowed.
 	t.Run("8d_DetachRootForbidden", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "detach-volume %s (root)", fix.RootVolumeID)
 		_, err := fix.AWS.EC2.DetachVolume(&ec2.DetachVolumeInput{
 			VolumeId:   aws.String(fix.RootVolumeID),
@@ -100,6 +104,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8e: DeleteSnapshot on a non-existent snapshot id.
 	t.Run("8e_DeleteSnapshotNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "delete-snapshot snap-nonexistent000000")
 		_, err := fix.AWS.EC2.DeleteSnapshot(&ec2.DeleteSnapshotInput{
 			SnapshotId: aws.String("snap-nonexistent000000"),
@@ -113,6 +118,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// here we accept either of the two canonical codes and surface anything
 	// else so we notice regressions in the gateway error envelope.
 	t.Run("8f_InvalidActionRawHTTP", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "POST Action=DescribeFakeThings")
 		status, body, code := harness.PostAWSAction(t, fix.Env, fix.AWS,
 			"DescribeFakeThings", nil)
@@ -128,6 +134,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8g: RunInstances with a well-formed but non-existent AMI id.
 	t.Run("8g_InvalidAMIIDNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "run-instances image-id=ami-0000000000000dead")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String("ami-0000000000000dead"),
@@ -142,6 +149,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8h: RunInstances with non-existent key pair name.
 	t.Run("8h_InvalidKeyPairNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "run-instances key-name=nonexistent-key-xyz")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String(fix.AMIID),
@@ -156,6 +164,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8i: DeleteVolume on an unknown volume id.
 	t.Run("8i_DeleteVolumeNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "delete-volume vol-0000000000000dead")
 		_, err := fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
 			VolumeId: aws.String("vol-0000000000000dead"),
@@ -165,6 +174,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8j: CreateKeyPair re-using test-key-1 (still present from Phase 3).
 	t.Run("8j_CreateKeyPairDuplicate", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "create-key-pair %s (duplicate)", existingKey)
 		out, err := fix.AWS.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{
 			KeyName: aws.String(existingKey),
@@ -184,6 +194,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8k: ImportKeyPair re-using test-key-1.
 	t.Run("8k_ImportKeyPairDuplicate", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "import-key-pair %s (duplicate)", existingKey)
 		_, err := fix.AWS.EC2.ImportKeyPair(&ec2.ImportKeyPairInput{
 			KeyName:           aws.String(existingKey),
@@ -194,6 +205,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8l: ImportKeyPair with garbage public-key material.
 	t.Run("8l_InvalidKeyFormat", func(t *testing.T) {
+		t.Parallel()
 		const badKeyName = "bad-format-key"
 		harness.Step(t, "import-key-pair %s (bad material)", badKeyName)
 		_, err := fix.AWS.EC2.ImportKeyPair(&ec2.ImportKeyPairInput{
@@ -214,6 +226,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8m: DescribeVolumes filtered by a non-existent volume id.
 	t.Run("8m_DescribeVolumesNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "describe-volumes vol-0000000000000dead")
 		_, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
 			VolumeIds: []*string{aws.String("vol-0000000000000dead")},
@@ -223,6 +236,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8n: DescribeImages filtered by a non-existent AMI id.
 	t.Run("8n_DescribeImagesNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "describe-images ami-0000000000000dead")
 		_, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{
 			ImageIds: []*string{aws.String("ami-0000000000000dead")},
@@ -234,6 +248,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// Stored in fix.CustomAMIID, but the duplicate-name check is by name, not
 	// id — assert via the well-known constant from Phase 5e.
 	t.Run("8o_CreateImageDuplicateName", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "create-image name=%s (duplicate)", customAMIName)
 		out, err := fix.AWS.EC2.CreateImage(&ec2.CreateImageInput{
 			InstanceId: aws.String(fix.InstanceID),
@@ -256,6 +271,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// 8p: DeleteKeyPair on an unknown key must succeed (idempotent — matches
 	// AWS). This is the only positive case in Phase 8.
 	t.Run("8p_DeleteKeyPairIdempotent", func(t *testing.T) {
+		t.Parallel()
 		const missingKey = "nonexistent-key-99999"
 		harness.Step(t, "delete-key-pair %s (idempotent)", missingKey)
 		_, err := fix.AWS.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{
@@ -269,6 +285,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// stopped KV view, so the error surfaces as NotFound rather than
 	// IncorrectInstanceState. Matches bash expectation.
 	t.Run("8q_ModifyAttributeOnRunning", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "modify-instance-attribute %s (running)", fix.InstanceID)
 		_, err := fix.AWS.EC2.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
 			InstanceId: aws.String(fix.InstanceID),
@@ -281,6 +298,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 
 	// 8r: RebootInstances on a non-existent instance id.
 	t.Run("8r_RebootInstanceNotFound", func(t *testing.T) {
+		t.Parallel()
 		harness.Step(t, "reboot-instances i-nonexistent")
 		_, err := fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{
 			InstanceIds: []*string{aws.String("i-nonexistent")},

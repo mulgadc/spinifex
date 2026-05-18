@@ -31,6 +31,13 @@ permissions:
   contents: read
   statuses: write
 
+# Pushes to the same ref stack on the single `ci-single` self-hosted runner,
+# and a cancelled run can leave orphan `tofu`/`go test -c` procs behind that
+# wedge the runner host. Auto-cancel keeps at most one in-flight run per ref.
+concurrency:
+  group: e2e-go-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-cert e2e-lb' }}
@@ -44,6 +51,24 @@ jobs:
       TOFU_LOG: /tmp/e2e-go-tofu-single-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
     steps:
+      - name: Reap Orphan Procs
+        # A cancelled prior run can leave `tofu`/`terraform` mid-apply or a
+        # libvirt `qemu+ssh` connection orphaned. Kill anything from previous
+        # invocations belonging to this runner user before we touch state.
+        # SIGTERM first to let tofu release its state lock, then SIGKILL.
+        run: |
+          set +e
+          UID_SELF=$(id -u)
+          pgrep -u "$UID_SELF" -af '^(tofu|terraform)\b|/tofu |/terraform ' || true
+          pkill -u "$UID_SELF" -TERM -x tofu 2>/dev/null
+          pkill -u "$UID_SELF" -TERM -x terraform 2>/dev/null
+          sleep 3
+          pkill -u "$UID_SELF" -KILL -x tofu 2>/dev/null
+          pkill -u "$UID_SELF" -KILL -x terraform 2>/dev/null
+          # Drop any stale tofu state lock from a SIGKILL'd apply.
+          find "$HOME" -maxdepth 6 -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          true
+
       - name: Clean Workspace
         run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
@@ -240,13 +265,26 @@ jobs:
       - name: Teardown
         if: always()
         working-directory: mulga/scripts/tofu-cluster
+        # `set -e` off — teardown must run scrub-env even if tofu destroy
+        # fails; scrub is the libvirt-level fallback when tofu state is
+        # inconsistent with the remote Proxmox node.
         run: |
-          set -euo pipefail
+          set +e
           # shellcheck source=/dev/null
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # Cancelled jobs from this point on can orphan an in-flight
+          # tofu/libvirt SSH; clear them before destroy so the next run's
+          # pre-clean isn't doing it.
+          UID_SELF=$(id -u)
+          pkill -u "$UID_SELF" -TERM -x tofu 2>/dev/null
+          pkill -u "$UID_SELF" -TERM -x terraform 2>/dev/null
+          sleep 2
+          pkill -u "$UID_SELF" -KILL -x tofu 2>/dev/null
+          pkill -u "$UID_SELF" -KILL -x terraform 2>/dev/null
+          find "$HOME" -maxdepth 6 -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
-          quiet_run "tofu destroy"          "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
-          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
           ok "teardown complete"
 
       - name: Fail job if any suite failed

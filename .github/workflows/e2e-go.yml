@@ -99,12 +99,22 @@ jobs:
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Install gotestsum on VM
+      - name: Install Go + gotestsum on VM
+        env:
+          GO_VERSION: "1.26.3"
         run: |
           ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
-            'command -v gotestsum >/dev/null 2>&1 || \
-              GOBIN=$HOME/go/bin go install gotest.tools/gotestsum@v1.12.0'
+            "set -eu; \
+             if ! /usr/local/go/bin/go version >/dev/null 2>&1; then \
+               curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+                 | sudo tar -C /usr/local -xz; \
+             fi; \
+             /usr/local/go/bin/go version; \
+             export PATH=/usr/local/go/bin:\$HOME/go/bin:\$PATH; \
+             command -v gotestsum >/dev/null 2>&1 \
+               || GOBIN=\$HOME/go/bin /usr/local/go/bin/go install gotest.tools/gotestsum@v1.12.0; \
+             \$HOME/go/bin/gotestsum --version"
 
       - name: Run Go E2E suites
         id: e2e
@@ -117,7 +127,7 @@ jobs:
             tf-user@${{ steps.vm.outputs.wan_ip }} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; \
              cd \$HOME/Development/mulga/spinifex && \
-             export PATH=\$HOME/go/bin:\$PATH && \
+             export PATH=/usr/local/go/bin:\$HOME/go/bin:\$PATH && \
              FAIL=0; \
              for SUITE in ${SUITES}; do \
                echo \"===> \$SUITE\"; \

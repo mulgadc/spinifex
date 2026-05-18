@@ -40,19 +40,23 @@ func Phase(t *testing.T, format string, args ...any) {
 	fmt.Fprintf(os.Stdout, "\n%s%s━━ %s ━━%s\n", colorBold, colorCyan, fmt.Sprintf(format, args...), colorReset)
 }
 
-// Step emits a single-line sub-phase marker via t.Logf so it stays
-// attributed to the owning test in JUnit XML. Indent + file:line prefix
-// are accepted as the cost of correct attribution — these lines carry
-// progress detail (e.g. "waiting for instance running") that a triager
-// will want bucketed with the failing testcase.
+// Step emits a single-line sub-phase marker. Dual-emits to os.Stdout so
+// long-running subtests stream progress live in CI (the testing framework
+// buffers t.Logf output per-test and releases only on PASS/FAIL), and to
+// t.Logf so JUnit XML still attributes the line to the owning test.
+// Duplicate output in the failure case is acceptable — both copies carry
+// the same content; the stdout copy gives a triager live signal, the
+// t.Logf copy keeps the per-test bucketing intact.
 func Step(t *testing.T, format string, args ...any) {
 	t.Helper()
-	t.Logf("%s· %s%s", colorDim, fmt.Sprintf(format, args...), colorReset)
+	line := fmt.Sprintf("%s· %s%s", colorDim, fmt.Sprintf(format, args...), colorReset)
+	fmt.Fprintln(os.Stdout, line)
+	t.Logf("%s", line)
 }
 
-// Detail emits a key=value line via t.Logf — same attribution rationale
-// as Step. Pass alternating key, value, key, value …; mismatched lengths
-// panic so the bug surfaces at the test boundary.
+// Detail emits a key=value line. Same dual-emit rationale as Step. Pass
+// alternating key, value, key, value …; mismatched lengths panic so the
+// bug surfaces at the test boundary.
 func Detail(t *testing.T, kvs ...any) {
 	t.Helper()
 	if len(kvs)%2 != 0 {
@@ -62,5 +66,7 @@ func Detail(t *testing.T, kvs ...any) {
 	for i := 0; i < len(kvs); i += 2 {
 		parts = append(parts, fmt.Sprintf("%s%v%s=%v", colorDim, kvs[i], colorReset, kvs[i+1]))
 	}
-	t.Logf("%s", strings.Join(parts, " "))
+	line := strings.Join(parts, " ")
+	fmt.Fprintln(os.Stdout, line)
+	t.Logf("%s", line)
 }

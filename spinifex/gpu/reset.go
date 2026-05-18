@@ -9,31 +9,22 @@ import (
 	"strings"
 )
 
-// resetPCI issues a PCI reset for addr via sysfs. It is a no-op for non-AMD
-// devices: NVIDIA and Intel handle FLR correctly through the standard unbind /
-// rebind cycle, so vendor-reset is not needed for them.
+// resetPCI issues a PCI Function-Level Reset for addr via sysfs. It is a no-op
+// for non-AMD devices: NVIDIA and Intel GPUs handle the unbind/rebind cycle
+// without requiring an explicit reset.
 //
-// For AMD (vendor 0x1002), CDNA/RDNA GPUs are left in a corrupted hardware
-// state after QEMU exits without a proper reset. If the linux-vendor-reset
-// module (github.com/gnif/vendor-reset) is loaded it intercepts the sysfs
-// write and applies the AMD-specific reset sequence; otherwise the kernel falls
-// back to a standard Function-Level Reset, which may be insufficient.
+// AMD Instinct (CDNA) data-centre GPUs expose a reset sysfs node and support
+// FLR correctly — writing "1" to it clears the hardware state left behind by
+// QEMU, allowing the next Claim to bind a clean device. Consumer AMD GPUs
+// (Polaris/Vega/Navi) have a firmware reset bug that FLR does not fully fix;
+// those architectures are not the target here.
 //
-// Returns nil when the reset attribute is absent — the device does not support
-// FLR — so callers treat this as best-effort.
+// Returns nil when the reset attribute is absent so callers treat this as
+// best-effort.
 func resetPCI(sysfsRoot, addr string) error {
 	vendorBytes, err := os.ReadFile(filepath.Join(sysfsRoot, "bus/pci/devices", addr, "vendor"))
 	if err != nil || strings.TrimSpace(string(vendorBytes)) != "0x1002" {
-		return nil // not AMD; standard unbind/rebind is sufficient
-	}
-
-	vendorResetLoaded := false
-	if _, err := os.Stat(filepath.Join(sysfsRoot, "module/vendor_reset")); err == nil {
-		vendorResetLoaded = true
-	}
-	if !vendorResetLoaded {
-		slog.Warn("vendor-reset module not loaded — AMD GPU reset may be incomplete; install linux-vendor-reset DKMS module",
-			"pci", addr)
+		return nil // not AMD; unbind/rebind is sufficient
 	}
 
 	resetPath := filepath.Join(sysfsRoot, "bus/pci/devices", addr, "reset")
@@ -50,6 +41,6 @@ func resetPCI(sysfsRoot, addr string) error {
 		return fmt.Errorf("PCI reset for %s: %w", addr, err)
 	}
 
-	slog.Info("PCI reset issued", "pci", addr, "vendor_reset", vendorResetLoaded)
+	slog.Info("PCI reset issued", "pci", addr)
 	return nil
 }

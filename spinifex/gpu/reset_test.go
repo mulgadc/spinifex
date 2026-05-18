@@ -56,22 +56,6 @@ func TestResetPCI_NVIDIASkipped(t *testing.T) {
 	}
 }
 
-func TestResetPCI_VendorResetModuleLoaded(t *testing.T) {
-	root := t.TempDir()
-	buildSysfsDevice(t, root, "0000:05:00.0", "0x030200", "0x1002", "0x744c", "vfio-pci", 3)
-	must(t, os.MkdirAll(filepath.Join(root, "module/vendor_reset"), 0o755))
-	makeResetNode(t, root, "0000:05:00.0")
-
-	if err := resetPCI(root, "0000:05:00.0"); err != nil {
-		t.Fatalf("resetPCI: %v", err)
-	}
-
-	got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/devices/0000:05:00.0/reset"))
-	if got != "1" {
-		t.Errorf("reset node = %q, want \"1\"", got)
-	}
-}
-
 func TestResetPCI_WriteFails(t *testing.T) {
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:05:00.0", "0x030200", "0x1002", "0x744c", "vfio-pci", 3)

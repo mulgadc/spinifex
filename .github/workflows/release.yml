@@ -271,10 +271,10 @@ jobs:
       - name: Build nbdkit viperblock plugin
         run: |
           mkdir -p viperblock/lib
-          cd viperblock && CGO_ENABLED=1 go build \
+          cd viperblock/nbd && CGO_ENABLED=1 go build \
             -buildmode=c-shared \
-            -o lib/nbdkit-viperblock-plugin.so \
-            nbd/viperblock.go
+            -o ../lib/nbdkit-viperblock-plugin.so \
+            .
 
       - name: Build release ISO
         id: build-iso

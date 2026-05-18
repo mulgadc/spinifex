@@ -55,11 +55,12 @@ const (
 func TestLoadBalancer(t *testing.T) {
 	env := harness.LoadEnv(t)
 	skipIfDevNetworking(t, env)
-	artifacts := harness.ArtifactDir(t, env)
 
-	client := harness.NewAWSClient(t, env)
-	fixture := setupSharedFixture(t, client, artifacts)
-
+	// Resolve peer availability BEFORE the shared fixture build (VPC + 2
+	// app VMs + probe client = minutes). Single-node mode has no peer, so
+	// the user sees the "internet-facing will skip" message immediately
+	// instead of attributing the fixture-setup wait to the first subtest
+	// name that gotestsum prints once subtests start.
 	peer := pickPeer(env)
 	var ssh *harness.PeerSSH
 	if peer != "" {
@@ -72,6 +73,13 @@ func TestLoadBalancer(t *testing.T) {
 			ssh = nil
 		}
 	}
+	if peer == "" {
+		t.Logf("no peer node available — internet-facing subtests will skip; building shared fixture for internal subtests")
+	}
+
+	artifacts := harness.ArtifactDir(t, env)
+	client := harness.NewAWSClient(t, env)
+	fixture := setupSharedFixture(t, client, artifacts)
 
 	t.Run("InternetFacing_ALB", func(t *testing.T) {
 		if peer == "" {

@@ -3,20 +3,11 @@ name: E2E (Go)
 # Standalone workflow for the Go E2E harness (tests/e2e/{cert,lb,...}).
 # Mirrors e2e.yml's single-node provisioning chain but runs `go test` via
 # gotestsum so we get JUnit XML + per-test artifact directories surfaced to
-# GitHub Actions. Gated to the feature branch + manual dispatch while the
-# conversion lands; promote to broader triggers once green.
+# GitHub Actions. Manual-dispatch only while the conversion lands — push
+# trigger lifts once the single-node Go port (mulga-siv-89) is green and
+# replaces run-e2e.sh; matches e2e-ddil.yml's Phase 1 trigger model.
 
 on:
-  push:
-    branches:
-      - feat/e2e-go-harness
-    paths:
-      - "**/*.go"
-      - go.mod
-      - go.sum
-      - Makefile
-      - tests/e2e/**
-      - .github/workflows/e2e-go.yml
   workflow_dispatch:
     inputs:
       sha:

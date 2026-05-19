@@ -258,13 +258,33 @@ printf '%s' "$KEY_MATERIAL" | put_to_node "$NODE_KEY_PATH"
 node_ssh "chmod 600 $NODE_KEY_PATH" || { fail "chmod key"; exit 1; }
 pass "key pair: reboot-e2e-key"
 
-# Stage user-data on the node (HTTP responder for round-robin verification)
+# Stage user-data on the node (HTTP responder for round-robin verification).
+# Installed as a systemd unit so the responder survives guest VM reboots —
+# nohup-from-cloud-init only runs on first boot (cloud-init's per-instance
+# semaphore) and would leave the app silent after host_reboot, even though
+# OVN/HAProxy recover correctly.
 APP_USER_DATA=$(cat <<'USERDATA'
 #!/bin/bash
+set -e
 INSTANCE_ID=$(hostname)
-mkdir -p /tmp/httpd && cd /tmp/httpd
-echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > index.html
-nohup python3 -m http.server 80 --bind 0.0.0.0 > /dev/null 2>&1 &
+install -d -m 0755 /var/lib/httpd
+echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > /var/lib/httpd/index.html
+cat > /etc/systemd/system/reboot-e2e-httpd.service <<'UNIT'
+[Unit]
+Description=Reboot E2E HTTP responder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 80 --bind 0.0.0.0 --directory /var/lib/httpd
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now reboot-e2e-httpd.service
 USERDATA
 )
 printf '%s' "$APP_USER_DATA" | put_to_node "$NODE_USERDATA_PATH"

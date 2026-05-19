@@ -712,3 +712,133 @@ func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
 	require.Len(t, albENI.Groups, 1)
 	assert.Equal(t, defaultSGID, *albENI.Groups[0].GroupId)
 }
+
+// TestRebuildSystemInstanceInput_HappyPath verifies that a recovering ALB
+// VM gets the same SystemInstanceInput shape the launch path produced —
+// otherwise writeFwCfgBlobs would emit a different netcfg/cacert blob than
+// the persisted QEMU command line references, and the relaunch would fail
+// at fw_cfg load time the same way the tmpfs wipe does today.
+func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnets.Subnets[0].SubnetId
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{
+			InstanceID: "i-recover-1",
+			PrivateIP:  "10.0.1.42",
+		},
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+	svc.CACert = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+
+	_, err = svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("recover-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+		Scheme:  aws.String("internal"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, mock.launchCalls, 1)
+	originalInput := mock.launchCalls[0]
+
+	ctx := RecoveryContext{
+		InstanceID:   "i-recover-1",
+		InstanceType: originalInput.InstanceType,
+		ENIMac:       originalInput.ENIMac,
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
+	}
+
+	rebuilt, err := svc.RebuildSystemInstanceInput(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	assert.Equal(t, originalInput.InstanceType, rebuilt.InstanceType)
+	assert.Equal(t, originalInput.SubnetID, rebuilt.SubnetID)
+	assert.Equal(t, originalInput.ENIID, rebuilt.ENIID)
+	assert.Equal(t, originalInput.ENIMac, rebuilt.ENIMac)
+	// ENIIP comes from the persisted lb.VPCIP (which the launcher's PrivateIP
+	// return value sets); in production the launcher echoes back the ENI's
+	// private IP, so this matches the original launch input. The test mock
+	// returns a synthetic value, so assert against the mock's PrivateIP.
+	assert.Equal(t, "10.0.1.42", rebuilt.ENIIP)
+	assert.Equal(t, originalInput.Scheme, rebuilt.Scheme)
+	assert.Equal(t, originalInput.AccountID, rebuilt.AccountID)
+	assert.Equal(t, originalInput.LBAgentEnv, rebuilt.LBAgentEnv)
+	assert.Equal(t, originalInput.CACert, rebuilt.CACert)
+
+	require.GreaterOrEqual(t, len(rebuilt.NICs), 2)
+	assert.True(t, rebuilt.NICs[0].IsDefault)
+	assert.Equal(t, "02:a0:00:11:22:33", rebuilt.NICs[1].MAC, "mgmt NIC MAC must come from RecoveryContext")
+	assert.Equal(t, "172.31.0.7/24", rebuilt.NICs[1].CIDR, "mgmt NIC CIDR must come from RecoveryContext")
+}
+
+// TestRebuildSystemInstanceInput_NoLBRecord verifies the error path used by
+// refreshSystemInstanceState to flag the instance recovery_failed when the
+// LB record was wiped from KV but the VM record survived — recovery must
+// not invent a fake input and silently boot the VM into an unowned state.
+func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.RebuildSystemInstanceInput(RecoveryContext{
+		InstanceID:   "i-ghost",
+		InstanceType: "sys.micro",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no LB record references instance i-ghost")
+}
+
+// TestRebuildSystemInstanceInput_MultiENI verifies that extras survive the
+// rebuild for multi-subnet ALBs — the create path passes one ExtraENIInput
+// per non-primary subnet, and recovery must produce the same shape so the
+// daemon wires the same set of taps and NICs the persisted QEMU args
+// reference.
+func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	vpcs, _ := vpcSvc.DescribeVpcs(&ec2.DescribeVpcsInput{}, testAccountID)
+	vpcID := *vpcs.Vpcs[0].VpcId
+	sub1 := getTestSubnetID(t, vpcSvc, vpcID, "10.0.20.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vpcID, "10.0.21.0/24", "us-east-1b")
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-recover-multi", PrivateIP: "10.0.20.4"},
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	_, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("recover-multi-alb"),
+		Subnets: []*string{aws.String(sub1), aws.String(sub2)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, mock.launchCalls, 1)
+	originalInput := mock.launchCalls[0]
+
+	rebuilt, err := svc.RebuildSystemInstanceInput(RecoveryContext{
+		InstanceID:   "i-recover-multi",
+		InstanceType: originalInput.InstanceType,
+		ENIMac:       originalInput.ENIMac,
+	})
+	require.NoError(t, err)
+	require.Len(t, rebuilt.ExtraENIs, len(originalInput.ExtraENIs))
+
+	originalByENI := map[string]ExtraENIInput{}
+	for _, e := range originalInput.ExtraENIs {
+		originalByENI[e.ENIID] = e
+	}
+	for _, e := range rebuilt.ExtraENIs {
+		orig, ok := originalByENI[e.ENIID]
+		require.True(t, ok, "extra ENI %s not in original launch", e.ENIID)
+		assert.Equal(t, orig.SubnetID, e.SubnetID)
+		assert.Equal(t, orig.ENIMac, e.ENIMac)
+		assert.Equal(t, orig.ENIIP, e.ENIIP)
+	}
+}

@@ -24,6 +24,13 @@ type ManagerHooks struct {
 	// OnInstanceUp on launch success is idempotent and reinstalls both
 	// the command and console subscriptions.
 	OnInstanceRecovering func(*VM)
+	// BeforeInstanceRelaunch fires from Restore once per recovery
+	// candidate, after OnInstanceRecovering and immediately before
+	// m.Run. Daemons use this to refresh ephemeral on-host state
+	// (tmpfs-backed config blobs, dynamic firmware files) that did not
+	// survive a host reboot. A non-nil error aborts the relaunch and
+	// marks the instance recovery_failed.
+	BeforeInstanceRelaunch func(*VM) error
 }
 
 // Deps bundles every collaborator the manager uses to drive lifecycle.

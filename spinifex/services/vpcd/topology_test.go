@@ -923,6 +923,55 @@ func TestTopologyHandler_IGWAttach_InvokesFlowBarrier(t *testing.T) {
 	}
 }
 
+// TestTopologyHandler_AddNAT_InvokesFlowBarrier asserts handleAddNAT
+// calls waitForFlowsHV after writing the dnat_and_snat row to NB.
+// Without this barrier, RunInstances returns success while OF flows for
+// the new public IP are still being installed on the gateway chassis,
+// and the freshly launched VM is unreachable on its public IP for the
+// flow-install latency. Reproduced in CI run 26072432957 Phase8b.
+func TestTopologyHandler_AddNAT_InvokesFlowBarrier(t *testing.T) {
+	orig := waitForFlowsHV
+	var called int
+	waitForFlowsHV = func() error { called++; return nil }
+	defer func() { waitForFlowsHV = orig }()
+
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name: "vpc-vpc-natbarrier",
+		ExternalIDs: map[string]string{
+			"spinifex:vpc_id": "vpc-natbarrier",
+			"spinifex:cidr":   "10.0.0.0/16",
+		},
+	}))
+
+	evt := NATEvent{
+		VpcId:      "vpc-natbarrier",
+		ExternalIP: "192.168.0.250",
+		LogicalIP:  "10.0.1.4",
+	}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicAddNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "add NAT")
+
+	if called != 1 {
+		t.Errorf("expected waitForFlowsHV to run exactly once after add-nat, got %d", called)
+	}
+}
+
 func TestTopologyHandler_IGWAttach_WithExternalPool(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()

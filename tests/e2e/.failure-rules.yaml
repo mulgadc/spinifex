@@ -1,0 +1,22 @@
+# Rule table consumed by .github/actions/e2e-analyze in Stage 3 of
+# docs/development/improvements/e2e-go-failure-analysis.md.
+#
+# Stage 1 (current) ignores this file. Stage 3 will match a failure's
+# normalised signature against `match` / `also_match` regexes and surface
+# `hint` text inline in the GITHUB_STEP_SUMMARY analysis report.
+#
+# Add rules in the same PR as the test or feature that surfaced the
+# failure. Rules are advisory only — they never gate the build.
+#
+# Schema (Stage 3 will validate):
+#   - id:         stable identifier (kebab-case)
+#     match:      Go-syntax regex against the normalised signature line
+#     also_match: optional second regex (must also match)
+#     hint: |
+#       Free text shown in the analysis report when match fires.
+#       Multi-line; markdown rendered.
+#     artifacts: [list of relative paths under ARTIFACT_DIR to surface]
+#
+# Empty list keeps the analyser additive — no rules means no hints.
+
+rules: []

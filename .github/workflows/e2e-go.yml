@@ -98,6 +98,15 @@ jobs:
           # warms across runs.
           cache: false
 
+      - name: Re-enable Go toolchain auto-download
+        # setup-go@v6 exports GOTOOLCHAIN=local to $GITHUB_ENV (v5 left it
+        # "auto"). build-install-artifacts.sh prepends /usr/local/go/bin to
+        # PATH on the self-hosted runner, and that Go is older than
+        # spinifex/go.mod's `go` directive; under "local" the build fails
+        # with `requires go >= X.Y.Z`. Restoring "auto" lets the resolved
+        # Go self-heal by fetching the named minor on demand.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -211,6 +220,10 @@ jobs:
              for SUITE in ${SUITES_RUN}; do \
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
+               # Record suite wall-clock start so the analyzer can locate
+               # the right journal window. junit-report's timestamp attr
+               # marks conversion time, not test start, so we cannot use it.
+               date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=30m \
@@ -246,7 +259,10 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
             | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
           ok "artifacts pulled to ${ARTIFACT_DIR}"
-          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --since "60 min ago"' \
+          # `-o short-iso` writes RFC3339-ish timestamps (e.g.
+          # `2026-05-19T12:32:34+1000 host …`) so the analyzer can window-slice
+          # the journal around each failure's wall-clock span.
+          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
             > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null
           ok "journal: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || echo 0) lines"
 
@@ -270,6 +286,14 @@ jobs:
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "Go E2E results"
+
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./spinifex/.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "E2E failure analysis"
 
       - uses: actions/upload-artifact@v7
         if: always()

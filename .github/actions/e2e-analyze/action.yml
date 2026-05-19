@@ -1,0 +1,38 @@
+name: E2E Failure Analyzer
+description: >-
+  Post-test analyzer for the Go E2E suites. Parses junit-*.xml emitted by
+  go-junit-report, clusters failures by signature, picks the earliest
+  non-cascade failure per suite as the likely root cause, and appends a
+  human-readable report to $GITHUB_STEP_SUMMARY. Always exits 0 — the
+  existing "Fail job if any suite failed" gate keeps owning exit-code
+  semantics.
+
+inputs:
+  junit-glob:
+    description: Shell glob matching JUnit XML files to analyze.
+    required: true
+  log-dir:
+    description: >-
+      Artifact directory. The rendered report is also written to
+      $log-dir/analysis.md so it travels with the uploaded artifact.
+    required: true
+  title:
+    description: Heading rendered at the top of the summary section.
+    required: false
+    default: "E2E failure analysis"
+
+runs:
+  using: composite
+  steps:
+    - id: analyze
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        ANALYZE_JUNIT_GLOB: ${{ inputs.junit-glob }}
+        ANALYZE_LOG_DIR: ${{ inputs.log-dir }}
+        ANALYZE_TITLE: ${{ inputs.title }}
+      run: |
+        go run . \
+          -junit-glob "$ANALYZE_JUNIT_GLOB" \
+          -log-dir "$ANALYZE_LOG_DIR" \
+          -title "$ANALYZE_TITLE"

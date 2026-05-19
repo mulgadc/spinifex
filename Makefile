@@ -126,6 +126,12 @@ test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
 	$(_Q)LOG_IGNORE=1 go test -race -timeout 300s ./spinifex/... $(_RACEQ)
 
+# Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
+# Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
+test-actions:
+	@echo -e "\n....Running action tests...."
+	LOG_IGNORE=1 go test -timeout 60s ./.github/actions/...
+
 # Check that new/changed code meets coverage threshold (runs tests first)
 diff-coverage: test-cover
 	@QUIET=$(QUIET) scripts/diff-coverage.sh $(COVERPROFILE)
@@ -275,7 +281,7 @@ ansible-dev-reset:
 ansible-dev-deploy:
 	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race test-actions diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

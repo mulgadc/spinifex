@@ -1361,6 +1361,17 @@ func (h *TopologyHandler) handleAddNAT(msg *nats.Msg) {
 		"logical_ip", evt.LogicalIP,
 		"port", evt.PortName,
 	)
+
+	// Block until ovn-northd compiles the new NAT into SB and every chassis
+	// has installed the resulting flows. handleIGWAttach has the same
+	// barrier (mulga-siv-105); without one here, the publisher (typically
+	// ec2d/RunInstances) returns success while the DNAT/SNAT flows for the
+	// VM's public IP are still being installed on the gateway chassis, so
+	// the freshly launched VM is unreachable on its public IP for whatever
+	// flow-install latency the chassis happens to incur. Reproduced in CI
+	// run 26072432957 Phase8b — Port_Binding showed up=true at the 3min
+	// timeout, but SSH never completed handshake.
+	_ = waitForFlowsHV()
 	respond(msg, nil)
 }
 

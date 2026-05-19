@@ -191,6 +191,28 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	})
 	harness.Detail(t, "rtb", rtbID, "assoc", assocID, "route", "0.0.0.0/0->"+igwID)
 
+	// --- Security group ----------------------------------------------------
+	// Fresh VPC's auto-created default SG denies all ingress. Authorize
+	// tcp/22 from anywhere so the SSH probe below can complete — the bash
+	// driver relies on the *default* VPC's default SG having been pre-baked
+	// with this rule by admin init, but a newly-created VPC has not.
+	// Without this step Phase 8b SSH times out via an ACL drop between OVN
+	// tables 13 (DNAT) and 17 (NAT commit) even when every datapath barrier
+	// is satisfied (tracking mulga-siv-111).
+	harness.Step(t, "describe-security-groups (default) vpc=%s", vpcID)
+	sgOut, err := c.EC2.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
+			{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
+		},
+	})
+	require.NoError(t, err, "describe-security-groups default")
+	require.NotEmpty(t, sgOut.SecurityGroups, "no default SG for vpc=%s", vpcID)
+	defaultSGID := aws.StringValue(sgOut.SecurityGroups[0].GroupId)
+	require.NotEmpty(t, defaultSGID, "default SG GroupId empty")
+	harness.AuthorizeSSHIngress(t, c, defaultSGID)
+	harness.Detail(t, "default_sg", defaultSGID, "ingress", "tcp/22<-0.0.0.0/0")
+
 	// --- Public instance ---------------------------------------------------
 	harness.Step(t, "run-instances ami=%s subnet=%s", fix.AMIID, pubSubnetID)
 	runOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
@@ -226,11 +248,16 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	// --- SSH + external connectivity ---------------------------------------
 	// Use the non-fatal probe so we can dump VPC/IGW datapath diagnostics
 	// before Fatal. Same 3min budget — fresh-VPC unreachability beyond that
-	// is a real product bug (mulga-siv-105), not test flake.
+	// is a real product bug (mulga-siv-105 + mulga-siv-111), not test flake.
 	if !trySSHReady(pubIP, 22, fix.KeyPath, 3*time.Minute) {
 		harness.DumpVPCFlowDiagnostics(t, c, instID,
-			fmt.Sprintf("Phase 8b SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP))
-		t.Fatalf("SSH handshake %s:22 never completed within 3min (see diagnostics above; tracking mulga-siv-105)", pubIP)
+			fmt.Sprintf("Phase 8b SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  pubIP,
+				LogicalIP:   privIP,
+				ArtifactDir: fix.Artifacts,
+			})
+		t.Fatalf("SSH handshake %s:22 never completed within 3min (see diagnostics above; tracking mulga-siv-111)", pubIP)
 	}
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: fix.KeyPath}

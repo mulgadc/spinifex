@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -15,6 +16,39 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// waitForFlowsHV shells out to `ovn-nbctl --wait=hv sync`, which bumps
+// NB_Global.nb_cfg and blocks until every connected chassis has acknowledged
+// the new sequence number — i.e. ovn-northd has compiled NB -> SB and
+// ovn-controller has installed the resulting flows. Used after IGW attach
+// so newly-launched VMs aren't unreachable while their gateway chassis is
+// still catching up (mulga-siv-105).
+//
+// Bounded by ovn-nbctl --timeout=30 (seconds). On overrun we log a WARN
+// and return nil — the caller continues. In practice flows converge within
+// seconds; a 30s overrun means something OVN-side is wedged enough that
+// failing VPC create wouldn't improve things.
+//
+// Declared as a var so tests can stub it.
+var waitForFlowsHV = func() error {
+	start := time.Now()
+	cmd := sudoCommand("ovn-nbctl",
+		"--no-leader-only",
+		"--timeout=30",
+		"--wait=hv",
+		"sync",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+			"elapsed", time.Since(start),
+			"err", err,
+			"output", strings.TrimSpace(string(out)),
+		)
+		return nil
+	}
+	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed", time.Since(start))
+	return nil
+}
 
 // NATS topics for VPC lifecycle events published by the daemon.
 const (
@@ -1174,6 +1208,14 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 		"wan_gateway", wanGateway,
 		"chassis_count", len(h.chassisNames),
 	)
+
+	// Block until ovn-northd compiles + the gateway chassis has installed
+	// flows for this VPC. Without this, a subsequent RunInstances ->
+	// vpc.add-nat can complete while the datapath is still dark, and the
+	// new VM is unreachable on its public IP for the duration of the
+	// flow-install latency (typically seconds; observed up to minutes when
+	// the chassis was loaded during CI). mulga-siv-105.
+	_ = waitForFlowsHV()
 	respond(msg, nil)
 }
 

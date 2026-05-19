@@ -3,6 +3,7 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -1380,6 +1381,17 @@ func (h *TopologyHandler) handleDeleteNAT(msg *nats.Msg) {
 	routerName := "vpc-" + evt.VpcId
 
 	if err := h.ovn.DeleteNAT(ctx, routerName, "dnat_and_snat", evt.LogicalIP); err != nil {
+		// vpc.delete-nat is published from multiple cleanup paths (per-VM
+		// ReleasePublicIP, ENI delete, VPC delete sweep), so a duplicate
+		// delete for the same logical_ip is expected. Treat "already gone"
+		// as success — the caller's intent ("ensure this NAT is removed")
+		// is satisfied whether we did the delete or someone else did.
+		if errors.Is(err, ErrNATNotFound) {
+			slog.Info("vpcd: dnat_and_snat rule already absent (idempotent)",
+				"router", routerName, "logical_ip", evt.LogicalIP)
+			respond(msg, nil)
+			return
+		}
 		slog.Error("vpcd: failed to delete dnat_and_snat rule", "router", routerName, "logicalIP", evt.LogicalIP, "err", err)
 		respond(msg, err)
 		return

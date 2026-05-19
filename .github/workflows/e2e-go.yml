@@ -44,20 +44,29 @@ jobs:
     steps:
       - name: Reap Orphan Procs
         # A cancelled prior run can leave `tofu`/`terraform` mid-apply or a
-        # libvirt `qemu+ssh` connection orphaned. Kill anything from previous
-        # invocations belonging to this runner user before we touch state.
-        # SIGTERM first to let tofu release its state lock, then SIGKILL.
+        # libvirt `qemu+ssh` connection orphaned. Kill only procs whose cwd is
+        # under THIS runner's workspace — every self-hosted runner on this host
+        # shares the `tf-user` UID, so a UID-wide pkill would SIGKILL sibling
+        # workflows (e2e.yml/e2e-ddil.yml/...) mid-apply. SIGTERM first to let
+        # tofu release its state lock, then SIGKILL.
         run: |
           set +e
           UID_SELF=$(id -u)
-          pgrep -u "$UID_SELF" -af '^(tofu|terraform)\b|/tofu |/terraform ' || true
-          pkill -u "$UID_SELF" -TERM -x tofu 2>/dev/null
-          pkill -u "$UID_SELF" -TERM -x terraform 2>/dev/null
+          WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in
+                "$WS"|"$WS"/*) echo "reap $sig pid=$pid cwd=$cwd"; kill "-$sig" "$pid" 2>/dev/null ;;
+              esac
+            done
+          }
+          reap TERM
           sleep 3
-          pkill -u "$UID_SELF" -KILL -x tofu 2>/dev/null
-          pkill -u "$UID_SELF" -KILL -x terraform 2>/dev/null
-          # Drop any stale tofu state lock from a SIGKILL'd apply.
-          find "$HOME" -maxdepth 6 -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          reap KILL
+          # Drop only this workspace's stale tofu state locks from a SIGKILL'd apply.
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           true
 
       - name: Clean Workspace
@@ -294,14 +303,24 @@ jobs:
           fi
           # Cancelled jobs from this point on can orphan an in-flight
           # tofu/libvirt SSH; clear them before destroy so the next run's
-          # pre-clean isn't doing it.
+          # pre-clean isn't doing it. Scoped to this runner's workspace via
+          # /proc/$pid/cwd — sibling runners share the tf-user UID, so a
+          # UID-wide pkill would nuke their tofu mid-apply.
           UID_SELF=$(id -u)
-          pkill -u "$UID_SELF" -TERM -x tofu 2>/dev/null
-          pkill -u "$UID_SELF" -TERM -x terraform 2>/dev/null
+          WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in
+                "$WS"|"$WS"/*) kill "-$sig" "$pid" 2>/dev/null ;;
+              esac
+            done
+          }
+          reap TERM
           sleep 2
-          pkill -u "$UID_SELF" -KILL -x tofu 2>/dev/null
-          pkill -u "$UID_SELF" -KILL -x terraform 2>/dev/null
-          find "$HOME" -maxdepth 6 -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
           quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
           quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"

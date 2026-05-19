@@ -106,8 +106,15 @@ go_run:
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check lint govulncheck test-cover diff-coverage test-race
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check lint govulncheck test-cover diff-coverage test-race test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
+
+# E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
+# default `go test ./spinifex/...`. Runs with mocked AWS clients — no
+# infrastructure required, safe to run in CI without a cluster.
+test-harness:
+	@echo -e "\n....Running e2e harness unit tests...."
+	$(_Q)LOG_IGNORE=1 go test -tags=e2e -timeout 60s ./tests/e2e/harness/... $(_RACEQ)
 
 # Validate docs/service-interfaces.yaml. Schema check + cross-reference
 # of services/suites/fixtures + on-disk path existence. Subject content
@@ -288,7 +295,7 @@ ansible-dev-reset:
 ansible-dev-deploy:
 	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race test-actions diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

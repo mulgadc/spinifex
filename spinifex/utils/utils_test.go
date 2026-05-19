@@ -185,6 +185,42 @@ func TestWaitForPidFile(t *testing.T) {
 	})
 }
 
+func TestWaitForUnixSocket(t *testing.T) {
+	t.Run("returns nil when socket appears within timeout", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "appears.sock")
+
+		ln, err := net.Listen("unix", path)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+
+		require.NoError(t, WaitForUnixSocket(path, time.Second))
+	})
+
+	t.Run("returns error when timeout expires", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "missing.sock")
+
+		err := WaitForUnixSocket(path, 100*time.Millisecond)
+		require.Error(t, err)
+	})
+
+	t.Run("waits for socket created after a delay", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "delayed.sock")
+
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			ln, err := net.Listen("unix", path)
+			if err == nil {
+				t.Cleanup(func() { _ = ln.Close() })
+			}
+		}()
+
+		require.NoError(t, WaitForUnixSocket(path, time.Second))
+	})
+}
+
 func TestUnmarshalJsonPayload(t *testing.T) {
 	type TestStruct struct {
 		Name  string `json:"name"`

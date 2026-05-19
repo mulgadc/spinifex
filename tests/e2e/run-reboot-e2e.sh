@@ -544,9 +544,31 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB post-reboot" "$LB_RECOVER_SECS" || true
 # 8.5: targets healthy again
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" || true
 
-# 8.6: re-run the traffic burst
-echo ""
+# 8.6: wait for the ALB to *actually* serve traffic before the burst.
+# `wait_for_targets_healthy` reads cached state from spinifex's TG store —
+# post-reboot the cache still shows pre-reboot "healthy" until the lb-agent
+# inside the ALB system VM sends a fresh report. Without this wait, the burst
+# fires while the VM is still booting (HAProxy not yet bound to :80), the
+# guest kernel sends RST for every SYN, and the test sees 0/20 even though
+# OVN is fine — see histogram diagnosis on run 25899285589.
+log "Waiting for ALB to actually serve HTTP (up to 90s)..."
+ALB_READY=0
+for attempt in $(seq 1 45); do
+    BODY=$(node_ssh "curl -s --connect-timeout 2 --max-time 3 'http://${ALB_PUBLIC_IP}:80/' 2>/dev/null" || true)
+    if echo "$BODY" | jq -e '.instance_id' >/dev/null 2>&1; then
+        log "  ALB serving HTTP at attempt ${attempt}"
+        ALB_READY=1
+        break
+    fi
+    sleep 2
+done
+if [ "$ALB_READY" -ne 1 ]; then
+    fail "ALB did not begin serving HTTP within 90s post-reboot"
+    dump_diagnostics
+fi
+
 log "Re-running traffic burst against same ALB..."
+
 PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"
 if [ "$FAILED" -gt "$PRE_BURST_FAILED" ]; then

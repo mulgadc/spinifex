@@ -74,7 +74,7 @@ Mirror the cloud image you intend to run as guest VMs:
 
 ```bash
 mkdir -p images
-curl -fsSL "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-amd64-20260501-2465.qcow2" \
+curl -fsSL "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.qcow2" \
   -o images/debian-13-amd64.qcow2
 ```
 

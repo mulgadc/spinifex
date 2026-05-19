@@ -105,8 +105,8 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 | Destination | Purpose | Protocol | Verification |
 |-------------|---------|----------|--------------|
-| `https://cloud.debian.org/images/cloud/trixie/20260501-2465` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
-| `https://cloud-images.ubuntu.com/resolute/current` | Ubuntu 26.04 LTS cloud image download | HTTPS | TLS + checksum verification |
+| `https://cloud.debian.org/images/cloud/trixie/` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
+| `https://cloud-images.ubuntu.com/resolute/` | Ubuntu 26.04 LTS cloud image download | HTTPS | TLS + checksum verification |
 | `https://d2yp8ipz5jfqcw.cloudfront.net` | Alpine image for managed HAProxy load-balancer | HTTPS | TLS + checksum verification |
 | `https://install.mulgadc.com/install` | One-shot install telemetry POST on `spx admin init` / `join`. | HTTPS | TLS |
 

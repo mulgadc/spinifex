@@ -266,7 +266,6 @@ type Images struct {
 	Checksum     string    `json:"checksum"`
 	ChecksumType string    `json:"checksum_type"`
 	BootMode     string    `json:"boot_mode"`
-	Starred      bool      `json:"starred"`
 	// Tags are copied onto the imported AMI's AMIMetadata.Tags so the UI
 	// can filter/classify the image. Used to mark system-owned AMIs
 	// (e.g. the LB/HAProxy image) via spinifex:managed-by.
@@ -282,12 +281,11 @@ var AvailableImages = map[string]Images{
 		Version:      "13",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-amd64-20260501-2465.tar.xz",
-		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260501-2465/SHA512SUMS",
+		CreatedAt:    time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.tar.xz",
+		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
 		BootMode:     "bios",
-		Starred:      true,
 	},
 
 	"debian-13-arm64": {
@@ -297,12 +295,11 @@ var AvailableImages = map[string]Images{
 		Version:      "13",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-arm64-20260501-2465.tar.xz",
-		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260501-2465/SHA512SUMS",
+		CreatedAt:    time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-arm64-20260518-2482.tar.xz",
+		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
 		BootMode:     "bios",
-		Starred:      true,
 	},
 
 	"ubuntu-26.04-x86_64": {
@@ -312,12 +309,11 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/current/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-amd64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "bios",
-		Starred:      false,
 	},
 
 	"ubuntu-26.04-arm64": {
@@ -327,12 +323,11 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-arm64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/current/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-arm64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
 		BootMode:     "bios",
-		Starred:      false,
 	},
 
 	"alpine-3.22.2-x86_64": {
@@ -347,7 +342,6 @@ var AvailableImages = map[string]Images{
 		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.2-x86_64-bios-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
 		BootMode:     "bios",
-		Starred:      false,
 	},
 
 	/*
@@ -365,7 +359,6 @@ var AvailableImages = map[string]Images{
 			Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/gcp_alpine-3.22.2-aarch64-uefi-cloudinit-metal-r0.raw.tar.gz.sha512",
 			ChecksumType: "sha512",
 			BootMode:     "uefi",
-			Starred:      false,
 		},
 	*/
 

@@ -237,6 +237,15 @@ function mustString(value: string | undefined, label: string): string {
   return value
 }
 
+function Harness() {
+  return {
+    createTg: useCreateTargetGroup(),
+    createLb: useCreateLoadBalancer(),
+    createListener: useCreateListener(),
+    registerTargets: useRegisterTargets(),
+  }
+}
+
 describe("ELBv2 cross-slice flow (mocked SDK)", () => {
   beforeEach(() => {
     sdk.reset()
@@ -244,15 +253,6 @@ describe("ELBv2 cross-slice flow (mocked SDK)", () => {
 
   it("creates TG → LB → listener → registers targets → observes healthy state", async () => {
     const qc = createQueryClient()
-
-    function Harness() {
-      return {
-        createTg: useCreateTargetGroup(),
-        createLb: useCreateLoadBalancer(),
-        createListener: useCreateListener(),
-        registerTargets: useRegisterTargets(),
-      }
-    }
 
     const { result } = renderHook(Harness, {
       wrapper: ({ children }: { children: ReactNode }) => (

@@ -376,6 +376,7 @@ function VolumeDetail() {
           </AlertDialogHeader>
           <label className="flex items-center gap-2 text-sm">
             <input
+              aria-label="Force detach"
               checked={detachForce}
               onChange={(e) => setDetachForce(e.target.checked)}
               type="checkbox"

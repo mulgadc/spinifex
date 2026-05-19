@@ -150,7 +150,9 @@ export function TargetsTab({
                 <th className="px-4 py-2 font-medium">Health</th>
                 <th className="px-4 py-2 font-medium">Reason</th>
                 <th className="px-4 py-2 font-medium">Description</th>
-                <th className="px-4 py-2 font-medium" />
+                <th className="px-4 py-2 font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>

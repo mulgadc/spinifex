@@ -246,7 +246,10 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
             | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
           ok "artifacts pulled to ${ARTIFACT_DIR}"
-          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --since "60 min ago"' \
+          # `-o short-iso` writes RFC3339-ish timestamps (e.g.
+          # `2026-05-19T12:32:34+1000 host …`) so the analyzer can window-slice
+          # the journal around each failure's wall-clock span.
+          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
             > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null
           ok "journal: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || echo 0) lines"
 

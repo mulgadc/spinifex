@@ -45,6 +45,12 @@ func main() {
 		report.Suites = append(report.Suites, sr)
 	}
 
+	// Stage 2: materialise per-failure bundles next to the JUnit data
+	// before rendering so Render can link each failure to its bundle.
+	if logDir != "" {
+		WriteBundles(&report, logDir)
+	}
+
 	out := Render(report)
 
 	if logDir != "" {

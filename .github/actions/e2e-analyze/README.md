@@ -70,11 +70,33 @@ When the report format changes intentionally, regenerate the snapshots:
 go test ./.github/actions/e2e-analyze/ -update
 ```
 
+## Per-failure bundles (Stage 2)
+
+After parsing, the action materialises a bundle directory per failure
+under `<log-dir>/analysis/NN-<TestName>/`. The report links to it from
+each entry so a reader on the Actions page can click straight through
+to the relevant log slice.
+
+Each bundle contains:
+
+| File              | Source                                                                            |
+|-------------------|-----------------------------------------------------------------------------------|
+| `failure.txt`     | Synthesised summary: test, start, duration, file-site, error line.                |
+| `journal.log`     | `spinifex-journal.log` sliced to `[StartAt − 5s, StartAt + Duration + 5s]`.       |
+| `test.log`        | `test-<suite>.log` block between `=== RUN <name>` and the matching `--- FAIL`.    |
+| `<other files>`   | Anything the harness already dropped into `<log-dir>/<TestName>/` at run-time.    |
+
+The journal slice relies on the workflow running
+`journalctl --output=short-iso` so timestamps are parseable. Lines
+without a parseable timestamp inherit the previous line's
+in-window/out-of-window classification (so multi-line records and stack
+traces stay contiguous).
+
 ## Roadmap
 
-- **Stage 1 (this action):** first-failure surfacing + cascade clustering.
-- **Stage 2:** time-window correlation — slice daemon / qemu / OVS logs
-  around each failure's `[t-5s, t+duration+5s]` window.
+- **Stage 1 (shipped):** first-failure surfacing + cascade clustering.
+- **Stage 2 (this update):** time-window correlation — per-failure bundle
+  with sliced journal + test-log + any per-test artifacts.
 - **Stage 3:** rule-based root-cause classifier driven by
   `spinifex/tests/e2e/.failure-rules.yaml`.
 

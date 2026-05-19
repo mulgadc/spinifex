@@ -68,6 +68,10 @@ type Failure struct {
 	FileHint  string    // e.g. "vpc_test.go:227", parsed from failure body
 	Cascade   bool      // signature matched a known downstream pattern
 	Signature string    // normalized error key for bucketing
+	// BundlePath is the relative path (from log-dir) to the per-failure
+	// bundle written by Stage 2's WriteBundles. Empty when bundles were
+	// not generated (e.g. unit tests that call Render directly).
+	BundlePath string
 }
 
 // SuiteReport summarises one junit-*.xml file.
@@ -446,6 +450,9 @@ func Render(r Report) string {
 			if s.Root.FileHint != "" {
 				fmt.Fprintf(&b, "- File:  `%s`\n", s.Root.FileHint)
 			}
+			if s.Root.BundlePath != "" {
+				fmt.Fprintf(&b, "- Bundle: `%s/`\n", s.Root.BundlePath)
+			}
 			b.WriteString("\n")
 		}
 
@@ -466,7 +473,11 @@ func Render(r Report) string {
 						fmt.Fprintf(&b, "  - … and %d more\n", len(bucket)-cap)
 						break
 					}
-					fmt.Fprintf(&b, "  - `%s`\n", f.Name)
+					if f.BundlePath != "" {
+						fmt.Fprintf(&b, "  - `%s` → `%s/`\n", f.Name, f.BundlePath)
+					} else {
+						fmt.Fprintf(&b, "  - `%s`\n", f.Name)
+					}
 				}
 			}
 			b.WriteString("\n")

@@ -326,12 +326,13 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT_URL: ${{ secrets.CF_R2_ENDPOINT_URL }}
           VERSION: ${{ github.ref_name }}
         run: |
-          aws --endpoint-url=https://e80e329f7dbcf75b80e019c1dce640f2.r2.cloudflarestorage.com \
+          aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
             s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso" \
                   "s3://spinifex-iso/spinifex-${VERSION}.iso"
-          aws --endpoint-url=https://e80e329f7dbcf75b80e019c1dce640f2.r2.cloudflarestorage.com \
+          aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
             s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso.sha256" \
                   "s3://spinifex-iso/spinifex-${VERSION}.iso.sha256"
 

@@ -220,6 +220,26 @@ func WaitForPidFile(instanceID string, timeout time.Duration) (int, error) {
 	}
 }
 
+// WaitForUnixSocket polls until a Unix socket exists at path or the timeout
+// expires. QEMU binds its QMP socket after writing the pidfile, so callers
+// that gate on WaitForPidFile can still race the socket bind under recovery
+// load. Existence is checked via os.Stat rather than a dial probe so we don't
+// consume the listener's accept queue before the real client connects.
+func WaitForUnixSocket(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for unix socket %s", path)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func WaitForPidFileRemoval(instanceID string, timeout time.Duration) error {
 	timeoutCh := time.After(timeout)
 	ticker := time.NewTicker(100 * time.Millisecond)

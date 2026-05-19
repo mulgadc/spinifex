@@ -26,19 +26,36 @@ func phase4_Image(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 4 — Image Management")
 	require.NotEmpty(t, fix.Arch, "Phase 2 must populate fix.Arch before Phase 4")
 
-	// Bash hard-coded the mapping to ubuntu-24.04-{x86_64,arm64}; keep
-	// parity. fix.Arch comes from DescribeInstanceTypes so it'll be the
-	// canonical AWS arch label.
-	imgName := "ubuntu-24.04-" + fix.Arch
-	harness.Detail(t, "image", imgName, "arch", fix.Arch)
-
-	harness.Step(t, "spx admin images import --name %s", imgName)
-	// wantErr=true: bootstrap-install.sh has already imported this AMI in
-	// most environments, so the import returns non-zero on duplicate. We
-	// don't care about the exit code — we care about either parsing an
-	// AMI ID out of the output or successfully filtering DescribeImages
-	// by the canonical ami-<name> tag afterwards.
-	out := harness.SpxRun(t, true, "admin", "images", "import", "--name", imgName)
+	// Try the current catalog entry (26.04 / resolute) first, fall back to
+	// 24.04 (noble) for clusters still on the v3 gold image. Drop the
+	// fallback once 24.04 is gone from spinifex/utils/images.go.
+	candidates := []string{
+		"ubuntu-26.04-" + fix.Arch,
+		"ubuntu-24.04-" + fix.Arch,
+	}
+	var imgName, out string
+	for _, name := range candidates {
+		harness.Detail(t, "image_candidate", name, "arch", fix.Arch)
+		harness.Step(t, "spx admin images import --name %s", name)
+		// wantErr=true: bootstrap-install.sh has already imported the
+		// AMI in most environments, so the import returns non-zero on
+		// duplicate. We don't care about the exit code — we care about
+		// either parsing an AMI ID or successfully filtering
+		// DescribeImages by the canonical ami-<name> tag afterwards.
+		out = harness.SpxRun(t, true, "admin", "images", "import", "--name", name)
+		imgName = name
+		// If DescribeImages can find this name, stop trying further
+		// candidates — bootstrap staged this version.
+		probe, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{
+			Filters: []*ec2.Filter{
+				{Name: aws.String("name"), Values: []*string{aws.String("ami-" + name)}},
+			},
+		})
+		if err == nil && len(probe.Images) > 0 {
+			break
+		}
+	}
+	harness.Detail(t, "image", imgName)
 
 	// Try to parse the AMI ID directly out of the CLI's success line.
 	amiID := amiIDRE.FindString(out)

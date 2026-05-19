@@ -148,6 +148,43 @@ func TestExecProcessAndKill(t *testing.T) {
 	assert.Error(t, err) // Should return an error since process is killed
 }
 
+func TestWaitForPidFile(t *testing.T) {
+	t.Run("returns pid when file appears within timeout", func(t *testing.T) {
+		const name = "wait-pidfile-appears"
+		_ = RemovePidFile(name)
+		t.Cleanup(func() { _ = RemovePidFile(name) })
+
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			_ = WritePidFile(name, 4242)
+		}()
+
+		pid, err := WaitForPidFile(name, time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, 4242, pid)
+	})
+
+	t.Run("returns error when timeout expires", func(t *testing.T) {
+		const name = "wait-pidfile-missing"
+		_ = RemovePidFile(name)
+
+		_, err := WaitForPidFile(name, 100*time.Millisecond)
+		assert.Error(t, err)
+	})
+
+	t.Run("returns immediately when file already present", func(t *testing.T) {
+		const name = "wait-pidfile-present"
+		require.NoError(t, WritePidFile(name, 7777))
+		t.Cleanup(func() { _ = RemovePidFile(name) })
+
+		start := time.Now()
+		pid, err := WaitForPidFile(name, time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, 7777, pid)
+		assert.Less(t, time.Since(start), 50*time.Millisecond)
+	})
+}
+
 func TestUnmarshalJsonPayload(t *testing.T) {
 	type TestStruct struct {
 		Name  string `json:"name"`

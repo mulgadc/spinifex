@@ -443,7 +443,11 @@ func (m *Manager) startQEMU(instance *VM) error {
 			"serial_socket", instance.Config.SerialSocket)
 	}
 
-	if _, err := utils.ReadPidFile(instance.ID); err != nil {
+	// QEMU writes its pidfile after parsing args and mmap'ing the kernel/initrd/
+	// fwcfg blobs. Direct-boot is usually <50ms, but under post-reboot recovery
+	// load it can exceed the settle wait — block briefly so we don't tear down
+	// the tap before QEMU finishes attaching to it.
+	if _, err := utils.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
 		slog.Error("Failed to read PID file", "err", err)
 		return err
 	}

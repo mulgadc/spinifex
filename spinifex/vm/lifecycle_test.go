@@ -762,12 +762,12 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
-// TestPreQEMUExecWait locks in the 2 s sleep before QEMU exec. The non-direct
-// path needs it for nbdkit socket binding; the direct path needs it because
-// TUNSETIFF returns EPERM when exec'd ~1 s after `ip tuntap add ... user X
-// group Y` on the post-host-reboot recovery path.
-func TestPreQEMUExecWait(t *testing.T) {
-	assert.Equal(t, 2*time.Second, preQEMUExecWait())
+// TestNbdkitPreExecWait locks in the per-mode pre-exec sleep budget: direct-boot
+// is zero (no drives, no nbdkit) and the PC-machine path keeps the 2 s wait that
+// the rest of the launch flow depends on.
+func TestNbdkitPreExecWait(t *testing.T) {
+	assert.Equal(t, time.Duration(0), nbdkitPreExecWait(true))
+	assert.Equal(t, 2*time.Second, nbdkitPreExecWait(false))
 }
 
 // TestQemuStartSettleWait locks in the per-mode post-fork settle: direct-boot

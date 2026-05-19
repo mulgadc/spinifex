@@ -171,13 +171,17 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
-// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU to
-// give nbdkit time to bind its sockets. Direct-boot instances have no drives
-// and no nbdkit, so the wait collapses to zero and the boot-time budget is
-// preserved.
+// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU.
+// Non-direct-boot waits 2 s so nbdkit can bind its sockets. Direct-boot has no
+// nbdkit but still waits 1 s so the kernel commits the just-created tap
+// owner (set via `ip tuntap add ... user X group Y`) before QEMU's TUNSETIFF
+// — post-host-reboot recovery has shown the ioctl racing the tap commit and
+// returning EPERM ("could not configure /dev/net/tun: Operation not
+// permitted"). The non-direct-boot path masks the same race incidentally
+// with its longer nbdkit wait.
 func nbdkitPreExecWait(directBoot bool) time.Duration {
 	if directBoot {
-		return 0
+		return time.Second
 	}
 	return 2 * time.Second
 }

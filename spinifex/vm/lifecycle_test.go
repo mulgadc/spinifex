@@ -763,10 +763,10 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
 // TestNbdkitPreExecWait locks in the per-mode pre-exec sleep budget: direct-boot
-// is zero (no drives, no nbdkit) and the PC-machine path keeps the 2 s wait that
-// the rest of the launch flow depends on.
+// is 1 s (tap-owner settle floor for TUNSETIFF, no nbdkit) and the PC-machine
+// path keeps the 2 s wait that the rest of the launch flow depends on.
 func TestNbdkitPreExecWait(t *testing.T) {
-	assert.Equal(t, time.Duration(0), nbdkitPreExecWait(true))
+	assert.Equal(t, time.Second, nbdkitPreExecWait(true))
 	assert.Equal(t, 2*time.Second, nbdkitPreExecWait(false))
 }
 

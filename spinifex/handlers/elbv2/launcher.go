@@ -82,6 +82,20 @@ type NICConfig struct {
 	RouteVia  string // next-hop for RouteDst
 }
 
+// RecoveryContext carries the per-VM fields the ELBv2 service needs to
+// reconstruct a SystemInstanceInput during host-reboot recovery, without
+// importing the vm package (which would cycle back through daemon).
+// MgmtMAC / MgmtIP are the values the daemon already allocated for this
+// instance on a prior launch; the service injects them back into NIC[1]
+// rather than re-allocating from the mgmt IPAM.
+type RecoveryContext struct {
+	InstanceID   string
+	InstanceType string
+	ENIMac       string
+	MgmtMAC      string
+	MgmtIP       string
+}
+
 // SystemInstanceOutput contains the result of a successful launch.
 type SystemInstanceOutput struct {
 	InstanceID string // e.g. "i-xxxxx"

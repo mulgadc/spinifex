@@ -300,6 +300,15 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 					"instanceId", inst.ID, "status", string(status))
 				return
 			}
+			if m.deps.Hooks.BeforeInstanceRelaunch != nil {
+				if err := m.deps.Hooks.BeforeInstanceRelaunch(inst); err != nil {
+					slog.Error("Pre-relaunch hook failed",
+						"instanceId", inst.ID, "managedBy", inst.ManagedBy,
+						"instanceType", inst.InstanceType, "err", err)
+					m.MarkRecoveryFailed(inst, "pre_relaunch_hook_failed")
+					return
+				}
+			}
 			slog.Info("Launching instance (recovery)",
 				"instance", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType)
 			if err := m.Run(inst); err != nil {

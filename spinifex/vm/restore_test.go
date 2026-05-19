@@ -630,6 +630,89 @@ func TestRelaunchAll(t *testing.T) {
 			"recovery failure preserves per-id subscriptions: OnInstanceDown must not fire")
 	})
 
+	t.Run("BeforeInstanceRelaunch fires once before Run on success", func(t *testing.T) {
+		m, mounter, _, _ := relaunchTestManager(t)
+		var hookOrder []string
+		var mu sync.Mutex
+		m.deps.Hooks.BeforeInstanceRelaunch = func(v *VM) error {
+			mu.Lock()
+			hookOrder = append(hookOrder, "hook:"+v.ID)
+			mu.Unlock()
+			return nil
+		}
+		mounter.behavior["i-hook-ok"] = func(v *VM) error {
+			mu.Lock()
+			hookOrder = append(hookOrder, "mount:"+v.ID)
+			mu.Unlock()
+			return nil
+		}
+
+		instance := &VM{
+			ID:           "i-hook-ok",
+			Status:       StatePending,
+			InstanceType: "t3.micro",
+			Instance:     &ec2.Instance{},
+		}
+		m.Insert(instance)
+
+		m.relaunchAll([]*VM{instance})
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{"hook:i-hook-ok", "mount:i-hook-ok"}, hookOrder,
+			"BeforeInstanceRelaunch must fire before Run's Mount — otherwise the host-local state Run consumes is still stale from the tmpfs wipe")
+	})
+
+	t.Run("BeforeInstanceRelaunch error marks recovery_failed and skips Run", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+		mounter := &recoveryMounter{behavior: map[string]func(*VM) error{}}
+		cleaner := &recordingInstanceCleaner{}
+		rt := &recordedTransitions{}
+		m := NewManager()
+		rt.bind(m)
+		m.SetDeps(Deps{
+			NodeID:          "test-node",
+			StateStore:      newFakeStateStore(),
+			VolumeMounter:   mounter,
+			InstanceCleaner: cleaner,
+			TransitionState: rt.apply,
+			ShutdownSignal:  func() bool { return false },
+			Hooks: ManagerHooks{
+				BeforeInstanceRelaunch: func(*VM) error {
+					return errors.New("blob regeneration failed")
+				},
+			},
+		})
+
+		instance := &VM{
+			ID:           "i-hook-fail",
+			Status:       StatePending,
+			InstanceType: "t3.micro",
+			Instance:     &ec2.Instance{},
+		}
+		m.Insert(instance)
+		errored := rt.waitFor(instance.ID, StateError)
+
+		m.relaunchAll([]*VM{instance})
+
+		select {
+		case <-errored:
+		case <-time.After(markFailedDeadline):
+			t.Fatalf("MarkRecoveryFailed did not record StateError transition within %s", markFailedDeadline)
+		}
+
+		assert.Equal(t, StateError, m.Status(instance),
+			"a pre-relaunch hook error must drive the instance into StateError via MarkRecoveryFailed — without this the failure is silent and the LB never recovers")
+		require.NotNil(t, instance.Instance.StateReason)
+		assert.Equal(t, "pre_relaunch_hook_failed", *instance.Instance.StateReason.Message,
+			"the reason must identify the hook failure class so the journal/audit log captures why launch was aborted before Run")
+
+		mounter.mu.Lock()
+		defer mounter.mu.Unlock()
+		assert.Empty(t, mounter.mounted,
+			"a failing hook must short-circuit before Run; otherwise QEMU launches against the missing fw_cfg blobs we tried to regenerate")
+	})
+
 	t.Run("status check skips instances flipped before launch", func(t *testing.T) {
 		m, mounter, _, _ := relaunchTestManager(t)
 		const total = 5

@@ -479,9 +479,10 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		VolumeStateUpdater: d.volumeService,
 		InstanceCleaner:    newInstanceCleanerAdapter(d),
 		Hooks: vm.ManagerHooks{
-			OnInstanceUp:         d.onInstanceUpHook(),
-			OnInstanceDown:       d.onInstanceDownHook(),
-			OnInstanceRecovering: d.onInstanceRecoveringHook(),
+			OnInstanceUp:           d.onInstanceUpHook(),
+			OnInstanceDown:         d.onInstanceDownHook(),
+			OnInstanceRecovering:   d.onInstanceRecoveringHook(),
+			BeforeInstanceRelaunch: d.refreshSystemInstanceState,
 		},
 		ShutdownSignal:             d.shuttingDown.Load,
 		CrashHandler:               d.vmMgr.HandleCrash,

@@ -392,6 +392,43 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	return nil
 }
 
+// refreshSystemInstanceState rebuilds any host-local state for a system VM
+// that did not survive a daemon/host restart. Currently this means the
+// per-VM fw_cfg tmpfiles under utils.RuntimeDir() that the direct-boot
+// launch path passes to QEMU via -fw_cfg. utils.RuntimeDir() is a tmpfs on
+// production hosts (XDG_RUNTIME_DIR=/run/spinifex), so the blobs vanish on
+// host reboot while the persisted vm.Config still references them; without
+// this regeneration QEMU exits 1 and the ALB never serves traffic.
+//
+// Non-system VMs (ManagedBy != ELBv2) are a no-op — their QEMU args
+// reference cloud-init ISOs and base AMIs under /var/lib/spinifex/, which
+// survive reboot.
+func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
+	if inst.ManagedBy != tags.ManagedByELBv2 {
+		return nil
+	}
+	if d.elbv2Service == nil {
+		return nil
+	}
+	ctx := handlers_elbv2.RecoveryContext{
+		InstanceID:   inst.ID,
+		InstanceType: inst.InstanceType,
+		ENIMac:       inst.ENIMac,
+		MgmtMAC:      inst.MgmtMAC,
+		MgmtIP:       inst.MgmtIP,
+	}
+	input, err := d.elbv2Service.RebuildSystemInstanceInput(ctx)
+	if err != nil {
+		return fmt.Errorf("rebuild system instance input: %w", err)
+	}
+	if _, err := d.writeFwCfgBlobs(inst.ID, input); err != nil {
+		return fmt.Errorf("rewrite fw_cfg blobs: %w", err)
+	}
+	slog.Info("Refreshed system instance state",
+		"instanceId", inst.ID, "managedBy", inst.ManagedBy)
+	return nil
+}
+
 // cleanupFailedSystemInstance handles cleanup when a system instance launch
 // fails after partial setup (state added, volumes created, etc). Delegates
 // to vm.Manager.MarkFailed which runs the synchronous teardown chain

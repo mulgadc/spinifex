@@ -290,6 +290,121 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 	return nics
 }
 
+// describeENIs resolves the supplied ENI IDs in one VPC describe call and
+// returns them keyed by NetworkInterfaceId. Returns an empty map when the
+// VPC service is unwired or the describe errors — callers must tolerate
+// missing entries.
+func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[string]*ec2.NetworkInterface {
+	eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
+	if s.VPCService == nil || len(eniIDs) == 0 {
+		return eniDetails
+	}
+	eniPtrs := make([]*string, 0, len(eniIDs))
+	for _, id := range eniIDs {
+		eniPtrs = append(eniPtrs, aws.String(id))
+	}
+	result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: eniPtrs,
+	}, accountID)
+	if err != nil {
+		slog.Debug("describeENIs: VPC describe failed", "count", len(eniIDs), "err", err)
+		return eniDetails
+	}
+	for _, eni := range result.NetworkInterfaces {
+		if eni.NetworkInterfaceId != nil {
+			eniDetails[*eni.NetworkInterfaceId] = eni
+		}
+	}
+	return eniDetails
+}
+
+// buildExtraENIInputs threads every non-primary ENI in eniIDs into an
+// ExtraENIInput, using eniDetails as the MAC/IP/SubnetID source. eniIDs[0]
+// is the primary ENI and is intentionally excluded. ENIs missing from
+// eniDetails are skipped (matching CreateLoadBalancer's original behaviour
+// when DescribeNetworkInterfaces drops an entry).
+func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInterface) []ExtraENIInput {
+	if len(eniIDs) <= 1 {
+		return nil
+	}
+	extras := make([]ExtraENIInput, 0, len(eniIDs)-1)
+	for i := 1; i < len(eniIDs); i++ {
+		eni := eniDetails[eniIDs[i]]
+		if eni == nil {
+			continue
+		}
+		extras = append(extras, ExtraENIInput{
+			ENIID:    eniIDs[i],
+			ENIMac:   aws.StringValue(eni.MacAddress),
+			ENIIP:    aws.StringValue(eni.PrivateIpAddress),
+			SubnetID: aws.StringValue(eni.SubnetId),
+		})
+	}
+	return extras
+}
+
+// RebuildSystemInstanceInput reconstructs the launch input for an existing
+// system instance during host-reboot recovery. It locates the LB record by
+// instance ID, re-derives NICs (including the mgmt NIC, using the MAC/IP
+// already allocated on the VM), and regenerates the LBAgentEnv/CACert blobs
+// from current service state. Returns an error when no LB record references
+// ctx.InstanceID — the caller treats that as a recovery failure rather than
+// guess at a launch input.
+func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*SystemInstanceInput, error) {
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		return nil, fmt.Errorf("list lb records: %w", err)
+	}
+	var lb *LoadBalancerRecord
+	for _, r := range lbs {
+		if r.InstanceID == ctx.InstanceID {
+			lb = r
+			break
+		}
+	}
+	if lb == nil {
+		return nil, fmt.Errorf("no LB record references instance %s", ctx.InstanceID)
+	}
+	if len(lb.Subnets) == 0 || len(lb.ENIs) == 0 {
+		return nil, fmt.Errorf("lb %s has no subnets/ENIs to rebuild from", lb.LoadBalancerID)
+	}
+
+	eniDetails := s.describeENIs(lb.ENIs, lb.AccountID)
+	primaryMAC := ctx.ENIMac
+	if primary := eniDetails[lb.ENIs[0]]; primary != nil {
+		if mac := aws.StringValue(primary.MacAddress); mac != "" {
+			primaryMAC = mac
+		}
+	}
+	extraENIs := buildExtraENIInputs(lb.ENIs, eniDetails)
+
+	nics := s.buildMicrovmNICs(lb.VPCIP, primaryMAC, lb.Subnets[0], lb.ENIs[0], lb.Scheme, extraENIs, lb.AccountID)
+	// Re-inject the daemon-allocated mgmt NIC values so writeFwCfgBlobs
+	// emits the same netcfg the original launch produced — buildMicrovmNICs
+	// leaves NIC[1] MAC/CIDR blank because they are only known after the
+	// daemon's per-instance mgmt IP allocation.
+	if len(nics) > 1 && ctx.MgmtMAC != "" {
+		nics[1].MAC = ctx.MgmtMAC
+		if ctx.MgmtIP != "" {
+			nics[1].CIDR = ctx.MgmtIP + "/24"
+		}
+	}
+
+	return &SystemInstanceInput{
+		InstanceType: ctx.InstanceType,
+		SubnetID:     lb.Subnets[0],
+		ENIID:        lb.ENIs[0],
+		ENIMac:       primaryMAC,
+		ENIIP:        lb.VPCIP,
+		ExtraENIs:    extraENIs,
+		Scheme:       lb.Scheme,
+		AccountID:    lb.AccountID,
+		NICs:         nics,
+		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
+		CACert:       s.CACert,
+	}, nil
+}
+
 // resolveENIBindAddr looks up the private IP of the first ENI belonging to the ALB.
 // Returns empty string if VPC service is unavailable or no ENIs exist.
 func (s *ELBv2ServiceImpl) resolveENIBindAddr(lb *LoadBalancerRecord) string {
@@ -706,24 +821,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var hostPorts map[int]int
 	var launchFailed bool
 	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		// Resolve MAC/IP for every ENI in one describe call.
-		eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
-		if s.VPCService != nil {
-			eniPtrs := make([]*string, 0, len(eniIDs))
-			for _, id := range eniIDs {
-				eniPtrs = append(eniPtrs, aws.String(id))
-			}
-			result, descErr := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
-				NetworkInterfaceIds: eniPtrs,
-			}, accountID)
-			if descErr == nil {
-				for _, eni := range result.NetworkInterfaces {
-					if eni.NetworkInterfaceId != nil {
-						eniDetails[*eni.NetworkInterfaceId] = eni
-					}
-				}
-			}
-		}
+		eniDetails := s.describeENIs(eniIDs, accountID)
 
 		primary := eniDetails[eniIDs[0]]
 		primaryIP := ""
@@ -733,19 +831,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			primaryMAC = aws.StringValue(primary.MacAddress)
 		}
 
-		extraENIInputs := make([]ExtraENIInput, 0, len(eniIDs)-1)
-		for i := 1; i < len(eniIDs); i++ {
-			eni := eniDetails[eniIDs[i]]
-			if eni == nil {
-				continue
-			}
-			extraENIInputs = append(extraENIInputs, ExtraENIInput{
-				ENIID:    eniIDs[i],
-				ENIMac:   aws.StringValue(eni.MacAddress),
-				ENIIP:    aws.StringValue(eni.PrivateIpAddress),
-				SubnetID: aws.StringValue(eni.SubnetId),
-			})
-		}
+		extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
 
 		var launchInput *SystemInstanceInput
 		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {

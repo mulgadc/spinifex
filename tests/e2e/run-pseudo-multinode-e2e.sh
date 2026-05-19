@@ -274,14 +274,27 @@ $AWS_EC2 authorize-security-group-ingress \
     --group-id "$MULTINODE_SG" --protocol icmp --port -1 --cidr 0.0.0.0/0 > /dev/null
 echo "  SG created: $MULTINODE_SG (tcp/22 + icmp from 0.0.0.0/0)"
 
-# Import Ubuntu image (use node1's config and spinifex-dir)
+# Import Ubuntu image (use node1's config and spinifex-dir). v6+ gold image
+# stages ubuntu-26.04 (resolute); v3 staged ubuntu-24.04 (noble). Detect
+# which is present so we can keep running both during the v3→v6 transition.
 echo ""
 echo "Importing Ubuntu image..."
+if [ -f "$HOME/images/ubuntu-26.04.img" ]; then
+    UBUNTU_IMG="$HOME/images/ubuntu-26.04.img"
+    UBUNTU_VER="26.04"
+elif [ -f "$HOME/images/ubuntu-24.04.img" ]; then
+    UBUNTU_IMG="$HOME/images/ubuntu-24.04.img"
+    UBUNTU_VER="24.04"
+else
+    echo "ERROR: no ubuntu cloud image at ~/images/ubuntu-{24,26}.04.img" >&2
+    exit 1
+fi
+echo "  Using: $UBUNTU_IMG (version $UBUNTU_VER)"
 IMPORT_LOG=$(./bin/spx admin images import \
-    --file ~/images/ubuntu-24.04.img \
+    --file "$UBUNTU_IMG" \
     --arch "$ARCH" \
     --distro ubuntu \
-    --version 24.04 \
+    --version "$UBUNTU_VER" \
     --config "$HOME/node1/config/spinifex.toml" \
     --spinifex-dir "$HOME/node1/" \
     --force 2>/dev/null)

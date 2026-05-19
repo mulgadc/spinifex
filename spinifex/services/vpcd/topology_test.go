@@ -877,6 +877,49 @@ func TestTopologyHandler_IGWAttach(t *testing.T) {
 	}
 }
 
+// TestTopologyHandler_IGWAttach_InvokesFlowBarrier asserts handleIGWAttach
+// calls waitForFlowsHV after the OVN writes complete (mulga-siv-105). The
+// barrier itself shells out to ovn-nbctl --wait=hv sync; stub it here so
+// the test doesn't depend on a live OVN.
+func TestTopologyHandler_IGWAttach_InvokesFlowBarrier(t *testing.T) {
+	orig := waitForFlowsHV
+	var called int
+	waitForFlowsHV = func() error { called++; return nil }
+	defer func() { waitForFlowsHV = orig }()
+
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name: "vpc-vpc-barrier1",
+		ExternalIDs: map[string]string{
+			"spinifex:vpc_id": "vpc-barrier1",
+			"spinifex:cidr":   "10.0.0.0/16",
+		},
+	}))
+
+	evt := types.IGWEvent{InternetGatewayId: "igw-barrier1", VpcId: "vpc-barrier1"}
+	data, _ := json.Marshal(evt)
+	resp, err := nc.Request(TopicIGWAttach, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "attach IGW")
+
+	if called != 1 {
+		t.Errorf("expected waitForFlowsHV to run exactly once after IGW attach, got %d", called)
+	}
+}
+
 func TestTopologyHandler_IGWAttach_WithExternalPool(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()

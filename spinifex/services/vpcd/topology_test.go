@@ -4015,11 +4015,17 @@ func TestTopologyHandler_DeleteNAT_Success(t *testing.T) {
 	assert.Empty(t, lr.NAT, "NAT rule must be removed")
 }
 
-// TestTopologyHandler_DeleteNAT_NotFound: an idempotent delete-by-LogicalIP
-// for a NAT that doesn't exist must return a clear error, not silently
-// succeed. Otherwise EIP disassociation can't tell whether it actually
-// disabled the NAT or hit a stale fixture.
-func TestTopologyHandler_DeleteNAT_NotFound(t *testing.T) {
+// TestTopologyHandler_DeleteNAT_NotFound_Idempotent: instance termination
+// fans out through multiple cleanup paths (ReleasePublicIP via
+// instanceCleanerAdapter AND DeleteNetworkInterface in the VPC service), and
+// both publish vpc.delete-nat for the same (vpc, logical_ip). The publish is
+// fire-and-forget (utils.PublishNATEvent for vpc.delete-nat), so callers
+// never branch on the response — a hard error on second delete just
+// pollutes triage logs without surfacing any actionable failure. Treat
+// "rule already absent" as success so the second publisher doesn't emit a
+// spurious ERROR. The handler still returns an error for other failure
+// modes (router missing, OVN unreachable, transact failure).
+func TestTopologyHandler_DeleteNAT_NotFound_Idempotent(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()
 	_ = mock.Connect(context.Background())
@@ -4040,5 +4046,5 @@ func TestTopologyHandler_DeleteNAT_NotFound(t *testing.T) {
 	data, _ := json.Marshal(delEvt)
 	resp, err := nc.Request(TopicDeleteNAT, data, 5_000_000_000)
 	require.NoError(t, err)
-	assertFailure(t, resp, "delete-nat for non-existent rule must fail")
+	assertSuccess(t, resp, "delete-nat for non-existent rule must be idempotent (mulga-siv-107)")
 }

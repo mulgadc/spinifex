@@ -391,7 +391,12 @@ function CreateInstance() {
         <Collapsible>
           <CollapsibleTrigger
             className="group flex h-7 w-full items-center justify-between rounded-md border border-input bg-input/20 px-2 py-0.5 text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 md:text-xs/relaxed dark:bg-input/30 dark:hover:bg-input/50"
-            render={<button type="button" />}
+            render={
+              <button
+                aria-label="Block Device Mappings (root volume)"
+                type="button"
+              />
+            }
           >
             <span>Block Device Mappings (root volume)</span>
             <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
@@ -479,6 +484,7 @@ function CreateInstance() {
                 render={({ field }) => (
                   <label className="flex items-center gap-2 text-sm">
                     <input
+                      aria-label="Delete on termination"
                       checked={field.value ?? true}
                       onChange={(e) => field.onChange(e.target.checked)}
                       type="checkbox"

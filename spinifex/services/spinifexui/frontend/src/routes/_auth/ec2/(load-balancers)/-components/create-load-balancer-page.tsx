@@ -282,6 +282,7 @@ export function CreateLoadBalancerPage() {
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 text-xs">
                   <input
+                    aria-label="Internet-facing"
                     checked={field.value === "internet-facing"}
                     name="scheme"
                     onChange={() => field.onChange("internet-facing")}
@@ -291,6 +292,7 @@ export function CreateLoadBalancerPage() {
                 </label>
                 <label className="flex items-center gap-2 text-xs">
                   <input
+                    aria-label="Internal"
                     checked={field.value === "internal"}
                     name="scheme"
                     onChange={() => field.onChange("internal")}
@@ -355,6 +357,7 @@ export function CreateLoadBalancerPage() {
                         key={subnet.SubnetId}
                       >
                         <input
+                          aria-label={`Subnet ${subnetLabel(subnet)}`}
                           checked={selectedSubnets.includes(
                             subnet.SubnetId ?? "",
                           )}
@@ -386,6 +389,7 @@ export function CreateLoadBalancerPage() {
                   key={sg.GroupId}
                 >
                   <input
+                    aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
                     checked={selectedSgs.includes(sg.GroupId ?? "")}
                     onChange={() => toggleSg(sg.GroupId ?? "")}
                     type="checkbox"
@@ -487,6 +491,7 @@ export function CreateLoadBalancerPage() {
                 <div className="flex gap-4">
                   <label className="flex items-center gap-2 text-xs">
                     <input
+                      aria-label="Create new target group"
                       checked={field.value === "new"}
                       name="tg-mode"
                       onChange={() => field.onChange("new")}
@@ -496,6 +501,7 @@ export function CreateLoadBalancerPage() {
                   </label>
                   <label className="flex items-center gap-2 text-xs">
                     <input
+                      aria-label="Use existing target group"
                       checked={field.value === "existing"}
                       name="tg-mode"
                       onChange={() => field.onChange("existing")}

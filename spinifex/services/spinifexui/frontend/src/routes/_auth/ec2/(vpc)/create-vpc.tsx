@@ -190,6 +190,7 @@ function CreateVpc() {
                 <div className="flex gap-4">
                   <label className="flex items-center gap-2 text-xs">
                     <input
+                      aria-label="VPC only"
                       checked={field.value === "vpc-only"}
                       name="mode"
                       onChange={() => field.onChange("vpc-only")}
@@ -199,6 +200,7 @@ function CreateVpc() {
                   </label>
                   <label className="flex items-center gap-2 text-xs">
                     <input
+                      aria-label="VPC and more"
                       checked={field.value === "vpc-and-more"}
                       name="mode"
                       onChange={() => field.onChange("vpc-and-more")}
@@ -228,6 +230,7 @@ function CreateVpc() {
                 render={({ field }) => (
                   <label className="flex shrink-0 items-center gap-2 text-xs">
                     <input
+                      aria-label="Auto-generate name tags"
                       checked={field.value}
                       onChange={(e) => field.onChange(e.target.checked)}
                       type="checkbox"

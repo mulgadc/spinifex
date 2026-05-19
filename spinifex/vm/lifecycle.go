@@ -171,18 +171,14 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
-// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU.
-// Non-direct-boot waits 2 s so nbdkit can bind its sockets. Direct-boot has no
-// nbdkit but still waits 1 s so the kernel commits the just-created tap
-// owner (set via `ip tuntap add ... user X group Y`) before QEMU's TUNSETIFF
-// — post-host-reboot recovery has shown the ioctl racing the tap commit and
-// returning EPERM ("could not configure /dev/net/tun: Operation not
-// permitted"). The non-direct-boot path masks the same race incidentally
-// with its longer nbdkit wait.
-func nbdkitPreExecWait(directBoot bool) time.Duration {
-	if directBoot {
-		return time.Second
-	}
+// preQEMUExecWait returns how long startQEMU sleeps before exec'ing QEMU.
+// Non-direct-boot needs 2 s so nbdkit can bind its sockets. Direct-boot has no
+// nbdkit but reuses the same window: post-host-reboot recovery has shown
+// qemu's TUNSETIFF returning EPERM ("could not configure /dev/net/tun:
+// Operation not permitted") when exec'd ~1 s after `ip tuntap add ... user X
+// group Y`, while a 2 s gap reliably succeeds for the same daemon/uid against
+// an identically owned tap on the q35 (nbdkit) path.
+func preQEMUExecWait() time.Duration {
 	return 2 * time.Second
 }
 
@@ -344,7 +340,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	// Wait briefly for nbdkit to start.
 	// TODO: Improve, confirm nbdkit started for each volume.
-	time.Sleep(nbdkitPreExecWait(instance.DirectBoot))
+	time.Sleep(preQEMUExecWait())
 
 	processChan := make(chan int, 1)
 	exitChan := make(chan int, 1)

@@ -5,7 +5,7 @@
 **Root cause (earliest non-cascade)**
 
 - Test: `TestSingleNode/Phase5_LaunchInstance`
-- Start: 12:40:00 (duration 2.5s)
+- Start: 12:30:00 (duration 2.5s)
 - Error: Received unexpected error: InvalidParameterValue (HTTP 400)
 - File:  `tests/e2e/harness/ec2helpers.go:164`
 

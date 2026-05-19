@@ -285,6 +285,35 @@ func isCascade(errLine string) bool {
 	return false
 }
 
+// computeLeafSet returns the testcase names that are leaves — i.e. no
+// other testcase name in `cases` starts with `<name>/`. go-junit-report
+// emits one <testcase> for the parent Go test AND each subtest, with the
+// parent's time = sum of its children, so summing every entry into the
+// suite's cumulative offset double-counts. Restrict accumulation to
+// leaves only.
+func computeLeafSet(cases []junitTC) map[string]bool {
+	leaf := make(map[string]bool, len(cases))
+	for _, tc := range cases {
+		leaf[tc.Name] = true
+	}
+	for _, tc := range cases {
+		// Strip the deepest path segment; any ancestor of this test is
+		// not a leaf.
+		name := tc.Name
+		for {
+			i := strings.LastIndex(name, "/")
+			if i <= 0 {
+				break
+			}
+			name = name[:i]
+			if _, ok := leaf[name]; ok {
+				leaf[name] = false
+			}
+		}
+	}
+	return leaf
+}
+
 // parseStartTime turns a junit timestamp attr (RFC3339) into a time.Time;
 // zero value if unparseable.
 func parseStartTime(s string) time.Time {
@@ -325,9 +354,16 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 	order := 0
 	for _, suite := range doc.Suites {
 		start := parseStartTime(suite.Timestamp)
+		// go-junit-report emits a testcase for both the parent Go test
+		// (e.g. `TestSingleNode`) AND each subtest (`TestSingleNode/PhaseX`).
+		// The parent's `time` attribute is the aggregate of its children, so
+		// summing every testcase double-counts. Pre-compute the leaf set so
+		// only leaves contribute to the suite's running offset.
+		isLeaf := computeLeafSet(suite.Cases)
 		cumul := 0.0
 		for _, tc := range suite.Cases {
 			rep.Total++
+			leaf := isLeaf[tc.Name]
 			var body string
 			switch {
 			case tc.Failure != nil:
@@ -335,7 +371,9 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 			case tc.Error != nil:
 				body = tc.Error.Body
 			default:
-				cumul += tc.Time
+				if leaf {
+					cumul += tc.Time
+				}
 				continue
 			}
 
@@ -344,7 +382,9 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 			// and would otherwise outrank real failures by XML order.
 			trimmed := strings.TrimSpace(stripANSI(body))
 			if trimmed == "" {
-				cumul += tc.Time
+				if leaf {
+					cumul += tc.Time
+				}
 				continue
 			}
 
@@ -367,7 +407,9 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 			rep.FailCount++
 			rep.Cascades = append(rep.Cascades, f) // temp staging; split below
 			order++
-			cumul += tc.Time
+			if leaf {
+				cumul += tc.Time
+			}
 		}
 	}
 

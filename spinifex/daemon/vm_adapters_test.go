@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
@@ -294,4 +297,22 @@ func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
 	instance := &vm.VM{ID: "i-unclaimed", GPUPCIAddresses: []string{"0000:03:00.0"}}
 	// Must not panic; the error is logged as a warning.
 	a.ReleaseGPU(instance)
+}
+
+// TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch guards the single line
+// in buildVMManagerDeps that routes the recovery hook to
+// refreshSystemInstanceState. Dropping it would surface only in cell-18.
+func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
+	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager()}
+	deps := d.buildVMManagerDeps()
+	require.NotNil(t, deps.Hooks.BeforeInstanceRelaunch)
+
+	wantPC := reflect.ValueOf(d.refreshSystemInstanceState).Pointer()
+	gotPC := reflect.ValueOf(deps.Hooks.BeforeInstanceRelaunch).Pointer()
+	assert.Equal(t, wantPC, gotPC, "hook must point at refreshSystemInstanceState")
+
+	// Sanity: the wired hook is callable and returns nil for non-ELBv2 VMs.
+	require.NoError(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-noop", ManagedBy: ""}))
+	require.Error(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-svc", ManagedBy: tags.ManagedByELBv2}),
+		"ELBv2 VM with nil elbv2Service must error rather than silently no-op")
 }

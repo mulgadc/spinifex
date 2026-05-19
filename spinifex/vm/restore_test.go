@@ -660,7 +660,7 @@ func TestRelaunchAll(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		assert.Equal(t, []string{"hook:i-hook-ok", "mount:i-hook-ok"}, hookOrder,
-			"BeforeInstanceRelaunch must fire before Run's Mount — otherwise the host-local state Run consumes is still stale from the tmpfs wipe")
+			"hook must fire before Run's Mount")
 	})
 
 	t.Run("BeforeInstanceRelaunch error marks recovery_failed and skips Run", func(t *testing.T) {
@@ -701,16 +701,13 @@ func TestRelaunchAll(t *testing.T) {
 			t.Fatalf("MarkRecoveryFailed did not record StateError transition within %s", markFailedDeadline)
 		}
 
-		assert.Equal(t, StateError, m.Status(instance),
-			"a pre-relaunch hook error must drive the instance into StateError via MarkRecoveryFailed — without this the failure is silent and the LB never recovers")
+		assert.Equal(t, StateError, m.Status(instance))
 		require.NotNil(t, instance.Instance.StateReason)
-		assert.Equal(t, "pre_relaunch_hook_failed", *instance.Instance.StateReason.Message,
-			"the reason must identify the hook failure class so the journal/audit log captures why launch was aborted before Run")
+		assert.Equal(t, "pre_relaunch_hook_failed", *instance.Instance.StateReason.Message)
 
 		mounter.mu.Lock()
 		defer mounter.mu.Unlock()
-		assert.Empty(t, mounter.mounted,
-			"a failing hook must short-circuit before Run; otherwise QEMU launches against the missing fw_cfg blobs we tried to regenerate")
+		assert.Empty(t, mounter.mounted, "Run must not fire when hook errors")
 	})
 
 	t.Run("status check skips instances flipped before launch", func(t *testing.T) {

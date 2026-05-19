@@ -769,17 +769,13 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	assert.Equal(t, "10.0.1.42", rebuilt.ENIIP)
 	assert.Equal(t, originalInput.Scheme, rebuilt.Scheme)
 	assert.Equal(t, originalInput.AccountID, rebuilt.AccountID)
-	assert.Equal(t, originalInput.LBAgentEnv, rebuilt.LBAgentEnv,
-		"buildLBAgentEnv is deterministic on lbID + system creds — recovery must regenerate the exact same env or HAProxy comes up with a different SigV4 identity")
-	assert.Equal(t, originalInput.CACert, rebuilt.CACert,
-		"a different CACert at recovery time would mean a TLS chain mismatch vs the one the running guest already trusted")
+	assert.Equal(t, originalInput.LBAgentEnv, rebuilt.LBAgentEnv)
+	assert.Equal(t, originalInput.CACert, rebuilt.CACert)
 
-	require.GreaterOrEqual(t, len(rebuilt.NICs), 2, "ALB recovery input must carry at least NIC[0] primary + NIC[1] mgmt")
-	assert.True(t, rebuilt.NICs[0].IsDefault, "NIC[0] must be the default-route owner — flipping this breaks egress to the gateway")
-	assert.Equal(t, "02:a0:00:11:22:33", rebuilt.NICs[1].MAC,
-		"NIC[1] MAC must come from the recovery context — re-allocating from mgmt IPAM would orphan the existing tap on br-mgmt")
-	assert.Equal(t, "172.31.0.7/24", rebuilt.NICs[1].CIDR,
-		"NIC[1] CIDR must mirror the daemon's prior allocation; otherwise the guest's lb-agent route to AWSGW points at the wrong source")
+	require.GreaterOrEqual(t, len(rebuilt.NICs), 2)
+	assert.True(t, rebuilt.NICs[0].IsDefault)
+	assert.Equal(t, "02:a0:00:11:22:33", rebuilt.NICs[1].MAC, "mgmt NIC MAC must come from RecoveryContext")
+	assert.Equal(t, "172.31.0.7/24", rebuilt.NICs[1].CIDR, "mgmt NIC CIDR must come from RecoveryContext")
 }
 
 // TestRebuildSystemInstanceInput_NoLBRecord verifies the error path used by
@@ -832,16 +828,17 @@ func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 		ENIMac:       originalInput.ENIMac,
 	})
 	require.NoError(t, err)
-	require.Len(t, rebuilt.ExtraENIs, len(originalInput.ExtraENIs),
-		"every extra ENI from the original launch must reappear on rebuild — dropping one would leave a tap on br-int with no QEMU NIC to feed it")
+	require.Len(t, rebuilt.ExtraENIs, len(originalInput.ExtraENIs))
 
-	originalSubs := map[string]bool{}
+	originalByENI := map[string]ExtraENIInput{}
 	for _, e := range originalInput.ExtraENIs {
-		originalSubs[e.SubnetID] = true
+		originalByENI[e.ENIID] = e
 	}
 	for _, e := range rebuilt.ExtraENIs {
-		assert.True(t, originalSubs[e.SubnetID], "extra ENI on subnet %s was not in the original launch — wrong subnet means wrong CIDR for guest routing", e.SubnetID)
-		assert.NotEmpty(t, e.ENIMac)
-		assert.NotEmpty(t, e.ENIIP)
+		orig, ok := originalByENI[e.ENIID]
+		require.True(t, ok, "extra ENI %s not in original launch", e.ENIID)
+		assert.Equal(t, orig.SubnetID, e.SubnetID)
+		assert.Equal(t, orig.ENIMac, e.ENIMac)
+		assert.Equal(t, orig.ENIIP, e.ENIIP)
 	}
 }

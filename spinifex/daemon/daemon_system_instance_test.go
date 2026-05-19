@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -317,81 +318,59 @@ func TestWriteFwCfgBlobs_InvalidNICs_NoDefault(t *testing.T) {
 // refreshSystemInstanceState
 // ---------------------------------------------------------------------------
 
-// TestRefreshSystemInstanceState_NonELBv2IsNoop guards the cheap-path
-// short-circuit: customer VMs (ManagedBy="") have no tmpfs blobs to
-// regenerate, and reaching the lb-record lookup would error pointlessly.
-func TestRefreshSystemInstanceState_NonELBv2IsNoop(t *testing.T) {
-	d := &Daemon{vmMgr: vm.NewManager()}
-	inst := &vm.VM{ID: "i-customer", ManagedBy: ""}
-
-	err := d.refreshSystemInstanceState(inst)
-	require.NoError(t, err, "non-ELBv2 VMs must short-circuit before the service lookup — customer instances do not need fw_cfg blob regeneration")
-}
-
-// TestRefreshSystemInstanceState_NilELBv2ServiceIsNoop covers the early
-// daemon-startup window where vmMgr.Restore runs before elbv2Service is
-// wired. The hook must not panic; the VM stays Pending and a later
-// recovery cycle (or operator retry) reaches the regen path with the
-// service available.
-func TestRefreshSystemInstanceState_NilELBv2ServiceIsNoop(t *testing.T) {
-	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: nil}
-	inst := &vm.VM{ID: "i-no-svc", ManagedBy: tags.ManagedByELBv2}
-
-	err := d.refreshSystemInstanceState(inst)
-	require.NoError(t, err, "an unwired elbv2Service must NOT block recovery with a hard error — the service finishes wiring later in Daemon.Start")
-}
-
-// TestRefreshSystemInstanceState_NoLBRecord verifies the failure-mode path:
-// the VM record survived but the LB record was wiped from KV (manual
-// admin deletion, KV corruption). Recovery must surface the error so the
-// caller flips the instance to recovery_failed rather than booting it
-// against guessed inputs.
-func TestRefreshSystemInstanceState_NoLBRecord(t *testing.T) {
+// newRefreshTestDaemon returns a Daemon wired with vmMgr + a fresh ELBv2
+// service, with XDG_RUNTIME_DIR pointed at a per-test tmpdir so
+// writeFwCfgBlobs is sandboxed. The returned nats.Conn lets the caller seed
+// LB records via a separate Store handle sharing the same KV bucket.
+func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
-
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)
 	t.Cleanup(svc.Close)
+	return &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}, nc, tmpDir
+}
 
-	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}
+func TestRefreshSystemInstanceState_NonELBv2IsNoop(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager()}
+	require.NoError(t, d.refreshSystemInstanceState(&vm.VM{ID: "i-customer", ManagedBy: ""}))
+}
+
+func TestRefreshSystemInstanceState_NilELBv2ServiceErrors(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: nil}
+	err := d.refreshSystemInstanceState(&vm.VM{ID: "i-no-svc", ManagedBy: tags.ManagedByELBv2})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "elbv2 service unavailable")
+}
+
+func TestRefreshSystemInstanceState_NoLBRecord(t *testing.T) {
+	d, _, tmpDir := newRefreshTestDaemon(t)
 	inst := &vm.VM{ID: "i-orphan-alb", ManagedBy: tags.ManagedByELBv2, InstanceType: "sys.micro"}
 
-	err = d.refreshSystemInstanceState(inst)
+	err := d.refreshSystemInstanceState(inst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rebuild system instance input")
-	assert.Contains(t, err.Error(), "no LB record references instance i-orphan-alb",
-		"the wrapped error must identify the missing LB so journal grep finds the orphaned VM record")
+	assert.Contains(t, err.Error(), "no LB record references instance i-orphan-alb")
 
-	// No tmpfiles must be created when rebuild fails — leaving stale blobs
-	// behind would mask the failure on the next recovery attempt.
 	entries, _ := os.ReadDir(tmpDir)
 	for _, e := range entries {
 		assert.False(t, strings.HasPrefix(e.Name(), "fwcfg-i-orphan-alb"),
-			"unexpected tmpfile left behind on rebuild failure: %s", e.Name())
+			"stale tmpfile left behind on rebuild failure: %s", e.Name())
 	}
 }
 
-// TestRefreshSystemInstanceState_RewritesBlobs covers the success path —
-// the bug's actual fix. Given an ELBv2-managed VM whose tmpfs blobs were
-// wiped (simulated by deleting the files after CreateLoadBalancer), the
-// hook must regenerate all three blobs at the deterministic paths the
-// persisted vm.Config.FwCfg references.
 func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+	d.elbv2Service.SystemAccessKey = "AKID-recover"
+	d.elbv2Service.SystemSecretKey = "SECRET-recover"
+	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
+	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
 
-	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
+	seedStore, err := handlers_elbv2.NewStore(nc)
 	require.NoError(t, err)
-	t.Cleanup(svc.Close)
-
-	// Pre-populate an LB record that references the recovery instance. We
-	// bypass CreateLoadBalancer (which would require a VPC service + mock
-	// launcher) by writing the record straight into the store — the
-	// rebuild path's only requirement is that some LB.InstanceID matches.
-	record := &handlers_elbv2.LoadBalancerRecord{
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
 		LoadBalancerID: "lb-recover",
 		Name:           "recover-alb",
 		Scheme:         handlers_elbv2.SchemeInternal,
@@ -402,14 +381,8 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 		InstanceID:     "i-recover-blobs",
 		VPCIP:          "10.0.1.5",
 		AccountID:      "123456789012",
-	}
-	// Both store instances share the same JetStream KV bucket, so a Put
-	// here is visible to svc.store on the next List call.
-	seedStore, err := handlers_elbv2.NewStore(nc)
-	require.NoError(t, err)
-	require.NoError(t, seedStore.PutLoadBalancer(record))
+	}))
 
-	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}
 	inst := &vm.VM{
 		ID:           "i-recover-blobs",
 		ManagedBy:    tags.ManagedByELBv2,
@@ -418,15 +391,61 @@ func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
 		MgmtMAC:      "02:a0:00:11:22:33",
 		MgmtIP:       "172.31.0.7",
 	}
-
 	require.NoError(t, d.refreshSystemInstanceState(inst))
 
-	// Three blobs at deterministic paths — these are the exact filenames
-	// writeFwCfgBlobs bakes into vm.Config.FwCfg, so the persisted QEMU
-	// command line will reference the same paths after the rewrite.
-	for _, suffix := range []string{"netcfg", "lbenv", "cacert"} {
-		path := filepath.Join(tmpDir, fmt.Sprintf("fwcfg-%s-%s.tmp", inst.ID, suffix))
-		_, statErr := os.Stat(path)
-		assert.NoError(t, statErr, "expected fw_cfg blob at %s after refresh — the persisted -fw_cfg arg in vm.Config references this exact path", path)
+	netcfg, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-netcfg.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(netcfg), "NIC0_MAC=02:aa:bb:cc:dd:01")
+	assert.Contains(t, string(netcfg), "NIC1_MAC=02:a0:00:11:22:33")
+
+	lbenv, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-lbenv.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(lbenv), "LB_LB_ID=lb-recover")
+	assert.Contains(t, string(lbenv), "LB_ACCESS_KEY=AKID-recover")
+
+	cacert, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-cacert.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cacert), "fake-ca")
+}
+
+// TestRefreshSystemInstanceState_WriteErrorPropagates exercises the
+// writeFwCfgBlobs error path (plan §3): a write failure under the tmpfs
+// path must surface as a wrapped error so MarkRecoveryFailed gets called.
+func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+
+	seedStore, err := handlers_elbv2.NewStore(nc)
+	require.NoError(t, err)
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+		LoadBalancerID: "lb-werr",
+		Name:           "werr-alb",
+		Scheme:         handlers_elbv2.SchemeInternal,
+		Type:           handlers_elbv2.LoadBalancerTypeApplication,
+		State:          handlers_elbv2.StateActive,
+		Subnets:        []string{"subnet-aaa"},
+		ENIs:           []string{"eni-primary"},
+		InstanceID:     "i-werr",
+		VPCIP:          "10.0.1.5",
+		AccountID:      "123456789012",
+	}))
+
+	// Replace XDG_RUNTIME_DIR with a regular file so os.WriteFile in
+	// writeFwCfgBlobs fails with ENOTDIR. tmpDir from the helper is no
+	// longer the runtime dir for this test.
+	_ = tmpDir
+	notADir := filepath.Join(t.TempDir(), "blocking-file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0600))
+	t.Setenv("XDG_RUNTIME_DIR", notADir)
+
+	inst := &vm.VM{
+		ID:           "i-werr",
+		ManagedBy:    tags.ManagedByELBv2,
+		InstanceType: "sys.micro",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
 	}
+	err = d.refreshSystemInstanceState(inst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rewrite fw_cfg blobs")
 }

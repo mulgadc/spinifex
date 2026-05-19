@@ -117,6 +117,10 @@ type ELBv2ServiceImpl struct {
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
+
+	recoveryLBIndexOnce sync.Once
+	recoveryLBIndex     map[string]*LoadBalancerRecord
+	recoveryLBIndexErr  error
 }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
@@ -307,7 +311,7 @@ func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[s
 		NetworkInterfaceIds: eniPtrs,
 	}, accountID)
 	if err != nil {
-		slog.Debug("describeENIs: VPC describe failed", "count", len(eniIDs), "err", err)
+		slog.Error("VPC describe ENIs failed", "count", len(eniIDs), "err", err)
 		return eniDetails
 	}
 	for _, eni := range result.NetworkInterfaces {
@@ -343,25 +347,37 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 	return extras
 }
 
-// RebuildSystemInstanceInput reconstructs the launch input for an existing
-// system instance during host-reboot recovery. It locates the LB record by
-// instance ID, re-derives NICs (including the mgmt NIC, using the MAC/IP
-// already allocated on the VM), and regenerates the LBAgentEnv/CACert blobs
-// from current service state. Returns an error when no LB record references
-// ctx.InstanceID — the caller treats that as a recovery failure rather than
-// guess at a launch input.
-func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*SystemInstanceInput, error) {
-	lbs, err := s.store.ListLoadBalancers()
-	if err != nil {
-		return nil, fmt.Errorf("list lb records: %w", err)
-	}
-	var lb *LoadBalancerRecord
-	for _, r := range lbs {
-		if r.InstanceID == ctx.InstanceID {
-			lb = r
-			break
+// loadRecoveryLBIndex returns the instanceID->LB map, populated once on
+// first call. Recovery is a daemon-startup-only flow so a process-lifetime
+// cache is appropriate; each daemon process constructs a fresh service.
+func (s *ELBv2ServiceImpl) loadRecoveryLBIndex() (map[string]*LoadBalancerRecord, error) {
+	s.recoveryLBIndexOnce.Do(func() {
+		lbs, err := s.store.ListLoadBalancers()
+		if err != nil {
+			s.recoveryLBIndexErr = fmt.Errorf("list lb records: %w", err)
+			return
 		}
+		index := make(map[string]*LoadBalancerRecord, len(lbs))
+		for _, r := range lbs {
+			if r.InstanceID != "" {
+				index[r.InstanceID] = r
+			}
+		}
+		s.recoveryLBIndex = index
+	})
+	return s.recoveryLBIndex, s.recoveryLBIndexErr
+}
+
+// RebuildSystemInstanceInput reconstructs the launch input for an existing
+// system instance during host-reboot recovery. The instance->LB map is
+// memoised in s.recoveryLBIndex so N concurrent recovery candidates share a
+// single ListLoadBalancers call instead of issuing N×L JetStream round-trips.
+func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*SystemInstanceInput, error) {
+	index, err := s.loadRecoveryLBIndex()
+	if err != nil {
+		return nil, err
 	}
+	lb := index[ctx.InstanceID]
 	if lb == nil {
 		return nil, fmt.Errorf("no LB record references instance %s", ctx.InstanceID)
 	}
@@ -370,11 +386,21 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 	}
 
 	eniDetails := s.describeENIs(lb.ENIs, lb.AccountID)
+	// Multi-ENI rebuild needs an authoritative MAC/IP/subnet per extra, which
+	// only the VPC store supplies. Single-ENI ALBs can fall back to ctx.ENIMac
+	// + lb.VPCIP for the primary, so we only enforce the strict count match
+	// when extras are present.
+	if len(lb.ENIs) > 1 && len(eniDetails) < len(lb.ENIs) {
+		return nil, fmt.Errorf("describe lb %s ENIs: got %d/%d", lb.LoadBalancerID, len(eniDetails), len(lb.ENIs))
+	}
 	primaryMAC := ctx.ENIMac
 	if primary := eniDetails[lb.ENIs[0]]; primary != nil {
 		if mac := aws.StringValue(primary.MacAddress); mac != "" {
 			primaryMAC = mac
 		}
+	}
+	if primaryMAC == "" {
+		return nil, fmt.Errorf("no MAC for primary ENI %s of lb %s", lb.ENIs[0], lb.LoadBalancerID)
 	}
 	extraENIs := buildExtraENIInputs(lb.ENIs, eniDetails)
 

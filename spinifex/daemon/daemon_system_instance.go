@@ -392,23 +392,17 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	return nil
 }
 
-// refreshSystemInstanceState rebuilds any host-local state for a system VM
-// that did not survive a daemon/host restart. Currently this means the
-// per-VM fw_cfg tmpfiles under utils.RuntimeDir() that the direct-boot
-// launch path passes to QEMU via -fw_cfg. utils.RuntimeDir() is a tmpfs on
-// production hosts (XDG_RUNTIME_DIR=/run/spinifex), so the blobs vanish on
-// host reboot while the persisted vm.Config still references them; without
-// this regeneration QEMU exits 1 and the ALB never serves traffic.
-//
-// Non-system VMs (ManagedBy != ELBv2) are a no-op — their QEMU args
-// reference cloud-init ISOs and base AMIs under /var/lib/spinifex/, which
-// survive reboot.
+// refreshSystemInstanceState regenerates the tmpfs-backed fw_cfg blobs that
+// QEMU loads at boot. The blobs live under utils.RuntimeDir() (tmpfs on
+// production hosts) and are wiped on host reboot while the persisted
+// vm.Config still references the same paths. Customer VMs use only paths
+// under /var/lib/spinifex/ and are a no-op.
 func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 	if inst.ManagedBy != tags.ManagedByELBv2 {
 		return nil
 	}
 	if d.elbv2Service == nil {
-		return nil
+		return fmt.Errorf("elbv2 service unavailable: cannot refresh fw_cfg blobs for system VM %s", inst.ID)
 	}
 	ctx := handlers_elbv2.RecoveryContext{
 		InstanceID:   inst.ID,

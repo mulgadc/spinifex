@@ -14,9 +14,9 @@ on:
         description: "PR head SHA to report status on"
         required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-cert e2e-lb')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-cert e2e-lb')"
         required: false
-        default: "e2e-cert e2e-lb"
+        default: "e2e-single e2e-cert e2e-lb"
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ concurrency:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-cert e2e-lb' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-cert e2e-lb' }}
 
 jobs:
   e2e_go_single:
@@ -361,7 +361,13 @@ jobs:
 
   e2e_go_status:
     name: Report E2E (Go) Status
-    if: always() && inputs.sha
+    # Always post status. When inputs.sha is unset (manual dispatch without
+    # a PR head), fall back to github.sha — the resolved commit SHA of the
+    # dispatched ref, always present. The previous `&& inputs.sha` gate
+    # plus `statuses/${{ inputs.sha }}` produced an 'invalid hash' error
+    # whenever the workflow was dispatched without the optional input
+    # (tests passed, status step silently failed). Refs mulga-siv-112.
+    if: always()
     needs: [ e2e_go_single ]
     runs-on: [ self-hosted, ci-single ]
     timeout-minutes: 5
@@ -369,7 +375,12 @@ jobs:
       - name: Report Status to PR
         env:
           GH_TOKEN: ${{ github.token }}
+          REPORT_SHA: ${{ inputs.sha || github.sha }}
         run: |
+          if [[ -z "${REPORT_SHA}" ]]; then
+            echo "::error::no SHA available (inputs.sha and github.sha both empty)"
+            exit 1
+          fi
           if [[ "${{ needs.e2e_go_single.result }}" == "success" ]]; then
             STATE="success"
             DESC="Go E2E suites passed"
@@ -377,7 +388,7 @@ jobs:
             STATE="failure"
             DESC="Go E2E failed: single=${{ needs.e2e_go_single.result }}"
           fi
-          gh api "repos/${{ github.repository }}/statuses/${{ inputs.sha }}" \
+          gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \
             -f context=e2e-go \
             -f description="$DESC" \

@@ -203,10 +203,41 @@ services:
     covers_no_suite: true
 
 
-# Fixture → service mapping. Populated by Bead 2 (e2e-fixtures-harness)
-# once tests/e2e/harness/fixtures.go exists. Until then, the selector
-# falls back to suite-level `covers` only.
-fixtures: {}
+# Fixture → service mapping. Each Ensure* helper in
+# tests/e2e/harness/fixtures.go exercises this set of services; the
+# Bead 4 selector AST-scans test files for harness.Ensure* call sites
+# and resolves coverage via this block.
+fixtures:
+
+  EnsureKeyPair:
+    services: [spinifex_daemon, predastore]
+
+  EnsureAMI:
+    services: [spinifex_daemon, predastore, viperblockd]
+
+  EnsureDefaultVPC:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureSubnet:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureSG:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureInstance:
+    services: [spinifex_daemon, viperblockd, vpcd]
+
+  EnsureVolume:
+    services: [spinifex_daemon, viperblockd]
+
+  EnsureSnapshot:
+    services: [spinifex_daemon, viperblockd, predastore]
+
+  EnsureNATGateway:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureLoadBalancer:
+    services: [spinifex_daemon, awsgw]
 
 
 suites:

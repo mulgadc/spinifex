@@ -14,12 +14,28 @@ import (
 )
 
 // shortIsoTSRe matches the timestamp prefix produced by
-// `journalctl --output=short-iso`: "2026-05-19T12:32:34+1000 host unit: …".
-// We match only the timestamp token (offset is `[+-]HHMM`, no colon) and
-// rely on time.Parse to validate the trailing characters via the layout.
-var shortIsoTSRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4})\s`)
+// `journalctl --output=short-iso`. The offset format varies across
+// systemd versions: most ship "+10:00" (RFC3339), some ship "+1000"
+// (no colon). Match either — the parser below picks the right layout.
+var shortIsoTSRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z))\s`)
 
-const shortIsoLayout = "2006-01-02T15:04:05-0700"
+// shortIsoLayouts are tried in order; the first parse that succeeds wins.
+var shortIsoLayouts = []string{
+	time.RFC3339,               // 2026-05-19T12:32:30+10:00
+	"2006-01-02T15:04:05-0700", // 2026-05-19T12:32:30+1000
+}
+
+func parseShortIso(s string) (time.Time, error) {
+	var lastErr error
+	for _, layout := range shortIsoLayouts {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
 
 // SliceJournal copies lines from src whose `short-iso` timestamp falls in
 // [start, end] to dst. Lines without a parseable timestamp inherit the
@@ -57,7 +73,7 @@ func SliceJournal(src string, start, end time.Time, dst string) (int, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		if m := shortIsoTSRe.FindStringSubmatch(line); m != nil {
-			ts, err := time.Parse(shortIsoLayout, m[1])
+			ts, err := parseShortIso(m[1])
 			if err != nil {
 				continue
 			}

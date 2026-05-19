@@ -220,6 +220,10 @@ jobs:
              for SUITE in ${SUITES_RUN}; do \
                echo \"::group::suite \$SUITE\"; \
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
+               # Record suite wall-clock start so the analyzer can locate
+               # the right journal window. junit-report's timestamp attr
+               # marks conversion time, not test start, so we cannot use it.
+               date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=30m \

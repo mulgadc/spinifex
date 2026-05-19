@@ -45,9 +45,11 @@ func main() {
 		report.Suites = append(report.Suites, sr)
 	}
 
-	// Stage 2: materialise per-failure bundles next to the JUnit data
-	// before rendering so Render can link each failure to its bundle.
+	// Stage 2: prefer authoritative per-suite start times written by the
+	// workflow over junit-report's conversion-time `timestamp` attribute,
+	// then materialise per-failure bundles so Render can link them.
 	if logDir != "" {
+		ApplySuiteStartFiles(&report, logDir)
 		WriteBundles(&report, logDir)
 	}
 

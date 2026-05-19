@@ -41,6 +41,36 @@ func TestSliceJournal_KeepsOnlyWindow(t *testing.T) {
 	}
 }
 
+func TestSliceJournal_AcceptsRFC3339ColonOffset(t *testing.T) {
+	// systemd's `journalctl --output=short-iso` ships RFC3339 timestamps
+	// (offset includes a colon, e.g. "+10:00") on most versions. Earlier
+	// regex only matched "+1000" — make sure both forms work.
+	src := filepath.Join(t.TempDir(), "journal.log")
+	dst := filepath.Join(t.TempDir(), "out.log")
+	body := strings.Join([]string{
+		"2026-05-19T12:32:30+10:00 host spinifex-daemon[1]: pre",
+		"2026-05-19T12:32:35+10:00 host spinifex-daemon[1]: IN window",
+		"2026-05-19T12:32:50+10:00 host spinifex-daemon[1]: post",
+		"",
+	}, "\n")
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	start, _ := time.Parse(time.RFC3339, "2026-05-19T12:32:33+10:00")
+	end, _ := time.Parse(time.RFC3339, "2026-05-19T12:32:40+10:00")
+	n, err := SliceJournal(src, start, end, dst)
+	if err != nil {
+		t.Fatalf("SliceJournal: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("written = %d, want 1", n)
+	}
+	got, _ := os.ReadFile(dst)
+	if !strings.Contains(string(got), "IN window") {
+		t.Errorf("missing in-window content:\n%s", got)
+	}
+}
+
 func TestSliceJournal_MissingSrcIsNotError(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "out.log")
 	n, err := SliceJournal("/no/such/file", time.Now(), time.Now(), dst)

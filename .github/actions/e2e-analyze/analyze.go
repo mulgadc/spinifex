@@ -68,6 +68,12 @@ type Failure struct {
 	FileHint  string    // e.g. "vpc_test.go:227", parsed from failure body
 	Cascade   bool      // signature matched a known downstream pattern
 	Signature string    // normalized error key for bucketing
+	// OffsetFromSuiteStart is sum(prior testcase durations) at the time
+	// this test started. Persisted separately from StartAt so a caller
+	// that has a more authoritative suite wall-clock origin (e.g. a
+	// `test-<suite>.start` file written by the workflow before the suite
+	// runs) can recompute StartAt without re-parsing the XML.
+	OffsetFromSuiteStart time.Duration
 	// BundlePath is the relative path (from log-dir) to the per-failure
 	// bundle written by Stage 2's WriteBundles. Empty when bundles were
 	// not generated (e.g. unit tests that call Render directly).
@@ -343,18 +349,20 @@ func ParseFile(path string, data []byte) (SuiteReport, error) {
 			}
 
 			errLine := extractErrorLine(body)
+			offset := time.Duration(cumul * float64(time.Second))
 			f := Failure{
-				SuiteFile: rep.Label,
-				Name:      tc.Name,
-				Duration:  tc.Time,
-				Order:     order,
-				Error:     errLine,
-				FileHint:  extractFileHint(body),
-				Cascade:   isCascade(errLine),
-				Signature: signature(errLine),
+				SuiteFile:            rep.Label,
+				Name:                 tc.Name,
+				Duration:             tc.Time,
+				Order:                order,
+				Error:                errLine,
+				FileHint:             extractFileHint(body),
+				Cascade:              isCascade(errLine),
+				Signature:            signature(errLine),
+				OffsetFromSuiteStart: offset,
 			}
 			if !start.IsZero() {
-				f.StartAt = start.Add(time.Duration(cumul * float64(time.Second)))
+				f.StartAt = start.Add(offset)
 			}
 			rep.FailCount++
 			rep.Cascades = append(rep.Cascades, f) // temp staging; split below

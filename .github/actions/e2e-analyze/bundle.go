@@ -33,6 +33,47 @@ func sanitiseTestName(s string) string {
 	return nameSanitiseRe.ReplaceAllString(s, "_")
 }
 
+// ApplySuiteStartFiles overrides each failure's StartAt by reading
+// <logDir>/test-<suiteLabel>.start (RFC3339 timestamp written by the
+// workflow before the suite runs). Required because go-junit-report's
+// `timestamp` attribute on <testsuite> records the time the XML was
+// produced — i.e. after the suite has finished — so it can't be used
+// as the suite wall-clock origin for journal slicing.
+//
+// Missing or unparseable files are silently ignored: the analyzer
+// falls back to the junit timestamp and the bundle still gets created,
+// it just may have an empty (or off-window) journal slice.
+func ApplySuiteStartFiles(rep *Report, logDir string) {
+	if logDir == "" {
+		return
+	}
+	for si := range rep.Suites {
+		s := &rep.Suites[si]
+		startPath := filepath.Join(logDir, fmt.Sprintf("test-%s.start", s.Label))
+		data, err := os.ReadFile(startPath)
+		if err != nil {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "::warning::e2e-analyze: parse %s: %v\n", startPath, err)
+			continue
+		}
+		if s.Root != nil {
+			s.Root.StartAt = ts.Add(s.Root.OffsetFromSuiteStart)
+		}
+		for ci := range s.Cascades {
+			s.Cascades[ci].StartAt = ts.Add(s.Cascades[ci].OffsetFromSuiteStart)
+		}
+		for bi := range s.Buckets {
+			for fi := range s.Buckets[bi] {
+				f := &s.Buckets[bi][fi]
+				f.StartAt = ts.Add(f.OffsetFromSuiteStart)
+			}
+		}
+	}
+}
+
 // WriteBundles materialises per-failure bundles under <logDir>/analysis/.
 // Mutates rep in-place so each Failure.BundlePath holds the relative
 // path the renderer will link from the summary.

@@ -11,7 +11,6 @@ package fipsboot
 
 import (
 	"crypto/fips140"
-	"log/slog"
 )
 
 func init() {
@@ -19,8 +18,4 @@ func init() {
 		panic("fipsboot: FIPS 140-3 mode is not enabled at runtime — refusing to start. " +
 			"Build with GOFIPS140=v1.0.0 and do not set GODEBUG=fips140=off.")
 	}
-	slog.Info("FIPS 140-3 mode enabled",
-		"module", "Go Cryptographic Module v1.0.0",
-		"cmvp_cert", "5247",
-	)
 }

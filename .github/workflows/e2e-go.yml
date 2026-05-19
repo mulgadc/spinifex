@@ -32,11 +32,6 @@ concurrency:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-cert e2e-lb' }}
-  # setup-go@v6 defaults this to "local" (v5 was "auto"). Build steps
-  # invoke /usr/local/go on the self-hosted runner (older than go.mod's
-  # `go` directive); "auto" lets the toolchain self-heal by downloading
-  # the required minor on demand, matching pre-v6 behaviour.
-  GOTOOLCHAIN: auto
 
 jobs:
   e2e_go_single:
@@ -102,6 +97,15 @@ jobs:
           # dominates total job time and the local Go module cache already
           # warms across runs.
           cache: false
+
+      - name: Re-enable Go toolchain auto-download
+        # setup-go@v6 exports GOTOOLCHAIN=local to $GITHUB_ENV (v5 left it
+        # "auto"). build-install-artifacts.sh prepends /usr/local/go/bin to
+        # PATH on the self-hosted runner, and that Go is older than
+        # spinifex/go.mod's `go` directive; under "local" the build fails
+        # with `requires go >= X.Y.Z`. Restoring "auto" lets the resolved
+        # Go self-heal by fetching the named minor on demand.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

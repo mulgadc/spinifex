@@ -176,8 +176,25 @@ jobs:
           # suite gets its own ::group:: + cyan banner inside so the Actions
           # UI collapses suite output by default; expand only what failed.
           SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g')
-          ssh -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
-            tf-user@${{ steps.vm.outputs.wan_ip }} \
+          VM_HOST="tf-user@${{ steps.vm.outputs.wan_ip }}"
+          SSH_KEY="${{ steps.vm.outputs.ssh_key }}"
+          # On cancel / runner SIGTERM / step timeout, force-kill any test
+          # binaries left running on the VM. Without this, the remote `.test`
+          # process keeps holding the suite's NATS connections + tmp dirs and
+          # the subsequent Teardown's tofu-destroy races with its file
+          # handles. -o ConnectTimeout=5 so a wedged VM doesn't block cleanup.
+          cleanup_remote() {
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" "$VM_HOST" \
+              'pkill -u tf-user -TERM -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; true' \
+              2>/dev/null || true
+          }
+          trap cleanup_remote EXIT INT TERM
+          # `ssh -tt` forces PTY allocation. When the runner cancels this
+          # step, the local ssh dies and the remote sshd sends SIGHUP through
+          # the PTY to its children — without -tt the remote `.test` would
+          # orphan and keep running until its own 30m timeout.
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" \
+            "$VM_HOST" \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; \
              cd \$HOME/spinifex-e2e-bin; \
              R=\$'\033[0m' B=\$'\033[1m' C=\$'\033[36m' G=\$'\033[32m' RED=\$'\033[31m'; \
@@ -263,6 +280,18 @@ jobs:
           set +e
           # shellcheck source=/dev/null
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # Kill any test binaries still running on the VM (cancelled mid-suite
+          # paths) BEFORE tofu destroy yanks the qcow2 from underneath them.
+          # Scoped to this run's VM by wan_ip — safe with sibling agents on
+          # the same host. ConnectTimeout=5 so an already-wedged VM doesn't
+          # block teardown.
+          if [ -n "${{ steps.vm.outputs.wan_ip }}" ] && [ -n "${{ steps.vm.outputs.ssh_key }}" ]; then
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+              -i "${{ steps.vm.outputs.ssh_key }}" \
+              tf-user@${{ steps.vm.outputs.wan_ip }} \
+              'pkill -u tf-user -TERM -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; true' \
+              2>/dev/null || true
+          fi
           # Cancelled jobs from this point on can orphan an in-flight
           # tofu/libvirt SSH; clear them before destroy so the next run's
           # pre-clean isn't doing it.

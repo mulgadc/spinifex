@@ -134,6 +134,7 @@ export function RegisterTargetsDialog({
                   key={id}
                 >
                   <input
+                    aria-label={`Register target ${id}`}
                     checked={checked}
                     id={`register-target-${id}`}
                     onChange={() => toggle(id)}

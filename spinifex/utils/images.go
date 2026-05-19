@@ -369,26 +369,6 @@ var AvailableImages = map[string]Images{
 		},
 	*/
 
-	// Alpine Linux (cloud init) x86_64 — LB system image with HAProxy and lb-agent
-	"lb-alpine-3.21.6-x86_64": {
-		Name:         "lb-alpine-3.21.6-x86_64",
-		Description:  "LB Alpine Linux 3.21.6 x86_64 system image",
-		Distro:       "alpine",
-		Version:      "3.21.6",
-		Arch:         "x86_64",
-		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 03, 27, 0, 0, 0, 0, time.UTC),
-		URL:          "https://iso.mulgadc.com/system-ami/lb-alpine-3.21.6-x86_64.raw",
-		Checksum:     "https://iso.mulgadc.com/system-ami/lb-alpine-3.21.6-x86_64.raw.sha512",
-		ChecksumType: "sha512",
-		BootMode:     "bios",
-		Starred:      false,
-		// Marked system-managed: the UI hides this AMI from the Images
-		// page so customers don't mistake it for a bootable OS image.
-		Tags: map[string]string{
-			"spinifex:managed-by": "elbv2",
-		},
-	},
 }
 
 // AMI / image extraction utils

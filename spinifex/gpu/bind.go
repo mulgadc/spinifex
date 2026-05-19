@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -68,6 +69,15 @@ func unbindVFIO(sysfsRoot, addr, originalDriver string) error {
 
 	if err := writeSysfs(filepath.Join(sysfsRoot, "bus/pci/drivers/vfio-pci/unbind"), addr); err != nil {
 		return fmt.Errorf("unbind %s from vfio-pci: %w", addr, err)
+	}
+
+	// AMD CDNA/RDNA GPUs are left in a corrupted hardware state after QEMU exits
+	// without a proper reset. Issue a PCI reset now so the original driver sees
+	// a clean device. The linux-vendor-reset module (gnif/vendor-reset), if
+	// loaded, intercepts this write and applies the AMD-specific reset sequence.
+	if err := resetPCI(sysfsRoot, addr); err != nil {
+		slog.Warn("PCI reset failed — GPU may require manual recovery",
+			"pci", addr, "err", err)
 	}
 
 	if err := writeSysfs(filepath.Join(devPath, "driver_override"), ""); err != nil {

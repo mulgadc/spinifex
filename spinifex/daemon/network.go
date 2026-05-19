@@ -6,8 +6,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -55,12 +55,14 @@ func (p *OVSNetworkPlumber) SetupTap(spec vm.TapSpec) error {
 	// (drivers/net/tun.c: tun_chr_open + TUNSETIFF perm check). Without the
 	// `user` flag the tap defaults to root:root and qemu's TUNSETIFF fails
 	// with EPERM ("could not configure /dev/net/tun: Operation not permitted").
-	// Root daemons skip this — they have CAP_NET_ADMIN ambient.
+	// Pass numeric uid/gid directly — user.Current() can fail silently under
+	// hardened systemd units / static builds, dropping the flags and leaving
+	// the tap root-owned (LB microvm in cell-17/tofu-examples). Numeric values
+	// always work and skip the NSS lookup. Root daemons skip this — they have
+	// CAP_NET_ADMIN ambient.
 	addArgs := []string{"tuntap", "add", "dev", spec.Name, "mode", "tap"}
-	if os.Geteuid() != 0 {
-		if u, err := user.Current(); err == nil {
-			addArgs = append(addArgs, "user", u.Username, "group", u.Gid)
-		}
+	if uid := os.Geteuid(); uid != 0 {
+		addArgs = append(addArgs, "user", strconv.Itoa(uid), "group", strconv.Itoa(os.Getegid()))
 	}
 	if out, err := sudoCommand("ip", addArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("create tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)

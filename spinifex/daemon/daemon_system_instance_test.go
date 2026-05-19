@@ -3,12 +3,16 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -308,4 +312,140 @@ func TestWriteFwCfgBlobs_InvalidNICs_NoDefault(t *testing.T) {
 		assert.False(t, strings.HasPrefix(e.Name(), "fwcfg-i-bad-nics"),
 			"unexpected tmpfile left behind: %s", e.Name())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// refreshSystemInstanceState
+// ---------------------------------------------------------------------------
+
+// newRefreshTestDaemon returns a Daemon wired with vmMgr + a fresh ELBv2
+// service, with XDG_RUNTIME_DIR pointed at a per-test tmpdir so
+// writeFwCfgBlobs is sandboxed. The returned nats.Conn lets the caller seed
+// LB records via a separate Store handle sharing the same KV bucket.
+func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	t.Cleanup(svc.Close)
+	return &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}, nc, tmpDir
+}
+
+func TestRefreshSystemInstanceState_NonELBv2IsNoop(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager()}
+	require.NoError(t, d.refreshSystemInstanceState(&vm.VM{ID: "i-customer", ManagedBy: ""}))
+}
+
+func TestRefreshSystemInstanceState_NilELBv2ServiceErrors(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: nil}
+	err := d.refreshSystemInstanceState(&vm.VM{ID: "i-no-svc", ManagedBy: tags.ManagedByELBv2})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "elbv2 service unavailable")
+}
+
+func TestRefreshSystemInstanceState_NoLBRecord(t *testing.T) {
+	d, _, tmpDir := newRefreshTestDaemon(t)
+	inst := &vm.VM{ID: "i-orphan-alb", ManagedBy: tags.ManagedByELBv2, InstanceType: "sys.micro"}
+
+	err := d.refreshSystemInstanceState(inst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rebuild system instance input")
+	assert.Contains(t, err.Error(), "no LB record references instance i-orphan-alb")
+
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), "fwcfg-i-orphan-alb"),
+			"stale tmpfile left behind on rebuild failure: %s", e.Name())
+	}
+}
+
+func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+	d.elbv2Service.SystemAccessKey = "AKID-recover"
+	d.elbv2Service.SystemSecretKey = "SECRET-recover"
+	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
+	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
+
+	seedStore, err := handlers_elbv2.NewStore(nc)
+	require.NoError(t, err)
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+		LoadBalancerID: "lb-recover",
+		Name:           "recover-alb",
+		Scheme:         handlers_elbv2.SchemeInternal,
+		Type:           handlers_elbv2.LoadBalancerTypeApplication,
+		State:          handlers_elbv2.StateActive,
+		Subnets:        []string{"subnet-aaa"},
+		ENIs:           []string{"eni-primary"},
+		InstanceID:     "i-recover-blobs",
+		VPCIP:          "10.0.1.5",
+		AccountID:      "123456789012",
+	}))
+
+	inst := &vm.VM{
+		ID:           "i-recover-blobs",
+		ManagedBy:    tags.ManagedByELBv2,
+		InstanceType: "sys.micro",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
+	}
+	require.NoError(t, d.refreshSystemInstanceState(inst))
+
+	netcfg, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-netcfg.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(netcfg), "NIC0_MAC=02:aa:bb:cc:dd:01")
+	assert.Contains(t, string(netcfg), "NIC1_MAC=02:a0:00:11:22:33")
+
+	lbenv, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-lbenv.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(lbenv), "LB_LB_ID=lb-recover")
+	assert.Contains(t, string(lbenv), "LB_ACCESS_KEY=AKID-recover")
+
+	cacert, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-cacert.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cacert), "fake-ca")
+}
+
+// TestRefreshSystemInstanceState_WriteErrorPropagates exercises the
+// writeFwCfgBlobs error path (plan §3): a write failure under the tmpfs
+// path must surface as a wrapped error so MarkRecoveryFailed gets called.
+func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+
+	seedStore, err := handlers_elbv2.NewStore(nc)
+	require.NoError(t, err)
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+		LoadBalancerID: "lb-werr",
+		Name:           "werr-alb",
+		Scheme:         handlers_elbv2.SchemeInternal,
+		Type:           handlers_elbv2.LoadBalancerTypeApplication,
+		State:          handlers_elbv2.StateActive,
+		Subnets:        []string{"subnet-aaa"},
+		ENIs:           []string{"eni-primary"},
+		InstanceID:     "i-werr",
+		VPCIP:          "10.0.1.5",
+		AccountID:      "123456789012",
+	}))
+
+	// Replace XDG_RUNTIME_DIR with a regular file so os.WriteFile in
+	// writeFwCfgBlobs fails with ENOTDIR. tmpDir from the helper is no
+	// longer the runtime dir for this test.
+	_ = tmpDir
+	notADir := filepath.Join(t.TempDir(), "blocking-file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0600))
+	t.Setenv("XDG_RUNTIME_DIR", notADir)
+
+	inst := &vm.VM{
+		ID:           "i-werr",
+		ManagedBy:    tags.ManagedByELBv2,
+		InstanceType: "sys.micro",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
+	}
+	err = d.refreshSystemInstanceState(inst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rewrite fw_cfg blobs")
 }

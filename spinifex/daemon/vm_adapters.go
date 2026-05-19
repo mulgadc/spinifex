@@ -412,6 +412,29 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 				}
 			}
 		}
+
+		// Republish vpc.add-nat so vpcd re-establishes the dnat_and_snat
+		// rule on host-reboot recovery. The OVN NB entry doesn't always
+		// survive the reboot, and vpcd's reconcile loop only re-creates
+		// EIP-allocated NATs (reconcile.go:391) — direct-add NATs from
+		// LaunchInstance / LaunchSystemInstance are otherwise unrecoverable.
+		// Idempotent: vpcd's handler deletes-then-adds (topology.go:1297),
+		// so this is a no-op on fresh launches where the initial publish
+		// already fired.
+		if d.natsConn != nil && instance.PublicIP != "" && instance.ENIId != "" && instance.Instance != nil {
+			vpcID := ""
+			privateIP := ""
+			if instance.Instance.VpcId != nil {
+				vpcID = *instance.Instance.VpcId
+			}
+			if instance.Instance.PrivateIpAddress != nil {
+				privateIP = *instance.Instance.PrivateIpAddress
+			}
+			if vpcID != "" && privateIP != "" {
+				portName := "port-" + instance.ENIId
+				utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, instance.PublicIP, privateIP, portName, instance.ENIMac)
+			}
+		}
 		return nil
 	}
 }
@@ -456,9 +479,10 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		VolumeStateUpdater: d.volumeService,
 		InstanceCleaner:    newInstanceCleanerAdapter(d),
 		Hooks: vm.ManagerHooks{
-			OnInstanceUp:         d.onInstanceUpHook(),
-			OnInstanceDown:       d.onInstanceDownHook(),
-			OnInstanceRecovering: d.onInstanceRecoveringHook(),
+			OnInstanceUp:           d.onInstanceUpHook(),
+			OnInstanceDown:         d.onInstanceDownHook(),
+			OnInstanceRecovering:   d.onInstanceRecoveringHook(),
+			BeforeInstanceRelaunch: d.refreshSystemInstanceState,
 		},
 		ShutdownSignal:             d.shuttingDown.Load,
 		CrashHandler:               d.vmMgr.HandleCrash,

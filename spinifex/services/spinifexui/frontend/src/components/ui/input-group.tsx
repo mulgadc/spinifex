@@ -50,7 +50,7 @@ export function InputGroupAddon({
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
-    // oxlint-disable-next-line jsx_a11y/click-events-have-key-events
+    // oxlint-disable-next-line jsx_a11y/click-events-have-key-events, jsx_a11y/no-noninteractive-element-interactions
     <div
       className={cn(inputGroupAddonVariants({ align }), className)}
       data-align={align}

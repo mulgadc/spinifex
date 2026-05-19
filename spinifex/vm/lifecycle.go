@@ -443,7 +443,11 @@ func (m *Manager) startQEMU(instance *VM) error {
 			"serial_socket", instance.Config.SerialSocket)
 	}
 
-	if _, err := utils.ReadPidFile(instance.ID); err != nil {
+	// QEMU writes its pidfile after parsing args and mmap'ing the kernel/initrd/
+	// fwcfg blobs. Direct-boot is usually <50ms, but under post-reboot recovery
+	// load it can exceed the settle wait — block briefly so we don't tear down
+	// the tap before QEMU finishes attaching to it.
+	if _, err := utils.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
 		slog.Error("Failed to read PID file", "err", err)
 		return err
 	}
@@ -525,6 +529,14 @@ func (m *Manager) AttachQMP(instance *VM) error {
 // qmp_capabilities handshake. The caller owns starting the heartbeat
 // goroutine on the returned client.
 func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
+	// QEMU binds the QMP listening socket after writing its pidfile and parsing
+	// args; under post-reboot recovery load the bind can lag behind startQEMU's
+	// pidfile gate, leaving an "ENOENT on dial" race that tears down the VM
+	// before it finishes coming up. Block briefly so the dial only runs once
+	// the socket inode exists.
+	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
+		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
+	}
 	client, err := qmp.NewQMPClient(v.Config.QMPSocket)
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)

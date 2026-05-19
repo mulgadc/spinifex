@@ -200,3 +200,151 @@ jobs:
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+
+  iso:
+    needs: release
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 90
+    steps:
+      - name: Clean Workspace
+        run: |
+          ROOTFS="${GITHUB_WORKSPACE}/mulga/scripts/iso-builder/.cache/rootfs"
+          # Mirror make clean's umount sequence unconditionally — lazy unmount
+          # detaches immediately even if the mount is busy, so rm -rf is safe.
+          sudo umount -l -R "${ROOTFS}" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/dev/pts" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/dev" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/sys" 2>/dev/null || true
+          sudo umount -l "${ROOTFS}/proc" 2>/dev/null || true
+          sudo rm -rf "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - name: Checkout Spinifex
+        uses: actions/checkout@v6
+        with:
+          path: spinifex
+          ref: ${{ github.ref }}
+
+      - name: Checkout Predastore
+        uses: actions/checkout@v6
+        with:
+          repository: mulgadc/predastore
+          path: predastore
+
+      - name: Checkout Viperblock
+        uses: actions/checkout@v6
+        with:
+          repository: mulgadc/viperblock
+          path: viperblock
+
+      - name: Checkout Mulga iso-builder
+        uses: actions/checkout@v6
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/iso-builder
+          path: mulga
+
+      - name: Clean ISO builder cache
+        run: sudo make -C mulga/scripts/iso-builder clean
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Configure Go workspace
+        run: go work init ./spinifex ./predastore ./viperblock
+
+      - name: Install ISO builder dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
+            grub-common mtools busybox-static ovmf zstd \
+            nbdkit nbdkit-plugin-dev pkg-config gcc
+
+      - name: Build spinifex binaries
+        run: cd spinifex && make build
+
+      - name: Build viperblock
+        run: cd viperblock && make build
+
+      - name: Build release ISO
+        id: build-iso
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          sudo make -C mulga/scripts/iso-builder release \
+            VERSION="${VERSION}" \
+            SPINIFEX_SRC="${GITHUB_WORKSPACE}/spinifex" \
+            VIPERBLOCK_SRC="${GITHUB_WORKSPACE}/viperblock" \
+            SPINIFEX_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spx" \
+            INSTALLER_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spinifex-installer"
+
+      - name: Wait for verify
+        id: wait-verify
+        if: steps.build-iso.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Waiting for verify job to complete..."
+          while true; do
+            CONCLUSION=$(gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+              --jq '.jobs[] | select(.name == "verify") | .conclusion // empty')
+            if [ -n "$CONCLUSION" ]; then
+              echo "Verify conclusion: $CONCLUSION"
+              [ "$CONCLUSION" = "success" ] && exit 0
+              exit 1
+            fi
+            echo "Verify still running, retrying in 30s..."
+            sleep 30
+          done
+
+      - name: Ensure AWS CLI is installed
+        if: steps.build-iso.outcome == 'success' && steps.wait-verify.outcome == 'success'
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp/aws-install
+            sudo /tmp/aws-install/aws/install
+            rm -rf /tmp/awscliv2.zip /tmp/aws-install
+          fi
+
+      - name: Upload ISO to Cloudflare R2
+        id: upload
+        if: steps.build-iso.outcome == 'success' && steps.wait-verify.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT_URL: ${{ secrets.CF_R2_ENDPOINT_URL }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso" \
+                  "s3://spinifex-iso/spinifex-${VERSION}.iso"
+          aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso.sha256" \
+                  "s3://spinifex-iso/spinifex-${VERSION}.iso.sha256"
+
+      - name: Mark ISO failed
+        if: always() && (steps.build-iso.outcome == 'failure' || steps.upload.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          EXISTING_BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
+          NOTES_FILE=$(mktemp)
+          printf 'ISO build/upload failed — see workflow run for details.\n\n%s' "$EXISTING_BODY" > "$NOTES_FILE"
+          gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_FILE"
+          rm -f "$NOTES_FILE"

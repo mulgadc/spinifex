@@ -32,6 +32,11 @@ concurrency:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-cert e2e-lb' }}
+  # setup-go@v6 defaults this to "local" (v5 was "auto"). Build steps
+  # invoke /usr/local/go on the self-hosted runner (older than go.mod's
+  # `go` directive); "auto" lets the toolchain self-heal by downloading
+  # the required minor on demand, matching pre-v6 behaviour.
+  GOTOOLCHAIN: auto
 
 jobs:
   e2e_go_single:

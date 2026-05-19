@@ -106,8 +106,15 @@ go_run:
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 lint govulncheck test-cover diff-coverage test-race
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check lint govulncheck test-cover diff-coverage test-race
 	@echo -e "\n ✅ Preflight passed — safe to commit."
+
+# Validate docs/service-interfaces.yaml. Schema check + cross-reference
+# of services/suites/fixtures + on-disk path existence. Subject content
+# vs source is enforced separately in Bead 5 drift lint.
+manifest-check:
+	@echo -e "\n....Checking service-interfaces.yaml...."
+	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
 
 # Run unit tests
 test:

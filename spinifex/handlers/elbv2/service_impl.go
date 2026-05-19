@@ -118,9 +118,8 @@ type ELBv2ServiceImpl struct {
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
 
-	recoveryLBIndexOnce sync.Once
-	recoveryLBIndex     map[string]*LoadBalancerRecord
-	recoveryLBIndexErr  error
+	recoveryLBIndexMu sync.Mutex
+	recoveryLBIndex   map[string]*LoadBalancerRecord
 }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
@@ -347,25 +346,28 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 	return extras
 }
 
-// loadRecoveryLBIndex returns the instanceID->LB map, populated once on
-// first call. Recovery is a daemon-startup-only flow so a process-lifetime
-// cache is appropriate; each daemon process constructs a fresh service.
+// loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
+// first successful call. Errors are not cached: a transient JetStream
+// failure at startup must not condemn every subsequent recovery candidate
+// in the same batch — the next caller retries.
 func (s *ELBv2ServiceImpl) loadRecoveryLBIndex() (map[string]*LoadBalancerRecord, error) {
-	s.recoveryLBIndexOnce.Do(func() {
-		lbs, err := s.store.ListLoadBalancers()
-		if err != nil {
-			s.recoveryLBIndexErr = fmt.Errorf("list lb records: %w", err)
-			return
+	s.recoveryLBIndexMu.Lock()
+	defer s.recoveryLBIndexMu.Unlock()
+	if s.recoveryLBIndex != nil {
+		return s.recoveryLBIndex, nil
+	}
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		return nil, fmt.Errorf("list lb records: %w", err)
+	}
+	index := make(map[string]*LoadBalancerRecord, len(lbs))
+	for _, r := range lbs {
+		if r.InstanceID != "" {
+			index[r.InstanceID] = r
 		}
-		index := make(map[string]*LoadBalancerRecord, len(lbs))
-		for _, r := range lbs {
-			if r.InstanceID != "" {
-				index[r.InstanceID] = r
-			}
-		}
-		s.recoveryLBIndex = index
-	})
-	return s.recoveryLBIndex, s.recoveryLBIndexErr
+	}
+	s.recoveryLBIndex = index
+	return s.recoveryLBIndex, nil
 }
 
 // RebuildSystemInstanceInput reconstructs the launch input for an existing

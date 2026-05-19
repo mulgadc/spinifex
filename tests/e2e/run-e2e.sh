@@ -232,20 +232,25 @@ fi
 
 # Phase 4: Image Management
 echo "Phase 4: Image Management"
-# Detect correct image name based on architecture
+# Discover whichever Ubuntu AMI bootstrap-install.sh staged. v6+ gold image
+# stages 26.04 (resolute); v3 staged 24.04 (noble). Catalog name follows
+# `ami-ubuntu-<ver>-<arch>`.
 if [ "$ARCH" = "x86_64" ]; then
-    IMAGE_NAME="ubuntu-24.04-x86_64"
+    ARCH_LABEL="x86_64"
 else
-    IMAGE_NAME="ubuntu-24.04-arm64"
+    ARCH_LABEL="arm64"
 fi
+echo "Looking up Ubuntu AMI for arch=${ARCH_LABEL}..."
+AMI_ID=$(aws ec2 describe-images \
+    --filters "Name=name,Values=ami-ubuntu-26.04-${ARCH_LABEL},ami-ubuntu-24.04-${ARCH_LABEL}" \
+    --query 'Images[0].ImageId' --output text)
+IMAGE_NAME=$(aws ec2 describe-images \
+    --filters "Name=name,Values=ami-ubuntu-26.04-${ARCH_LABEL},ami-ubuntu-24.04-${ARCH_LABEL}" \
+    --query 'Images[0].Name' --output text | sed 's/^ami-//')
 echo "Using image: $IMAGE_NAME"
 
-# AMI already imported by bootstrap-install.sh — discover the existing AMI
-echo "Discovering existing AMI (imported by bootstrap)..."
-AMI_ID=$(aws ec2 describe-images --filters "Name=name,Values=ami-${IMAGE_NAME}" --query 'Images[0].ImageId' --output text)
-
 if [ -z "$AMI_ID" ] || [ "$AMI_ID" = "None" ]; then
-    echo "Failed to capture AMI ID"
+    echo "Failed to capture AMI ID — bootstrap-install.sh did not stage ubuntu-{24,26}.04-${ARCH_LABEL}"
     exit 1
 fi
 echo "Captured AMI ID: $AMI_ID"

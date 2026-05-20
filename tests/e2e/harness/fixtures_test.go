@@ -133,6 +133,42 @@ func TestEnsureKeyPair_ConcurrentCallers(t *testing.T) {
 	}
 }
 
+// TestProcessFixture_CloseRunsCleanupsLIFO verifies the process-mode
+// cleanup chain fires every registered callback in reverse order, exactly
+// once per Close(), and that a second Close() is a no-op.
+func TestProcessFixture_CloseRunsCleanupsLIFO(t *testing.T) {
+	ec2c := &fakeEC2{}
+	fx := &Fixture{
+		EC2:      ec2c,
+		ELBv2:    &fakeELB{},
+		scratch:  "test",
+		memo:     map[string]string{},
+		cleanups: map[string]struct{}{},
+	}
+
+	var order []int
+	fx.RegisterCleanup(func() { order = append(order, 1) })
+	fx.RegisterCleanup(func() { order = append(order, 2) })
+	fx.RegisterCleanup(func() { order = append(order, 3) })
+
+	fx.Close()
+	want := []int{3, 2, 1}
+	if len(order) != len(want) {
+		t.Fatalf("cleanup count = %d, want %d", len(order), len(want))
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("cleanup order = %v, want %v", order, want)
+		}
+	}
+
+	// Second Close is a no-op — no duplicate firings, no panic.
+	fx.Close()
+	if len(order) != len(want) {
+		t.Fatalf("second Close re-fired callbacks: order=%v", order)
+	}
+}
+
 // TestEnsureKeyPair_CleanupRunsOnce verifies cleanup fires DeleteKeyPair
 // exactly once even after multiple Ensure calls memoize to the same ID.
 func TestEnsureKeyPair_CleanupRunsOnce(t *testing.T) {

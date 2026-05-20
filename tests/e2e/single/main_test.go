@@ -14,11 +14,92 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
+
+// Package-scoped singleton fixture. Initialised lazily by the first call
+// to requireSingleNodeFixture (currently no callers; reserved for the
+// per-phase top-level Test* migration that will replace TestSingleNode).
+// TestMain drains its cleanup chain after m.Run().
+var (
+	pkgFixOnce sync.Once
+	pkgFix     *Fixture
+	pkgFixErr  error
+)
+
+// TestMain owns process-level lifecycle for the singleton fixture. The
+// singleton itself is built lazily by requireSingleNodeFixture so a test
+// run with SPINIFEX_E2E unset stays cheap (no AWS dial, no temp dir).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if pkgFix != nil {
+		if pkgFix.Harness != nil {
+			pkgFix.Harness.Close()
+		}
+		if pkgFix.TmpDir != "" {
+			_ = os.RemoveAll(pkgFix.TmpDir)
+		}
+	}
+	os.Exit(code)
+}
+
+// requireSingleNodeFixture returns the package-scoped Fixture singleton,
+// building it on first call. Skips the calling test if SPINIFEX_E2E is
+// unset or the cluster mode is not single-node. Fails the test if init
+// itself errors (e.g. AWS client construction).
+//
+// Used by future top-level Test* once TestSingleNode is dismantled —
+// today TestSingleNode still owns its own Fixture, so this helper is
+// unreferenced. Keeping it live so the next migration step has a stable
+// API to call.
+func requireSingleNodeFixture(t *testing.T) *Fixture {
+	t.Helper()
+	pkgFixOnce.Do(func() {
+		if os.Getenv("SPINIFEX_E2E") == "" {
+			return
+		}
+		env := harness.LoadEnv(t)
+		if env.Mode != harness.ModeSingle {
+			return
+		}
+		awsCli := harness.NewAWSClient(t, env)
+		h, herr := harness.NewProcessFixture(awsCli)
+		if herr != nil {
+			pkgFixErr = herr
+			return
+		}
+		tmpDir, terr := os.MkdirTemp("", "single-pkgfix-*")
+		if terr != nil {
+			pkgFixErr = terr
+			return
+		}
+		fix := &Fixture{
+			Env:       env,
+			AWS:       awsCli,
+			Harness:   h,
+			Artifacts: harness.ArtifactDir(t, env),
+			TmpDir:    tmpDir,
+		}
+		fix.PoolMode = detectPoolMode(env)
+		pkgFix = fix
+	})
+	if pkgFixErr != nil {
+		t.Fatalf("singleton fixture init failed: %v", pkgFixErr)
+	}
+	if pkgFix == nil {
+		t.Skip("singleton fixture unavailable (SPINIFEX_E2E unset or mode != single)")
+	}
+	return pkgFix
+}
+
+// Compile-time guard against signature drift in requireSingleNodeFixture.
+// Never invoked; exists so a future rename of pkgFix / Fixture surfaces at
+// build time, not at the first migrated top-level Test*.
+var _ = requireSingleNodeFixture
 
 // Fixture carries state across the sequential Phase subtests of
 // TestSingleNode. Mirrors the env vars run-e2e.sh threads between phases

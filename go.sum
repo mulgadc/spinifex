@@ -288,8 +288,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/predastore v1.4.0 h1:txPZCaVT1cDpBotx8zHPXHZD3Mz62+n207zXISkK4uU=
 github.com/mulgadc/predastore v1.4.0/go.mod h1:fXIGz7yCKcHh68ybcw7aigdOdzIfyt19h/0diPF+JCU=
-github.com/mulgadc/viperblock v1.4.0 h1:3Yr6lRDnFgxkdMOWu+Tq1b97qWHQDNwkPWmCp38CIy8=
-github.com/mulgadc/viperblock v1.4.0/go.mod h1:hHdfo02iJgCdNktiPAq+x+VQE0ZNYOLJXw0abJ81LeE=
+github.com/mulgadc/viperblock v1.4.1 h1:DCnZctlmY0clw4wV+3TohBWuivwATi0+/5yA4Jdaezw=
+github.com/mulgadc/viperblock v1.4.1/go.mod h1:hHdfo02iJgCdNktiPAq+x+VQE0ZNYOLJXw0abJ81LeE=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=

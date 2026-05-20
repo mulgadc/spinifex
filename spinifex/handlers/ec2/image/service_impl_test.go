@@ -200,6 +200,52 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 	assert.Equal(t, testAccountID, *result.Images[0].OwnerId)
 }
 
+// TestDescribeImages_BootModeProjection asserts that AMIMetadata.BootMode
+// round-trips through DescribeImages. Empty BootMode (legacy AMIs registered
+// before the field existed) must pass through as an empty string, not get
+// synthesized to a default.
+func TestDescribeImages_BootModeProjection(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+		ImageID:         "ami-uefi001",
+		Name:            "uefi-image",
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: testAccountID,
+		BootMode:        "uefi",
+	})
+	createTestAMIConfigFull(t, store, viperblock.AMIMetadata{
+		ImageID:         "ami-legacy001",
+		Name:            "legacy-image",
+		Architecture:    "x86_64",
+		PlatformDetails: "Linux/UNIX",
+		Virtualization:  "hvm",
+		RootDeviceType:  "ebs",
+		VolumeSizeGiB:   8,
+		ImageOwnerAlias: testAccountID,
+	})
+
+	result, err := svc.DescribeImages(&ec2.DescribeImagesInput{
+		ImageIds: []*string{aws.String("ami-uefi001"), aws.String("ami-legacy001")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, result.Images, 2)
+
+	byID := map[string]*ec2.Image{}
+	for _, img := range result.Images {
+		byID[aws.StringValue(img.ImageId)] = img
+	}
+	require.Contains(t, byID, "ami-uefi001")
+	require.Contains(t, byID, "ami-legacy001")
+	assert.Equal(t, "uefi", aws.StringValue(byID["ami-uefi001"].BootMode))
+	assert.Equal(t, "", aws.StringValue(byID["ami-legacy001"].BootMode),
+		"legacy AMIs (empty BootMode) must pass through as empty, not be backfilled")
+}
+
 func TestGetVolumeConfig(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -1595,6 +1641,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 		VolumeSizeGiB:   32,
 		RootDeviceType:  "ebs",
 		Description:     "arm source",
+		BootMode:        "uefi",
 	})
 
 	before := time.Now()
@@ -1608,6 +1655,7 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	assert.Equal(t, "hvm", newMeta.Virtualization)
 	assert.Equal(t, uint64(32), newMeta.VolumeSizeGiB)
 	assert.Equal(t, "ebs", newMeta.RootDeviceType)
+	assert.Equal(t, "uefi", newMeta.BootMode, "CopyImage must propagate BootMode from source")
 	assert.False(t, newMeta.CreationDate.Before(before), "CreationDate must be refreshed on copy, not inherited")
 }
 

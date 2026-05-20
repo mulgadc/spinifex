@@ -161,19 +161,6 @@ func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
 	assert.Equal(t, 0, store.Count())
 }
 
-func TestRemoveSystemImage_SpinifexLegacyOwner_HappyPath(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	const id = "ami-legacy-001"
-	putAMI(t, store, id, "legacy-image", "spinifex", SnapPrefix(id))
-	putAMIBlocks(t, store, id, 3, 16)
-	putSnapBlocks(t, store, SnapPrefix(id), 1, 8)
-
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
-	require.NoError(t, err)
-	assert.Greater(t, res.ObjectsDeleted, 0)
-	assert.Equal(t, 0, store.Count())
-}
-
 func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	const id = "ami-missing"

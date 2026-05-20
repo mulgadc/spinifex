@@ -158,9 +158,8 @@ var imagesRemoveCmd = &cobra.Command{
 	Short: "Remove an admin-imported system AMI",
 	Long: `Delete an AMI imported via 'spx admin images import', including its
 backing block storage and snapshot artefacts. Only operates on AMIs with a
-non-account owner (e.g. "system" or legacy "spinifex"); account-owned AMIs
-must be removed via 'aws ec2 deregister-image' followed by
-'aws ec2 delete-snapshot'.
+non-account owner (e.g. "system"); account-owned AMIs must be removed via
+'aws ec2 deregister-image' followed by 'aws ec2 delete-snapshot'.
 
 Refuses to delete an AMI that has dependent volumes or copied snapshots/AMIs
 unless --force is passed. Prompts for confirmation unless --yes is passed.`,

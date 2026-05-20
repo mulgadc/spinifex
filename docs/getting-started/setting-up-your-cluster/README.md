@@ -58,10 +58,10 @@ spx admin images list
 
 ```
 NAME                    | DISTRO | VERSION | ARCH   | BOOT
-debian-13-arm64         | debian | 13      | arm64  | bios
-debian-13-x86_64        | debian | 13      | x86_64 | bios
-ubuntu-26.04-arm64      | ubuntu | 26.04   | arm64  | bios
-ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | bios
+debian-13-arm64         | debian | 13      | arm64  | uefi
+debian-13-x86_64        | debian | 13      | x86_64 | uefi
+ubuntu-26.04-arm64      | ubuntu | 26.04   | arm64  | uefi
+ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | uefi
 ```
 
 Import an image:
@@ -73,7 +73,7 @@ spx admin images import --name ubuntu-26.04-x86_64
 Or import a local image file:
 
 ```bash
-spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --version 26.04 --arch x86_64
+spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
 ```
 
 Verify the import and note the AMI ID:

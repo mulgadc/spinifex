@@ -84,6 +84,14 @@ var supportedPlatforms = map[string]bool{
 	"Windows":    true,
 }
 
+// Mirrors the gateway RegisterImage allowlist so admin imports can't write an
+// AMI with a boot mode that RegisterImage would reject.
+var supportedBootModes = map[string]bool{
+	"bios":           true,
+	"uefi":           true,
+	"uefi-preferred": true,
+}
+
 var adminCmd = &cobra.Command{
 	Use:   "admin",
 	Short: "Administrative commands for Spinifex platform management",
@@ -304,6 +312,7 @@ func init() {
 	imagesImportCmd.Flags().String("version", "", "Specified distro version (e.g 12)")
 	imagesImportCmd.Flags().String("arch", "", "Specified distro arch (e.g aarch64, arm64, x86_64)")
 	imagesImportCmd.Flags().String("platform", "Linux/UNIX", "Specified platform (e.g Linux/UNIX, Windows)")
+	imagesImportCmd.Flags().String("boot-mode", "", "Boot mode for the imported AMI (bios|uefi|uefi-preferred). Required with --file. Overrides the catalog value when used with --name.")
 	imagesImportCmd.Flags().StringSlice("tag", nil, "Tag to apply to the imported AMI as key=value (repeatable; e.g. --tag spinifex:managed-by=elbv2)")
 	imagesImportCmd.Flags().Bool("force", false, "Force command execution (overwrites existing files)")
 	imagesImportCmd.Flags().Bool("skip-verify", false, "Skip catalog-image checksum verification (INSECURE; operator assumes integrity responsibility)")
@@ -374,6 +383,22 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 			image.Arch, _ = cmd.Flags().GetString("arch")
 			image.Platform, _ = cmd.Flags().GetString("platform")
 		}
+	}
+
+	// --file imports have no catalog metadata to inherit from, so the operator
+	// must declare the boot mode explicitly — guessing would silently produce
+	// a BIOS AMI from a UEFI-only image (or vice versa) and fail at launch.
+	// --name imports inherit from the catalog; the flag overrides when set.
+	bootModeFlag, _ := cmd.Flags().GetString("boot-mode")
+	if bootModeFlag != "" {
+		if !supportedBootModes[bootModeFlag] {
+			fmt.Fprintf(os.Stderr, "Unsupported --boot-mode %q (expected bios|uefi|uefi-preferred)\n", bootModeFlag)
+			os.Exit(1)
+		}
+		image.BootMode = bootModeFlag
+	} else if imageName == "" {
+		fmt.Fprintf(os.Stderr, "--boot-mode is required when importing via --file (expected bios|uefi|uefi-preferred)\n")
+		os.Exit(1)
 	}
 
 	// --tag k=v (repeatable) merges user-supplied tags into the AMI. Overrides

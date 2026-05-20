@@ -126,7 +126,7 @@ else
     if [ -f "$LOCAL_IMAGE" ]; then
         echo "  Using local image: $LOCAL_IMAGE"
         sudo /usr/local/bin/spx admin images import \
-            --file "$LOCAL_IMAGE" --distro ubuntu --version 26.04 --arch "$IMG_ARCH"
+            --file "$LOCAL_IMAGE" --distro ubuntu --version 26.04 --arch "$IMG_ARCH" --boot-mode uefi
     else
         echo "  Downloading image: $IMAGE_NAME"
         sudo /usr/local/bin/spx admin images import --name "$IMAGE_NAME"

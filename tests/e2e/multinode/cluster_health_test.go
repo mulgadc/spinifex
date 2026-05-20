@@ -39,7 +39,10 @@ func phase2_ClusterHealth(t *testing.T, fix *Fixture) {
 		t.Fatalf("spx get nodes: %d Ready, want >= %d\n%s", ready, len(fix.Cluster.Nodes), nodesOut)
 	}
 
+	// Best-effort: bash phase 2 runs `spx get vms --timeout 5s 2>/dev/null`
+	// and never checks the exit code — the CLI ↔ NATS dial can transiently
+	// fail right after cluster join without affecting the data path.
 	harness.Step(t, "spx get vms returns (any result, even empty)")
-	vmsOut := harness.SpxGetVMs(t)
+	vmsOut := harness.SpxRunBestEffort(t, "get", "vms")
 	harness.Detail(t, "spx_get_vms_bytes", len(vmsOut))
 }

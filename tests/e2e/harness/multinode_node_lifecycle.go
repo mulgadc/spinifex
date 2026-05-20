@@ -17,7 +17,9 @@ import (
 func StopNode(t *testing.T, node Node) {
 	t.Helper()
 	ssh := NewPeerSSH()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// spinifex.target has 6+ units (predastore, NATS, awsgw, vpcd, daemon, ui).
+	// stop takes 30-60s in practice; budget 3min to cover slow shutdowns.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl stop spinifex.target"); err != nil {
 		t.Logf("StopNode %s: %v (proceeding — bash treats this as non-fatal)", node.Name, err)
@@ -30,7 +32,11 @@ func StopNode(t *testing.T, node Node) {
 func StartNode(t *testing.T, node Node) {
 	t.Helper()
 	ssh := NewPeerSSH()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// systemctl start on spinifex.target blocks until every dependent unit
+	// is Active=active — predastore + NATS + awsgw + vpcd + daemon + ui can
+	// take 60-90s combined. 30s was too tight and produced "signal: killed"
+	// SSH terminations under context cancel; bump to 5min.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if _, err := ssh.Run(ctx, node.Addr, "sudo systemctl start spinifex.target"); err != nil {
 		t.Fatalf("StartNode %s: %v", node.Name, err)

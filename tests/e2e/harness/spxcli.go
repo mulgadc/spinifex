@@ -61,6 +61,21 @@ func SpxGetVMs(t *testing.T) string {
 	return SpxRun(t, false, "get", "vms")
 }
 
+// SpxRunBestEffort runs `spx <args...>` and returns combined output ignoring
+// the exit code. Matches the bash `2>/dev/null` + no exit-check pattern used
+// by `spx get vms` in run-multinode-e2e.sh phases 2-3 — the CLI's NATS dial
+// can race the cluster join shortly after bootstrap without indicating a
+// data-path fault, so a transient non-zero exit shouldn't fail the suite.
+func SpxRunBestEffort(t *testing.T, args ...string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	cmd := exec.Command(SpxBin(), args...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	_ = cmd.Run()
+	return buf.String()
+}
+
 // SpxTopNodes runs `spx top nodes`.
 func SpxTopNodes(t *testing.T) string {
 	t.Helper()

@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -32,25 +33,31 @@ type natsRoutezResponse struct {
 // at least want distinct peers. Default timeout 60s / interval 2s — covers
 // the post-join settle window observed in run-multinode-e2e.sh phase 2.
 //
+// NATS monitor binds 127.0.0.1:8222 only (cmd/spinifex/cmd/templates/nats.conf),
+// so the routez query has to land on each node's loopback. Bash uses
+// `peer_ssh "$ip" curl http://127.0.0.1:8222/routez`; we mirror that via
+// PeerSSH + curl rather than dialling node.Addr:8222 directly (which fails
+// with connection refused).
+//
 // Use want=2 on a healthy 3-node cluster (each peer sees the other two via
 // one route — NATS dedupes by remote_id so a 3-node mesh shows 2 unique
 // peers per node). Drops to want=1 after a single-node failure.
 func (c *Cluster) WaitNATSPeers(t *testing.T, want int, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 60 * time.Second, interval: 2 * time.Second}, opts...)
-	httpc := insecureHTTPClient(cfg.interval)
+	ssh := NewPeerSSH()
 
 	EventuallyErr(t, func() error {
 		for _, n := range c.Nodes {
-			url := fmt.Sprintf("http://%s:%d/routez", n.Addr, natsMonitorPort)
-			resp, err := httpc.Get(url)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			out, err := ssh.Run(ctx, n.Addr,
+				fmt.Sprintf("curl -fsS http://127.0.0.1:%d/routez", natsMonitorPort))
+			cancel()
 			if err != nil {
-				return fmt.Errorf("%s NATS /routez: %w", n.Name, err)
+				return fmt.Errorf("%s NATS /routez via peer_ssh: %w", n.Name, err)
 			}
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
 			var routez natsRoutezResponse
-			if err := json.Unmarshal(body, &routez); err != nil {
+			if err := json.Unmarshal(out, &routez); err != nil {
 				return fmt.Errorf("%s NATS /routez decode: %w", n.Name, err)
 			}
 			seen := map[string]struct{}{}

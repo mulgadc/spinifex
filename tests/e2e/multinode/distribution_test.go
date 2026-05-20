@@ -29,8 +29,13 @@ func phase3_InstanceDistribution(t *testing.T, fix *Fixture) {
 		t.Logf("WARN: all %d instances on one node (%v) — non-fatal, scheduler quirk", len(ids), counts)
 	}
 
-	harness.Step(t, "spx get vms includes every launched instance")
-	vms := harness.SpxGetVMs(t)
+	// `spx get vms` is best-effort. Bash phase 3 invokes it with `2>/dev/null`
+	// and downgrades a missing instance to WARN — the underlying CLI ↔ NATS
+	// connection can race the cluster join (mulga-siv-90 CI run 26161792146)
+	// without affecting correctness of the data path. Mirror that: accept
+	// non-zero exit, log when an ID is missing rather than fail.
+	harness.Step(t, "spx get vms includes every launched instance (best-effort)")
+	vms := harness.SpxRunBestEffort(t, "get", "vms")
 	for _, id := range ids {
 		if !strings.Contains(vms, id) {
 			t.Logf("WARN: spx get vms did not list %s", id)

@@ -63,13 +63,23 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey string) *AWSClien
 	}
 	region := getenv("SPINIFEX_AWS_REGION", "ap-southeast-2")
 
-	caPath, err := ResolveCACert(env)
-	if err != nil {
-		t.Fatalf("AWS client: %v", err)
-	}
-	pool, err := LoadCAPool(caPath)
-	if err != nil {
-		t.Fatalf("AWS client: %v", err)
+	// Runner-resident scenarios (e.g. reboot suite running outside the VM)
+	// don't have the spinifex CA cert on disk. SPINIFEX_AWS_INSECURE=1 skips
+	// the CA load entirely and uses InsecureSkipVerify — trust validation is
+	// already covered by the cert suite, so this is safe for non-cert tests.
+	tlsCfg := &tls.Config{}
+	if os.Getenv("SPINIFEX_AWS_INSECURE") == "1" {
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec // explicit opt-in for runner-resident E2E
+	} else {
+		caPath, err := ResolveCACert(env)
+		if err != nil {
+			t.Fatalf("AWS client: %v", err)
+		}
+		pool, err := LoadCAPool(caPath)
+		if err != nil {
+			t.Fatalf("AWS client: %v", err)
+		}
+		tlsCfg.RootCAs = pool
 	}
 
 	cfg := &aws.Config{
@@ -78,7 +88,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey string) *AWSClien
 		S3ForcePathStyle: aws.Bool(true),
 		HTTPClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: pool},
+				TLSClientConfig: tlsCfg,
 			},
 		},
 	}

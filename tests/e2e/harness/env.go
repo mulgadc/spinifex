@@ -28,8 +28,15 @@ const (
 )
 
 type Env struct {
-	Mode           Mode
-	NodeIPs        []string
+	Mode    Mode
+	NodeIPs []string
+	// WANHost is the externally-reachable host used by runner-resident
+	// scenarios (e.g. the reboot suite, which executes on the GitHub Actions
+	// runner because systemctl-reboot kills any in-VM process). Distinct from
+	// ServiceIPs[0]: ServiceIPs[0] is the awsgw bind IP and may be loopback
+	// when the test runs in-VM, whereas WANHost must always be the SSH/HTTP
+	// target IP reachable from outside the cluster.
+	WANHost        string
 	ServiceIPs     []string
 	ConfigDir      string
 	AWSGWPort      int
@@ -79,9 +86,15 @@ func LoadEnv(t *testing.T) *Env {
 		}
 	}
 
+	wanHost := getenv("SPINIFEX_WAN_IP", "")
+	if wanHost == "" && len(nodeIPs) > 0 {
+		wanHost = nodeIPs[0]
+	}
+
 	return &Env{
 		Mode:           mode,
 		NodeIPs:        nodeIPs,
+		WANHost:        wanHost,
 		ServiceIPs:     serviceIPs,
 		ConfigDir:      configDir,
 		AWSGWPort:      atoiOr("SPINIFEX_AWSGW_PORT", 9999),

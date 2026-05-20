@@ -431,6 +431,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			s.resourceMgr.Deallocate(instanceType)
 			continue
 		}
+		instance.BootMode = amiMeta.BootMode
 
 		// Terraform with associate_public_ip_address sends subnet/SG via
 		// NetworkInterfaces[0]; lift to top-level so the rest works uniformly.

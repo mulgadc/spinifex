@@ -222,7 +222,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.PIDFile = pidFile
 		instance.Config.ConsoleLogPath = consoleLogPath
 	} else {
-		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
+		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
 
 		instance.EBSRequests.Mu.Lock()
 		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
@@ -628,8 +628,10 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 }
 
 // buildBaseVMConfig creates a vm.Config with base QEMU settings and PCIe
-// hotplug root ports.
-func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture string, vCPUs, memoryMiB int) Config {
+// hotplug root ports. bootMode is the AMI's boot mode string ("bios" | "uefi"
+// | "uefi-preferred"); "uefi" and "uefi-preferred" flip cfg.UseUEFI. Any other
+// value (including "") defaults to BIOS.
+func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
 	cfg := Config{
 		Name:           instanceID,
 		PIDFile:        pidFile,
@@ -642,6 +644,7 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 		Memory:         memoryMiB,
 		CPUCount:       vCPUs,
 		Architecture:   architecture,
+		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
 	}
 	// 11 PCIe root ports for /dev/sd[f-p] hotplug slots, starting at chassis 1.
 	for i := 1; i <= 11; i++ {

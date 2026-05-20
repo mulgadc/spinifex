@@ -132,6 +132,12 @@ type VM struct {
 	// GPUXVGAEnabled controls whether x-vga=on is passed to QEMU for this instance's
 	// GPU device. True for consumer GPUs; false for headless datacenter cards.
 	GPUXVGAEnabled bool `json:"gpu_xvga_enabled,omitempty"`
+
+	// BootMode captures the AMI's boot mode ("bios" | "uefi" | "uefi-preferred")
+	// at launch time so the firmware choice survives daemon restart and host
+	// migration without re-querying AMIMetadata. Empty for legacy VMs launched
+	// before this field existed; treated as "bios" by the launch path.
+	BootMode string `json:"boot_mode,omitempty"`
 }
 
 // ResetNodeLocalState zeroes out fields that are specific to the daemon node

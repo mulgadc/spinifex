@@ -22,18 +22,41 @@ import (
 func TestBuildBaseVMConfig(t *testing.T) {
 	for _, arch := range []string{"x86_64", "arm64"} {
 		t.Run(arch, func(t *testing.T) {
-			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, 2, 4096)
+			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, "", 2, 4096)
 
 			assert.True(t, cfg.EnableKVM)
 			assert.True(t, cfg.NoGraphic)
 			assert.Equal(t, "q35", cfg.MachineType)
 			assert.Equal(t, "host", cfg.CPUType)
+			assert.False(t, cfg.UseUEFI, "empty bootMode must default to BIOS")
 
 			require.Len(t, cfg.Devices, 11, "PCIe hot-plug requires 11 pre-allocated root ports")
 			for i, dev := range cfg.Devices {
 				expected := fmt.Sprintf("pcie-root-port,id=hotplug%d,chassis=%d,slot=0", i+1, i+1)
 				assert.Equal(t, expected, dev.Value)
 			}
+		})
+	}
+}
+
+// TestBuildBaseVMConfig_BootMode pins the bootMode → UseUEFI mapping.
+// "uefi" and AWS's "uefi-preferred" both flip the firmware flag; "bios" and
+// any unrecognised value (including "") fall through as BIOS.
+func TestBuildBaseVMConfig_BootMode(t *testing.T) {
+	tests := []struct {
+		bootMode    string
+		wantUseUEFI bool
+	}{
+		{"", false},
+		{"bios", false},
+		{"uefi", true},
+		{"uefi-preferred", true},
+		{"garbage", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.bootMode, func(t *testing.T) {
+			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", "x86_64", tc.bootMode, 2, 4096)
+			assert.Equal(t, tc.wantUseUEFI, cfg.UseUEFI)
 		})
 	}
 }

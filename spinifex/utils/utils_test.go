@@ -1583,3 +1583,63 @@ iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
 		assert.Equal(t, targetHex, got)
 	})
 }
+
+func TestAvailableImages_Rocky(t *testing.T) {
+	cases := []struct {
+		name        string
+		arch        string
+		filenameSub string
+	}{
+		{"rocky-10-x86_64", "x86_64", "x86_64.qcow2"},
+		{"rocky-10-arm64", "arm64", "aarch64.qcow2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			img, ok := AvailableImages[tc.name]
+			require.True(t, ok, "catalog must contain %q", tc.name)
+			assert.Equal(t, tc.name, img.Name)
+			assert.Equal(t, "rocky", img.Distro)
+			assert.Equal(t, "10", img.Version)
+			assert.Equal(t, tc.arch, img.Arch)
+			// Rocky 10 cloud images are UEFI-only on both architectures.
+			assert.Equal(t, "uefi", img.BootMode)
+			assert.Equal(t, "sha256", img.ChecksumType)
+			// URL must be pinned to a dated build (no moving "latest" symlink)
+			// and the checksum URL must be the BSD-style .CHECKSUM companion.
+			assert.NotContains(t, img.URL, "latest")
+			assert.Contains(t, img.URL, tc.filenameSub)
+			assert.True(t, strings.HasSuffix(img.Checksum, ".CHECKSUM"),
+				"Rocky publishes BSD-style .CHECKSUM files; got %q", img.Checksum)
+			// Catalog Distro must resolve to the rhel family — typo here would
+			// silently render Rocky guests with netplan/sudo group.
+			assert.Equal(t, "rhel", DistroFamily(img.Distro))
+		})
+	}
+}
+
+func TestDistroFamily(t *testing.T) {
+	cases := []struct {
+		distro string
+		want   string
+	}{
+		{"debian", "debian"},
+		{"ubuntu", "debian"},
+		{"rocky", "rhel"},
+		{"rhel", "rhel"},
+		{"alma", "rhel"},
+		{"fedora", "rhel"},
+		{"centos", "rhel"},
+		{"alpine", "alpine"},
+		// Case + whitespace normalisation
+		{"  Rocky  ", "rhel"},
+		{"UBUNTU", "debian"},
+		// Unknown and empty fall through to debian with a warning logged.
+		{"", "debian"},
+		{"plan9", "debian"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.distro, func(t *testing.T) {
+			assert.Equal(t, tc.want, DistroFamily(tc.distro))
+		})
+	}
+}

@@ -291,6 +291,34 @@ type Images struct {
 	Tags map[string]string `json:"tags,omitempty"`
 }
 
+// distroFamilies maps a distro name to its cloud-init family. Family selects
+// the per-distro branches in the cloud-init template (sudoers group,
+// NetworkManager keyfile vs netplan). Keep keys lowercase; callers normalise.
+var distroFamilies = map[string]string{
+	"debian": "debian",
+	"ubuntu": "debian",
+	"rocky":  "rhel",
+	"rhel":   "rhel",
+	"alma":   "rhel",
+	"fedora": "rhel",
+	"centos": "rhel",
+	"alpine": "alpine",
+}
+
+// DistroFamily returns the cloud-init family for distro. Unknown or empty
+// distro maps to "debian" (today's default rendering) and logs a warning so
+// operators using --file imports for custom appliances aren't broken by a
+// missing --distro flag; explicit RHEL-family rendering requires
+// --distro rocky|rhel|alma|fedora|centos.
+func DistroFamily(distro string) string {
+	d := strings.ToLower(strings.TrimSpace(distro))
+	if family, ok := distroFamilies[d]; ok {
+		return family
+	}
+	slog.Warn("unknown distro, defaulting to debian-family cloud-init", "distro", distro)
+	return "debian"
+}
+
 var AvailableImages = map[string]Images{
 
 	"debian-13-x86_64": {
@@ -374,6 +402,34 @@ var AvailableImages = map[string]Images{
 		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2",
 		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
+		BootMode:     "uefi",
+	},
+
+	"rocky-10-x86_64": {
+		Name:         "rocky-10-x86_64",
+		Description:  "Rocky Linux 10 x86_64 cloud image",
+		Distro:       "rocky",
+		Version:      "10",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2025, 11, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2",
+		Checksum:     "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2.CHECKSUM",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+	},
+
+	"rocky-10-arm64": {
+		Name:         "rocky-10-arm64",
+		Description:  "Rocky Linux 10 arm64 cloud image",
+		Distro:       "rocky",
+		Version:      "10",
+		Arch:         "arm64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2025, 11, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2",
+		Checksum:     "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2.CHECKSUM",
+		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},
 }

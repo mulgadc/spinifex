@@ -272,6 +272,187 @@ func TestCloudInitTemplateRendering(t *testing.T) {
 	}
 }
 
+func TestFloorVolumeSizeToAMI(t *testing.T) {
+	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		"ami-rocky":   {VolumeSizeGiB: 10},
+		"ami-debian":  {VolumeSizeGiB: 3},
+		"ami-no-size": {VolumeSizeGiB: 0},
+	}}
+	const fourGiB = 4 * 1024 * 1024 * 1024
+	const tenGiB = 10 * 1024 * 1024 * 1024
+	const twentyGiB = 20 * 1024 * 1024 * 1024
+
+	t.Run("ami larger than requested rounds up", func(t *testing.T) {
+		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(loader, "ami-rocky", fourGiB))
+	})
+	t.Run("ami smaller than requested keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-debian", fourGiB))
+	})
+	t.Run("requested larger than ami keeps requested", func(t *testing.T) {
+		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(loader, "ami-rocky", twentyGiB))
+	})
+	t.Run("missing VolumeSizeGiB keeps requested (legacy AMI)", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-no-size", fourGiB))
+	})
+	t.Run("unknown AMI keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-unknown", fourGiB))
+	})
+	t.Run("non-ami image id keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "vol-123", fourGiB))
+	})
+	t.Run("nil loader keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(nil, "ami-rocky", fourGiB))
+	})
+}
+
+func TestBuildRHELCloudInit(t *testing.T) {
+	t.Run("empty eniMAC returns empty (wildcard path)", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("", "", "", "", nil)
+		assert.Empty(t, wf)
+		assert.Empty(t, rc)
+	})
+
+	t.Run("vpc0 only", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("02:00:00:00:00:01", "", "", "", nil)
+		// File mode + ownership are load-bearing — NM ignores anything else.
+		assert.Contains(t, wf, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, wf, "owner: root:root")
+		assert.Contains(t, wf, "permissions: '0600'")
+		assert.Contains(t, wf, "mac-address=02:00:00:00:00:01")
+		assert.Contains(t, wf, "dhcp-client-id=mac")
+		assert.Contains(t, wf, "method=auto")
+		assert.NotContains(t, wf, "never-default")
+		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
+	})
+
+	t.Run("vpc0 + extra ENIs + dev + mgmt", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"02:00:00:00:00:aa", "10.250.0.5",
+			[]string{"02:00:00:00:00:02", "02:00:00:00:00:03"},
+		)
+		for _, name := range []string{"vpc0", "vpc1", "vpc2", "dev0", "mgmt0"} {
+			assert.Contains(t, wf, "/etc/NetworkManager/system-connections/"+name+".nmconnection", name)
+			assert.Contains(t, rc, "  - [ nmcli, connection, up, "+name+" ]", name)
+		}
+		// dev NIC must not install default route or DNS.
+		assert.Contains(t, wf, "never-default=true")
+		assert.Contains(t, wf, "ignore-auto-dns=true")
+		// mgmt NIC is static with the supplied IP.
+		assert.Contains(t, wf, "method=manual")
+		assert.Contains(t, wf, "addresses=10.250.0.5/24")
+	})
+
+	t.Run("empty extra MAC skipped", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01", "", "", "",
+			[]string{"", "02:00:00:00:00:02"},
+		)
+		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
+		assert.NotContains(t, wf, "vpc1.nmconnection")
+		assert.Contains(t, wf, "vpc2.nmconnection")
+	})
+}
+
+func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
+	rhelWF, rhelRC := buildRHELCloudInit("02:00:00:11:22:33", "", "", "", nil)
+
+	t.Run("debian family: sudo group, no NM keyfiles", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
+			DistroFamily: "debian", SudoGroup: "sudo",
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- sudo")
+		assert.NotContains(t, out, "- wheel")
+		assert.NotContains(t, out, "NetworkManager/system-connections")
+		assert.NotContains(t, out, "nmcli")
+		assert.NotContains(t, out, "restorecon")
+	})
+
+	t.Run("rhel family: wheel group, NM keyfile write_files + runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- wheel")
+		assert.NotContains(t, out, "- sudo\n")
+		assert.Contains(t, out, "write_files:")
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "permissions: '0600'")
+		assert.Contains(t, out, "dhcp-client-id=mac")
+		assert.Contains(t, out, "runcmd:")
+		assert.Contains(t, out, "restorecon")
+		assert.Contains(t, out, "nmcli, connection, reload")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+	})
+
+	t.Run("rhel + user script: both blocks merged under single write_files/runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+			UserDataScript: "      #!/bin/bash\n      echo hi\n",
+		}))
+		out := buf.String()
+		// YAML disallows duplicate top-level keys; assert each appears exactly once.
+		assert.Equal(t, 1, strings.Count(out, "\nwrite_files:"))
+		assert.Equal(t, 1, strings.Count(out, "\nruncmd:"))
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "/tmp/cloud-init-startup.sh")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+		assert.Contains(t, out, `"/bin/bash", "/tmp/cloud-init-startup.sh"`)
+	})
+}
+
+func TestSelectNetworkConfigForFamily(t *testing.T) {
+	const eniMAC = "02:00:00:00:00:01"
+
+	t.Run("rhel returns disabled stub", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("rhel", eniMAC, "", "", "", nil)
+		assert.Equal(t, cloudInitNetworkConfigDisabled, out)
+		assert.Contains(t, out, "config: disabled")
+		// Must not emit any netplan v2 keys — those would render alongside
+		// our NM keyfile and produce a competing cloud-init-enpXsY connection.
+		assert.NotContains(t, out, "ethernets:")
+		assert.NotContains(t, out, "version: 2")
+	})
+
+	t.Run("debian returns per-interface netplan", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("debian", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.Contains(t, out, "ethernets:")
+		assert.Contains(t, out, "vpc0:")
+		assert.Contains(t, out, "dhcp-identifier: mac")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("empty family falls through to netplan", func(t *testing.T) {
+		// Legacy AMIs without DistroFamily populated must keep today's behaviour.
+		out := selectNetworkConfigForFamily("", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("alpine falls through to netplan", func(t *testing.T) {
+		// Alpine has no RHEL-style NM keyfile path; reuses netplan.
+		out := selectNetworkConfigForFamily("alpine", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+}
+
 func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	data := CloudInitMetaData{
 		InstanceID: "i-0123456789abcdef0",

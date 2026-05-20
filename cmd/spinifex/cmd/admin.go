@@ -522,6 +522,8 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	manifest.AMIMetadata.ImageOwnerAlias = "system"
 	manifest.AMIMetadata.VolumeSizeGiB = utils.SafeInt64ToUint64(imageStat.Size() / 1024 / 1024 / 1024)
 	manifest.AMIMetadata.BootMode = image.BootMode
+	manifest.AMIMetadata.Distro = image.Distro
+	manifest.AMIMetadata.DistroFamily = utils.DistroFamily(image.Distro)
 
 	// Copy catalog-provided tags (e.g. spinifex:managed-by for system AMIs)
 	// onto the imported AMI so the UI can filter them out.

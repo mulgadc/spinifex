@@ -39,7 +39,7 @@ users:
   - name: {{.Username}}
     shell: /bin/sh
     groups:
-      - sudo
+      - {{.SudoGroup}}
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     ssh_authorized_keys:
       - {{.SSHKey}}
@@ -60,15 +60,21 @@ ca_certs:
 {{.UserDataCloudConfig}}
 {{end}}
 
-{{if .UserDataScript}}
+{{if or .RHELWriteFiles .UserDataScript}}
 write_files:
+{{- if .RHELWriteFiles}}
+{{.RHELWriteFiles}}{{end}}{{if .UserDataScript}}
   - path: /tmp/cloud-init-startup.sh
     permissions: '0755'
     content: |
-{{.UserDataScript}}
-
+{{.UserDataScript}}{{end}}
+{{end}}
+{{if or .RHELRunCmd .UserDataScript}}
 runcmd:
+{{- if .RHELRunCmd}}
+{{.RHELRunCmd}}{{end}}{{if .UserDataScript}}
   - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
+{{end}}
 {{end}}
 `
 
@@ -90,6 +96,26 @@ const cloudInitNetworkConfigWildcard = `network:
       dhcp4: true
       dhcp-identifier: mac
 `
+
+// cloudInitNetworkConfigDisabled tells cloud-init to do no network rendering
+// at all. Used on RHEL-family guests where Spinifex writes NM keyfiles via
+// user-data write_files; without this stub cloud-init's RHEL network module
+// falls back to autodetect-DHCP and drops a second keyfile next to ours.
+const cloudInitNetworkConfigDisabled = `network:
+  config: disabled
+`
+
+// selectNetworkConfigForFamily returns the cloud-init network-config payload
+// for the given distro family. RHEL-family guests get an explicit
+// "config: disabled" stub because their NM keyfiles are written via user-data
+// write_files; shipping a netplan config alongside would let cloud-init's RHEL
+// network module drop a competing cloud-init-enpXsY.nmconnection.
+func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
+	if distroFamily == "rhel" {
+		return cloudInitNetworkConfigDisabled
+	}
+	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs)
+}
 
 // generateNetworkConfig produces the cloud-init network-config for the instance.
 //
@@ -163,6 +189,116 @@ type CloudInitData struct {
 	UserDataCloudConfig string
 	UserDataScript      string
 	CACertPEM           string
+	// DistroFamily selects per-distro branches in the cloud-init template.
+	// "debian" | "rhel" | "alpine". Empty falls through to debian rendering
+	// (legacy AMIs registered before the field existed).
+	DistroFamily string
+	// SudoGroup is the OS group cloud-init adds the user to for passwordless
+	// sudo. "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
+	SudoGroup string
+	// RHELWriteFiles is the pre-indented YAML block of NM keyfile entries
+	// (one per NIC) appended under the merged write_files: key. Empty on
+	// non-RHEL guests; the network-config ISO file carries the YAML netplan
+	// equivalent instead.
+	RHELWriteFiles string
+	// RHELRunCmd is the pre-indented YAML block of runcmd entries (restorecon
+	// + nmcli reload/up) needed to load and bring up the keyfiles. Empty on
+	// non-RHEL guests.
+	RHELRunCmd string
+}
+
+// buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
+// runcmd (restorecon + nmcli) blocks needed to bring up networking on a
+// RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
+// non-VPC path) so NM's default autoconnect handles the interface.
+//
+// Mirrors generateNetworkConfig's per-interface structure: vpc0 + optional
+// vpc1..N for extra ENIs, dev0 (DHCP with route/DNS suppression), mgmt0
+// (static). Owning the keyfile bytes directly avoids relying on cloud-init's
+// v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
+// which OVN's MAC-keyed DHCP requires.
+//
+// File mode 0600 root:root is load-bearing — NM ignores keyfiles otherwise.
+// restorecon defers to host SELinux policy (no-op on non-SELinux systems);
+// nmcli reload forces NM to rescan system-connections after write_files
+// completes in cloud-init's config stage, and nmcli up brings each interface
+// online without waiting on autoconnect heuristics.
+func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) (writeFiles, runCmd string) {
+	if eniMAC == "" {
+		return "", ""
+	}
+
+	var wf, rc strings.Builder
+
+	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
+	rc.WriteString("  - [ nmcli, connection, reload ]\n")
+
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
+	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
+
+	for i, mac := range extraENIMACs {
+		if mac == "" {
+			continue
+		}
+		name := fmt.Sprintf("vpc%d", i+1)
+		appendRHELDHCPKeyfile(&wf, name, mac, false)
+		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
+	}
+
+	if devMAC != "" {
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
+		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
+	}
+
+	if mgmtMAC != "" && mgmtIP != "" {
+		appendRHELStaticKeyfile(&wf, "mgmt0", mgmtMAC, mgmtIP)
+		rc.WriteString("  - [ nmcli, connection, up, mgmt0 ]\n")
+	}
+
+	// Trim trailing newline so the template's {{.RHELWriteFiles}} doesn't
+	// produce a blank line before the user-script write_files entry on
+	// instances that have both.
+	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
+}
+
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=auto\n")
+	b.WriteString("      dhcp-client-id=mac\n")
+	if suppressDefaults {
+		// Equivalent to netplan dhcp4-overrides {use-routes: false, use-dns: false}:
+		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
+		b.WriteString("      never-default=true\n")
+		b.WriteString("      ignore-auto-dns=true\n")
+	}
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
+}
+
+func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=manual\n")
+	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
 }
 
 type CloudInitMetaData struct {
@@ -188,6 +324,33 @@ type volumeParams struct {
 	imageId             string
 	snapshotId          string
 	deleteOnTermination bool
+}
+
+// floorVolumeSizeToAMI ensures requested is at least the AMI's snapshot size.
+// Cloud images embed a fixed-size partition table; truncating below it (e.g.
+// a 10 GiB Rocky image requested at the 4 GiB default) hangs the guest in
+// dracut waiting on a root UUID that lives past the cut-off. AWS rejects
+// under-sized requests with InvalidParameterValue — spinifex silently rounds
+// up since we don't surface that error code today and the user-visible
+// failure (dracut hang) is worse than a slightly bigger volume.
+func floorVolumeSizeToAMI(loader AMIMetaLoader, imageID string, requested int) int {
+	if loader == nil || !strings.HasPrefix(imageID, "ami-") {
+		return requested
+	}
+	amiMeta, err := loader.GetAMIConfig(imageID)
+	if err != nil {
+		slog.Warn("floorVolumeSizeToAMI: AMI metadata fetch failed; using requested size — guest may dracut-hang if requested is smaller than the AMI snapshot", "imageId", imageID, "err", err)
+		return requested
+	}
+	if amiMeta.VolumeSizeGiB == 0 {
+		return requested
+	}
+	amiSize := utils.SafeUint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	if amiSize <= int64(requested) {
+		return requested
+	}
+	slog.Info("floorVolumeSizeToAMI: rounding up to AMI snapshot size", "imageId", imageID, "requestedBytes", requested, "amiBytes", amiSize)
+	return int(amiSize)
 }
 
 // parseVolumeParams extracts volume parameters from RunInstancesInput,
@@ -802,6 +965,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
 	p := parseVolumeParams(input)
+	if input.ImageId != nil {
+		p.size = floorVolumeSizeToAMI(s.amiLoader, *input.ImageId, p.size)
+	}
 
 	// Capture attach time for the root volume
 	attachTime := time.Now()
@@ -1253,11 +1419,40 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
 	}
 
+	// Re-read AMI metadata for DistroFamily rather than persisting it on
+	// vm.VM — cloud-init renders once at first launch and the ISO is sealed,
+	// so no consumer needs DistroFamily after this point.
+	var distroFamily string
+	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
+		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
+		if err != nil {
+			slog.Warn("createCloudInitISO: AMI metadata fetch failed; cloud-init will render with debian-family defaults (RHEL guests will boot without networking and with wrong sudo group)", "imageId", *input.ImageId, "err", err)
+		} else {
+			distroFamily = amiMeta.DistroFamily
+		}
+	}
+
+	extraMACs := make([]string, 0, len(instance.ExtraENIs))
+	for _, extra := range instance.ExtraENIs {
+		extraMACs = append(extraMACs, extra.ENIMac)
+	}
+
+	sudoGroup := "sudo"
+	var rhelWriteFiles, rhelRunCmd string
+	if distroFamily == "rhel" {
+		sudoGroup = "wheel"
+		rhelWriteFiles, rhelRunCmd = buildRHELCloudInit(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	}
+
 	userData := CloudInitData{
-		Username:  "ec2-user",
-		SSHKey:    string(sshKey),
-		Hostname:  hostname,
-		CACertPEM: caCertPEM,
+		Username:       "ec2-user",
+		SSHKey:         string(sshKey),
+		Hostname:       hostname,
+		CACertPEM:      caCertPEM,
+		DistroFamily:   distroFamily,
+		SudoGroup:      sudoGroup,
+		RHELWriteFiles: rhelWriteFiles,
+		RHELRunCmd:     rhelRunCmd,
 	}
 
 	// Decode and classify user-data from RunInstances (base64-encoded).
@@ -1319,12 +1514,10 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 
 	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
 	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
-	// multi-subnet system VMs (multi-AZ ALBs).
-	extraMACs := make([]string, 0, len(instance.ExtraENIs))
-	for _, extra := range instance.ExtraENIs {
-		extraMACs = append(extraMACs, extra.ENIMac)
-	}
-	networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	// multi-subnet system VMs (multi-AZ ALBs). RHEL-family guests get a
+	// "config: disabled" stub here so cloud-init doesn't drop a second NM
+	// keyfile alongside the ones we wrote via user-data write_files.
+	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
 	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
 	if err != nil {
 		slog.Error("failed to add network-config file", "err", err)

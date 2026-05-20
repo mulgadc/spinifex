@@ -93,7 +93,6 @@ linters:
     modernize:
       disable:
         - newexpr # don't replace aws.String() with new() — AWS SDK idiom
-        - slicesbackward # less readable
         - stringsbuilder # don't replace small string concatenations with strings.Builder
 
     perfsprint:

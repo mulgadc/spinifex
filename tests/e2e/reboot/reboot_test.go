@@ -334,12 +334,18 @@ func phase1Network(t *testing.T, fix *fixture) {
 
 	// Structured IpPermissions form — vpcd ignores the top-level shortcut
 	// (mulga-siv-79) so port 80 ingress must use IpPermissions to land in OVN.
+	// tcp/22 is opened so on-failure diagnostics can SSH into app guests.
 	_, err = fix.aws.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(fix.sgID),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol: aws.String("tcp"),
 			FromPort:   aws.Int64(httpPort),
 			ToPort:     aws.Int64(httpPort),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}, {
+			IpProtocol: aws.String("tcp"),
+			FromPort:   aws.Int64(22),
+			ToPort:     aws.Int64(22),
 			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
 		}},
 	})
@@ -999,6 +1005,78 @@ rm -f /tmp/diag-body-%[2]s
 	default:
 		harness.Detail(t, id, "probe inconclusive — see artifact")
 	}
+
+	// Try SSH-in via the IGW path. tcp/22 SG ingress is wired in phase1.
+	// On success this dumps the responder unit + cloud-init state, which is
+	// the only path to root-cause a "tcp open but responder silent" failure.
+	sshIntoApp(ctx, t, fix, id, pub)
+}
+
+// sshIntoApp uploads the key pair private key to the host, then SSHes from
+// the host to the app guest at its IGW public IP and dumps responder /
+// cloud-init / network state. Best-effort: silently no-ops if key wasn't
+// captured or SSH fails.
+func sshIntoApp(ctx context.Context, t *testing.T, fix *fixture, id, pub string) {
+	t.Helper()
+	if fix.privateKeyPath == "" {
+		return
+	}
+	keyData, err := os.ReadFile(fix.privateKeyPath)
+	if err != nil {
+		harness.Detail(t, id, fmt.Sprintf("ssh-in: read key err: %v", err))
+		return
+	}
+	enc := base64.StdEncoding.EncodeToString(keyData)
+	remoteKey := fmt.Sprintf("/tmp/reboot-e2e-%s.pem", id)
+
+	diag := `set +e
+echo "=== uname / uptime ==="
+uname -a; uptime
+echo "=== systemctl is-active reboot-e2e-httpd.service ==="
+systemctl is-active reboot-e2e-httpd.service
+systemctl is-enabled reboot-e2e-httpd.service
+echo "=== systemctl status (head 40) ==="
+systemctl status --no-pager reboot-e2e-httpd.service 2>&1 | head -40
+echo "=== unit file ==="
+ls -l /etc/systemd/system/reboot-e2e-httpd.service 2>&1
+echo "=== port :80 listeners ==="
+sudo ss -tlnp 'sport = :80' 2>/dev/null
+echo "=== curl localhost ==="
+curl -s -m 3 -w '\nHTTP=%{http_code}\n' http://127.0.0.1/ || echo "curl localhost FAILED"
+echo "=== /var/lib/httpd ==="
+ls -l /var/lib/httpd 2>&1
+cat /var/lib/httpd/index.html 2>&1
+echo "=== responder journal ==="
+sudo journalctl -u reboot-e2e-httpd.service --no-pager -n 60 2>&1
+echo "=== cloud-init result.json ==="
+cat /run/cloud-init/result.json 2>&1
+echo "=== cloud-init.log tail ==="
+sudo tail -80 /var/log/cloud-init.log 2>&1
+echo "=== cloud-init-output.log tail ==="
+sudo tail -40 /var/log/cloud-init-output.log 2>&1
+echo "=== instance-id sem ==="
+ls -l /var/lib/cloud/instance 2>&1
+ls -l /var/lib/cloud/instances/ 2>&1
+`
+	// Outer ssh ships one cmd; inside, write the key, then ssh again to guest
+	// with a heredoc. Single round trip from runner.
+	outerCmd := fmt.Sprintf(`set +e
+umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s
+ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 \
+    ubuntu@%s bash -s <<'EOFDIAG'
+%s
+EOFDIAG
+rm -f %s
+`, enc, remoteKey, remoteKey, remoteKey, pub, diag, remoteKey)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, outerCmd)
+	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-guest-ssh.txt", id), out)
+	if err != nil {
+		harness.Detail(t, id, fmt.Sprintf("ssh-in err: %v", err))
+		return
+	}
+	harness.Detail(t, id, "ssh-in OK (see diag-*-guest-ssh.txt)")
 }
 
 // --- Cleanup -------------------------------------------------------------

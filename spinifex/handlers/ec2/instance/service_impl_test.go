@@ -2670,3 +2670,33 @@ func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
 }
+
+// TestInstanceArchitecture pins the safe-extraction contract: malformed
+// InstanceTypeInfo returns "" rather than panicking, and the firmware probe
+// surfaces "" as a clear error on the launch path.
+func TestInstanceArchitecture(t *testing.T) {
+	tests := []struct {
+		name string
+		it   *ec2.InstanceTypeInfo
+		want string
+	}{
+		{"nil", nil, ""},
+		{"nil processor info", &ec2.InstanceTypeInfo{}, ""},
+		{"empty supported archs", &ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{}}, ""},
+		{
+			"x86_64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}}},
+			"x86_64",
+		},
+		{
+			"arm64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}}},
+			"arm64",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
+		})
+	}
+}

@@ -175,6 +175,11 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
+	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
+	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
+	Unit int `json:"unit,omitempty"`
+	// ReadOnly emits readonly=on; used for the pflash CODE blob.
+	ReadOnly bool `json:"readonly,omitempty"`
 }
 
 type IOThread struct {
@@ -204,8 +209,11 @@ type Config struct {
 	InstanceType string `json:"instance_type"`
 	Architecture string `json:"architecture"`
 
-	// UseUEFI requests OVMF firmware instead of the default SeaBIOS for x86_64 VMs.
-	// Falls back silently to SeaBIOS if OVMF is not installed on the host.
+	// UseUEFI requests UEFI firmware (OVMF on x86_64, AAVMF on arm64) instead of
+	// SeaBIOS / no-firmware boot. Execute() probes firmwarePathCandidates and
+	// returns an error if no matching code+vars pair is installed — no silent
+	// SeaBIOS fallback, since a UEFI-only guest booted under SeaBIOS panics on
+	// missing ESP.
 	UseUEFI bool `json:"use_uefi,omitempty"`
 
 	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set
@@ -288,10 +296,20 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		return nil, fmt.Errorf("at least one drive or a kernel image is required")
 	}
 
-	for _, drive := range cfg.Drives {
-		var opts []string
+	drives := cfg.Drives
+	if cfg.UseUEFI {
+		codePath, _, _, fwErr := FirmwarePaths(cfg.Architecture)
+		if fwErr != nil {
+			return nil, fwErr
+		}
+		// pflash CODE must come before VARS so QEMU loads firmware into the
+		// readonly slot first; buildDrives emits the VARS drive (unit 1) from
+		// the per-VM EFI viperblock volume.
+		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
+	}
 
-		//args = append(args, "-drive", fmt.Sprintf("file=%s", drive.File)
+	for _, drive := range drives {
+		var opts []string
 
 		if drive.File != "" {
 			opts = append(opts, fmt.Sprintf("file=%s", drive.File))
@@ -303,6 +321,14 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 		if drive.If != "" {
 			opts = append(opts, fmt.Sprintf("if=%s", drive.If))
+		}
+
+		if drive.If == "pflash" {
+			opts = append(opts, fmt.Sprintf("unit=%d", drive.Unit))
+		}
+
+		if drive.ReadOnly {
+			opts = append(opts, "readonly=on")
 		}
 
 		if drive.Media != "" {
@@ -357,31 +383,14 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		return nil, fmt.Errorf("architecture missing")
 	}
 
-	// Note, require `-M` machine type for ARM (virt) if set to q35 (incompatible)
+	// arm64 q35 is incompatible with the q35 PC machine; override to virt.
+	// Firmware loading is unified: UseUEFI emits pflash drives above; no
+	// SeaBIOS fallback (aarch64 has none, and a UEFI-only x86_64 guest under
+	// SeaBIOS panics on missing ESP).
 	if cfg.Architecture == "arm64" && cfg.MachineType == "q35" {
 		args = append(args, "-M", "virt")
-
-		// For ARM, when using virt, preload the firmware file
-		// Note: this requires the `qemu-efi-aarch64` package to be installed on the host
-		uefiPath := "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-
-		// TODO: Use EFI via NBD for state persistence
-		if _, err := os.Stat(uefiPath); err == nil {
-			args = append(args, "-bios", uefiPath)
-		} else {
-			slog.Warn("UEFI firmware file not found for ARM virt machine. Ensure qemu-efi-aarch64 package is installed.", "path", uefiPath)
-			return nil, fmt.Errorf("UEFI firmware file not found for ARM virt machine")
-		}
 	} else if cfg.MachineType != "" {
 		args = append(args, "-M", cfg.MachineType)
-		if cfg.Architecture == "x86_64" && cfg.UseUEFI {
-			uefiPath := "/usr/share/ovmf/OVMF.fd"
-			if _, err := os.Stat(uefiPath); err == nil {
-				args = append(args, "-bios", uefiPath)
-			} else {
-				slog.Warn("OVMF firmware not found, falling back to SeaBIOS", "path", uefiPath)
-			}
-		}
 	}
 
 	slog.Info("Executing QEMU command:", "cmd", qemuArchitecture, "args", args)

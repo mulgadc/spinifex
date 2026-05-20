@@ -656,18 +656,15 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 }
 
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and
-// device configurations. Returns an error if any non-EFI volume is missing
-// its NBDURI.
+// device configurations. Returns an error if any volume is missing its
+// NBDURI. EFI volumes are emitted as pflash unit=1 (per-VM EFI variable
+// store); the readonly pflash CODE blob (unit=0) is added by Config.Execute.
 func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread
 	var devices []Device
 
 	for _, v := range requests {
-		// TODO: Add EFI support
-		if v.EFI {
-			continue
-		}
 		if v.NBDURI == "" {
 			return nil, nil, nil, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
 		}
@@ -691,6 +688,12 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			drive.If = "virtio"
 			drive.Media = "cdrom"
 			drive.ID = "cloudinit"
+		}
+
+		if v.EFI {
+			drive.Format = "raw"
+			drive.If = "pflash"
+			drive.Unit = 1
 		}
 
 		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)

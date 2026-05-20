@@ -97,11 +97,14 @@ func TestBuildDrives(t *testing.T) {
 			},
 		},
 		{
-			name: "EFI volume skipped",
+			name: "EFI volume emits pflash unit=1",
 			requests: []types.EBSRequest{
-				{Name: "vol-efi", EFI: true},
+				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
+			},
 		},
 		{
 			name: "missing NBDURI returns error",
@@ -112,16 +115,25 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "NBDURI not set for volume vol-bad",
 		},
 		{
+			name: "missing NBDURI on EFI returns error",
+			requests: []types.EBSRequest{
+				{Name: "vol-efi-bad", EFI: true},
+			},
+			cpuCount: 2,
+			wantErr:  "NBDURI not set for volume vol-efi-bad",
+		},
+		{
 			name: "mixed boot + cloud-init + EFI",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-ci", NBDURI: "nbd:unix:/tmp/ci.sock", CloudInit: true},
-				{Name: "vol-efi", EFI: true},
+				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
 				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
 				{File: "nbd:unix:/tmp/ci.sock", Format: "raw", If: "virtio", Media: "cdrom", ID: "cloudinit"},
+				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{

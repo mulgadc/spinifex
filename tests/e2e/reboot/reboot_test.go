@@ -616,6 +616,12 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 
 	runHTTPBurst(t, fix, "ALB post-reboot")
 
+	// 8.6.5 ALWAYS-RUN guest probe — captures in-guest responder state even
+	// when the test passes, so we can confirm whether the responder is genuinely
+	// running on the relaunched VMs vs. some upstream cache satisfying HC.
+	// Refs investigation into "tcp/22 SG ingress fixes post-reboot HTTP".
+	dumpAppDiagnostics(t, fix)
+
 	// 8.7 ovn-nbctl drift check
 	dumpCtx, dumpCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer dumpCancel()

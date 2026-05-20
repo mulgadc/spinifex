@@ -376,11 +376,11 @@ jobs:
     name: Reboot Resilience E2E (Go)
     # Opt-in: only fires when the SUITES dispatch input lists e2e-reboot.
     # The reboot test reboots the spinifex VM, so it must run on the runner
-    # (not shipped to the VM like the cert/lb/single suites). Self-hosted
-    # ci-single shares the runner pool with e2e_go_single — needs: ensures
-    # ordering so they don't race for the host's VM allocation.
+    # (not shipped to the VM like the cert/lb/single suites). Runs in
+    # parallel with e2e_go_single — both target [self-hosted, ci-single]
+    # and GitHub Actions serialises on the underlying runner allocation,
+    # so no explicit needs: ordering is required.
     if: contains(github.event.inputs.suites, 'e2e-reboot')
-    needs: [ e2e_go_single ]
     runs-on: [ self-hosted, ci-single ]
     timeout-minutes: 60
     env:

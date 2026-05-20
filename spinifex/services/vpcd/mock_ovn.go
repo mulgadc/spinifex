@@ -452,7 +452,7 @@ func (m *MockOVNClient) DeleteNAT(_ context.Context, routerName string, natType,
 		}
 	}
 	if foundUUID == "" {
-		return fmt.Errorf("NAT %s %s not found", natType, logicalIP)
+		return fmt.Errorf("NAT %s %s: %w", natType, logicalIP, ErrNATNotFound)
 	}
 	// Remove from router's NAT list
 	for i, uuid := range lr.NAT {
@@ -479,7 +479,7 @@ func (m *MockOVNClient) DeleteNATByExternalIP(_ context.Context, routerName stri
 		}
 	}
 	if len(foundUUIDs) == 0 {
-		return fmt.Errorf("NAT %s external_ip=%s not found", natType, externalIP)
+		return fmt.Errorf("NAT %s external_ip=%s: %w", natType, externalIP, ErrNATNotFound)
 	}
 	for _, foundUUID := range foundUUIDs {
 		for i, uuid := range lr.NAT {

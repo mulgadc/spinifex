@@ -373,3 +373,72 @@ func TestAllocateForLaunch(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveHostReserve(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		wantVCPU int
+		wantMem  float64
+	}{
+		{
+			name:     "no env returns default",
+			env:      map[string]string{},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  defaultHostReserve.memGB,
+		},
+		{
+			name:     "vCPU override",
+			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "1"},
+			wantVCPU: 1,
+			wantMem:  defaultHostReserve.memGB,
+		},
+		{
+			name:     "memory override",
+			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "0.5"},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  0.5,
+		},
+		{
+			name: "both overrides",
+			env: map[string]string{
+				"SPINIFEX_RESERVED_VCPU":   "0",
+				"SPINIFEX_RESERVED_MEM_GB": "1.5",
+			},
+			wantVCPU: 0,
+			wantMem:  1.5,
+		},
+		{
+			name:     "invalid vCPU falls back to default",
+			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "garbage"},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  defaultHostReserve.memGB,
+		},
+		{
+			name:     "negative vCPU falls back to default",
+			env:      map[string]string{"SPINIFEX_RESERVED_VCPU": "-1"},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  defaultHostReserve.memGB,
+		},
+		{
+			name:     "invalid memory falls back to default",
+			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "not-a-number"},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  defaultHostReserve.memGB,
+		},
+		{
+			name:     "negative memory falls back to default",
+			env:      map[string]string{"SPINIFEX_RESERVED_MEM_GB": "-0.5"},
+			wantVCPU: defaultHostReserve.vCPU,
+			wantMem:  defaultHostReserve.memGB,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveHostReserve(func(k string) string { return tc.env[k] })
+			assert.Equal(t, tc.wantVCPU, got.vCPU)
+			assert.InDelta(t, tc.wantMem, got.memGB, 0.001)
+		})
+	}
+}

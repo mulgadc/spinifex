@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="3" failures="0" skipped="0">
+	<testsuite name="" tests="3" failures="0" errors="0" id="0" hostname="banksia" skipped="0" time="1.500" timestamp="2026-04-12T12:30:00+10:00">
+		<testcase name="TestSingleNode" classname="" time="1.500"/>
+		<testcase name="TestSingleNode/Phase1_Environment" classname="" time="0.300"/>
+		<testcase name="TestSingleNode/Phase2_Discovery" classname="" time="1.200"/>
+	</testsuite>
+</testsuites>

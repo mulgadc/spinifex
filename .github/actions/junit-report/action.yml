@@ -1,0 +1,41 @@
+name: JUnit Report
+description: >-
+  Render JUnit XML files into the GitHub Actions job summary and emit
+  inline ::error annotations for each failed test case. Designed to be
+  called once per job after the test step (with `if: always()`) so summary
+  + annotations appear on both passing and failing runs.
+
+inputs:
+  junit-glob:
+    description: Shell glob matching JUnit XML files to render.
+    required: true
+  title:
+    description: Heading rendered at the top of the job summary section.
+    required: false
+    default: "Test results"
+  fail-on-empty:
+    description: >-
+      When "true", the action fails if the glob matches no files. Useful
+      for catching silently-skipped test phases.
+    required: false
+    default: "false"
+
+outputs:
+  failures:
+    description: Total failed + errored test cases across all matched files.
+    value: ${{ steps.render.outputs.failures }}
+  total:
+    description: Total test cases across all matched files.
+    value: ${{ steps.render.outputs.total }}
+
+runs:
+  using: composite
+  steps:
+    - id: render
+      shell: bash
+      env:
+        JUNIT_GLOB: ${{ inputs.junit-glob }}
+        JUNIT_TITLE: ${{ inputs.title }}
+        JUNIT_FAIL_ON_EMPTY: ${{ inputs.fail-on-empty }}
+      run: |
+        python3 "${{ github.action_path }}/render.py"

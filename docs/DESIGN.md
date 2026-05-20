@@ -84,6 +84,13 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 
 ### 4. NATS Messaging
 
+The full service-to-subject map — which service subscribes to what, what
+each one publishes downstream, what each depends on — is captured in
+[`service-interfaces.yaml`](./service-interfaces.yaml). It is the source
+of truth for targeted e2e suite selection (see
+`docs/development/improvements/e2e-targeted-suite-selection.md`) and is
+validated by `make manifest-check`.
+
 The gateway communicates with daemons via NATS request/response. Most calls go through `utils.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
 ```go

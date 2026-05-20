@@ -3,11 +3,13 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -15,6 +17,39 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// waitForFlowsHV shells out to `ovn-nbctl --wait=hv sync`, which bumps
+// NB_Global.nb_cfg and blocks until every connected chassis has acknowledged
+// the new sequence number — i.e. ovn-northd has compiled NB -> SB and
+// ovn-controller has installed the resulting flows. Used after IGW attach
+// so newly-launched VMs aren't unreachable while their gateway chassis is
+// still catching up (mulga-siv-105).
+//
+// Bounded by ovn-nbctl --timeout=30 (seconds). On overrun we log a WARN
+// and return nil — the caller continues. In practice flows converge within
+// seconds; a 30s overrun means something OVN-side is wedged enough that
+// failing VPC create wouldn't improve things.
+//
+// Declared as a var so tests can stub it.
+var waitForFlowsHV = func() error {
+	start := time.Now()
+	cmd := sudoCommand("ovn-nbctl",
+		"--no-leader-only",
+		"--timeout=30",
+		"--wait=hv",
+		"sync",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+			"elapsed", time.Since(start),
+			"err", err,
+			"output", strings.TrimSpace(string(out)),
+		)
+		return nil
+	}
+	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed", time.Since(start))
+	return nil
+}
 
 // NATS topics for VPC lifecycle events published by the daemon.
 const (
@@ -492,6 +527,12 @@ func (h *TopologyHandler) handleVPCCreate(msg *nats.Msg) {
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": evt.VpcId,
 			"spinifex:vni":    strconv.FormatInt(evt.VNI, 10),
+			// Cleanup paths (handleIGWDetach, NAT sweeps) read this to scope
+			// their SNAT removal to the VPC's own CIDR. When unset, those
+			// paths fall back to an overbroad 10.0.0.0/8 and emit noisy
+			// "VPC CIDR missing from router metadata" WARNs. reconcileVPC
+			// stores the same key on startup; keep parity here.
+			"spinifex:cidr": evt.CidrBlock,
 		},
 	}
 
@@ -501,7 +542,7 @@ func (h *TopologyHandler) handleVPCCreate(msg *nats.Msg) {
 		return
 	}
 
-	slog.Info("vpcd: created logical router for VPC", "router", routerName, "vpc_id", evt.VpcId)
+	slog.Info("vpcd: created logical router for VPC", "router", routerName, "vpc_id", evt.VpcId, "cidr", evt.CidrBlock)
 	respond(msg, nil)
 }
 
@@ -1174,6 +1215,14 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 		"wan_gateway", wanGateway,
 		"chassis_count", len(h.chassisNames),
 	)
+
+	// Block until ovn-northd compiles + the gateway chassis has installed
+	// flows for this VPC. Without this, a subsequent RunInstances ->
+	// vpc.add-nat can complete while the datapath is still dark, and the
+	// new VM is unreachable on its public IP for the duration of the
+	// flow-install latency (typically seconds; observed up to minutes when
+	// the chassis was loaded during CI). mulga-siv-105.
+	_ = waitForFlowsHV()
 	respond(msg, nil)
 }
 
@@ -1312,6 +1361,17 @@ func (h *TopologyHandler) handleAddNAT(msg *nats.Msg) {
 		"logical_ip", evt.LogicalIP,
 		"port", evt.PortName,
 	)
+
+	// Block until ovn-northd compiles the new NAT into SB and every chassis
+	// has installed the resulting flows. handleIGWAttach has the same
+	// barrier (mulga-siv-105); without one here, the publisher (typically
+	// ec2d/RunInstances) returns success while the DNAT/SNAT flows for the
+	// VM's public IP are still being installed on the gateway chassis, so
+	// the freshly launched VM is unreachable on its public IP for whatever
+	// flow-install latency the chassis happens to incur. Reproduced in CI
+	// run 26072432957 Phase8b — Port_Binding showed up=true at the 3min
+	// timeout, but SSH never completed handshake.
+	_ = waitForFlowsHV()
 	respond(msg, nil)
 }
 
@@ -1332,6 +1392,17 @@ func (h *TopologyHandler) handleDeleteNAT(msg *nats.Msg) {
 	routerName := "vpc-" + evt.VpcId
 
 	if err := h.ovn.DeleteNAT(ctx, routerName, "dnat_and_snat", evt.LogicalIP); err != nil {
+		// vpc.delete-nat is published from multiple cleanup paths (per-VM
+		// ReleasePublicIP, ENI delete, VPC delete sweep), so a duplicate
+		// delete for the same logical_ip is expected. Treat "already gone"
+		// as success — the caller's intent ("ensure this NAT is removed")
+		// is satisfied whether we did the delete or someone else did.
+		if errors.Is(err, ErrNATNotFound) {
+			slog.Info("vpcd: dnat_and_snat rule already absent (idempotent)",
+				"router", routerName, "logical_ip", evt.LogicalIP)
+			respond(msg, nil)
+			return
+		}
 		slog.Error("vpcd: failed to delete dnat_and_snat rule", "router", routerName, "logicalIP", evt.LogicalIP, "err", err)
 		respond(msg, err)
 		return

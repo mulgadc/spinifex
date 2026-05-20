@@ -61,6 +61,9 @@ jobs:
       - name: Run Tests with Coverage
         run: make -C spinifex test-cover
 
+      - name: Run Action Tests
+        run: make -C spinifex test-actions
+
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
 

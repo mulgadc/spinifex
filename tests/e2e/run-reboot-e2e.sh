@@ -285,6 +285,18 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now reboot-e2e-httpd.service
+
+# Workaround for viperblock WAL <4MB skip-upload bug (mulga-siv-122):
+# WriteWALToChunk(false) is a no-op when the WAL is under 4MB so small
+# user-data writes (the unit file, index.html) sit in the on-host WAL
+# and are lost when the host reboots before the WAL hits the threshold.
+# Write 8MB of zeros + sync to push WAL over the threshold so the
+# unit-file write definitely lands in predastore before the host reboot.
+# Drop when upstream fix lands.
+dd if=/dev/zero of=/var/lib/spinifex-e2e-pad bs=1M count=8 status=none
+sync
+rm -f /var/lib/spinifex-e2e-pad
+sync
 USERDATA
 )
 printf '%s' "$APP_USER_DATA" | put_to_node "$NODE_USERDATA_PATH"

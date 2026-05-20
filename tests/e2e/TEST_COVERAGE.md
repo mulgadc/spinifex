@@ -603,6 +603,8 @@ Tests that EC2 resources are properly isolated between the Alpha/Beta accounts. 
 
 Runs on a real 3-node libvirt cluster provisioned by OpenTofu (`scripts/tofu-cluster/`). Each node is a separate VM with its own OVN, NATS, Predastore, and Spinifex daemon. Bootstrap (`bootstrap.sh`) handles all provisioning before the test script runs.
 
+> **Go port:** every phase below has a `TestMultinode*` counterpart in `tests/e2e/multinode/` (phase N -> `phaseN_*` helper). CI runs the Go suite via the `e2e_go_multinode` job in `.github/workflows/e2e-go.yml`; the bash driver stays in place as the executable spec until the Go run has a soak-tested cadence on `ci-multi`.
+
 ### Bootstrap (pre-test)
 
 1. OpenTofu provisions 3 libvirt VMs (bottlebrush, ironbark, casuarina) with cloud-init

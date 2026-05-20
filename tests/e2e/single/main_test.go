@@ -24,9 +24,9 @@ import (
 // TestSingleNode. Mirrors the env vars run-e2e.sh threads between phases
 // (AMI_ID, INSTANCE_ID, KEY_NAME, etc).
 //
-// Migration in progress: per-phase fields (AMIID, InstanceID, DefaultVPCID,
-// etc.) are being replaced by harness.Ensure* memoized lookups against
-// Harness. Bead 3 (e2e-single-fixture-migration) removes each block as the
+// Migration in progress: per-phase fields (AMIID, InstanceID, etc.) are
+// being replaced by harness.Ensure* memoized lookups against Harness.
+// Bead 3 (e2e-single-fixture-migration) removes each block as the
 // downstream tests stop reading it; Bead 3h deletes the umbrella and
 // shrinks Fixture to env + AWS client + Harness.
 type Fixture struct {
@@ -43,14 +43,11 @@ type Fixture struct {
 	KeyName      string // Phase 3
 	KeyPath      string // PEM written by Phase 3
 
-	Instance        *ec2.Instance // Phase 5 primary (Stage C populates)
-	InstanceID      string
-	RootVolumeID    string
-	SSHHost         string
-	SSHPort         int
-	DefaultVPCID    string
-	DefaultSGID     string
-	DefaultSubnetID string
+	Instance     *ec2.Instance // Phase 5 primary (Stage C populates)
+	InstanceID   string
+	RootVolumeID string
+	SSHHost      string
+	SSHPort      int
 
 	VolumeID        string // Phase 5b
 	SnapshotID      string // Phase 5c
@@ -58,8 +55,7 @@ type Fixture struct {
 	CustomAMIID     string // Phase 5e
 	CustomAMISnapID string // Phase 5e backing
 
-	OVNAvailable bool // gates 8b-e
-	PoolMode     bool // gates 8b / 8d
+	PoolMode bool // gates 8b / 8d
 
 	// IAM phase state (Stage E). Threaded between IAM Phase 1–7 so
 	// Phase 7's cleanup can defensively delete keys/users created

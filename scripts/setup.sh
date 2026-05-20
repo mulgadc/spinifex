@@ -214,7 +214,7 @@ install_apt_deps() {
 
         DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
             nbdkit \
-            $QEMU_PACKAGES qemu-utils qemu-kvm ovmf less \
+            $QEMU_PACKAGES qemu-utils qemu-kvm ovmf qemu-efi-aarch64 less \
             libvirt-daemon-system libvirt-clients \
             pciutils \
             jq curl iproute2 netcat-openbsd wget unzip xz-utils file \

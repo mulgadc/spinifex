@@ -61,6 +61,7 @@
     --distro {{ spinifex_smoketest_distro }}
     --version {{ spinifex_smoketest_version }}
     --arch {{ smoketest_arch }}
+    --boot-mode uefi
   register: smoketest_import_local
   until: >-
     smoketest_import_local.rc == 0 or

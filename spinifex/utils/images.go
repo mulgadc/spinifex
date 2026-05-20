@@ -285,7 +285,7 @@ var AvailableImages = map[string]Images{
 		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.tar.xz",
 		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 	},
 
 	"debian-13-arm64": {
@@ -299,7 +299,7 @@ var AvailableImages = map[string]Images{
 		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-arm64-20260518-2482.tar.xz",
 		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 	},
 
 	"ubuntu-26.04-x86_64": {
@@ -313,7 +313,7 @@ var AvailableImages = map[string]Images{
 		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-amd64.img",
 		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 	},
 
 	"ubuntu-26.04-arm64": {
@@ -327,41 +327,36 @@ var AvailableImages = map[string]Images{
 		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-arm64.img",
 		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 	},
 
-	"alpine-3.22.2-x86_64": {
-		Name:         "alpine-3.22.2-x86_64",
-		Description:  "Alpine Linux 3.22.2 x86_64 cloud image",
+	"alpine-3.22.4-x86_64": {
+		Name:         "alpine-3.22.4-x86_64",
+		Description:  "Alpine Linux 3.22.4 x86_64 cloud image",
 		Distro:       "alpine",
-		Version:      "3.22.2",
+		Version:      "3.22.4",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2025, 10, 6, 0, 0, 0, 0, time.UTC),
-		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.2-x86_64-bios-cloudinit-r0.qcow2",
-		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.2-x86_64-bios-cloudinit-r0.qcow2.sha512",
+		CreatedAt:    time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-x86_64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-x86_64-uefi-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
+		BootMode:     "uefi",
 	},
 
-	/*
-		"alpine-3.22.2-arm64":
-		// Alpine Linux (cloud init) arm64 (Requires UEFI boot, TODO)
-		{
-			Name:         "alpine-3.22.2-arm64",
-			Description:  "Alpine Linux 3.22.2 arm64 cloud image",
-			Distro:       "alpine",
-			Version:      "3.22.2",
-			Arch:         "arm64",
-			Platform:     "Linux/UNIX",
-			CreatedAt:    time.Date(2025, 10, 6, 0, 0, 0, 0, time.UTC),
-			URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/gcp_alpine-3.22.2-aarch64-uefi-cloudinit-metal-r0.raw.tar.gz",
-			Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/gcp_alpine-3.22.2-aarch64-uefi-cloudinit-metal-r0.raw.tar.gz.sha512",
-			ChecksumType: "sha512",
-			BootMode:     "uefi",
-		},
-	*/
-
+	"alpine-3.22.4-arm64": {
+		Name:         "alpine-3.22.4-arm64",
+		Description:  "Alpine Linux 3.22.4 arm64 cloud image",
+		Distro:       "alpine",
+		Version:      "3.22.4",
+		Arch:         "arm64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2.sha512",
+		ChecksumType: "sha512",
+		BootMode:     "uefi",
+	},
 }
 
 // AMI / image extraction utils

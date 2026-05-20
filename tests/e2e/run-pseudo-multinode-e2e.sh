@@ -295,6 +295,7 @@ IMPORT_LOG=$(./bin/spx admin images import \
     --arch "$ARCH" \
     --distro ubuntu \
     --version "$UBUNTU_VER" \
+    --boot-mode uefi \
     --config "$HOME/node1/config/spinifex.toml" \
     --spinifex-dir "$HOME/node1/" \
     --force 2>/dev/null)

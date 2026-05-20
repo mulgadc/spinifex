@@ -185,14 +185,10 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 		volID := strings.TrimSuffix(p, "/")
 		cfg, err := readVolumeConfig(store, bucket, volID)
 		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) {
+			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, errCorruptVolumeConfig) {
 				continue
 			}
-			// Skip corrupt volume configs rather than failing the whole walk —
-			// they aren't safer to ignore but a corrupt vol-*/config.json
-			// already means manual recovery is required for that volume.
-			slog.Warn("FindAMIDependents: skipping unreadable volume config", "volumeId", volID, "err", err)
-			continue
+			return Dependents{}, fmt.Errorf("read volume %s: %w", volID, err)
 		}
 		if volSnapRefs[cfg.VolumeMetadata.SnapshotID] {
 			deps.Volumes = append(deps.Volumes, volID)
@@ -214,8 +210,7 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 			if objectstore.IsNoSuchKeyError(err) || errors.Is(err, handlers_ec2_image.ErrCorruptAMIConfig) {
 				continue
 			}
-			slog.Warn("FindAMIDependents: skipping unreadable AMI config", "imageId", otherAMI, "err", err)
-			continue
+			return Dependents{}, fmt.Errorf("read AMI %s: %w", otherAMI, err)
 		}
 		if derived[meta.SnapshotID] {
 			deps.AMIs = append(deps.AMIs, otherAMI)
@@ -349,6 +344,12 @@ func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viper
 	return state.VolumeConfig.AMIMetadata, nil
 }
 
+// errCorruptVolumeConfig lets the dependency walk distinguish a vol-*/config.json
+// that can't be parsed (recovery is operator-owned, walk continues) from a
+// transient transport error (walk must fail closed — silently dropping a
+// dependent could lead to deleting blocks underneath a live volume).
+var errCorruptVolumeConfig = errors.New("corrupt volume config")
+
 // readVolumeConfig reads vol-<id>/config.json into VolumeConfig.
 type volumeConfigWrapper struct {
 	VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
@@ -372,7 +373,7 @@ func readVolumeConfig(store objectstore.ObjectStore, bucket, volumeID string) (*
 
 	var w volumeConfigWrapper
 	if err := json.Unmarshal(body, &w); err != nil {
-		return nil, fmt.Errorf("decode %s: %v", key, err)
+		return nil, fmt.Errorf("%w: %s: %v", errCorruptVolumeConfig, key, err)
 	}
 	return &w.VolumeConfig, nil
 }

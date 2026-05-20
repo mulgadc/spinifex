@@ -141,10 +141,37 @@ func TestRemoveSystemImage_AccountOwned_Refused(t *testing.T) {
 
 	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), id)
+	assert.Contains(t, err.Error(), testRemoveAccountID)
 	assert.Contains(t, err.Error(), "account-owned")
 	assert.Contains(t, err.Error(), "aws ec2 deregister-image")
 	// Objects untouched.
 	assert.Equal(t, 2, store.Count())
+}
+
+func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const id = "ami-acct-002"
+	putAMI(t, store, id, "user-ami", testRemoveAccountID, "snap-acct-002")
+	putAMIBlocks(t, store, id, 2, 16)
+
+	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	require.NoError(t, err)
+	assert.Greater(t, res.ObjectsDeleted, 0)
+	assert.Equal(t, 0, store.Count())
+}
+
+func TestRemoveSystemImage_SpinifexLegacyOwner_HappyPath(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const id = "ami-legacy-001"
+	putAMI(t, store, id, "legacy-image", "spinifex", SnapPrefix(id))
+	putAMIBlocks(t, store, id, 3, 16)
+	putSnapBlocks(t, store, SnapPrefix(id), 1, 8)
+
+	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	require.NoError(t, err)
+	assert.Greater(t, res.ObjectsDeleted, 0)
+	assert.Equal(t, 0, store.Count())
 }
 
 func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {

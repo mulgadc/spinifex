@@ -27,8 +27,8 @@ import (
 //	8g InvalidAMIID.NotFound        — RunInstances with bogus ami id
 //	8h InvalidKeyPair.NotFound      — RunInstances with bogus key name
 //	8i InvalidVolume.NotFound       — DeleteVolume for unknown vol
-//	8j InvalidKeyPair.Duplicate     — CreateKeyPair re-using test-key-1
-//	8k InvalidKeyPair.Duplicate     — ImportKeyPair re-using test-key-1
+//	8j InvalidKeyPair.Duplicate     — CreateKeyPair re-using phase 3 key
+//	8k InvalidKeyPair.Duplicate     — ImportKeyPair re-using phase 3 key
 //	8l InvalidKey.Format            — ImportKeyPair with non-PEM/SSH material
 //	8m InvalidVolume.NotFound       — DescribeVolumes with unknown vol id
 //	8n InvalidAMIID.NotFound        — DescribeImages with unknown ami id
@@ -46,7 +46,12 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
 	require.NotEmpty(t, fix.CustomAMIID, "Phase 5e must populate fix.CustomAMIID")
 
-	const existingKey = "test-key-1" // staged by Phase 3 / phase3_KeyPairs
+	// Phase 3 stages the primary key pair via harness.EnsureKeyPair, which
+	// generates a scratch-suffixed name (e2e-key-<random>) — not the
+	// hardcoded "test-key-1" used pre-3c. Read fix.KeyName so 8j/8k probe
+	// the actual staged key, not a stale literal.
+	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
+	existingKey := fix.KeyName
 	const customAMIName = "e2e-custom-ami"
 
 	// 8a: RunInstances with malformed AMI ID (missing ami- prefix).
@@ -172,7 +177,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		harness.AssertAWSError(t, err, "InvalidVolume.NotFound")
 	})
 
-	// 8j: CreateKeyPair re-using test-key-1 (still present from Phase 3).
+	// 8j: CreateKeyPair re-using the Phase 3 primary key (still present).
 	t.Run("8j_CreateKeyPairDuplicate", func(t *testing.T) {
 		t.Parallel()
 		harness.Step(t, "create-key-pair %s (duplicate)", existingKey)
@@ -192,7 +197,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		harness.AssertAWSError(t, err, "InvalidKeyPair.Duplicate")
 	})
 
-	// 8k: ImportKeyPair re-using test-key-1.
+	// 8k: ImportKeyPair re-using the Phase 3 primary key.
 	t.Run("8k_ImportKeyPairDuplicate", func(t *testing.T) {
 		t.Parallel()
 		harness.Step(t, "import-key-pair %s (duplicate)", existingKey)

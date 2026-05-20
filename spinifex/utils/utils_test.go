@@ -1583,3 +1583,30 @@ iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
 		assert.Equal(t, targetHex, got)
 	})
 }
+
+func TestDistroFamily(t *testing.T) {
+	cases := []struct {
+		distro string
+		want   string
+	}{
+		{"debian", "debian"},
+		{"ubuntu", "debian"},
+		{"rocky", "rhel"},
+		{"rhel", "rhel"},
+		{"alma", "rhel"},
+		{"fedora", "rhel"},
+		{"centos", "rhel"},
+		{"alpine", "alpine"},
+		// Case + whitespace normalisation
+		{"  Rocky  ", "rhel"},
+		{"UBUNTU", "debian"},
+		// Unknown and empty fall through to debian with a warning logged.
+		{"", "debian"},
+		{"plan9", "debian"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.distro, func(t *testing.T) {
+			assert.Equal(t, tc.want, DistroFamily(tc.distro))
+		})
+	}
+}

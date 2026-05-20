@@ -163,6 +163,10 @@ type CloudInitData struct {
 	UserDataCloudConfig string
 	UserDataScript      string
 	CACertPEM           string
+	// DistroFamily selects per-distro branches in the cloud-init template.
+	// "debian" | "rhel" | "alpine". Empty falls through to debian rendering
+	// (legacy AMIs registered before the field existed).
+	DistroFamily string
 }
 
 type CloudInitMetaData struct {
@@ -1253,11 +1257,23 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
 	}
 
+	// Re-read AMI metadata for DistroFamily rather than persisting it on
+	// vm.VM — cloud-init renders once at first launch and the ISO is sealed,
+	// so no consumer needs DistroFamily after this point. Mirrors how
+	// PrepareRunInstances reads amiMeta at service_impl.go:369.
+	var distroFamily string
+	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
+		if amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId); err == nil {
+			distroFamily = amiMeta.DistroFamily
+		}
+	}
+
 	userData := CloudInitData{
-		Username:  "ec2-user",
-		SSHKey:    string(sshKey),
-		Hostname:  hostname,
-		CACertPEM: caCertPEM,
+		Username:     "ec2-user",
+		SSHKey:       string(sshKey),
+		Hostname:     hostname,
+		CACertPEM:    caCertPEM,
+		DistroFamily: distroFamily,
 	}
 
 	// Decode and classify user-data from RunInstances (base64-encoded).

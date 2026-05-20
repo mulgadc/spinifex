@@ -13,7 +13,7 @@ require (
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/cpuid/v2 v2.3.0
 	github.com/mulgadc/predastore v1.4.0
-	github.com/mulgadc/viperblock v1.4.1
+	github.com/mulgadc/viperblock v1.4.2
 	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.52.0
 	github.com/ovn-kubernetes/libovsdb v0.8.1

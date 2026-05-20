@@ -47,17 +47,14 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	// public subnet has MapPublicIpOnLaunch=true and the default IGW
 	// attached, so bastion launches there pick up a routable public IP
 	// without extra plumbing.
-	if fix.DefaultVPCID == "" {
-		vpcID, sgID, subnetID := harness.DiscoverDefaultVPC(t, c)
-		fix.DefaultVPCID, fix.DefaultSGID, fix.DefaultSubnetID = vpcID, sgID, subnetID
-	}
-	harness.Detail(t, "vpc", fix.DefaultVPCID, "pub_subnet", fix.DefaultSubnetID, "sg", fix.DefaultSGID)
-	harness.AuthorizeSSHIngress(t, c, fix.DefaultSGID)
+	def := harness.EnsureDefaultVPC(t, fix.Harness)
+	harness.Detail(t, "vpc", def.VPCID, "pub_subnet", def.SubnetID, "sg", def.SGID)
+	harness.AuthorizeSSHIngress(t, c, def.SGID)
 
 	// --- Private subnet ----------------------------------------------------
 	harness.Step(t, "create-subnet 172.31.16.0/20 (private)")
 	privSubOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
-		VpcId:     aws.String(fix.DefaultVPCID),
+		VpcId:     aws.String(def.VPCID),
 		CidrBlock: aws.String("172.31.16.0/20"),
 	})
 	require.NoError(t, err, "create private subnet")
@@ -76,7 +73,7 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 		ImageId:      aws.String(fix.AMIID),
 		InstanceType: aws.String(fix.InstanceType),
 		KeyName:      aws.String(fix.KeyName),
-		SubnetId:     aws.String(fix.DefaultSubnetID),
+		SubnetId:     aws.String(def.SubnetID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
 	})
@@ -194,9 +191,9 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	})
 	harness.Detail(t, "eip", natPubIP, "alloc", natAllocID)
 
-	harness.Step(t, "create-nat-gateway in %s", fix.DefaultSubnetID)
+	harness.Step(t, "create-nat-gateway in %s", def.SubnetID)
 	natOut, err := c.EC2.CreateNatGateway(&ec2.CreateNatGatewayInput{
-		SubnetId:     aws.String(fix.DefaultSubnetID),
+		SubnetId:     aws.String(def.SubnetID),
 		AllocationId: aws.String(natAllocID),
 	})
 	require.NoError(t, err, "create-nat-gateway")
@@ -222,7 +219,7 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	// association must exist before the route gets added.
 	harness.Step(t, "create-route-table")
 	rtOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{
-		VpcId: aws.String(fix.DefaultVPCID),
+		VpcId: aws.String(def.VPCID),
 	})
 	require.NoError(t, err, "create-route-table")
 	require.NotNil(t, rtOut.RouteTable, "create-route-table returned nil RouteTable")

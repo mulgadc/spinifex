@@ -43,3 +43,13 @@ func TestMultinodeCrossNodeGateway(t *testing.T) {
 func TestMultinodeCrossNodeOps(t *testing.T) {
 	phase7_CrossNodeOps(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeNodeFailure maps to phase 8.
+func TestMultinodeNodeFailure(t *testing.T) {
+	phase8_NodeFailure(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeNodeRecovery maps to phase 9.
+func TestMultinodeNodeRecovery(t *testing.T) {
+	phase9_NodeRecovery(t, requireMultiNodeFixture(t))
+}

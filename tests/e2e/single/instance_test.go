@@ -18,36 +18,41 @@ import (
 )
 
 // phase5_LaunchInstance discovers the default VPC, opens tcp/22 on the
-// default SG, and starts a single nano instance. Maps to run-e2e.sh ~257–343.
+// default SG, and starts a single nano instance via EnsureInstance so
+// downstream callers (phase 5a–5f, 6, 7) inherit the memoized ID. Maps to
+// run-e2e.sh ~257–343.
 func phase5_LaunchInstance(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5 — Instance Lifecycle")
 	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
 	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
 	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
 
-	if fix.DefaultVPCID == "" {
-		vpcID, sgID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-		fix.DefaultVPCID, fix.DefaultSGID, fix.DefaultSubnetID = vpcID, sgID, subnetID
-		harness.Detail(t, "vpc", vpcID, "sg", sgID, "subnet", subnetID)
-	}
-	harness.AuthorizeSSHIngress(t, fix.AWS, fix.DefaultSGID)
+	def := harness.EnsureDefaultVPC(t, fix.Harness)
+	require.NotEmpty(t, def.SGID, "default SG ID required")
+	harness.Detail(t, "vpc", def.VPCID, "sg", def.SGID, "subnet", def.SubnetID)
+	harness.AuthorizeSSHIngress(t, fix.AWS, def.SGID)
 
 	harness.Step(t, "run-instances ami=%s type=%s key=%s", fix.AMIID, fix.InstanceType, fix.KeyName)
-	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:          aws.String(fix.AMIID),
-		InstanceType:     aws.String(fix.InstanceType),
-		KeyName:          aws.String(fix.KeyName),
-		MinCount:         aws.Int64(1),
-		MaxCount:         aws.Int64(1),
-		SecurityGroupIds: []*string{aws.String(fix.DefaultSGID)},
+	fix.InstanceID = harness.EnsureInstance(t, fix.Harness, harness.InstanceSpec{
+		AMIID:        fix.AMIID,
+		InstanceType: fix.InstanceType,
+		KeyName:      fix.KeyName,
+		SubnetID:     def.SubnetID,
+		SGID:         def.SGID,
 	})
-	require.NoError(t, err, "run-instances")
-	require.NotEmpty(t, out.Instances, "run-instances returned no Instances")
-	fix.InstanceID = aws.StringValue(out.Instances[0].InstanceId)
-	require.NotEmpty(t, fix.InstanceID, "run-instances returned empty InstanceId")
+	require.NotEmpty(t, fix.InstanceID, "EnsureInstance returned empty InstanceId")
 	harness.Detail(t, "instance", fix.InstanceID)
 
-	inst := harness.WaitForInstanceState(t, fix.AWS, fix.InstanceID, "running")
+	// Re-describe so downstream phases get the populated *ec2.Instance —
+	// EnsureInstance only returns the ID, but phase5a-ii needs BDMs +
+	// network info to derive the root volume and SSH endpoint.
+	descOut, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(fix.InstanceID)},
+	})
+	require.NoError(t, err, "describe-instances %s", fix.InstanceID)
+	require.NotEmpty(t, descOut.Reservations, "no reservations for %s", fix.InstanceID)
+	require.NotEmpty(t, descOut.Reservations[0].Instances, "no instances for %s", fix.InstanceID)
+	inst := descOut.Reservations[0].Instances[0]
 	fix.Instance = inst
 
 	// Root volume: the BDM whose DeviceName matches RootDeviceName. Fall

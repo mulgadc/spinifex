@@ -50,17 +50,14 @@ func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
 	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
 
-	if fix.DefaultVPCID == "" {
-		vpcID, sgID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-		fix.DefaultVPCID, fix.DefaultSGID, fix.DefaultSubnetID = vpcID, sgID, subnetID
-	}
-	require.NotEmpty(t, fix.DefaultVPCID, "default VPC ID required")
-	require.NotEmpty(t, fix.DefaultSubnetID, "default subnet ID required")
+	def := harness.EnsureDefaultVPC(t, fix.Harness)
+	require.NotEmpty(t, def.VPCID, "default VPC ID required")
+	require.NotEmpty(t, def.SubnetID, "default subnet ID required")
 
 	// Step 1: Create client-sg and target-sg.
 	harness.Step(t, "8e-1 create sge-client + sge-target security groups")
-	clientSG := createSG(t, fix, "sge-client", "Phase 8e client SG (SSH ingress from anywhere)")
-	targetSG := createSG(t, fix, "sge-target", "Phase 8e target SG (TCP/8080 ingress from client-sg only)")
+	clientSG := createSG(t, fix, def.VPCID, "sge-client", "Phase 8e client SG (SSH ingress from anywhere)")
+	targetSG := createSG(t, fix, def.VPCID, "sge-target", "Phase 8e target SG (TCP/8080 ingress from client-sg only)")
 
 	// Pre-register SG cleanup BEFORE instance cleanup so the LIFO order runs:
 	// terminate instances -> delete SGs. Otherwise delete-security-group fails
@@ -108,8 +105,8 @@ func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
 	// runner cannot ssh into it directly, only nested-ssh from client.
 	harness.Step(t, "8e-2 launch client-vm + target-vm")
 
-	clientID := runSGEInstance(t, fix, clientSG, "" /* no user-data */)
-	targetID := runSGEInstance(t, fix, targetSG, targetUserData)
+	clientID := runSGEInstance(t, fix, def.SubnetID, clientSG, "" /* no user-data */)
+	targetID := runSGEInstance(t, fix, def.SubnetID, targetSG, targetUserData)
 
 	// Pre-register instance cleanup BEFORE the running wait so a t.Fatal
 	// mid-wait still tears them down.
@@ -273,12 +270,12 @@ func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
 
 // createSG creates a security group in the default VPC and returns its ID.
 // Failures are fatal — the rest of the phase depends on both SGs existing.
-func createSG(t *testing.T, fix *Fixture, name, desc string) string {
+func createSG(t *testing.T, fix *Fixture, vpcID, name, desc string) string {
 	t.Helper()
 	out, err := fix.AWS.EC2.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String(name),
 		Description: aws.String(desc),
-		VpcId:       aws.String(fix.DefaultVPCID),
+		VpcId:       aws.String(vpcID),
 	})
 	require.NoError(t, err, "create-security-group %s", name)
 	id := aws.StringValue(out.GroupId)
@@ -286,16 +283,21 @@ func createSG(t *testing.T, fix *Fixture, name, desc string) string {
 	return id
 }
 
-// runSGEInstance launches a single instance in the default subnet bound to
-// sgID. userData may be empty; when set it is base64-encoded for the SDK
-// (the AWS CLI does this for you, the SDK does not). Returns the instance ID.
-func runSGEInstance(t *testing.T, fix *Fixture, sgID, userData string) string {
+// runSGEInstance launches a single instance in subnetID bound to sgID.
+// userData may be empty; when set it is base64-encoded for the SDK (the
+// AWS CLI does this for you, the SDK does not). Returns the instance ID.
+//
+// Bypasses EnsureInstance on purpose: phase 8e's client/target VMs are
+// test subjects, not memoized prerequisites — each phase8e run must get
+// fresh VMs (different SGs, fresh ENI/private-IP for the address-set
+// assertion). Memoizing across runs would defeat the test.
+func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string) string {
 	t.Helper()
 	in := &ec2.RunInstancesInput{
 		ImageId:          aws.String(fix.AMIID),
 		InstanceType:     aws.String(fix.InstanceType),
 		KeyName:          aws.String(fix.KeyName),
-		SubnetId:         aws.String(fix.DefaultSubnetID),
+		SubnetId:         aws.String(subnetID),
 		MinCount:         aws.Int64(1),
 		MaxCount:         aws.Int64(1),
 		SecurityGroupIds: []*string{aws.String(sgID)},

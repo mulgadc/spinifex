@@ -439,7 +439,10 @@ func EnsureDefaultVPC(t *testing.T, fx *Fixture) VPCInfo {
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		vpcs, err := fx.EC2.DescribeVpcs(&ec2.DescribeVpcsInput{
 			Filters: []*ec2.Filter{{
-				Name:   aws.String("isDefault"),
+				// Filter name is `is-default` per the AWS EC2 surface — the
+				// daemon rejects the camelCase `isDefault` form with a 400
+				// InvalidParameterValue (matches the AWS CLI contract).
+				Name:   aws.String("is-default"),
 				Values: []*string{aws.String("true")},
 			}},
 		})

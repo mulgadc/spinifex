@@ -864,12 +864,76 @@ func dumpAppDiagnostics(t *testing.T, fix *fixture) {
 
 	harness.Step(t, "app diagnostics: probing %d app instance(s)", len(fix.appInstanceIDs))
 
-	natOut, _ := fix.ssh.Run(ctx, fix.env.WANHost,
-		"sudo ovn-nbctl list nat 2>/dev/null || true")
-	harness.DumpFile(t, fix.artifacts, "diag-ovn-nat.txt", natOut)
+	dumpHostNetState(ctx, t, fix)
+	dumpALBProbe(ctx, t, fix)
 
 	for _, id := range fix.appInstanceIDs {
 		diagnoseAppInstance(ctx, t, fix, id)
+	}
+}
+
+// dumpHostNetState captures post-reboot OVN/OVS/route state on the spinifex
+// host so failures show whether the gateway router, ext bridge, and host
+// routing table all came back as expected. Single round-trip.
+func dumpHostNetState(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	bundle := `set +e
+echo "=== ip route show ==="
+ip route show 2>&1
+echo "=== ip route show 192.168.0.0/24 ==="
+ip route show 192.168.0.0/24 2>&1
+echo "=== ip neigh show dev br-wan ==="
+ip neigh show dev br-wan 2>&1 || ip neigh show 2>&1
+echo "=== ovn-nbctl list nat ==="
+sudo ovn-nbctl list nat 2>&1
+echo "=== ovn-nbctl show ==="
+sudo ovn-nbctl show 2>&1
+echo "=== ovs-vsctl show ==="
+sudo ovs-vsctl show 2>&1
+echo "=== ovs-vsctl list-ports br-int ==="
+sudo ovs-vsctl list-ports br-int 2>&1
+`
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)
+	if err != nil {
+		harness.Detail(t, "host-net", fmt.Sprintf("dump err: %v", err))
+	}
+}
+
+// dumpALBProbe probes the ALB public IP from host — pre-reboot this path
+// worked (the burst hit it). If post-reboot ALB is also unreachable, the
+// gateway/ext-bridge is broken; if ALB reaches but apps don't, only the
+// app-VM side is broken. Complements per-app probes.
+func dumpALBProbe(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	if fix.albPublicIP == "" {
+		harness.Detail(t, "alb", "no public IP captured")
+		return
+	}
+	probe := fmt.Sprintf(`set +e
+echo "=== ping ALB %[1]s ==="
+ping -c 2 -W 2 %[1]s 2>&1
+echo "=== tcp-connect ALB %[1]s:80 ==="
+timeout 5 bash -c 'exec 3<>/dev/tcp/%[1]s/80 && echo "tcp OPEN" || echo "tcp CLOSED/UNREACH"'
+echo "=== curl ALB http://%[1]s/ ==="
+curl -sS -m 5 -w 'HTTP=%%{http_code} time=%%{time_total}s\n' http://%[1]s/ 2>&1
+`, fix.albPublicIP)
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, probe)
+	harness.DumpFile(t, fix.artifacts, "diag-alb-probe.txt", out)
+	if err != nil {
+		harness.Detail(t, "alb", fmt.Sprintf("probe err: %v", err))
+		return
+	}
+	body := string(out)
+	switch {
+	case strings.Contains(body, `"instance_id"`):
+		harness.Detail(t, "alb", "ALB serving (responder reachable through HAProxy)")
+	case strings.Contains(body, "tcp OPEN"):
+		harness.Detail(t, "alb", "ALB tcp open, no body (HAProxy up but backends silent)")
+	case strings.Contains(body, "tcp CLOSED"):
+		harness.Detail(t, "alb", "ALB tcp closed/unreach (gateway or sys.micro broken)")
+	default:
+		harness.Detail(t, "alb", "probe inconclusive — see artifact")
 	}
 }
 

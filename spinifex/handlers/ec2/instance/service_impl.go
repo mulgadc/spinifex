@@ -431,6 +431,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			s.resourceMgr.Deallocate(instanceType)
 			continue
 		}
+		instance.BootMode = amiMeta.BootMode
 
 		// Terraform with associate_public_ip_address sends subnet/SG via
 		// NetworkInterfaces[0]; lift to top-level so the rest works uniformly.
@@ -830,10 +831,14 @@ func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, inst
 		return nil, err
 	}
 
-	// Step 2: Create EFI partition
-	err = s.prepareEFIVolume(imageId, volumeConfig, instance)
-	if err != nil {
-		return nil, err
+	// Step 2: Create EFI variable store (only when the AMI is UEFI; BIOS
+	// guests must not allocate an orphan VARS volume).
+	if instance.BootMode == "uefi" || instance.BootMode == "uefi-preferred" {
+		arch := instanceArchitecture(s.instanceTypes[*input.InstanceType])
+		err = s.prepareEFIVolume(imageId, volumeConfig, instance, arch)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Step 3: Create cloud-init volume if needed
@@ -992,73 +997,96 @@ func (s *InstanceServiceImpl) cloneAMIToVolume(input *ec2.RunInstancesInput, siz
 	return nil
 }
 
-// prepareEFIVolume creates the EFI boot partition
-func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM) error {
-	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
-	efiSize := 64 * 1024 * 1024 // 64MB
+// prepareEFIVolume creates the per-VM EFI variable store. The volume is
+// sized to match the firmware's VARS template (QEMU pflash refuses any other
+// size) and seeded with the template bytes so EFI variables — BootOrder,
+// BootNext, secure-boot state — survive across reboots. arch is the AMI
+// architecture string ("x86_64" | "arm64").
+func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
+	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
+	if err != nil {
+		slog.Error("UEFI firmware not installed on this host", "arch", arch, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	template, err := os.ReadFile(varsTemplate)
+	if err != nil {
+		slog.Error("Failed to read VARS template", "path", varsTemplate, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if int64(len(template)) != varsSize {
+		slog.Error("VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.Info("Preparing EFI variable store", "arch", arch, "code", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
-	// Update VolumeID to match the EFI volume name
+	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig
 	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
+	// Zero SizeGiB so viperblock's LoadState doesn't reconcile the EFI
+	// volume's persisted byte-exact size up to the parent root volume's
+	// GiB-rounded size — QEMU pflash rejects any VARS volume larger than
+	// the firmware's expected variable region.
+	efiVolumeConfig.VolumeMetadata.SizeGiB = 0
 
-	efiVb, err := s.newViperblock(efiVolumeName, efiSize, efiVolumeConfig)
+	efiVb, err := s.newViperblock(efiVolumeName, int(varsSize), efiVolumeConfig)
 	if err != nil {
 		slog.Error("Could not create EFI viperblock", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Initialize the backend
 	slog.Debug("Initializing EFI Viperblock store backend")
-	err = efiVb.Backend.Init()
-	if err != nil {
+	if err := efiVb.Backend.Init(); err != nil {
 		slog.Error("Failed to initialize EFI Viperblock store backend", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Load the state from the remote backend
-	_, err = efiVb.LoadStateRequest("")
-	slog.Info("LoadStateRequest", "error", err)
+	// Distinguish "not found" (seed from template) from any other backend
+	// failure (transient S3 5xx, JSON unmarshal, etc.). Treating a transient
+	// failure as "not found" would silently re-seed a volume on every retry,
+	// clobbering guest-set BootOrder. Backends signal missing-object by
+	// wrapping os.ErrNotExist (see viperblock.classifyStateLoad).
+	_, loadErr := efiVb.LoadStateRequest("")
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		slog.Error("Failed to load EFI volume state from backend", "name", efiVolumeName, "err", loadErr)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if loadErr != nil {
+		slog.Info("EFI volume does not yet exist, seeding from firmware VARS template", "name", efiVolumeName)
 
-	// Create EFI volume if it doesn't exist
-	if err != nil {
-		slog.Info("Volume does not yet exist, creating EFI disk ...")
-
-		// Open the chunk WAL (sharded or legacy)
+		var walErr error
 		if efiVb.UseShardedWAL {
-			err = efiVb.OpenShardedWAL()
+			walErr = efiVb.OpenShardedWAL()
 		} else {
-			err = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
+			walErr = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
 		}
-		if err != nil {
-			slog.Error("Failed to load WAL", "err", err)
+		if walErr != nil {
+			slog.Error("Failed to load WAL", "err", walErr)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
-		// Open the block to object WAL
-		err = efiVb.OpenWAL(&efiVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, efiVb.BlockToObjectWAL.WallNum.Load(), efiVb.GetVolume())))
-		if err != nil {
+		if err := efiVb.OpenWAL(&efiVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, efiVb.BlockToObjectWAL.WallNum.Load(), efiVb.GetVolume()))); err != nil {
 			slog.Error("Failed to load block WAL", "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
-		// Write an empty block to the EFI volume
-		if err := efiVb.WriteAt(0, make([]byte, efiVb.BlockSize)); err != nil {
-			slog.Error("Failed to write empty EFI block", "err", err)
+		if err := efiVb.WriteAt(0, template); err != nil {
+			slog.Error("Failed to seed EFI volume with VARS template", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if err := efiVb.Flush(); err != nil {
 			slog.Error("Failed to flush EFI volume", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	slog.Info("Closing EFI")
-	err = efiVb.Close()
-	slog.Info("Close", "error", err)
-	if err != nil {
+	// Close is the durability boundary after WriteAt+Flush; if it fails the
+	// VARS volume may be partially written and QEMU pflash will refuse to
+	// start. Fail the launch loudly rather than enqueueing a corrupt volume.
+	if err := efiVb.Close(); err != nil {
 		slog.Error("Failed to close EFI Viperblock store", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
 	}
-
-	err = efiVb.RemoveLocalFiles()
-	if err != nil {
+	if err := efiVb.RemoveLocalFiles(); err != nil {
 		slog.Error("Failed to remove local files", "err", err)
 	}
 
@@ -1071,6 +1099,17 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 	instance.EBSRequests.Mu.Unlock()
 
 	return nil
+}
+
+// instanceArchitecture pulls the AWS architecture string off an
+// ec2.InstanceTypeInfo. Returns "" when the spec is nil or malformed; the
+// caller's firmware probe surfaces that as a clear error rather than a
+// silent BIOS fallback.
+func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
+	if it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 || it.ProcessorInfo.SupportedArchitectures[0] == nil {
+		return ""
+	}
+	return *it.ProcessorInfo.SupportedArchitectures[0]
 }
 
 // prepareCloudInitVolume creates cloud-init ISO with SSH keys and user data.

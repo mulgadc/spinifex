@@ -2067,6 +2067,48 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	}
 }
 
+// TestPrepareRunInstances_BootModePropagated pins that the AMI's BootMode
+// flows onto every prepared VM, so the launch path picks UEFI vs BIOS without
+// a second AMI lookup. Empty AMI BootMode (legacy) flows through as empty.
+func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
+	tests := []struct {
+		name         string
+		amiBootMode  string
+		wantBootMode string
+	}{
+		{"legacy empty", "", ""},
+		{"bios", "bios", "bios"},
+		{"uefi", "uefi", "uefi"},
+		{"uefi-preferred", "uefi-preferred", "uefi-preferred"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			types, _ := defaultPrepareInstanceTypes()
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: types,
+				canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+			}
+			svc := &InstanceServiceImpl{
+				config:        &config.Config{},
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+					"ami-1": {ImageOwnerAlias: "acc", BootMode: tc.amiBootMode},
+				}},
+				resourceMgr: prov,
+			}
+			_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc")
+			require.NoError(t, err)
+			require.Len(t, instances, 1)
+			assert.Equal(t, tc.wantBootMode, instances[0].BootMode)
+		})
+	}
+}
+
 func TestStartInstance_NotStopped(t *testing.T) {
 	id := "i-running"
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
@@ -2627,4 +2669,34 @@ func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
+}
+
+// TestInstanceArchitecture pins the safe-extraction contract: malformed
+// InstanceTypeInfo returns "" rather than panicking, and the firmware probe
+// surfaces "" as a clear error on the launch path.
+func TestInstanceArchitecture(t *testing.T) {
+	tests := []struct {
+		name string
+		it   *ec2.InstanceTypeInfo
+		want string
+	}{
+		{"nil", nil, ""},
+		{"nil processor info", &ec2.InstanceTypeInfo{}, ""},
+		{"empty supported archs", &ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{}}, ""},
+		{
+			"x86_64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}}},
+			"x86_64",
+		},
+		{
+			"arm64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}}},
+			"arm64",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
+		})
+	}
 }

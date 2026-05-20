@@ -222,7 +222,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.PIDFile = pidFile
 		instance.Config.ConsoleLogPath = consoleLogPath
 	} else {
-		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
+		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
 
 		instance.EBSRequests.Mu.Lock()
 		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
@@ -628,8 +628,10 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 }
 
 // buildBaseVMConfig creates a vm.Config with base QEMU settings and PCIe
-// hotplug root ports.
-func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture string, vCPUs, memoryMiB int) Config {
+// hotplug root ports. bootMode is the AMI's boot mode string ("bios" | "uefi"
+// | "uefi-preferred"); "uefi" and "uefi-preferred" flip cfg.UseUEFI. Any other
+// value (including "") defaults to BIOS.
+func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
 	cfg := Config{
 		Name:           instanceID,
 		PIDFile:        pidFile,
@@ -642,6 +644,7 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 		Memory:         memoryMiB,
 		CPUCount:       vCPUs,
 		Architecture:   architecture,
+		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
 	}
 	// 11 PCIe root ports for /dev/sd[f-p] hotplug slots, starting at chassis 1.
 	for i := 1; i <= 11; i++ {
@@ -653,18 +656,15 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 }
 
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and
-// device configurations. Returns an error if any non-EFI volume is missing
-// its NBDURI.
+// device configurations. Returns an error if any volume is missing its
+// NBDURI. EFI volumes are emitted as pflash unit=1 (per-VM EFI variable
+// store); the readonly pflash CODE blob (unit=0) is added by Config.Execute.
 func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread
 	var devices []Device
 
 	for _, v := range requests {
-		// TODO: Add EFI support
-		if v.EFI {
-			continue
-		}
 		if v.NBDURI == "" {
 			return nil, nil, nil, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
 		}
@@ -688,6 +688,12 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			drive.If = "virtio"
 			drive.Media = "cdrom"
 			drive.ID = "cloudinit"
+		}
+
+		if v.EFI {
+			drive.Format = "raw"
+			drive.If = "pflash"
+			drive.Unit = 1
 		}
 
 		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)

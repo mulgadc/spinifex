@@ -39,17 +39,23 @@ import (
 )
 
 // Fixture carries the per-process e2e state: AWS client surface, memoized
-// resource IDs, and the parent test whose Cleanup runs teardown.
+// resource IDs, and the cleanup chain that runs at teardown.
 //
-// Construct one per test process via NewFixture (typically in a top-level
-// TestMain or umbrella test). All Ensure* calls within the same process
-// share the memo so a second EnsureAMI returns the cached image and never
-// double-builds.
+// Two construction modes:
+//
+//   - NewFixture(t, aws): bound to t — cleanups route through t.Cleanup so
+//     the standard testing lifecycle owns teardown. Use under an umbrella
+//     test or TestMain wrapper that itself owns a *testing.T.
+//   - NewProcessFixture(aws): no *testing.T — cleanups queue on an internal
+//     LIFO that Close() drains. Use under TestMain where the singleton
+//     spans every top-level Test* in the package.
+//
+// All Ensure* calls within the same Fixture share the memo so a second
+// EnsureAMI returns the cached image and never double-builds.
 type Fixture struct {
-	// parent is the testing.T that constructed the Fixture. All cleanup
-	// callbacks register here, NOT on the per-test t passed to Ensure*.
-	// This keeps a memoized resource alive across the parent's subtests
-	// and tears it down exactly once when the parent exits.
+	// parent is the testing.T that constructed the Fixture in test mode.
+	// nil in process mode (NewProcessFixture). Cleanup routing forks on
+	// this — see registerCleanup.
 	parent *testing.T
 
 	EC2   ec2iface.EC2API
@@ -65,6 +71,11 @@ type Fixture struct {
 	memo     map[string]string
 	cleanups map[string]struct{}
 	sf       singleflight.Group
+
+	// processCleanups holds teardown callbacks for process-mode fixtures.
+	// Close() runs them LIFO. Unused (and untouched) when parent != nil.
+	processMu       sync.Mutex
+	processCleanups []func()
 }
 
 // Compile-time interface checks — the real SDK clients must satisfy the
@@ -83,6 +94,28 @@ func NewFixture(t *testing.T, aws *AWSClient) *Fixture {
 		t.Fatalf("NewFixture: nil AWSClient")
 	}
 	return newFixture(t, aws.EC2, aws.ELBv2)
+}
+
+// NewProcessFixture builds a Fixture that lives for the test process. No
+// *testing.T parent — Close() must be invoked from TestMain after m.Run()
+// to drain the cleanup chain. Use when a singleton fixture must outlive
+// every top-level Test* in the package.
+func NewProcessFixture(aws *AWSClient) (*Fixture, error) {
+	if aws == nil {
+		return nil, fmt.Errorf("NewProcessFixture: nil AWSClient")
+	}
+	scratch, err := randHex(4)
+	if err != nil {
+		return nil, fmt.Errorf("NewProcessFixture: scratch suffix: %w", err)
+	}
+	return &Fixture{
+		parent:   nil,
+		EC2:      aws.EC2,
+		ELBv2:    aws.ELBv2,
+		scratch:  scratch,
+		memo:     map[string]string{},
+		cleanups: map[string]struct{}{},
+	}, nil
 }
 
 // newFixture is the test-facing constructor: callers inject EC2 / ELBv2
@@ -104,17 +137,57 @@ func newFixture(t *testing.T, ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API) *F
 	}
 }
 
+// Close drains the process-mode cleanup chain LIFO. No-op for test-mode
+// fixtures (parent != nil) since those route teardown through t.Cleanup.
+// Safe to call multiple times; subsequent calls drain an empty slice.
+func (f *Fixture) Close() {
+	f.processMu.Lock()
+	cleanups := f.processCleanups
+	f.processCleanups = nil
+	f.processMu.Unlock()
+	for i := len(cleanups) - 1; i >= 0; i-- {
+		cleanups[i]()
+	}
+}
+
+// registerCleanup routes a teardown callback to the appropriate sink based
+// on construction mode. Test mode: t.Cleanup on the bound parent. Process
+// mode: append to the LIFO drained by Close().
+func (f *Fixture) registerCleanup(fn func()) {
+	if f.parent != nil {
+		f.parent.Cleanup(fn)
+		return
+	}
+	f.processMu.Lock()
+	f.processCleanups = append(f.processCleanups, fn)
+	f.processMu.Unlock()
+}
+
+// logf forwards diagnostic output to the bound parent in test mode, or to
+// stderr in process mode where no *testing.T is available.
+func (f *Fixture) logf(format string, args ...any) {
+	if f.parent != nil {
+		f.parent.Logf(format, args...)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "harness.Fixture: "+format+"\n", args...)
+}
+
 // Scratch returns the per-process suffix appended to resource names. Useful
 // for tests that need to assert against names they didn't construct directly.
 func (f *Fixture) Scratch() string { return f.scratch }
 
-// RegisterCleanup runs fn at the end of the parent test, not the calling
-// subtest. Use for resources created mid-suite by code paths that don't
-// flow through ensureOnce (e.g. IAM users threaded across multiple phase
-// subtests) — registering on the calling subtest would tear them down
-// before the next dependent subtest runs.
+// RegisterCleanup runs fn at fixture teardown, not at the end of the
+// calling subtest. Use for resources created mid-suite by code paths that
+// don't flow through ensureOnce (e.g. IAM users threaded across multiple
+// phase subtests) — registering on the calling subtest would tear them
+// down before the next dependent subtest runs.
+//
+// Test mode (NewFixture): fn runs at parent t.Cleanup.
+// Process mode (NewProcessFixture): fn runs at f.Close() (typically called
+// from TestMain after m.Run()).
 func (f *Fixture) RegisterCleanup(fn func()) {
-	f.parent.Cleanup(fn)
+	f.registerCleanup(fn)
 }
 
 // ensureOnce is the shared backbone of every Ensure*. It:
@@ -158,9 +231,9 @@ func (f *Fixture) ensureOnce(t *testing.T, key string, create func() (string, fu
 		f.mu.Unlock()
 
 		if !dup && cleanup != nil {
-			f.parent.Cleanup(func() {
+			f.registerCleanup(func() {
 				if cerr := cleanup(); cerr != nil {
-					f.parent.Logf("fixture cleanup %s: %v", key, cerr)
+					f.logf("fixture cleanup %s: %v", key, cerr)
 				}
 			})
 		}

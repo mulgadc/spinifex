@@ -33,30 +33,12 @@ func phase5c_SnapshotLifecycle(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "create-snapshot volume=%s", fix.RootVolumeID)
 	const origDesc = "e2e-test-snapshot"
-	snap, err := fix.AWS.EC2.CreateSnapshot(&ec2.CreateSnapshotInput{
-		VolumeId:    aws.String(fix.RootVolumeID),
-		Description: aws.String(origDesc),
+	fix.SnapshotID = harness.EnsureSnapshot(t, fix.Harness, harness.SnapshotSpec{
+		VolumeID:    fix.RootVolumeID,
+		Description: origDesc,
 	})
-	require.NoError(t, err, "create-snapshot")
-	fix.SnapshotID = aws.StringValue(snap.SnapshotId)
-	require.NotEmpty(t, fix.SnapshotID, "create-snapshot returned empty SnapshotId")
-
-	// Verify the create response itself — bash treats these as load-bearing
-	// because they prove the response shape matches AWS before any polling.
-	assert.Equal(t, fix.RootVolumeID, aws.StringValue(snap.VolumeId), "snapshot VolumeId mismatch")
-	assert.Equal(t, rootSize, aws.Int64Value(snap.VolumeSize), "snapshot VolumeSize mismatch")
-	assert.NotEmpty(t, aws.StringValue(snap.State), "snapshot State should be populated")
-	assert.NotEmpty(t, aws.StringValue(snap.Progress), "snapshot Progress should be populated")
-	harness.Detail(t,
-		"snapshot", fix.SnapshotID,
-		"size", rootSize,
-		"state", aws.StringValue(snap.State),
-		"progress", aws.StringValue(snap.Progress),
-	)
-
-	// Local QEMU finishes snapshot state transitions in <1s; tighten the
-	// default 2s polling to 500ms for the fast paths.
-	harness.WaitForSnapshotState(t, fix.AWS, fix.SnapshotID, "completed", harness.WithPoll(500*time.Millisecond))
+	require.NotEmpty(t, fix.SnapshotID, "EnsureSnapshot returned empty SnapshotId")
+	harness.Detail(t, "snapshot", fix.SnapshotID, "size", rootSize)
 
 	harness.Step(t, "describe-snapshots %s", fix.SnapshotID)
 	desc, err := fix.AWS.EC2.DescribeSnapshots(&ec2.DescribeSnapshotsInput{

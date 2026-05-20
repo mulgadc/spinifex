@@ -786,6 +786,10 @@ func phaseIAM6_PolicyLifecycle(t *testing.T, fix *Fixture) {
 func phaseIAM7_Cleanup(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "IAM Phase 7 — Cleanup")
 
+	// Resolve account ID before deleting users — iamEnsureAdminAccountID
+	// probes via GetUser(alice), and the user is gone after the loop below.
+	adminAccount := iamEnsureAdminAccountID(t, fix)
+
 	// Users: delete their keys first, then the user. iamDeleteUserBestEffort
 	// handles already-deleted resources gracefully.
 	for _, u := range []string{iamUserAlice, iamUserBob, iamUserCharlie} {
@@ -805,8 +809,6 @@ func phaseIAM7_Cleanup(t *testing.T, fix *Fixture) {
 
 	// Policies: detach (where applicable) and delete every test policy.
 	// FullAdmin lives under /admin/ so its ARN includes the path.
-	adminAccount := iamEnsureAdminAccountID(t, fix)
-
 	for _, p := range []struct{ name, path string }{
 		{iamPolicyEC2ReadOnly, ""},
 		{iamPolicyFullAdmin, iamPolicyFullAdminPath},

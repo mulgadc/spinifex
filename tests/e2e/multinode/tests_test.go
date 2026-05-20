@@ -28,3 +28,18 @@ func TestMultinodeInstanceDistribution(t *testing.T) {
 func TestMultinodeGuestSSH(t *testing.T) {
 	phase4_GuestSSH(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeVolumeLifecycle maps to phase 5.
+func TestMultinodeVolumeLifecycle(t *testing.T) {
+	phase5_VolumeLifecycle(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeCrossNodeGateway maps to phase 6.
+func TestMultinodeCrossNodeGateway(t *testing.T) {
+	phase6_CrossNodeGateway(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeCrossNodeOps maps to phase 7.
+func TestMultinodeCrossNodeOps(t *testing.T) {
+	phase7_CrossNodeOps(t, requireMultiNodeFixture(t))
+}

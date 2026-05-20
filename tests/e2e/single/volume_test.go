@@ -20,19 +20,35 @@ import (
 // Maps to run-e2e.sh ~488–612.
 func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5b — Volume Lifecycle (Attach/Detach)")
-	require.NotEmpty(t, fix.AZName, "Phase 1 must populate fix.AZName")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
 
-	harness.Step(t, "create-volume size=10 az=%s", fix.AZName)
-	fix.VolumeID = harness.EnsureVolume(t, fix.Harness, fix.AZName, 10)
-	require.NotEmpty(t, fix.VolumeID, "EnsureVolume returned empty VolumeId")
-	harness.Detail(t, "volume", fix.VolumeID)
+	az := needAZ(t, fix)
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+
+	// This phase creates + deletes a standalone test volume; do NOT route
+	// through harness.EnsureVolume because the fixture's terminate-on-cleanup
+	// would later try to re-delete a volume this test has just deleted in-line.
+	harness.Step(t, "create-volume size=10 az=%s", az)
+	createOut, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
+		AvailabilityZone: aws.String(az),
+		Size:             aws.Int64(10),
+	})
+	require.NoError(t, err, "create-volume")
+	volumeID := aws.StringValue(createOut.VolumeId)
+	require.NotEmpty(t, volumeID, "CreateVolume returned empty VolumeId")
+	harness.Detail(t, "volume", volumeID)
+
+	// Best-effort cleanup if a later assertion fails before the in-line delete.
+	t.Cleanup(func() {
+		_, _ = fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)})
+	})
+
+	harness.WaitForVolumeState(t, fix.AWS, volumeID, "available", harness.WithPoll(500*time.Millisecond))
 
 	const newSize int64 = 20
-	var err error
 	harness.Step(t, "modify-volume size=%d", newSize)
 	_, err = fix.AWS.EC2.ModifyVolume(&ec2.ModifyVolumeInput{
-		VolumeId: aws.String(fix.VolumeID),
+		VolumeId: aws.String(volumeID),
 		Size:     aws.Int64(newSize),
 	})
 	require.NoError(t, err, "modify-volume")
@@ -41,54 +57,54 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	// Resize is slower than state transitions; allow 5 minutes.
 	harness.EventuallyErr(t, func() error {
 		out, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
-			VolumeIds: []*string{aws.String(fix.VolumeID)},
+			VolumeIds: []*string{aws.String(volumeID)},
 		})
 		if err != nil {
 			return fmt.Errorf("describe-volumes: %w", err)
 		}
 		if len(out.Volumes) == 0 {
-			return fmt.Errorf("%s not found", fix.VolumeID)
+			return fmt.Errorf("%s not found", volumeID)
 		}
 		if got := aws.Int64Value(out.Volumes[0].Size); got != newSize {
-			return fmt.Errorf("%s size=%d want=%d", fix.VolumeID, got, newSize)
+			return fmt.Errorf("%s size=%d want=%d", volumeID, got, newSize)
 		}
 		return nil
 	}, 5*time.Minute, 5*time.Second)
 	harness.Detail(t, "resized_gib", newSize)
 
-	harness.Step(t, "attach-volume %s -> %s as /dev/sdf", fix.VolumeID, fix.InstanceID)
+	harness.Step(t, "attach-volume %s -> %s as /dev/sdf", volumeID, instanceID)
 	_, err = fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
-		VolumeId:   aws.String(fix.VolumeID),
-		InstanceId: aws.String(fix.InstanceID),
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
 		Device:     aws.String("/dev/sdf"),
 	})
 	require.NoError(t, err, "attach-volume")
 
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, ec2.VolumeStateInUse, harness.WithPoll(500*time.Millisecond))
+	harness.WaitForVolumeState(t, fix.AWS, volumeID, ec2.VolumeStateInUse, harness.WithPoll(500*time.Millisecond))
 
 	// Once the volume is in-use, the attachment record should be populated.
 	descAttached, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
-		VolumeIds: []*string{aws.String(fix.VolumeID)},
+		VolumeIds: []*string{aws.String(volumeID)},
 	})
 	require.NoError(t, err, "describe-volumes (attached)")
 	require.NotEmpty(t, descAttached.Volumes[0].Attachments, "no Attachments after attach-volume")
 	att := descAttached.Volumes[0].Attachments[0]
 	assert.Equal(t, ec2.VolumeAttachmentStateAttached, aws.StringValue(att.State),
 		"attachment State should be %q", ec2.VolumeAttachmentStateAttached)
-	assert.Equal(t, fix.InstanceID, aws.StringValue(att.InstanceId), "Attachment.InstanceId mismatch")
+	assert.Equal(t, instanceID, aws.StringValue(att.InstanceId), "Attachment.InstanceId mismatch")
 
 	// Bash omits --instance-id to exercise the gateway's resolution path.
-	harness.Step(t, "detach-volume %s", fix.VolumeID)
+	harness.Step(t, "detach-volume %s", volumeID)
 	_, err = fix.AWS.EC2.DetachVolume(&ec2.DetachVolumeInput{
-		VolumeId: aws.String(fix.VolumeID),
+		VolumeId: aws.String(volumeID),
 	})
 	require.NoError(t, err, "detach-volume")
 
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available", harness.WithPoll(500*time.Millisecond))
+	harness.WaitForVolumeState(t, fix.AWS, volumeID, "available", harness.WithPoll(500*time.Millisecond))
 
-	harness.Step(t, "delete-volume %s", fix.VolumeID)
+	harness.Step(t, "delete-volume %s", volumeID)
 	_, err = fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
-		VolumeId: aws.String(fix.VolumeID),
+		VolumeId: aws.String(volumeID),
 	})
 	require.NoError(t, err, "delete-volume")
 
@@ -98,7 +114,7 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	// surfaces the bug instead of being papered over.
 	harness.EventuallyErr(t, func() error {
 		out, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
-			VolumeIds: []*string{aws.String(fix.VolumeID)},
+			VolumeIds: []*string{aws.String(volumeID)},
 		})
 		if err != nil {
 			if harness.ErrorCodeIs(err, "InvalidVolume.NotFound") {
@@ -115,28 +131,25 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 			return errors.New("volume still present: state=" + state)
 		}
 	}, 2*time.Minute, 2*time.Second)
-
-	// Defensive: clear the fixture field so Stage D / G cleanup doesn't try
-	// to re-delete this volume.
-	fix.VolumeID = ""
 }
 
 // phase5bii_VolumeStatus runs DescribeVolumeStatus against the root volume
 // and asserts the response references it back. Maps to run-e2e.sh ~614–625.
 func phase5bii_VolumeStatus(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5b-ii — DescribeVolumeStatus")
-	require.NotEmpty(t, fix.RootVolumeID, "Phase 5 must populate fix.RootVolumeID")
+
+	_, rootVolumeID := needInstance(t, fix)
 
 	out, err := fix.AWS.EC2.DescribeVolumeStatus(&ec2.DescribeVolumeStatusInput{
-		VolumeIds: []*string{aws.String(fix.RootVolumeID)},
+		VolumeIds: []*string{aws.String(rootVolumeID)},
 	})
-	require.NoError(t, err, "describe-volume-status %s", fix.RootVolumeID)
+	require.NoError(t, err, "describe-volume-status %s", rootVolumeID)
 	require.NotEmpty(t, out.VolumeStatuses, "no VolumeStatuses returned")
 
 	var matched bool
 	var status string
 	for _, vs := range out.VolumeStatuses {
-		if aws.StringValue(vs.VolumeId) == fix.RootVolumeID {
+		if aws.StringValue(vs.VolumeId) == rootVolumeID {
 			matched = true
 			if vs.VolumeStatus != nil {
 				status = aws.StringValue(vs.VolumeStatus.Status)
@@ -145,6 +158,6 @@ func phase5bii_VolumeStatus(t *testing.T, fix *Fixture) {
 		}
 	}
 	assert.Truef(t, matched, "DescribeVolumeStatus did not return %s; got %d entries",
-		fix.RootVolumeID, len(out.VolumeStatuses))
-	harness.Detail(t, "volume", fix.RootVolumeID, "status", status)
+		rootVolumeID, len(out.VolumeStatuses))
+	harness.Detail(t, "volume", rootVolumeID, "status", status)
 }

@@ -224,19 +224,23 @@ func phaseIAM1_UserCRUD(t *testing.T, fix *Fixture) {
 // requests with it.
 func phaseIAM2_AccessKeyLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "IAM Phase 2 — Access Key Lifecycle")
-	// fix.IAMAdminAccount is populated by IAM Phase 4 which runs after
-	// this phase, so it is intentionally not asserted here.
+	iamEnsureAlice(t, fix)
+	iamEnsureBob(t, fix)
+
+	// Drop any leftover keys so the LimitExceeded sub-step still bites at
+	// the AWS 2-key cap when this Test* runs in isolation.
+	iamDeleteAllKeys(fix, iamUserAlice)
 
 	harness.Step(t, "create-access-key user=%s (key 1)", iamUserAlice)
 	k1, err := fix.AWS.IAM.CreateAccessKey(&iam.CreateAccessKeyInput{
 		UserName: aws.String(iamUserAlice),
 	})
 	require.NoError(t, err, "create-access-key 1")
-	fix.IAMAliceKeyID = aws.StringValue(k1.AccessKey.AccessKeyId)
-	fix.IAMAliceSecret = aws.StringValue(k1.AccessKey.SecretAccessKey)
-	require.NotEmpty(t, fix.IAMAliceKeyID, "empty AccessKeyId")
-	require.NotEmpty(t, fix.IAMAliceSecret, "empty SecretAccessKey")
-	harness.Detail(t, "key1", fix.IAMAliceKeyID)
+	aliceKeyID := aws.StringValue(k1.AccessKey.AccessKeyId)
+	aliceSecret := aws.StringValue(k1.AccessKey.SecretAccessKey)
+	require.NotEmpty(t, aliceKeyID, "empty AccessKeyId")
+	require.NotEmpty(t, aliceSecret, "empty SecretAccessKey")
+	harness.Detail(t, "key1", aliceKeyID)
 
 	harness.Step(t, "create-access-key user=%s (key 2)", iamUserAlice)
 	k2, err := fix.AWS.IAM.CreateAccessKey(&iam.CreateAccessKeyInput{
@@ -277,24 +281,25 @@ func phaseIAM2_AccessKeyLifecycle(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "list-access-keys bob")
 	require.Empty(t, bobKeys.AccessKeyMetadata, "bob should have 0 keys")
 
-	harness.Step(t, "update-access-key %s -> Inactive", fix.IAMAliceKeyID)
+	harness.Step(t, "update-access-key %s -> Inactive", aliceKeyID)
 	_, err = fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
-		AccessKeyId: aws.String(fix.IAMAliceKeyID),
+		AccessKeyId: aws.String(aliceKeyID),
 		Status:      aws.String(iam.StatusTypeInactive),
 	})
 	require.NoError(t, err, "update-access-key deactivate")
 	require.Equal(t, iam.StatusTypeInactive,
-		iamFindKeyStatus(t, fix, iamUserAlice, fix.IAMAliceKeyID),
+		iamFindKeyStatus(t, fix, iamUserAlice, aliceKeyID),
 		"key not Inactive after update")
 
-	harness.Step(t, "update-access-key %s -> Active", fix.IAMAliceKeyID)
+	harness.Step(t, "update-access-key %s -> Active", aliceKeyID)
 	_, err = fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
-		AccessKeyId: aws.String(fix.IAMAliceKeyID),
+		AccessKeyId: aws.String(aliceKeyID),
 		Status:      aws.String(iam.StatusTypeActive),
 	})
 	require.NoError(t, err, "update-access-key reactivate")
+	_ = aliceSecret // captured for parity with helpers; not consumed by IAM2 itself.
 
 	harness.Step(t, "delete-access-key %s (key 2)", aliceKey2)
 	_, err = fix.AWS.IAM.DeleteAccessKey(&iam.DeleteAccessKeyInput{
@@ -321,18 +326,17 @@ func phaseIAM3_UserAuthentication(t *testing.T, fix *Fixture) {
 	// API — every scoped DescribeInstances returns 403. Skip-gate until
 	// the handler lands; mulga-siv-100 tracks the daemon-side work.
 	t.Skip("daemon IAM signature/principal lookup not implemented — mulga-siv-100")
-	require.NotEmpty(t, fix.IAMAliceKeyID, "Phase 2 must populate fix.IAMAliceKeyID")
-	require.NotEmpty(t, fix.IAMAliceSecret, "Phase 2 must populate fix.IAMAliceSecret")
+	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 
 	harness.Step(t, "scoped client (alice) describe-instances — active key OK")
-	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMAliceKeyID, fix.IAMAliceSecret)
+	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
 	_, err := aliceCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
 	require.NoError(t, err, "alice describe-instances with active key")
 
 	harness.Step(t, "deactivate alice key, expect InvalidClientTokenId")
 	_, err = fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
-		AccessKeyId: aws.String(fix.IAMAliceKeyID),
+		AccessKeyId: aws.String(aliceKeyID),
 		Status:      aws.String(iam.StatusTypeInactive),
 	})
 	require.NoError(t, err, "deactivate alice key")
@@ -344,13 +348,13 @@ func phaseIAM3_UserAuthentication(t *testing.T, fix *Fixture) {
 	harness.Step(t, "reactivate alice key")
 	_, err = fix.AWS.IAM.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
-		AccessKeyId: aws.String(fix.IAMAliceKeyID),
+		AccessKeyId: aws.String(aliceKeyID),
 		Status:      aws.String(iam.StatusTypeActive),
 	})
 	require.NoError(t, err, "reactivate alice key")
 
 	harness.Step(t, "bad secret (expect SignatureDoesNotMatch)")
-	badSecret := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMAliceKeyID, "WRONG_SECRET_KEY_HERE_12345678901")
+	badSecret := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, "WRONG_SECRET_KEY_HERE_12345678901")
 	harness.ExpectError(t, "SignatureDoesNotMatch", func() error {
 		_, e := badSecret.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
 		return e
@@ -363,15 +367,8 @@ func phaseIAM3_UserAuthentication(t *testing.T, fix *Fixture) {
 		return e
 	})
 
-	harness.Step(t, "create-access-key user=%s (multi-user auth)", iamUserBob)
-	bobKey, err := fix.AWS.IAM.CreateAccessKey(&iam.CreateAccessKeyInput{
-		UserName: aws.String(iamUserBob),
-	})
-	require.NoError(t, err, "create-access-key bob")
-	fix.IAMBobKeyID = aws.StringValue(bobKey.AccessKey.AccessKeyId)
-	fix.IAMBobSecret = aws.StringValue(bobKey.AccessKey.SecretAccessKey)
-	require.NotEmpty(t, fix.IAMBobKeyID, "empty bob key id")
-	harness.Detail(t, "bob_key", fix.IAMBobKeyID)
+	bobKeyID, _ := iamEnsureBobKey(t, fix)
+	harness.Detail(t, "bob_key", bobKeyID)
 
 	harness.Step(t, "root auth still OK")
 	_, err = fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
@@ -401,14 +398,13 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "create-policy %s", iamPolicyEC2ReadOnly)
 	ec2roArn := aws.StringValue(pol.Policy.Arn)
 	require.NotEmpty(t, ec2roArn, "empty policy ARN")
-	fix.IAMAdminAccount = iamAccountFromARN(t, ec2roArn)
+	adminAccount := iamAccountFromARN(t, ec2roArn)
 
 	// Parent-scoped cleanup of every policy this phase creates. Registered
 	// once we have the account ID so the ARN constructor works. LIFO ⇒
 	// runs before phase 1's user cleanup (DetachUserPolicy from inside
 	// iamDeleteUserBestEffort still works either way; this just removes
 	// the policy faster on partial-run cleanup).
-	adminAccount := fix.IAMAdminAccount
 	fix.Harness.RegisterCleanup(func() {
 		for _, p := range []struct{ name, path string }{
 			{iamPolicyEC2ReadOnly, ""},
@@ -424,10 +420,10 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 			iamDeletePolicyBestEffort(fix, iamPolicyARN(adminAccount, key))
 		}
 	})
-	harness.Detail(t, "policy", iamPolicyEC2ReadOnly, "arn", ec2roArn, "account", fix.IAMAdminAccount)
+	harness.Detail(t, "policy", iamPolicyEC2ReadOnly, "arn", ec2roArn, "account", adminAccount)
 
 	// EC2ReadOnly is seeded sequentially above because it populates
-	// fix.IAMAdminAccount (read by Phase 5). The remaining four policies
+	// the admin-account ID (read by Phase 5). The remaining four policies
 	// have no cross-dependency, so fan them out in parallel under a
 	// wrapping t.Run that blocks until all four complete.
 	t.Run("create_policies_parallel", func(t *testing.T) {
@@ -495,7 +491,7 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 	require.Equal(t, iamPolicyEC2ReadOnly, aws.StringValue(got.Policy.PolicyName))
 
 	harness.Step(t, "get-policy nonexistent (expect NoSuchEntity)")
-	ghostArn := iamPolicyARN(fix.IAMAdminAccount, "Ghost")
+	ghostArn := iamPolicyARN(adminAccount, "Ghost")
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.IAM.GetPolicy(&iam.GetPolicyInput{PolicyArn: aws.String(ghostArn)})
 		return e
@@ -567,31 +563,22 @@ func phaseIAM5_PolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	// daemon doesn't honour yet — mulga-siv-100. Skip-gate the whole phase
 	// until the upstream gap closes.
 	t.Skip("daemon IAM scoped-credential enforcement not implemented — mulga-siv-100")
-	require.NotEmpty(t, fix.IAMAdminAccount, "Phase 4 must populate fix.IAMAdminAccount")
+	adminAccount := iamEnsureAdminAccountID(t, fix)
+	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
+	bobKeyID, bobSecret := iamEnsureBobKey(t, fix)
+	charlieKeyID, charlieSecret := iamEnsureCharlieKey(t, fix)
 
-	ec2roArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyEC2ReadOnly)
-	iamroArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyIAMReadOnly)
-	denyArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyDenyTerminate)
-	descAllArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyEC2DescribeAll)
-	fullAdminArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyFullAdminPath[1:]+iamPolicyFullAdmin)
+	ec2roArn := iamPolicyARN(adminAccount, iamPolicyEC2ReadOnly)
+	iamroArn := iamPolicyARN(adminAccount, iamPolicyIAMReadOnly)
+	denyArn := iamPolicyARN(adminAccount, iamPolicyDenyTerminate)
+	descAllArn := iamPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
+	fullAdminArn := iamPolicyARN(adminAccount, iamPolicyFullAdminPath[1:]+iamPolicyFullAdmin)
 
-	harness.Step(t, "create-user %q + key (enforcement subject)", iamUserCharlie)
-	iamDeleteUserBestEffort(fix, iamUserCharlie)
-	_, err := fix.AWS.IAM.CreateUser(&iam.CreateUserInput{
-		UserName: aws.String(iamUserCharlie),
-	})
-	require.NoError(t, err, "create-user %s", iamUserCharlie)
-	charlieKey, err := fix.AWS.IAM.CreateAccessKey(&iam.CreateAccessKeyInput{
-		UserName: aws.String(iamUserCharlie),
-	})
-	require.NoError(t, err, "create-access-key %s", iamUserCharlie)
-	fix.IAMCharlieKeyID = aws.StringValue(charlieKey.AccessKey.AccessKeyId)
-	fix.IAMCharlieSecret = aws.StringValue(charlieKey.AccessKey.SecretAccessKey)
-	harness.Detail(t, "charlie_key", fix.IAMCharlieKeyID)
-
-	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMAliceKeyID, fix.IAMAliceSecret)
-	bobCli := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMBobKeyID, fix.IAMBobSecret)
-	charlieCli := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMCharlieKeyID, fix.IAMCharlieSecret)
+	harness.Detail(t, "charlie_key", charlieKeyID)
+	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
+	bobCli := harness.NewAWSClientWithCreds(t, fix.Env, bobKeyID, bobSecret)
+	charlieCli := harness.NewAWSClientWithCreds(t, fix.Env, charlieKeyID, charlieSecret)
+	var err error
 
 	harness.Step(t, "attach-user-policy alice <- EC2ReadOnly + IAMReadOnly")
 	_, err = fix.AWS.IAM.AttachUserPolicy(&iam.AttachUserPolicyInput{
@@ -632,7 +619,7 @@ func phaseIAM5_PolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	harness.ExpectError(t, "NoSuchEntity", func() error {
 		_, e := fix.AWS.IAM.AttachUserPolicy(&iam.AttachUserPolicyInput{
 			UserName:  aws.String(iamUserAlice),
-			PolicyArn: aws.String(iamPolicyARN(fix.IAMAdminAccount, "Ghost")),
+			PolicyArn: aws.String(iamPolicyARN(adminAccount, "Ghost")),
 		})
 		return e
 	})
@@ -750,12 +737,13 @@ func phaseIAM6_PolicyLifecycle(t *testing.T, fix *Fixture) {
 	// confirmed by Phase 5 — daemon's attachment ledger isn't persisted
 	// across the API boundary. Skip-gate; mulga-siv-100 tracks the fix.
 	t.Skip("daemon DetachUserPolicy not implemented — mulga-siv-100")
-	require.NotEmpty(t, fix.IAMAdminAccount, "Phase 4 must populate fix.IAMAdminAccount")
+	adminAccount := iamEnsureAdminAccountID(t, fix)
+	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 
-	descAllArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyEC2DescribeAll)
-	denyArn := iamPolicyARN(fix.IAMAdminAccount, iamPolicyDenyTerminate)
+	descAllArn := iamPolicyARN(adminAccount, iamPolicyEC2DescribeAll)
+	denyArn := iamPolicyARN(adminAccount, iamPolicyDenyTerminate)
 
-	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, fix.IAMAliceKeyID, fix.IAMAliceSecret)
+	aliceCli := harness.NewAWSClientWithCreds(t, fix.Env, aliceKeyID, aliceSecret)
 
 	harness.Step(t, "detach EC2DescribeAll from alice (expect AccessDenied)")
 	_, err := fix.AWS.IAM.DetachUserPolicy(&iam.DetachUserPolicyInput{
@@ -817,11 +805,7 @@ func phaseIAM7_Cleanup(t *testing.T, fix *Fixture) {
 
 	// Policies: detach (where applicable) and delete every test policy.
 	// FullAdmin lives under /admin/ so its ARN includes the path.
-	if fix.IAMAdminAccount == "" {
-		// Phase 4 never ran → nothing to clean. Skip policy teardown
-		// entirely; this keeps Phase 7 idempotent when run standalone.
-		return
-	}
+	adminAccount := iamEnsureAdminAccountID(t, fix)
 
 	for _, p := range []struct{ name, path string }{
 		{iamPolicyEC2ReadOnly, ""},
@@ -836,7 +820,7 @@ func phaseIAM7_Cleanup(t *testing.T, fix *Fixture) {
 			// stripping the leading '/' matches iamPolicyARN's expectation.
 			key = p.path[1:] + p.name
 		}
-		arn := iamPolicyARN(fix.IAMAdminAccount, key)
+		arn := iamPolicyARN(adminAccount, key)
 		harness.Step(t, "cleanup policy %s", arn)
 		iamDeletePolicyBestEffort(fix, arn)
 	}

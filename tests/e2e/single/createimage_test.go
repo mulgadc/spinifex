@@ -18,51 +18,43 @@ import (
 // trips over the still-referenced snapshot). Maps to run-e2e.sh ~805–844.
 func phase5e_CreateImage(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5e — CreateImage Lifecycle")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
+
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
 
 	const customName = "e2e-custom-ami"
 	const customDesc = "E2E test custom image"
 
-	harness.Step(t, "create-image instance=%s name=%s (no-reboot)", fix.InstanceID, customName)
-	fix.CustomAMIID = harness.EnsureAMI(t, fix.Harness, harness.AMISource{
-		CreateFrom: &harness.AMICreateSpec{
-			SourceInstanceID: fix.InstanceID,
-			Name:             customName,
-			Description:      customDesc,
-			NoReboot:         true,
-		},
-	})
-	require.NotEmpty(t, fix.CustomAMIID, "EnsureAMI returned empty ImageId")
-	harness.Detail(t, "custom_ami", fix.CustomAMIID)
+	harness.Step(t, "create-image instance=%s name=%s (no-reboot)", instanceID, customName)
+	customAMIID := ensureCustomAMI(t, fix, instanceID, customName, customDesc)
+	require.NotEmpty(t, customAMIID, "ensureCustomAMI returned empty ImageId")
+	harness.Detail(t, "custom_ami", customAMIID)
 
-	harness.Step(t, "describe-images %s", fix.CustomAMIID)
+	harness.Step(t, "describe-images %s", customAMIID)
 	out, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{
-		ImageIds: []*string{aws.String(fix.CustomAMIID)},
+		ImageIds: []*string{aws.String(customAMIID)},
 	})
-	require.NoError(t, err, "describe-images %s", fix.CustomAMIID)
-	require.NotEmpty(t, out.Images, "no image for %s", fix.CustomAMIID)
+	require.NoError(t, err, "describe-images %s", customAMIID)
+	require.NotEmpty(t, out.Images, "no image for %s", customAMIID)
 	img := out.Images[0]
 
 	assert.Equal(t, customName, aws.StringValue(img.Name), "custom AMI Name mismatch")
 	assert.Equal(t, "available", aws.StringValue(img.State), "custom AMI State should be available")
 
-	// Capture the backing snapshot — needed by Phase 9 cleanup (Stage G).
+	var customAMISnapID string
 	for _, bdm := range img.BlockDeviceMappings {
 		if bdm.Ebs == nil {
 			continue
 		}
 		if id := aws.StringValue(bdm.Ebs.SnapshotId); id != "" {
-			fix.CustomAMISnapID = id
+			customAMISnapID = id
 			break
 		}
 	}
-	if fix.CustomAMISnapID == "" {
-		// Bash treats this as a non-fatal warning — replicate so a transient
-		// CreateImage path that omits the snapshot ref doesn't fail the suite.
-		t.Logf("WARNING: custom AMI %s has no backing snapshot ID — Stage G cleanup may be incomplete",
-			fix.CustomAMIID)
+	if customAMISnapID == "" {
+		t.Logf("WARNING: custom AMI %s has no backing snapshot ID", customAMIID)
 	} else {
-		harness.Detail(t, "custom_ami_snapshot", fix.CustomAMISnapID)
+		harness.Detail(t, "custom_ami_snapshot", customAMISnapID)
 	}
 
 	// TODO(stage-?): bash mentions verifying the predastore-side snapshot

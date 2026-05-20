@@ -39,20 +39,14 @@ import (
 func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 8 — Negative / Error Path Tests")
 
-	// Sanity: every sub-test below depends on at least one of these.
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.RootVolumeID, "Phase 5 must populate fix.RootVolumeID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.CustomAMIID, "Phase 5e must populate fix.CustomAMIID")
-
-	// Phase 3 stages the primary key pair via harness.EnsureKeyPair, which
-	// generates a scratch-suffixed name (e2e-key-<random>) — not the
-	// hardcoded "test-key-1" used pre-3c. Read fix.KeyName so 8j/8k probe
-	// the actual staged key, not a stale literal.
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
-	existingKey := fix.KeyName
-	const customAMIName = "e2e-custom-ami"
+	// Bootstrap every prereq up front so the parallel sub-tests below all
+	// see populated locals.
+	amiID := needAMI(t, fix)
+	inst, rootVolumeID := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+	instType, _ := needInstanceTypeArch(t, fix)
+	customAMIID := needCustomAMI(t, fix)
+	existingKey, _ := needKeyPair(t, fix)
 
 	// 8a: RunInstances with malformed AMI ID (missing ami- prefix).
 	t.Run("8a_InvalidAMIIDMalformed", func(t *testing.T) {
@@ -60,7 +54,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		harness.Step(t, "run-instances image-id=notanami")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String("notanami"),
-			InstanceType: aws.String(fix.InstanceType),
+			InstanceType: aws.String(instType),
 			KeyName:      aws.String(existingKey),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -74,7 +68,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		t.Parallel()
 		harness.Step(t, "run-instances instance-type=x99.superlarge")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-			ImageId:      aws.String(fix.AMIID),
+			ImageId:      aws.String(amiID),
 			InstanceType: aws.String("x99.superlarge"),
 			KeyName:      aws.String(existingKey),
 			MinCount:     aws.Int64(1),
@@ -87,10 +81,10 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// 8c: AttachVolume on the already-attached root volume.
 	t.Run("8c_VolumeInUse", func(t *testing.T) {
 		t.Parallel()
-		harness.Step(t, "attach-volume %s (root, in-use)", fix.RootVolumeID)
+		harness.Step(t, "attach-volume %s (root, in-use)", rootVolumeID)
 		_, err := fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
-			VolumeId:   aws.String(fix.RootVolumeID),
-			InstanceId: aws.String(fix.InstanceID),
+			VolumeId:   aws.String(rootVolumeID),
+			InstanceId: aws.String(instanceID),
 			Device:     aws.String("/dev/sdg"),
 		})
 		harness.AssertAWSError(t, err, "VolumeInUse")
@@ -99,10 +93,10 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// 8d: DetachVolume against the boot/root volume — explicitly disallowed.
 	t.Run("8d_DetachRootForbidden", func(t *testing.T) {
 		t.Parallel()
-		harness.Step(t, "detach-volume %s (root)", fix.RootVolumeID)
+		harness.Step(t, "detach-volume %s (root)", rootVolumeID)
 		_, err := fix.AWS.EC2.DetachVolume(&ec2.DetachVolumeInput{
-			VolumeId:   aws.String(fix.RootVolumeID),
-			InstanceId: aws.String(fix.InstanceID),
+			VolumeId:   aws.String(rootVolumeID),
+			InstanceId: aws.String(instanceID),
 		})
 		harness.AssertAWSError(t, err, "OperationNotPermitted")
 	})
@@ -143,7 +137,7 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		harness.Step(t, "run-instances image-id=ami-0000000000000dead")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 			ImageId:      aws.String("ami-0000000000000dead"),
-			InstanceType: aws.String(fix.InstanceType),
+			InstanceType: aws.String(instType),
 			KeyName:      aws.String(existingKey),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -157,8 +151,8 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 		t.Parallel()
 		harness.Step(t, "run-instances key-name=nonexistent-key-xyz")
 		out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-			ImageId:      aws.String(fix.AMIID),
-			InstanceType: aws.String(fix.InstanceType),
+			ImageId:      aws.String(amiID),
+			InstanceType: aws.String(instType),
 			KeyName:      aws.String("nonexistent-key-xyz"),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -250,19 +244,19 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	})
 
 	// 8o: CreateImage with a name that already exists (Phase 5e's AMI).
-	// Stored in fix.CustomAMIID, but the duplicate-name check is by name, not
+	// Stored in customAMIID, but the duplicate-name check is by name, not
 	// id — assert via the well-known constant from Phase 5e.
 	t.Run("8o_CreateImageDuplicateName", func(t *testing.T) {
 		t.Parallel()
 		harness.Step(t, "create-image name=%s (duplicate)", customAMIName)
 		out, err := fix.AWS.EC2.CreateImage(&ec2.CreateImageInput{
-			InstanceId: aws.String(fix.InstanceID),
+			InstanceId: aws.String(instanceID),
 			Name:       aws.String(customAMIName),
 		})
 		// If a second AMI somehow got minted, deregister it so it doesn't
 		// linger past the suite.
 		if err == nil && out != nil && aws.StringValue(out.ImageId) != "" &&
-			aws.StringValue(out.ImageId) != fix.CustomAMIID {
+			aws.StringValue(out.ImageId) != customAMIID {
 			extraID := aws.StringValue(out.ImageId)
 			t.Cleanup(func() {
 				_, _ = fix.AWS.EC2.DeregisterImage(&ec2.DeregisterImageInput{
@@ -291,11 +285,11 @@ func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// IncorrectInstanceState. Matches bash expectation.
 	t.Run("8q_ModifyAttributeOnRunning", func(t *testing.T) {
 		t.Parallel()
-		harness.Step(t, "modify-instance-attribute %s (running)", fix.InstanceID)
+		harness.Step(t, "modify-instance-attribute %s (running)", instanceID)
 		_, err := fix.AWS.EC2.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-			InstanceId: aws.String(fix.InstanceID),
+			InstanceId: aws.String(instanceID),
 			InstanceType: &ec2.AttributeValue{
-				Value: aws.String(fix.InstanceType),
+				Value: aws.String(instType),
 			},
 		})
 		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")

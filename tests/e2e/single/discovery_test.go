@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -78,10 +77,10 @@ func phase1_Environment(t *testing.T, fix *Fixture) {
 	azOut, err := fix.AWS.EC2.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{})
 	require.NoError(t, err, "describe-availability-zones")
 	require.NotEmpty(t, azOut.AvailabilityZones, "no AZs returned")
-	fix.AZName = aws.StringValue(azOut.AvailabilityZones[0].ZoneName)
+	azName := aws.StringValue(azOut.AvailabilityZones[0].ZoneName)
 	azState := aws.StringValue(azOut.AvailabilityZones[0].State)
-	require.Equalf(t, "available", azState, "AZ %s state %q (want available)", fix.AZName, azState)
-	harness.Detail(t, "az", fix.AZName, "region", aws.StringValue(azOut.AvailabilityZones[0].RegionName))
+	require.Equalf(t, "available", azState, "AZ %s state %q (want available)", azName, azState)
+	harness.Detail(t, "az", azName, "region", aws.StringValue(azOut.AvailabilityZones[0].RegionName))
 
 	harness.OnFailure(t, func() {
 		harness.DumpCmd(t, fix.Artifacts, "phase1-az.txt",
@@ -131,32 +130,11 @@ func phase2_Discovery(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, azOut.AvailabilityZones, "describe-availability-zones empty")
 
 	harness.Step(t, "discovering nano instance type")
-	out, err := fix.AWS.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
-	require.NoError(t, err)
-	require.NotEmpty(t, out.InstanceTypes, "describe-instance-types empty")
-
-	// Bash picks the first match for `nano` and reads the architecture out
-	// of the same row. Replicate that ordering — daemons emit types in a
-	// stable order so picking the first nano keeps parity with the bash
-	// driver.
-	for _, it := range out.InstanceTypes {
-		name := aws.StringValue(it.InstanceType)
-		if !strings.Contains(name, "nano") {
-			continue
-		}
-		fix.InstanceType = name
-		if it.ProcessorInfo != nil && len(it.ProcessorInfo.SupportedArchitectures) > 0 {
-			fix.Arch = aws.StringValue(it.ProcessorInfo.SupportedArchitectures[0])
-		}
-		break
-	}
-	if fix.InstanceType == "" {
-		t.Fatalf("no nano instance type available; saw %d types", len(out.InstanceTypes))
-	}
-	if fix.Arch == "" {
-		t.Fatalf("instance type %s missing ProcessorInfo.SupportedArchitectures", fix.InstanceType)
-	}
-	harness.Detail(t, "instance_type", fix.InstanceType, "arch", fix.Arch, "az", fix.AZName)
+	instType, arch := needInstanceTypeArch(t, fix)
+	require.NotEmpty(t, instType, "no nano instance type discovered")
+	require.NotEmpty(t, arch, "nano instance type missing SupportedArchitectures")
+	az := needAZ(t, fix)
+	harness.Detail(t, "instance_type", instType, "arch", arch, "az", az)
 }
 
 // phase2b_SerialConsole flips serial-console-access on then off and verifies

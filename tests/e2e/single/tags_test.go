@@ -20,15 +20,16 @@ import (
 // bash driver only implies via per-resource targeting.
 func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 6 — Tag Management")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.RootVolumeID, "Phase 5 must populate fix.RootVolumeID")
+
+	inst, rootVolumeID := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
 
 	// Cleanup runs regardless of which sub-step failed so later phases see
 	// a tag-free instance/volume. DeleteTags with no Value drops the tag
 	// unconditionally — exactly what we want here.
 	t.Cleanup(func() {
 		_, _ = fix.AWS.EC2.DeleteTags(&ec2.DeleteTagsInput{
-			Resources: []*string{aws.String(fix.InstanceID), aws.String(fix.RootVolumeID)},
+			Resources: []*string{aws.String(instanceID), aws.String(rootVolumeID)},
 			Tags: []*ec2.Tag{
 				{Key: aws.String("Name")},
 				{Key: aws.String("Environment")},
@@ -38,9 +39,9 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	})
 
 	// 6a: create three tags on the instance.
-	harness.Step(t, "6a create-tags instance=%s (Name, Environment, DeleteMe)", fix.InstanceID)
+	harness.Step(t, "6a create-tags instance=%s (Name, Environment, DeleteMe)", instanceID)
 	_, err := fix.AWS.EC2.CreateTags(&ec2.CreateTagsInput{
-		Resources: []*string{aws.String(fix.InstanceID)},
+		Resources: []*string{aws.String(instanceID)},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("e2e-test")},
 			{Key: aws.String("Environment"), Value: aws.String("testing")},
@@ -50,21 +51,21 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "create-tags instance")
 
 	// 6b: filter by resource-id should return all three.
-	harness.Step(t, "6b describe-tags resource-id=%s want=3", fix.InstanceID)
+	harness.Step(t, "6b describe-tags resource-id=%s want=3", instanceID)
 	tags, err := describeTags(fix, &ec2.Filter{
 		Name:   aws.String("resource-id"),
-		Values: []*string{aws.String(fix.InstanceID)},
+		Values: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-tags resource-id")
 	require.Lenf(t, tags, 3, "instance tag count after 6a: %v", tagSummary(tags))
 
 	// 6c: tag the root volume with two tags. Bash uses VOLUME_ID (the now-
 	// deleted Phase 5b volume), which is a bug in the bash driver; the Go
-	// port targets the persistent RootVolumeID so the assertion in 6d
+	// port targets the persistent rootVolumeID so the assertion in 6d
 	// reflects real cross-resource state.
-	harness.Step(t, "6c create-tags volume=%s (Name, Environment)", fix.RootVolumeID)
+	harness.Step(t, "6c create-tags volume=%s (Name, Environment)", rootVolumeID)
 	_, err = fix.AWS.EC2.CreateTags(&ec2.CreateTagsInput{
-		Resources: []*string{aws.String(fix.RootVolumeID)},
+		Resources: []*string{aws.String(rootVolumeID)},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("e2e-root-vol")},
 			{Key: aws.String("Environment"), Value: aws.String("testing")},
@@ -94,7 +95,7 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	// must replace the prior Value.
 	harness.Step(t, "6f overwrite instance Name -> e2e-test-updated")
 	_, err = fix.AWS.EC2.CreateTags(&ec2.CreateTagsInput{
-		Resources: []*string{aws.String(fix.InstanceID)},
+		Resources: []*string{aws.String(instanceID)},
 		Tags: []*ec2.Tag{
 			{Key: aws.String("Name"), Value: aws.String("e2e-test-updated")},
 		},
@@ -102,7 +103,7 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "create-tags overwrite Name")
 
 	tags, err = describeTags(fix,
-		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(fix.InstanceID)}},
+		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(instanceID)}},
 		&ec2.Filter{Name: aws.String("key"), Values: []*string{aws.String("Name")}},
 	)
 	require.NoError(t, err, "describe-tags resource-id + key=Name")
@@ -113,14 +114,14 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	// value. Instance should be down to {Name, Environment}.
 	harness.Step(t, "6g delete-tags Key=DeleteMe (no value)")
 	_, err = fix.AWS.EC2.DeleteTags(&ec2.DeleteTagsInput{
-		Resources: []*string{aws.String(fix.InstanceID)},
+		Resources: []*string{aws.String(instanceID)},
 		Tags:      []*ec2.Tag{{Key: aws.String("DeleteMe")}},
 	})
 	require.NoError(t, err, "delete-tags DeleteMe")
 
 	tags, err = describeTags(fix, &ec2.Filter{
 		Name:   aws.String("resource-id"),
-		Values: []*string{aws.String(fix.InstanceID)},
+		Values: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-tags after unconditional delete")
 	require.Lenf(t, tags, 2, "instance tags after deleting DeleteMe: %v", tagSummary(tags))
@@ -129,13 +130,13 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	// Environment tag on the instance still holds "testing".
 	harness.Step(t, "6h delete-tags Key=Environment,Value=production (no-op)")
 	_, err = fix.AWS.EC2.DeleteTags(&ec2.DeleteTagsInput{
-		Resources: []*string{aws.String(fix.InstanceID)},
+		Resources: []*string{aws.String(instanceID)},
 		Tags:      []*ec2.Tag{{Key: aws.String("Environment"), Value: aws.String("production")}},
 	})
 	require.NoError(t, err, "delete-tags Environment=production")
 
 	tags, err = describeTags(fix,
-		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(fix.InstanceID)}},
+		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(instanceID)}},
 		&ec2.Filter{Name: aws.String("key"), Values: []*string{aws.String("Environment")}},
 	)
 	require.NoError(t, err, "describe-tags instance Environment after no-op delete")
@@ -147,31 +148,31 @@ func phase6_TagManagement(t *testing.T, fix *Fixture) {
 	// because DeleteTags was scoped to the instance.
 	harness.Step(t, "6i delete-tags Key=Environment,Value=testing (instance only)")
 	_, err = fix.AWS.EC2.DeleteTags(&ec2.DeleteTagsInput{
-		Resources: []*string{aws.String(fix.InstanceID)},
+		Resources: []*string{aws.String(instanceID)},
 		Tags:      []*ec2.Tag{{Key: aws.String("Environment"), Value: aws.String("testing")}},
 	})
 	require.NoError(t, err, "delete-tags Environment=testing")
 
 	tags, err = describeTags(fix,
-		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(fix.InstanceID)}},
+		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(instanceID)}},
 		&ec2.Filter{Name: aws.String("key"), Values: []*string{aws.String("Environment")}},
 	)
 	require.NoError(t, err, "describe-tags instance Environment after match-delete")
 	assert.Lenf(t, tags, 0, "Environment tag must be gone from instance: %v", tagSummary(tags))
 
 	tags, err = describeTags(fix,
-		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(fix.RootVolumeID)}},
+		&ec2.Filter{Name: aws.String("resource-id"), Values: []*string{aws.String(rootVolumeID)}},
 		&ec2.Filter{Name: aws.String("key"), Values: []*string{aws.String("Environment")}},
 	)
 	require.NoError(t, err, "describe-tags volume Environment after instance-scoped delete")
 	require.Lenf(t, tags, 1, "volume Environment tag must survive instance-scoped delete: %v", tagSummary(tags))
-	assert.Equal(t, fix.RootVolumeID, aws.StringValue(tags[0].ResourceId), "Environment tag still attached to root volume")
+	assert.Equal(t, rootVolumeID, aws.StringValue(tags[0].ResourceId), "Environment tag still attached to root volume")
 
 	// 6j: only Name should remain on the instance.
-	harness.Step(t, "6j final describe-tags resource-id=%s want=1", fix.InstanceID)
+	harness.Step(t, "6j final describe-tags resource-id=%s want=1", instanceID)
 	tags, err = describeTags(fix, &ec2.Filter{
 		Name:   aws.String("resource-id"),
-		Values: []*string{aws.String(fix.InstanceID)},
+		Values: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-tags final instance")
 	require.Lenf(t, tags, 1, "final instance tag count: %v", tagSummary(tags))

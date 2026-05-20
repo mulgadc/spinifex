@@ -31,14 +31,12 @@ func phase3_KeyPairs(t *testing.T, fix *Fixture) {
 	_, _ = fix.AWS.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(key2)})
 
 	harness.Step(t, "ensure primary key pair (Phase 5+ prereq)")
-	keyName, pemPath := harness.EnsureKeyPair(t, fix.Harness, fix.TmpDir)
+	keyName, pemPath := needKeyPair(t, fix)
 	material, rerr := os.ReadFile(pemPath)
 	require.NoError(t, rerr, "read PEM %s", pemPath)
 	require.NotEmpty(t, material, "EnsureKeyPair PEM empty")
 	require.True(t, strings.HasPrefix(string(material), "-----BEGIN"),
 		"PEM must start with -----BEGIN (got prefix %q)", firstN(string(material), 32))
-	fix.KeyName = keyName
-	fix.KeyPath = pemPath
 	harness.Detail(t, "key", keyName, "pem", pemPath)
 
 	harness.Step(t, "import-key-pair %q (local-generated RSA)", key2)

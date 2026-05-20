@@ -44,9 +44,9 @@ import (
 func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 8 (acct) — EC2 Account Scoping")
 
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.AZName, "Phase 2 must populate fix.AZName")
+	amiID := needAMI(t, fix)
+	instType, _ := needInstanceTypeArch(t, fix)
+	az := needAZ(t, fix)
 
 	carousel := harness.NewAccountCarousel()
 
@@ -249,8 +249,8 @@ func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
 
 		harness.Step(t, "alpha run-instances")
 		alphaRun, err := alpha.Client.EC2.RunInstances(&ec2.RunInstancesInput{
-			ImageId:      aws.String(fix.AMIID),
-			InstanceType: aws.String(fix.InstanceType),
+			ImageId:      aws.String(amiID),
+			InstanceType: aws.String(instType),
 			KeyName:      aws.String(alphaInstKey),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -263,8 +263,8 @@ func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
 
 		harness.Step(t, "beta run-instances")
 		betaRun, err := beta.Client.EC2.RunInstances(&ec2.RunInstancesInput{
-			ImageId:      aws.String(fix.AMIID),
-			InstanceType: aws.String(fix.InstanceType),
+			ImageId:      aws.String(amiID),
+			InstanceType: aws.String(instType),
 			KeyName:      aws.String(betaInstKey),
 			MinCount:     aws.Int64(1),
 			MaxCount:     aws.Int64(1),
@@ -365,7 +365,7 @@ func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
 	t.Run("Step3_VolumeScoping", func(t *testing.T) {
 		harness.Step(t, "alpha create-volume")
 		av, err := alpha.Client.EC2.CreateVolume(&ec2.CreateVolumeInput{
-			AvailabilityZone: aws.String(fix.AZName),
+			AvailabilityZone: aws.String(az),
 			Size:             aws.Int64(10),
 			VolumeType:       aws.String("gp3"),
 		})
@@ -376,7 +376,7 @@ func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
 
 		harness.Step(t, "beta create-volume")
 		bv, err := beta.Client.EC2.CreateVolume(&ec2.CreateVolumeInput{
-			AvailabilityZone: aws.String(fix.AZName),
+			AvailabilityZone: aws.String(az),
 			Size:             aws.Int64(10),
 			VolumeType:       aws.String("gp3"),
 		})

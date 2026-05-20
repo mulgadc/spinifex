@@ -25,26 +25,37 @@ import (
 // ~1027–1053.
 func phase7_StopStart(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 7 — Instance State Transitions (Stop)")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
 
-	harness.Step(t, "stop-instances %s", fix.InstanceID)
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+
+	harness.Step(t, "stop-instances %s", instanceID)
 	_, err := fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "stop-instances")
 
-	harness.WaitForInstanceState(t, fix.AWS, fix.InstanceID, "stopped")
+	harness.WaitForInstanceState(t, fix.AWS, instanceID, "stopped")
 
 	// Reboot of a stopped instance must be rejected — IncorrectInstanceState
 	// is the AWS code bash's expect_error pins on.
 	harness.Step(t, "reboot-instances on stopped instance (should fail)")
 	harness.ExpectError(t, "IncorrectInstanceState", func() error {
 		_, err := fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{
-			InstanceIds: []*string{aws.String(fix.InstanceID)},
+			InstanceIds: []*string{aws.String(instanceID)},
 		})
 		return err
 	})
 	harness.Detail(t, "stopped_reject", "IncorrectInstanceState")
+
+	// Restore primary instance to running so sibling Test* don't trip on a
+	// stopped singleton row.
+	harness.Step(t, "start-instances %s (restore for sibling tests)", instanceID)
+	_, err = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	})
+	require.NoError(t, err, "start-instances (restore)")
+	harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 }
 
 // phase7a_AttachToStoppedError creates a fresh 10 GiB volume and attempts
@@ -54,13 +65,31 @@ func phase7_StopStart(t *testing.T, fix *Fixture) {
 // run-e2e.sh ~1054–1068.
 func phase7a_AttachToStoppedError(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 7a — Attach Volume to Stopped Instance (Error Path)")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.AZName, "Phase 2 must populate fix.AZName")
 
-	harness.Step(t, "create-volume size=10 az=%s", fix.AZName)
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+	az := needAZ(t, fix)
+
+	// Stop the primary instance so the IncorrectInstanceState assertion has
+	// something to bite on, then restore it at end so sibling Test* see the
+	// canonical running row.
+	harness.Step(t, "stop-instances %s (precondition for 7a)", instanceID)
+	_, err := fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	})
+	require.NoError(t, err, "stop-instances")
+	harness.WaitForInstanceState(t, fix.AWS, instanceID, "stopped")
+	t.Cleanup(func() {
+		_, _ = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		})
+		harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
+	})
+
+	harness.Step(t, "create-volume size=10 az=%s", az)
 	create, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		Size:             aws.Int64(10),
-		AvailabilityZone: aws.String(fix.AZName),
+		AvailabilityZone: aws.String(az),
 	})
 	require.NoError(t, err, "create-volume")
 	stoppedVolID := aws.StringValue(create.VolumeId)
@@ -81,11 +110,11 @@ func phase7a_AttachToStoppedError(t *testing.T, fix *Fixture) {
 
 	harness.WaitForVolumeState(t, fix.AWS, stoppedVolID, "available")
 
-	harness.Step(t, "attach-volume %s -> %s (should fail)", stoppedVolID, fix.InstanceID)
+	harness.Step(t, "attach-volume %s -> %s (should fail)", stoppedVolID, instanceID)
 	harness.ExpectError(t, "IncorrectInstanceState", func() error {
 		_, err := fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
 			VolumeId:   aws.String(stoppedVolID),
-			InstanceId: aws.String(fix.InstanceID),
+			InstanceId: aws.String(instanceID),
 			Device:     aws.String("/dev/sdg"),
 		})
 		return err
@@ -106,18 +135,44 @@ func phase7a_AttachToStoppedError(t *testing.T, fix *Fixture) {
 // ~1070–1177.
 func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 7b — ModifyInstanceAttribute")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+	origType, _ := needInstanceTypeArch(t, fix)
+	_, keyPath := needKeyPair(t, fix)
 
 	// Bash strips the ".nano" suffix and appends ".small" — same family,
 	// more RAM at matching vCPU. Avoids xlarge (16 GiB) which the CI host
 	// can't satisfy.
-	if !strings.HasSuffix(fix.InstanceType, ".nano") {
-		t.Fatalf("phase7b: expected fix.InstanceType to end with .nano, got %q", fix.InstanceType)
+	if !strings.HasSuffix(origType, ".nano") {
+		t.Fatalf("phase7b: expected discovered instance type to end with .nano, got %q", origType)
 	}
-	modifyType := strings.TrimSuffix(fix.InstanceType, ".nano") + ".small"
-	harness.Detail(t, "from_type", fix.InstanceType, "to_type", modifyType)
+	modifyType := strings.TrimSuffix(origType, ".nano") + ".small"
+	harness.Detail(t, "from_type", origType, "to_type", modifyType)
+
+	// Stop the instance first — ModifyInstanceAttribute on a running
+	// instance is rejected. Restore (type + state) at end so sibling Test*
+	// see the canonical running singleton.
+	harness.Step(t, "stop-instances %s (precondition for modify)", instanceID)
+	_, err := fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	})
+	require.NoError(t, err, "stop-instances")
+	harness.WaitForInstanceState(t, fix.AWS, instanceID, "stopped")
+	t.Cleanup(func() {
+		_, _ = fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		})
+		harness.WaitForInstanceState(t, fix.AWS, instanceID, "stopped")
+		_, _ = fix.AWS.EC2.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
+			InstanceId:   aws.String(instanceID),
+			InstanceType: &ec2.AttributeValue{Value: aws.String(origType)},
+		})
+		_, _ = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		})
+		harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
+	})
 
 	// Look up expected vCPUs / memory for the upsized type so we can
 	// assert SSH-reported values match what the AWS surface advertises.
@@ -141,43 +196,38 @@ func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 	require.NotZero(t, expectedMemMiB, "%s missing MemoryInfo.SizeInMiB", modifyType)
 	harness.Detail(t, "expected_vcpus", expectedVCPUs, "expected_mem_mib", expectedMemMiB)
 
-	harness.Step(t, "modify-instance-attribute %s type=%s", fix.InstanceID, modifyType)
+	harness.Step(t, "modify-instance-attribute %s type=%s", instanceID, modifyType)
 	_, err = fix.AWS.EC2.ModifyInstanceAttribute(&ec2.ModifyInstanceAttributeInput{
-		InstanceId:   aws.String(fix.InstanceID),
+		InstanceId:   aws.String(instanceID),
 		InstanceType: &ec2.AttributeValue{Value: aws.String(modifyType)},
 	})
 	require.NoError(t, err, "modify-instance-attribute")
 
 	// Verify describe-instances reflects the new type before we start.
 	descOut, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-instances")
-	require.NotEmpty(t, descOut.Reservations, "no reservations for %s", fix.InstanceID)
-	require.NotEmpty(t, descOut.Reservations[0].Instances, "no instances for %s", fix.InstanceID)
+	require.NotEmpty(t, descOut.Reservations, "no reservations for %s", instanceID)
+	require.NotEmpty(t, descOut.Reservations[0].Instances, "no instances for %s", instanceID)
 	gotType := aws.StringValue(descOut.Reservations[0].Instances[0].InstanceType)
 	require.Equalf(t, modifyType, gotType,
 		"ModifyInstanceAttribute did not stick: want %s got %s", modifyType, gotType)
-	// Reflect the new type in the fixture so any later phase that reads
-	// fix.InstanceType sees the post-modify value.
-	fix.InstanceType = modifyType
 
-	harness.Step(t, "start-instances %s", fix.InstanceID)
+	harness.Step(t, "start-instances %s", instanceID)
 	_, err = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "start-instances")
 
-	inst := harness.WaitForInstanceState(t, fix.AWS, fix.InstanceID, "running")
-	fix.Instance = inst
+	runInst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 
 	// Re-discover SSH endpoint — qemu hostfwd may have rebound.
-	host, port := harness.InstancePublicSSHHost(t, inst)
-	fix.SSHHost, fix.SSHPort = host, port
+	host, port := harness.InstancePublicSSHHost(t, runInst)
 	harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
-	waitForSSHReady(t, host, port, fix.KeyPath)
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
+	waitForSSHReady(t, host, port, keyPath)
+	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
 
 	harness.Step(t, "ssh nproc")
 	nprocOut := strings.TrimSpace(runSSH(t, tgt, "nproc"))
@@ -199,16 +249,7 @@ func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 		vmMemMiB, expectedMemLow, expectedMemMiB)
 	harness.Detail(t, "vm_mem_mib", vmMemMiB, "threshold_mib", expectedMemLow)
 
-	// Phase 7c-pre expects the instance running again, but the bash phase
-	// ordering leaves the instance stopped between 7b and 7c-pre by
-	// implicitly relying on 7c-pre to start it. We restore that contract
-	// explicitly so 7c-pre can drive its own start.
-	harness.Step(t, "stop-instances %s (end of 7b)", fix.InstanceID)
-	_, err = fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
-	})
-	require.NoError(t, err, "stop-instances (end of 7b)")
-	harness.WaitForInstanceState(t, fix.AWS, fix.InstanceID, "stopped")
+	// Cleanup restores original type + running state for sibling Test*.
 }
 
 // phase7cPre_Reboot starts the (stopped) primary instance, captures its
@@ -219,35 +260,27 @@ func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 // run-e2e.sh ~1178–1236.
 func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 7c-pre — Reboot Running Instance")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
 
-	// Bring instance back up from the stopped state left by Phase 7b.
-	harness.Step(t, "start-instances %s", fix.InstanceID)
-	_, err := fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
-	})
-	require.NoError(t, err, "start-instances")
-	inst := harness.WaitForInstanceState(t, fix.AWS, fix.InstanceID, "running")
-	fix.Instance = inst
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+	_, keyPath := needKeyPair(t, fix)
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
-	fix.SSHHost, fix.SSHPort = host, port
-	waitForSSHReady(t, host, port, fix.KeyPath)
+	waitForSSHReady(t, host, port, keyPath)
 
 	// Capture pre-reboot private IP for the post-reboot identity check.
 	preDesc, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-instances (pre-reboot)")
-	require.NotEmpty(t, preDesc.Reservations, "no reservations for %s", fix.InstanceID)
-	require.NotEmpty(t, preDesc.Reservations[0].Instances, "no instances for %s", fix.InstanceID)
+	require.NotEmpty(t, preDesc.Reservations, "no reservations for %s", instanceID)
+	require.NotEmpty(t, preDesc.Reservations[0].Instances, "no instances for %s", instanceID)
 	preRebootIP := aws.StringValue(preDesc.Reservations[0].Instances[0].PrivateIpAddress)
 	harness.Detail(t, "pre_reboot_private_ip", preRebootIP)
 
-	harness.Step(t, "reboot-instances %s", fix.InstanceID)
+	harness.Step(t, "reboot-instances %s", instanceID)
 	_, err = fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "reboot-instances")
 
@@ -255,7 +288,7 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 	// reboot semantics don't transition the instance state at all.
 	for i := 0; i < 10; i++ {
 		out, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String(fix.InstanceID)},
+			InstanceIds: []*string{aws.String(instanceID)},
 		})
 		require.NoError(t, err, "describe-instances during reboot poll %d", i)
 		require.NotEmpty(t, out.Reservations[0].Instances, "instance disappeared during reboot")
@@ -268,17 +301,15 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 	// SSH endpoint may have rebound after the guest restart (qemu hostfwd
 	// can shift), so re-discover.
 	descPost, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
 	require.NoError(t, err, "describe-instances (post-reboot)")
 	require.NotEmpty(t, descPost.Reservations[0].Instances, "no instances post-reboot")
 	postInst := descPost.Reservations[0].Instances[0]
-	fix.Instance = postInst
 	host, port = harness.InstancePublicSSHHost(t, postInst)
-	fix.SSHHost, fix.SSHPort = host, port
-	waitForSSHReady(t, host, port, fix.KeyPath)
+	waitForSSHReady(t, host, port, keyPath)
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
+	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
 	harness.Step(t, "ssh uptime")
 	uptimeOut := strings.TrimSpace(runSSH(t, tgt, "cat /proc/uptime | cut -d. -f1"))
 	uptimeSecs, err := strconv.ParseInt(uptimeOut, 10, 64)
@@ -302,15 +333,16 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 // ~1238–1296.
 func phase7c_RunInstancesMultiCount(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 7c — RunInstances with MinCount/MaxCount > 1")
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
 
-	harness.Step(t, "run-instances ami=%s type=%s count=2", fix.AMIID, fix.InstanceType)
+	amiID := needAMI(t, fix)
+	instType, _ := needInstanceTypeArch(t, fix)
+	keyName, _ := needKeyPair(t, fix)
+
+	harness.Step(t, "run-instances ami=%s type=%s count=2", amiID, instType)
 	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(fix.AMIID),
-		InstanceType: aws.String(fix.InstanceType),
-		KeyName:      aws.String(fix.KeyName),
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		KeyName:      aws.String(keyName),
 		MinCount:     aws.Int64(2),
 		MaxCount:     aws.Int64(2),
 	})

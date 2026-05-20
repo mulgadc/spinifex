@@ -32,15 +32,15 @@ var pingDroppedRE = regexp.MustCompile(`0 (packets )?received|100% packet loss`)
 // only egress hits the ACL. Maps to run-e2e.sh ~846–928.
 func phase5f_SecurityGroupEgress(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5f — Security Group Enforcement (egress ACL)")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.SSHHost, "Phase 5a-ii must populate fix.SSHHost")
-	require.NotZero(t, fix.SSHPort, "Phase 5a-ii must populate fix.SSHPort")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+
+	inst, _ := needInstance(t, fix)
+	_, keyPath := needKeyPair(t, fix)
 
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.SGID, "default SG ID required")
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: fix.SSHHost, Port: fix.SSHPort, KeyPath: fix.KeyPath}
+	sshHost, sshPort := harness.InstancePublicSSHHost(t, inst)
+	tgt := harness.SSHTarget{User: "ec2-user", Host: sshHost, Port: sshPort, KeyPath: keyPath}
 
 	// Restore allow-all egress no matter what — ignore Duplicate so a clean
 	// finish (test left the rule in place) doesn't poison later phases.

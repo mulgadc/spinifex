@@ -36,10 +36,9 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	}
 	harness.Phase(t, "Phase 8d — NAT Gateway E2E")
 
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+	amiID := needAMI(t, fix)
+	instType, _ := needInstanceTypeArch(t, fix)
+	keyName, keyPath := needKeyPair(t, fix)
 
 	c := fix.AWS
 
@@ -70,9 +69,9 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	// --- Bastion (public subnet) -------------------------------------------
 	harness.Step(t, "run-instances bastion (default subnet)")
 	bastionOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(fix.AMIID),
-		InstanceType: aws.String(fix.InstanceType),
-		KeyName:      aws.String(fix.KeyName),
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		KeyName:      aws.String(keyName),
 		SubnetId:     aws.String(def.SubnetID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
@@ -94,9 +93,9 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 	// --- Private instance ---------------------------------------------------
 	harness.Step(t, "run-instances private (private subnet)")
 	privOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(fix.AMIID),
-		InstanceType: aws.String(fix.InstanceType),
-		KeyName:      aws.String(fix.KeyName),
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		KeyName:      aws.String(keyName),
 		SubnetId:     aws.String(privSubnetID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
@@ -127,14 +126,14 @@ func phase8d_NATGateway(t *testing.T, fix *Fixture) {
 
 	// --- SSH plumbing ------------------------------------------------------
 	// Wait for bastion SSH handshake so the SCP below has somewhere to land.
-	waitForSSHReady(t, bastionPubIP, 22, fix.KeyPath)
+	waitForSSHReady(t, bastionPubIP, 22, keyPath)
 
-	bastionTgt := harness.SSHTarget{User: "ec2-user", Host: bastionPubIP, Port: 22, KeyPath: fix.KeyPath}
+	bastionTgt := harness.SSHTarget{User: "ec2-user", Host: bastionPubIP, Port: 22, KeyPath: keyPath}
 
 	// Copy the keypair to the bastion so it can hop into the private VM.
 	// Matches the bash `scp ... ec2-user@$PUB_IP:/tmp/key.pem` step.
 	harness.Step(t, "scp keypair -> bastion:/tmp/key.pem")
-	scpKey(t, fix.KeyPath, bastionPubIP)
+	scpKey(t, keyPath, bastionPubIP)
 	_ = runSSH(t, bastionTgt, "chmod 600 /tmp/key.pem")
 
 	// Bastion → private SSH probe (cloud-init on the private VM can lag

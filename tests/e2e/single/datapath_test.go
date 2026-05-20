@@ -45,10 +45,13 @@ systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
 func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 8e — Security Group SG-to-SG Datapath (OVN)")
 	harness.SkipIfNoOVN(t)
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+
+	// Bootstrap every prereq up front. runSGEInstance / primaryENI use
+	// `fix.AMIID / InstanceType / KeyName / KeyPath` indirectly; resolve
+	// once and pass into the local helpers.
+	_ = needAMI(t, fix)
+	_, _ = needInstanceTypeArch(t, fix)
+	_, keyPath := needKeyPair(t, fix)
 
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.VPCID, "default VPC ID required")
@@ -181,7 +184,7 @@ func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
 	// `ssh <client> 'curl <target>:8080'`. Target-vm has no SSH ingress on
 	// its own SG so we never connect to it directly.
 	clientHost, clientPort := harness.InstancePublicSSHHost(t, clientInst)
-	clientTgt := harness.SSHTarget{User: "ec2-user", Host: clientHost, Port: clientPort, KeyPath: fix.KeyPath}
+	clientTgt := harness.SSHTarget{User: "ec2-user", Host: clientHost, Port: clientPort, KeyPath: keyPath}
 	harness.Step(t, "8e-3 wait for client-vm SSH at %s:%d", clientHost, clientPort)
 	harness.EventuallyErr(t, func() error {
 		if _, err := runSSHCombined(clientTgt, "true"); err != nil {
@@ -293,10 +296,13 @@ func createSG(t *testing.T, fix *Fixture, vpcID, name, desc string) string {
 // assertion). Memoizing across runs would defeat the test.
 func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string) string {
 	t.Helper()
+	amiID := needAMI(t, fix)
+	instType, _ := needInstanceTypeArch(t, fix)
+	keyName, _ := needKeyPair(t, fix)
 	in := &ec2.RunInstancesInput{
-		ImageId:          aws.String(fix.AMIID),
-		InstanceType:     aws.String(fix.InstanceType),
-		KeyName:          aws.String(fix.KeyName),
+		ImageId:          aws.String(amiID),
+		InstanceType:     aws.String(instType),
+		KeyName:          aws.String(keyName),
 		SubnetId:         aws.String(subnetID),
 		MinCount:         aws.Int64(1),
 		MaxCount:         aws.Int64(1),

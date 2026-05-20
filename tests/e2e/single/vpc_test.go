@@ -45,10 +45,9 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	}
 	harness.Phase(t, "Phase 8b — VPC Public/Private Subnet E2E")
 
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+	amiID := needAMI(t, fix)
+	instType, _ := needInstanceTypeArch(t, fix)
+	keyName, keyPath := needKeyPair(t, fix)
 
 	c := fix.AWS
 
@@ -214,11 +213,11 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "default_sg", defaultSGID, "ingress", "tcp/22<-0.0.0.0/0")
 
 	// --- Public instance ---------------------------------------------------
-	harness.Step(t, "run-instances ami=%s subnet=%s", fix.AMIID, pubSubnetID)
+	harness.Step(t, "run-instances ami=%s subnet=%s", amiID, pubSubnetID)
 	runOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
-		ImageId:      aws.String(fix.AMIID),
-		InstanceType: aws.String(fix.InstanceType),
-		KeyName:      aws.String(fix.KeyName),
+		ImageId:      aws.String(amiID),
+		InstanceType: aws.String(instType),
+		KeyName:      aws.String(keyName),
 		SubnetId:     aws.String(pubSubnetID),
 		MinCount:     aws.Int64(1),
 		MaxCount:     aws.Int64(1),
@@ -249,7 +248,7 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	// Use the non-fatal probe so we can dump VPC/IGW datapath diagnostics
 	// before Fatal. Same 3min budget — fresh-VPC unreachability beyond that
 	// is a real product bug (mulga-siv-105 + mulga-siv-111), not test flake.
-	if !trySSHReady(pubIP, 22, fix.KeyPath, 3*time.Minute) {
+	if !trySSHReady(pubIP, 22, keyPath, 3*time.Minute) {
 		harness.DumpVPCFlowDiagnostics(t, c, instID,
 			fmt.Sprintf("Phase 8b SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 			harness.VPCDiagnosticsOpts{
@@ -260,7 +259,7 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 		t.Fatalf("SSH handshake %s:22 never completed within 3min (see diagnostics above; tracking mulga-siv-111)", pubIP)
 	}
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: fix.KeyPath}
+	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
 
 	harness.Step(t, "ssh id (smoke)")
 	idOut := runSSH(t, tgt, "id")

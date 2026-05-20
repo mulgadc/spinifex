@@ -17,62 +17,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5_LaunchInstance discovers the default VPC, opens tcp/22 on the
-// default SG, and starts a single nano instance via EnsureInstance so
-// downstream callers (phase 5a–5f, 6, 7) inherit the memoized ID. Maps to
-// run-e2e.sh ~257–343.
+// phase5_LaunchInstance bootstraps the suite's primary instance and asserts
+// that the live row exposes the AMI / type / key the launch was given.
+// Delegates the launch + memoization to needInstance so any sibling Test*
+// hits the same cached row. Maps to run-e2e.sh ~257–343.
 func phase5_LaunchInstance(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5 — Instance Lifecycle")
-	require.NotEmpty(t, fix.AMIID, "Phase 4 must populate fix.AMIID")
-	require.NotEmpty(t, fix.InstanceType, "Phase 2 must populate fix.InstanceType")
-	require.NotEmpty(t, fix.KeyName, "Phase 3 must populate fix.KeyName")
 
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.SGID, "default SG ID required")
 	harness.Detail(t, "vpc", def.VPCID, "sg", def.SGID, "subnet", def.SubnetID)
-	harness.AuthorizeSSHIngress(t, fix.AWS, def.SGID)
 
-	harness.Step(t, "run-instances ami=%s type=%s key=%s", fix.AMIID, fix.InstanceType, fix.KeyName)
-	fix.InstanceID = harness.EnsureInstance(t, fix.Harness, harness.InstanceSpec{
-		AMIID:        fix.AMIID,
-		InstanceType: fix.InstanceType,
-		KeyName:      fix.KeyName,
-		SubnetID:     def.SubnetID,
-		SGID:         def.SGID,
-	})
-	require.NotEmpty(t, fix.InstanceID, "EnsureInstance returned empty InstanceId")
-	harness.Detail(t, "instance", fix.InstanceID)
-
-	// Re-describe so downstream phases get the populated *ec2.Instance —
-	// EnsureInstance only returns the ID, but phase5a-ii needs BDMs +
-	// network info to derive the root volume and SSH endpoint.
-	descOut, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
-	})
-	require.NoError(t, err, "describe-instances %s", fix.InstanceID)
-	require.NotEmpty(t, descOut.Reservations, "no reservations for %s", fix.InstanceID)
-	require.NotEmpty(t, descOut.Reservations[0].Instances, "no instances for %s", fix.InstanceID)
-	inst := descOut.Reservations[0].Instances[0]
-	fix.Instance = inst
-
-	// Root volume: the BDM whose DeviceName matches RootDeviceName. Fall
-	// back to the first BDM if RootDeviceName is empty (some drivers don't
-	// echo it back).
-	rootDev := aws.StringValue(inst.RootDeviceName)
-	for _, bdm := range inst.BlockDeviceMappings {
-		if rootDev != "" && aws.StringValue(bdm.DeviceName) != rootDev {
-			continue
-		}
-		if bdm.Ebs != nil {
-			fix.RootVolumeID = aws.StringValue(bdm.Ebs.VolumeId)
-			break
-		}
-	}
-	if fix.RootVolumeID == "" && len(inst.BlockDeviceMappings) > 0 && inst.BlockDeviceMappings[0].Ebs != nil {
-		fix.RootVolumeID = aws.StringValue(inst.BlockDeviceMappings[0].Ebs.VolumeId)
-	}
-	require.NotEmpty(t, fix.RootVolumeID, "could not resolve root volume from BlockDeviceMappings")
-	harness.Detail(t, "root_volume", fix.RootVolumeID, "root_device", rootDev)
+	inst, rootVolumeID := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+	require.NotEmpty(t, instanceID, "needInstance returned empty InstanceId")
+	harness.Detail(t, "instance", instanceID, "root_volume", rootVolumeID,
+		"root_device", aws.StringValue(inst.RootDeviceName))
 }
 
 // phase5aPre_ClusterStats re-runs `spx get vms` now that a VM is running.
@@ -83,30 +43,37 @@ func phase5aPre_ClusterStats(t *testing.T, fix *Fixture) {
 	if fix.Env.Mode != harness.ModeSingle {
 		t.Skipf("Phase 5a-pre is single-node only (mode=%s)", fix.Env.Mode)
 	}
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
+
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
 
 	vms := harness.SpxGetVMs(t)
-	assert.Containsf(t, vms, fix.InstanceID,
-		"spx get vms should list running instance %s\n%s", fix.InstanceID, vms)
+	assert.Containsf(t, vms, instanceID,
+		"spx get vms should list running instance %s\n%s", instanceID, vms)
 }
 
 // phase5a_Metadata round-trips DescribeInstances and asserts the basic
 // metadata fields match what RunInstances saw. Maps to run-e2e.sh ~355–379.
 func phase5a_Metadata(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5a — Instance Metadata Validation")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
+
+	want, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(want.InstanceId)
+	expectedType, _ := needInstanceTypeArch(t, fix)
+	expectedKey, _ := needKeyPair(t, fix)
+	expectedAMI := needAMI(t, fix)
 
 	out, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(fix.InstanceID)},
+		InstanceIds: []*string{aws.String(instanceID)},
 	})
-	require.NoError(t, err, "describe-instances %s", fix.InstanceID)
-	require.NotEmpty(t, out.Reservations, "no reservations for %s", fix.InstanceID)
-	require.NotEmpty(t, out.Reservations[0].Instances, "no instances for %s", fix.InstanceID)
+	require.NoError(t, err, "describe-instances %s", instanceID)
+	require.NotEmpty(t, out.Reservations, "no reservations for %s", instanceID)
+	require.NotEmpty(t, out.Reservations[0].Instances, "no instances for %s", instanceID)
 	inst := out.Reservations[0].Instances[0]
 
-	assert.Equal(t, fix.InstanceType, aws.StringValue(inst.InstanceType), "InstanceType mismatch")
-	assert.Equal(t, fix.KeyName, aws.StringValue(inst.KeyName), "KeyName mismatch")
-	assert.Equal(t, fix.AMIID, aws.StringValue(inst.ImageId), "ImageId mismatch")
+	assert.Equal(t, expectedType, aws.StringValue(inst.InstanceType), "InstanceType mismatch")
+	assert.Equal(t, expectedKey, aws.StringValue(inst.KeyName), "KeyName mismatch")
+	assert.Equal(t, expectedAMI, aws.StringValue(inst.ImageId), "ImageId mismatch")
 	assert.GreaterOrEqual(t, len(inst.BlockDeviceMappings), 1,
 		"expected at least 1 BlockDeviceMapping, got %d", len(inst.BlockDeviceMappings))
 
@@ -123,20 +90,20 @@ func phase5a_Metadata(t *testing.T, fix *Fixture) {
 // presents the expected root volume. Maps to run-e2e.sh ~381–463.
 func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5a-ii — SSH Connectivity & Volume Verification")
-	require.NotNil(t, fix.Instance, "Phase 5 must populate fix.Instance")
-	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
-	require.NotEmpty(t, fix.RootVolumeID, "Phase 5 must populate fix.RootVolumeID")
 
-	host, port := harness.InstancePublicSSHHost(t, fix.Instance)
-	fix.SSHHost, fix.SSHPort = host, port
+	inst, rootVolumeID := needInstance(t, fix)
+	_, keyPath := needKeyPair(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
+
+	host, port := harness.InstancePublicSSHHost(t, inst)
 	harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	harness.Step(t, "waiting for SSH handshake %s", addr)
-	waitForSSHHandshake(t, host, port, fix.KeyPath)
+	waitForSSHHandshake(t, host, port, keyPath)
 	_ = addr
 
-	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: fix.KeyPath}
+	tgt := harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
 
 	harness.Step(t, "ssh id")
 	idOut := runSSH(t, tgt, "id")
@@ -146,10 +113,10 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 	guestGiB := harness.LsblkRootGiB(t, tgt)
 
 	vols, err := fix.AWS.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
-		VolumeIds: []*string{aws.String(fix.RootVolumeID)},
+		VolumeIds: []*string{aws.String(rootVolumeID)},
 	})
-	require.NoError(t, err, "describe-volumes %s", fix.RootVolumeID)
-	require.NotEmpty(t, vols.Volumes, "no volume for %s", fix.RootVolumeID)
+	require.NoError(t, err, "describe-volumes %s", rootVolumeID)
+	require.NotEmpty(t, vols.Volumes, "no volume for %s", rootVolumeID)
 	apiGiB := int(aws.Int64Value(vols.Volumes[0].Size))
 
 	// lsblk rounds down — bash treats equality as required, but on backing
@@ -169,7 +136,7 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 	// a missing prefix as a non-fatal warning. Replicate the soft check via
 	// t.Logf rather than asserting — the spx hostname format is not part of
 	// the EC2 surface contract.
-	shortID := strings.TrimPrefix(fix.InstanceID, "i-")
+	shortID := strings.TrimPrefix(instanceID, "i-")
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
@@ -185,13 +152,15 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 // decode it and neither do we. Maps to run-e2e.sh ~465–478.
 func phase5aiii_ConsoleOutput(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5a-iii — Console Output")
-	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
+
+	inst, _ := needInstance(t, fix)
+	instanceID := aws.StringValue(inst.InstanceId)
 
 	out, err := fix.AWS.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{
-		InstanceId: aws.String(fix.InstanceID),
+		InstanceId: aws.String(instanceID),
 	})
-	require.NoError(t, err, "get-console-output %s", fix.InstanceID)
-	require.Equal(t, fix.InstanceID, aws.StringValue(out.InstanceId),
+	require.NoError(t, err, "get-console-output %s", instanceID)
+	require.Equal(t, instanceID, aws.StringValue(out.InstanceId),
 		"GetConsoleOutput returned a different InstanceId")
 	harness.Detail(t,
 		"instance", aws.StringValue(out.InstanceId),

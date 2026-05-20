@@ -24,21 +24,12 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
 
 	harness.Step(t, "create-volume size=10 az=%s", fix.AZName)
-	create, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
-		Size:             aws.Int64(10),
-		AvailabilityZone: aws.String(fix.AZName),
-	})
-	require.NoError(t, err, "create-volume")
-	fix.VolumeID = aws.StringValue(create.VolumeId)
-	require.NotEmpty(t, fix.VolumeID, "create-volume returned empty VolumeId")
+	fix.VolumeID = harness.EnsureVolume(t, fix.Harness, fix.AZName, 10)
+	require.NotEmpty(t, fix.VolumeID, "EnsureVolume returned empty VolumeId")
 	harness.Detail(t, "volume", fix.VolumeID)
 
-	// Local QEMU finishes volume state transitions in <1s; the default
-	// 2s polling adds avoidable wall-clock per phase. Tighten to 500ms
-	// for the fast paths (create→available, attach→in-use, detach→available).
-	harness.WaitForVolumeState(t, fix.AWS, fix.VolumeID, "available", harness.WithPoll(500*time.Millisecond))
-
 	const newSize int64 = 20
+	var err error
 	harness.Step(t, "modify-volume size=%d", newSize)
 	_, err = fix.AWS.EC2.ModifyVolume(&ec2.ModifyVolumeInput{
 		VolumeId: aws.String(fix.VolumeID),

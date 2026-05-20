@@ -624,15 +624,30 @@ func EnsureVolume(t *testing.T, fx *Fixture, az string, sizeGiB int64) string {
 // EnsureSnapshot
 // ----------------------------------------------------------------------------
 
-// EnsureSnapshot creates a snapshot of volumeID, polls to "completed",
+// SnapshotSpec captures the inputs to CreateSnapshot. Description is
+// optional — empty means use the EnsureSnapshot default.
+type SnapshotSpec struct {
+	VolumeID    string
+	Description string
+}
+
+// EnsureSnapshot creates a snapshot matching spec, polls to "completed",
 // returns the snapshot ID.
-func EnsureSnapshot(t *testing.T, fx *Fixture, volumeID string) string {
+func EnsureSnapshot(t *testing.T, fx *Fixture, spec SnapshotSpec) string {
 	t.Helper()
-	key := "snapshot:" + volumeID
+	desc := spec.Description
+	if desc == "" {
+		desc = "e2e fixture snapshot for " + spec.VolumeID
+	}
+	// Memo key includes description so a second EnsureSnapshot call with a
+	// distinct description gets its own snapshot (caller intent: distinct
+	// resource), not a silent return of the first ID.
+	descSum := sha256.Sum256([]byte(desc))
+	key := fmt.Sprintf("snapshot:%s:%s", spec.VolumeID, hex.EncodeToString(descSum[:8]))
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		out, err := fx.EC2.CreateSnapshot(&ec2.CreateSnapshotInput{
-			VolumeId:    aws.String(volumeID),
-			Description: aws.String("e2e fixture snapshot for " + volumeID),
+			VolumeId:    aws.String(spec.VolumeID),
+			Description: aws.String(desc),
 		})
 		if err != nil {
 			return "", nil, fmt.Errorf("CreateSnapshot: %w", err)

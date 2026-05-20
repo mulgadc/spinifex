@@ -196,6 +196,6 @@ func _ensureCompileCheck(t *testing.T, fx *Fixture) {
 	_ = EnsureSG(t, fx, "vpc-0", "sg")
 	_ = EnsureInstance(t, fx, InstanceSpec{AMIID: "ami-0"})
 	_ = EnsureVolume(t, fx, "ap-southeast-2a", 10)
-	_ = EnsureSnapshot(t, fx, "vol-0")
+	_ = EnsureSnapshot(t, fx, SnapshotSpec{VolumeID: "vol-0"})
 	_ = EnsureNATGateway(t, fx, "subnet-0", "")
 }

@@ -105,6 +105,18 @@ const cloudInitNetworkConfigDisabled = `network:
   config: disabled
 `
 
+// selectNetworkConfigForFamily returns the cloud-init network-config payload
+// for the given distro family. RHEL-family guests get an explicit
+// "config: disabled" stub because their NM keyfiles are written via user-data
+// write_files; shipping a netplan config alongside would let cloud-init's RHEL
+// network module drop a competing cloud-init-enpXsY.nmconnection.
+func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
+	if distroFamily == "rhel" {
+		return cloudInitNetworkConfigDisabled
+	}
+	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs)
+}
+
 // generateNetworkConfig produces the cloud-init network-config for the instance.
 //
 // Per-interface config is generated when eniMAC is present (VPC NIC). This allows
@@ -326,15 +338,19 @@ func floorVolumeSizeToAMI(loader AMIMetaLoader, imageID string, requested int) i
 		return requested
 	}
 	amiMeta, err := loader.GetAMIConfig(imageID)
-	if err != nil || amiMeta.VolumeSizeGiB == 0 {
+	if err != nil {
+		slog.Warn("floorVolumeSizeToAMI: AMI metadata fetch failed; using requested size — guest may dracut-hang if requested is smaller than the AMI snapshot", "imageId", imageID, "err", err)
 		return requested
 	}
-	amiSize := int(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
-	if amiSize <= requested {
+	if amiMeta.VolumeSizeGiB == 0 {
+		return requested
+	}
+	amiSize := utils.SafeUint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	if amiSize <= int64(requested) {
 		return requested
 	}
 	slog.Info("floorVolumeSizeToAMI: rounding up to AMI snapshot size", "imageId", imageID, "requestedBytes", requested, "amiBytes", amiSize)
-	return amiSize
+	return int(amiSize)
 }
 
 // parseVolumeParams extracts volume parameters from RunInstancesInput,
@@ -1405,11 +1421,13 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 
 	// Re-read AMI metadata for DistroFamily rather than persisting it on
 	// vm.VM — cloud-init renders once at first launch and the ISO is sealed,
-	// so no consumer needs DistroFamily after this point. Mirrors how
-	// PrepareRunInstances reads amiMeta at service_impl.go:369.
+	// so no consumer needs DistroFamily after this point.
 	var distroFamily string
 	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
-		if amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId); err == nil {
+		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
+		if err != nil {
+			slog.Warn("createCloudInitISO: AMI metadata fetch failed; cloud-init will render with debian-family defaults (RHEL guests will boot without networking and with wrong sudo group)", "imageId", *input.ImageId, "err", err)
+		} else {
 			distroFamily = amiMeta.DistroFamily
 		}
 	}
@@ -1496,18 +1514,10 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 
 	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
 	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
-	// multi-subnet system VMs (multi-AZ ALBs).
-	//
-	// RHEL-family guests get their NM keyfiles via user-data write_files
-	// instead. Ship an explicit "network: config: disabled" stub so cloud-init's
-	// own network renderer doesn't fall back to its built-in DHCP autodetect
-	// and write a competing cloud-init-enpXsY.nmconnection alongside ours.
-	var networkConfig string
-	if distroFamily == "rhel" {
-		networkConfig = cloudInitNetworkConfigDisabled
-	} else {
-		networkConfig = generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	}
+	// multi-subnet system VMs (multi-AZ ALBs). RHEL-family guests get a
+	// "config: disabled" stub here so cloud-init doesn't drop a second NM
+	// keyfile alongside the ones we wrote via user-data write_files.
+	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
 	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
 	if err != nil {
 		slog.Error("failed to add network-config file", "err", err)

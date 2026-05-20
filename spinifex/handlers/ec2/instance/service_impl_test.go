@@ -416,6 +416,43 @@ func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
 	})
 }
 
+func TestSelectNetworkConfigForFamily(t *testing.T) {
+	const eniMAC = "02:00:00:00:00:01"
+
+	t.Run("rhel returns disabled stub", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("rhel", eniMAC, "", "", "", nil)
+		assert.Equal(t, cloudInitNetworkConfigDisabled, out)
+		assert.Contains(t, out, "config: disabled")
+		// Must not emit any netplan v2 keys — those would render alongside
+		// our NM keyfile and produce a competing cloud-init-enpXsY connection.
+		assert.NotContains(t, out, "ethernets:")
+		assert.NotContains(t, out, "version: 2")
+	})
+
+	t.Run("debian returns per-interface netplan", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("debian", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.Contains(t, out, "ethernets:")
+		assert.Contains(t, out, "vpc0:")
+		assert.Contains(t, out, "dhcp-identifier: mac")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("empty family falls through to netplan", func(t *testing.T) {
+		// Legacy AMIs without DistroFamily populated must keep today's behaviour.
+		out := selectNetworkConfigForFamily("", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("alpine falls through to netplan", func(t *testing.T) {
+		// Alpine has no RHEL-style NM keyfile path; reuses netplan.
+		out := selectNetworkConfigForFamily("alpine", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+}
+
 func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	data := CloudInitMetaData{
 		InstanceID: "i-0123456789abcdef0",

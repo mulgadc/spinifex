@@ -258,6 +258,10 @@ type AMICreateSpec struct {
 	Name             string
 	Description      string
 	Architecture     string
+	// NoReboot mirrors CreateImage's NoReboot flag. Set true when the
+	// source instance must keep running across the AMI bake (e.g. Phase 5e
+	// hands the instance off to Phase 6/7 lifecycle assertions).
+	NoReboot bool
 }
 
 // EnsureAMI returns an available AMI ID. Existing IDs short-circuit to a
@@ -285,6 +289,7 @@ func EnsureAMI(t *testing.T, fx *Fixture, src AMISource) string {
 				InstanceId:  aws.String(spec.SourceInstanceID),
 				Name:        aws.String(spec.Name),
 				Description: aws.String(spec.Description),
+				NoReboot:    aws.Bool(spec.NoReboot),
 			})
 			if err != nil {
 				return "", nil, fmt.Errorf("CreateImage: %w", err)

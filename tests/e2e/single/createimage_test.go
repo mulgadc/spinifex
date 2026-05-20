@@ -24,18 +24,16 @@ func phase5e_CreateImage(t *testing.T, fix *Fixture) {
 	const customDesc = "E2E test custom image"
 
 	harness.Step(t, "create-image instance=%s name=%s (no-reboot)", fix.InstanceID, customName)
-	create, err := fix.AWS.EC2.CreateImage(&ec2.CreateImageInput{
-		InstanceId:  aws.String(fix.InstanceID),
-		Name:        aws.String(customName),
-		Description: aws.String(customDesc),
-		NoReboot:    aws.Bool(true),
+	fix.CustomAMIID = harness.EnsureAMI(t, fix.Harness, harness.AMISource{
+		CreateFrom: &harness.AMICreateSpec{
+			SourceInstanceID: fix.InstanceID,
+			Name:             customName,
+			Description:      customDesc,
+			NoReboot:         true,
+		},
 	})
-	require.NoError(t, err, "create-image")
-	fix.CustomAMIID = aws.StringValue(create.ImageId)
-	require.NotEmpty(t, fix.CustomAMIID, "create-image returned empty ImageId")
+	require.NotEmpty(t, fix.CustomAMIID, "EnsureAMI returned empty ImageId")
 	harness.Detail(t, "custom_ami", fix.CustomAMIID)
-
-	harness.WaitForImageState(t, fix.AWS, fix.CustomAMIID, "available")
 
 	harness.Step(t, "describe-images %s", fix.CustomAMIID)
 	out, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{

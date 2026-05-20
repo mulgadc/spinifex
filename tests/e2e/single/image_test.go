@@ -50,7 +50,12 @@ func phase4_Image(t *testing.T, fix *Fixture) {
 		"no Ubuntu AMI found via DescribeImages — bootstrap-install.sh did not stage one (tried: %v)", candidates)
 	require.NotEmpty(t, resolvedName, "resolved name went empty")
 	harness.Detail(t, "image", resolvedName, "ami", resolvedID)
-	fix.AMIID = resolvedID
+
+	// Route the discovered catalog AMI through harness.EnsureAMI so the
+	// state-available wait + memoization live with the fixture, and any
+	// future Phase 5+ caller that picks up the Ensure* migration sees the
+	// same cached ID.
+	fix.AMIID = harness.EnsureAMI(t, fix.Harness, harness.AMISource{Existing: resolvedID})
 
 	harness.Step(t, "describe-images by AMI ID (verify round-trip)")
 	byID, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{

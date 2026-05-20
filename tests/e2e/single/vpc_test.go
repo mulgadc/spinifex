@@ -316,14 +316,13 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 
 	c := fix.AWS
 
-	// Locate the default VPC + a usable subnet up-front; both steps need them.
-	if fix.DefaultVPCID == "" {
-		vpcID, sgID, subnetID := harness.DiscoverDefaultVPC(t, c)
-		fix.DefaultVPCID, fix.DefaultSGID, fix.DefaultSubnetID = vpcID, sgID, subnetID
-	}
-	require.NotEmpty(t, fix.DefaultVPCID, "default VPC ID required")
-	require.NotEmpty(t, fix.DefaultSubnetID, "default subnet ID required")
-	harness.Detail(t, "vpc", fix.DefaultVPCID, "subnet", fix.DefaultSubnetID)
+	// Default VPC + subnet + SG are owned by the harness Ensure* memo, so
+	// repeated calls across phases (and post-migration: across sibling
+	// tests) hit the same cached IDs without re-discovering.
+	def := harness.EnsureDefaultVPC(t, fix.Harness)
+	require.NotEmpty(t, def.VPCID, "default VPC ID required")
+	require.NotEmpty(t, def.SubnetID, "default subnet ID required")
+	harness.Detail(t, "vpc", def.VPCID, "subnet", def.SubnetID)
 
 	// --- Step 1: Default VPC main route table -----------------------------
 	var mainRTBID string
@@ -331,13 +330,13 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 		harness.Step(t, "describe-route-tables filter=vpc-id,association.main")
 		out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
 			Filters: []*ec2.Filter{
-				{Name: aws.String("vpc-id"), Values: []*string{aws.String(fix.DefaultVPCID)}},
+				{Name: aws.String("vpc-id"), Values: []*string{aws.String(def.VPCID)}},
 				{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
 			},
 		})
 		require.NoError(t, err, "describe-route-tables (main)")
 		require.NotEmptyf(t, out.RouteTables,
-			"no main route table found for default VPC %s", fix.DefaultVPCID)
+			"no main route table found for default VPC %s", def.VPCID)
 		mainRTBID = aws.StringValue(out.RouteTables[0].RouteTableId)
 		require.NotEmpty(t, mainRTBID, "main RouteTableId empty")
 		harness.Detail(t, "main_rtb", mainRTBID)
@@ -394,9 +393,9 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 
 	// --- Step 2: Custom route table CRUD lifecycle ------------------------
 	t.Run("Step2_CustomRouteTableLifecycle", func(t *testing.T) {
-		harness.Step(t, "create-route-table (vpc=%s)", fix.DefaultVPCID)
+		harness.Step(t, "create-route-table (vpc=%s)", def.VPCID)
 		ctOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{
-			VpcId: aws.String(fix.DefaultVPCID),
+			VpcId: aws.String(def.VPCID),
 		})
 		require.NoError(t, err, "create custom route table")
 		require.NotNil(t, ctOut.RouteTable, "create-route-table returned nil RouteTable")
@@ -435,7 +434,7 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 		igwForVPC := ""
 		igws, err := c.EC2.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
 			Filters: []*ec2.Filter{
-				{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String(fix.DefaultVPCID)}},
+				{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String(def.VPCID)}},
 			},
 		})
 		require.NoError(t, err, "describe-internet-gateways")
@@ -463,12 +462,12 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 		}
 
 		// Associate with the default subnet, then disassociate. The bash
-		// driver uses `default-for-az` to find a subnet; fix.DefaultSubnetID
+		// driver uses `default-for-az` to find a subnet; def.SubnetID
 		// is already that subnet (DiscoverDefaultVPC prefers DefaultForAz).
-		harness.Step(t, "associate-route-table %s <- %s", customRTB, fix.DefaultSubnetID)
+		harness.Step(t, "associate-route-table %s <- %s", customRTB, def.SubnetID)
 		assocOut, err := c.EC2.AssociateRouteTable(&ec2.AssociateRouteTableInput{
 			RouteTableId: aws.String(customRTB),
-			SubnetId:     aws.String(fix.DefaultSubnetID),
+			SubnetId:     aws.String(def.SubnetID),
 		})
 		require.NoError(t, err, "associate-route-table custom")
 		assocID := aws.StringValue(assocOut.AssociationId)
@@ -514,7 +513,7 @@ func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
 		// table or the Step 2 lifecycle table.
 		harness.Step(t, "create-route-table (scratch for error paths)")
 		ctOut, err := c.EC2.CreateRouteTable(&ec2.CreateRouteTableInput{
-			VpcId: aws.String(fix.DefaultVPCID),
+			VpcId: aws.String(def.VPCID),
 		})
 		require.NoError(t, err, "create scratch RT")
 		require.NotNil(t, ctOut.RouteTable, "create-route-table returned nil RouteTable")

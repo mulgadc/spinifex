@@ -23,9 +23,16 @@ import (
 // Fixture carries state across the sequential Phase subtests of
 // TestSingleNode. Mirrors the env vars run-e2e.sh threads between phases
 // (AMI_ID, INSTANCE_ID, KEY_NAME, etc).
+//
+// Migration in progress: per-phase fields (AMIID, InstanceID, DefaultVPCID,
+// etc.) are being replaced by harness.Ensure* memoized lookups against
+// Harness. Bead 3 (e2e-single-fixture-migration) removes each block as the
+// downstream tests stop reading it; Bead 3h deletes the umbrella and
+// shrinks Fixture to env + AWS client + Harness.
 type Fixture struct {
 	Env       *harness.Env
 	AWS       *harness.AWSClient
+	Harness   *harness.Fixture // memoized Ensure* fixture; parent test = TestSingleNode
 	Artifacts string
 	TmpDir    string // TestSingleNode-scoped scratch dir; survives until the whole test exits, unlike subtest t.TempDir().
 
@@ -75,9 +82,11 @@ func TestSingleNode(t *testing.T) {
 		t.Skipf("TestSingleNode requires SPINIFEX_MODE=single (got %q)", env.Mode)
 	}
 
+	awsClient := harness.NewAWSClient(t, env)
 	fix := &Fixture{
 		Env:       env,
-		AWS:       harness.NewAWSClient(t, env),
+		AWS:       awsClient,
+		Harness:   harness.NewFixture(t, awsClient),
 		Artifacts: harness.ArtifactDir(t, env),
 		TmpDir:    t.TempDir(),
 	}

@@ -33,20 +33,22 @@ var pingDroppedRE = regexp.MustCompile(`0 (packets )?received|100% packet loss`)
 func phase5f_SecurityGroupEgress(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Phase 5f — Security Group Enforcement (egress ACL)")
 	require.NotEmpty(t, fix.InstanceID, "Phase 5 must populate fix.InstanceID")
-	require.NotEmpty(t, fix.DefaultSGID, "Phase 5 must populate fix.DefaultSGID")
 	require.NotEmpty(t, fix.SSHHost, "Phase 5a-ii must populate fix.SSHHost")
 	require.NotZero(t, fix.SSHPort, "Phase 5a-ii must populate fix.SSHPort")
 	require.NotEmpty(t, fix.KeyPath, "Phase 3 must populate fix.KeyPath")
+
+	def := harness.EnsureDefaultVPC(t, fix.Harness)
+	require.NotEmpty(t, def.SGID, "default SG ID required")
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: fix.SSHHost, Port: fix.SSHPort, KeyPath: fix.KeyPath}
 
 	// Restore allow-all egress no matter what — ignore Duplicate so a clean
 	// finish (test left the rule in place) doesn't poison later phases.
 	t.Cleanup(func() {
-		if err := authorizeAllowAllEgress(fix.AWS, fix.DefaultSGID); err != nil &&
+		if err := authorizeAllowAllEgress(fix.AWS, def.SGID); err != nil &&
 			!harness.ErrorCodeIs(err, "InvalidPermission.Duplicate") {
 			t.Logf("WARNING: cleanup failed to restore allow-all egress on %s: %v",
-				fix.DefaultSGID, err)
+				def.SGID, err)
 		}
 	})
 
@@ -85,7 +87,7 @@ func phase5f_SecurityGroupEgress(t *testing.T, fix *Fixture) {
 	// Test 5f-2: Revoke egress → ICMP must be dropped.
 	harness.Step(t, "5f-2 revoke egress -> expect drop")
 	_, err := fix.AWS.EC2.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
-		GroupId:       aws.String(fix.DefaultSGID),
+		GroupId:       aws.String(def.SGID),
 		IpPermissions: []*ec2.IpPermission{allowAllEgressPermission()},
 	})
 	require.NoError(t, err, "revoke-security-group-egress")
@@ -106,7 +108,7 @@ func phase5f_SecurityGroupEgress(t *testing.T, fix *Fixture) {
 
 	// Test 5f-3: Re-authorize → ICMP works again.
 	harness.Step(t, "5f-3 re-authorize egress -> expect allow")
-	err = authorizeAllowAllEgress(fix.AWS, fix.DefaultSGID)
+	err = authorizeAllowAllEgress(fix.AWS, def.SGID)
 	require.NoError(t, err, "authorize-security-group-egress")
 
 	var lastRestore string

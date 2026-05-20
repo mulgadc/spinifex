@@ -57,3 +57,12 @@ func (p *PeerSSH) Ping(ctx context.Context, host string) error {
 	_, err := p.Run(ctx, host, "hostname")
 	return err
 }
+
+// IsReachable wraps Ping with a short timeout. Used by cleanup paths that
+// must skip rather than fatal when the host is mid-reboot or already torn
+// down. Caps the parent ctx at 10s so cleanup doesn't block teardown.
+func (p *PeerSSH) IsReachable(ctx context.Context, host string) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return p.Ping(probeCtx, host) == nil
+}

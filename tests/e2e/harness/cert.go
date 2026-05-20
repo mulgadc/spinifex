@@ -16,7 +16,15 @@ import (
 
 // ResolveCACert walks the standard config locations for the Spinifex CA cert
 // (matching the bash resolve_ca_cert helper) and returns the first hit.
+// SPINIFEX_CA_CERT overrides the search — useful for runner-resident scenarios
+// that SCP the CA off the cluster to a tmp path.
 func ResolveCACert(env *Env) (string, error) {
+	if explicit := os.Getenv("SPINIFEX_CA_CERT"); explicit != "" {
+		if _, err := os.Stat(explicit); err == nil {
+			return explicit, nil
+		}
+		return "", fmt.Errorf("SPINIFEX_CA_CERT=%s not readable", explicit)
+	}
 	candidates := []string{
 		filepath.Join(env.ConfigDir, "ca.pem"),
 		"/etc/spinifex/ca.pem",

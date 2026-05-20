@@ -21,6 +21,7 @@ package harness
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -502,7 +503,16 @@ type InstanceSpec struct {
 // "running", registers terminate-on-cleanup. Returns the instance ID.
 func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 	t.Helper()
-	key := fmt.Sprintf("instance:%s:%s:%s", spec.AMIID, spec.SubnetID, spec.KeyName)
+	// Memo key must include every input that changes the running instance —
+	// otherwise a second EnsureInstance call with a different SGID/UserData
+	// would silently return the first instance's ID.
+	udHash := ""
+	if spec.UserData != "" {
+		sum := sha256.Sum256([]byte(spec.UserData))
+		udHash = hex.EncodeToString(sum[:8])
+	}
+	key := fmt.Sprintf("instance:%s:%s:%s:%s:%s:%s",
+		spec.AMIID, spec.InstanceType, spec.KeyName, spec.SubnetID, spec.SGID, udHash)
 	id, err := fx.ensureOnce(t, key, func() (string, func() error, error) {
 		input := &ec2.RunInstancesInput{
 			ImageId:      aws.String(spec.AMIID),

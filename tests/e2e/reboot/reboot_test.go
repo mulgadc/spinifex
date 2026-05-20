@@ -562,21 +562,33 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	// 8.5 targets healthy
 	harness.WaitForTargetsHealthy(t, fix.aws, fix.tgArn, 2, "ALB post-reboot", fix.timeouts.lbRecover)
 
-	// 8.6 ALB actually serves traffic.
+	// 8.6 ALB actually serves traffic from BOTH backends.
 	// WaitForTargetsHealthy reads cached state from spinifex's TG store —
 	// post-reboot the cache may still show pre-reboot "healthy" until the
-	// lb-agent inside the ALB system VM sends a fresh report. Without this
-	// probe-until-serving wait, the burst would fire while the VM is still
-	// booting (HAProxy not yet bound to :80) and see 0/N responses. See
-	// histogram diagnosis on run 25899285589.
-	harness.Step(t, "waiting for ALB to actually serve HTTP")
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// lb-agent inside the ALB system VM sends a fresh report. A naive
+	// "ANY response" probe lets the burst fire when only one backend is
+	// up (the second is still bringing HAProxy/responder online), and the
+	// burst then lands 20/0 instead of 10/10. Probe until both backends'
+	// instance_ids each appear at least once — confirms the recovery path
+	// has actually reached both before we assert round-robin. Refs the
+	// daemon-side TG cache invalidation bug tracked separately.
+	harness.Step(t, "waiting for ALB to serve HTTP from both backends")
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer probeCancel()
+	seen := map[string]bool{}
 	harness.Eventually(t, func() bool {
 		out, err := fix.ssh.Run(probeCtx, fix.env.WANHost,
 			fmt.Sprintf("curl -s --connect-timeout 2 --max-time 3 'http://%s:%d/' 2>/dev/null", fix.albPublicIP, httpPort))
-		return err == nil && hasInstanceID(out)
-	}, 90*time.Second, 2*time.Second, "ALB did not begin serving HTTP within 90s post-reboot")
+		if err != nil {
+			return false
+		}
+		id := instanceIDFromResponse(out)
+		if id != "" {
+			seen[id] = true
+		}
+		return len(seen) >= 2
+	}, 180*time.Second, 1*time.Second,
+		fmt.Sprintf("ALB did not serve from both backends within 180s post-reboot (saw=%v)", seen))
 
 	runHTTPBurst(t, fix, "ALB post-reboot")
 
@@ -750,14 +762,14 @@ func countOVN(out string) (switches, ports int) {
 	return
 }
 
-func hasInstanceID(out []byte) bool {
+func instanceIDFromResponse(out []byte) string {
 	var payload struct {
 		InstanceID string `json:"instance_id"`
 	}
 	if err := json.Unmarshal(out, &payload); err != nil {
-		return false
+		return ""
 	}
-	return payload.InstanceID != ""
+	return payload.InstanceID
 }
 
 // --- Diagnostics ---------------------------------------------------------

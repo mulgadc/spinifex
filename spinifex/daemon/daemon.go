@@ -1190,6 +1190,16 @@ func (d *Daemon) startCluster() error {
 		return "sys.micro"
 	})
 
+	// Invalidate persisted target HealthState before subscriptions go live.
+	// Stale "healthy" entries from a pre-restart cluster otherwise satisfy
+	// DescribeTargetHealth waiters before any actual post-restart health
+	// observation has been recorded. Best-effort: a failure here just leaves
+	// the old behavior in place rather than blocking daemon startup.
+	if err := d.elbv2Service.ResetTargetHealthOnStartup(context.Background()); err != nil {
+		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
+			"err", err)
+	}
+
 	// Ensure default VPC exists for system and admin accounts
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {

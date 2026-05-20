@@ -160,6 +160,77 @@ func (s *ELBv2ServiceImpl) Close() {
 	}
 }
 
+// ResetTargetHealthOnStartup invalidates persisted target HealthState across
+// all target groups by resetting every non-draining target to "initial". Run
+// once during daemon startup before the service begins serving requests.
+//
+// Rationale: target HealthState is persisted in JetStream KV, but the
+// healthChecker's per-target counters live only in process memory. After a
+// daemon restart (e.g. host reboot), the counters are gone but the stored
+// "healthy" claim remains — DescribeTargetHealth returns "healthy"
+// immediately even though the daemon has zero active health observations
+// and the LB system VM's lb-agent hasn't posted a fresh report yet. Tests
+// that gate on WaitForTargetsHealthy advance prematurely, then ALB traffic
+// lands on a backend that isn't actually up.
+//
+// Resetting to "initial" is the correct AWS-semantics representation of
+// "we don't know yet, give us a moment" — the next lb-agent heartbeat
+// drives the state machine forward through evaluateHealth.
+//
+// Multi-node caveat: in a multi-daemon cluster, each daemon that restarts
+// resets the SHARED KV state. A sibling daemon's in-memory counters would
+// then be out-of-sync with the persisted "initial" state until the next
+// heartbeat re-converges. Acceptable trade-off — heartbeats arrive within
+// one health-check interval (default 5-30s) and round-robin transiently
+// excluding a backend is safer than serving traffic to a dead one.
+//
+// Refs mulga-siv-119.
+func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	tgs, err := s.store.ListTargetGroups()
+	if err != nil {
+		return fmt.Errorf("list target groups: %w", err)
+	}
+	resetTGs := 0
+	resetTargets := 0
+	for _, tg := range tgs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		changed := false
+		for i := range tg.Targets {
+			t := &tg.Targets[i]
+			// Skip targets actively being drained — that state is driven by
+			// DeregisterTargets and must not be clobbered by a daemon restart.
+			if t.HealthState == TargetHealthDraining {
+				continue
+			}
+			if t.HealthState == TargetHealthInitial {
+				continue
+			}
+			t.HealthState = TargetHealthInitial
+			t.HealthDesc = "Target registration is in progress"
+			changed = true
+			resetTargets++
+		}
+		if changed {
+			if err := s.store.PutTargetGroup(tg); err != nil {
+				slog.Error("ResetTargetHealthOnStartup: persist failed",
+					"tgId", tg.TargetGroupID, "err", err)
+				continue
+			}
+			resetTGs++
+		}
+	}
+	if resetTargets > 0 {
+		slog.Info("ELBv2: reset target health on startup",
+			"targetsReset", resetTargets, "targetGroupsTouched", resetTGs)
+	}
+	return nil
+}
+
 // SetSystemInstanceTypeFunc sets a function that resolves the smallest available
 // instance type. Called at request time so it adapts to node capacity.
 func (s *ELBv2ServiceImpl) SetSystemInstanceTypeFunc(fn func() string) {

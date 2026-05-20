@@ -75,6 +75,7 @@ case "$DISTRO" in
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-alpine.raw"
         DISTRO_VERSION="${ALPINE_VERSION}"
         ROOT_PART="${NBD_DEV}"
+        BOOT_MODE="bios"
         ;;
     ubuntu)
         if [[ -z "${UBUNTU_VERSION:-}" ]]; then
@@ -87,6 +88,7 @@ case "$DISTRO" in
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.raw"
         DISTRO_VERSION="${UBUNTU_VERSION}"
         ROOT_PART="${NBD_DEV}p1"
+        BOOT_MODE="uefi"
         ;;
     *)
         echo "ERROR: Unknown DISTRO: $DISTRO (supported: alpine, ubuntu)"
@@ -189,7 +191,7 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
     if [[ "$DO_IMPORT" == true ]]; then
         echo "Importing as AMI..."
         rm -f "$OUTPUT_IMAGE"
-        IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
+        IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
         if [[ -n "${SYSTEM_TAG:-}" ]]; then
             IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
         fi
@@ -423,7 +425,7 @@ echo ""
 if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
     rm -f "$OUTPUT_IMAGE"
-    IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64)
+    IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
@@ -433,9 +435,9 @@ else
     echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 \\"
+        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE} \\"
         echo "    --tag ${SYSTEM_TAG}"
     else
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64"
+        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}"
     fi
 fi

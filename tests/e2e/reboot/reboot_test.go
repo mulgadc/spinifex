@@ -23,6 +23,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +94,7 @@ type fixture struct {
 
 	appInstanceIDs []string
 	preIPs         map[string]string
+	privateKeyPath string // local PEM written from CreateKeyPair KeyMaterial
 
 	tgArn       string
 	albArn      string
@@ -170,6 +172,7 @@ func TestRebootResilience(t *testing.T) {
 			since = time.Time{}
 		}
 		dumpDiagnostics(t, fix, since)
+		dumpAppDiagnostics(t, fix)
 	})
 
 	harness.Phase(t, "Phase 0 — Prerequisites")
@@ -280,11 +283,15 @@ func phase0Prereqs(t *testing.T, fix *fixture) {
 	fix.amiID = discoverAMI(t, fix.aws)
 	harness.Detail(t, "ami", fix.amiID)
 
-	// Key pair — created for parity with the bash driver, never used for
-	// guest SSH (single-node has no host route to VPC subnets).
+	// Key pair — capture KeyMaterial so post-reboot diagnostics can SSH into
+	// guest VMs via the host's QEMU hostfwd port when health probes fail.
 	_, _ = fix.aws.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(keyName)})
-	_, err := fix.aws.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(keyName)})
+	kpOut, err := fix.aws.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String(keyName)})
 	require.NoErrorf(t, err, "create-key-pair %s", keyName)
+	material := aws.StringValue(kpOut.KeyMaterial)
+	require.NotEmptyf(t, material, "create-key-pair %s returned no KeyMaterial", keyName)
+	fix.privateKeyPath = filepath.Join(fix.artifacts, keyName+".pem")
+	require.NoError(t, os.WriteFile(fix.privateKeyPath, []byte(material), 0o600), "write private key")
 	harness.Detail(t, "key_pair", keyName)
 }
 
@@ -819,6 +826,138 @@ func dumpDiagnostics(t *testing.T, fix *fixture, since time.Time) {
 			continue
 		}
 		harness.DumpFile(t, fix.artifacts, fmt.Sprintf("journal-%s.log", svc), out)
+	}
+}
+
+// hostfwdSSHPortRE matches `hostfwd=tcp:[HOST]:PORT-:22` in a qemu argv.
+var hostfwdSSHPortRE = regexp.MustCompile(`hostfwd=tcp:[^:]*:([0-9]+)-:22`)
+
+// dumpAppDiagnostics SSHes from the host into each app guest VM via its
+// QEMU hostfwd:22 port and dumps responder state. Surfaces the actual reason
+// for post-reboot health failures (responder unit dead, port not bound,
+// network unreachable) so failures don't bottom out at "0/2 healthy" with no
+// further detail. Best-effort — any step failing logs and continues.
+func dumpAppDiagnostics(t *testing.T, fix *fixture) {
+	t.Helper()
+	if fix.privateKeyPath == "" {
+		harness.Step(t, "app diagnostics: no private key captured; skipping")
+		return
+	}
+	if len(fix.appInstanceIDs) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	if !fix.ssh.IsReachable(ctx, fix.env.WANHost) {
+		harness.Step(t, "app diagnostics: host unreachable; skipping")
+		return
+	}
+
+	harness.Step(t, "app diagnostics: SSHing into %d guest(s) via hostfwd", len(fix.appInstanceIDs))
+
+	remoteKey := fmt.Sprintf("/tmp/reboot-e2e-key-%d.pem", time.Now().UnixNano())
+	if err := uploadKeyToHost(ctx, fix, remoteKey); err != nil {
+		harness.Step(t, "app diagnostics: upload key failed: %v", err)
+		return
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = fix.ssh.Run(cleanupCtx, fix.env.WANHost, "rm -f "+remoteKey)
+	}()
+
+	for _, id := range fix.appInstanceIDs {
+		diagnoseAppInstance(ctx, t, fix, id, remoteKey)
+	}
+}
+
+// uploadKeyToHost base64-encodes the local PEM and writes it to remotePath on
+// the spinifex host (mode 600). Works around PeerSSH having no scp/stdin path.
+func uploadKeyToHost(ctx context.Context, fix *fixture, remotePath string) error {
+	data, err := os.ReadFile(fix.privateKeyPath)
+	if err != nil {
+		return fmt.Errorf("read local key: %w", err)
+	}
+	enc := base64.StdEncoding.EncodeToString(data)
+	cmd := fmt.Sprintf(
+		"umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s",
+		enc, remotePath, remotePath,
+	)
+	_, err = fix.ssh.Run(ctx, fix.env.WANHost, cmd)
+	return err
+}
+
+// diagnoseAppInstance dumps qemu process state + an in-guest battery for one
+// instance. Writes per-instance files so the artifact dir clearly attributes
+// findings. Each remote shell call is best-effort.
+func diagnoseAppInstance(ctx context.Context, t *testing.T, fix *fixture, id, remoteKey string) {
+	t.Helper()
+
+	psOut, err := fix.ssh.Run(ctx, fix.env.WANHost, fmt.Sprintf("ps -eo args= | grep -F %q | grep -v grep || true", id))
+	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-qemu-ps.txt", id), psOut)
+	if err != nil {
+		harness.Detail(t, id, fmt.Sprintf("qemu ps err: %v", err))
+		return
+	}
+	if len(strings.TrimSpace(string(psOut))) == 0 {
+		harness.Detail(t, id, "qemu NOT running on host")
+		return
+	}
+
+	m := hostfwdSSHPortRE.FindStringSubmatch(string(psOut))
+	if m == nil {
+		harness.Detail(t, id, "no hostfwd:22 in qemu argv (cannot ssh into guest)")
+		return
+	}
+	port := m[1]
+	harness.Detail(t, id, fmt.Sprintf("hostfwd_ssh_port=%s", port))
+
+	// In-guest battery. Heredoc keeps quoting sane through two ssh hops.
+	// Each step has || true so one failure doesn't abort the rest.
+	diag := `set +e
+echo "=== uname / uptime ==="
+uname -a
+uptime
+echo "=== systemctl is-active reboot-e2e-httpd.service ==="
+systemctl is-active reboot-e2e-httpd.service
+echo "=== systemctl status (head 40) ==="
+systemctl status --no-pager reboot-e2e-httpd.service 2>&1 | head -40
+echo "=== port 80 listeners ==="
+sudo ss -tlnp 'sport = :80' 2>/dev/null || ss -tlnp 2>/dev/null | grep ':80 ' || echo "no :80 listener"
+echo "=== curl localhost ==="
+curl -s -m 3 -w '\nHTTP=%{http_code}\n' http://127.0.0.1/ || echo "curl localhost FAILED"
+echo "=== index.html ==="
+ls -l /var/lib/httpd/ 2>&1
+cat /var/lib/httpd/index.html 2>&1
+echo "=== responder journal (last 80 lines) ==="
+sudo journalctl -u reboot-e2e-httpd.service --no-pager -n 80 2>&1
+echo "=== cloud-init final ==="
+sudo tail -20 /var/log/cloud-init-output.log 2>&1
+`
+	// Wrap the guest ssh in bash -c so the outer ssh ships one cmd arg; the
+	// inner heredoc is interpreted by the host's bash, not the guest's.
+	// Try ubuntu first (matches discoverAMI preference), then root.
+	for _, user := range []string{"ubuntu", "root"} {
+		remoteCmd := fmt.Sprintf(`bash -c '
+ssh -i %s -p %s \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o ConnectTimeout=5 \
+  -o BatchMode=yes \
+  %s@127.0.0.1 bash -s <<"EOFDIAG"
+%s
+EOFDIAG
+'`, remoteKey, port, user, diag)
+
+		out, err := fix.ssh.Run(ctx, fix.env.WANHost, remoteCmd)
+		harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-app-%s.txt", id, user), out)
+		if err == nil {
+			harness.Detail(t, id, fmt.Sprintf("guest ssh ok as %s", user))
+			return
+		}
+		harness.Detail(t, id, fmt.Sprintf("guest ssh as %s failed: %v", user, err))
 	}
 }
 

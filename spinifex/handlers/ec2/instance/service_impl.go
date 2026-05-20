@@ -1022,6 +1022,11 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig
 	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
+	// Zero SizeGiB so viperblock's LoadState doesn't reconcile the EFI
+	// volume's persisted byte-exact size up to the parent root volume's
+	// GiB-rounded size — QEMU pflash rejects any VARS volume larger than
+	// the firmware's expected variable region.
+	efiVolumeConfig.VolumeMetadata.SizeGiB = 0
 
 	efiVb, err := s.newViperblock(efiVolumeName, int(varsSize), efiVolumeConfig)
 	if err != nil {

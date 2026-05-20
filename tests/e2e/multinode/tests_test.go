@@ -53,3 +53,8 @@ func TestMultinodeNodeFailure(t *testing.T) {
 func TestMultinodeNodeRecovery(t *testing.T) {
 	phase9_NodeRecovery(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeVPCNetworking maps to phase 10.
+func TestMultinodeVPCNetworking(t *testing.T) {
+	phase10_VPCNetworking(t, requireMultiNodeFixture(t))
+}

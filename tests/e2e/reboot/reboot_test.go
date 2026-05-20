@@ -1045,6 +1045,19 @@ echo "=== systemctl status (head 40) ==="
 systemctl status --no-pager reboot-e2e-httpd.service 2>&1 | head -40
 echo "=== unit file ==="
 ls -l /etc/systemd/system/reboot-e2e-httpd.service 2>&1
+echo "=== unit file content ==="
+sudo cat /etc/systemd/system/reboot-e2e-httpd.service 2>&1
+echo "=== enable symlink ==="
+ls -l /etc/systemd/system/multi-user.target.wants/reboot-e2e-httpd.service 2>&1
+echo "=== network-online.target ==="
+systemctl is-active network-online.target
+systemctl status --no-pager network-online.target 2>&1 | head -20
+echo "=== networkctl ==="
+networkctl status 2>&1 | head -40
+echo "=== ip addr ==="
+ip -br addr
+echo "=== ip route ==="
+ip route
 echo "=== port :80 listeners ==="
 sudo ss -tlnp 'sport = :80' 2>/dev/null
 echo "=== curl localhost ==="
@@ -1054,6 +1067,12 @@ ls -l /var/lib/httpd 2>&1
 cat /var/lib/httpd/index.html 2>&1
 echo "=== responder journal ==="
 sudo journalctl -u reboot-e2e-httpd.service --no-pager -n 60 2>&1
+echo "=== boot list ==="
+sudo journalctl --list-boots 2>&1 | tail -5
+echo "=== last-boot journal grep responder ==="
+sudo journalctl -b -1 --no-pager 2>&1 | grep -i "reboot-e2e\|network-online\|cloud-init" | tail -40
+echo "=== this-boot journal grep responder ==="
+sudo journalctl -b --no-pager 2>&1 | grep -i "reboot-e2e\|network-online\|cloud-init" | tail -40
 echo "=== cloud-init result.json ==="
 cat /run/cloud-init/result.json 2>&1
 echo "=== cloud-init.log tail ==="
@@ -1063,6 +1082,8 @@ sudo tail -40 /var/log/cloud-init-output.log 2>&1
 echo "=== instance-id sem ==="
 ls -l /var/lib/cloud/instance 2>&1
 ls -l /var/lib/cloud/instances/ 2>&1
+echo "=== /var/lib/cloud/instances/*/sem ==="
+ls -l /var/lib/cloud/instances/*/sem/ 2>&1
 `
 	// Outer ssh ships one cmd; inside, write the key, then ssh again to guest
 	// with a heredoc. Single round trip from runner.
@@ -1070,7 +1091,7 @@ ls -l /var/lib/cloud/instances/ 2>&1
 umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s
 ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 \
-    ubuntu@%s bash -s <<'EOFDIAG'
+    ec2-user@%s bash -s <<'EOFDIAG'
 %s
 EOFDIAG
 rm -f %s

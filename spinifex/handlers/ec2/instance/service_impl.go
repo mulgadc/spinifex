@@ -1035,19 +1035,27 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// LoadStateRequest fails with "not found" for a brand-new volume; seed
-	// from the template only in that case so reboots reuse the existing
-	// variable store (preserving guest-set BootOrder etc.).
-	if _, err := efiVb.LoadStateRequest(""); err != nil {
+	// Distinguish "not found" (seed from template) from any other backend
+	// failure (transient S3 5xx, JSON unmarshal, etc.). Treating a transient
+	// failure as "not found" would silently re-seed a volume on every retry,
+	// clobbering guest-set BootOrder. Backends signal missing-object by
+	// wrapping os.ErrNotExist (see viperblock.classifyStateLoad).
+	_, loadErr := efiVb.LoadStateRequest("")
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		slog.Error("Failed to load EFI volume state from backend", "name", efiVolumeName, "err", loadErr)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if loadErr != nil {
 		slog.Info("EFI volume does not yet exist, seeding from firmware VARS template", "name", efiVolumeName)
 
+		var walErr error
 		if efiVb.UseShardedWAL {
-			err = efiVb.OpenShardedWAL()
+			walErr = efiVb.OpenShardedWAL()
 		} else {
-			err = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
+			walErr = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
 		}
-		if err != nil {
-			slog.Error("Failed to load WAL", "err", err)
+		if walErr != nil {
+			slog.Error("Failed to load WAL", "err", walErr)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
@@ -1066,8 +1074,12 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 		}
 	}
 
+	// Close is the durability boundary after WriteAt+Flush; if it fails the
+	// VARS volume may be partially written and QEMU pflash will refuse to
+	// start. Fail the launch loudly rather than enqueueing a corrupt volume.
 	if err := efiVb.Close(); err != nil {
 		slog.Error("Failed to close EFI Viperblock store", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 	if err := efiVb.RemoveLocalFiles(); err != nil {
 		slog.Error("Failed to remove local files", "err", err)

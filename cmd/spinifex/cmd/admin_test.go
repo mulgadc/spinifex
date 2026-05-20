@@ -310,3 +310,24 @@ func TestWritePredastoreEncryptionKey_CreatesMissingDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dirInfo.IsDir())
 }
+
+// TestImagesRemoveCmd_FlagSchema guards the public flag surface for
+// `spx admin images remove`. --image-id is required so cobra rejects a bare
+// invocation; --force/--yes default to false.
+func TestImagesRemoveCmd_FlagSchema(t *testing.T) {
+	imageIDFlag := imagesRemoveCmd.Flags().Lookup("image-id")
+	require.NotNil(t, imageIDFlag, "--image-id must be defined")
+	assert.Equal(t, []string{"true"}, imageIDFlag.Annotations[cobraRequiredAnnotation],
+		"--image-id must be marked required")
+
+	forceFlag := imagesRemoveCmd.Flags().Lookup("force")
+	require.NotNil(t, forceFlag)
+	assert.Equal(t, "false", forceFlag.DefValue)
+
+	yesFlag := imagesRemoveCmd.Flags().Lookup("yes")
+	require.NotNil(t, yesFlag)
+	assert.Equal(t, "false", yesFlag.DefValue)
+}
+
+// cobraRequiredAnnotation is the annotation key cobra uses to mark required flags.
+const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_flag"

@@ -91,6 +91,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 |---------|-------|---------------|-------------|------------|--------|
 | `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Cluster must be running; either `--name` (catalog download) or `--file` (operator-supplied media). `--file` mode additionally requires `--distro`, `--version`, `--arch`, `--boot-mode`. | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. | 1. Import valid catalog image (verifies checksum)<br>2. Tampered cache hit fails with `ErrChecksumMismatch`<br>3. `--force` recovers after a mismatch<br>4. `--file` import skips verification<br>5. `--skip-verify` bypasses checksum with WARN<br>6. `--file` without `--boot-mode` rejected<br>7. `--boot-mode=invalid` rejected | **DONE** |
 | `spx admin images list` | — | None | Lists available OS images that can be imported or downloaded | 1. List available images | **DONE** |
+| `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Cluster must be running; predastore reachable. Targets AMIs imported via `spx admin images import` (non-account `ImageOwnerAlias`, e.g. `"system"` / legacy `"spinifex"`). | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. | 1. Happy path: system AMI, no deps → deleted<br>2. Account-owned → refused with AWS-flow hint<br>3. Missing/corrupt config → `InvalidAMIID.NotFound` (salvageable with `--force`)<br>4. Dependent volume (direct or via copied snap) → refused<br>5. Dependent account AMI → refused<br>6. `--force` overrides dependents<br>7. Idempotent re-run after partial delete | **DONE** |
 
 #### Image integrity verification (CMMC SI.L1-3.14.2)
 
@@ -122,6 +123,35 @@ verified image over `--skip-verify` whenever possible.
 served. A mirror compromise that swaps both image and sums file is not
 detected; closing that gap requires GPG signature verification of the sums
 file, deferred to a later phase.
+
+#### `spx admin images remove` caveats
+
+Admin-imported AMIs (`ImageOwnerAlias = "system"` / legacy `"spinifex"`) live
+under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
+at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
+(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
+`UnauthorizedOperation`, which is the right behaviour for tenant API callers
+but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
+the admin-trust-boundary counterpart that performs the dependency walk and
+hard-deletes the blocks directly against predastore.
+
+`CopyImage` of a system AMI is metadata-only: it writes a fresh
+`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
+`ami-<acct>/config.json` referencing that snap. Volumes launched from the
+copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
+walks this transitive set and refuses if anything references the target.
+
+**TOCTOU window:** between the safety scan and the `config.json` delete a
+concurrent `RunInstances` against the AMI could create a new dependent
+volume. The window is sub-second on a healthy cluster. The admin running
+this command is expected to know the fleet's operational state; if the race
+fires the result is a `vol-<id>` with deleted backing blocks, recovered by
+terminating the orphaned instance.
+
+**`--force` bypasses every safety check** (dependents, ownership, missing /
+corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
+against a live system AMI corrupts every dependent volume on the next disk
+read.
 
 ### GPU Management
 

@@ -57,6 +57,7 @@ sudo apt update
 sudo apt install --download-only -y \
   nbdkit nbdkit-plugin-dev pkg-config \
   qemu-system-x86 qemu-utils qemu-kvm \
+  ovmf qemu-efi-aarch64 \
   libvirt-daemon-system libvirt-clients libvirt-dev \
   ovn-central ovn-host openvswitch-switch \
   dhcpcd-base make gcc jq curl iproute2 netcat-openbsd \

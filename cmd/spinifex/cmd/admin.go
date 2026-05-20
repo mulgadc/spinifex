@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -48,6 +49,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
@@ -151,6 +153,19 @@ var imagesListCmd = &cobra.Command{
 	Run:   runimagesListCmd,
 }
 
+var imagesRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove an admin-imported system AMI",
+	Long: `Delete an AMI imported via 'spx admin images import', including its
+backing block storage and snapshot artefacts. Only operates on AMIs with a
+non-account owner (e.g. "system"); account-owned AMIs must be removed via
+'aws ec2 deregister-image' followed by 'aws ec2 delete-snapshot'.
+
+Refuses to delete an AMI that has dependent volumes or copied snapshots/AMIs
+unless --force is passed. Prompts for confirmation unless --yes is passed.`,
+	Run: runimagesRemoveCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -233,6 +248,7 @@ func init() {
 	adminCmd.AddCommand(imagesCmd)
 	imagesCmd.AddCommand(imagesImportCmd)
 	imagesCmd.AddCommand(imagesListCmd)
+	imagesCmd.AddCommand(imagesRemoveCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -316,6 +332,13 @@ func init() {
 	imagesImportCmd.Flags().StringSlice("tag", nil, "Tag to apply to the imported AMI as key=value (repeatable; e.g. --tag spinifex:managed-by=elbv2)")
 	imagesImportCmd.Flags().Bool("force", false, "Force command execution (overwrites existing files)")
 	imagesImportCmd.Flags().Bool("skip-verify", false, "Skip catalog-image checksum verification (INSECURE; operator assumes integrity responsibility)")
+
+	imagesRemoveCmd.Flags().String("image-id", "", "AMI ID to remove (required)")
+	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
+	imagesRemoveCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
+	if err := imagesRemoveCmd.MarkFlagRequired("image-id"); err != nil {
+		panic(err)
+	}
 }
 
 func runimagesImportCmd(cmd *cobra.Command, args []string) {
@@ -600,6 +623,136 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	defer os.RemoveAll(tmpDir)
 
 	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+}
+
+func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+	force, _ := cmd.Flags().GetBool("force")
+	yes, _ := cmd.Flags().GetBool("yes")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+	bucket := node.Predastore.Bucket
+
+	preview, err := admin.PreviewRemoveSystemImage(store, bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
+		os.Exit(1)
+	}
+
+	// Print metadata block.
+	fmt.Println("About to remove system AMI:")
+	fmt.Println()
+	fmt.Printf("  Image ID:        %s\n", preview.ImageID)
+	switch {
+	case !preview.ConfigPresent && !preview.ConfigCorrupt:
+		fmt.Println("  Name:            <unknown — config.json missing>")
+		fmt.Println("  Owner:           <unknown>")
+	case preview.ConfigCorrupt:
+		fmt.Println("  Name:            <unknown — config.json corrupt>")
+		fmt.Println("  Owner:           <unknown>")
+	default:
+		fmt.Printf("  Name:            %s\n", preview.Name)
+		fmt.Printf("  Owner:           %s\n", preview.Owner)
+		if !preview.Created.IsZero() {
+			fmt.Printf("  Created:         %s\n", preview.Created.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+	}
+	fmt.Printf("  Backing storage: %s/      (%d objects, %s)\n",
+		preview.ImageID, preview.AMIObjectCount, utils.HumanBytes(utils.SafeInt64ToUint64(preview.AMIBytesTotal)))
+	fmt.Printf("                   %s/ (%d objects, %s)\n",
+		admin.SnapPrefix(preview.ImageID), preview.SnapObjectCount, utils.HumanBytes(utils.SafeInt64ToUint64(preview.SnapBytesTotal)))
+	fmt.Println()
+
+	// Account-owned guard before salvage / dependents — the AWS-flow hint is
+	// the most useful thing to surface for this kind of mistake.
+	if preview.ConfigPresent && !preview.IsSystemOwned && !force {
+		fmt.Fprintf(os.Stderr,
+			"Refusing to remove: %s is account-owned (%s).\n"+
+				"Use 'aws ec2 deregister-image --image-id %s' followed by 'aws ec2 delete-snapshot ...'.\n",
+			preview.ImageID, preview.Owner, preview.ImageID)
+		os.Exit(1)
+	}
+
+	if !preview.ConfigPresent && !force {
+		fmt.Fprintln(os.Stderr, "AMI config.json missing or corrupt; re-run with --force to salvage backing blocks.")
+		os.Exit(1)
+	}
+
+	if !preview.Dependents.Empty() && !force {
+		fmt.Fprintln(os.Stderr, "Refusing to remove: dependent resources reference this image.")
+		printDependents(os.Stderr, preview.Dependents)
+		fmt.Fprintln(os.Stderr, "Remove them first (e.g. 'aws ec2 terminate-instances', 'aws ec2 delete-snapshot', 'aws ec2 deregister-image') or re-run with --force.")
+		os.Exit(1)
+	}
+
+	if force && (!preview.ConfigPresent || !preview.Dependents.Empty()) {
+		fmt.Println("⚠️  --force: skipping dependency check and ownership check.")
+		if !preview.Dependents.Empty() {
+			printDependents(os.Stdout, preview.Dependents)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("This is permanent and cannot be undone.")
+	if !yes {
+		fmt.Print("Type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	res, err := admin.RemoveSystemImage(store, bucket, admin.RemoveImageOpts{
+		ImageID: imageID,
+		Force:   force,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Remove failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Removed AMI %s (freed %s across %d objects).\n",
+		imageID, utils.HumanBytes(utils.SafeInt64ToUint64(res.BytesFreed)), res.ObjectsDeleted)
+}
+
+func printDependents(w io.Writer, d admin.Dependents) {
+	if len(d.Volumes) > 0 {
+		fmt.Fprintf(w, "  Volumes (%d):\n", len(d.Volumes))
+		for _, v := range d.Volumes {
+			fmt.Fprintf(w, "    - %s\n", v)
+		}
+	}
+	if len(d.Snapshots) > 0 {
+		fmt.Fprintf(w, "  Snapshots (%d):\n", len(d.Snapshots))
+		for _, s := range d.Snapshots {
+			fmt.Fprintf(w, "    - %s\n", s)
+		}
+	}
+	if len(d.AMIs) > 0 {
+		fmt.Fprintf(w, "  AMIs (%d):\n", len(d.AMIs))
+		for _, a := range d.AMIs {
+			fmt.Fprintf(w, "    - %s\n", a)
+		}
+	}
 }
 
 // List remote images available

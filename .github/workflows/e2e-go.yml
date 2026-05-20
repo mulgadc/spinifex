@@ -36,6 +36,11 @@ env:
 jobs:
   e2e_go_single:
     name: Single-Node E2E (Go)
+    # Skip when the dispatch input requests no in-VM suites (e.g.
+    # suites='e2e-reboot' only). Push triggers and the default SUITES list
+    # both include single/cert/lb so the inputs.suites null-check keeps the
+    # job running on plain PR pushes.
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb')
     runs-on: [ self-hosted, ci-single ]
     timeout-minutes: 45
     env:

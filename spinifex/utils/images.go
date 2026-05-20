@@ -182,13 +182,21 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	return digest, nil
 }
 
-// parseSumsFile scans a coreutils-style sums file and returns the hex digest
-// matching filename. Filename match is case-sensitive: upstream Debian/Ubuntu/
-// Alpine sums are consistently lowercase and a divergence is a real signal.
+// parseSumsFile scans a sums file and returns the hex digest matching filename.
+// Filename match is case-sensitive: upstream Debian/Ubuntu/Alpine sums are
+// consistently lowercase and a divergence is a real signal.
 //
-// Accepts three on-the-wire shapes: "<hex>  <name>" (text mode), "<hex> *<name>"
-// (binary mode), and a bare single-token "<hex>" line (single-file .sha512 from
-// Alpine, which does not carry a filename).
+// Accepts four on-the-wire shapes: "<hex>  <name>" (coreutils text mode),
+// "<hex> *<name>" (coreutils binary mode), "<algo> (<name>) = <hex>" (BSD
+// style, used by Rocky/RHEL/Alma/Fedora/CentOS Stream CHECKSUM files), and a
+// bare single-token "<hex>" line (single-file .sha512 from Alpine, which does
+// not carry a filename).
+//
+// GPG cleartext-signed armor is tolerated implicitly: the BEGIN/END markers
+// and "Hash:" header don't match any shape's structural guards, and signature
+// body lines are individually single tokens but always appear in pairs
+// (base64 + the =CRC trailer at minimum), so bareCount stays ≥ 2 and the
+// bare-digest fallback never fires on a signed file.
 func parseSumsFile(body []byte, filename string) (string, error) {
 	var bareDigest string
 	bareCount := 0
@@ -209,10 +217,21 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 			if name == filename {
 				return fields[0], nil
 			}
+		case 4:
+			// BSD-style: "<algo> (<name>) = <hex>". The "=" guard also rejects
+			// armor lines like "-----BEGIN PGP SIGNED MESSAGE-----" that happen
+			// to tokenise into 4 fields. Filenames have no spaces in upstream
+			// usage (Rocky/Alma/Fedora pin dated builds).
+			if fields[2] != "=" || !strings.HasPrefix(fields[1], "(") || !strings.HasSuffix(fields[1], ")") {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimPrefix(fields[1], "("), ")")
+			if name == filename {
+				return fields[3], nil
+			}
 		default:
-			// More than two fields: not a format we recognise. Skip rather than
-			// reject outright — signed sums files occasionally have trailing
-			// commentary we want to tolerate.
+			// Unrecognised shape. Skip rather than reject outright — signed sums
+			// files occasionally have trailing commentary we want to tolerate.
 		}
 	}
 	if err := scanner.Err(); err != nil {

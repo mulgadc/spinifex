@@ -1464,4 +1464,122 @@ func TestVerifyImageChecksum(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrChecksumFetchFailed)
 	})
+
+	t.Run("rocky bsd-style gpg-armored sums match", func(t *testing.T) {
+		const rockyName = "Rocky-10.0-20250612.0.x86_64.qcow2"
+		rockyBytes := []byte("rocky-image-bytes-fixture")
+		img := writeTempImage(t, rockyName, rockyBytes)
+		// Captured shape of a real Rocky CHECKSUM file: GPG cleartext-signed
+		// armor wrapping BSD-style "SHA256 (name) = hex" lines, followed by an
+		// ASCII-armored signature block we must skip without misparsing.
+		body := fmt.Sprintf(`-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+SHA256 (Rocky-10.0-20250612.0-x86_64-boot.iso) = %s
+SHA256 (%s) = %s
+SHA256 (Rocky-10.0-20250612.0-x86_64-dvd.iso) = %s
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
+nopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+/abcdefghijklmn
+=ABCD
+-----END PGP SIGNATURE-----
+`, sha256Hex([]byte("boot-iso")), rockyName, sha256Hex(rockyBytes), sha256Hex([]byte("dvd-iso")))
+		url := newSumsServer(t, body)
+		err := VerifyImageChecksum(img, url, "sha256")
+		assert.NoError(t, err)
+	})
+
+	t.Run("alma bsd-style gpg-armored sums match", func(t *testing.T) {
+		const almaName = "AlmaLinux-10-GenericCloud-10.0-x86_64.qcow2"
+		almaBytes := []byte("alma-image-bytes-fixture")
+		img := writeTempImage(t, almaName, almaBytes)
+		body := fmt.Sprintf(`-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+SHA256 (%s) = %s
+-----BEGIN PGP SIGNATURE-----
+
+iHUEABYKAB0WIQTm5n8/yqv7tQAaIQAaIQAFAmJabcdEFGhijklmnopqrstuvwxyz
+=EFGH
+-----END PGP SIGNATURE-----
+`, almaName, sha256Hex(almaBytes))
+		url := newSumsServer(t, body)
+		err := VerifyImageChecksum(img, url, "sha256")
+		assert.NoError(t, err)
+	})
+
+	t.Run("bsd-style filename absent", func(t *testing.T) {
+		const rockyName = "Rocky-10.0-20250612.0.x86_64.qcow2"
+		rockyBytes := []byte("rocky-image-bytes-fixture")
+		img := writeTempImage(t, rockyName, rockyBytes)
+		body := fmt.Sprintf(`-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+SHA256 (Rocky-10.0-20250612.0-x86_64-boot.iso) = %s
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
+=ABCD
+-----END PGP SIGNATURE-----
+`, sha256Hex([]byte("boot-iso")))
+		url := newSumsServer(t, body)
+		err := VerifyImageChecksum(img, url, "sha256")
+		assert.ErrorIs(t, err, ErrChecksumNotFound)
+	})
+}
+
+func TestParseSumsFile(t *testing.T) {
+	const target = "Rocky-10.0-20250612.0.x86_64.qcow2"
+	const targetHex = "a3f1c2d4e5f60718293a4b5c6d7e8f9012345678901234567890abcdefabcdef"
+
+	t.Run("bsd 4-field line", func(t *testing.T) {
+		body := []byte("SHA256 (" + target + ") = " + targetHex + "\n")
+		got, err := parseSumsFile(body, target)
+		require.NoError(t, err)
+		assert.Equal(t, targetHex, got)
+	})
+
+	t.Run("bsd missing equals separator skipped", func(t *testing.T) {
+		// Malformed line — third field is not "=". Must not match.
+		body := []byte("SHA256 (" + target + ") - " + targetHex + "\n")
+		_, err := parseSumsFile(body, target)
+		assert.ErrorIs(t, err, ErrChecksumNotFound)
+	})
+
+	t.Run("bsd missing parens skipped", func(t *testing.T) {
+		// Without parens the filename field is ambiguous; reject by not matching.
+		body := []byte("SHA256 " + target + " = " + targetHex + "\n")
+		_, err := parseSumsFile(body, target)
+		assert.ErrorIs(t, err, ErrChecksumNotFound)
+	})
+
+	t.Run("gpg-armored body with no sums returns not found", func(t *testing.T) {
+		// Signature-block lines are individually single tokens. The
+		// bare-digest fallback only fires when bareCount == 1; PGP signatures
+		// always have ≥ 2 (the base64 block + the =CRC trailer), so the
+		// fallback stays dormant and we correctly report NotFound.
+		body := []byte(`-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCAAdFiEEnK6Ehq8eQ0z6yqv7tQAaIQAaIQAAaIQFAmJabcdEFGhijklm
+=ABCD
+-----END PGP SIGNATURE-----
+`)
+		_, err := parseSumsFile(body, target)
+		assert.ErrorIs(t, err, ErrChecksumNotFound)
+	})
+
+	t.Run("mixed bsd and coreutils shapes", func(t *testing.T) {
+		// Defensive: a sums file with both shapes should still resolve the
+		// requested filename regardless of which line carries it.
+		body := []byte("# header\n" +
+			targetHex + "  some-other.iso\n" +
+			"SHA256 (" + target + ") = " + targetHex + "\n")
+		got, err := parseSumsFile(body, target)
+		require.NoError(t, err)
+		assert.Equal(t, targetHex, got)
+	})
 }

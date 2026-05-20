@@ -532,6 +532,48 @@ jobs:
           tar -C spinifex/tests/e2e/_bin -cf - . | ssh "${SSH_OPTS[@]}" "$VM" "tar -xf - -C \$HOME/spinifex-e2e-bin"
           ok "shipped binaries to $VM"
 
+      - name: Pre-flight diagnostics on node1
+        # Captures cluster + tf-user state directly via SSH so the post-mortem
+        # in run 26163994815-style spx-NATS failures has structured data
+        # before the test binary runs. Best-effort (|| true on everything) —
+        # this step never fails the job, only feeds the artifact bundle.
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh" 2>/dev/null || true
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.cluster.outputs.node1_ip }}
+          mkdir -p "${ARTIFACT_DIR}"
+          DIAG="${ARTIFACT_DIR}/preflight-diag.log"
+          {
+            echo "=== id (tf-user groups) ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'id; echo; getent group spinifex || true'
+            echo
+            echo "=== ls -la /etc/spinifex/ ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'ls -la /etc/spinifex/ 2>&1; echo; ls -la /etc/spinifex/nats/ 2>&1'
+            echo
+            echo "=== spinifex.toml NATS section ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'grep -A4 "\[nodes\\..*\\.nats" /etc/spinifex/spinifex.toml 2>&1 | head -40'
+            echo
+            echo "=== systemctl is-active spinifex-* ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'for s in spinifex-nats spinifex-predastore spinifex-awsgw spinifex-vpcd spinifex-daemon; do printf "%-22s %s\n" "$s" "$(systemctl is-active $s 2>&1)"; done'
+            echo
+            echo "=== which spx + version ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'which spx; spx --version 2>&1 || true'
+            echo
+            echo "=== spx get nodes (direct ssh, tf-user) ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'spx get nodes --timeout 5s 2>&1; echo "exit=$?"'
+            echo
+            echo "=== spx top nodes (direct ssh, tf-user) ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'spx top nodes 2>&1 | head -30; echo "exit=$?"'
+            echo
+            echo "=== NATS routez (curl 127.0.0.1:8222) ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'curl -fsS http://127.0.0.1:8222/routez 2>&1 | head -40'
+            echo
+            echo "=== aws describe-instance-types via gateway (tf-user) ==="
+            ssh "${SSH_OPTS[@]}" "$VM" 'AWS_PROFILE=spinifex AWS_CA_BUNDLE=/etc/spinifex/ca.pem aws --endpoint-url https://${{ steps.cluster.outputs.node1_ip }}:9999 ec2 describe-instance-types --query "InstanceTypes[*].InstanceType" --output text 2>&1 | head -5'
+          } 2>&1 | tee "$DIAG"
+          true
+
       - name: Run Go E2E suites
         id: e2e
         run: |

@@ -33,11 +33,14 @@ func DumpAllNodeLogs(t *testing.T, c *Cluster, artifactsDir string) {
 	}
 }
 
-// SpxGetNodesAcrossCluster runs `spx get nodes` and returns the raw output
-// stripped of trailing whitespace. Same as harness.SpxGetNodes but tagged
-// for multinode call sites — kept as a thin shim so the bash phase 9
-// "spx get nodes after recovery" assertion has a single source of truth.
+// SpxGetNodesAcrossCluster runs `spx get nodes` best-effort and returns the
+// raw output stripped of trailing whitespace. Bash phase 9 (run-multinode-e2e
+// .sh:1018) appends `|| echo ""` to swallow a non-zero spx exit — the CLI ↔
+// NATS dial races the cluster join right after node restart and can return
+// "no servers available for connection" even though the data path is healthy
+// (gateway+daemon already verified). Mirror that lenience so phase 9 doesn't
+// fail on a known-flaky CLI dial.
 func SpxGetNodesAcrossCluster(t *testing.T) string {
 	t.Helper()
-	return strings.TrimSpace(SpxGetNodes(t))
+	return strings.TrimSpace(SpxRunBestEffort(t, "get", "nodes", "--timeout", "5s"))
 }

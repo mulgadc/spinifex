@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -65,16 +66,36 @@ func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 		require.NotEmpty(t, def.SGID, "default SG required")
 		harness.AuthorizeSSHIngress(t, fix.AWS, def.SGID)
 
+		// Bash phase 3 launches with a 2s stagger between calls. Go port
+		// also retries each launch on InsufficientInstanceCapacity — on a
+		// cold-bootstrapped CI cluster (mulga-siv-90 run 26163994815) the
+		// per-node resourceMgr can briefly report 0 capacity right after
+		// daemon start before its first inventory scan completes, even
+		// though DescribeInstanceTypes already answers. AWS itself surfaces
+		// the same error transiently; treat as retryable.
+		input := &ec2.RunInstancesInput{
+			ImageId:          aws.String(amiID),
+			InstanceType:     aws.String(instType),
+			KeyName:          aws.String(keyName),
+			SubnetId:         aws.String(def.SubnetID),
+			SecurityGroupIds: []*string{aws.String(def.SGID)},
+			MinCount:         aws.Int64(1),
+			MaxCount:         aws.Int64(1),
+		}
 		for i := 0; i < 3; i++ {
-			out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
-				ImageId:          aws.String(amiID),
-				InstanceType:     aws.String(instType),
-				KeyName:          aws.String(keyName),
-				SubnetId:         aws.String(def.SubnetID),
-				SecurityGroupIds: []*string{aws.String(def.SGID)},
-				MinCount:         aws.Int64(1),
-				MaxCount:         aws.Int64(1),
-			})
+			var out *ec2.Reservation
+			var err error
+			for attempt := 1; attempt <= 6; attempt++ {
+				out, err = fix.AWS.EC2.RunInstances(input)
+				if err == nil {
+					break
+				}
+				if !strings.Contains(err.Error(), "InsufficientInstanceCapacity") {
+					break
+				}
+				t.Logf("needInstanceTrio: launch %d attempt %d: InsufficientInstanceCapacity, retrying in 10s", i, attempt)
+				time.Sleep(10 * time.Second)
+			}
 			if err != nil {
 				trioErr = err
 				return
@@ -94,6 +115,10 @@ func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 					InstanceIds: []*string{aws.String(idCopy)},
 				})
 			})
+			// Stagger encourages distribution across nodes (bash sleep 2).
+			if i < 2 {
+				time.Sleep(2 * time.Second)
+			}
 		}
 
 		for _, id := range trioIDs {

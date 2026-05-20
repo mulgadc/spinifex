@@ -272,6 +272,39 @@ func TestCloudInitTemplateRendering(t *testing.T) {
 	}
 }
 
+func TestFloorVolumeSizeToAMI(t *testing.T) {
+	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		"ami-rocky":   {VolumeSizeGiB: 10},
+		"ami-debian":  {VolumeSizeGiB: 3},
+		"ami-no-size": {VolumeSizeGiB: 0},
+	}}
+	const fourGiB = 4 * 1024 * 1024 * 1024
+	const tenGiB = 10 * 1024 * 1024 * 1024
+	const twentyGiB = 20 * 1024 * 1024 * 1024
+
+	t.Run("ami larger than requested rounds up", func(t *testing.T) {
+		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(loader, "ami-rocky", fourGiB))
+	})
+	t.Run("ami smaller than requested keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-debian", fourGiB))
+	})
+	t.Run("requested larger than ami keeps requested", func(t *testing.T) {
+		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(loader, "ami-rocky", twentyGiB))
+	})
+	t.Run("missing VolumeSizeGiB keeps requested (legacy AMI)", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-no-size", fourGiB))
+	})
+	t.Run("unknown AMI keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-unknown", fourGiB))
+	})
+	t.Run("non-ami image id keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "vol-123", fourGiB))
+	})
+	t.Run("nil loader keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(nil, "ami-rocky", fourGiB))
+	})
+}
+
 func TestBuildRHELCloudInit(t *testing.T) {
 	t.Run("empty eniMAC returns empty (wildcard path)", func(t *testing.T) {
 		wf, rc := buildRHELCloudInit("", "", "", "", nil)

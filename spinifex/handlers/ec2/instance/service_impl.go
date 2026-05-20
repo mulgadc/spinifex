@@ -97,6 +97,14 @@ const cloudInitNetworkConfigWildcard = `network:
       dhcp-identifier: mac
 `
 
+// cloudInitNetworkConfigDisabled tells cloud-init to do no network rendering
+// at all. Used on RHEL-family guests where Spinifex writes NM keyfiles via
+// user-data write_files; without this stub cloud-init's RHEL network module
+// falls back to autodetect-DHCP and drops a second keyfile next to ours.
+const cloudInitNetworkConfigDisabled = `network:
+  config: disabled
+`
+
 // generateNetworkConfig produces the cloud-init network-config for the instance.
 //
 // Per-interface config is generated when eniMAC is present (VPC NIC). This allows
@@ -304,6 +312,29 @@ type volumeParams struct {
 	imageId             string
 	snapshotId          string
 	deleteOnTermination bool
+}
+
+// floorVolumeSizeToAMI ensures requested is at least the AMI's snapshot size.
+// Cloud images embed a fixed-size partition table; truncating below it (e.g.
+// a 10 GiB Rocky image requested at the 4 GiB default) hangs the guest in
+// dracut waiting on a root UUID that lives past the cut-off. AWS rejects
+// under-sized requests with InvalidParameterValue — spinifex silently rounds
+// up since we don't surface that error code today and the user-visible
+// failure (dracut hang) is worse than a slightly bigger volume.
+func floorVolumeSizeToAMI(loader AMIMetaLoader, imageID string, requested int) int {
+	if loader == nil || !strings.HasPrefix(imageID, "ami-") {
+		return requested
+	}
+	amiMeta, err := loader.GetAMIConfig(imageID)
+	if err != nil || amiMeta.VolumeSizeGiB == 0 {
+		return requested
+	}
+	amiSize := int(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	if amiSize <= requested {
+		return requested
+	}
+	slog.Info("floorVolumeSizeToAMI: rounding up to AMI snapshot size", "imageId", imageID, "requestedBytes", requested, "amiBytes", amiSize)
+	return amiSize
 }
 
 // parseVolumeParams extracts volume parameters from RunInstancesInput,
@@ -918,6 +949,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
 	p := parseVolumeParams(input)
+	if input.ImageId != nil {
+		p.size = floorVolumeSizeToAMI(s.amiLoader, *input.ImageId, p.size)
+	}
 
 	// Capture attach time for the root volume
 	attachTime := time.Now()
@@ -1465,15 +1499,19 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 	// multi-subnet system VMs (multi-AZ ALBs).
 	//
 	// RHEL-family guests get their NM keyfiles via user-data write_files
-	// instead, so skip network-config here to keep a single writer for
-	// /etc/NetworkManager/system-connections/.
-	if distroFamily != "rhel" {
-		networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-		err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
-		if err != nil {
-			slog.Error("failed to add network-config file", "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
+	// instead. Ship an explicit "network: config: disabled" stub so cloud-init's
+	// own network renderer doesn't fall back to its built-in DHCP autodetect
+	// and write a competing cloud-init-enpXsY.nmconnection alongside ours.
+	var networkConfig string
+	if distroFamily == "rhel" {
+		networkConfig = cloudInitNetworkConfigDisabled
+	} else {
+		networkConfig = generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	}
+	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
+	if err != nil {
+		slog.Error("failed to add network-config file", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Store temp file

@@ -137,7 +137,19 @@ func TestRebootResilience(t *testing.T) {
 			rebootWait:      durationEnv("REBOOT_WAIT_SECS", 300*time.Second),
 			daemonReady:     durationEnv("DAEMON_READY_SECS", 180*time.Second),
 			instanceRunning: durationEnv("INSTANCE_RUNNING_SECS", 120*time.Second),
-			lbRecover:       durationEnv("LB_RECOVER_SECS", 180*time.Second),
+			// 5min, not bash's 180s. Pre-reboot the test creates the LB
+			// AFTER the apps are already running, so by the time HAProxy
+			// starts probing the app responders are already serving — ~75s
+			// to healthy. Post-reboot the daemon's recovery scan relaunches
+			// app VMs and the ALB sys.micro VM simultaneously, so HC starts
+			// probing within seconds of app boot beginning. Both targets
+			// honestly report unhealthy until the app's responder unit
+			// finishes starting (cloud-init's per-instance semaphore means
+			// no shortcut path on relaunch). The bash driver masked this by
+			// reading stale "healthy" from the daemon's pre-reboot TG cache
+			// (now fixed via ResetTargetHealthOnStartup — mulga-siv-119);
+			// the honest wait surfaces the real recovery window.
+			lbRecover: durationEnv("LB_RECOVER_SECS", 300*time.Second),
 		},
 	}
 

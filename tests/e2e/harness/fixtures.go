@@ -108,6 +108,15 @@ func newFixture(t *testing.T, ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API) *F
 // for tests that need to assert against names they didn't construct directly.
 func (f *Fixture) Scratch() string { return f.scratch }
 
+// RegisterCleanup runs fn at the end of the parent test, not the calling
+// subtest. Use for resources created mid-suite by code paths that don't
+// flow through ensureOnce (e.g. IAM users threaded across multiple phase
+// subtests) — registering on the calling subtest would tear them down
+// before the next dependent subtest runs.
+func (f *Fixture) RegisterCleanup(fn func()) {
+	f.parent.Cleanup(fn)
+}
+
 // ensureOnce is the shared backbone of every Ensure*. It:
 //  1. Returns the cached resource ID if one exists for key.
 //  2. Otherwise enters singleflight, calls create exactly once across

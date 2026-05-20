@@ -106,6 +106,18 @@ func phaseIAM1_UserCRUD(t *testing.T, fix *Fixture) {
 	iamDeleteUserBestEffort(fix, iamUserAlice)
 	iamDeleteUserBestEffort(fix, iamUserBob)
 
+	// Register parent-scoped cleanup BEFORE create so a mid-phase panic
+	// still tears down. Parent scope (TestSingleNode) keeps alice/bob
+	// reachable through phases 2–7; LIFO ordering means policy cleanup
+	// (phase 4) runs before user cleanup here. Phase 7 still runs the
+	// same logic — these registrations are an idempotent safety net for
+	// partial / out-of-order runs.
+	fix.Harness.RegisterCleanup(func() {
+		iamDeleteUserBestEffort(fix, iamUserAlice)
+		iamDeleteUserBestEffort(fix, iamUserBob)
+		iamDeleteUserBestEffort(fix, iamUserCharlie)
+	})
+
 	harness.Step(t, "list-users (root auth sanity)")
 	rootUsers, err := fix.AWS.IAM.ListUsers(&iam.ListUsersInput{})
 	require.NoError(t, err, "list-users (root)")
@@ -390,6 +402,28 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 	ec2roArn := aws.StringValue(pol.Policy.Arn)
 	require.NotEmpty(t, ec2roArn, "empty policy ARN")
 	fix.IAMAdminAccount = iamAccountFromARN(t, ec2roArn)
+
+	// Parent-scoped cleanup of every policy this phase creates. Registered
+	// once we have the account ID so the ARN constructor works. LIFO ⇒
+	// runs before phase 1's user cleanup (DetachUserPolicy from inside
+	// iamDeleteUserBestEffort still works either way; this just removes
+	// the policy faster on partial-run cleanup).
+	adminAccount := fix.IAMAdminAccount
+	fix.Harness.RegisterCleanup(func() {
+		for _, p := range []struct{ name, path string }{
+			{iamPolicyEC2ReadOnly, ""},
+			{iamPolicyFullAdmin, iamPolicyFullAdminPath},
+			{iamPolicyIAMReadOnly, ""},
+			{iamPolicyEC2DescribeAll, ""},
+			{iamPolicyDenyTerminate, ""},
+		} {
+			key := p.name
+			if p.path != "" {
+				key = p.path[1:] + p.name
+			}
+			iamDeletePolicyBestEffort(fix, iamPolicyARN(adminAccount, key))
+		}
+	})
 	harness.Detail(t, "policy", iamPolicyEC2ReadOnly, "arn", ec2roArn, "account", fix.IAMAdminAccount)
 
 	// EC2ReadOnly is seeded sequentially above because it populates

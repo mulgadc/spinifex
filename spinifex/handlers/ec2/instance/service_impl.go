@@ -39,7 +39,7 @@ users:
   - name: {{.Username}}
     shell: /bin/sh
     groups:
-      - sudo
+      - {{.SudoGroup}}
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     ssh_authorized_keys:
       - {{.SSHKey}}
@@ -60,15 +60,21 @@ ca_certs:
 {{.UserDataCloudConfig}}
 {{end}}
 
-{{if .UserDataScript}}
+{{if or .RHELWriteFiles .UserDataScript}}
 write_files:
+{{- if .RHELWriteFiles}}
+{{.RHELWriteFiles}}{{end}}{{if .UserDataScript}}
   - path: /tmp/cloud-init-startup.sh
     permissions: '0755'
     content: |
-{{.UserDataScript}}
-
+{{.UserDataScript}}{{end}}
+{{end}}
+{{if or .RHELRunCmd .UserDataScript}}
 runcmd:
+{{- if .RHELRunCmd}}
+{{.RHELRunCmd}}{{end}}{{if .UserDataScript}}
   - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
+{{end}}
 {{end}}
 `
 
@@ -167,6 +173,112 @@ type CloudInitData struct {
 	// "debian" | "rhel" | "alpine". Empty falls through to debian rendering
 	// (legacy AMIs registered before the field existed).
 	DistroFamily string
+	// SudoGroup is the OS group cloud-init adds the user to for passwordless
+	// sudo. "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
+	SudoGroup string
+	// RHELWriteFiles is the pre-indented YAML block of NM keyfile entries
+	// (one per NIC) appended under the merged write_files: key. Empty on
+	// non-RHEL guests; the network-config ISO file carries the YAML netplan
+	// equivalent instead.
+	RHELWriteFiles string
+	// RHELRunCmd is the pre-indented YAML block of runcmd entries (restorecon
+	// + nmcli reload/up) needed to load and bring up the keyfiles. Empty on
+	// non-RHEL guests.
+	RHELRunCmd string
+}
+
+// buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
+// runcmd (restorecon + nmcli) blocks needed to bring up networking on a
+// RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
+// non-VPC path) so NM's default autoconnect handles the interface.
+//
+// Mirrors generateNetworkConfig's per-interface structure: vpc0 + optional
+// vpc1..N for extra ENIs, dev0 (DHCP with route/DNS suppression), mgmt0
+// (static). Owning the keyfile bytes directly avoids relying on cloud-init's
+// v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
+// which OVN's MAC-keyed DHCP requires.
+//
+// File mode 0600 root:root is load-bearing — NM ignores keyfiles otherwise.
+// restorecon defers to host SELinux policy (no-op on non-SELinux systems);
+// nmcli reload forces NM to rescan system-connections after write_files
+// completes in cloud-init's config stage, and nmcli up brings each interface
+// online without waiting on autoconnect heuristics.
+func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) (writeFiles, runCmd string) {
+	if eniMAC == "" {
+		return "", ""
+	}
+
+	var wf, rc strings.Builder
+
+	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
+	rc.WriteString("  - [ nmcli, connection, reload ]\n")
+
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
+	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
+
+	for i, mac := range extraENIMACs {
+		if mac == "" {
+			continue
+		}
+		name := fmt.Sprintf("vpc%d", i+1)
+		appendRHELDHCPKeyfile(&wf, name, mac, false)
+		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
+	}
+
+	if devMAC != "" {
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
+		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
+	}
+
+	if mgmtMAC != "" && mgmtIP != "" {
+		appendRHELStaticKeyfile(&wf, "mgmt0", mgmtMAC, mgmtIP)
+		rc.WriteString("  - [ nmcli, connection, up, mgmt0 ]\n")
+	}
+
+	// Trim trailing newline so the template's {{.RHELWriteFiles}} doesn't
+	// produce a blank line before the user-script write_files entry on
+	// instances that have both.
+	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
+}
+
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=auto\n")
+	b.WriteString("      dhcp-client-id=mac\n")
+	if suppressDefaults {
+		// Equivalent to netplan dhcp4-overrides {use-routes: false, use-dns: false}:
+		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
+		b.WriteString("      never-default=true\n")
+		b.WriteString("      ignore-auto-dns=true\n")
+	}
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
+}
+
+func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=manual\n")
+	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
 }
 
 type CloudInitMetaData struct {
@@ -1268,12 +1380,27 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		}
 	}
 
+	extraMACs := make([]string, 0, len(instance.ExtraENIs))
+	for _, extra := range instance.ExtraENIs {
+		extraMACs = append(extraMACs, extra.ENIMac)
+	}
+
+	sudoGroup := "sudo"
+	var rhelWriteFiles, rhelRunCmd string
+	if distroFamily == "rhel" {
+		sudoGroup = "wheel"
+		rhelWriteFiles, rhelRunCmd = buildRHELCloudInit(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	}
+
 	userData := CloudInitData{
-		Username:     "ec2-user",
-		SSHKey:       string(sshKey),
-		Hostname:     hostname,
-		CACertPEM:    caCertPEM,
-		DistroFamily: distroFamily,
+		Username:       "ec2-user",
+		SSHKey:         string(sshKey),
+		Hostname:       hostname,
+		CACertPEM:      caCertPEM,
+		DistroFamily:   distroFamily,
+		SudoGroup:      sudoGroup,
+		RHELWriteFiles: rhelWriteFiles,
+		RHELRunCmd:     rhelRunCmd,
 	}
 
 	// Decode and classify user-data from RunInstances (base64-encoded).
@@ -1336,15 +1463,17 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
 	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
 	// multi-subnet system VMs (multi-AZ ALBs).
-	extraMACs := make([]string, 0, len(instance.ExtraENIs))
-	for _, extra := range instance.ExtraENIs {
-		extraMACs = append(extraMACs, extra.ENIMac)
-	}
-	networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
-	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
-	if err != nil {
-		slog.Error("failed to add network-config file", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
+	//
+	// RHEL-family guests get their NM keyfiles via user-data write_files
+	// instead, so skip network-config here to keep a single writer for
+	// /etc/NetworkManager/system-connections/.
+	if distroFamily != "rhel" {
+		networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+		err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
+		if err != nil {
+			slog.Error("failed to add network-config file", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	// Store temp file

@@ -272,6 +272,117 @@ func TestCloudInitTemplateRendering(t *testing.T) {
 	}
 }
 
+func TestBuildRHELCloudInit(t *testing.T) {
+	t.Run("empty eniMAC returns empty (wildcard path)", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("", "", "", "", nil)
+		assert.Empty(t, wf)
+		assert.Empty(t, rc)
+	})
+
+	t.Run("vpc0 only", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("02:00:00:00:00:01", "", "", "", nil)
+		// File mode + ownership are load-bearing — NM ignores anything else.
+		assert.Contains(t, wf, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, wf, "owner: root:root")
+		assert.Contains(t, wf, "permissions: '0600'")
+		assert.Contains(t, wf, "mac-address=02:00:00:00:00:01")
+		assert.Contains(t, wf, "dhcp-client-id=mac")
+		assert.Contains(t, wf, "method=auto")
+		assert.NotContains(t, wf, "never-default")
+		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
+	})
+
+	t.Run("vpc0 + extra ENIs + dev + mgmt", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"02:00:00:00:00:aa", "10.250.0.5",
+			[]string{"02:00:00:00:00:02", "02:00:00:00:00:03"},
+		)
+		for _, name := range []string{"vpc0", "vpc1", "vpc2", "dev0", "mgmt0"} {
+			assert.Contains(t, wf, "/etc/NetworkManager/system-connections/"+name+".nmconnection", name)
+			assert.Contains(t, rc, "  - [ nmcli, connection, up, "+name+" ]", name)
+		}
+		// dev NIC must not install default route or DNS.
+		assert.Contains(t, wf, "never-default=true")
+		assert.Contains(t, wf, "ignore-auto-dns=true")
+		// mgmt NIC is static with the supplied IP.
+		assert.Contains(t, wf, "method=manual")
+		assert.Contains(t, wf, "addresses=10.250.0.5/24")
+	})
+
+	t.Run("empty extra MAC skipped", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01", "", "", "",
+			[]string{"", "02:00:00:00:00:02"},
+		)
+		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
+		assert.NotContains(t, wf, "vpc1.nmconnection")
+		assert.Contains(t, wf, "vpc2.nmconnection")
+	})
+}
+
+func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
+	rhelWF, rhelRC := buildRHELCloudInit("02:00:00:11:22:33", "", "", "", nil)
+
+	t.Run("debian family: sudo group, no NM keyfiles", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
+			DistroFamily: "debian", SudoGroup: "sudo",
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- sudo")
+		assert.NotContains(t, out, "- wheel")
+		assert.NotContains(t, out, "NetworkManager/system-connections")
+		assert.NotContains(t, out, "nmcli")
+		assert.NotContains(t, out, "restorecon")
+	})
+
+	t.Run("rhel family: wheel group, NM keyfile write_files + runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- wheel")
+		assert.NotContains(t, out, "- sudo\n")
+		assert.Contains(t, out, "write_files:")
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "permissions: '0600'")
+		assert.Contains(t, out, "dhcp-client-id=mac")
+		assert.Contains(t, out, "runcmd:")
+		assert.Contains(t, out, "restorecon")
+		assert.Contains(t, out, "nmcli, connection, reload")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+	})
+
+	t.Run("rhel + user script: both blocks merged under single write_files/runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+			UserDataScript: "      #!/bin/bash\n      echo hi\n",
+		}))
+		out := buf.String()
+		// YAML disallows duplicate top-level keys; assert each appears exactly once.
+		assert.Equal(t, 1, strings.Count(out, "\nwrite_files:"))
+		assert.Equal(t, 1, strings.Count(out, "\nruncmd:"))
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "/tmp/cloud-init-startup.sh")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+		assert.Contains(t, out, `"/bin/bash", "/tmp/cloud-init-startup.sh"`)
+	})
+}
+
 func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	data := CloudInitMetaData{
 		InstanceID: "i-0123456789abcdef0",

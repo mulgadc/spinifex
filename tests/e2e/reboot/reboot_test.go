@@ -23,7 +23,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -732,6 +731,21 @@ func describePrivateIP(t *testing.T, c *harness.AWSClient, id string) string {
 	return aws.StringValue(out.Reservations[0].Instances[0].PrivateIpAddress)
 }
 
+func describePublicIP(t *testing.T, c *harness.AWSClient, id string) string {
+	t.Helper()
+	out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(id)},
+	})
+	if err != nil {
+		t.Logf("describe %s: %v", id, err)
+		return ""
+	}
+	if len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+		return ""
+	}
+	return aws.StringValue(out.Reservations[0].Instances[0].PublicIpAddress)
+}
+
 func describeInstanceState(t *testing.T, c *harness.AWSClient, id string) string {
 	t.Helper()
 	out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -829,25 +843,18 @@ func dumpDiagnostics(t *testing.T, fix *fixture, since time.Time) {
 	}
 }
 
-// hostfwdSSHPortRE matches `hostfwd=tcp:[HOST]:PORT-:22` in a qemu argv.
-var hostfwdSSHPortRE = regexp.MustCompile(`hostfwd=tcp:[^:]*:([0-9]+)-:22`)
-
-// dumpAppDiagnostics SSHes from the host into each app guest VM via its
-// QEMU hostfwd:22 port and dumps responder state. Surfaces the actual reason
-// for post-reboot health failures (responder unit dead, port not bound,
-// network unreachable) so failures don't bottom out at "0/2 healthy" with no
-// further detail. Best-effort — any step failing logs and continues.
+// dumpAppDiagnostics probes each app instance's IGW-NAT'd public IP from the
+// host VM. App VMs use pure OVN tap interfaces (no QEMU hostfwd), so SSH from
+// host is impossible — public-IP probes are the only no-cost path. Localises
+// post-reboot failures to one of: VM not running, OVN DNAT missing, responder
+// down, or responder up but reachable only from sys.micro (path asymmetry).
 func dumpAppDiagnostics(t *testing.T, fix *fixture) {
 	t.Helper()
-	if fix.privateKeyPath == "" {
-		harness.Step(t, "app diagnostics: no private key captured; skipping")
-		return
-	}
 	if len(fix.appInstanceIDs) == 0 {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	if !fix.ssh.IsReachable(ctx, fix.env.WANHost) {
@@ -855,109 +862,71 @@ func dumpAppDiagnostics(t *testing.T, fix *fixture) {
 		return
 	}
 
-	harness.Step(t, "app diagnostics: SSHing into %d guest(s) via hostfwd", len(fix.appInstanceIDs))
+	harness.Step(t, "app diagnostics: probing %d app instance(s)", len(fix.appInstanceIDs))
 
-	remoteKey := fmt.Sprintf("/tmp/reboot-e2e-key-%d.pem", time.Now().UnixNano())
-	if err := uploadKeyToHost(ctx, fix, remoteKey); err != nil {
-		harness.Step(t, "app diagnostics: upload key failed: %v", err)
-		return
-	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, _ = fix.ssh.Run(cleanupCtx, fix.env.WANHost, "rm -f "+remoteKey)
-	}()
+	natOut, _ := fix.ssh.Run(ctx, fix.env.WANHost,
+		"sudo ovn-nbctl list nat 2>/dev/null || true")
+	harness.DumpFile(t, fix.artifacts, "diag-ovn-nat.txt", natOut)
 
 	for _, id := range fix.appInstanceIDs {
-		diagnoseAppInstance(ctx, t, fix, id, remoteKey)
+		diagnoseAppInstance(ctx, t, fix, id)
 	}
 }
 
-// uploadKeyToHost base64-encodes the local PEM and writes it to remotePath on
-// the spinifex host (mode 600). Works around PeerSSH having no scp/stdin path.
-func uploadKeyToHost(ctx context.Context, fix *fixture, remotePath string) error {
-	data, err := os.ReadFile(fix.privateKeyPath)
-	if err != nil {
-		return fmt.Errorf("read local key: %w", err)
-	}
-	enc := base64.StdEncoding.EncodeToString(data)
-	cmd := fmt.Sprintf(
-		"umask 077 && printf '%%s' '%s' | base64 -d > %s && chmod 600 %s",
-		enc, remotePath, remotePath,
-	)
-	_, err = fix.ssh.Run(ctx, fix.env.WANHost, cmd)
-	return err
-}
-
-// diagnoseAppInstance dumps qemu process state + an in-guest battery for one
-// instance. Writes per-instance files so the artifact dir clearly attributes
-// findings. Each remote shell call is best-effort.
-func diagnoseAppInstance(ctx context.Context, t *testing.T, fix *fixture, id, remoteKey string) {
+// diagnoseAppInstance probes one instance from the host VM: qemu running,
+// ping, TCP-connect on :80, HTTP GET. Single shell session per instance.
+func diagnoseAppInstance(ctx context.Context, t *testing.T, fix *fixture, id string) {
 	t.Helper()
 
-	psOut, err := fix.ssh.Run(ctx, fix.env.WANHost, fmt.Sprintf("ps -eo args= | grep -F %q | grep -v grep || true", id))
+	psOut, err := fix.ssh.Run(ctx, fix.env.WANHost,
+		fmt.Sprintf("ps -eo args= | grep -F %q | grep -v grep || true", id))
 	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-qemu-ps.txt", id), psOut)
-	if err != nil {
+	switch {
+	case err != nil:
 		harness.Detail(t, id, fmt.Sprintf("qemu ps err: %v", err))
-		return
-	}
-	if len(strings.TrimSpace(string(psOut))) == 0 {
+	case len(strings.TrimSpace(string(psOut))) == 0:
 		harness.Detail(t, id, "qemu NOT running on host")
+	default:
+		harness.Detail(t, id, "qemu running")
+	}
+
+	priv := fix.preIPs[id]
+	pub := describePublicIP(t, fix.aws, id)
+	harness.Detail(t, id, fmt.Sprintf("priv=%s pub=%s", priv, pub))
+	if pub == "" {
+		harness.Detail(t, id, "no public IP — cannot probe from host")
 		return
 	}
 
-	m := hostfwdSSHPortRE.FindStringSubmatch(string(psOut))
-	if m == nil {
-		harness.Detail(t, id, "no hostfwd:22 in qemu argv (cannot ssh into guest)")
+	probe := fmt.Sprintf(`set +e
+echo "=== ping %[1]s ==="
+ping -c 2 -W 2 %[1]s 2>&1
+echo "=== tcp-connect %[1]s:80 ==="
+timeout 5 bash -c 'exec 3<>/dev/tcp/%[1]s/80 && echo "tcp OPEN" || echo "tcp CLOSED/UNREACH"'
+echo "=== curl http://%[1]s/ ==="
+curl -sS -m 5 -o /tmp/diag-body-%[2]s -w 'HTTP=%%{http_code} time=%%{time_total}s size=%%{size_download}\n' http://%[1]s/
+echo "=== body ==="
+cat /tmp/diag-body-%[2]s 2>/dev/null; echo
+rm -f /tmp/diag-body-%[2]s
+`, pub, id)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, probe)
+	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-net-probe.txt", id), out)
+	if err != nil {
+		harness.Detail(t, id, fmt.Sprintf("probe err: %v", err))
 		return
 	}
-	port := m[1]
-	harness.Detail(t, id, fmt.Sprintf("hostfwd_ssh_port=%s", port))
 
-	// In-guest battery. Heredoc keeps quoting sane through two ssh hops.
-	// Each step has || true so one failure doesn't abort the rest.
-	diag := `set +e
-echo "=== uname / uptime ==="
-uname -a
-uptime
-echo "=== systemctl is-active reboot-e2e-httpd.service ==="
-systemctl is-active reboot-e2e-httpd.service
-echo "=== systemctl status (head 40) ==="
-systemctl status --no-pager reboot-e2e-httpd.service 2>&1 | head -40
-echo "=== port 80 listeners ==="
-sudo ss -tlnp 'sport = :80' 2>/dev/null || ss -tlnp 2>/dev/null | grep ':80 ' || echo "no :80 listener"
-echo "=== curl localhost ==="
-curl -s -m 3 -w '\nHTTP=%{http_code}\n' http://127.0.0.1/ || echo "curl localhost FAILED"
-echo "=== index.html ==="
-ls -l /var/lib/httpd/ 2>&1
-cat /var/lib/httpd/index.html 2>&1
-echo "=== responder journal (last 80 lines) ==="
-sudo journalctl -u reboot-e2e-httpd.service --no-pager -n 80 2>&1
-echo "=== cloud-init final ==="
-sudo tail -20 /var/log/cloud-init-output.log 2>&1
-`
-	// Wrap the guest ssh in bash -c so the outer ssh ships one cmd arg; the
-	// inner heredoc is interpreted by the host's bash, not the guest's.
-	// Try ubuntu first (matches discoverAMI preference), then root.
-	for _, user := range []string{"ubuntu", "root"} {
-		remoteCmd := fmt.Sprintf(`bash -c '
-ssh -i %s -p %s \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o ConnectTimeout=5 \
-  -o BatchMode=yes \
-  %s@127.0.0.1 bash -s <<"EOFDIAG"
-%s
-EOFDIAG
-'`, remoteKey, port, user, diag)
-
-		out, err := fix.ssh.Run(ctx, fix.env.WANHost, remoteCmd)
-		harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-app-%s.txt", id, user), out)
-		if err == nil {
-			harness.Detail(t, id, fmt.Sprintf("guest ssh ok as %s", user))
-			return
-		}
-		harness.Detail(t, id, fmt.Sprintf("guest ssh as %s failed: %v", user, err))
+	body := string(out)
+	switch {
+	case strings.Contains(body, `"instance_id"`):
+		harness.Detail(t, id, "responder OK from host")
+	case strings.Contains(body, "tcp OPEN"):
+		harness.Detail(t, id, "tcp open but responder silent")
+	case strings.Contains(body, "tcp CLOSED"):
+		harness.Detail(t, id, "tcp closed/unreach (responder down OR OVN path broken)")
+	default:
+		harness.Detail(t, id, "probe inconclusive — see artifact")
 	}
 }
 

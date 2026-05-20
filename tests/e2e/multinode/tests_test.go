@@ -18,3 +18,13 @@ func TestMultinodePreflight(t *testing.T) {
 func TestMultinodeClusterHealth(t *testing.T) {
 	phase2_ClusterHealth(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeInstanceDistribution maps to phase 3.
+func TestMultinodeInstanceDistribution(t *testing.T) {
+	phase3_InstanceDistribution(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeGuestSSH maps to phase 4.
+func TestMultinodeGuestSSH(t *testing.T) {
+	phase4_GuestSSH(t, requireMultiNodeFixture(t))
+}

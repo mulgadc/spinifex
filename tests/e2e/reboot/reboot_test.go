@@ -954,6 +954,13 @@ func diagnoseAppInstance(ctx context.Context, t *testing.T, fix *fixture, id str
 		harness.Detail(t, id, "qemu running")
 	}
 
+	// Serial console — captures cloud-init, kernel oops, systemd boot, anything
+	// the guest emitted to ttyS0. Tail to cap size; the full log lives on the
+	// host until cleanup.
+	consoleOut, _ := fix.ssh.Run(ctx, fix.env.WANHost,
+		fmt.Sprintf("sudo tail -c 262144 /run/spinifex/console-%s.log 2>/dev/null || true", id))
+	harness.DumpFile(t, fix.artifacts, fmt.Sprintf("diag-%s-console.log", id), consoleOut)
+
 	priv := fix.preIPs[id]
 	pub := describePublicIP(t, fix.aws, id)
 	harness.Detail(t, id, fmt.Sprintf("priv=%s pub=%s", priv, pub))

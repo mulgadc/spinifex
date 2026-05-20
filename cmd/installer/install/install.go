@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -850,8 +851,8 @@ func bindChrootMounts() error {
 // unbindChrootMounts unmounts the virtual filesystems in reverse order.
 // Errors are logged but not returned — this is best-effort cleanup.
 func unbindChrootMounts() {
-	for i := len(chrootMountPaths) - 1; i >= 0; i-- {
-		_ = run("umount", filepath.Join(mountRoot, chrootMountPaths[i]))
+	for _, v := range slices.Backward(chrootMountPaths) {
+		_ = run("umount", filepath.Join(mountRoot, v))
 	}
 }
 

@@ -139,11 +139,15 @@ func phase11_PlacementAndNATGateway(t *testing.T, fix *Fixture) {
 		})
 	})
 	_, err = c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:    aws.String(bastionSGID),
-		IpProtocol: aws.String("tcp"),
-		FromPort:   aws.Int64(22),
-		ToPort:     aws.Int64(22),
-		CidrIp:     aws.String("0.0.0.0/0"),
+		GroupId: aws.String(bastionSGID),
+		IpPermissions: []*ec2.IpPermission{
+			{
+				IpProtocol: aws.String("tcp"),
+				FromPort:   aws.Int64(22),
+				ToPort:     aws.Int64(22),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+			},
+		},
 	})
 	require.NoError(t, err, "authorize bastion SG tcp/22")
 
@@ -176,11 +180,15 @@ func phase11_PlacementAndNATGateway(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "authorize private SG tcp/22 from bastion-sg")
 	// icmp from VPC CIDR
 	_, err = c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:    aws.String(privSGID),
-		IpProtocol: aws.String("icmp"),
-		FromPort:   aws.Int64(-1),
-		ToPort:     aws.Int64(-1),
-		CidrIp:     aws.String("10.100.0.0/16"),
+		GroupId: aws.String(privSGID),
+		IpPermissions: []*ec2.IpPermission{
+			{
+				IpProtocol: aws.String("icmp"),
+				FromPort:   aws.Int64(-1),
+				ToPort:     aws.Int64(-1),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("10.100.0.0/16")}},
+			},
+		},
 	})
 	require.NoError(t, err, "authorize private SG icmp from VPC")
 	harness.Detail(t, "vpc", vpcID, "pub_subnet", pubSubnetID, "priv_subnet", privSubnetID,

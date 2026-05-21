@@ -215,6 +215,17 @@ func phase11_PlacementAndNATGateway(t *testing.T, fix *Fixture) {
 		"bastion %s has no PublicIpAddress (pool mode required for phase 11)", bastionID)
 	harness.Detail(t, "bastion", bastionID, "bastion_pub_ip", bastionPubIP)
 
+	// On failure from this point, capture cluster-wide datapath state.
+	// veth bridge mode (run 26198221557 journal) routes all EIP ingress
+	// through the priority-20 gateway-chassis; with a 3-node cluster the
+	// gw chassis is the same node as the bastion only ~33% of the time,
+	// so ARP + geneve traversal need to be observed to localise SYN drops.
+	t.Cleanup(func() {
+		if t.Failed() {
+			dumpPlacementNATDiag(t, fix, bastionPubIP, bastionID)
+		}
+	})
+
 	waitForBastionSSH(t, bastionPubIP, keyPath, 5*time.Minute)
 	scpKeyToBastion(t, keyPath, bastionPubIP)
 
@@ -654,6 +665,91 @@ func waitForNATGatewayStateBest(c *harness.AWSClient, id, target string, timeout
 			return fmt.Errorf("nat gw %s did not reach %s within %s", id, target, timeout)
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+// dumpPlacementNATDiag fans out a fixed shortlist of datapath probes to
+// every cluster node and writes results to <Artifacts>/diag-<node>-<probe>.log.
+// Triggered only on test failure (via t.Cleanup wrapper) so a green run
+// leaves no extra files. Best-effort: per-node SSH errors are logged but
+// never re-fail the test.
+//
+// Probe set targets the centralized-NAT EIP datapath:
+//   - arp -an              : did ARP for the EIP resolve on this node?
+//   - ip route get <eip>   : kernel routing decision for outbound to EIP
+//   - ovs-vsctl show       : bridges + ports (br-int, br-ex)
+//   - ovs-vsctl get ... ovn-bridge-mappings : physnet binding
+//   - ovn-sbctl list chassis              : encap IPs + gateway hostnames
+//   - ovn-nbctl list nat                  : dnat_and_snat rule state
+//   - ovn-nbctl list gateway_chassis      : priority election state
+//   - ovn-nbctl find logical_router_port  : DGP gateway chassis attachment
+func dumpPlacementNATDiag(t *testing.T, fix *Fixture, bastionPubIP, bastionID string) {
+	t.Helper()
+	if fix.Artifacts == "" {
+		t.Logf("dumpPlacementNATDiag: no artifact dir; skipping")
+		return
+	}
+	if fix.Cluster == nil || len(fix.Cluster.Nodes) == 0 {
+		t.Logf("dumpPlacementNATDiag: no cluster nodes; skipping")
+		return
+	}
+
+	t.Logf("dumpPlacementNATDiag: bastion=%s eip=%s nodes=%d -> %s",
+		bastionID, bastionPubIP, len(fix.Cluster.Nodes), fix.Artifacts)
+
+	probes := []struct {
+		name string
+		cmd  string
+	}{
+		{"arp", "arp -an"},
+		{"ip-route-eip", fmt.Sprintf("ip route get %s 2>&1 || true", bastionPubIP)},
+		{"ip-addr", "ip -br addr"},
+		{"ovs-show", "sudo ovs-vsctl show"},
+		{"ovs-bridge-mappings", "sudo ovs-vsctl get Open_vSwitch . external_ids:ovn-bridge-mappings 2>&1 || true"},
+		{"ovn-sb-chassis", "sudo ovn-sbctl --no-leader-only list chassis 2>&1 || true"},
+		{"ovn-nb-nat", "sudo ovn-nbctl --no-leader-only list nat 2>&1 || true"},
+		{"ovn-nb-gw-chassis", "sudo ovn-nbctl --no-leader-only list gateway_chassis 2>&1 || true"},
+		{"ovn-nb-lrp", "sudo ovn-nbctl --no-leader-only list logical_router_port 2>&1 || true"},
+		{"ip-link-geneve", "ip -d link show type geneve 2>&1 || true"},
+	}
+
+	ssh := harness.NewPeerSSH()
+	for _, n := range fix.Cluster.Nodes {
+		for _, p := range probes {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			out, err := ssh.Run(ctx, n.Addr, p.cmd)
+			cancel()
+			header := fmt.Sprintf("# host=%s cmd=%s\n", n.Addr, p.cmd)
+			if err != nil {
+				header += fmt.Sprintf("# (ssh error: %v)\n", err)
+			}
+			name := fmt.Sprintf("diag-%s-%s.log", n.Name, p.name)
+			harness.DumpFile(t, fix.Artifacts, name, append([]byte(header), out...))
+		}
+	}
+
+	// Local-side: where does the test runner think the EIP is, and is
+	// ICMP returning right now? Distinguishes runner-network breakage
+	// from cluster datapath breakage.
+	localProbes := []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{"local-ping-eip", "ping", []string{"-c", "3", "-W", "2", bastionPubIP}},
+		{"local-traceroute-eip", "traceroute", []string{"-n", "-w", "2", "-m", "12", bastionPubIP}},
+		{"local-ip-route-eip", "ip", []string{"route", "get", bastionPubIP}},
+		{"local-arp", "arp", []string{"-an"}},
+	}
+	for _, p := range localProbes {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		out, err := exec.CommandContext(ctx, p.cmd, p.args...).CombinedOutput()
+		cancel()
+		header := fmt.Sprintf("$ %s %s\n", p.cmd, strings.Join(p.args, " "))
+		if err != nil {
+			header += fmt.Sprintf("(exit error: %v)\n", err)
+		}
+		harness.DumpFile(t, fix.Artifacts, p.name+".log", append([]byte(header), out...))
 	}
 }
 

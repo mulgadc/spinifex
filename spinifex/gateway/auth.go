@@ -20,10 +20,7 @@ import (
 // Maximum request body size for signature validation (10 MB).
 const maxBodySize = 10 * 1024 * 1024
 
-// SigV4AuthMiddleware returns stdlib middleware that validates AWS
-// Signature V4 authentication. Structural parsing, clock skew, and
-// signature verification all delegate to predastore/auth; gateway
-// owns the IAM lookup, rate-limiter, and awserrors mapping.
+// SigV4AuthMiddleware returns stdlib middleware that validates AWS Signature V4 authentication.
 func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	if gw.RateLimiter == nil {
 		gw.RateLimiter = NewAuthRateLimiter()
@@ -38,17 +35,22 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 
 			sig, err := auth.ParseReq(r)
 			if err != nil {
-				gw.RateLimiter.RecordFailure(clientIP)
 				gw.writeSigV4Error(w, r, parseSigV4ErrorCode(err))
 				return
 			}
 
-			// Fail fast when NATS is down. IAMService.LookupAccessKey waits 5s
-			// per attempt before context.DeadlineExceeded; the catch-all
-			// IsConnected check in gateway.Request() is unreachable because
-			// this middleware runs first. Only fires when NATSConn is set
-			// but disconnected — test helpers leaving it nil get pre-1c
-			// behaviour.
+			// Reject services the gateway doesn't serve before any crypto:
+			// otherwise Verify re-signs with the client-claimed service and
+			// rubber-stamps the scope.
+			if !supportedServices[sig.Service] {
+				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
+				return
+			}
+
+			// Fail fast when NATS is down: LookupAccessKey waits 5s per attempt
+			// before context.DeadlineExceeded, and gateway.Request()'s catch-all
+			// IsConnected check is unreachable from here. Nil NATSConn (test
+			// helpers) skips the short-circuit.
 			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
 				gw.writeClusterUnavailable(w, r, sig.Service)
 				return
@@ -102,7 +104,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			sum := sha256.Sum256(body)
 			bodyHash := hex.EncodeToString(sum[:])
 
-			if err := sig.Verify(secret, sig.Service, sig.Region,
+			if err := sig.Verify(secret, sig.Service, gw.Region,
 				auth.WithBodyHash(bodyHash)); err != nil {
 				slog.Warn("Auth failure: verification failed",
 					"accessKeyID", sig.AccessKeyID,
@@ -136,28 +138,20 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-// parseSigV4ErrorCode maps predastore/auth ParseReq sentinels to the
-// gateway's awserrors error codes.
 func parseSigV4ErrorCode(err error) string {
 	switch {
 	case errors.Is(err, auth.ErrMissingAuth):
 		return awserrors.ErrorMissingAuthenticationToken
 	default:
-		// ErrInvalidAuthFormat, ErrMissingSignedHeader, ErrMissingDate
-		// all surface as IncompleteSignature.
 		return awserrors.ErrorIncompleteSignature
 	}
 }
 
-// verifySigV4ErrorCode maps predastore/auth Verify sentinels to the
-// gateway's awserrors error codes.
 func verifySigV4ErrorCode(err error) string {
 	switch {
 	case errors.Is(err, auth.ErrMissingContentSHA):
 		return awserrors.ErrorIncompleteSignature
 	default:
-		// ErrClockSkew, ErrBodyHashMismatch, ErrSignatureMismatch
-		// (incl. *SigMismatchError) all surface as SignatureDoesNotMatch.
 		return awserrors.ErrorSignatureDoesNotMatch
 	}
 }

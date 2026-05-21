@@ -391,7 +391,7 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost:9999"
 		req.RemoteAddr = "10.99.0.1:54321"
-		req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=badsig")
+		req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000")
 		req.Header.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
 		doRequest(handler, req)
 	}
@@ -400,7 +400,7 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	req.RemoteAddr = "10.99.0.1:54321"
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=badsig")
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000")
 	req.Header.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
 
 	resp := doRequest(handler, req)
@@ -425,7 +425,7 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost:9999"
 		req.RemoteAddr = "10.99.0.2:54321"
-		req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=badsig")
+		req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAINVALIDKEY000000/20240101/us-east-1/ec2/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000")
 		req.Header.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
 		doRequest(handler, req)
 	}

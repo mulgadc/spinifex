@@ -118,11 +118,8 @@ func init() {
 	}
 }
 
-// signTestRequest signs req in place via auth.SignReq. body must be
-// the exact bytes the middleware will read from r.Body — the helper
-// hashes it to populate X-Amz-Content-Sha256. testRegion / testService
-// are hard-coded; pass auth.WithTime(...) via optFns to pin the
-// signing timestamp for clock-skew tests.
+// signTestRequest signs req in place. body must match what the middleware will read from r.Body —
+// its sha256 populates X-Amz-Content-Sha256.
 func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, optFns ...func(*auth.Options)) {
 	t.Helper()
 	sum := sha256.Sum256(body)
@@ -238,8 +235,6 @@ func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
 func TestSigV4Auth_InvalidSignature(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// Sign with the wrong secret — middleware re-signs with the real
-	// secret via predastore/auth.Verify; signatures diverge.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, "WRONG_SECRET_KEY")
@@ -588,7 +583,7 @@ func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
-	req.Header.Del("X-Amz-Date") // simulate client omitting the date header
+	req.Header.Del("X-Amz-Date")
 
 	resp := doRequest(handler, req)
 
@@ -608,7 +603,7 @@ func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
-	req.Header.Set("X-Amz-Date", "not-a-valid-date") // overwrite with malformed value
+	req.Header.Set("X-Amz-Date", "not-a-valid-date")
 
 	resp := doRequest(handler, req)
 
@@ -871,20 +866,16 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	testCases := []struct {
-		name     string
-		signPath string // decoded path used for signing
-		reqPath  string // percent-encoded path for the HTTP request line
+		name    string
+		reqPath string
 	}{
-		{"encoded space", "/my resource", "/my%20resource"},
-		{"nested slashes", "/a/b/c/d", "/a/b/c/d"},
-		{"trailing slash", "/path/", "/path/"},
+		{"encoded space", "/my%20resource"},
+		{"nested slashes", "/a/b/c/d"},
+		{"trailing slash", "/path/"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// The SDK signer canonicalizes URL.Path itself; client + server
-			// running the same SDK produce identical canonical URIs from the
-			// same wire path, so signPath/reqPath are equivalent here.
 			req := httptest.NewRequest(http.MethodGet, tc.reqPath, nil)
 			req.Host = "localhost:9999"
 			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
@@ -930,8 +921,6 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	// Setting Content-Type before signing causes the SDK signer to
-	// include it in SignedHeaders automatically.
 	body := []byte("Action=DescribeInstances")
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
@@ -962,9 +951,6 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 	}
 }
 
-// TestSigV4Auth_MultipartContentType exercises the middleware end-to-end
-// with a multipart/form-data Content-Type included in SignedHeaders.
-// Verify must accept the SDK-produced signature for a multipart body.
 func TestSigV4Auth_MultipartContentType(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
@@ -1458,11 +1444,8 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 	}
 }
 
-// TestSigV4Auth_NATSDisconnectedShortCircuit verifies that the SigV4 middleware
-// returns the cluster-unavailable 503 promised by 1c without ever reaching the
-// IAM lookup when the NATS connection is disconnected. With IAMService nil the
-// post-lookup path would return 500 InternalError, so a 503 here proves the
-// short-circuit fired before the lookup.
+// With IAMService nil the post-lookup path would return 500 InternalError, so a 503
+// here proves the disconnected-NATS short-circuit fired before the lookup.
 func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	ns, _ := testutil.StartTestNATS(t)
 	nc, err := nats.Connect(ns.ClientURL())

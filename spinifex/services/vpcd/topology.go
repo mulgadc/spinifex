@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"strconv"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -415,19 +415,6 @@ func (h *TopologyHandler) RetrofitAllExternalLocalnetOptions(ctx context.Context
 	}
 }
 
-// dnsServer returns the DNS server string for OVN DHCP options.
-// Uses dns_servers from the external pool config (auto-detected by admin init).
-// Falls back to 8.8.8.8 and 1.1.1.1 if none configured.
-// OVN DHCP expects the format "{ip1, ip2}" for multiple servers.
-func (h *TopologyHandler) dnsServer() string {
-	pool := h.findExternalPool("", "")
-	if pool != nil && len(pool.DNSServers) > 0 {
-		return "{" + strings.Join(pool.DNSServers, ", ") + "}"
-	}
-	// Fallback: public DNS
-	return "{8.8.8.8, 1.1.1.1}"
-}
-
 // findExternalPool returns the first pool matching the given region/AZ,
 // using the fallback order: AZ-scoped → region-scoped → unscoped.
 func (h *TopologyHandler) findExternalPool(region, az string) *ExternalPoolConfig {
@@ -515,45 +502,27 @@ func (h *TopologyHandler) handleVPCCreate(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt VPCEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.create event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	routerName := "vpc-" + evt.VpcId
-	ctx := context.Background()
-
-	// Idempotent: skip if router already exists (another vpcd instance may have created it)
-	if _, err := h.ovn.GetLogicalRouter(ctx, routerName); err == nil {
-		slog.Debug("vpcd: logical router already exists, skipping", "router", routerName)
-		respond(msg, nil)
-		return
+	spec := topology.VPCSpec{VPCID: evt.VpcId, VNI: evt.VNI}
+	if evt.CidrBlock != "" {
+		cidr, err := netip.ParsePrefix(evt.CidrBlock)
+		if err != nil {
+			slog.Error("vpcd: invalid CIDR in vpc.create event", "cidr", evt.CidrBlock, "err", err)
+			respond(msg, err)
+			return
+		}
+		spec.CIDR = cidr
 	}
-
-	lr := &nbdb.LogicalRouter{
-		Name: routerName,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": evt.VpcId,
-			"spinifex:vni":    strconv.FormatInt(evt.VNI, 10),
-			// Cleanup paths (handleIGWDetach, NAT sweeps) read this to scope
-			// their SNAT removal to the VPC's own CIDR. When unset, those
-			// paths fall back to an overbroad 10.0.0.0/8 and emit noisy
-			// "VPC CIDR missing from router metadata" WARNs. reconcileVPC
-			// stores the same key on startup; keep parity here.
-			"spinifex:cidr": evt.CidrBlock,
-		},
-	}
-
-	if err := h.ovn.CreateLogicalRouter(ctx, lr); err != nil {
-		slog.Error("vpcd: failed to create logical router", "router", routerName, "err", err)
+	if err := h.EnsureVPC(context.Background(), spec); err != nil {
+		slog.Error("vpcd: EnsureVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	slog.Info("vpcd: created logical router for VPC", "router", routerName, "vpc_id", evt.VpcId, "cidr", evt.CidrBlock)
 	respond(msg, nil)
 }
 
@@ -562,56 +531,17 @@ func (h *TopologyHandler) handleVPCDelete(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt VPCEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.delete event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	routerName := "vpc-" + evt.VpcId
-	ctx := context.Background()
-
-	// List all switches to find ones belonging to this VPC
-	switches, err := h.ovn.ListLogicalSwitches(ctx)
-	if err != nil {
-		slog.Warn("vpcd: failed to list switches during VPC delete", "err", err)
-	} else {
-		for _, ls := range switches {
-			if ls.ExternalIDs["spinifex:vpc_id"] == evt.VpcId {
-				// Delete switch ports first
-				for range ls.Ports {
-					// Ports are UUIDs; best-effort cleanup
-				}
-				if err := h.ovn.DeleteLogicalSwitch(ctx, ls.Name); err != nil {
-					slog.Warn("vpcd: failed to delete switch during VPC cascade", "switch", ls.Name, "err", err)
-				}
-			}
-		}
-	}
-
-	// Delete DHCP options for this VPC
-	dhcpOpts, err := h.ovn.ListDHCPOptions(ctx)
-	if err != nil {
-		slog.Warn("vpcd: failed to list DHCP options during VPC delete", "err", err)
-	} else {
-		for _, opts := range dhcpOpts {
-			if opts.ExternalIDs["spinifex:vpc_id"] == evt.VpcId {
-				if err := h.ovn.DeleteDHCPOptions(ctx, opts.UUID); err != nil {
-					slog.Warn("vpcd: failed to delete DHCP options during VPC cascade", "uuid", opts.UUID, "err", err)
-				}
-			}
-		}
-	}
-
-	if err := h.ovn.DeleteLogicalRouter(ctx, routerName); err != nil {
-		slog.Error("vpcd: failed to delete logical router", "router", routerName, "err", err)
+	if err := h.DeleteVPC(context.Background(), evt.VpcId); err != nil {
+		slog.Error("vpcd: DeleteVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	slog.Info("vpcd: deleted logical router for VPC", "router", routerName, "vpc_id", evt.VpcId)
 	respond(msg, nil)
 }
 
@@ -622,119 +552,27 @@ func (h *TopologyHandler) handleSubnetCreate(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt SubnetEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.create-subnet event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	switchName := "subnet-" + evt.SubnetId
-	routerName := "vpc-" + evt.VpcId
-	routerPortName := "rtr-" + evt.SubnetId
-	switchRouterPortName := "rtr-port-" + evt.SubnetId
-
-	// Parse subnet CIDR to compute gateway IP
-	gwIP, mask, err := subnetGateway(evt.CidrBlock)
+	cidr, err := netip.ParsePrefix(evt.CidrBlock)
 	if err != nil {
-		slog.Error("vpcd: invalid subnet CIDR", "cidr", evt.CidrBlock, "err", err)
+		slog.Error("vpcd: invalid CIDR in vpc.create-subnet event", "cidr", evt.CidrBlock, "err", err)
 		respond(msg, err)
 		return
 	}
-	gwCIDR := fmt.Sprintf("%s/%d", gwIP, mask)
-
-	// Generate a deterministic MAC for the router port
-	routerMAC := generateMAC(evt.SubnetId)
-
-	// Idempotent: skip if switch already exists (another vpcd instance may have created it)
-	if _, err := h.ovn.GetLogicalSwitch(ctx, switchName); err == nil {
-		slog.Debug("vpcd: subnet topology already exists, skipping", "switch", switchName)
-		respond(msg, nil)
-		return
-	}
-
-	// 1. Create LogicalSwitch
-	ls := &nbdb.LogicalSwitch{
-		Name: switchName,
-		ExternalIDs: map[string]string{
-			"spinifex:subnet_id": evt.SubnetId,
-			"spinifex:vpc_id":    evt.VpcId,
-		},
-	}
-	if err := h.ovn.CreateLogicalSwitch(ctx, ls); err != nil {
-		slog.Error("vpcd: failed to create logical switch", "switch", switchName, "err", err)
+	if err := h.EnsureSubnet(context.Background(), topology.SubnetSpec{
+		SubnetID: evt.SubnetId,
+		VPCID:    evt.VpcId,
+		CIDR:     cidr,
+	}); err != nil {
+		slog.Error("vpcd: EnsureSubnet failed", "subnet_id", evt.SubnetId, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	// 2. Create LogicalRouterPort on the VPC router
-	lrp := &nbdb.LogicalRouterPort{
-		Name:     routerPortName,
-		MAC:      routerMAC,
-		Networks: []string{gwCIDR},
-		ExternalIDs: map[string]string{
-			"spinifex:subnet_id": evt.SubnetId,
-			"spinifex:vpc_id":    evt.VpcId,
-		},
-	}
-	if err := h.ovn.CreateLogicalRouterPort(ctx, routerName, lrp); err != nil {
-		slog.Error("vpcd: failed to create router port", "port", routerPortName, "err", err)
-		// Best-effort cleanup
-		_ = h.ovn.DeleteLogicalSwitch(ctx, switchName)
-		respond(msg, err)
-		return
-	}
-
-	// 3. Create LogicalSwitchPort (type=router) connecting switch to router
-	lsp := &nbdb.LogicalSwitchPort{
-		Name:      switchRouterPortName,
-		Type:      "router",
-		Addresses: []string{"router"},
-		Options: map[string]string{
-			"router-port": routerPortName,
-		},
-		ExternalIDs: map[string]string{
-			"spinifex:subnet_id": evt.SubnetId,
-			"spinifex:vpc_id":    evt.VpcId,
-		},
-	}
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, switchName, lsp); err != nil {
-		slog.Error("vpcd: failed to create switch router port", "port", switchRouterPortName, "err", err)
-		_ = h.ovn.DeleteLogicalRouterPort(ctx, routerName, routerPortName)
-		_ = h.ovn.DeleteLogicalSwitch(ctx, switchName)
-		respond(msg, err)
-		return
-	}
-
-	// 4. Create DHCP_Options for the subnet
-	dhcpOpts := &nbdb.DHCPOptions{
-		CIDR: evt.CidrBlock,
-		Options: map[string]string{
-			"server_id":  gwIP,
-			"server_mac": routerMAC,
-			"lease_time": "3600",
-			"router":     gwIP,
-			"dns_server": h.dnsServer(),
-			"mtu":        "1442", // Geneve overhead
-		},
-		ExternalIDs: map[string]string{
-			"spinifex:subnet_id": evt.SubnetId,
-			"spinifex:vpc_id":    evt.VpcId,
-		},
-	}
-	if _, err := h.ovn.CreateDHCPOptions(ctx, dhcpOpts); err != nil {
-		slog.Error("vpcd: failed to create DHCP options", "cidr", evt.CidrBlock, "err", err)
-		// Non-fatal: switch and router port are still useful
-	}
-
-	slog.Info("vpcd: created subnet topology",
-		"switch", switchName,
-		"router_port", routerPortName,
-		"gateway", gwCIDR,
-		"subnet_id", evt.SubnetId,
-	)
 	respond(msg, nil)
 }
 
@@ -743,46 +581,23 @@ func (h *TopologyHandler) handleSubnetDelete(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt SubnetEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.delete-subnet event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	switchName := "subnet-" + evt.SubnetId
-	routerName := "vpc-" + evt.VpcId
-	routerPortName := "rtr-" + evt.SubnetId
-	switchRouterPortName := "rtr-port-" + evt.SubnetId
-
-	// 1. Delete switch router port
-	if err := h.ovn.DeleteLogicalSwitchPort(ctx, switchName, switchRouterPortName); err != nil {
-		slog.Warn("vpcd: failed to delete switch router port", "port", switchRouterPortName, "err", err)
-	}
-
-	// 2. Delete router port
-	if err := h.ovn.DeleteLogicalRouterPort(ctx, routerName, routerPortName); err != nil {
-		slog.Warn("vpcd: failed to delete router port", "port", routerPortName, "err", err)
-	}
-
-	// 3. Delete DHCP options for this subnet
-	dhcpOpts, err := h.ovn.FindDHCPOptionsByCIDR(ctx, evt.CidrBlock)
-	if err == nil {
-		if err := h.ovn.DeleteDHCPOptions(ctx, dhcpOpts.UUID); err != nil {
-			slog.Warn("vpcd: failed to delete DHCP options", "cidr", evt.CidrBlock, "err", err)
+	spec := topology.SubnetSpec{SubnetID: evt.SubnetId, VPCID: evt.VpcId}
+	if evt.CidrBlock != "" {
+		if cidr, perr := netip.ParsePrefix(evt.CidrBlock); perr == nil {
+			spec.CIDR = cidr
 		}
 	}
-
-	// 4. Delete the logical switch
-	if err := h.ovn.DeleteLogicalSwitch(ctx, switchName); err != nil {
-		slog.Error("vpcd: failed to delete logical switch", "switch", switchName, "err", err)
+	if err := h.DeleteSubnet(context.Background(), spec); err != nil {
+		slog.Error("vpcd: DeleteSubnet failed", "subnet_id", evt.SubnetId, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	slog.Info("vpcd: deleted subnet topology", "switch", switchName, "subnet_id", evt.SubnetId)
 	respond(msg, nil)
 }
 
@@ -793,84 +608,36 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt PortEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.create-port event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	portName := "port-" + evt.NetworkInterfaceId
-	switchName := "subnet-" + evt.SubnetId
-
-	// Idempotent: if the port already exists from a previous attempt that
-	// crashed before joining its SG port groups, converge the memberships now
-	// instead of waiting up to a full reconciler interval — that gap would
-	// leave a port with zero ACLs (OVN default = unrestricted), defeating the
-	// atomic-create guarantee on the recovery path.
-	if _, err := h.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
-		if _, err := h.reconcilePortSGs(ctx, portName, evt.SecurityGroupIds); err != nil {
-			slog.Error("vpcd: failed to reconcile SGs for existing port", "port", portName, "err", err)
-			respond(msg, err)
-			return
-		}
-		slog.Debug("vpcd: logical switch port already exists, reconciled SG memberships", "port", portName)
-		respond(msg, nil)
-		return
-	}
-
-	addrStr := fmt.Sprintf("%s %s", evt.MacAddress, evt.PrivateIpAddress)
-
-	lsp := &nbdb.LogicalSwitchPort{
-		Name:         portName,
-		Addresses:    []string{addrStr},
-		PortSecurity: []string{addrStr},
-		ExternalIDs: map[string]string{
-			"spinifex:eni_id":    evt.NetworkInterfaceId,
-			"spinifex:subnet_id": evt.SubnetId,
-			"spinifex:vpc_id":    evt.VpcId,
-		},
-	}
-
-	// Look up DHCP options for the subnet and attach to the port
-	dhcpOpts, err := h.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", evt.SubnetId)
+	ip, err := netip.ParseAddr(evt.PrivateIpAddress)
 	if err != nil {
-		slog.Warn("vpcd: DHCP options not found for subnet, port will not have DHCP", "subnet", evt.SubnetId, "err", err)
-	} else {
-		lsp.DHCPv4Options = &dhcpOpts.UUID
-	}
-
-	// LSP create + switch-port mutate + SG port-group joins + per-SG address-set
-	// inserts MUST be one OVSDB transaction. A two-step shape leaves a window
-	// where the port exists outside any port group (OVN default =
-	// unrestricted) — opposite of the enforcement guarantee. The matching
-	// `<pg>_ip4` Address_Set in SB is auto-derived by ovn-northd from the
-	// port group's port addresses once the LSP joins.
-	pgNames := make([]string, 0, len(evt.SecurityGroupIds))
-	for _, sgId := range evt.SecurityGroupIds {
-		pgNames = append(pgNames, topology.SecurityGroupPortGroup(sgId))
-	}
-	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames); err != nil {
-		slog.Error("vpcd: failed to create logical switch port", "port", portName, "switch", switchName, "err", err)
+		slog.Error("vpcd: invalid private IP in vpc.create-port event", "ip", evt.PrivateIpAddress, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	// Logged at INFO so the `<MAC> <IP>` string is captured in journals — the SB
-	// Address_Set ovn-northd derives for SG-to-SG ACL matches keys off this exact
-	// field, and a malformed addresses entry silently breaks cross-SG traffic.
-	slog.Info("vpcd: created logical switch port for ENI",
-		"port", portName,
-		"switch", switchName,
-		"eni_id", evt.NetworkInterfaceId,
-		"ip", evt.PrivateIpAddress,
-		"mac", evt.MacAddress,
-		"addr_str", addrStr,
-		"sgs", evt.SecurityGroupIds,
-		"port_groups", pgNames,
-	)
+	mac, err := net.ParseMAC(evt.MacAddress)
+	if err != nil {
+		slog.Error("vpcd: invalid MAC in vpc.create-port event", "mac", evt.MacAddress, "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := h.EnsurePort(context.Background(), topology.PortSpec{
+		PortID:    evt.NetworkInterfaceId,
+		SubnetID:  evt.SubnetId,
+		VPCID:     evt.VpcId,
+		PrivateIP: ip,
+		MAC:       mac,
+		SGIDs:     evt.SecurityGroupIds,
+	}); err != nil {
+		slog.Error("vpcd: EnsurePort failed", "eni_id", evt.NetworkInterfaceId, "err", err)
+		respond(msg, err)
+		return
+	}
 	respond(msg, nil)
 }
 
@@ -879,140 +646,45 @@ func (h *TopologyHandler) handleDeletePort(msg *nats.Msg) {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt PortEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.delete-port event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	portName := "port-" + evt.NetworkInterfaceId
-	switchName := "subnet-" + evt.SubnetId
-
-	// Remove the LSP from every port group before deleting it. OVSDB rejects
-	// deletes of a row still referenced by another row's set column (the port
-	// group's ports set), so swallowing this error guarantees the next
-	// DeleteLogicalSwitchPort fails with a misleading reference-integrity
-	// error and hides the real first-step cause.
-	if _, err := h.reconcilePortSGs(ctx, portName, nil); err != nil {
-		slog.Error("vpcd: failed to clear port group memberships before delete", "port", portName, "err", err)
+	if err := h.DeletePort(context.Background(), topology.PortSpec{
+		PortID:   evt.NetworkInterfaceId,
+		SubnetID: evt.SubnetId,
+		VPCID:    evt.VpcId,
+	}); err != nil {
+		slog.Error("vpcd: DeletePort failed", "eni_id", evt.NetworkInterfaceId, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	if err := h.ovn.DeleteLogicalSwitchPort(ctx, switchName, portName); err != nil {
-		slog.Error("vpcd: failed to delete logical switch port", "port", portName, "switch", switchName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	slog.Info("vpcd: deleted logical switch port for ENI",
-		"port", portName,
-		"switch", switchName,
-		"eni_id", evt.NetworkInterfaceId,
-	)
 	respond(msg, nil)
 }
 
 // handleUpdatePortSGs reconciles the port group membership for an ENI's LSP
-// against the desired SG list in the event. The payload is declarative — vpcd
-// computes the add/remove diff from the current libovsdb cache state. Same
-// helper is used by the reconciler.
+// against the desired SG list in the event. The payload is declarative — the
+// manager computes the add/remove diff from current OVN state.
 func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt UpdatePortSGsEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.update-port-sgs event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	portName := "port-" + evt.NetworkInterfaceId
-
-	if _, err := h.reconcilePortSGs(ctx, portName, evt.SecurityGroupIds); err != nil {
-		slog.Error("vpcd: failed to reconcile port SGs",
-			"port", portName, "eni_id", evt.NetworkInterfaceId, "sgs", evt.SecurityGroupIds, "err", err)
+	if err := h.SetPortSecurityGroups(context.Background(), evt.NetworkInterfaceId, evt.SecurityGroupIds); err != nil {
+		slog.Error("vpcd: SetPortSecurityGroups failed",
+			"eni_id", evt.NetworkInterfaceId, "sgs", evt.SecurityGroupIds, "err", err)
 		respond(msg, err)
 		return
 	}
-
-	slog.Info("vpcd: updated port group memberships",
-		"port", portName,
-		"eni_id", evt.NetworkInterfaceId,
-		"sgs", evt.SecurityGroupIds,
-	)
 	respond(msg, nil)
-}
-
-// reconcilePortSGs converges the OVN port-group membership of lspName against
-// desiredSGs. Reads current membership from the libovsdb cache, computes
-// add/remove sets, and applies each side incrementally. Idempotent — replaying
-// the same desired state is a no-op. Self-healing — a previous partial failure
-// converges on the next call. desiredSGs may be nil (delete-port path) to
-// remove the port from every group.
-//
-// SG-to-SG rule matches like "ip4.src == $<pg>_ip4" resolve against the SB
-// Address_Set rows that ovn-northd auto-derives from each port group's port
-// addresses, so port-group join/leave alone is enough — no explicit
-// address-set membership maintenance is required here.
-//
-// Returns changed=true iff at least one port-group join or leave was applied;
-// callers use this to distinguish actual drift from a no-op pass.
-func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName string, desiredSGs []string) (bool, error) {
-	desired := make(map[string]struct{}, len(desiredSGs))
-	for _, sgId := range desiredSGs {
-		desired[topology.SecurityGroupPortGroup(sgId)] = struct{}{}
-	}
-
-	currentNames, err := h.ovn.ListPortGroupsForPort(ctx, lspName)
-	if err != nil {
-		return false, fmt.Errorf("list current port groups for %s: %w", lspName, err)
-	}
-	current := make(map[string]struct{}, len(currentNames))
-	for _, name := range currentNames {
-		current[name] = struct{}{}
-	}
-
-	addPGs := make([]string, 0)
-	for name := range desired {
-		if _, ok := current[name]; !ok {
-			addPGs = append(addPGs, name)
-		}
-	}
-	removePGs := make([]string, 0)
-	for name := range current {
-		if _, ok := desired[name]; !ok {
-			removePGs = append(removePGs, name)
-		}
-	}
-
-	if len(addPGs) == 0 && len(removePGs) == 0 {
-		return false, nil
-	}
-
-	// Single OVSDB transaction so a 5-SG → different-5-SG modify never
-	// exposes an intermediate state with fewer port groups (which would
-	// let the OVN default = unrestricted apply for the gap).
-	if err := h.ovn.UpdatePortGroupMemberships(ctx, lspName, addPGs, removePGs); err != nil {
-		return false, err
-	}
-	// Logged at INFO so SG-to-SG ACL failures can be correlated with the exact
-	// port-group join/leave events that drive ovn-northd's SB Address_Set
-	// derivation
-	slog.Info("vpcd: reconciled port group memberships",
-		"port", lspName,
-		"added", addPGs,
-		"removed", removePGs,
-		"desired", desiredSGs,
-	)
-	return true, nil
 }
 
 // --- Internet Gateway (external connectivity + NAT) ---
@@ -1823,27 +1495,6 @@ func ipv4ToUint32(ip net.IP) uint32 {
 
 func uint32ToIPv4(n uint32) net.IP {
 	return net.IPv4(byte(n>>24&0xff), byte(n>>16&0xff), byte(n>>8&0xff), byte(n&0xff)).To4()
-}
-
-// subnetGateway computes the gateway IP (.1) from a CIDR string.
-// Returns the gateway IP string and the prefix length.
-func subnetGateway(cidr string) (string, int, error) {
-	ip, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return "", 0, fmt.Errorf("parse CIDR %q: %w", cidr, err)
-	}
-
-	// Use the network address, increment last octet to .1
-	gw := ipNet.IP.To4()
-	if gw == nil {
-		return "", 0, fmt.Errorf("only IPv4 supported, got %s", ip)
-	}
-	gw = make(net.IP, len(ipNet.IP.To4()))
-	copy(gw, ipNet.IP.To4())
-	gw[3]++
-
-	ones, _ := ipNet.Mask.Size()
-	return gw.String(), ones, nil
 }
 
 // generateMAC creates a deterministic locally-administered unicast MAC

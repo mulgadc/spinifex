@@ -381,41 +381,6 @@ func TestTopologyHandler_VPCDeleteCascade(t *testing.T) {
 	}
 }
 
-func TestSubnetGateway(t *testing.T) {
-	tests := []struct {
-		cidr     string
-		wantIP   string
-		wantMask int
-		wantErr  bool
-	}{
-		{"10.0.1.0/24", "10.0.1.1", 24, false},
-		{"192.168.0.0/16", "192.168.0.1", 16, false},
-		{"172.16.0.0/20", "172.16.0.1", 20, false},
-		{"invalid", "", 0, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.cidr, func(t *testing.T) {
-			ip, mask, err := subnetGateway(tt.cidr)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if ip != tt.wantIP {
-				t.Errorf("expected IP %s, got %s", tt.wantIP, ip)
-			}
-			if mask != tt.wantMask {
-				t.Errorf("expected mask %d, got %d", tt.wantMask, mask)
-			}
-		})
-	}
-}
-
 func TestGenerateMAC(t *testing.T) {
 	mac1 := generateMAC("subnet-aaa")
 	mac2 := generateMAC("subnet-bbb")

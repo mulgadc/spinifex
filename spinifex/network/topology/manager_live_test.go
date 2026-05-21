@@ -255,12 +255,31 @@ func TestLiveManager_WithDNSServer(t *testing.T) {
 }
 
 func TestSubnetGatewayCIDR(t *testing.T) {
-	prefix := netip.MustParsePrefix("10.0.1.0/24")
-	gw, bits, err := SubnetGatewayCIDR(prefix)
-	if err != nil {
-		t.Fatalf("SubnetGatewayCIDR: %v", err)
+	cases := []struct {
+		cidr   string
+		wantIP string
+		bits   int
+	}{
+		{"10.0.1.0/24", "10.0.1.1", 24},
+		{"192.168.0.0/16", "192.168.0.1", 16},
+		{"172.16.0.0/20", "172.16.0.1", 20},
+		{"172.31.0.0/28", "172.31.0.1", 28},
 	}
-	if gw != "10.0.1.1" || bits != 24 {
-		t.Errorf("got (%q, %d), want (10.0.1.1, 24)", gw, bits)
+	for _, tc := range cases {
+		t.Run(tc.cidr, func(t *testing.T) {
+			gw, bits, err := SubnetGatewayCIDR(netip.MustParsePrefix(tc.cidr))
+			if err != nil {
+				t.Fatalf("SubnetGatewayCIDR: %v", err)
+			}
+			if gw != tc.wantIP || bits != tc.bits {
+				t.Errorf("got (%q, %d), want (%q, %d)", gw, bits, tc.wantIP, tc.bits)
+			}
+		})
+	}
+}
+
+func TestSubnetGatewayCIDR_IPv6Rejected(t *testing.T) {
+	if _, _, err := SubnetGatewayCIDR(netip.MustParsePrefix("2001:db8::/32")); err == nil {
+		t.Fatal("expected error for IPv6 prefix")
 	}
 }

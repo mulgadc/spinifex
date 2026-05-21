@@ -53,6 +53,25 @@ func HTTPSGet(url string, caPool *x509.CertPool, timeout time.Duration) (int, []
 	return resp.StatusCode, body, nil
 }
 
+// FetchTLSPosture opens a TLS connection to host:port and returns the
+// negotiated version and curve. Trust is bypassed because the goal is to
+// observe the handshake, not validate the cert chain. Used by e2e tests to
+// assert that deployed services actually negotiate TLS 1.3 + PQ hybrid
+// (see internal/tlsconfig.Curves) under the production FIPS build.
+func FetchTLSPosture(host string, port int, timeout time.Duration) (version uint16, curve tls.CurveID, err error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("%s:%d", host, port), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         host,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("tls dial %s:%d: %w", host, port, err)
+	}
+	defer conn.Close()
+	state := conn.ConnectionState()
+	return state.Version, state.CurveID, nil
+}
+
 // LoadCAPool reads a PEM-encoded CA bundle from path and returns an x509 pool.
 func LoadCAPool(path string) (*x509.CertPool, error) {
 	raw, err := os.ReadFile(path)

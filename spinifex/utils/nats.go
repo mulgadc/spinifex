@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/nats-io/nats.go"
 )
 
@@ -79,7 +80,9 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 			return nil, fmt.Errorf("%w from %s", ErrCACertParse, caCertPath)
 		}
 		natsOpts = append(natsOpts, nats.Secure(&tls.Config{
-			RootCAs: pool,
+			RootCAs:          pool,
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
 		}))
 	}
 

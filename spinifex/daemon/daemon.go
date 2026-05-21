@@ -28,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -1609,8 +1610,9 @@ func (d *Daemon) ClusterManager() error {
 	}
 
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		Certificates:     []tls.Certificate{cert},
+		MinVersion:       tls.VersionTLS13,
+		CurvePreferences: tlsconfig.Curves,
 	}
 
 	d.clusterServer = &http.Server{

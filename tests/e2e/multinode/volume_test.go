@@ -12,17 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5_VolumeLifecycle is the Go port of phase 5 from
-// run-multinode-e2e.sh:731-825. Creates a 10GiB volume, attaches to the
+// runVolumeLifecycle is the Go port of volume lifecycle
+// (run-multinode-e2e.sh:731-825). Creates a 10GiB volume, attaches to the
 // first trio instance at /dev/sdf, detaches, deletes. Each step polls a
 // matching state target (in-use/attached → available → 404).
 //
-// Volume is created + torn down inline (not via EnsureVolume) because
-// the test exercises the full CRUD cycle including DeleteVolume — wiring
-// it through Ensure* would have the fixture cleanup race the in-test
-// delete and surface as InvalidVolume.NotFound.
-func phase5_VolumeLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 5 — Volume Lifecycle")
+// Volume is created + torn down inline (not via EnsureVolume) because the
+// test exercises the full CRUD cycle including DeleteVolume — wiring it
+// through Ensure* would have the fixture cleanup race the in-test delete
+// and surface as InvalidVolume.NotFound.
+func runVolumeLifecycle(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Volume Lifecycle")
 
 	az := needAZ(t, fix)
 	trio := needInstanceTrio(t, fix)

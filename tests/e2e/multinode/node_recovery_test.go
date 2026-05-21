@@ -10,19 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase9_NodeRecovery is the Go port of phase 9 from
-// run-multinode-e2e.sh:961-1037. Starts spinifex.target on node2,
-// waits for NATS to reform to 2 peers, gateway to answer, spx get
-// nodes to show 3 Ready, and node2's gateway to answer
-// DescribeInstanceTypes.
+// runNodeRecovery is the Go port of node-recovery validation
+// (run-multinode-e2e.sh:961-1037). Starts spinifex.target on node2, waits for
+// NATS to reform to 2 peers, gateway to answer, spx get nodes to show 3
+// Ready, and node2's gateway to answer DescribeInstanceTypes.
 //
-// Idempotent: if phase 8 didn't actually take node2 down (e.g.
-// `go test -run TestMultinodeNodeRecovery` in isolation), the StartNode
-// call no-ops and the assertions still hold.
-func phase9_NodeRecovery(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 9 — Node Recovery")
+// Idempotent: if runNodeFailure didn't actually take node2 down (e.g.
+// `go test -run TestMultinodeNodeRecovery` in isolation), the StartNode call
+// no-ops and the assertions still hold.
+func runNodeRecovery(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Node Recovery")
 
-	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3, "phase 9 requires a 3-node cluster, have %d", len(fix.Cluster.Nodes))
+	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3, "node recovery requires a 3-node cluster, have %d", len(fix.Cluster.Nodes))
 	node2 := fix.Cluster.Nodes[1]
 
 	harness.Step(t, "start spinifex.target on %s (%s)", node2.Name, node2.Addr)
@@ -34,8 +33,8 @@ func phase9_NodeRecovery(t *testing.T, fix *Fixture) {
 	harness.Step(t, "wait %s gateway to answer HTTPS", node2.Name)
 	harness.WaitNodeServiceReady(t, node2, harness.WithTimeout(60*time.Second), harness.WithPoll(2*time.Second))
 
-	// Bash phase 9 (run-multinode-e2e.sh:1018) appends `|| echo ""` to swallow
-	// a non-zero spx exit and never checks Ready count strictly — recovery is
+	// Bash (run-multinode-e2e.sh:1018) appends `|| echo ""` to swallow a
+	// non-zero spx exit and never checks Ready count strictly — recovery is
 	// gated on the gateway DescribeInstanceTypes call below, which actually
 	// proves end-to-end NATS routing through node2. Downgrade spx to WARN.
 	harness.Step(t, "spx get nodes shows %d Ready after recovery (best-effort)", len(fix.Cluster.Nodes))

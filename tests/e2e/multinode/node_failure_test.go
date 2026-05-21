@@ -11,22 +11,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase8_NodeFailure is the Go port of phase 8 from
-// run-multinode-e2e.sh:898-957. Stops spinifex.target on node2,
-// asserts the cluster degrades cleanly: surviving nodes still serve
-// DescribeInstances, NATS reports 1 peer instead of 2, and the trio
-// remains addressable.
+// runNodeFailure is the Go port of node-failure injection
+// (run-multinode-e2e.sh:898-957). Stops spinifex.target on node2, asserts the
+// cluster degrades cleanly: surviving nodes still serve DescribeInstances,
+// NATS reports 1 peer instead of 2, and the trio remains addressable.
 //
-// Registers a t.Cleanup that restarts node2 unconditionally so a
-// cancelled phase 9 doesn't leave the cluster broken for downstream
-// tests. Phase 9 itself runs the recovery assertions explicitly.
-func phase8_NodeFailure(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 8 — Node Failure")
+// Registers a t.Cleanup that restarts node2 unconditionally so a cancelled
+// recovery test doesn't leave the cluster broken for downstream tests.
+// runNodeRecovery itself runs the recovery assertions explicitly.
+func runNodeFailure(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Node Failure")
 
-	// Trio must already exist — node2 going down shouldn't cause a
-	// race with trio launches issuing through that node's gateway.
+	// Trio must already exist — node2 going down shouldn't cause a race with
+	// trio launches issuing through that node's gateway.
 	_ = needInstanceTrio(t, fix)
-	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3, "phase 8 requires a 3-node cluster, have %d", len(fix.Cluster.Nodes))
+	require.GreaterOrEqualf(t, len(fix.Cluster.Nodes), 3, "node failure requires a 3-node cluster, have %d", len(fix.Cluster.Nodes))
 	node2 := fix.Cluster.Nodes[1]
 	node3 := fix.Cluster.Nodes[2]
 	local := fix.Cluster.Nodes[0]
@@ -34,8 +33,8 @@ func phase8_NodeFailure(t *testing.T, fix *Fixture) {
 	harness.Step(t, "stop spinifex.target on %s (%s)", node2.Name, node2.Addr)
 	harness.StopNode(t, node2)
 	t.Cleanup(func() {
-		// Best-effort: ensure node2 comes back even if assertions below
-		// fail or the run is cancelled. Phase 9 calls StartNode again —
+		// Best-effort: ensure node2 comes back even if assertions below fail
+		// or the run is cancelled. runNodeRecovery calls StartNode again —
 		// systemctl start is idempotent.
 		harness.StartNode(t, node2)
 	})

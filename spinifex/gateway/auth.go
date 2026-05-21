@@ -104,7 +104,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			sum := sha256.Sum256(body)
 			bodyHash := hex.EncodeToString(sum[:])
 
-			if err := sig.Verify(secret, sig.Service, sig.Region,
+			if err := sig.Verify(secret, sig.Service, gw.Region,
 				auth.WithBodyHash(bodyHash)); err != nil {
 				attrs := []any{
 					"accessKeyID", sig.AccessKeyID,

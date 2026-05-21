@@ -188,6 +188,13 @@ type TopologyHandler struct {
 	// SG subscribers reuse one manager instance across events.
 	sgmOnce sync.Once
 	sgm     policy.SecurityGroupManager
+
+	// natm + natmOnce cache the policy.NATManager backed by h.ovn. NAT mode
+	// resolves from h.bridgeMode at first use; the FlowsBarrier closure
+	// shells out to ovn-nbctl --wait=hv sync via waitForFlowsHV.
+	natmOnce sync.Once
+	natm     policy.NATManager
+	natmErr  error
 }
 
 // NewTopologyHandler creates a new TopologyHandler with optional external network config.
@@ -1531,63 +1538,52 @@ func respond(msg *nats.Msg, err error) {
 	}
 }
 
-// handleAddNATGateway creates an OVN SNAT rule for a private subnet via a NAT Gateway.
-// The SNAT rule rewrites source IPs from the private subnet CIDR to the NAT GW's public IP.
+// handleAddNATGateway is a thin wrapper that decodes the NATS event and
+// delegates the SNAT installation to policy.NATManager.AddNATGateway.
 func (h *TopologyHandler) handleAddNATGateway(msg *nats.Msg) {
 	var evt NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.add-nat-gateway event", "err", err)
 		return
 	}
-
-	slog.Info("vpcd: adding NAT Gateway SNAT rule",
-		"vpcId", evt.VpcId, "natGatewayId", evt.NatGatewayId,
-		"publicIp", evt.PublicIp, "subnetCidr", evt.SubnetCidr)
-
-	ctx := context.Background()
-	routerName := "vpc-" + evt.VpcId
-
-	snatRule := &nbdb.NAT{
-		Type:       "snat",
-		ExternalIP: evt.PublicIp,
-		LogicalIP:  evt.SubnetCidr,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id":         evt.VpcId,
-			"spinifex:nat_gateway_id": evt.NatGatewayId,
-		},
-	}
-
-	if err := h.ovn.AddNAT(ctx, routerName, snatRule); err != nil {
-		slog.Error("vpcd: failed to add NAT Gateway SNAT rule",
-			"router", routerName, "publicIp", evt.PublicIp,
-			"subnetCidr", evt.SubnetCidr, "err", err)
+	nm, err := h.natManager()
+	if err != nil {
+		slog.Error("vpcd: NAT manager init failed", "err", err)
 		return
 	}
-
+	if err := nm.AddNATGateway(context.Background(), policy.NATGWSpec{
+		VPCID:        evt.VpcId,
+		NATGatewayID: evt.NatGatewayId,
+		PublicIP:     evt.PublicIp,
+		SubnetCIDR:   evt.SubnetCidr,
+	}); err != nil {
+		slog.Error("vpcd: AddNATGateway failed",
+			"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId,
+			"public_ip", evt.PublicIp, "subnet_cidr", evt.SubnetCidr, "err", err)
+		return
+	}
 	slog.Info("vpcd: NAT Gateway SNAT rule added",
-		"router", routerName, "publicIp", evt.PublicIp, "subnetCidr", evt.SubnetCidr)
+		"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId,
+		"public_ip", evt.PublicIp, "subnet_cidr", evt.SubnetCidr)
 }
 
-// handleDeleteNATGateway removes the OVN SNAT rule for a private subnet's NAT Gateway.
+// handleDeleteNATGateway delegates SNAT teardown to policy.NATManager.
 func (h *TopologyHandler) handleDeleteNATGateway(msg *nats.Msg) {
 	var evt NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.delete-nat-gateway event", "err", err)
 		return
 	}
-
-	slog.Info("vpcd: removing NAT Gateway SNAT rule",
-		"vpcId", evt.VpcId, "natGatewayId", evt.NatGatewayId, "subnetCidr", evt.SubnetCidr)
-
-	ctx := context.Background()
-	routerName := "vpc-" + evt.VpcId
-
-	if err := h.ovn.DeleteNAT(ctx, routerName, "snat", evt.SubnetCidr); err != nil {
-		slog.Warn("vpcd: failed to delete NAT Gateway SNAT rule",
-			"router", routerName, "subnetCidr", evt.SubnetCidr, "err", err)
+	nm, err := h.natManager()
+	if err != nil {
+		slog.Error("vpcd: NAT manager init failed", "err", err)
 		return
 	}
-
+	if err := nm.DeleteNATGateway(context.Background(), evt.VpcId, evt.SubnetCidr); err != nil {
+		slog.Warn("vpcd: DeleteNATGateway failed",
+			"vpc_id", evt.VpcId, "subnet_cidr", evt.SubnetCidr, "err", err)
+		return
+	}
 	slog.Info("vpcd: NAT Gateway SNAT rule removed",
-		"router", routerName, "subnetCidr", evt.SubnetCidr)
+		"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId, "subnet_cidr", evt.SubnetCidr)
 }

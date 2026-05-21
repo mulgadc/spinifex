@@ -16,11 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase1_Environment verifies KVM, AWS gateway TLS reachability, daemon NATS
+// runEnvironment verifies KVM, AWS gateway TLS reachability, daemon NATS
 // readiness, and the basic region/AZ discovery calls. Maps to run-e2e.sh
 // lines ~51–93.
-func phase1_Environment(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 1 — Environment")
+func runEnvironment(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Environment")
 
 	// /dev/kvm — skip rather than fatal in local-dev to match the bash
 	// "exit 1" only when KVM is genuinely required (CI). Local devs without
@@ -88,11 +88,11 @@ func phase1_Environment(t *testing.T, fix *Fixture) {
 	})
 }
 
-// phase1b_ClusterStats exercises the spx CLI cluster surface (`get nodes`,
+// runClusterStatsCLI exercises the spx CLI cluster surface (`get nodes`,
 // `top nodes`, `get vms`). Single-node only — multinode mode is tested by a
 // different scenario. Maps to run-e2e.sh ~95–127.
-func phase1b_ClusterStats(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 1b — Cluster Stats CLI")
+func runClusterStatsCLI(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Cluster Stats CLI")
 	if fix.Env.Mode != harness.ModeSingle {
 		t.Skipf("Phase 1b is single-node only (mode=%s)", fix.Env.Mode)
 	}
@@ -114,12 +114,12 @@ func phase1b_ClusterStats(t *testing.T, fix *Fixture) {
 		"spx get vms should be empty before Phase 5\n%s", vms)
 }
 
-// phase2_Discovery re-asserts describe-regions / describe-availability-zones
+// runDiscovery re-asserts describe-regions / describe-availability-zones
 // (cheap but it's where the bash records them as a phase boundary) and picks
 // the nano instance type + architecture used throughout the rest of the run.
 // Maps to run-e2e.sh ~128–164.
-func phase2_Discovery(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 2 — Discovery & Metadata")
+func runDiscovery(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Discovery Phase 2 — Discovery & Metadata Metadata")
 
 	regions, err := fix.AWS.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
 	require.NoError(t, err)
@@ -137,11 +137,11 @@ func phase2_Discovery(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "instance_type", instType, "arch", arch, "az", az)
 }
 
-// phase2b_SerialConsole flips serial-console-access on then off and verifies
+// runSerialConsoleAccess flips serial-console-access on then off and verifies
 // each transition with both the action-returned bool and a follow-up
 // get-status round-trip. Maps to run-e2e.sh ~166–202.
-func phase2b_SerialConsole(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 2b — Serial Console Access")
+func runSerialConsoleAccess(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Serial Console Access")
 
 	harness.Step(t, "default state should be disabled")
 	if got := harness.GetSerialConsoleAccessEnabled(t, fix.AWS); got {

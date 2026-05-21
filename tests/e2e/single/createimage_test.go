@@ -12,12 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5e_CreateImage builds a custom AMI from the running instance and
+// runCreateImage builds a custom AMI from the running instance and
 // records the backing snapshot ID so Phase 9 cleanup can delete the
 // snapshot before terminating the instance (otherwise DeleteOnTermination
 // trips over the still-referenced snapshot). Maps to run-e2e.sh ~805–844.
-func phase5e_CreateImage(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5e — CreateImage Lifecycle")
+func runCreateImage(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — CreateImage Lifecycle")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)

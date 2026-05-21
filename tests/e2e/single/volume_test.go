@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5b_VolumeLifecycle exercises create → modify → attach → detach →
+// runVolumeLifecycle exercises create → modify → attach → detach →
 // delete on a fresh 10 GiB volume against the running Phase 5 instance.
 // Maps to run-e2e.sh ~488–612.
-func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5b — Volume Lifecycle (Attach/Detach)")
+func runVolumeLifecycle(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Volume Lifecycle (Attach/Detach)")
 
 	az := needAZ(t, fix)
 	inst, _ := needInstance(t, fix)
@@ -133,10 +133,10 @@ func phase5b_VolumeLifecycle(t *testing.T, fix *Fixture) {
 	}, 2*time.Minute, 2*time.Second)
 }
 
-// phase5bii_VolumeStatus runs DescribeVolumeStatus against the root volume
+// runVolumeStatus runs DescribeVolumeStatus against the root volume
 // and asserts the response references it back. Maps to run-e2e.sh ~614–625.
-func phase5bii_VolumeStatus(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5b-ii — DescribeVolumeStatus")
+func runVolumeStatus(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — DescribeVolumeStatus")
 
 	_, rootVolumeID := needInstance(t, fix)
 

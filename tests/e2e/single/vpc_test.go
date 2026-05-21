@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase8b_VPCSubnetE2E ports run-e2e.sh Phase 8b (~2747-3496).
+// runVPCSubnetE2E ports run-e2e.sh Phase 8b (~2747-3496).
 //
 // The bash driver layers Phase 8b on top of the *default* VPC + IGW that
 // admin init prebakes, then leans on Phase 8d / 8e to share the public and
@@ -39,11 +39,11 @@ import (
 // VPC graph down in the correct order: instance -> wait terminated ->
 // disassociate route table -> delete route(s) -> delete route table ->
 // detach IGW -> delete IGW -> delete subnets -> delete VPC.
-func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
+func runVPCSubnetE2E(t *testing.T, fix *Fixture) {
 	if !fix.PoolMode {
 		t.Skip("Phase 8b requires pool-mode networking")
 	}
-	harness.Phase(t, "Phase 8b — VPC Public/Private Subnet E2E")
+	harness.Phase(t, "Single — VPC Public/Private Subnet E2E")
 
 	amiID := needAMI(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)
@@ -293,7 +293,7 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 	}
 }
 
-// phase8c_RouteTableValidation ports run-e2e.sh Phase 8c (~2626-2745).
+// runRouteTableValidation ports run-e2e.sh Phase 8c (~2626-2745).
 //
 // Validates route-table CRUD + invariants against the *default* VPC's main
 // route table (always runs — no pool-mode gating). Three sub-tests:
@@ -310,8 +310,8 @@ func phase8b_VPCSubnetE2E(t *testing.T, fix *Fixture) {
 //
 // Each step registers its own cleanup so a partial run still releases the
 // scratch route table / association regardless of which assertion fired.
-func phase8c_RouteTableValidation(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 8c — Route Table Validation")
+func runRouteTableValidation(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Route Table Validation")
 
 	c := fix.AWS
 

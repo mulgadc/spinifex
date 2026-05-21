@@ -26,7 +26,7 @@ systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
     /usr/bin/python3 -m http.server 8080 --bind 0.0.0.0
 `
 
-// phase8e_SGToSGDatapath validates the closed loop from RunInstances
+// runSGToSGDatapath validates the closed loop from RunInstances
 // (--security-group-ids) -> ENI -> vpcd -> OVN port group + ACL -> datapath
 // drop. Creates two SGs (client / target) with an SG-to-SG ingress rule for
 // tcp/8080, launches one VM in each, then exercises:
@@ -42,8 +42,8 @@ systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
 //
 // OVN gated — skipped on dev laptops without ovn-nbctl/sudo. Maps to
 // run-e2e.sh ~3188-3442.
-func phase8e_SGToSGDatapath(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 8e — Security Group SG-to-SG Datapath (OVN)")
+func runSGToSGDatapath(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Security Group SG-to-SG Datapath (OVN)")
 	harness.SkipIfNoOVN(t)
 
 	// Bootstrap every prereq up front. runSGEInstance / primaryENI use

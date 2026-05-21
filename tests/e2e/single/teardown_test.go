@@ -9,12 +9,12 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// phase9b_FinalClusterStats is a single-node sanity pass against `spx get
+// runFinalClusterStats is a single-node sanity pass against `spx get
 // vms`. Replaces the umbrella's phase9 + phase9a (deleted) — resource
 // cleanup is now owned by harness.Fixture.Close, invoked from TestMain
 // after every Test* in the package has run.
-func phase9b_FinalClusterStats(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 9b — Final Cluster Stats")
+func runFinalClusterStats(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Final Cluster Stats")
 	if fix.Env.Mode != harness.ModeSingle {
 		t.Skipf("Phase 9b is single-node only (mode=%s)", fix.Env.Mode)
 	}

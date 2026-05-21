@@ -104,12 +104,18 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			sum := sha256.Sum256(body)
 			bodyHash := hex.EncodeToString(sum[:])
 
-			if err := sig.Verify(secret, sig.Service, gw.Region,
+			if err := sig.Verify(secret, sig.Service, sig.Region,
 				auth.WithBodyHash(bodyHash)); err != nil {
-				slog.Warn("Auth failure: verification failed",
+				attrs := []any{
 					"accessKeyID", sig.AccessKeyID,
 					"sourceIP", clientIP,
-					"err", err)
+					"err", err,
+				}
+				var sme *auth.SigMismatchError
+				if errors.As(err, &sme) {
+					attrs = append(attrs, "expectedAuthHdr", sme.ExpectedAuthHdr, "providedAuthHdr", sme.ProvidedAuthHdr)
+				}
+				slog.Warn("Auth failure: verification failed", attrs...)
 				gw.RateLimiter.RecordFailure(clientIP)
 				gw.writeSigV4Error(w, r, verifySigV4ErrorCode(err))
 				return

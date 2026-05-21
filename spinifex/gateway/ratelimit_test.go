@@ -431,12 +431,10 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 	}
 
 	// Now send a valid request — should succeed and clear failure state.
-	authHeader, timestamp := generateTestAuthHeader("GET", "/", "", "", testAccessKey, testSecretKey, testRegion, testService)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	req.RemoteAddr = "10.99.0.2:54321"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 	if resp.StatusCode != http.StatusOK {

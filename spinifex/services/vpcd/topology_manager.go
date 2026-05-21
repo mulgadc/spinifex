@@ -14,6 +14,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
@@ -117,4 +118,52 @@ func (h *TopologyHandler) natManager() (policy.NATManager, error) {
 		h.natm, h.natmErr = policy.NewNATManager(h.ovn, mode, policy.WithFlowsBarrier(waitForFlowsHV))
 	})
 	return h.natm, h.natmErr
+}
+
+// igwManager returns the lazily-constructed external.IGWManager. Only the
+// static-pool / distributed-NAT IGW subscriber path goes through it; the
+// DHCP-coupled centralised path is held in attachIGWLegacy until bead
+// mulga-siv-125.3.3 removes the vpcd-local DHCP manager.
+func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
+	h.igwmOnce.Do(func() {
+		nm, err := h.natManager()
+		if err != nil {
+			h.igwmErr = err
+			return
+		}
+		mode := policy.NATModeDistributed
+		if h.useCentralizedNAT() {
+			mode = policy.NATModeCentralized
+		}
+		var poolCfg *external.ExternalPoolConfig
+		if p := h.findExternalPool("", ""); p != nil {
+			shared := external.ExternalPoolConfig{
+				Name:            p.Name,
+				Source:          p.Source,
+				RangeStart:      p.RangeStart,
+				RangeEnd:        p.RangeEnd,
+				Gateway:         p.Gateway,
+				GatewayIP:       p.GatewayIP,
+				PrefixLen:       p.PrefixLen,
+				DNSServers:      p.DNSServers,
+				Region:          p.Region,
+				AZ:              p.AZ,
+				DhcpBindBridge:  p.DhcpBindBridge,
+				GwLrpRangeStart: p.GwLrpRangeStart,
+				GwLrpRangeEnd:   p.GwLrpRangeEnd,
+			}
+			poolCfg = &shared
+		}
+		h.igwm, h.igwmErr = external.NewIGWManager(external.IGWManagerConfig{
+			OVN:          h.ovn,
+			Routes:       policy.NewRouteManager(h.ovn),
+			NAT:          nm,
+			Pool:         poolCfg,
+			Allocator:    external.NewStaticRangeAllocator(h.ovn),
+			Chassis:      h.chassisNames,
+			NATMode:      mode,
+			FlowsBarrier: waitForFlowsHV,
+		})
+	})
+	return h.igwm, h.igwmErr
 }

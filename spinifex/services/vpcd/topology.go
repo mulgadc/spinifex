@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
@@ -194,6 +195,14 @@ type TopologyHandler struct {
 	natmOnce sync.Once
 	natm     policy.NATManager
 	natmErr  error
+
+	// igwm + igwmOnce cache the external.IGWManager. Handler routes the
+	// static-pool / distributed branches through it; the DHCP-coupled
+	// centralised path keeps using attachIGWLegacy until bead
+	// mulga-siv-125.3.3 lands and the DHCP manager goes away.
+	igwmOnce sync.Once
+	igwm     external.IGWManager
+	igwmErr  error
 }
 
 // NewTopologyHandler creates a new TopologyHandler with optional external network config.
@@ -695,20 +704,59 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 
 // --- Internet Gateway (external connectivity + NAT) ---
 
+// handleIGWAttach decodes the event and chooses a path:
+//
+//   - Centralised NAT + DHCP-sourced pool: stays on attachIGWLegacy
+//     because the gateway LRP IP is allocated via vpc.dhcp.acquire, and
+//     that DHCP client lives in services/vpcd. Bead mulga-siv-125.3.3
+//     removes the DHCP manager; the legacy branch goes away then.
+//
+//   - All other cases (distributed NAT, static-range pool, no pool):
+//     delegate to external.IGWManager.AttachIGW. Behaviour is identical
+//     end-to-end — same external switch, same localnet port options,
+//     same gateway LRP networks, same default route, same chassis HA,
+//     same waitForFlowsHV tail barrier.
 func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt types.IGWEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.igw-attach event", "err", err)
 		respond(msg, err)
 		return
 	}
-
 	ctx := context.Background()
+
+	pool := h.findExternalPool("", "")
+	if pool != nil && pool.IsDHCP() && h.useCentralizedNAT() {
+		h.attachIGWLegacy(ctx, msg, evt, pool)
+		return
+	}
+
+	igw, err := h.igwManager()
+	if err != nil {
+		slog.Error("vpcd: IGW manager init failed", "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := igw.AttachIGW(ctx, external.IGWSpec{
+		VPCID:             evt.VpcId,
+		InternetGatewayID: evt.InternetGatewayId,
+	}); err != nil {
+		slog.Error("vpcd: AttachIGW failed",
+			"vpc_id", evt.VpcId, "igw_id", evt.InternetGatewayId, "err", err)
+		respond(msg, err)
+		return
+	}
+	respond(msg, nil)
+}
+
+// attachIGWLegacy is the DHCP-coupled centralised-NAT IGW attach path.
+// Kept inline until the vpcd-local DHCP manager goes away in bead
+// mulga-siv-125.3.3. The caller pre-resolved pool.
+func (h *TopologyHandler) attachIGWLegacy(ctx context.Context, msg *nats.Msg, evt types.IGWEvent, pool *ExternalPoolConfig) {
 	routerName := "vpc-" + evt.VpcId
 	extSwitchName := "ext-" + evt.VpcId
 	extPortName := "ext-port-" + evt.VpcId
@@ -779,7 +827,6 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	// ARP for the WAN nexthop (RFC 826) and the default route never
 	// resolves.
 	// TODO: use VPC's region/AZ once we track it; for now use first matching pool.
-	pool := h.findExternalPool("", "")
 	gatewayNetwork := gatewayPortNetwork
 	wanGateway := "169.254.0.2"
 	gwLrpIP := ""
@@ -915,78 +962,39 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
+// handleIGWDetach decodes the event, delegates the OVN teardown to
+// external.IGWManager.DetachIGW, and unconditionally calls
+// releaseGatewayLRPLease afterwards. The DHCP lease release stays here
+// because the upstream client lives in services/vpcd; both attach paths
+// (legacy + manager-driven) tear down through the same exit so we don't
+// need to branch.
 func (h *TopologyHandler) handleIGWDetach(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt types.IGWEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.igw-detach event", "err", err)
 		respond(msg, err)
 		return
 	}
-
 	ctx := context.Background()
-	routerName := "vpc-" + evt.VpcId
-	extSwitchName := "ext-" + evt.VpcId
-	extPortName := "ext-port-" + evt.VpcId
-	gwPortName := "gw-" + evt.VpcId
-	switchGWPortName := "gw-port-" + evt.VpcId
 
-	// 1. Delete default route
-	if err := h.ovn.DeleteStaticRoute(ctx, routerName, "0.0.0.0/0"); err != nil {
-		slog.Warn("vpcd: failed to delete default route", "router", routerName, "err", err)
-	}
-
-	// 2. Delete SNAT rule(s) for this IGW
-	// Find VPC CIDR for the SNAT rule
-	router, err := h.ovn.GetLogicalRouter(ctx, routerName)
+	igw, err := h.igwManager()
 	if err != nil {
-		slog.Warn("vpcd: failed to get router for NAT cleanup", "router", routerName, "err", err)
-	} else {
-		vpcCIDR := router.ExternalIDs["spinifex:cidr"]
-		if vpcCIDR == "" {
-			vpcCIDR = "10.0.0.0/8"
-			slog.Warn("vpcd: VPC CIDR missing from router metadata, using overbroad fallback for NAT cleanup",
-				"router", routerName, "fallbackCIDR", vpcCIDR)
-		}
-		if err := h.ovn.DeleteNAT(ctx, routerName, "snat", vpcCIDR); err != nil {
-			slog.Warn("vpcd: failed to delete SNAT rule", "router", routerName, "err", err)
-		}
-	}
-
-	// 3. Delete switch gateway port
-	if err := h.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, switchGWPortName); err != nil {
-		slog.Warn("vpcd: failed to delete switch gateway port", "port", switchGWPortName, "err", err)
-	}
-
-	// 4. Delete gateway router port
-	if err := h.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName); err != nil {
-		slog.Warn("vpcd: failed to delete gateway router port", "port", gwPortName, "err", err)
-	}
-
-	// 5. Delete localnet port
-	if err := h.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, extPortName); err != nil {
-		slog.Warn("vpcd: failed to delete localnet port", "port", extPortName, "err", err)
-	}
-
-	// 6. Delete external switch
-	if err := h.ovn.DeleteLogicalSwitch(ctx, extSwitchName); err != nil {
-		slog.Error("vpcd: failed to delete external switch", "switch", extSwitchName, "err", err)
+		slog.Error("vpcd: IGW manager init failed", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	// 7. Release any DHCP-acquired gateway LRP lease (mulga-siv-38). Best-
-	//    effort — upstream server expires the lease on its own if this fails.
+	if err := igw.DetachIGW(ctx, evt.VpcId); err != nil {
+		slog.Error("vpcd: DetachIGW failed", "vpc_id", evt.VpcId, "err", err)
+		respond(msg, err)
+		return
+	}
 	h.releaseGatewayLRPLease(evt.VpcId)
-
 	slog.Info("vpcd: detached internet gateway from VPC",
-		"igw_id", evt.InternetGatewayId,
-		"vpc_id", evt.VpcId,
-	)
+		"igw_id", evt.InternetGatewayId, "vpc_id", evt.VpcId)
 	respond(msg, nil)
 }
 

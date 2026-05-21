@@ -31,6 +31,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
 // Reconciler converges OVN NB DB to a declared IntentState. Implementations
@@ -42,12 +43,13 @@ type Reconciler interface {
 // Config is the construction-time bag for the reconciler. Every field
 // except Chassis is required.
 type Config struct {
-	OVN     ovn.Client
-	SG      policy.SecurityGroupManager
-	NAT     policy.NATManager
-	Routes  policy.RouteManager
-	IGW     external.IGWManager
-	LocalAZ string
+	OVN      ovn.Client
+	SG       policy.SecurityGroupManager
+	NAT      policy.NATManager
+	Routes   policy.RouteManager
+	IGW      external.IGWManager
+	Topology topology.Manager
+	LocalAZ  string
 	// NodeHostname is the holder identity stamped on the leader-election
 	// CAS row. Set to os.Hostname() in production.
 	NodeHostname string
@@ -58,14 +60,15 @@ type Config struct {
 }
 
 type reconciler struct {
-	ovn     ovn.Client
-	sg      policy.SecurityGroupManager
-	nat     policy.NATManager
-	routes  policy.RouteManager
-	igw     external.IGWManager
-	localAZ string
-	host    string
-	chassis []string
+	ovn      ovn.Client
+	sg       policy.SecurityGroupManager
+	nat      policy.NATManager
+	routes   policy.RouteManager
+	igw      external.IGWManager
+	topology topology.Manager
+	localAZ  string
+	host     string
+	chassis  []string
 }
 
 var _ Reconciler = (*reconciler)(nil)
@@ -84,18 +87,21 @@ func New(cfg Config) (Reconciler, error) {
 		return nil, errors.New("reconcile: RouteManager required")
 	case cfg.IGW == nil:
 		return nil, errors.New("reconcile: IGWManager required")
+	case cfg.Topology == nil:
+		return nil, errors.New("reconcile: Topology manager required")
 	case cfg.NodeHostname == "":
 		return nil, errors.New("reconcile: NodeHostname required")
 	}
 	return &reconciler{
-		ovn:     cfg.OVN,
-		sg:      cfg.SG,
-		nat:     cfg.NAT,
-		routes:  cfg.Routes,
-		igw:     cfg.IGW,
-		localAZ: cfg.LocalAZ,
-		host:    cfg.NodeHostname,
-		chassis: cfg.Chassis,
+		ovn:      cfg.OVN,
+		sg:       cfg.SG,
+		nat:      cfg.NAT,
+		routes:   cfg.Routes,
+		igw:      cfg.IGW,
+		topology: cfg.Topology,
+		localAZ:  cfg.LocalAZ,
+		host:     cfg.NodeHostname,
+		chassis:  cfg.Chassis,
 	}, nil
 }
 

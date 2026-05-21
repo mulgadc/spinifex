@@ -35,8 +35,9 @@ func newTestReconciler(t *testing.T) (*reconciler, *mock.Client) {
 	if err != nil {
 		t.Fatalf("NewIGWManager: %v", err)
 	}
+	topo := topology.NewLiveManager(m)
 	rec, err := New(Config{
-		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw,
+		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topo,
 		LocalAZ: "us-east-1a", NodeHostname: "test-host",
 	})
 	if err != nil {
@@ -171,8 +172,9 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 		Allocator: external.LinkLocalAllocator{},
 		NATMode:   policy.NATModeDistributed,
 	})
+	topo := topology.NewLiveManager(m)
 	rec, err := New(Config{
-		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw,
+		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topo,
 		LocalAZ: "us-east-1a", NodeHostname: "test-host",
 		Chassis: []string{"chassis-1", "chassis-2"},
 	})

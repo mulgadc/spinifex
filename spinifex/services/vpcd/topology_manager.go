@@ -89,6 +89,11 @@ func (h *TopologyHandler) DeleteSGPortGroup(ctx context.Context, groupID string)
 	return h.topologyManager().DeleteSGPortGroup(ctx, groupID)
 }
 
+// DeleteSGPortGroupByName removes the OVN port group given its raw name.
+func (h *TopologyHandler) DeleteSGPortGroupByName(ctx context.Context, pgName string) error {
+	return h.topologyManager().DeleteSGPortGroupByName(ctx, pgName)
+}
+
 // securityGroupManager returns the lazily-constructed policy SG manager
 // backed by the same OVN client as the live topology manager. Subscribers
 // use it to apply ACL sets against the SG's port group.

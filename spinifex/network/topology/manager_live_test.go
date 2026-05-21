@@ -201,6 +201,32 @@ func TestLiveManager_DeleteSGPortGroup(t *testing.T) {
 	}
 }
 
+func TestLiveManager_DeleteSGPortGroupByName(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+
+	pgName := SecurityGroupPortGroup("sg-del-byname")
+	if err := mockClient.CreatePortGroup(ctx, pgName, nil); err != nil {
+		t.Fatalf("seed port group: %v", err)
+	}
+	if err := mgr.DeleteSGPortGroupByName(ctx, pgName); err != nil {
+		t.Fatalf("DeleteSGPortGroupByName: %v", err)
+	}
+	if _, err := mockClient.GetPortGroup(ctx, pgName); err == nil {
+		t.Fatalf("port group still present after delete-by-name")
+	}
+
+	// Idempotent on already-absent.
+	if err := mgr.DeleteSGPortGroupByName(ctx, pgName); err != nil {
+		t.Fatalf("DeleteSGPortGroupByName second call: %v", err)
+	}
+
+	// Empty pgName rejected.
+	if err := mgr.DeleteSGPortGroupByName(ctx, ""); err == nil {
+		t.Fatalf("DeleteSGPortGroupByName: empty pgName must error")
+	}
+}
+
 func TestLiveManager_SetPortSecurityGroups(t *testing.T) {
 	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()

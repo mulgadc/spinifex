@@ -565,6 +565,7 @@ func launchService(cfg *Config) error {
 		NAT:          natMgr,
 		Routes:       routeMgr,
 		IGW:          igwMgr,
+		Topology:     topo,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,

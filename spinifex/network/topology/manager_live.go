@@ -364,13 +364,21 @@ func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) err
 // Reference-integrity dictates ClearACLs before DeletePortGroup — libovsdb
 // rejects deleting a port group with dangling ACL references.
 func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) error {
-	if m.ovn == nil {
-		return fmt.Errorf("OVN client not connected")
-	}
 	if groupID == "" {
 		return fmt.Errorf("DeleteSGPortGroup: empty groupID")
 	}
-	pgName := SecurityGroupPortGroup(groupID)
+	return m.DeleteSGPortGroupByName(ctx, SecurityGroupPortGroup(groupID))
+}
+
+// DeleteSGPortGroupByName is the raw-name variant of DeleteSGPortGroup. It
+// shares the same idempotency and ordering contract.
+func (m *liveManager) DeleteSGPortGroupByName(ctx context.Context, pgName string) error {
+	if m.ovn == nil {
+		return fmt.Errorf("OVN client not connected")
+	}
+	if pgName == "" {
+		return fmt.Errorf("DeleteSGPortGroupByName: empty pgName")
+	}
 	if _, err := m.ovn.GetPortGroup(ctx, pgName); err != nil {
 		if errors.Is(err, ovn.ErrPortGroupNotFound) {
 			return nil
@@ -383,7 +391,7 @@ func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) err
 	if err := m.ovn.DeletePortGroup(ctx, pgName); err != nil {
 		return fmt.Errorf("delete port group %s: %w", pgName, err)
 	}
-	slog.Info("topology: deleted SG port group", "pg", pgName, "group_id", groupID)
+	slog.Info("topology: deleted SG port group", "pg", pgName)
 	return nil
 }
 

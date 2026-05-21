@@ -132,20 +132,15 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 
 // applySGs runs the SG stage in two halves: first ensure every intent SG's
 // port group exists in OVN, then push the ACL set via the policy manager.
-// Orphan port groups (sg_* with no matching intent SG) are torn down.
-// Port group lifecycle remains the reconciler's responsibility until
-// topology.Manager grows EnsureSecurityGroupPortGroup / DeleteSGPortGroup
-// (parent plan §2.1 deferred to a follow-on bead).
+// Orphan port groups (sg_* with no matching intent SG) are torn down via
+// topology.Manager so port-group lifecycle is centralised in one place.
 func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual ActualState) {
 	for groupID, spec := range intent.SGs {
-		pgName := topology.SecurityGroupPortGroup(groupID)
-		if _, ok := actual.PortGroups[pgName]; !ok {
-			if err := r.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
-				slog.Error("reconcile/apply: create SG port group failed", "sg", groupID, "pg", pgName, "err", err)
-				continue
-			}
-			actual.PortGroups[pgName] = struct{}{}
+		if err := r.topology.EnsureSGPortGroup(ctx, groupID); err != nil {
+			slog.Error("reconcile/apply: EnsureSGPortGroup failed", "sg", groupID, "err", err)
+			continue
 		}
+		actual.PortGroups[topology.SecurityGroupPortGroup(groupID)] = struct{}{}
 		if err := r.sg.EnsureSG(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: EnsureSG failed", "sg", groupID, "err", err)
 		}
@@ -162,12 +157,8 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		if _, ok := wantPGs[pgName]; ok {
 			continue
 		}
-		if err := r.ovn.ClearACLs(ctx, pgName); err != nil {
-			slog.Warn("reconcile/apply: orphan ClearACLs failed", "pg", pgName, "err", err)
-			continue
-		}
-		if err := r.ovn.DeletePortGroup(ctx, pgName); err != nil {
-			slog.Warn("reconcile/apply: orphan DeletePortGroup failed", "pg", pgName, "err", err)
+		if err := r.topology.DeleteSGPortGroupByName(ctx, pgName); err != nil {
+			slog.Warn("reconcile/apply: orphan DeleteSGPortGroupByName failed", "pg", pgName, "err", err)
 			continue
 		}
 		delete(actual.PortGroups, pgName)

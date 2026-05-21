@@ -40,6 +40,11 @@ type Manager interface {
 	// OVN port-group row keyed by SecurityGroupPortGroup(groupID).
 	EnsureSGPortGroup(ctx context.Context, groupID string) error
 	DeleteSGPortGroup(ctx context.Context, groupID string) error
+
+	// DeleteSGPortGroupByName tears down a port group given its raw OVN
+	// name (e.g. "sg_abc"). Used by the reconciler's orphan-removal path,
+	// which iterates OVN port-group names without a groupID round-trip.
+	DeleteSGPortGroupByName(ctx context.Context, pgName string) error
 }
 
 // VPCSpec describes a VPC at L2. AZSlice is reserved for Phase 3 per-AZ CIDR

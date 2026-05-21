@@ -168,6 +168,16 @@ func startPredastoreServer(t *testing.T) *Config {
 	// once-per-process singleton.
 	quicclient.SetDefaultRootCAs(caPool)
 
+	// Predastore's in-process s3db REST client (port 6660) has no public
+	// hook to override its RootCAs — it uses the OS trust store via the
+	// default tls.Config (RootCAs nil ⇒ x509.SystemCertPool, which Go reads
+	// from SSL_CERT_FILE on Unix). Point it at the ephemeral cert so the
+	// in-process bucket/object metadata calls trust their own server.
+	// x509.SystemCertPool is sync.Once-cached, so the pool is loaded on
+	// the first dial below while SSL_CERT_FILE is still set, and stays
+	// valid for the rest of the process even after t.Setenv reverts.
+	t.Setenv("SSL_CERT_FILE", certPath)
+
 	// Predastore mandates a 32-byte master key at mode 0600 (rejected otherwise
 	// by internal/keyfile.Load).
 	encryptionKeyPath := filepath.Join(testDir, "encryption.key")

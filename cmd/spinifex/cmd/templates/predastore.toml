@@ -51,19 +51,19 @@ secret_access_key = "{{.SecretKey}}"
 # Using distributed hash ring for object > shard placement.
 [[nodes]]
 id = 1
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 9991
 path = "distributed/nodes/node-1/"
 
 [[nodes]]
 id = 2
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 9992
 path = "distributed/nodes/node-2/"
 
 [[nodes]]
 id = 3
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 9993
 path = "distributed/nodes/node-3/"
 

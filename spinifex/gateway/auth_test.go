@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -114,67 +118,13 @@ func init() {
 	}
 }
 
-// generateTestAuthHeader creates a valid AWS SigV4 Authorization header for testing.
-func generateTestAuthHeader(method, path, queryString, body, accessKey, secretKey, region, service string) (authHeader, timestamp string) {
-	now := time.Now().UTC()
-	timestamp = now.Format(auth.TimeFormat)
-	date := now.Format(auth.ShortTimeFormat)
-
-	// Build canonical URI
-	canonicalURI := auth.UriEncode(path, false)
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-
-	// Build canonical query string
-	canonicalQueryString := buildCanonicalQueryString(queryString)
-
-	// Build canonical headers
-	host := "localhost:9999"
-	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-date:%s\n", host, timestamp)
-	signedHeaders := "host;x-amz-date"
-
-	// Hash payload
-	payloadHash := auth.HashSHA256(body)
-
-	// Build canonical request
-	canonicalRequest := fmt.Sprintf(
-		"%s\n%s\n%s\n%s\n%s\n%s",
-		method,
-		canonicalURI,
-		canonicalQueryString,
-		canonicalHeaders,
-		signedHeaders,
-		payloadHash,
-	)
-
-	hashedCanonicalRequest := auth.HashSHA256(canonicalRequest)
-
-	// Build string-to-sign
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
-	stringToSign := fmt.Sprintf(
-		"AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		timestamp,
-		scope,
-		hashedCanonicalRequest,
-	)
-
-	// Derive signing key and compute signature
-	signingKey := auth.GetSigningKey(secretKey, date, region, service)
-	signature := auth.HmacSHA256Hex(signingKey, stringToSign)
-
-	// Build Authorization header
-	authHeader = fmt.Sprintf(
-		"AWS4-HMAC-SHA256 Credential=%s/%s/%s/%s/aws4_request, SignedHeaders=%s, Signature=%s",
-		accessKey,
-		date,
-		region,
-		service,
-		signedHeaders,
-		signature,
-	)
-
-	return authHeader, timestamp
+// signTestRequest signs req in place. body must match what the middleware will read from r.Body —
+// its sha256 populates X-Amz-Content-Sha256.
+func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, optFns ...func(*auth.Options)) {
+	t.Helper()
+	sum := sha256.Sum256(body)
+	require.NoError(t, auth.SignReq(req, accessKey, secret,
+		hex.EncodeToString(sum[:]), testService, testRegion, optFns...))
 }
 
 func setupTestApp(accessKey, secretKey string) http.Handler {
@@ -247,7 +197,7 @@ func TestSigV4Auth_MalformedHeader(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
 			req.Header.Set("Authorization", tc.authHeader)
-			req.Header.Set("X-Amz-Date", time.Now().UTC().Format(auth.TimeFormat))
+			req.Header.Set("X-Amz-Date", time.Now().UTC().Format("20060102T150405Z"))
 
 			resp := doRequest(handler, req)
 
@@ -266,15 +216,9 @@ func TestSigV4Auth_MalformedHeader(t *testing.T) {
 func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		"INVALID_ACCESS_KEY", testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, "INVALID_ACCESS_KEY", testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -291,16 +235,9 @@ func TestSigV4Auth_InvalidAccessKey(t *testing.T) {
 func TestSigV4Auth_InvalidSignature(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// Generate auth header with wrong secret key
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, "WRONG_SECRET_KEY", testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, "WRONG_SECRET_KEY")
 
 	resp := doRequest(handler, req)
 
@@ -317,15 +254,9 @@ func TestSigV4Auth_InvalidSignature(t *testing.T) {
 func TestSigV4Auth_ValidSignature(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -338,17 +269,11 @@ func TestSigV4Auth_ValidSignature(t *testing.T) {
 func TestSigV4Auth_ValidSignatureWithBody(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	body := "Action=DescribeInstances&Version=2016-11-15"
-	authHeader, timestamp := generateTestAuthHeader(
-		"POST", "/", "", body,
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	body := []byte("Action=DescribeInstances&Version=2016-11-15")
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signTestRequest(t, req, body, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -362,15 +287,9 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	queryString := "Action=DescribeInstances&Version=2016-11-15"
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", queryString, "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/?"+queryString, nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -410,15 +329,9 @@ func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -445,15 +358,9 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -499,54 +406,6 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 	}
 }
 
-func TestBuildCanonicalQueryString(t *testing.T) {
-	testCases := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"empty", "", ""},
-		{"single param", "Action=Test", "Action=Test"},
-		{"multiple params sorted", "Version=1&Action=Test", "Action=Test&Version=1"},
-		{"encoded values", "Name=Hello World", "Name=Hello%20World"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := buildCanonicalQueryString(tc.input)
-			if result != tc.expected {
-				t.Errorf("Expected %q, got %q", tc.expected, result)
-			}
-		})
-	}
-}
-
-func TestBuildCanonicalQueryString_EdgeCases(t *testing.T) {
-	testCases := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"empty value", "key=", "key="},
-		{"param with multiple equals", "key=a=b", "key=a%3Db"},
-		{"duplicate keys sorted by value", "x=b&x=a", "x=a&x=b"},
-		{"unicode in value", "name=café", "name=caf%C3%A9"},
-		{"unicode in key", "clé=val", "cl%C3%A9=val"},
-		{"long query string", "a=" + strings.Repeat("x", 500), "a=" + strings.Repeat("x", 500)},
-		{"no value (key only)", "key", "key="},
-		{"empty pair skipped", "a=1&&b=2", "a=1&b=2"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := buildCanonicalQueryString(tc.input)
-			if result != tc.expected {
-				t.Errorf("Expected %q, got %q", tc.expected, result)
-			}
-		})
-	}
-}
-
 func TestSigV4Auth_DecryptFailure(t *testing.T) {
 	// Encrypt secret with a DIFFERENT master key so decryption fails
 	otherKey, err := handlers_iam.GenerateMasterKey()
@@ -582,15 +441,9 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -608,17 +461,11 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	// Create a body that exceeds maxBodySize (10 MB + 1 byte)
-	oversizedBody := strings.Repeat("x", maxBodySize+1)
-	authHeader, timestamp := generateTestAuthHeader(
-		"POST", "/", "", oversizedBody,
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(oversizedBody))
+	oversizedBody := []byte(strings.Repeat("x", maxBodySize+1))
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signTestRequest(t, req, oversizedBody, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -632,113 +479,6 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	}
 }
 
-func TestCanonicalHeaderName(t *testing.T) {
-	testCases := []struct {
-		input    string
-		expected string
-	}{
-		{"host", "Host"},
-		{"x-amz-date", "X-Amz-Date"},
-		{"content-type", "Content-Type"},
-		{"x-amz-security-token", "X-Amz-Security-Token"},
-		{"authorization", "Authorization"},
-		{"", ""},
-		{"Host", "Host"},             // already canonical (no-op for uppercase first char)
-		{"X-Amz-Date", "X-Amz-Date"}, // already canonical
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.input, func(t *testing.T) {
-			result := canonicalHeaderName(tc.input)
-			if result != tc.expected {
-				t.Errorf("Expected %q, got %q", tc.expected, result)
-			}
-		})
-	}
-}
-
-// generateTestAuthHeaderAt creates a valid AWS SigV4 Authorization header at a specific time.
-func generateTestAuthHeaderAt(method, path, queryString, body, accessKey, secretKey, region, service string, at time.Time) (authHeader, timestamp string) {
-	timestamp = at.Format(auth.TimeFormat)
-	date := at.Format(auth.ShortTimeFormat)
-
-	canonicalURI := auth.UriEncode(path, false)
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-
-	canonicalQueryString := buildCanonicalQueryString(queryString)
-
-	host := "localhost:9999"
-	canonicalHeaders := fmt.Sprintf("host:%s\nx-amz-date:%s\n", host, timestamp)
-	signedHeaders := "host;x-amz-date"
-	payloadHash := auth.HashSHA256(body)
-
-	canonicalRequest := fmt.Sprintf(
-		"%s\n%s\n%s\n%s\n%s\n%s",
-		method, canonicalURI, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash,
-	)
-
-	hashedCanonicalRequest := auth.HashSHA256(canonicalRequest)
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s", timestamp, scope, hashedCanonicalRequest)
-
-	signingKey := auth.GetSigningKey(secretKey, date, region, service)
-	signature := auth.HmacSHA256Hex(signingKey, stringToSign)
-
-	authHeader = fmt.Sprintf(
-		"AWS4-HMAC-SHA256 Credential=%s/%s/%s/%s/aws4_request, SignedHeaders=%s, Signature=%s",
-		accessKey, date, region, service, signedHeaders, signature,
-	)
-	return authHeader, timestamp
-}
-
-// generateTestAuthHeaderWithSignedHeaders creates a SigV4 header with custom signed headers.
-func generateTestAuthHeaderWithSignedHeaders(method, path, queryString, body, accessKey, secretKey, region, service string, headers map[string]string, signedHeadersList string) (authHeader, timestamp string) {
-	now := time.Now().UTC()
-	timestamp = now.Format(auth.TimeFormat)
-	date := now.Format(auth.ShortTimeFormat)
-
-	canonicalURI := auth.UriEncode(path, false)
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-
-	canonicalQueryString := buildCanonicalQueryString(queryString)
-
-	// Build canonical headers from the signed headers list
-	headerNames := strings.Split(signedHeadersList, ";")
-	var canonicalHeaders strings.Builder
-	for _, h := range headerNames {
-		h = strings.TrimSpace(h)
-		value := headers[h]
-		canonicalHeaders.WriteString(h)
-		canonicalHeaders.WriteString(":")
-		canonicalHeaders.WriteString(value)
-		canonicalHeaders.WriteString("\n")
-	}
-
-	payloadHash := auth.HashSHA256(body)
-
-	canonicalRequest := fmt.Sprintf(
-		"%s\n%s\n%s\n%s\n%s\n%s",
-		method, canonicalURI, canonicalQueryString, canonicalHeaders.String(), signedHeadersList, payloadHash,
-	)
-
-	hashedCanonicalRequest := auth.HashSHA256(canonicalRequest)
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s", timestamp, scope, hashedCanonicalRequest)
-
-	signingKey := auth.GetSigningKey(secretKey, date, region, service)
-	signature := auth.HmacSHA256Hex(signingKey, stringToSign)
-
-	authHeader = fmt.Sprintf(
-		"AWS4-HMAC-SHA256 Credential=%s/%s/%s/%s/aws4_request, SignedHeaders=%s, Signature=%s",
-		accessKey, date, region, service, signedHeadersList, signature,
-	)
-	return authHeader, timestamp
-}
-
 // --- Clock Skew / Replay Protection Tests ---
 
 func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
@@ -746,15 +486,9 @@ func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 
 	// 6 minutes in the past — exceeds the 5-minute maxClockSkew
 	past := time.Now().UTC().Add(-6 * time.Minute)
-	authHeader, timestamp := generateTestAuthHeaderAt(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService, past,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(past))
 
 	resp := doRequest(handler, req)
 
@@ -773,15 +507,9 @@ func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 
 	// 6 minutes in the future — exceeds the 5-minute maxClockSkew
 	future := time.Now().UTC().Add(6 * time.Minute)
-	authHeader, timestamp := generateTestAuthHeaderAt(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService, future,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(future))
 
 	resp := doRequest(handler, req)
 
@@ -800,15 +528,9 @@ func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 
 	// 4 minutes ago — within the 5-minute window
 	recent := time.Now().UTC().Add(-4 * time.Minute)
-	authHeader, timestamp := generateTestAuthHeaderAt(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService, recent,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(recent))
 
 	resp := doRequest(handler, req)
 
@@ -838,15 +560,9 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			at := time.Now().UTC().Add(tc.offset)
-			authHeader, timestamp := generateTestAuthHeaderAt(
-				"GET", "/", "", "",
-				testAccessKey, testSecretKey, testRegion, testService, at,
-			)
-
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			req.Header.Set("Authorization", authHeader)
-			req.Header.Set("X-Amz-Date", timestamp)
+			signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(at))
 
 			resp := doRequest(handler, req)
 
@@ -864,15 +580,10 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	authHeader, _ := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	// Deliberately omit X-Amz-Date
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	req.Header.Del("X-Amz-Date")
 
 	resp := doRequest(handler, req)
 
@@ -889,14 +600,9 @@ func TestSigV4Auth_MissingXAmzDate(t *testing.T) {
 func TestSigV4Auth_MalformedTimestamp(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	authHeader, _ := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 	req.Header.Set("X-Amz-Date", "not-a-valid-date")
 
 	resp := doRequest(handler, req)
@@ -1022,15 +728,9 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 		)
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1106,14 +806,9 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	})
 
 	// First request as alice
-	authHeader1, timestamp1 := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
 	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req1.Host = "localhost:9999"
-	req1.Header.Set("Authorization", authHeader1)
-	req1.Header.Set("X-Amz-Date", timestamp1)
+	signTestRequest(t, req1, nil, testAccessKey, testSecretKey)
 
 	resp1 := doRequest(r, req1)
 	body1, _ := io.ReadAll(resp1.Body)
@@ -1122,14 +817,9 @@ func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
 	}
 
 	// Second request as bob
-	authHeader2, timestamp2 := generateTestAuthHeader(
-		"GET", "/", "", "",
-		secondKey, testSecretKey, testRegion, testService,
-	)
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req2.Host = "localhost:9999"
-	req2.Header.Set("Authorization", authHeader2)
-	req2.Header.Set("X-Amz-Date", timestamp2)
+	signTestRequest(t, req2, nil, secondKey, testSecretKey)
 
 	resp2 := doRequest(r, req2)
 	body2, _ := io.ReadAll(resp2.Body)
@@ -1154,15 +844,9 @@ func TestSigV4Auth_LookupAccessKeyUnexpectedError(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1182,26 +866,19 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	testCases := []struct {
-		name     string
-		signPath string // decoded path used for signing
-		reqPath  string // percent-encoded path for the HTTP request line
+		name    string
+		reqPath string
 	}{
-		{"encoded space", "/my resource", "/my%20resource"},
-		{"nested slashes", "/a/b/c/d", "/a/b/c/d"},
-		{"trailing slash", "/path/", "/path/"},
+		{"encoded space", "/my%20resource"},
+		{"nested slashes", "/a/b/c/d"},
+		{"trailing slash", "/path/"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			authHeader, timestamp := generateTestAuthHeader(
-				"GET", tc.signPath, "", "",
-				testAccessKey, testSecretKey, testRegion, testService,
-			)
-
 			req := httptest.NewRequest(http.MethodGet, tc.reqPath, nil)
 			req.Host = "localhost:9999"
-			req.Header.Set("Authorization", authHeader)
-			req.Header.Set("X-Amz-Date", timestamp)
+			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 			resp := doRequest(handler, req)
 
@@ -1244,26 +921,11 @@ func TestSigV4Auth_SignedContentType(t *testing.T) {
 		w.Write([]byte("OK"))
 	})
 
-	body := "Action=DescribeInstances"
-	headers := map[string]string{
-		"content-type": "application/x-www-form-urlencoded",
-		"host":         "localhost:9999",
-	}
-
-	// Include content-type in signed headers
-	now := time.Now().UTC()
-	headers["x-amz-date"] = now.Format(auth.TimeFormat)
-	authHeader, timestamp := generateTestAuthHeaderWithSignedHeaders(
-		"POST", "/", "", body,
-		testAccessKey, testSecretKey, testRegion, testService,
-		headers, "content-type;host;x-amz-date",
-	)
-
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	body := []byte("Action=DescribeInstances")
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signTestRequest(t, req, body, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 
@@ -1277,15 +939,9 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
 	// POST with empty body — payload hash is hash of ""
-	authHeader, timestamp := generateTestAuthHeader(
-		"POST", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1295,87 +951,14 @@ func TestSigV4Auth_EmptyBodyPOST(t *testing.T) {
 	}
 }
 
-// --- computeSignatureWithSecret Direct Unit Tests ---
-
-// TestComputeSignatureWithSecret_MethodSensitivity pins the contract that
-// the HTTP method participates in the canonical request: changing the method
-// (with all other inputs fixed) must change the signature. Catches a
-// regression class where method is dropped from the canonical-string
-// composition — signing would silently collapse across methods.
-func TestComputeSignatureWithSecret_MethodSensitivity(t *testing.T) {
-	secret := "test-secret-key"
-	date := "20260305"
-	timestamp := "20260305T120000Z"
-	region := "us-east-1"
-	service := "ec2"
-	signedHeaders := "host;x-amz-date"
-
-	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
-	signatures := make(map[string]string, len(methods))
-
-	for _, method := range methods {
-		req := httptest.NewRequest(method, "/", nil)
-		req.Host = "localhost:9999"
-		req.Header.Set("X-Amz-Date", timestamp)
-
-		signatures[method] = computeSignatureWithSecret(req, nil, secret, date, timestamp, region, service, signedHeaders)
-	}
-
-	for i, m1 := range methods {
-		for _, m2 := range methods[i+1:] {
-			if signatures[m1] == signatures[m2] {
-				t.Errorf("methods %s and %s produced the same signature (method missing from canonical request?)", m1, m2)
-			}
-		}
-	}
-}
-
-func TestComputeSignatureWithSecret_Determinism(t *testing.T) {
-	secret := "test-secret-key"
-	date := "20260305"
-	timestamp := "20260305T120000Z"
-	region := "us-east-1"
-	service := "ec2"
-	signedHeaders := "host;x-amz-date"
-	body := []byte("Action=DescribeInstances")
-
-	var first string
-	for i := range 10 {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		req.Host = "localhost:9999"
-		req.Header.Set("X-Amz-Date", timestamp)
-
-		sig := computeSignatureWithSecret(req, body, secret, date, timestamp, region, service, signedHeaders)
-		if i == 0 {
-			first = sig
-		} else if sig != first {
-			t.Fatalf("Signature not deterministic: iteration %d got %q, expected %q", i, sig, first)
-		}
-	}
-}
-
-func TestComputeSignatureWithSecret_MultipartContentType(t *testing.T) {
+func TestSigV4Auth_MultipartContentType(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	body := "Action=DescribeInstances"
-	headers := map[string]string{
-		"content-type": "multipart/form-data; boundary=something",
-		"host":         "localhost:9999",
-	}
-
-	now := time.Now().UTC()
-	headers["x-amz-date"] = now.Format(auth.TimeFormat)
-	authHeader, timestamp := generateTestAuthHeaderWithSignedHeaders(
-		"POST", "/", "", body,
-		testAccessKey, testSecretKey, testRegion, testService,
-		headers, "content-type;host;x-amz-date",
-	)
-
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	body := []byte("Action=DescribeInstances")
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=something")
+	signTestRequest(t, req, body, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1399,15 +982,9 @@ func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			authHeader, timestamp := generateTestAuthHeader(
-				"GET", "/", tc.queryString, "",
-				testAccessKey, testSecretKey, testRegion, testService,
-			)
-
 			req := httptest.NewRequest(http.MethodGet, "/?"+tc.queryString, nil)
 			req.Host = "localhost:9999"
-			req.Header.Set("Authorization", authHeader)
-			req.Header.Set("X-Amz-Date", timestamp)
+			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 			resp := doRequest(handler, req)
 
@@ -1492,15 +1069,9 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1558,15 +1129,9 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1624,15 +1189,9 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1691,15 +1250,9 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1739,15 +1292,9 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1789,15 +1336,9 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1841,15 +1382,9 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 
 	handler := setupPolicyTestHandler(gw)
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
-
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(handler, req)
 
@@ -1889,16 +1424,11 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			authHeader, timestamp := generateTestAuthHeader(
-				"GET", "/", "", "",
-				testAccessKey, testSecretKey, testRegion, testService,
-			)
-			authHeader = rewriteSignedHeaders(authHeader, tc.signedList)
-
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			req.Host = "localhost:9999"
-			req.Header.Set("Authorization", authHeader)
-			req.Header.Set("X-Amz-Date", timestamp)
+			signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+			req.Header.Set("Authorization",
+				rewriteSignedHeaders(req.Header.Get("Authorization"), tc.signedList))
 
 			resp := doRequest(handler, req)
 
@@ -1914,35 +1444,8 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 	}
 }
 
-func TestSignedHeadersIncludeHostAndDate(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"host;x-amz-date", true},
-		{"content-type;host;x-amz-date", true},
-		{"Host;X-Amz-Date", true},
-		{" host ; x-amz-date ", true},
-		{"x-amz-date", false},
-		{"host", false},
-		{"content-type", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			got := signedHeadersIncludeHostAndDate(tc.in)
-			if got != tc.want {
-				t.Errorf("signedHeadersIncludeHostAndDate(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestSigV4Auth_NATSDisconnectedShortCircuit verifies that the SigV4 middleware
-// returns the cluster-unavailable 503 promised by 1c without ever reaching the
-// IAM lookup when the NATS connection is disconnected. With IAMService nil the
-// post-lookup path would return 500 InternalError, so a 503 here proves the
-// short-circuit fired before the lookup.
+// With IAMService nil the post-lookup path would return 500 InternalError, so a 503
+// here proves the disconnected-NATS short-circuit fired before the lookup.
 func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	ns, _ := testutil.StartTestNATS(t)
 	nc, err := nats.Connect(ns.ClientURL())
@@ -1964,14 +1467,9 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 		_, _ = w.Write([]byte("OK"))
 	})
 
-	authHeader, timestamp := generateTestAuthHeader(
-		"GET", "/", "", "",
-		testAccessKey, testSecretKey, testRegion, testService,
-	)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	req.Header.Set("Authorization", authHeader)
-	req.Header.Set("X-Amz-Date", timestamp)
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
 
 	resp := doRequest(r, req)
 

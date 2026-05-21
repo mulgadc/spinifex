@@ -11,15 +11,15 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// phase1_Preflight is the Go port of `Phase 1: Pre-flight Validation`
+// runPreflight is the Go port of pre-flight validation
 // (run-multinode-e2e.sh:394-423). Two checks:
 //   - /dev/kvm exists and is writable on the local node (we run on node1).
 //   - SSH to every peer node succeeds with `hostname`.
 //
-// Failing this phase exposes a misconfigured VM image or broken peer
-// networking before any AWS API churn.
-func phase1_Preflight(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 1 — Pre-flight")
+// Failing this exposes a misconfigured VM image or broken peer networking
+// before any AWS API churn.
+func runPreflight(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Pre-flight")
 
 	harness.Step(t, "verify /dev/kvm")
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)

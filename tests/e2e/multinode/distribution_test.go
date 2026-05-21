@@ -9,15 +9,15 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// phase3_InstanceDistribution is the Go port of phase 3 from
-// run-multinode-e2e.sh:513-623. Launches a trio of instances and checks
-// at least two cluster nodes host them. Distribution is non-deterministic
+// runInstanceDistribution is the Go port of instance lifecycle + distribution
+// (run-multinode-e2e.sh:513-623). Launches a trio of instances and checks at
+// least two cluster nodes host them. Distribution is non-deterministic
 // (scheduler may stack on one node under load) so the bash version
-// warns-not-fails when all three land on the same host. The Go port
-// mirrors: minNodes=1 fatal, log "spread=N" so flaky CI surfaces in
-// metrics without blocking the run.
-func phase3_InstanceDistribution(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 3 — Instance Lifecycle + Distribution")
+// warns-not-fails when all three land on the same host. The Go port mirrors:
+// minNodes=1 fatal, log "spread=N" so flaky CI surfaces in metrics without
+// blocking the run.
+func runInstanceDistribution(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Instance Distribution")
 
 	ids := needInstanceTrio(t, fix)
 	harness.Detail(t, "instances", ids)

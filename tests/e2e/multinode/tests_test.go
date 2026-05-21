@@ -4,62 +4,97 @@ package multinode
 
 import "testing"
 
-// Top-level Test* wrappers — one per bash phase. Each delegates to a
-// phaseN_X function in the matching <phase>_test.go file. Names follow
-// the single-node convention (TestX, no numeric prefix) so isolated
-// runs via `go test -run TestMultinodeClusterHealth` are stable.
+// Top-level Test* wrappers. Each delegates to a runX function in the matching
+// <name>_test.go file. Names follow the single-node convention (TestX) so
+// isolated runs via `go test -run TestMultinodeClusterHealth` are stable.
+//
+// Spread placement + NAT GW (formerly bash phase 11) lives in
+// placement_nat_test.go as a single TestMultinodeSpread with 6 t.Run
+// sub-tests sharing one VPC + bastion + private trio + NAT GW setup chain.
+// Sub-test layout keeps JUnit granularity without paying 6× setup cost.
+//
+// Parallelism (mulga-siv-127 Stage J):
+//
+// Bucket #1 (parallel): the read-only / independent Tests below call
+// t.Parallel(). They share the package-singleton trio (sync.Once gated) and
+// the harness Fixture but never mutate it — DescribeInstances / SSH probe /
+// VPC creation in independent CIDR space.
+//
+// Sequential (no t.Parallel — would race the parallel bucket):
+//   - TestMultinodePreflight             : runs first; initialises pkg fixture.
+//   - TestMultinodeVolumeLifecycle       : touches predastore state.
+//   - TestMultinodeCrossNodeGateway      : asserts equality between baseline
+//     DescribeInstances and per-gateway DescribeInstances; concurrent VPC
+//     test launches/terminates instances mid-assert, breaking equality.
+//     Bead spec listed it in bucket #1 but the snapshot assumption fails
+//     under parallel state churn; keep sequential.
+//   - TestMultinodeCrossNodeOps          : stops/starts trio[0], would race
+//     TestMultinodeGuestSSH which iterates every trio member. Bead spec
+//     listed it in bucket #1 but the trio mutation makes that unsafe;
+//     keep sequential until bucket #3 reworks shared-state ownership.
+//   - TestMultinodeNodeFailure/Recovery  : StopNode/StartNode mutate cluster.
+//   - TestMultinodeSpread                : owns EIP pool + VPC CIDR
+//     10.100.0.0/16; sub-tests share the setup chain sequentially.
 
-// TestMultinodePreflight maps to phase 1 of run-multinode-e2e.sh.
+// TestMultinodePreflight runs sequentially because it initialises the
+// package fixture singleton.
 func TestMultinodePreflight(t *testing.T) {
-	phase1_Preflight(t, requireMultiNodeFixture(t))
+	runPreflight(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeClusterHealth maps to phase 2.
 func TestMultinodeClusterHealth(t *testing.T) {
-	phase2_ClusterHealth(t, requireMultiNodeFixture(t))
+	t.Parallel()
+	runClusterHealth(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeInstanceDistribution maps to phase 3.
 func TestMultinodeInstanceDistribution(t *testing.T) {
-	phase3_InstanceDistribution(t, requireMultiNodeFixture(t))
+	t.Parallel()
+	runInstanceDistribution(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeGuestSSH maps to phase 4.
 func TestMultinodeGuestSSH(t *testing.T) {
-	phase4_GuestSSH(t, requireMultiNodeFixture(t))
+	t.Parallel()
+	runGuestSSH(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeVolumeLifecycle maps to phase 5.
+// TestMultinodeVolumeLifecycle is sequential — touches predastore state
+// shared with other suites.
 func TestMultinodeVolumeLifecycle(t *testing.T) {
-	phase5_VolumeLifecycle(t, requireMultiNodeFixture(t))
+	runVolumeLifecycle(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeCrossNodeGateway maps to phase 6.
+// TestMultinodeCrossNodeGateway is sequential — asserts a stable
+// instance-count snapshot across gateways, which the parallel VPC test
+// would break by launching/terminating its own instances mid-assert.
 func TestMultinodeCrossNodeGateway(t *testing.T) {
-	phase6_CrossNodeGateway(t, requireMultiNodeFixture(t))
+	runCrossNodeGateway(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeCrossNodeOps maps to phase 7.
+// TestMultinodeCrossNodeOps is sequential — stops/starts trio[0], which
+// would race TestMultinodeGuestSSH.
 func TestMultinodeCrossNodeOps(t *testing.T) {
-	phase7_CrossNodeOps(t, requireMultiNodeFixture(t))
+	runCrossNodeOps(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeNodeFailure maps to phase 8.
 func TestMultinodeNodeFailure(t *testing.T) {
-	phase8_NodeFailure(t, requireMultiNodeFixture(t))
+	runNodeFailure(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeNodeRecovery maps to phase 9.
 func TestMultinodeNodeRecovery(t *testing.T) {
-	phase9_NodeRecovery(t, requireMultiNodeFixture(t))
+	runNodeRecovery(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeVPCNetworking maps to phase 10.
+// TestMultinodeSpread runs after NodeRecovery so the cluster is fully
+// healthy + degrade-tested before this Test launches its 4-VM + NAT GW +
+// custom-VPC graph. Sequential — owns 10.100.0.0/16 + EIP pool; sub-tests
+// share the setup chain (see placement_nat_test.go).
+func TestMultinodeSpread(t *testing.T) {
+	runSpread(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeVPCNetworking owns its own 10.200.0.0/16 VPC (no EIP use)
+// so it's safe alongside bucket #1.
 func TestMultinodeVPCNetworking(t *testing.T) {
-	phase10_VPCNetworking(t, requireMultiNodeFixture(t))
-}
-
-// TestMultinodePlacementAndNAT maps to phase 11.
-func TestMultinodePlacementAndNAT(t *testing.T) {
-	phase11_PlacementAndNATGateway(t, requireMultiNodeFixture(t))
+	t.Parallel()
+	runVPCNetworking(t, requireMultiNodeFixture(t))
 }

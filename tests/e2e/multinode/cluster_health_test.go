@@ -9,16 +9,16 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// phase2_ClusterHealth is the Go port of `Phase 2: Cluster Health`
+// runClusterHealth is the Go port of cluster health checks
 // (run-multinode-e2e.sh:426-510). Verifies the four mesh services
 // (NATS, Predastore, gateway, daemon) are healthy on every node and
 // the `spx get` CLI agrees the cluster is formed.
 //
 // Bash version uses `pass_test` / `fail_test` to accumulate per-check
 // pass counts; the Go port lets each failing sub-check fail the whole
-// test (t.Fatalf) — a single dead node should fail the phase fast.
-func phase2_ClusterHealth(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 2 — Cluster Health")
+// test (t.Fatalf) — a single dead node should fail fast.
+func runClusterHealth(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Cluster Health")
 
 	harness.Step(t, "NATS unique peers >= 2 per node")
 	fix.Cluster.WaitNATSPeers(t, 2)

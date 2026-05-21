@@ -45,8 +45,9 @@ func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	return harness.EnsureKeyPair(t, fix.Harness, fix.Artifacts)
 }
 
-// Package-scoped trio. Phase 3 launches; phases 4–7 reuse the same IDs.
-// Mirrors the iam_helpers_test sync.Once pattern from tests/e2e/single.
+// Package-scoped trio. runInstanceDistribution launches; runGuestSSH /
+// runCrossNodeGateway / runCrossNodeOps / runVolumeLifecycle reuse the same
+// IDs. Mirrors the iam_helpers_test sync.Once pattern from tests/e2e/single.
 var (
 	trioOnce sync.Once
 	trioIDs  []string

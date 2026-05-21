@@ -14,13 +14,13 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// phase4_GuestSSH is the Go port of phase 4 from run-multinode-e2e.sh:
-// 626-728. For every instance in the trio, resolve an SSH endpoint
-// (PublicIpAddress or hosting-node hostfwd), wait until SSH answers,
-// and assert `id` reports ec2-user. Also runs `lsblk` as a smoke probe
-// for the root-device wiring.
-func phase4_GuestSSH(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 4 — Guest SSH")
+// runGuestSSH is the Go port of guest SSH probes
+// (run-multinode-e2e.sh:626-728). For every instance in the trio, resolve an
+// SSH endpoint (PublicIpAddress or hosting-node hostfwd), wait until SSH
+// answers, and assert `id` reports ec2-user. Also runs `lsblk` as a smoke
+// probe for the root-device wiring.
+func runGuestSSH(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Guest SSH")
 
 	ids := needInstanceTrio(t, fix)
 	_, pemPath := needKeyPair(t, fix)

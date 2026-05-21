@@ -17,18 +17,17 @@ import (
 // IPs must come from 10.200.1.0/24. Compiled once.
 var vpcSubnetCIDR = regexp.MustCompile(`^10\.200\.1\.[0-9]+$`)
 
-// phase10_VPCNetworking is the Go port of phase 10 from
-// run-multinode-e2e.sh:1042-1251. Stands up a fresh non-default VPC +
-// subnet, launches 3 instances into the subnet, asserts each gets a
-// unique PrivateIpAddress within 10.200.1.0/24, then stops + restarts
-// all three and re-asserts the same IPs persist.
+// runVPCNetworking is the Go port of VPC networking validation
+// (run-multinode-e2e.sh:1042-1251). Stands up a fresh non-default VPC +
+// subnet, launches 3 instances into the subnet, asserts each gets a unique
+// PrivateIpAddress within 10.200.1.0/24, then stops + restarts all three and
+// re-asserts the same IPs persist.
 //
-// Independent of the package-level trio (which lives on the default
-// VPC) — this phase needs full control over subnet allocation, so
-// instances are launched, terminated, and cleaned up locally via
-// t.Cleanup.
-func phase10_VPCNetworking(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 10 — VPC Networking")
+// Independent of the package-level trio (which lives on the default VPC) —
+// this test needs full control over subnet allocation, so instances are
+// launched, terminated, and cleaned up locally via t.Cleanup.
+func runVPCNetworking(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — VPC Networking")
 
 	amiID := needAMI(t, fix, needArch(t, fix))
 	instType, _ := needInstanceTypeArch(t, fix)

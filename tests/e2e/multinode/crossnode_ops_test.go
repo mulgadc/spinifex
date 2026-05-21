@@ -12,18 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase7_CrossNodeOps is the Go port of phase 7 from
-// run-multinode-e2e.sh:854-895. Picks the first trio instance, finds the
+// runCrossNodeOps is the Go port of cross-node stop/start
+// (run-multinode-e2e.sh:854-895). Picks the first trio instance, finds the
 // node currently hosting it, then drives stop+start through gateways on
 // OTHER nodes — proving the cross-node control path actually reaches the
 // hosting daemon, not just the local one.
 //
 // State guarantee: instance ends running. Other Test*s may share the trio
-// (phase 4 SSH, etc.) so leaving it stopped would cascade-fail downstream
-// tests. Bash phase 7 has the same guarantee implicitly via the start
-// poll at the end.
-func phase7_CrossNodeOps(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 7 — Cross-Node Stop/Start")
+// (guest SSH, etc.) so leaving it stopped would cascade-fail downstream
+// tests. Bash has the same guarantee implicitly via the start poll at end.
+func runCrossNodeOps(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Cross-Node Stop/Start")
 
 	trio := needInstanceTrio(t, fix)
 	require.NotEmpty(t, trio, "trio required")

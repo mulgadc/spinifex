@@ -10,16 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase6_CrossNodeGateway is the Go port of phase 6 from
-// run-multinode-e2e.sh:828-851. Drives DescribeInstances through every
-// node's gateway and asserts each returns the same instance count as
-// node1 (the test runner's local gateway).
+// runCrossNodeGateway is the Go port of cross-node gateway access
+// (run-multinode-e2e.sh:828-851). Drives DescribeInstances through every
+// node's gateway and asserts each returns the same instance count as node1
+// (the test runner's local gateway).
 //
 // Catches the regression where the daemon answers only locally-hosted
 // instances instead of fanning out via NATS — i.e. a stale awsgw routing
 // table or a queue-group misconfiguration.
-func phase6_CrossNodeGateway(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Multinode Phase 6 — Cross-Node Gateway Access")
+func runCrossNodeGateway(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Cross-Node Gateway Access")
 
 	// Trigger trio launch so the baseline count is meaningful.
 	_ = needInstanceTrio(t, fix)

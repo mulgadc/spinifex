@@ -972,6 +972,94 @@ func TestTopologyHandler_AddNAT_InvokesFlowBarrier(t *testing.T) {
 	}
 }
 
+// TestTopologyHandler_AddNAT_Idempotent asserts handleAddNAT does NOT
+// delete-then-re-add the dnat_and_snat rule when the second invocation
+// targets a rule whose state already matches the event (mulga-siv-124).
+// Concurrent duplicate publishes for the same EIP would otherwise tear
+// down the rule the previous invocation just installed, creating a
+// flow-install gap during which the EIP is unreachable.
+//
+// Witness: the row's UUID. If the handler re-ran delete+add the row would
+// be recreated with a fresh UUID; if the handler short-circuits the UUID
+// is preserved. We also confirm the second invocation skips the flow
+// barrier (waitForFlowsHV) — the flow already exists.
+func TestTopologyHandler_AddNAT_Idempotent(t *testing.T) {
+	orig := waitForFlowsHV
+	var barrier int
+	waitForFlowsHV = func() error { barrier++; return nil }
+	defer func() { waitForFlowsHV = orig }()
+
+	_, nc := startTestNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock, WithBridgeMode(BridgeModeVeth))
+	subs, err := topo.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, mock.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name: "vpc-vpc-idem",
+		ExternalIDs: map[string]string{
+			"spinifex:vpc_id": "vpc-idem",
+			"spinifex:cidr":   "10.0.0.0/16",
+		},
+	}))
+
+	evt := NATEvent{
+		VpcId:      "vpc-idem",
+		ExternalIP: "192.168.1.244",
+		LogicalIP:  "10.0.1.7",
+		PortName:   "port-eni-idem",
+		MAC:        "02:00:00:cc:cc:cc",
+	}
+	data, _ := json.Marshal(evt)
+
+	// First invocation: rule does not exist → installs + waits for flows.
+	resp, err := nc.Request(TopicAddNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "first add-nat")
+
+	router, err := mock.GetLogicalRouter(ctx, "vpc-vpc-idem")
+	require.NoError(t, err)
+	if len(router.NAT) != 1 {
+		t.Fatalf("after first add-nat: expected 1 NAT rule, got %d", len(router.NAT))
+	}
+	firstUUID := router.NAT[0]
+	if barrier != 1 {
+		t.Fatalf("after first add-nat: waitForFlowsHV called %d times, want 1", barrier)
+	}
+
+	// Second invocation with identical event: must short-circuit. The
+	// existing row must survive untouched (same UUID), and the flow
+	// barrier must NOT run again.
+	resp, err = nc.Request(TopicAddNAT, data, 5_000_000_000)
+	require.NoError(t, err)
+	assertSuccess(t, resp, "second add-nat (idempotent)")
+
+	router, err = mock.GetLogicalRouter(ctx, "vpc-vpc-idem")
+	require.NoError(t, err)
+	if len(router.NAT) != 1 {
+		t.Fatalf("after second add-nat: expected 1 NAT rule, got %d", len(router.NAT))
+	}
+	if router.NAT[0] != firstUUID {
+		t.Errorf("second add-nat recreated the NAT row (uuid %q -> %q); delete-then-add was NOT skipped", firstUUID, router.NAT[0])
+	}
+	if barrier != 1 {
+		t.Errorf("second add-nat ran flow barrier: waitForFlowsHV called %d times, want 1", barrier)
+	}
+
+	nat := mock.nats[router.NAT[0]]
+	if nat.LogicalIP != evt.LogicalIP {
+		t.Errorf("NAT logical_ip=%q want %q", nat.LogicalIP, evt.LogicalIP)
+	}
+}
+
 func TestTopologyHandler_IGWAttach_WithExternalPool(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()

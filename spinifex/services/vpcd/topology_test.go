@@ -1140,7 +1140,7 @@ func TestTopologyHandler_IGWAttach_WithExternalPool(t *testing.T) {
 	if len(router.StaticRoutes) != 1 {
 		t.Fatalf("expected 1 static route, got %d", len(router.StaticRoutes))
 	}
-	route := mock.staticRoutes[router.StaticRoutes[0]]
+	route := mock.StaticRoutes[router.StaticRoutes[0]]
 	if route == nil {
 		t.Fatal("static route not found in mock")
 	}
@@ -1202,7 +1202,7 @@ func TestTopologyHandler_IGWAttach_PoolWithGatewayIP(t *testing.T) {
 	if len(router.NAT) != 0 {
 		t.Errorf("expected 0 NAT rules (no blanket SNAT), got %d", len(router.NAT))
 	}
-	route := mock.staticRoutes[router.StaticRoutes[0]]
+	route := mock.StaticRoutes[router.StaticRoutes[0]]
 	if route.Nexthop != "203.0.113.1" {
 		t.Errorf("expected nexthop 203.0.113.1, got %s", route.Nexthop)
 	}
@@ -1302,7 +1302,7 @@ func TestTopologyHandler_IGWAttach_MultiVPC_NoIPCollision(t *testing.T) {
 		if len(router.StaticRoutes) != 1 {
 			t.Fatalf("%s: expected 1 static route, got %d", vpcId, len(router.StaticRoutes))
 		}
-		route := mock.staticRoutes[router.StaticRoutes[0]]
+		route := mock.StaticRoutes[router.StaticRoutes[0]]
 		if route.Nexthop != "192.168.0.1" {
 			t.Errorf("%s: expected nexthop 192.168.0.1, got %s", vpcId, route.Nexthop)
 		}
@@ -2699,7 +2699,7 @@ func TestTopologyHandler_AddNAT_DirectBridge_DistributedNAT(t *testing.T) {
 	if len(router.NAT) != 1 {
 		t.Fatalf("expected 1 NAT rule, got %d", len(router.NAT))
 	}
-	nat := mock.nats[router.NAT[0]]
+	nat := mock.NATs[router.NAT[0]]
 	if nat.ExternalMAC == nil || *nat.ExternalMAC != "02:00:00:ab:cd:ef" {
 		t.Errorf("expected ExternalMAC=02:00:00:ab:cd:ef for distributed NAT, got %v", nat.ExternalMAC)
 	}
@@ -2798,7 +2798,7 @@ func TestTopologyHandler_AddNAT_VethMode_CentralizedNAT(t *testing.T) {
 	if len(router.NAT) != 1 {
 		t.Fatalf("expected 1 NAT rule, got %d", len(router.NAT))
 	}
-	nat := mock.nats[router.NAT[0]]
+	nat := mock.NATs[router.NAT[0]]
 	if nat.ExternalMAC != nil {
 		t.Errorf("veth mode should NOT have ExternalMAC, got %v", *nat.ExternalMAC)
 	}
@@ -2889,7 +2889,7 @@ func TestTopologyHandler_AddNAT_CleansStaleRulesFromOtherVPCs(t *testing.T) {
 	if len(newRouter.NAT) != 1 {
 		t.Fatalf("expected 1 NAT on new router, got %d", len(newRouter.NAT))
 	}
-	newNAT := mock.nats[newRouter.NAT[0]]
+	newNAT := mock.NATs[newRouter.NAT[0]]
 	if newNAT.LogicalIP != "10.200.1.10" {
 		t.Errorf("new NAT logical IP = %q, want 10.200.1.10", newNAT.LogicalIP)
 	}
@@ -3617,7 +3617,7 @@ func TestTopologyHandler_CreatePort_JoinsPortGroups(t *testing.T) {
 	}
 
 	for _, sgId := range []string{"sg-1111", "sg-2222"} {
-		pg := mock.portGroups[portGroupName(sgId)]
+		pg := mock.PortGroups[portGroupName(sgId)]
 		if !slices.Contains(pg.Ports, lsp.UUID) {
 			t.Errorf("expected %s membership in port group %s, got %v", lsp.UUID, sgId, pg.Ports)
 		}
@@ -3695,7 +3695,7 @@ func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
 	resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
 	assertSuccess(t, resp, "create port")
 
-	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 1 {
+	if got := len(mock.PortGroups[portGroupName("sg-del")].Ports); got != 1 {
 		t.Fatalf("setup: expected 1 member in port group, got %d", got)
 	}
 
@@ -3710,7 +3710,7 @@ func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
 	resp, _ = nc.Request(TopicDeletePort, data, 5_000_000_000)
 	assertSuccess(t, resp, "delete port")
 
-	if got := len(mock.portGroups[portGroupName("sg-del")].Ports); got != 0 {
+	if got := len(mock.PortGroups[portGroupName("sg-del")].Ports); got != 0 {
 		t.Errorf("expected 0 members after delete-port, got %d", got)
 	}
 }
@@ -3794,7 +3794,7 @@ func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
 			for _, s := range tc.expected {
 				expected[portGroupName(s)] = struct{}{}
 			}
-			for name, pg := range mock.portGroups {
+			for name, pg := range mock.PortGroups {
 				inGroup := slices.Contains(pg.Ports, lsp.UUID)
 				_, want := expected[name]
 				if inGroup && !want {
@@ -3837,7 +3837,7 @@ func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testi
 		Addresses: []string{"02:00:00:00:00:99 10.0.6.50"},
 	}))
 	pgName := portGroupName("sg-recover")
-	require.NotContains(t, mock.portGroups[pgName].Ports, mock.ports["port-eni-recover"].UUID)
+	require.NotContains(t, mock.PortGroups[pgName].Ports, mock.Ports["port-eni-recover"].UUID)
 
 	evt := PortEvent{
 		NetworkInterfaceId: "eni-recover",
@@ -3857,7 +3857,7 @@ func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testi
 	// group port addresses and intentionally not modelled in the mock.
 	lsp, err := mock.GetLogicalSwitchPort(ctx, "port-eni-recover")
 	require.NoError(t, err)
-	assert.Contains(t, mock.portGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
+	assert.Contains(t, mock.PortGroups[pgName].Ports, lsp.UUID, "existing-LSP path must reconcile SG memberships")
 }
 
 // --- handleAddNATGateway / handleDeleteNATGateway ---
@@ -3872,18 +3872,18 @@ func natGatewayProcessed(t *testing.T, mock *MockOVNClient, routerName, subnetCi
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mock.mu.Lock()
-		lr := mock.routers[routerName]
+		mock.Mu.Lock()
+		lr := mock.Routers[routerName]
 		present := false
 		if lr != nil {
 			for _, uuid := range lr.NAT {
-				if n := mock.nats[uuid]; n != nil && n.Type == "snat" && n.LogicalIP == subnetCidr {
+				if n := mock.NATs[uuid]; n != nil && n.Type == "snat" && n.LogicalIP == subnetCidr {
 					present = true
 					break
 				}
 			}
 		}
-		mock.mu.Unlock()
+		mock.Mu.Unlock()
 		if present == wantPresent {
 			return
 		}
@@ -3924,11 +3924,11 @@ func TestTopologyHandler_AddNATGateway_AddsSnat(t *testing.T) {
 
 	natGatewayProcessed(t, mock, "vpc-vpc-natgw", "10.0.50.0/24", true)
 
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	lr := mock.routers["vpc-vpc-natgw"]
+	mock.Mu.Lock()
+	defer mock.Mu.Unlock()
+	lr := mock.Routers["vpc-vpc-natgw"]
 	require.Len(t, lr.NAT, 1)
-	nat := mock.nats[lr.NAT[0]]
+	nat := mock.NATs[lr.NAT[0]]
 	assert.Equal(t, "snat", nat.Type)
 	assert.Equal(t, "203.0.113.10", nat.ExternalIP)
 	assert.Equal(t, "10.0.50.0/24", nat.LogicalIP)
@@ -3968,9 +3968,9 @@ func TestTopologyHandler_DeleteNATGateway_RemovesSnat(t *testing.T) {
 	require.NoError(t, nc.Flush())
 	natGatewayProcessed(t, mock, "vpc-vpc-rm", "10.0.51.0/24", false)
 
-	mock.mu.Lock()
-	natCount := len(mock.routers["vpc-vpc-rm"].NAT)
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	natCount := len(mock.Routers["vpc-vpc-rm"].NAT)
+	mock.Mu.Unlock()
 	assert.Zero(t, natCount, "delete must remove the SNAT rule")
 	_ = ctx
 }

@@ -33,9 +33,9 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 	assertSuccess(t, resp, "create SG port group")
 
 	// Verify port group was created in the mock
-	mock.mu.Lock()
-	pg, exists := mock.portGroups["sg_abc123"]
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	pg, exists := mock.PortGroups["sg_abc123"]
+	mock.Mu.Unlock()
 	assert.True(t, exists, "port group sg_abc123 should exist")
 	assert.NotNil(t, pg)
 
@@ -52,10 +52,10 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 		match     string
 	}
 	var snapshots []aclSnapshot
-	mock.mu.Lock()
+	mock.Mu.Lock()
 	aclCount := len(pg.ACLs)
 	for _, aclUUID := range pg.ACLs {
-		a := mock.acls[aclUUID]
+		a := mock.ACLs[aclUUID]
 		if a == nil {
 			continue
 		}
@@ -74,7 +74,7 @@ func TestSecurity_CreatePortGroup(t *testing.T) {
 		}
 		snapshots = append(snapshots, snap)
 	}
-	mock.mu.Unlock()
+	mock.Mu.Unlock()
 
 	assert.Equal(t, 4, aclCount, "should have 4 infra ACLs (2 deny + 2 DHCP allow)")
 	denyCount, dhcpAllowCount := 0, 0
@@ -158,9 +158,9 @@ func TestSecurity_DeletePortGroup(t *testing.T) {
 	assertSuccess(t, resp, "create SG for delete test")
 
 	// Verify it exists
-	mock.mu.Lock()
-	_, exists := mock.portGroups["sg_del1"]
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	_, exists := mock.PortGroups["sg_del1"]
+	mock.Mu.Unlock()
 	assert.True(t, exists)
 
 	// Delete
@@ -171,9 +171,9 @@ func TestSecurity_DeletePortGroup(t *testing.T) {
 	assertSuccess(t, resp, "delete SG port group")
 
 	// Verify removed
-	mock.mu.Lock()
-	_, exists = mock.portGroups["sg_del1"]
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	_, exists = mock.PortGroups["sg_del1"]
+	mock.Mu.Unlock()
 	assert.False(t, exists, "port group sg_del1 should be deleted")
 }
 
@@ -219,17 +219,17 @@ func TestSecurity_UpdateSGAddRules(t *testing.T) {
 		log    bool
 	}
 	var snapshots []aclSnapshot
-	mock.mu.Lock()
-	pg := mock.portGroups["sg_upd1"]
+	mock.Mu.Lock()
+	pg := mock.PortGroups["sg_upd1"]
 	aclCount := len(pg.ACLs)
 	for _, aclUUID := range pg.ACLs {
-		a := mock.acls[aclUUID]
+		a := mock.ACLs[aclUUID]
 		if a == nil {
 			continue
 		}
 		snapshots = append(snapshots, aclSnapshot{action: a.Action, match: a.Match, log: a.Log})
 	}
-	mock.mu.Unlock()
+	mock.Mu.Unlock()
 
 	assert.Equal(t, 6, aclCount, "should have 6 ACLs (2 deny + 2 DHCP infra allow + 2 ingress allow)")
 
@@ -282,9 +282,9 @@ func TestSecurity_CreateSG_FailsFastOnAddACLError(t *testing.T) {
 	require.NoError(t, err)
 	assertFailure(t, resp, "create SG must fail when AddACL fails")
 
-	mock.mu.Lock()
-	_, pgExists := mock.portGroups["sg_failacl"]
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	_, pgExists := mock.PortGroups["sg_failacl"]
+	mock.Mu.Unlock()
 	assert.False(t, pgExists, "port group must be torn down on failed provisionSG")
 }
 
@@ -311,10 +311,10 @@ func TestSecurity_UpdateSG_FailsFastOnAddACLError(t *testing.T) {
 	require.NoError(t, err)
 	assertSuccess(t, resp, "create SG before update")
 
-	mock.mu.Lock()
-	mock.addACLCalls = 0
+	mock.Mu.Lock()
+	mock.AddACLCalls = 0
 	mock.AddACLErrAfter = 1
-	mock.mu.Unlock()
+	mock.Mu.Unlock()
 
 	updateEvt := SGEvent{
 		GroupId: "sg-updfail",
@@ -362,9 +362,9 @@ func TestSecurity_CreateSG_WithRules_FailsFastOnAddACLError(t *testing.T) {
 	require.NoError(t, err)
 	assertFailure(t, resp, "create SG with rules must fail when AddACLs fails")
 
-	mock.mu.Lock()
-	_, pgExists := mock.portGroups["sg_rulefail"]
-	mock.mu.Unlock()
+	mock.Mu.Lock()
+	_, pgExists := mock.PortGroups["sg_rulefail"]
+	mock.Mu.Unlock()
 	assert.False(t, pgExists, "port group must be torn down when AddACLs fails")
 }
 
@@ -561,15 +561,15 @@ func TestSecurity_HandleDeleteSG_LeavesNoResidualState(t *testing.T) {
 	require.NoError(t, err)
 	assertSuccess(t, resp, "delete SG")
 
-	mock.mu.Lock()
-	_, pgExists := mock.portGroups["sg_residual"]
+	mock.Mu.Lock()
+	_, pgExists := mock.PortGroups["sg_residual"]
 	leftoverACLs := 0
-	for _, a := range mock.acls {
+	for _, a := range mock.ACLs {
 		if a != nil && (a.Match == "outport == @sg_residual && ip4" || a.Match == "inport == @sg_residual && ip4") {
 			leftoverACLs++
 		}
 	}
-	mock.mu.Unlock()
+	mock.Mu.Unlock()
 	assert.False(t, pgExists, "port group must be gone")
 	assert.Zero(t, leftoverACLs, "no ACL rows must reference the deleted PG")
 }

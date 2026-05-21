@@ -215,7 +215,7 @@ func phase11_PlacementAndNATGateway(t *testing.T, fix *Fixture) {
 		"bastion %s has no PublicIpAddress (pool mode required for phase 11)", bastionID)
 	harness.Detail(t, "bastion", bastionID, "bastion_pub_ip", bastionPubIP)
 
-	waitForBastionSSH(t, bastionPubIP, keyPath, 150*time.Second)
+	waitForBastionSSH(t, bastionPubIP, keyPath, 5*time.Minute)
 	scpKeyToBastion(t, keyPath, bastionPubIP)
 
 	// --- Step 3: Placement group + 3 private VMs --------------------------
@@ -474,11 +474,31 @@ func uniqueCount(xs []string) int {
 }
 
 // waitForBastionSSH polls SSH `true` until the handshake completes. Bash
-// equivalent: phase 11 Step 2's 30-attempt 5s loop = 150s budget.
+// equivalent: phase 11 Step 2's 30-attempt 5s loop = 150s budget. Go port
+// uses a wider 5min budget because a brand-new VPC's OVN flow install on
+// the external switch lags the instance's "running" state on the tofu
+// cluster (mulga-siv-90 runs 26195522455, 26197248656, 26198221557 — SSH
+// timed out at exactly 150s even after the dnat_and_snat race fix
+// mulga-siv-124 landed). 5min covers both cloud-init + OVN warm-up.
+//
+// Logs a single ICMP probe per iteration before the SSH dial so a future
+// failure log distinguishes "datapath down" (ping fails) from "sshd not
+// up yet" (ping ok, ssh refused/timeout) — the smoking-gun split per
+// the RCA agent's fix candidate 3.
 func waitForBastionSSH(t *testing.T, host, keyPath string, timeout time.Duration) {
 	t.Helper()
 	harness.Step(t, "wait bastion SSH %s", host)
 	harness.EventuallyErr(t, func() error {
+		// ICMP probe — diagnostic only; do not fail on ping failure
+		// because some host LANs block ICMP while leaving tcp/22 open.
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		pingOut, pingErr := exec.CommandContext(pingCtx, "ping", "-c", "1", "-W", "2", host).CombinedOutput()
+		pingCancel()
+		pingState := "ok"
+		if pingErr != nil {
+			pingState = fmt.Sprintf("fail (%v)", pingErr)
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		args := []string{
@@ -492,7 +512,8 @@ func waitForBastionSSH(t *testing.T, host, keyPath string, timeout time.Duration
 			"true",
 		}
 		if out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("ssh %s: %w\n%s", host, err, string(out))
+			return fmt.Errorf("ssh %s: %w\n  ping=%s\n  ping_output=%s\n  ssh_output=%s",
+				host, err, pingState, strings.TrimSpace(string(pingOut)), string(out))
 		}
 		return nil
 	}, timeout, 5*time.Second)

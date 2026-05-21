@@ -20,6 +20,8 @@ import "testing"
 // singleton EC2 instance, default VPC, or default SG.
 //
 // Sequential (no t.Parallel — would race the singleton VM or shared state):
+//   - TestClusterStatsCLI                 : asserts baseline cluster state
+//     (0/ CPU, "No VMs found"); must run before any launches.
 //   - TestInstanceLaunch                  : first sequential — boots singleton.
 //   - TestInstanceClusterStats / Metadata
 //     / SSHProbe / ConsoleOutput          : read singleton.
@@ -41,11 +43,6 @@ import "testing"
 func TestEnvironment(t *testing.T) {
 	t.Parallel()
 	runEnvironment(t, requireSingleNodeFixture(t))
-}
-
-func TestClusterStatsCLI(t *testing.T) {
-	t.Parallel()
-	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
 func TestDiscovery(t *testing.T) {
@@ -89,6 +86,13 @@ func TestRouteTableValidation(t *testing.T) {
 }
 
 // --- Sequential: singleton VM lifecycle ---
+
+// TestClusterStatsCLI runs before TestInstanceLaunch because it asserts
+// baseline cluster state (0/ CPU used, "No VMs found") that doesn't hold
+// once the singleton instance is up.
+func TestClusterStatsCLI(t *testing.T) {
+	runClusterStatsCLI(t, requireSingleNodeFixture(t))
+}
 
 func TestInstanceLaunch(t *testing.T) {
 	runInstanceLaunch(t, requireSingleNodeFixture(t))

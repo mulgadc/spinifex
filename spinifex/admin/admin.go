@@ -73,7 +73,7 @@ type ConfigSettings struct {
 	ExternalMode   string   // "pool" or "" (disabled)
 	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
 	DhcpBindBridge string   // Bridge where the DHCP AF_PACKET socket binds (Linux bridge in veth mode, OVS bridge in direct mode; never "br-ext")
-	ExternalDHCP   bool     // Obtain gateway IP via DHCP on macvlan/bridge
+	ExternalDHCP   bool     // Obtain gateway IP via DHCP on the WAN bridge
 	PoolName       string   // External pool name (e.g., "wan")
 	PoolSource     string   // IP source: "static" (default) or "dhcp" (from router DHCP)
 	PoolStart      string   // First IP in external pool range (static source only)

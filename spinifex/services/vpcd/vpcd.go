@@ -64,18 +64,17 @@ type Config struct {
 	ExternalPools []ExternalPoolConfig
 	// Bootstrap holds the default VPC config from spinifex.toml for first-boot reconciliation.
 	Bootstrap *BootstrapVPC
-	// ExternalInterface is the WAN NIC name (e.g., "enp0s3"). Used to align
-	// the macvlan MAC with the OVN gateway MAC for inbound traffic.
+	// ExternalInterface is the WAN NIC name (e.g., "enp0s3"). Used by
+	// detectBridgeMode for veth/direct auto-detection.
 	ExternalInterface string
 	// DhcpBindBridge is the bridge where the DHCP client binds its AF_PACKET
 	// socket. In veth mode this is the Linux bridge that holds the WAN NIC
 	// (e.g. "br-wan"); in direct mode this is the OVS bridge holding the
 	// WAN NIC. Never the OVN-side "br-ext" — that never sees LAN DHCP.
 	DhcpBindBridge string
-	// BridgeMode is "direct", "macvlan", or "veth". Direct bridge adds the WAN
-	// NIC directly to the OVS bridge; macvlan creates a sub-interface; veth uses
-	// a veth pair to link a Linux bridge to OVS. When empty, auto-detected at
-	// startup.
+	// BridgeMode is "direct" or "veth". Direct bridge adds the WAN NIC
+	// directly to the OVS bridge; veth uses a veth pair to link a Linux bridge
+	// to OVS. When empty, auto-detected at startup.
 	BridgeMode string
 }
 
@@ -364,21 +363,6 @@ func launchService(cfg *Config) error {
 	holder, _ := os.Hostname()
 	releaseLeader, isLeader := AcquireReconcileLeader(nc, holder)
 
-	// Macvlan mode only: align macvlan MAC with the OVN gateway router MAC.
-	// The macvlan only delivers inbound unicast matching its own MAC. With
-	// centralized NAT, OVN uses the router MAC for all external ARP replies.
-	// Setting the macvlan MAC to the router MAC ensures inbound traffic reaches OVS.
-	// Direct bridge mode doesn't need this — OVS sees all traffic on the wire.
-	if bridgeMode == BridgeModeMacvlan && cfg.Bootstrap != nil && cfg.Bootstrap.VpcId != "" && cfg.ExternalInterface != "" {
-		gwMAC := generateMAC("gw-" + cfg.Bootstrap.VpcId)
-		macvlanName := "spx-ext-" + cfg.ExternalInterface
-		if err := setMacvlanMAC(macvlanName, gwMAC); err != nil {
-			slog.Warn("vpcd: failed to set macvlan MAC (inbound traffic may not work)", "iface", macvlanName, "mac", gwMAC, "err", err)
-		} else {
-			slog.Info("vpcd: macvlan MAC aligned with gateway", "iface", macvlanName, "mac", gwMAC)
-		}
-	}
-
 	subs, err := topo.Subscribe(nc)
 	if err != nil {
 		slog.Error("Failed to subscribe to VPC topics", "err", err)
@@ -554,21 +538,12 @@ func resolveBridgeConfig(cfgBridgeMode, externalIface, cfgDhcpBindBridge string)
 	return bridgeMode, dhcpBindBridge
 }
 
-// ifaceIsMacvlan returns true when the given interface exists and is a
-// macvlan sub-interface. Injected as a var so detectBridgeMode tests can stub
-// it without launching ip(8).
-var ifaceIsMacvlan = func(name string) bool {
-	out, err := exec.Command("ip", "-d", "link", "show", name).CombinedOutput()
-	return err == nil && strings.Contains(string(out), "macvlan")
-}
-
 // ifaceExists returns true when the kernel reports the named link.
 var ifaceExists = func(name string) bool {
 	return exec.Command("ip", "link", "show", name).Run() == nil
 }
 
 // detectBridgeMode checks how the WAN bridge is wired:
-//   - macvlan: spx-ext-{iface} macvlan sub-interface exists
 //   - veth: veth-wan-ovs interface exists (Linux bridge linked to OVS via veth pair)
 //   - direct: physical NIC is added directly to the OVS bridge
 //
@@ -577,17 +552,12 @@ var ifaceExists = func(name string) bool {
 // silent Debug fall-through is what let the veth-persistence bug hide for
 // weeks (mulga-998.b Fix 2).
 func detectBridgeMode(externalIface string) string {
-	macvlanName := "spx-ext-" + externalIface
-	if ifaceIsMacvlan(macvlanName) {
-		slog.Info("vpcd: detected macvlan interface on WAN bridge", "iface", macvlanName, "mode", BridgeModeMacvlan)
-		return BridgeModeMacvlan
-	}
 	if ifaceExists("veth-wan-ovs") {
 		slog.Info("vpcd: detected veth pair linking Linux bridge to OVS", "mode", BridgeModeVeth)
 		return BridgeModeVeth
 	}
-	slog.Warn("vpcd: no macvlan or veth interface found, assuming direct bridge mode",
-		"external_iface", externalIface, "checked_macvlan", macvlanName, "checked_veth", "veth-wan-ovs",
+	slog.Warn("vpcd: no veth interface found, assuming direct bridge mode",
+		"external_iface", externalIface, "checked_veth", "veth-wan-ovs",
 		"mode", BridgeModeDirect)
 	return BridgeModeDirect
 }
@@ -677,20 +647,4 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		return fmt.Errorf("vpcd: unknown bridge_mode %q — supported values: %q, %q",
 			mode, BridgeModeDirect, BridgeModeVeth)
 	}
-}
-
-// setMacvlanMAC sets the MAC address on a macvlan interface. The interface is
-// brought down, MAC changed, and brought back up. Requires sudo/NET_ADMIN.
-func setMacvlanMAC(iface, mac string) error {
-	cmds := [][]string{
-		{"sudo", "ip", "link", "set", iface, "down"},
-		{"sudo", "ip", "link", "set", iface, "address", mac},
-		{"sudo", "ip", "link", "set", iface, "up"},
-	}
-	for _, args := range cmds {
-		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
-			return fmt.Errorf("%s: %w (%s)", args[3], err, string(out))
-		}
-	}
-	return nil
 }

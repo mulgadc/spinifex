@@ -304,9 +304,10 @@ func installSpinifex(cfg *Config) error {
 		return err
 	}
 
-	// dhcpcd-base is present on the installed system (used by setup-ovn.sh for
-	// macvlan mode). Mask the standalone dhcpcd.service so it never auto-starts
-	// and races with systemd-networkd's built-in DHCP client on br-wan.
+	// dhcpcd-base is present on the installed system (used by setup-ovn.sh
+	// for WAN DHCP acquisition). Mask the standalone dhcpcd.service so it
+	// never auto-starts and races with systemd-networkd's built-in DHCP
+	// client on br-wan.
 	if err := maskSystemdUnit(mountRoot, "dhcpcd.service"); err != nil {
 		slog.Warn("installSpinifex: failed to mask dhcpcd.service", "err", err)
 	}

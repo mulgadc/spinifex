@@ -74,7 +74,7 @@ const (
 // chassis so the LRP IP itself never goes on the wire. The default route's
 // OutputPort is set explicitly so the WAN nexthop need not be on this subnet.
 //
-// Centralized-NAT (veth/macvlan) bypasses this constant: the gateway LRP is
+// Centralized-NAT (veth) bypasses this constant: the gateway LRP is
 // the on-wire egress point and must hold a WAN-subnet IP from the pool's
 // gw_lrp_range, otherwise the upstream router silently drops ARP requests
 // from an off-subnet sender (RFC 826) and the default route never resolves
@@ -144,16 +144,13 @@ type NATGatewayEvent struct {
 
 // Bridge mode constants for external connectivity.
 const (
-	// BridgeModeMacvlan uses a macvlan sub-interface on the WAN NIC. SSH-safe
-	// for single-NIC hosts but requires centralized NAT and MAC alignment.
-	BridgeModeMacvlan = "macvlan"
 	// BridgeModeDirect adds the WAN NIC directly to br-external as an OVS port.
-	// Enables distributed NAT and avoids macvlan workarounds. Only safe when
-	// the WAN NIC is NOT the SSH/management NIC.
+	// Enables distributed NAT. Only safe when the WAN NIC is NOT the SSH/
+	// management NIC.
 	BridgeModeDirect = "direct"
 	// BridgeModeVeth uses a veth pair to link a Linux bridge (br-wan) to an
-	// OVS bridge (br-ext). Requires centralized NAT like macvlan because the
-	// Linux bridge intermediary breaks distributed NAT hairpin routing.
+	// OVS bridge (br-ext). Requires centralized NAT because the Linux bridge
+	// intermediary breaks distributed NAT hairpin routing.
 	BridgeModeVeth = "veth"
 	// OvnExternalBridge is the OVS bridge that ovn-bridge-mappings targets
 	// for the "external" localnet. Owned by setup-ovn.sh's ovn-bridge-mappings
@@ -169,7 +166,7 @@ type TopologyHandler struct {
 	externalMode  string
 	externalPools []ExternalPoolConfig
 	chassisNames  []string // OVN chassis names for gateway HA scheduling
-	bridgeMode    string   // "direct" or "macvlan" — controls NAT mode and localnet options
+	bridgeMode    string   // "direct" or "veth" — controls NAT mode and localnet options
 	// nc is used to talk to vpcd's DHCPManager via vpc.dhcp.acquire /
 	// vpc.dhcp.release for gateway LRP IPs in centralized NAT on
 	// source="dhcp" pools (mulga-siv-38). nil when no DHCP pool is wired or
@@ -204,9 +201,8 @@ func WithChassisNames(names []string) TopologyOption {
 	}
 }
 
-// WithBridgeMode sets the external bridge mode ("direct", "macvlan", or "veth").
-// Direct bridge enables distributed NAT; macvlan and veth use centralized NAT.
-// Defaults to macvlan if not set (backward-compatible).
+// WithBridgeMode sets the external bridge mode ("direct" or "veth").
+// Direct bridge enables distributed NAT; veth uses centralized NAT.
 func WithBridgeMode(mode string) TopologyOption {
 	return func(h *TopologyHandler) {
 		h.bridgeMode = mode
@@ -223,11 +219,10 @@ func WithNATSConn(nc *nats.Conn) TopologyOption {
 }
 
 // useCentralizedNAT returns true if the bridge mode requires centralized NAT.
-// Macvlan and veth modes both need centralized NAT — macvlan because of MAC
-// filtering, veth because the Linux bridge intermediary breaks distributed NAT
-// hairpin routing. Only direct bridge mode supports distributed NAT.
+// Veth mode needs centralized NAT because the Linux bridge intermediary breaks
+// distributed NAT hairpin routing. Only direct bridge mode supports distributed NAT.
 func (h *TopologyHandler) useCentralizedNAT() bool {
-	return h.bridgeMode != BridgeModeDirect
+	return h.bridgeMode == BridgeModeVeth
 }
 
 // ensureLocalnetOptions aligns options on an existing localnet port with the
@@ -239,7 +234,7 @@ func (h *TopologyHandler) useCentralizedNAT() bool {
 //
 // network_name=external is required regardless of bridge mode — it binds the
 // port to the ovn-bridge-mappings entry for the external OVS bridge.
-// Centralized mode (veth/macvlan): options:nat-addresses=router must be set.
+// Centralized mode (veth): options:nat-addresses=router must be set.
 // Distributed mode (direct): options:nat-addresses must be absent.
 func (h *TopologyHandler) ensureLocalnetOptions(ctx context.Context, extPortName string) error {
 	lsp, err := h.ovn.GetLogicalSwitchPort(ctx, extPortName)
@@ -1053,9 +1048,9 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 		"network_name": "external",
 	}
 	// nat-addresses=router: OVN sends gratuitous ARPs for all NAT external IPs
-	// using the router port MAC. Required for centralized NAT modes (macvlan,
-	// veth) so that ARP replies for NAT IPs reach hosts correctly. Not needed
-	// for direct bridge since OVS sees all traffic on the wire without MAC
+	// using the router port MAC. Required for centralized NAT (veth mode) so
+	// that ARP replies for NAT IPs reach hosts correctly. Not needed for
+	// direct bridge since OVS sees all traffic on the wire without MAC
 	// filtering and distributed NAT handles ARP per-chassis.
 	if h.useCentralizedNAT() {
 		localnetOpts["nat-addresses"] = "router"
@@ -1083,7 +1078,7 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	// dnat_and_snat row with external_mac/logical_port on every chassis, so
 	// the LRP IP itself never goes on the wire.
 	//
-	// Centralized mode (veth/macvlan): the LRP is the on-wire egress, so it
+	// Centralized mode (veth): the LRP is the on-wire egress, so it
 	// must hold a WAN-subnet IP. Allocate one from pool.GwLrpRange (or
 	// auto-derive from the WAN subnet) so each VPC gets a distinct sender
 	// IP (mulga-siv-36). Without this the upstream router silently drops

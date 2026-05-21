@@ -2931,7 +2931,7 @@ if [ "$PUB_SSH_READY" = true ]; then
         exit 1
     fi
 else
-    echo "WARN: SSH via public IP $PUB_IP not reachable (macvlan isolation or bridge not ready)"
+    echo "WARN: SSH via public IP $PUB_IP not reachable (bridge not ready)"
     echo "Falling back to API-only verification (OVN state already validated above)"
 fi
 

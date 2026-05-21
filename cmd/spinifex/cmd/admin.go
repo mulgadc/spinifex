@@ -893,9 +893,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
 			}
 			if detected.LANCount == 0 {
-				fmt.Println("\n  Mode: single-NIC (macvlan for external bridge)")
+				fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
 			} else {
-				fmt.Printf("\n  Mode: %d LAN + 1 WAN (macvlan for external bridge)\n", detected.LANCount)
+				fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
 			}
 
 			// Apply auto-detected values when flags not explicitly set
@@ -984,7 +984,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	// For pool/dhcp source, the gateway IP is obtained via DHCP on the
-	// macvlan/bridge interface (no static pool range or explicit gateway-ip).
+	// WAN bridge interface (no static pool range or explicit gateway-ip).
 	useExternalDHCP := externalMode == "pool" && externalSource == "dhcp" && gatewayIP == ""
 
 	// Validate IP address format

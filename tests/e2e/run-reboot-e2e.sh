@@ -544,7 +544,7 @@ if [ "$IPS_PRESERVED" = true ]; then
 fi
 
 # 8.3: guest VMs relaunched post-reboot (LaunchTime > reboot time via describe-instances)
-# Two-hop SSH to VPC private IPs is not possible in single-node macvlan mode —
+# Two-hop SSH to VPC private IPs is not possible in single-node mode —
 # the host has no route to VPC subnets. LaunchTime from the daemon's recovery
 # path (reset to time.Now() on relaunch) is a reliable reboot signal.
 log "Verifying guest VMs relaunched post-reboot (LaunchTime check)..."

@@ -170,9 +170,10 @@ if [ -e /etc/systemd/network/15-spinifex-veth-wan.netdev ] || \
     sudo networkctl reload 2>/dev/null || true
 fi
 
-# Remove macvlan interfaces created by setup-ovn.sh
+# Legacy: clean up macvlan interfaces left over from pre-veth setup-ovn.sh
+# runs. Safe to remove once no operator system retains these.
 for iface in $(ip -o link show type macvlan 2>/dev/null | awk -F': ' '{print $2}' | grep '^spx-ext-'); do
-    echo "  Deleting macvlan: $iface"
+    echo "  Deleting legacy macvlan: $iface"
     sudo ip link del "$iface" 2>/dev/null || true
 done
 

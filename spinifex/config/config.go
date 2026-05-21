@@ -32,7 +32,7 @@ type ExternalPool struct {
 	Region     string   `mapstructure:"region"`      // Scope to region (optional — empty means any region)
 	AZ         string   `mapstructure:"az"`          // Scope to AZ (optional — empty means any AZ in region)
 	// GwLrpRangeStart/End reserve a sub-range of the LAN for OVN gateway LRP IPs
-	// in centralized NAT mode (veth/macvlan). Each VPC consumes one IP from this
+	// in centralized NAT mode (veth). Each VPC consumes one IP from this
 	// range so its gateway router port can ARP with a sender IP on the LAN
 	// subnet — link-local 169.254.0.1/30 makes upstream routers reject ARP per
 	// RFC 826 (mulga-siv-36). Must NOT overlap [RangeStart, RangeEnd] or IPAM

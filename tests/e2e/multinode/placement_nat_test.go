@@ -17,175 +17,141 @@ import (
 )
 
 // Spread placement + NAT GW (the largest section of run-multinode-e2e.sh,
-// originally phase 11) was a single monolithic Test until mulga-siv-127 split
-// it into 6 top-level Tests, each owning its own VPC graph via t.Cleanup.
-// The 8 bash sub-steps map to the new Tests as:
+// originally phase 11) runs as one top-level Test with 6 t.Run sub-tests
+// sharing the VPC + bastion + private trio + NAT GW graph. Setup happens
+// once in the outer scope; sub-tests carry the assertions. The 8 bash
+// sub-steps map as:
 //
-//	bash step 1 (VPC + subnets + IGW + SGs + route)   -> TestMultinodeSpreadVPCSetup
-//	bash step 2 (bastion launch + SSH + scp key)      -> TestMultinodeSpreadBastionSSH
-//	bash steps 3+4 (spread PG + 3 priv VMs + assert)  -> TestMultinodeSpreadPlacement
-//	bash step 5 (ping pre-NAT, expect fail)           -> TestMultinodeSpreadPreNATIsolation
-//	bash steps 6+7 (NAT GW + ping post-NAT)           -> TestMultinodeSpreadNATGatewayInternet
-//	bash step 8 (explicit teardown ordering)          -> TestMultinodeSpreadNATCleanupOrdering
+//	bash step 1 (VPC + subnets + IGW + SGs + route)   -> sub-test "VPCSetup"
+//	bash step 2 (bastion launch + SSH + scp key)      -> sub-test "BastionSSH"
+//	bash steps 3+4 (spread PG + 3 priv VMs + assert)  -> sub-test "SpreadPlacement"
+//	bash step 5 (ping pre-NAT, expect fail)           -> sub-test "PreNATIsolation"
+//	bash steps 6+7 (NAT GW + ping post-NAT)           -> sub-test "NATGatewayInternet"
+//	bash step 8 (explicit teardown ordering)          -> sub-test "NATCleanupOrdering"
 //
-// Tests run sequentially (no t.Parallel) — they all use VPC CIDR 10.100.0.0/16
-// and the shared EIP pool, so concurrent runs would collide. Each Test
-// re-builds its own VPC + bastion + private trio (the layered ph11SetupX
-// helpers below); the cost is intentional — isolation > speed.
+// Earlier mulga-siv-127 iterations split this into 6 separate top-level Tests
+// each rebuilding the full graph — that ballooned phase-11 runtime to ~60min
+// (6 × ~10min setups). The shared-setup layout keeps sub-test granularity in
+// JUnit while restoring the ~15min monolithic budget. Outer Test stays
+// sequential (no t.Parallel) — owns VPC CIDR 10.100.0.0/16 + EIP pool.
 
-// --- Test entry points ----------------------------------------------------
-
-// TestMultinodeSpreadVPCSetup builds the full VPC graph used by the spread
-// placement + NAT suite (VPC, public+private subnets, IGW + main RT 0.0.0.0/0
-// route, bastion+private SGs) and asserts the IGW route is in place.
-func TestMultinodeSpreadVPCSetup(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — VPC Setup")
-	v := spreadSetupVPC(t, fix)
-
-	// Assert the 0.0.0.0/0 -> IGW route landed on the main RT. The setup
-	// helper requires the CreateRoute call so the test would already fatal
-	// on error; the DescribeRouteTables read here is the explicit oracle
-	// matching this Test's name.
-	out, err := fix.AWS.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
-		RouteTableIds: []*string{aws.String(v.MainRTBID)},
-	})
-	require.NoError(t, err, "describe main RT")
-	require.NotEmpty(t, out.RouteTables, "main RT not found")
-	var foundIGW bool
-	for _, r := range out.RouteTables[0].Routes {
-		if aws.StringValue(r.DestinationCidrBlock) == "0.0.0.0/0" &&
-			aws.StringValue(r.GatewayId) == v.IGWID {
-			foundIGW = true
-			break
-		}
-	}
-	require.Truef(t, foundIGW, "main RT %s missing 0.0.0.0/0 -> %s route", v.MainRTBID, v.IGWID)
-}
-
-// TestMultinodeSpreadBastionSSH builds the VPC then launches the bastion and
-// waits for an SSH handshake + key SCP. SSH success is the implicit assertion
-// (spreadSetupBastion fatals on failure).
-func TestMultinodeSpreadBastionSSH(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — Bastion SSH")
-	v := spreadSetupVPC(t, fix)
-	_ = spreadSetupBastion(t, fix, v)
-}
-
-// TestMultinodeSpreadPlacement builds VPC + bastion + spread placement group
-// + 3 private VMs and asserts they land on at least 2 distinct hosting nodes
-// (>=3 nominal, 2 best-effort per bash).
-func TestMultinodeSpreadPlacement(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — Placement Group + 3 Private VMs")
-	v := spreadSetupVPC(t, fix)
-	b := spreadSetupBastion(t, fix, v)
-	p := spreadSetupPrivateTrio(t, fix, b)
-
-	unique := uniqueCount(p.HostingNodes)
-	harness.Detail(t, "unique_hosting_nodes", unique, "want_ge", 3)
-	switch {
-	case unique >= 3:
-		// nominal — full spread
-	case unique >= 2:
-		t.Logf("WARN: only %d unique hosting nodes (expected 3) — spread best-effort", unique)
-	default:
-		t.Fatalf("spread placement failed: %d unique hosting nodes (want >= 2), hosts=%v", unique, p.HostingNodes)
-	}
-}
-
-// TestMultinodeSpreadPreNATIsolation builds the full pre-NAT graph and
-// asserts ping 8.8.8.8 from each private VM via the bastion fails — i.e.
-// no internet without NAT.
-func TestMultinodeSpreadPreNATIsolation(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — Pre-NAT Isolation")
-	v := spreadSetupVPC(t, fix)
-	b := spreadSetupBastion(t, fix, v)
-	p := spreadSetupPrivateTrio(t, fix, b)
-
-	for i, privIP := range p.PrivateIPs {
-		if _, err := pingViaBastion(b.KeyPath, b.PublicIP, privIP); err == nil {
-			t.Fatalf("baseline FAIL: %s (%s) can reach internet WITHOUT NAT GW", p.InstanceIDs[i], privIP)
-		}
-		harness.Detail(t, "pre_nat", p.InstanceIDs[i], "reachable", false)
-	}
-}
-
-// TestMultinodeSpreadNATGatewayInternet builds the full graph + NAT Gateway
-// and polls ping 8.8.8.8 via each private VM until the OVN SNAT flow lands.
-func TestMultinodeSpreadNATGatewayInternet(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — NAT Gateway Internet")
-	v := spreadSetupVPC(t, fix)
-	b := spreadSetupBastion(t, fix, v)
-	p := spreadSetupPrivateTrio(t, fix, b)
-	_ = spreadSetupNATGW(t, fix, p)
-
-	harness.Step(t, "verify internet via NAT GW (x%d)", len(p.PrivateIPs))
-	for i, privIP := range p.PrivateIPs {
-		host := p.HostingNodes[i]
-		harness.EventuallyErr(t, func() error {
-			if _, err := pingViaBastion(b.KeyPath, b.PublicIP, privIP); err != nil {
-				return fmt.Errorf("ping via NAT GW (%s on %s): %w", p.InstanceIDs[i], host, err)
-			}
-			return nil
-		}, 90*time.Second, 5*time.Second)
-		harness.Detail(t, "post_nat", p.InstanceIDs[i], "node", host, "reachable", true)
-	}
-}
-
-// TestMultinodeSpreadNATCleanupOrdering builds the full graph + NAT GW then
-// runs the explicit teardown sequence (delete-route, disassociate RT, delete
-// RT, delete NAT GW, release EIP) and asserts each call succeeds. The
-// deferred t.Cleanup latches flip as each step completes so the LIFO unwind
-// is a no-op on the success path.
-func TestMultinodeSpreadNATCleanupOrdering(t *testing.T) {
-	fix := requireMultiNodeFixture(t)
-	harness.Phase(t, "Multinode Spread — Explicit NAT Cleanup Ordering")
-	v := spreadSetupVPC(t, fix)
-	b := spreadSetupBastion(t, fix, v)
-	p := spreadSetupPrivateTrio(t, fix, b)
-	n := spreadSetupNATGW(t, fix, p)
+// runSpread is the Go port of the spread-placement + NAT GW section from
+// run-multinode-e2e.sh:1255-1594. See file-level doc for the sub-test map.
+// Wrapper TestMultinodeSpread lives in tests_test.go so source-order
+// controls execution position relative to the rest of the suite.
+func runSpread(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Multinode — Spread Placement + NAT Gateway")
 	c := fix.AWS
 
-	harness.Step(t, "delete-route 0.0.0.0/0")
-	_, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
-		RouteTableId:         aws.String(n.PrivRTBID),
-		DestinationCidrBlock: aws.String("0.0.0.0/0"),
-	})
-	require.NoError(t, err, "delete-route 0.0.0.0/0")
-	*n.RouteDeleted = true
+	v := spreadSetupVPC(t, fix)
 
-	harness.Step(t, "disassociate-route-table %s", n.AssocID)
-	_, err = c.EC2.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
-		AssociationId: aws.String(n.AssocID),
+	t.Run("VPCSetup", func(t *testing.T) {
+		// Setup helper required the CreateRoute call so the test would
+		// already fatal on error; the DescribeRouteTables read here is the
+		// explicit oracle matching this sub-test's name.
+		out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+			RouteTableIds: []*string{aws.String(v.MainRTBID)},
+		})
+		require.NoError(t, err, "describe main RT")
+		require.NotEmpty(t, out.RouteTables, "main RT not found")
+		var foundIGW bool
+		for _, r := range out.RouteTables[0].Routes {
+			if aws.StringValue(r.DestinationCidrBlock) == "0.0.0.0/0" &&
+				aws.StringValue(r.GatewayId) == v.IGWID {
+				foundIGW = true
+				break
+			}
+		}
+		require.Truef(t, foundIGW, "main RT %s missing 0.0.0.0/0 -> %s route", v.MainRTBID, v.IGWID)
 	})
-	require.NoError(t, err, "disassociate private RT")
-	*n.AssocReleased = true
 
-	harness.Step(t, "delete-route-table %s", n.PrivRTBID)
-	_, err = c.EC2.DeleteRouteTable(&ec2.DeleteRouteTableInput{
-		RouteTableId: aws.String(n.PrivRTBID),
-	})
-	require.NoError(t, err, "delete private RT")
-	*n.RTBDeleted = true
+	b := spreadSetupBastion(t, fix, v)
 
-	harness.Step(t, "delete-nat-gateway %s", n.NatGWID)
-	_, err = c.EC2.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
-		NatGatewayId: aws.String(n.NatGWID),
+	t.Run("BastionSSH", func(t *testing.T) {
+		// spreadSetupBastion already waited for SSH + scp'd the key. The
+		// sub-test is the JUnit marker recording that those steps passed
+		// for this run.
+		t.Logf("bastion %s SSH+scp ok at %s", b.ID, b.PublicIP)
 	})
-	require.NoError(t, err, "delete-nat-gateway")
-	waitForNATGatewayStateFatal(t, c, n.NatGWID, "deleted")
-	*n.NatDeleted = true
 
-	harness.Step(t, "release-address %s", n.EIPAllocID)
-	_, err = c.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{
-		AllocationId: aws.String(n.EIPAllocID),
+	p := spreadSetupPrivateTrio(t, fix, b)
+
+	t.Run("SpreadPlacement", func(t *testing.T) {
+		unique := uniqueCount(p.HostingNodes)
+		harness.Detail(t, "unique_hosting_nodes", unique, "want_ge", 3)
+		switch {
+		case unique >= 3:
+			// nominal — full spread
+		case unique >= 2:
+			t.Logf("WARN: only %d unique hosting nodes (expected 3) — spread best-effort", unique)
+		default:
+			t.Fatalf("spread placement failed: %d unique hosting nodes (want >= 2), hosts=%v", unique, p.HostingNodes)
+		}
 	})
-	require.NoError(t, err, "release-address")
-	*n.EIPReleased = true
+
+	t.Run("PreNATIsolation", func(t *testing.T) {
+		for i, privIP := range p.PrivateIPs {
+			if _, err := pingViaBastion(b.KeyPath, b.PublicIP, privIP); err == nil {
+				t.Fatalf("baseline FAIL: %s (%s) can reach internet WITHOUT NAT GW", p.InstanceIDs[i], privIP)
+			}
+			harness.Detail(t, "pre_nat", p.InstanceIDs[i], "reachable", false)
+		}
+	})
+
+	n := spreadSetupNATGW(t, fix, p)
+
+	t.Run("NATGatewayInternet", func(t *testing.T) {
+		harness.Step(t, "verify internet via NAT GW (x%d)", len(p.PrivateIPs))
+		for i, privIP := range p.PrivateIPs {
+			host := p.HostingNodes[i]
+			harness.EventuallyErr(t, func() error {
+				if _, err := pingViaBastion(b.KeyPath, b.PublicIP, privIP); err != nil {
+					return fmt.Errorf("ping via NAT GW (%s on %s): %w", p.InstanceIDs[i], host, err)
+				}
+				return nil
+			}, 90*time.Second, 5*time.Second)
+			harness.Detail(t, "post_nat", p.InstanceIDs[i], "node", host, "reachable", true)
+		}
+	})
+
+	t.Run("NATCleanupOrdering", func(t *testing.T) {
+		harness.Step(t, "delete-route 0.0.0.0/0")
+		_, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
+			RouteTableId:         aws.String(n.PrivRTBID),
+			DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		})
+		require.NoError(t, err, "delete-route 0.0.0.0/0")
+		*n.RouteDeleted = true
+
+		harness.Step(t, "disassociate-route-table %s", n.AssocID)
+		_, err = c.EC2.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+			AssociationId: aws.String(n.AssocID),
+		})
+		require.NoError(t, err, "disassociate private RT")
+		*n.AssocReleased = true
+
+		harness.Step(t, "delete-route-table %s", n.PrivRTBID)
+		_, err = c.EC2.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+			RouteTableId: aws.String(n.PrivRTBID),
+		})
+		require.NoError(t, err, "delete private RT")
+		*n.RTBDeleted = true
+
+		harness.Step(t, "delete-nat-gateway %s", n.NatGWID)
+		_, err = c.EC2.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+			NatGatewayId: aws.String(n.NatGWID),
+		})
+		require.NoError(t, err, "delete-nat-gateway")
+		waitForNATGatewayStateFatal(t, c, n.NatGWID, "deleted")
+		*n.NatDeleted = true
+
+		harness.Step(t, "release-address %s", n.EIPAllocID)
+		_, err = c.EC2.ReleaseAddress(&ec2.ReleaseAddressInput{
+			AllocationId: aws.String(n.EIPAllocID),
+		})
+		require.NoError(t, err, "release-address")
+		*n.EIPReleased = true
+	})
 }
 
 // --- Layered setup helpers ------------------------------------------------

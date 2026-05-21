@@ -9,8 +9,9 @@ import "testing"
 // isolated runs via `go test -run TestMultinodeClusterHealth` are stable.
 //
 // Spread placement + NAT GW (formerly bash phase 11) lives in
-// placement_nat_test.go as 6 top-level TestMultinodeSpread* funcs after the
-// mulga-siv-127 flatten — no wrappers needed for those.
+// placement_nat_test.go as a single TestMultinodeSpread with 6 t.Run
+// sub-tests sharing one VPC + bastion + private trio + NAT GW setup chain.
+// Sub-test layout keeps JUnit granularity without paying 6× setup cost.
 //
 // Parallelism (mulga-siv-127 Stage J):
 //
@@ -32,8 +33,8 @@ import "testing"
 //     listed it in bucket #1 but the trio mutation makes that unsafe;
 //     keep sequential until bucket #3 reworks shared-state ownership.
 //   - TestMultinodeNodeFailure/Recovery  : StopNode/StartNode mutate cluster.
-//   - TestMultinodeSpread*               : sequential vs each other due to
-//     EIP pool contention + shared VPC CIDR 10.100.0.0/16.
+//   - TestMultinodeSpread                : owns EIP pool + VPC CIDR
+//     10.100.0.0/16; sub-tests share the setup chain sequentially.
 
 // TestMultinodePreflight runs sequentially because it initialises the
 // package fixture singleton.
@@ -81,6 +82,14 @@ func TestMultinodeNodeFailure(t *testing.T) {
 
 func TestMultinodeNodeRecovery(t *testing.T) {
 	runNodeRecovery(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeSpread runs after NodeRecovery so the cluster is fully
+// healthy + degrade-tested before this Test launches its 4-VM + NAT GW +
+// custom-VPC graph. Sequential — owns 10.100.0.0/16 + EIP pool; sub-tests
+// share the setup chain (see placement_nat_test.go).
+func TestMultinodeSpread(t *testing.T) {
+	runSpread(t, requireMultiNodeFixture(t))
 }
 
 // TestMultinodeVPCNetworking owns its own 10.200.0.0/16 VPC (no EIP use)

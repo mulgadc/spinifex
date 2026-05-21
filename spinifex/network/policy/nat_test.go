@@ -61,6 +61,33 @@ func TestNATManager_AddEIP_FlowsBarrier_Fires(t *testing.T) {
 	assert.Equal(t, 1, calls, "FlowsBarrier must fire once per AddEIP")
 }
 
+func TestNATManager_AddEIP_IdempotentSkip(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeDistributed, WithFlowsBarrier(func() error {
+		barrierCalls++
+		return nil
+	}))
+	require.NoError(t, err)
+
+	spec := EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}
+	require.NoError(t, nm.AddEIP(ctx, spec))
+	require.Equal(t, 1, barrierCalls, "first AddEIP must fire barrier")
+	firstUUID := findNAT(m, "dnat_and_snat", spec.LogicalIP).UUID
+
+	// Second AddEIP with the same spec must skip delete-then-add. UUID
+	// staying constant confirms the existing row was not replaced.
+	require.NoError(t, nm.AddEIP(ctx, spec))
+	assert.Equal(t, firstUUID, findNAT(m, "dnat_and_snat", spec.LogicalIP).UUID,
+		"idempotent re-add must reuse the existing NAT row")
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+}
+
 func TestNATManager_AddEIP_NoBarrier_Default(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

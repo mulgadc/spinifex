@@ -135,11 +135,29 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 			"spinifex:public_ip": eip.ExternalIP,
 		},
 	}
-	if m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != "" {
+	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
+	if distributed {
 		mac := eip.MAC
 		port := eip.PortName
 		natRule.ExternalMAC = &mac
 		natRule.LogicalPort = &port
+	}
+
+	// Idempotency: if a dnat_and_snat row already matches the target
+	// (same VPC, same LogicalIP, and — under distributed NAT — same
+	// ExternalMAC + LogicalPort), return without touching NB. Avoids the
+	// delete-then-add flow-install gap on duplicate publishes for the
+	// same EIP (mulga-siv-124).
+	if existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
+		slog.Warn("policy: AddEIP idempotency lookup failed", "external_ip", eip.ExternalIP, "err", err)
+	} else if existing != nil && existing.LogicalIP == eip.LogicalIP &&
+		existing.ExternalIDs["spinifex:vpc_id"] == eip.VPCID &&
+		(!distributed ||
+			(existing.ExternalMAC != nil && *existing.ExternalMAC == eip.MAC &&
+				existing.LogicalPort != nil && *existing.LogicalPort == eip.PortName)) {
+		slog.Info("policy: AddEIP idempotent skip — rule already current",
+			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
+		return nil
 	}
 
 	// Search every router, not just the target — stale rules may exist on

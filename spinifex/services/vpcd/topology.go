@@ -3,7 +3,6 @@ package vpcd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -993,144 +992,74 @@ func (h *TopologyHandler) handleIGWDetach(msg *nats.Msg) {
 
 // --- NAT (dnat_and_snat for public IPs) ---
 
-// handleAddNAT installs a dnat_and_snat rule for an EIP. Idempotent: if a rule
-// already exists for the external IP and its state matches the target
-// (LogicalIP, VpcId, plus ExternalMAC/LogicalPort under distributed-NAT mode),
-// the handler returns without touching NB. This avoids the delete-then-add
-// gap during which a chassis briefly has no flow for the EIP — a gap that
-// concurrent duplicate publishes for the same EIP would otherwise reopen
-// (mulga-siv-124).
+// handleAddNAT decodes the EIP event and delegates to
+// policy.NATManager.AddEIP. The manager owns the idempotency-skip,
+// stale-rule cleanup, distributed-NAT mode selection, and post-write
+// flow-install barrier.
 func (h *TopologyHandler) handleAddNAT(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt NATEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.add-nat event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	routerName := "vpc-" + evt.VpcId
-
-	// NAT mode depends on bridge type:
-	// - Direct bridge: distributed NAT (ExternalMAC + LogicalPort set). DNAT
-	//   is processed on the VM's own chassis — no hairpin through the gateway
-	//   chassis. This is the preferred mode for multi-node performance.
-	natRule := &nbdb.NAT{
-		Type:       "dnat_and_snat",
-		ExternalIP: evt.ExternalIP,
-		LogicalIP:  evt.LogicalIP,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id":    evt.VpcId,
-			"spinifex:public_ip": evt.ExternalIP,
-		},
-	}
-	distributed := !h.useCentralizedNAT() && evt.MAC != "" && evt.PortName != ""
-	if distributed {
-		natRule.ExternalMAC = &evt.MAC
-		natRule.LogicalPort = &evt.PortName
-		slog.Debug("vpcd: using distributed NAT (direct bridge)",
-			"external_ip", evt.ExternalIP, "port", evt.PortName, "mac", evt.MAC)
-	}
-
-	// Idempotency: if the existing rule already matches the target, do not
-	// run delete-then-add. Concurrent duplicate vpc.add-nat publishes for the
-	// same EIP would otherwise tear down the rule the previous invocation
-	// just installed, creating a flow-install gap on the chassis.
-	if existing, err := h.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", evt.ExternalIP); err != nil {
-		slog.Warn("vpcd: failed to look up existing NAT for idempotency check", "external_ip", evt.ExternalIP, "err", err)
-	} else if existing != nil && existing.LogicalIP == evt.LogicalIP &&
-		existing.ExternalIDs["spinifex:vpc_id"] == evt.VpcId &&
-		(!distributed ||
-			(existing.ExternalMAC != nil && *existing.ExternalMAC == evt.MAC &&
-				existing.LogicalPort != nil && *existing.LogicalPort == evt.PortName)) {
-		slog.Info("vpcd: dnat_and_snat already current, skipping",
-			"router", routerName,
-			"external_ip", evt.ExternalIP,
-			"logical_ip", evt.LogicalIP,
-			"port", evt.PortName,
-		)
-		respond(msg, nil)
-		return
-	}
-
-	// Remove any stale NAT rule for the same external IP before adding the new
-	// one. Search ALL routers, not just the target — stale rules may exist on a
-	// different VPC's router when vpc.delete-nat (fire-and-forget) hasn't been
-	// processed before the IP was reused by a new VPC.
-	if removed, err := h.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", evt.ExternalIP); err != nil {
-		slog.Warn("vpcd: failed to clean up stale NAT rules for external IP", "external_ip", evt.ExternalIP, "err", err)
-	} else if removed > 0 {
-		slog.Info("vpcd: cleaned up stale NAT rules before re-add", "external_ip", evt.ExternalIP, "removed", removed)
-	}
-
-	if err := h.ovn.AddNAT(ctx, routerName, natRule); err != nil {
-		slog.Error("vpcd: failed to add dnat_and_snat rule", "router", routerName, "externalIP", evt.ExternalIP, "logicalIP", evt.LogicalIP, "err", err)
+	nm, err := h.natManager()
+	if err != nil {
+		slog.Error("vpcd: NAT manager init failed", "err", err)
 		respond(msg, err)
 		return
 	}
-
+	if err := nm.AddEIP(context.Background(), policy.EIPSpec{
+		VPCID:      evt.VpcId,
+		ExternalIP: evt.ExternalIP,
+		LogicalIP:  evt.LogicalIP,
+		PortName:   evt.PortName,
+		MAC:        evt.MAC,
+	}); err != nil {
+		slog.Error("vpcd: AddEIP failed",
+			"vpc_id", evt.VpcId, "external_ip", evt.ExternalIP,
+			"logical_ip", evt.LogicalIP, "err", err)
+		respond(msg, err)
+		return
+	}
 	slog.Info("vpcd: added dnat_and_snat rule",
-		"router", routerName,
-		"external_ip", evt.ExternalIP,
-		"logical_ip", evt.LogicalIP,
-		"port", evt.PortName,
-	)
-
-	// Block until ovn-northd compiles the new NAT into SB and every chassis
-	// has installed the resulting flows. handleIGWAttach has the same
-	// barrier (mulga-siv-105); without one here, the publisher (typically
-	// ec2d/RunInstances) returns success while the DNAT/SNAT flows for the
-	// VM's public IP are still being installed on the gateway chassis, so
-	// the freshly launched VM is unreachable on its public IP for whatever
-	// flow-install latency the chassis happens to incur. Reproduced in CI
-	// run 26072432957 Phase8b — Port_Binding showed up=true at the 3min
-	// timeout, but SSH never completed handshake.
-	_ = waitForFlowsHV()
+		"vpc_id", evt.VpcId, "external_ip", evt.ExternalIP,
+		"logical_ip", evt.LogicalIP, "port", evt.PortName)
 	respond(msg, nil)
 }
 
+// handleDeleteNAT decodes the event and delegates to
+// policy.NATManager.DeleteEIP. Idempotency on already-absent rules is
+// handled by the manager.
 func (h *TopologyHandler) handleDeleteNAT(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
 		return
 	}
-
 	var evt NATEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("vpcd: failed to unmarshal vpc.delete-nat event", "err", err)
 		respond(msg, err)
 		return
 	}
-
-	ctx := context.Background()
-	routerName := "vpc-" + evt.VpcId
-
-	if err := h.ovn.DeleteNAT(ctx, routerName, "dnat_and_snat", evt.LogicalIP); err != nil {
-		// vpc.delete-nat is published from multiple cleanup paths (per-VM
-		// ReleasePublicIP, ENI delete, VPC delete sweep), so a duplicate
-		// delete for the same logical_ip is expected. Treat "already gone"
-		// as success — the caller's intent ("ensure this NAT is removed")
-		// is satisfied whether we did the delete or someone else did.
-		if errors.Is(err, ErrNATNotFound) {
-			slog.Info("vpcd: dnat_and_snat rule already absent (idempotent)",
-				"router", routerName, "logical_ip", evt.LogicalIP)
-			respond(msg, nil)
-			return
-		}
-		slog.Error("vpcd: failed to delete dnat_and_snat rule", "router", routerName, "logicalIP", evt.LogicalIP, "err", err)
+	nm, err := h.natManager()
+	if err != nil {
+		slog.Error("vpcd: NAT manager init failed", "err", err)
 		respond(msg, err)
 		return
 	}
-
+	if err := nm.DeleteEIP(context.Background(), evt.VpcId, evt.LogicalIP); err != nil {
+		slog.Error("vpcd: DeleteEIP failed",
+			"vpc_id", evt.VpcId, "logical_ip", evt.LogicalIP, "err", err)
+		respond(msg, err)
+		return
+	}
 	slog.Info("vpcd: deleted dnat_and_snat rule",
-		"router", routerName,
-		"logical_ip", evt.LogicalIP,
-	)
+		"vpc_id", evt.VpcId, "logical_ip", evt.LogicalIP)
 	respond(msg, nil)
 }
 

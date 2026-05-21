@@ -1,4 +1,4 @@
-package vpcd
+package topology
 
 import (
 	"context"
@@ -6,21 +6,20 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
 )
 
-func newManagerForTest(t *testing.T) (topology.Manager, *MockOVNClient) {
+func newLiveManagerForTest(t *testing.T) (Manager, *mock.Client) {
 	t.Helper()
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-	h := NewTopologyHandler(mock)
-	return h, mock
+	m := mock.New()
+	_ = m.Connect(context.Background())
+	return NewLiveManager(m), m
 }
 
-func TestManager_EnsureVPC(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_EnsureVPC(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
-	spec := topology.VPCSpec{
+	spec := VPCSpec{
 		VPCID: "vpc-mgr1",
 		CIDR:  netip.MustParsePrefix("10.0.0.0/16"),
 		VNI:   42,
@@ -28,7 +27,7 @@ func TestManager_EnsureVPC(t *testing.T) {
 	if err := mgr.EnsureVPC(ctx, spec); err != nil {
 		t.Fatalf("EnsureVPC: %v", err)
 	}
-	got, err := mock.GetLogicalRouter(ctx, topology.VPCRouter(spec.VPCID))
+	got, err := mockClient.GetLogicalRouter(ctx, VPCRouter(spec.VPCID))
 	if err != nil {
 		t.Fatalf("router not present: %v", err)
 	}
@@ -45,14 +44,14 @@ func TestManager_EnsureVPC(t *testing.T) {
 	}
 }
 
-func TestManager_EnsureSubnet(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_EnsureSubnet(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
-	vpc := topology.VPCSpec{VPCID: "vpc-sub", CIDR: netip.MustParsePrefix("10.1.0.0/16")}
+	vpc := VPCSpec{VPCID: "vpc-sub", CIDR: netip.MustParsePrefix("10.1.0.0/16")}
 	if err := mgr.EnsureVPC(ctx, vpc); err != nil {
 		t.Fatalf("EnsureVPC: %v", err)
 	}
-	sub := topology.SubnetSpec{
+	sub := SubnetSpec{
 		SubnetID: "subnet-A",
 		VPCID:    vpc.VPCID,
 		CIDR:     netip.MustParsePrefix("10.1.1.0/24"),
@@ -60,13 +59,13 @@ func TestManager_EnsureSubnet(t *testing.T) {
 	if err := mgr.EnsureSubnet(ctx, sub); err != nil {
 		t.Fatalf("EnsureSubnet: %v", err)
 	}
-	if _, err := mock.GetLogicalSwitch(ctx, topology.SubnetSwitch(sub.SubnetID)); err != nil {
+	if _, err := mockClient.GetLogicalSwitch(ctx, SubnetSwitch(sub.SubnetID)); err != nil {
 		t.Errorf("subnet switch missing: %v", err)
 	}
-	if _, err := mock.GetLogicalRouterPort(ctx, topology.SubnetRouterPort(sub.SubnetID)); err != nil {
+	if _, err := mockClient.GetLogicalRouterPort(ctx, SubnetRouterPort(sub.SubnetID)); err != nil {
 		t.Errorf("subnet router port missing: %v", err)
 	}
-	if _, err := mock.GetLogicalSwitchPort(ctx, topology.SubnetSwitchRouterPort(sub.SubnetID)); err != nil {
+	if _, err := mockClient.GetLogicalSwitchPort(ctx, SubnetSwitchRouterPort(sub.SubnetID)); err != nil {
 		t.Errorf("subnet switch-side router port missing: %v", err)
 	}
 
@@ -75,12 +74,12 @@ func TestManager_EnsureSubnet(t *testing.T) {
 	}
 }
 
-func TestManager_EnsurePort(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_EnsurePort(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
 
-	vpc := topology.VPCSpec{VPCID: "vpc-port", CIDR: netip.MustParsePrefix("10.2.0.0/16")}
-	sub := topology.SubnetSpec{SubnetID: "subnet-P", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.2.1.0/24")}
+	vpc := VPCSpec{VPCID: "vpc-port", CIDR: netip.MustParsePrefix("10.2.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-P", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.2.1.0/24")}
 	if err := mgr.EnsureVPC(ctx, vpc); err != nil {
 		t.Fatalf("EnsureVPC: %v", err)
 	}
@@ -89,7 +88,7 @@ func TestManager_EnsurePort(t *testing.T) {
 	}
 
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")
-	port := topology.PortSpec{
+	port := PortSpec{
 		PortID:    "eni-1",
 		SubnetID:  sub.SubnetID,
 		VPCID:     vpc.VPCID,
@@ -99,7 +98,7 @@ func TestManager_EnsurePort(t *testing.T) {
 	if err := mgr.EnsurePort(ctx, port); err != nil {
 		t.Fatalf("EnsurePort: %v", err)
 	}
-	got, err := mock.GetLogicalSwitchPort(ctx, topology.Port(port.PortID))
+	got, err := mockClient.GetLogicalSwitchPort(ctx, Port(port.PortID))
 	if err != nil {
 		t.Fatalf("port LSP missing: %v", err)
 	}
@@ -110,21 +109,20 @@ func TestManager_EnsurePort(t *testing.T) {
 		t.Errorf("addresses mismatch: %v", got.Addresses)
 	}
 
-	// Idempotent re-call.
 	if err := mgr.EnsurePort(ctx, port); err != nil {
 		t.Fatalf("EnsurePort second call: %v", err)
 	}
 }
 
-func TestManager_DeletePort(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_DeletePort(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
-	vpc := topology.VPCSpec{VPCID: "vpc-dp", CIDR: netip.MustParsePrefix("10.3.0.0/16")}
-	sub := topology.SubnetSpec{SubnetID: "subnet-DP", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.3.1.0/24")}
+	vpc := VPCSpec{VPCID: "vpc-dp", CIDR: netip.MustParsePrefix("10.3.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-DP", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.3.1.0/24")}
 	_ = mgr.EnsureVPC(ctx, vpc)
 	_ = mgr.EnsureSubnet(ctx, sub)
 	mac, _ := net.ParseMAC("02:00:00:00:00:02")
-	port := topology.PortSpec{
+	port := PortSpec{
 		PortID: "eni-DP", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.3.1.5"), MAC: mac,
 	}
@@ -134,49 +132,48 @@ func TestManager_DeletePort(t *testing.T) {
 	if err := mgr.DeletePort(ctx, port); err != nil {
 		t.Fatalf("DeletePort: %v", err)
 	}
-	if _, err := mock.GetLogicalSwitchPort(ctx, topology.Port(port.PortID)); err == nil {
+	if _, err := mockClient.GetLogicalSwitchPort(ctx, Port(port.PortID)); err == nil {
 		t.Fatal("expected LSP to be gone after DeletePort")
 	}
 }
 
-func TestManager_DeleteSubnetAndVPC(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_DeleteSubnetAndVPC(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
-	vpc := topology.VPCSpec{VPCID: "vpc-del", CIDR: netip.MustParsePrefix("10.4.0.0/16")}
-	sub := topology.SubnetSpec{SubnetID: "subnet-del", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.4.1.0/24")}
+	vpc := VPCSpec{VPCID: "vpc-del", CIDR: netip.MustParsePrefix("10.4.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-del", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.4.1.0/24")}
 	_ = mgr.EnsureVPC(ctx, vpc)
 	_ = mgr.EnsureSubnet(ctx, sub)
 
 	if err := mgr.DeleteSubnet(ctx, sub); err != nil {
 		t.Fatalf("DeleteSubnet: %v", err)
 	}
-	if _, err := mock.GetLogicalSwitch(ctx, topology.SubnetSwitch(sub.SubnetID)); err == nil {
+	if _, err := mockClient.GetLogicalSwitch(ctx, SubnetSwitch(sub.SubnetID)); err == nil {
 		t.Fatal("expected subnet switch to be gone")
 	}
 
 	if err := mgr.DeleteVPC(ctx, vpc.VPCID); err != nil {
 		t.Fatalf("DeleteVPC: %v", err)
 	}
-	if _, err := mock.GetLogicalRouter(ctx, topology.VPCRouter(vpc.VPCID)); err == nil {
+	if _, err := mockClient.GetLogicalRouter(ctx, VPCRouter(vpc.VPCID)); err == nil {
 		t.Fatal("expected VPC router to be gone")
 	}
 }
 
-func TestManager_SetPortSecurityGroups(t *testing.T) {
-	mgr, mock := newManagerForTest(t)
+func TestLiveManager_SetPortSecurityGroups(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()
-	vpc := topology.VPCSpec{VPCID: "vpc-sg", CIDR: netip.MustParsePrefix("10.5.0.0/16")}
-	sub := topology.SubnetSpec{SubnetID: "subnet-sg", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.5.1.0/24")}
+	vpc := VPCSpec{VPCID: "vpc-sg", CIDR: netip.MustParsePrefix("10.5.0.0/16")}
+	sub := SubnetSpec{SubnetID: "subnet-sg", VPCID: vpc.VPCID, CIDR: netip.MustParsePrefix("10.5.1.0/24")}
 	_ = mgr.EnsureVPC(ctx, vpc)
 	_ = mgr.EnsureSubnet(ctx, sub)
 
-	// Seed an SG port group so the port can join it.
-	if err := mock.CreatePortGroup(ctx, topology.SecurityGroupPortGroup("sg-A"), nil); err != nil {
+	if err := mockClient.CreatePortGroup(ctx, SecurityGroupPortGroup("sg-A"), nil); err != nil {
 		t.Fatalf("seed port group: %v", err)
 	}
 
 	mac, _ := net.ParseMAC("02:00:00:00:00:03")
-	port := topology.PortSpec{
+	port := PortSpec{
 		PortID: "eni-sg", SubnetID: sub.SubnetID, VPCID: vpc.VPCID,
 		PrivateIP: netip.MustParseAddr("10.5.1.7"), MAC: mac,
 		SGIDs: []string{"sg-A"},
@@ -185,18 +182,44 @@ func TestManager_SetPortSecurityGroups(t *testing.T) {
 		t.Fatalf("EnsurePort: %v", err)
 	}
 
-	// Seed second SG, then move membership from A to B.
-	if err := mock.CreatePortGroup(ctx, topology.SecurityGroupPortGroup("sg-B"), nil); err != nil {
+	if err := mockClient.CreatePortGroup(ctx, SecurityGroupPortGroup("sg-B"), nil); err != nil {
 		t.Fatalf("seed port group B: %v", err)
 	}
 	if err := mgr.SetPortSecurityGroups(ctx, port.PortID, []string{"sg-B"}); err != nil {
 		t.Fatalf("SetPortSecurityGroups: %v", err)
 	}
-	names, err := mock.ListPortGroupsForPort(ctx, topology.Port(port.PortID))
+	names, err := mockClient.ListPortGroupsForPort(ctx, Port(port.PortID))
 	if err != nil {
 		t.Fatalf("ListPortGroupsForPort: %v", err)
 	}
-	if len(names) != 1 || names[0] != topology.SecurityGroupPortGroup("sg-B") {
+	if len(names) != 1 || names[0] != SecurityGroupPortGroup("sg-B") {
 		t.Errorf("expected only sg-B membership, got %v", names)
+	}
+}
+
+func TestLiveManager_WithDNSServer(t *testing.T) {
+	mockClient := mock.New()
+	_ = mockClient.Connect(context.Background())
+	mgr := NewLiveManager(mockClient, WithDNSServer(func() string { return "{10.0.0.2}" }))
+	ctx := context.Background()
+	_ = mgr.EnsureVPC(ctx, VPCSpec{VPCID: "vpc-dns", CIDR: netip.MustParsePrefix("10.6.0.0/16")})
+	_ = mgr.EnsureSubnet(ctx, SubnetSpec{SubnetID: "subnet-dns", VPCID: "vpc-dns", CIDR: netip.MustParsePrefix("10.6.1.0/24")})
+	opts, err := mockClient.FindDHCPOptionsByCIDR(ctx, "10.6.1.0/24")
+	if err != nil {
+		t.Fatalf("DHCPOptions missing: %v", err)
+	}
+	if opts.Options["dns_server"] != "{10.0.0.2}" {
+		t.Errorf("dns_server = %q, want {10.0.0.2}", opts.Options["dns_server"])
+	}
+}
+
+func TestSubnetGatewayCIDR(t *testing.T) {
+	prefix := netip.MustParsePrefix("10.0.1.0/24")
+	gw, bits, err := SubnetGatewayCIDR(prefix)
+	if err != nil {
+		t.Fatalf("SubnetGatewayCIDR: %v", err)
+	}
+	if gw != "10.0.1.1" || bits != 24 {
+		t.Errorf("got (%q, %d), want (10.0.1.1, 24)", gw, bits)
 	}
 }

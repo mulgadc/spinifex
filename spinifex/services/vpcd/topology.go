@@ -9,8 +9,10 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -172,6 +174,11 @@ type TopologyHandler struct {
 	// source="dhcp" pools (mulga-siv-38). nil when no DHCP pool is wired or
 	// the test stack supplies a static-only mock.
 	nc *nats.Conn
+
+	// lm + lmOnce cache the topology.Manager produced from h.ovn so each
+	// adapter call doesn't re-construct (Phase 2.6, mulga-siv-129).
+	lmOnce sync.Once
+	lm     topology.Manager
 }
 
 // NewTopologyHandler creates a new TopologyHandler with optional external network config.

@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -78,6 +82,10 @@ type Config struct {
 	// directly to the OVS bridge; veth uses a veth pair to link a Linux bridge
 	// to OVS. When empty, auto-detected at startup.
 	BridgeMode string
+	// AZ is the local availability zone identifier. The reconciler uses it
+	// to scope its IntentState scan to local-AZ KV records; new VPC records
+	// are stamped with this value at create time.
+	AZ string
 }
 
 // ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
@@ -455,7 +463,7 @@ func launchService(cfg *Config) error {
 	// Runtime VPC events still fan out via the vpcd-workers queue group, so
 	// non-leaders remain functional after Subscribe below.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := AcquireReconcileLeader(nc, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeader(nc, holder)
 
 	subs, err := topo.Subscribe(nc)
 	if err != nil {
@@ -514,49 +522,81 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
-	// Pass 1: Bootstrap-config reconcile. Creates the bootstrap VPC / IGW
-	// topology if missing. Leader-only.
-	if isLeader {
-		Reconcile(ctx, topo, cfg.Bootstrap)
+	// Construct the network/reconcile manager stack. The reconciler replaces
+	// the five-pass startup sequence (Reconcile + ReconcileFromKV +
+	// ReconcileSGsOnce + RetrofitAllExternalLocalnetOptions +
+	// RetrofitAllGatewayPortNetworks) with a single intent-driven pass that
+	// also runs on a 5-minute drift ticker (replaces the 30s ReconcileSGsLoop).
+	uplinkMode := host.UplinkModePhysical
+	if bridgeMode == BridgeModeVeth {
+		uplinkMode = host.UplinkModeVeth
+	}
+	natMode := policy.NATModeFromUplinkMode(uplinkMode)
+
+	sgMgr := policy.NewSecurityGroupManager(liveClient)
+	natMgr, err := policy.NewNATManager(liveClient, natMode)
+	if err != nil {
+		return fmt.Errorf("construct NAT manager: %w", err)
+	}
+	routeMgr := policy.NewRouteManager(liveClient)
+
+	var igwPool *external.ExternalPoolConfig
+	if cfg.ExternalMode != "" && len(cfg.ExternalPools) > 0 {
+		p := externalPoolConfigToShared(cfg.ExternalPools[0])
+		igwPool = &p
+	}
+	igwMgr, err := external.NewIGWManager(external.IGWManagerConfig{
+		OVN:          liveClient,
+		Routes:       routeMgr,
+		NAT:          natMgr,
+		Pool:         igwPool,
+		Allocator:    external.NewStaticRangeAllocator(liveClient),
+		Chassis:      chassisNames,
+		NATMode:      natMode,
+		FlowsBarrier: waitForFlowsHV,
+	})
+	if err != nil {
+		return fmt.Errorf("construct IGW manager: %w", err)
 	}
 
-	// Pass 2: Reconcile from NATS KV (handles reboots, OVN DB loss, missed events).
-	// Runs after subscribing so new events are not missed during reconciliation.
-	// Leader-gated (mulga-siv-29) to avoid concurrent Create races against OVN NB.
-	//
-	// ReconcileFromKV creates ENI LSPs with the non-atomic primitive (no SG
-	// port-group joins). Calling ReconcileSGsOnce immediately after — under the
-	// same leader lock — recreates any missing port groups and joins the
-	// fresh LSPs to them, closing the enforcement gap before the periodic
-	// loop's first 30s tick.
-	if isLeader {
-		ReconcileFromKV(ctx, nc, topo, chassisNames)
-		ReconcileSGsOnce(ctx, nc, topo)
+	rec, err := reconcile.New(reconcile.Config{
+		OVN:          liveClient,
+		SG:           sgMgr,
+		NAT:          natMgr,
+		Routes:       routeMgr,
+		IGW:          igwMgr,
+		LocalAZ:      cfg.AZ,
+		NodeHostname: holder,
+		Chassis:      chassisNames,
+	})
+	if err != nil {
+		return fmt.Errorf("construct reconciler: %w", err)
 	}
 
-	// Pass 3: Retrofit localnet options on every external switch. Walks OVN
-	// directly so stale/missing KV records can't hide a stale nat-addresses
-	// or cleared network_name. Idempotent; silent when all correct.
-	// Pass 4: Retrofit gateway-port Networks. Reconcile gates IGW work on
-	// "ext switch missing", so a cluster shipped with the pool-IP bug
-	// (mulga-siv-26) never re-enters reconcileIGW. Walk every gateway LRP
-	// directly and rewrite stale Networks to link-local in place.
-	// Both leader-gated (mulga-siv-29) — these read-modify-write OVN NB and
-	// would race against the leader's Reconcile/ReconcileFromKV otherwise.
+	// Startup reconcile: leader-gated read of NATS KV intent state, applied
+	// once against OVN NB DB. The drift loop below handles the recovery case
+	// (KV not yet populated when this fires — daemon's EnsureDefaultVPC may
+	// race with vpcd's startup). Subscribers above keep handling per-event
+	// NATS messages via the legacy TopologyHandler path; phase 4 migrates
+	// those onto the new managers.
 	if isLeader {
-		topo.RetrofitAllExternalLocalnetOptions(ctx)
-		topo.RetrofitAllGatewayPortNetworks(ctx)
+		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+		if intentErr != nil {
+			slog.Warn("vpcd: startup intent load failed", "err", intentErr)
+		} else if err := rec.Reconcile(ctx, intent); err != nil {
+			slog.Warn("vpcd: startup reconcile failed", "err", err)
+		}
 		releaseLeader()
 	}
 
-	// Periodic SG/port-group/address-set drift convergence. Leader-gated on the
-	// shared reconcile bucket so only one vpcd in the cluster runs the scans at
-	// a time; cancelled when the parent ctx is.
+	// Periodic drift detection. Leader-gated on the shared reconcile bucket
+	// so only one vpcd in the cluster scans at a time; cancelled when the
+	// parent ctx is.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	loopDone := make(chan struct{})
 	go func() {
-		ReconcileSGsLoop(loopCtx, nc, topo)
+		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder)
 		close(loopDone)
 	}()
 
@@ -613,6 +653,28 @@ func newDHCPManagerWithRetry(ctx context.Context, nc *nats.Conn, js nats.JetStre
 		case <-time.After(retryDelay):
 		}
 		retryDelay = min(retryDelay*2, 10*time.Second)
+	}
+}
+
+// externalPoolConfigToShared translates the vpcd-local ExternalPoolConfig
+// into the network/external package's shared shape. The two will merge
+// once topology.go is split (bead mulga-siv-125.3.4 — see external.go's
+// type doc); until then this is the seam.
+func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
+	return external.ExternalPoolConfig{
+		Name:            p.Name,
+		Source:          p.Source,
+		RangeStart:      p.RangeStart,
+		RangeEnd:        p.RangeEnd,
+		Gateway:         p.Gateway,
+		GatewayIP:       p.GatewayIP,
+		PrefixLen:       p.PrefixLen,
+		DNSServers:      p.DNSServers,
+		Region:          p.Region,
+		AZ:              p.AZ,
+		DhcpBindBridge:  p.DhcpBindBridge,
+		GwLrpRangeStart: p.GwLrpRangeStart,
+		GwLrpRangeEnd:   p.GwLrpRangeEnd,
 	}
 }
 

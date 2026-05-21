@@ -1054,7 +1054,7 @@ func TestTopologyHandler_AddNAT_Idempotent(t *testing.T) {
 		t.Errorf("second add-nat ran flow barrier: waitForFlowsHV called %d times, want 1", barrier)
 	}
 
-	nat := mock.nats[router.NAT[0]]
+	nat := mock.NATs[router.NAT[0]]
 	if nat.LogicalIP != evt.LogicalIP {
 		t.Errorf("NAT logical_ip=%q want %q", nat.LogicalIP, evt.LogicalIP)
 	}

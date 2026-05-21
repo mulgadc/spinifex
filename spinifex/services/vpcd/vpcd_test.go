@@ -411,3 +411,50 @@ func TestResolveExternalCIDR_ContextCancel(t *testing.T) {
 		t.Errorf("expected 'cancelled' error, got: %v", err)
 	}
 }
+
+// Exercises the original externalCIDRFromBridge body (not the test stub) by
+// resolving against the loopback interface, which is guaranteed to exist and
+// carry an IPv4 address on every supported host.
+func TestExternalCIDRFromBridge_Loopback(t *testing.T) {
+	got, err := externalCIDRFromBridge("lo")
+	if err != nil {
+		t.Fatalf("loopback resolve: %v", err)
+	}
+	if !got.Addr().Is4() {
+		t.Errorf("expected IPv4 address, got %v", got)
+	}
+	if !got.Addr().IsLoopback() {
+		t.Errorf("expected loopback address, got %v", got.Addr())
+	}
+}
+
+func TestExternalCIDRFromBridge_UnknownInterface(t *testing.T) {
+	_, err := externalCIDRFromBridge("nonexistent-iface-zzz")
+	if err == nil {
+		t.Fatal("expected error for unknown interface")
+	}
+	if !strings.Contains(err.Error(), "interface") {
+		t.Errorf("expected 'interface' in error, got: %v", err)
+	}
+}
+
+func TestEnsureExternalCIDRReady_NoExternalMode(t *testing.T) {
+	if err := ensureExternalCIDRReady(context.Background(), "", "br-wan"); err != nil {
+		t.Fatalf("empty externalMode must be a no-op, got: %v", err)
+	}
+}
+
+func TestEnsureExternalCIDRReady_ResolvesSuccessfully(t *testing.T) {
+	stubExternalCIDR(t, []externalCIDRResponse{{prefix: netip.MustParsePrefix("10.0.0.1/24")}})
+	if err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan"); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+}
+
+func TestEnsureExternalCIDRReady_PropagatesError(t *testing.T) {
+	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
+	err := ensureExternalCIDRReady(context.Background(), "direct", "br-wan")
+	if err == nil {
+		t.Fatal("expected error when resolveExternalCIDR fails")
+	}
+}

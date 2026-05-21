@@ -354,6 +354,26 @@ func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Durati
 	}
 }
 
+// ensureExternalCIDRReady blocks at startup until the WAN bridge has an IPv4
+// address, or returns an error if resolution fails within the timeout. The OS
+// (netplan static or systemd-networkd DHCP) assigns the uplink address before
+// Spinifex starts in steady-state; a missing address at this point means a
+// boot race or misconfiguration. Bounded retry so systemd's
+// Restart=on-failure does not flap through transient gaps. No-op when
+// externalMode is empty (overlay-only deployments).
+func ensureExternalCIDRReady(ctx context.Context, externalMode, bridge string) error {
+	if externalMode == "" {
+		return nil
+	}
+	cidr, err := resolveExternalCIDR(ctx, bridge, 30*time.Second)
+	if err != nil {
+		slog.Error("vpcd: external CIDR resolution failed", "bridge", bridge, "err", err)
+		return err
+	}
+	slog.Info("vpcd: external CIDR resolved at startup", "bridge", bridge, "cidr", cidr.String())
+	return nil
+}
+
 func launchService(cfg *Config) error {
 	slog.Info("Starting vpcd service",
 		"ovn_nb_addr", cfg.OVNNBAddr,
@@ -396,19 +416,10 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
-	// Resolve external CIDR from the WAN bridge before any reconcile. The OS
-	// (netplan static or systemd-networkd DHCP) assigns the uplink address
-	// before Spinifex starts in steady-state; a missing address at this point
-	// means a boot race or misconfiguration. Block with bounded retry so
-	// systemd's Restart=on-failure does not flap us through transient gaps.
-	// Skipped when external networking is disabled (overlay-only deployments).
-	if cfg.ExternalMode != "" {
-		externalCIDR, err := resolveExternalCIDR(ctx, dhcpBindBridge, 30*time.Second)
-		if err != nil {
-			slog.Error("vpcd: external CIDR resolution failed", "bridge", dhcpBindBridge, "err", err)
-			return err
-		}
-		slog.Info("vpcd: external CIDR resolved at startup", "bridge", dhcpBindBridge, "cidr", externalCIDR.String())
+	// Resolve external CIDR from the WAN bridge before any reconcile. Skipped
+	// when external networking is disabled (overlay-only deployments).
+	if err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, dhcpBindBridge); err != nil {
+		return err
 	}
 
 	// Reconcile OVN topology from bootstrap config before subscribing.

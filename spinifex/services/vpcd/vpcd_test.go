@@ -1,9 +1,12 @@
 package vpcd
 
 import (
+	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPreflightOVN_AllPass(t *testing.T) {
@@ -333,5 +336,78 @@ func TestResolveBridgeConfig_DefaultsBindBridge(t *testing.T) {
 	_, br := resolveBridgeConfig(BridgeModeDirect, "enp0s3", "")
 	if br != "br-wan" {
 		t.Errorf("empty dhcp_bind_bridge should default to br-wan, got %q", br)
+	}
+}
+
+// stubExternalCIDR replaces externalCIDRFromBridge with a sequence of
+// responses. Each call consumes the next entry; the last entry repeats.
+func stubExternalCIDR(t *testing.T, responses []externalCIDRResponse) {
+	t.Helper()
+	orig := externalCIDRFromBridge
+	t.Cleanup(func() { externalCIDRFromBridge = orig })
+	i := 0
+	externalCIDRFromBridge = func(bridge string) (netip.Prefix, error) {
+		r := responses[i]
+		if i < len(responses)-1 {
+			i++
+		}
+		return r.prefix, r.err
+	}
+}
+
+type externalCIDRResponse struct {
+	prefix netip.Prefix
+	err    error
+}
+
+func TestResolveExternalCIDR_ImmediateSuccess(t *testing.T) {
+	want := netip.MustParsePrefix("192.168.1.10/24")
+	stubExternalCIDR(t, []externalCIDRResponse{{prefix: want}})
+	got, err := resolveExternalCIDR(context.Background(), "br-wan", 1*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestResolveExternalCIDR_RetriesThenSucceeds(t *testing.T) {
+	want := netip.MustParsePrefix("10.0.0.5/16")
+	stubExternalCIDR(t, []externalCIDRResponse{
+		{err: fmt.Errorf("no IPv4")},
+		{err: fmt.Errorf("no IPv4")},
+		{prefix: want},
+	})
+	got, err := resolveExternalCIDR(context.Background(), "br-wan", 5*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error after retry: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestResolveExternalCIDR_TimeoutFailsStart(t *testing.T) {
+	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
+	_, err := resolveExternalCIDR(context.Background(), "br-wan", 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "not resolved") {
+		t.Errorf("expected 'not resolved' error, got: %v", err)
+	}
+}
+
+func TestResolveExternalCIDR_ContextCancel(t *testing.T) {
+	stubExternalCIDR(t, []externalCIDRResponse{{err: fmt.Errorf("no IPv4")}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := resolveExternalCIDR(ctx, "br-wan", 10*time.Second)
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected 'cancelled' error, got: %v", err)
 	}
 }

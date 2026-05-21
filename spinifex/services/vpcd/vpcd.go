@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -286,6 +288,72 @@ func preflightOVN() error {
 	return nil
 }
 
+// externalCIDRFromBridge returns the first IPv4 CIDR assigned to the named
+// bridge interface. Used to discover the host's uplink network at startup
+// (the OS assigns this via netplan static config or systemd-networkd DHCP
+// before Spinifex starts).
+//
+// Injected as a var so tests can stub it without requiring a real interface.
+var externalCIDRFromBridge = func(bridge string) (netip.Prefix, error) {
+	iface, err := net.InterfaceByName(bridge)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("interface %q: %w", bridge, err)
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("addrs %q: %w", bridge, err)
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		v4 := ipnet.IP.To4()
+		if v4 == nil {
+			continue
+		}
+		ones, _ := ipnet.Mask.Size()
+		addr, _ := netip.AddrFromSlice(v4)
+		return netip.PrefixFrom(addr, ones), nil
+	}
+	return netip.Prefix{}, fmt.Errorf("no IPv4 address on %q", bridge)
+}
+
+// resolveExternalCIDR blocks until the WAN bridge has an IPv4 address or the
+// timeout elapses. This guards the boot race where vpcd starts before
+// systemd-networkd finishes DHCP on br-wan, or before netplan applies a
+// static config. Returns the resolved CIDR for downstream consumers.
+//
+// Forward-compatible with the ADR-0006 L0 contract: this becomes the backing
+// implementation of HostWiring.ExternalCIDR() once the network/host package
+// lands. Until then the value is only used to fail-start on missing uplink.
+func resolveExternalCIDR(ctx context.Context, bridge string, timeout time.Duration) (netip.Prefix, error) {
+	const retryDelay = 500 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	attempt := 0
+	for {
+		attempt++
+		cidr, err := externalCIDRFromBridge(bridge)
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("vpcd: external CIDR resolved", "bridge", bridge, "cidr", cidr.String(), "attempts", attempt)
+			}
+			return cidr, nil
+		}
+		if time.Now().After(deadline) {
+			return netip.Prefix{}, fmt.Errorf("external CIDR not resolved on %q after %s (%d attempts): %w",
+				bridge, timeout, attempt, err)
+		}
+		slog.Warn("vpcd: external CIDR not yet assigned, retrying",
+			"bridge", bridge, "err", err, "attempt", attempt, "retry_in", retryDelay)
+		select {
+		case <-ctx.Done():
+			return netip.Prefix{}, fmt.Errorf("external CIDR resolution cancelled: %w", ctx.Err())
+		case <-time.After(retryDelay):
+		}
+	}
+}
+
 func launchService(cfg *Config) error {
 	slog.Info("Starting vpcd service",
 		"ovn_nb_addr", cfg.OVNNBAddr,
@@ -326,6 +394,21 @@ func launchService(cfg *Config) error {
 	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, dhcpBindBridge); err != nil {
 		slog.Error("vpcd: bridge mode sanity check failed", "err", err)
 		return err
+	}
+
+	// Resolve external CIDR from the WAN bridge before any reconcile. The OS
+	// (netplan static or systemd-networkd DHCP) assigns the uplink address
+	// before Spinifex starts in steady-state; a missing address at this point
+	// means a boot race or misconfiguration. Block with bounded retry so
+	// systemd's Restart=on-failure does not flap us through transient gaps.
+	// Skipped when external networking is disabled (overlay-only deployments).
+	if cfg.ExternalMode != "" {
+		externalCIDR, err := resolveExternalCIDR(ctx, dhcpBindBridge, 30*time.Second)
+		if err != nil {
+			slog.Error("vpcd: external CIDR resolution failed", "bridge", dhcpBindBridge, "err", err)
+			return err
+		}
+		slog.Info("vpcd: external CIDR resolved at startup", "bridge", dhcpBindBridge, "cidr", externalCIDR.String())
 	}
 
 	// Reconcile OVN topology from bootstrap config before subscribing.

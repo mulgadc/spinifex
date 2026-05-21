@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -935,6 +936,84 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		negResult := rm.canAllocate(microType, -1)
 		assert.GreaterOrEqual(t, negResult, -1) // Implementation dependent
 	})
+}
+
+// TestAllocate_NoOvercommitUnderContention exercises the TOCTOU window that
+// the pre-fix code had between canAllocate's RUnlock and the subsequent
+// mu.Lock(): N concurrent allocate() callers on a pool with capacity for
+// exactly N-1 must produce exactly N-1 successes and 1 insufficient-capacity
+// failure. Run under -race to also catch any regression that re-introduces
+// a check-then-commit gap. Pre-fix this test would intermittently overcommit;
+// post-fix the per-call write-lock acquisition makes it deterministic.
+func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
+	rm, err := NewResourceManager(nil, nil)
+	require.NoError(t, err)
+
+	var microType *ec2.InstanceTypeInfo
+	for key, it := range rm.instanceTypes {
+		if strings.HasSuffix(key, ".micro") {
+			microType = it
+			break
+		}
+	}
+	require.NotNil(t, microType, "test requires a .micro instance type")
+
+	vCPUs := int(instanceTypeVCPUs(microType))
+	memGB := float64(instanceTypeMemoryMiB(microType)) / 1024.0
+	require.Greater(t, vCPUs, 0, "micro type must report vCPU count")
+	require.Greater(t, memGB, float64(0), "micro type must report memory")
+
+	const capacityFor = 8 // slots
+	const goroutines = capacityFor + 1
+	rm.mu.Lock()
+	rm.hostVCPU = vCPUs * capacityFor
+	rm.hostMemGB = memGB * float64(capacityFor)
+	rm.reservedVCPU = 0
+	rm.reservedMem = 0
+	rm.allocatedVCPU = 0
+	rm.allocatedMem = 0
+	rm.mu.Unlock()
+
+	require.Equal(t, capacityFor, rm.canAllocate(microType, goroutines),
+		"setup sanity: pool should have exactly capacityFor slots")
+
+	var (
+		wg           sync.WaitGroup
+		startGate    = make(chan struct{})
+		successes    int64
+		insufficient int64
+		otherErrs    int64
+		errsMu       sync.Mutex
+		seenErrs     []string
+	)
+	for range goroutines {
+		wg.Go(func() {
+			<-startGate
+			if err := rm.allocate(microType); err == nil {
+				atomic.AddInt64(&successes, 1)
+			} else if strings.Contains(err.Error(), "insufficient resources") {
+				atomic.AddInt64(&insufficient, 1)
+			} else {
+				atomic.AddInt64(&otherErrs, 1)
+				errsMu.Lock()
+				seenErrs = append(seenErrs, err.Error())
+				errsMu.Unlock()
+			}
+		})
+	}
+	close(startGate)
+	wg.Wait()
+
+	assert.Equal(t, int64(0), otherErrs, "unexpected error classes: %v", seenErrs)
+	assert.Equal(t, int64(capacityFor), successes, "must commit exactly capacityFor allocations")
+	assert.Equal(t, int64(1), insufficient, "exactly one caller must observe insufficient capacity")
+
+	rm.mu.RLock()
+	finalVCPU := rm.allocatedVCPU
+	finalMem := rm.allocatedMem
+	rm.mu.RUnlock()
+	assert.Equal(t, vCPUs*capacityFor, finalVCPU, "allocated vCPU must not exceed schedulable pool")
+	assert.InDelta(t, memGB*float64(capacityFor), finalMem, 0.001, "allocated memory must not exceed schedulable pool")
 }
 
 // TestDescribeInstances_ReservationGrouping tests that instances are grouped by reservation ID

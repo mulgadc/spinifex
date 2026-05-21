@@ -565,6 +565,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	launchCount := allocatableCount
 	slog.Info("PrepareRunInstances: count determined", "min", minCount, "max", maxCount, "launching", launchCount)
 
+	// Allocate is atomic per call (check + commit under a single write lock),
+	// so this loop can never overcommit. Under contention it may allocate
+	// fewer than allocatableCount; the < minCount branch below rolls back.
 	var allocatedCount int
 	for i := 0; i < launchCount; i++ {
 		if err := s.resourceMgr.Allocate(instanceType); err != nil {

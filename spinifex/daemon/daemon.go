@@ -1869,7 +1869,13 @@ func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID
 func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count int) int {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
+	return rm.canAllocateLocked(instanceType, count)
+}
 
+// canAllocateLocked is the lock-free body of canAllocate. Caller must already
+// hold rm.mu for read or write. Extracted so allocate can re-check capacity
+// while holding the write lock without dropping it.
+func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo, count int) int {
 	// GPU capacity is managed exclusively by gpuManager.Claim; don't double-gate
 	// on host CPU/memory which is always abundant on GPU-class hardware.
 	if instancetypes.IsGPUType(instanceType) {
@@ -1886,17 +1892,21 @@ func (rm *ResourceManager) canAllocate(instanceType *ec2.InstanceTypeInfo, count
 	)
 }
 
-// allocate reserves resources for an instance and updates NATS subscriptions
+// allocate reserves resources for one instance and updates NATS subscriptions.
+// Check and commit run under a single write-lock acquisition; without this,
+// two concurrent callers could both observe free capacity through the read
+// lock and then both commit, overcommitting the host. Multi-instance launch
+// paths loop on allocate per VM, relying on this per-call atomicity.
 func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
-	if rm.canAllocate(instanceType, 1) < 1 {
+	rm.mu.Lock()
+	if rm.canAllocateLocked(instanceType, 1) < 1 {
+		rm.mu.Unlock()
 		instanceTypeName := ""
 		if instanceType.InstanceType != nil {
 			instanceTypeName = *instanceType.InstanceType
 		}
 		return fmt.Errorf("insufficient resources for instance type %s", instanceTypeName)
 	}
-
-	rm.mu.Lock()
 	vCPUs := instanceTypeVCPUs(instanceType)
 	memoryGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)

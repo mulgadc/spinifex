@@ -1303,6 +1303,13 @@ func (h *TopologyHandler) handleIGWDetach(msg *nats.Msg) {
 
 // --- NAT (dnat_and_snat for public IPs) ---
 
+// handleAddNAT installs a dnat_and_snat rule for an EIP. Idempotent: if a rule
+// already exists for the external IP and its state matches the target
+// (LogicalIP, VpcId, plus ExternalMAC/LogicalPort under distributed-NAT mode),
+// the handler returns without touching NB. This avoids the delete-then-add
+// gap during which a chassis briefly has no flow for the EIP — a gap that
+// concurrent duplicate publishes for the same EIP would otherwise reopen
+// (mulga-siv-124).
 func (h *TopologyHandler) handleAddNAT(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
@@ -1332,11 +1339,33 @@ func (h *TopologyHandler) handleAddNAT(msg *nats.Msg) {
 			"spinifex:public_ip": evt.ExternalIP,
 		},
 	}
-	if !h.useCentralizedNAT() && evt.MAC != "" && evt.PortName != "" {
+	distributed := !h.useCentralizedNAT() && evt.MAC != "" && evt.PortName != ""
+	if distributed {
 		natRule.ExternalMAC = &evt.MAC
 		natRule.LogicalPort = &evt.PortName
 		slog.Debug("vpcd: using distributed NAT (direct bridge)",
 			"external_ip", evt.ExternalIP, "port", evt.PortName, "mac", evt.MAC)
+	}
+
+	// Idempotency: if the existing rule already matches the target, do not
+	// run delete-then-add. Concurrent duplicate vpc.add-nat publishes for the
+	// same EIP would otherwise tear down the rule the previous invocation
+	// just installed, creating a flow-install gap on the chassis.
+	if existing, err := h.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", evt.ExternalIP); err != nil {
+		slog.Warn("vpcd: failed to look up existing NAT for idempotency check", "external_ip", evt.ExternalIP, "err", err)
+	} else if existing != nil && existing.LogicalIP == evt.LogicalIP &&
+		existing.ExternalIDs["spinifex:vpc_id"] == evt.VpcId &&
+		(!distributed ||
+			(existing.ExternalMAC != nil && *existing.ExternalMAC == evt.MAC &&
+				existing.LogicalPort != nil && *existing.LogicalPort == evt.PortName)) {
+		slog.Info("vpcd: dnat_and_snat already current, skipping",
+			"router", routerName,
+			"external_ip", evt.ExternalIP,
+			"logical_ip", evt.LogicalIP,
+			"port", evt.PortName,
+		)
+		respond(msg, nil)
+		return
 	}
 
 	// Remove any stale NAT rule for the same external IP before adding the new

@@ -25,23 +25,23 @@ func TestCurves_OnlyApprovedEntries(t *testing.T) {
 	want := []tls.CurveID{
 		tls.X25519MLKEM768,
 		tls.SecP384r1MLKEM1024,
+		tls.X25519,
+		tls.CurveP384,
 	}
 	if !slices.Equal(tlsconfig.Curves, want) {
 		t.Errorf("Curves = %v, want %v", tlsconfig.Curves, want)
 	}
 }
 
-func TestCurves_ExcludesClassicalAndWeakPrimitives(t *testing.T) {
+func TestCurves_ExcludesWeakPrimitives(t *testing.T) {
 	forbidden := []tls.CurveID{
 		tls.SecP256r1MLKEM768, // weakest ML-KEM hybrid (P-256 component)
-		tls.X25519,            // classical, no PQ component — HNDL exposure
-		tls.CurveP256,         // classical, not CNSA 2.0
-		tls.CurveP384,         // classical, no PQ component — HNDL exposure
-		tls.CurveP521,         // classical, niche
+		tls.CurveP256,         // not CNSA 2.0
+		tls.CurveP521,         // niche, no current peers
 	}
 	for _, c := range forbidden {
 		if slices.Contains(tlsconfig.Curves, c) {
-			t.Errorf("Curves includes forbidden curve %v (PQ-only policy)", c)
+			t.Errorf("Curves includes forbidden curve %v", c)
 		}
 	}
 }

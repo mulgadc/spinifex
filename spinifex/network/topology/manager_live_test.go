@@ -160,6 +160,47 @@ func TestLiveManager_DeleteSubnetAndVPC(t *testing.T) {
 	}
 }
 
+func TestLiveManager_EnsureSGPortGroup(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+
+	if err := mgr.EnsureSGPortGroup(ctx, "sg-pg1"); err != nil {
+		t.Fatalf("EnsureSGPortGroup: %v", err)
+	}
+	pg, err := mockClient.GetPortGroup(ctx, SecurityGroupPortGroup("sg-pg1"))
+	if err != nil {
+		t.Fatalf("port group not present: %v", err)
+	}
+	if pg.Name != SecurityGroupPortGroup("sg-pg1") {
+		t.Errorf("port group name mismatch: %q", pg.Name)
+	}
+
+	// Idempotent: second call must not fail or churn state.
+	if err := mgr.EnsureSGPortGroup(ctx, "sg-pg1"); err != nil {
+		t.Fatalf("EnsureSGPortGroup second call: %v", err)
+	}
+}
+
+func TestLiveManager_DeleteSGPortGroup(t *testing.T) {
+	mgr, mockClient := newLiveManagerForTest(t)
+	ctx := context.Background()
+
+	if err := mgr.EnsureSGPortGroup(ctx, "sg-del1"); err != nil {
+		t.Fatalf("EnsureSGPortGroup: %v", err)
+	}
+	if err := mgr.DeleteSGPortGroup(ctx, "sg-del1"); err != nil {
+		t.Fatalf("DeleteSGPortGroup: %v", err)
+	}
+	if _, err := mockClient.GetPortGroup(ctx, SecurityGroupPortGroup("sg-del1")); err == nil {
+		t.Fatalf("port group still present after delete")
+	}
+
+	// Idempotent on already-absent.
+	if err := mgr.DeleteSGPortGroup(ctx, "sg-del1"); err != nil {
+		t.Fatalf("DeleteSGPortGroup second call: %v", err)
+	}
+}
+
 func TestLiveManager_SetPortSecurityGroups(t *testing.T) {
 	mgr, mockClient := newLiveManagerForTest(t)
 	ctx := context.Background()

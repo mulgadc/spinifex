@@ -1068,7 +1068,7 @@ func (c *LiveClient) getPortGroup(ctx context.Context, name string) (*nbdb.PortG
 		return nil, fmt.Errorf("get port group: %w", err)
 	}
 	if len(pgs) == 0 {
-		return nil, fmt.Errorf("port group %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ErrPortGroupNotFound, name)
 	}
 	return &pgs[0], nil
 }

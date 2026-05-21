@@ -700,13 +700,14 @@ func (m *Client) ListPortGroupsForPort(_ context.Context, lspName string) ([]str
 }
 
 // GetPortGroup returns the port group with the given name, or an error if it
-// doesn't exist. Mirrors the live client.
+// doesn't exist. Mirrors the live client; missing rows surface as
+// ovn.ErrPortGroupNotFound so callers can use errors.Is for idempotent flows.
 func (m *Client) GetPortGroup(_ context.Context, name string) (*nbdb.PortGroup, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	pg, exists := m.PortGroups[name]
 	if !exists {
-		return nil, fmt.Errorf("port group %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrPortGroupNotFound, name)
 	}
 	return pg, nil
 }

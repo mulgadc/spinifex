@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -3570,7 +3571,7 @@ func setupPortSGFixture(t *testing.T, mock *MockOVNClient, ctx context.Context, 
 		t.Fatalf("CreateDHCPOptions: %v", err)
 	}
 	for _, sgId := range sgIds {
-		pg := portGroupName(sgId)
+		pg := topology.SecurityGroupPortGroup(sgId)
 		if err := mock.CreatePortGroup(ctx, pg, nil); err != nil {
 			t.Fatalf("CreatePortGroup %s: %v", sgId, err)
 		}
@@ -3617,7 +3618,7 @@ func TestTopologyHandler_CreatePort_JoinsPortGroups(t *testing.T) {
 	}
 
 	for _, sgId := range []string{"sg-1111", "sg-2222"} {
-		pg := mock.PortGroups[portGroupName(sgId)]
+		pg := mock.PortGroups[topology.SecurityGroupPortGroup(sgId)]
 		if !slices.Contains(pg.Ports, lsp.UUID) {
 			t.Errorf("expected %s membership in port group %s, got %v", lsp.UUID, sgId, pg.Ports)
 		}
@@ -3695,7 +3696,7 @@ func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
 	resp, _ := nc.Request(TopicCreatePort, data, 5_000_000_000)
 	assertSuccess(t, resp, "create port")
 
-	if got := len(mock.PortGroups[portGroupName("sg-del")].Ports); got != 1 {
+	if got := len(mock.PortGroups[topology.SecurityGroupPortGroup("sg-del")].Ports); got != 1 {
 		t.Fatalf("setup: expected 1 member in port group, got %d", got)
 	}
 
@@ -3710,7 +3711,7 @@ func TestTopologyHandler_DeletePort_ClearsPortGroupMembership(t *testing.T) {
 	resp, _ = nc.Request(TopicDeletePort, data, 5_000_000_000)
 	assertSuccess(t, resp, "delete port")
 
-	if got := len(mock.PortGroups[portGroupName("sg-del")].Ports); got != 0 {
+	if got := len(mock.PortGroups[topology.SecurityGroupPortGroup("sg-del")].Ports); got != 0 {
 		t.Errorf("expected 0 members after delete-port, got %d", got)
 	}
 }
@@ -3792,7 +3793,7 @@ func TestTopologyHandler_UpdatePortSGs_Transitions(t *testing.T) {
 			}
 			expected := make(map[string]struct{}, len(tc.expected))
 			for _, s := range tc.expected {
-				expected[portGroupName(s)] = struct{}{}
+				expected[topology.SecurityGroupPortGroup(s)] = struct{}{}
 			}
 			for name, pg := range mock.PortGroups {
 				inGroup := slices.Contains(pg.Ports, lsp.UUID)
@@ -3836,7 +3837,7 @@ func TestTopologyHandler_CreatePort_ExistingLSP_ReconcilesSGMemberships(t *testi
 		Name:      "port-eni-recover",
 		Addresses: []string{"02:00:00:00:00:99 10.0.6.50"},
 	}))
-	pgName := portGroupName("sg-recover")
+	pgName := topology.SecurityGroupPortGroup("sg-recover")
 	require.NotContains(t, mock.PortGroups[pgName].Ports, mock.Ports["port-eni-recover"].UUID)
 
 	evt := PortEvent{

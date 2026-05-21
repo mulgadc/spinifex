@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
@@ -69,6 +70,9 @@ const (
 	TopicDeleteNAT        = "vpc.delete-nat"
 	TopicAddNATGateway    = "vpc.add-nat-gateway"
 	TopicDeleteNATGateway = "vpc.delete-nat-gateway"
+	TopicCreateSG         = "vpc.create-sg"
+	TopicDeleteSG         = "vpc.delete-sg"
+	TopicUpdateSG         = "vpc.update-sg"
 )
 
 // gatewayPortNetwork is the link-local CIDR every IGW gateway-LRP carries
@@ -179,6 +183,11 @@ type TopologyHandler struct {
 	// adapter call doesn't re-construct (Phase 2.6, mulga-siv-129).
 	lmOnce sync.Once
 	lm     topology.Manager
+
+	// sgm + sgmOnce cache the policy.SecurityGroupManager backed by h.ovn so
+	// SG subscribers reuse one manager instance across events.
+	sgmOnce sync.Once
+	sgm     policy.SecurityGroupManager
 }
 
 // NewTopologyHandler creates a new TopologyHandler with optional external network config.
@@ -841,7 +850,7 @@ func (h *TopologyHandler) handleCreatePort(msg *nats.Msg) {
 	// port group's port addresses once the LSP joins.
 	pgNames := make([]string, 0, len(evt.SecurityGroupIds))
 	for _, sgId := range evt.SecurityGroupIds {
-		pgNames = append(pgNames, portGroupName(sgId))
+		pgNames = append(pgNames, topology.SecurityGroupPortGroup(sgId))
 	}
 	if err := h.ovn.CreateLogicalSwitchPortInGroups(ctx, switchName, lsp, pgNames); err != nil {
 		slog.Error("vpcd: failed to create logical switch port", "port", portName, "switch", switchName, "err", err)
@@ -959,7 +968,7 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 func (h *TopologyHandler) reconcilePortSGs(ctx context.Context, lspName string, desiredSGs []string) (bool, error) {
 	desired := make(map[string]struct{}, len(desiredSGs))
 	for _, sgId := range desiredSGs {
-		desired[portGroupName(sgId)] = struct{}{}
+		desired[topology.SecurityGroupPortGroup(sgId)] = struct{}{}
 	}
 
 	currentNames, err := h.ovn.ListPortGroupsForPort(ctx, lspName)

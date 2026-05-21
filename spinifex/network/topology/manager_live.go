@@ -2,6 +2,7 @@ package topology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -330,6 +331,59 @@ func (m *liveManager) DeletePort(ctx context.Context, spec PortSpec) error {
 		"switch", switchName,
 		"eni_id", spec.PortID,
 	)
+	return nil
+}
+
+// EnsureSGPortGroup creates the empty OVN port-group row for a security
+// group. Idempotent: a second call with the same groupID is a no-op. ACL
+// programming lives in network/policy.SecurityGroupManager — callers must
+// invoke it after EnsureSGPortGroup to attach the infrastructure and tenant
+// rule sets.
+func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) error {
+	if m.ovn == nil {
+		return fmt.Errorf("OVN client not connected")
+	}
+	if groupID == "" {
+		return fmt.Errorf("EnsureSGPortGroup: empty groupID")
+	}
+	pgName := SecurityGroupPortGroup(groupID)
+	if _, err := m.ovn.GetPortGroup(ctx, pgName); err == nil {
+		return nil
+	} else if !errors.Is(err, ovn.ErrPortGroupNotFound) {
+		return fmt.Errorf("get port group %s: %w", pgName, err)
+	}
+	if err := m.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
+		return fmt.Errorf("create port group %s: %w", pgName, err)
+	}
+	slog.Info("topology: created SG port group", "pg", pgName, "group_id", groupID)
+	return nil
+}
+
+// DeleteSGPortGroup clears every ACL on the SG's port group and removes the
+// port group row. Idempotent: missing port group is treated as success.
+// Reference-integrity dictates ClearACLs before DeletePortGroup — libovsdb
+// rejects deleting a port group with dangling ACL references.
+func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) error {
+	if m.ovn == nil {
+		return fmt.Errorf("OVN client not connected")
+	}
+	if groupID == "" {
+		return fmt.Errorf("DeleteSGPortGroup: empty groupID")
+	}
+	pgName := SecurityGroupPortGroup(groupID)
+	if _, err := m.ovn.GetPortGroup(ctx, pgName); err != nil {
+		if errors.Is(err, ovn.ErrPortGroupNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get port group %s: %w", pgName, err)
+	}
+	if err := m.ovn.ClearACLs(ctx, pgName); err != nil {
+		return fmt.Errorf("clear ACLs on %s: %w", pgName, err)
+	}
+	if err := m.ovn.DeletePortGroup(ctx, pgName); err != nil {
+		return fmt.Errorf("delete port group %s: %w", pgName, err)
+	}
+	slog.Info("topology: deleted SG port group", "pg", pgName, "group_id", groupID)
 	return nil
 }
 

@@ -16,6 +16,11 @@ import (
 // the same delete) match it with errors.Is and treat as success.
 var ErrNATNotFound = errors.New("NAT not found")
 
+// ErrPortGroupNotFound is returned by GetPortGroup when the named port group
+// is absent. EnsureSGPortGroup / DeleteSGPortGroup use errors.Is to make
+// existence checks and delete-then-recheck flows idempotent.
+var ErrPortGroupNotFound = errors.New("port group not found")
+
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
 // Name, Severity, and Meter are optional — set Severity when Log is true.
 type ACLSpec struct {

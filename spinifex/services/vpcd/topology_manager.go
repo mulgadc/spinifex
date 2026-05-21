@@ -14,6 +14,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
@@ -76,4 +77,24 @@ func (h *TopologyHandler) DeletePort(ctx context.Context, spec topology.PortSpec
 // the declared list.
 func (h *TopologyHandler) SetPortSecurityGroups(ctx context.Context, portID string, sgIDs []string) error {
 	return h.topologyManager().SetPortSecurityGroups(ctx, portID, sgIDs)
+}
+
+// EnsureSGPortGroup creates the OVN port group for a security group.
+func (h *TopologyHandler) EnsureSGPortGroup(ctx context.Context, groupID string) error {
+	return h.topologyManager().EnsureSGPortGroup(ctx, groupID)
+}
+
+// DeleteSGPortGroup removes the OVN port group for a security group.
+func (h *TopologyHandler) DeleteSGPortGroup(ctx context.Context, groupID string) error {
+	return h.topologyManager().DeleteSGPortGroup(ctx, groupID)
+}
+
+// securityGroupManager returns the lazily-constructed policy SG manager
+// backed by the same OVN client as the live topology manager. Subscribers
+// use it to apply ACL sets against the SG's port group.
+func (h *TopologyHandler) securityGroupManager() policy.SecurityGroupManager {
+	h.sgmOnce.Do(func() {
+		h.sgm = policy.NewSecurityGroupManager(h.ovn)
+	})
+	return h.sgm
 }

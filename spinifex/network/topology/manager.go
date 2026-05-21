@@ -34,6 +34,12 @@ type Manager interface {
 	// memberships for a port. Manager computes the add/remove diff against
 	// current OVN state.
 	SetPortSecurityGroups(ctx context.Context, portID string, sgIDs []string) error
+
+	// SG port-group lifecycle. ACL programming on a port group lives in
+	// network/policy.SecurityGroupManager — topology only owns the empty
+	// OVN port-group row keyed by SecurityGroupPortGroup(groupID).
+	EnsureSGPortGroup(ctx context.Context, groupID string) error
+	DeleteSGPortGroup(ctx context.Context, groupID string) error
 }
 
 // VPCSpec describes a VPC at L2. AZSlice is reserved for Phase 3 per-AZ CIDR

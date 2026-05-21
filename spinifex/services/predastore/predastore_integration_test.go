@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/predastore/quic/quicclient"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -57,10 +58,14 @@ var (
 )
 
 // generateTestCertificate generates a self-signed TLS certificate for testing
-func generateTestCertificate(certPath, keyPath string) error {
+// and returns a CertPool that trusts it. Predastore's QUIC client (commit
+// dce8618) verifies server certs against the OS trust store after
+// InsecureSkipVerify was dropped, so the test must inject the ephemeral CA
+// via quicclient.SetDefaultRootCAs before any dial.
+func generateTestCertificate(certPath, keyPath string) (*x509.CertPool, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	notBefore := time.Now()
@@ -68,7 +73,7 @@ func generateTestCertificate(certPath, keyPath string) error {
 
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	template := x509.Certificate{
@@ -88,31 +93,40 @@ func generateTestCertificate(certPath, keyPath string) error {
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	certOut, err := os.Create(certPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer certOut.Close()
 
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return err
+		return nil, err
 	}
 
 	keyOut, err := os.Create(keyPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer keyOut.Close()
 
 	privBytes, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
+		return nil, err
 	}
 
-	return pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+	parsed, err := x509.ParseCertificate(derBytes)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(parsed)
+	return pool, nil
 }
 
 // startPredastoreServer starts the predastore server once for all tests
@@ -142,10 +156,17 @@ func startPredastoreServer(t *testing.T) *Config {
 	certPath := filepath.Join(certDir, "test.crt")
 	keyPath := filepath.Join(certDir, "test.key")
 
-	err = generateTestCertificate(certPath, keyPath)
+	caPool, err := generateTestCertificate(certPath, keyPath)
 	if err != nil {
 		t.Fatalf("Failed to generate certificate: %v", err)
 	}
+
+	// Predastore's in-process QUIC client (s3d → shard nodes) verifies the
+	// server cert against the OS trust store. The ephemeral test cert is
+	// not in that store, so inject it as a package-level default. Persists
+	// for the lifetime of the test process — startPredastoreServer is a
+	// once-per-process singleton.
+	quicclient.SetDefaultRootCAs(caPool)
 
 	// Predastore mandates a 32-byte master key at mode 0600 (rejected otherwise
 	// by internal/keyfile.Load).

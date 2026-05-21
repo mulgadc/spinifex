@@ -26,12 +26,12 @@ var pingReceivedRE = regexp.MustCompile(`[1-3] (packets )?received`)
 // `0 received` or `100% packet loss`. Mirrors the bash grep pattern.
 var pingDroppedRE = regexp.MustCompile(`0 (packets )?received|100% packet loss`)
 
-// phase5f_SecurityGroupEgress flips the default SG's allow-all egress rule and
+// runSecurityGroupEgress flips the default SG's allow-all egress rule and
 // verifies vpcd programs OVN ACLs that actually drop traffic. Egress is tested
 // because in dev_networking mode ingress SSH bypasses OVN via QEMU hostfwd —
 // only egress hits the ACL. Maps to run-e2e.sh ~846–928.
-func phase5f_SecurityGroupEgress(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5f — Security Group Enforcement (egress ACL)")
+func runSecurityGroupEgress(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Security Group Enforcement (egress ACL)")
 
 	inst, _ := needInstance(t, fix)
 	_, keyPath := needKeyPair(t, fix)

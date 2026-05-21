@@ -12,14 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase6_TagManagement exercises CreateTags / DescribeTags / DeleteTags
+// runTagManagement exercises CreateTags / DescribeTags / DeleteTags
 // against the Phase 5 instance and its root volume. Maps to run-e2e.sh
 // ~930–1026. Sub-steps mirror the bash 6a–6j checks; we additionally
 // assert in 6i that the value-conditional DeleteTags scoped to the
 // instance does NOT touch the matching tag on the root volume, which the
 // bash driver only implies via per-resource targeting.
-func phase6_TagManagement(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 6 — Tag Management")
+func runTagManagement(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Tag Management")
 
 	inst, rootVolumeID := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)

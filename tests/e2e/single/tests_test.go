@@ -4,122 +4,203 @@ package single
 
 import "testing"
 
-// Top-level Test* entry points. Each delegates to a phaseN_X function in
-// this package, passing the package-scoped Fixture singleton.
+// Top-level Test* entry points. Each delegates to a runX function in the
+// matching <name>_test.go file. Names are number-free (TestX) so isolated
+// runs via `go test -run TestKeyPairs` are stable.
 //
-// Every phase function self-bootstraps any prerequisite resource it needs
-// via harness.Discover* / harness.Ensure* (or the package-local need* /
-// iamEnsure* helpers), so a targeted `go test -run TestX` run works in
-// isolation without depending on a sibling Test* having stashed state.
+// Every run* function self-bootstraps prerequisites via harness.Discover* /
+// harness.Ensure* (or the package-local need* / iamEnsure* helpers), so a
+// targeted `go test -run TestX` invocation works in isolation without
+// relying on a sibling Test* having stashed state.
+//
+// Parallelism (mulga-siv-128):
+//
+// Bucket #1 (parallel): read-only or own-everything Tests below call
+// t.Parallel(). They share the package fixture but never mutate the
+// singleton EC2 instance, default VPC, or default SG.
+//
+// Sequential (no t.Parallel — would race the singleton VM or shared state):
+//   - TestInstanceLaunch                  : first sequential — boots singleton.
+//   - TestInstanceClusterStats / Metadata
+//     / SSHProbe / ConsoleOutput          : read singleton.
+//   - TestVolumeLifecycle / VolumeStatus  : attach to singleton.
+//   - TestSnapshotLifecycle /
+//     SnapshotBackedLaunch / CreateImage  : snapshot singleton.
+//   - TestSecurityGroupEgress             : mutates default SG.
+//   - TestStopStart / AttachToStoppedError
+//     / ModifyInstanceAttribute /
+//     RebootInstance / RunInstancesMultiCount : mutate singleton state.
+//   - TestNegativeErrorPaths              : sub-tests already parallel inside.
+//   - TestNATGateway / TestSGToSGDatapath : share EIP pool.
+//   - All TestIAM*                        : share IAM policy state via the
+//     package-scoped IAM fixture; sub-tests inside each already parallel.
+//   - TestFinalClusterStats               : final sanity gate.
 
-// Discovery + environment.
-func TestEnvironment(t *testing.T)         { phase1_Environment(t, requireSingleNodeFixture(t)) }
-func TestClusterStatsCLI(t *testing.T)     { phase1b_ClusterStats(t, requireSingleNodeFixture(t)) }
-func TestDiscovery(t *testing.T)           { phase2_Discovery(t, requireSingleNodeFixture(t)) }
-func TestSerialConsoleAccess(t *testing.T) { phase2b_SerialConsole(t, requireSingleNodeFixture(t)) }
+// --- Bucket #1: parallel-safe ---
 
-// Key pairs + image.
-func TestKeyPairs(t *testing.T) { phase3_KeyPairs(t, requireSingleNodeFixture(t)) }
-func TestImage(t *testing.T)    { phase4_Image(t, requireSingleNodeFixture(t)) }
-
-// Instance lifecycle.
-func TestInstanceLaunch(t *testing.T) {
-	phase5_LaunchInstance(t, requireSingleNodeFixture(t))
-}
-func TestInstanceClusterStats(t *testing.T) {
-	phase5aPre_ClusterStats(t, requireSingleNodeFixture(t))
-}
-func TestInstanceMetadata(t *testing.T) {
-	phase5a_Metadata(t, requireSingleNodeFixture(t))
-}
-func TestSSHProbe(t *testing.T) {
-	phase5aii_SSHProbe(t, requireSingleNodeFixture(t))
-}
-func TestConsoleOutput(t *testing.T) {
-	phase5aiii_ConsoleOutput(t, requireSingleNodeFixture(t))
-}
-
-// Volume + snapshot + AMI.
-func TestVolumeLifecycle(t *testing.T) {
-	phase5b_VolumeLifecycle(t, requireSingleNodeFixture(t))
-}
-func TestVolumeStatus(t *testing.T) {
-	phase5bii_VolumeStatus(t, requireSingleNodeFixture(t))
-}
-func TestSnapshotLifecycle(t *testing.T) {
-	phase5c_SnapshotLifecycle(t, requireSingleNodeFixture(t))
-}
-func TestSnapshotBackedLaunch(t *testing.T) {
-	phase5d_SnapshotBackedLaunch(t, requireSingleNodeFixture(t))
-}
-func TestCreateImage(t *testing.T) {
-	phase5e_CreateImage(t, requireSingleNodeFixture(t))
-}
-func TestSecurityGroupEgress(t *testing.T) {
-	phase5f_SecurityGroupEgress(t, requireSingleNodeFixture(t))
+func TestEnvironment(t *testing.T) {
+	t.Parallel()
+	runEnvironment(t, requireSingleNodeFixture(t))
 }
 
-// Tags + lifecycle transitions.
-func TestTagManagement(t *testing.T) { phase6_TagManagement(t, requireSingleNodeFixture(t)) }
-func TestStopStart(t *testing.T)     { phase7_StopStart(t, requireSingleNodeFixture(t)) }
-func TestAttachToStoppedError(t *testing.T) {
-	phase7a_AttachToStoppedError(t, requireSingleNodeFixture(t))
-}
-func TestModifyInstanceAttribute(t *testing.T) {
-	phase7b_ModifyInstanceAttribute(t, requireSingleNodeFixture(t))
-}
-func TestRebootInstance(t *testing.T) {
-	phase7cPre_Reboot(t, requireSingleNodeFixture(t))
-}
-func TestRunInstancesMultiCount(t *testing.T) {
-	phase7c_RunInstancesMultiCount(t, requireSingleNodeFixture(t))
+func TestClusterStatsCLI(t *testing.T) {
+	t.Parallel()
+	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
-// Negative / error paths.
-func TestNegativeErrorPaths(t *testing.T) {
-	phase8_NegativeErrorPaths(t, requireSingleNodeFixture(t))
+func TestDiscovery(t *testing.T) {
+	t.Parallel()
+	runDiscovery(t, requireSingleNodeFixture(t))
 }
 
-// IAM 1–7.
-func TestIAM1_UserCRUD(t *testing.T) {
-	phaseIAM1_UserCRUD(t, requireSingleNodeFixture(t))
-}
-func TestIAM2_AccessKeyLifecycle(t *testing.T) {
-	phaseIAM2_AccessKeyLifecycle(t, requireSingleNodeFixture(t))
-}
-func TestIAM3_UserAuthentication(t *testing.T) {
-	phaseIAM3_UserAuthentication(t, requireSingleNodeFixture(t))
-}
-func TestIAM4_PolicyCRUD(t *testing.T) {
-	phaseIAM4_PolicyCRUD(t, requireSingleNodeFixture(t))
-}
-func TestIAM5_PolicyAttachmentEnforcement(t *testing.T) {
-	phaseIAM5_PolicyAttachmentEnforcement(t, requireSingleNodeFixture(t))
-}
-func TestIAM6_PolicyLifecycle(t *testing.T) {
-	phaseIAM6_PolicyLifecycle(t, requireSingleNodeFixture(t))
-}
-func TestIAM7_Cleanup(t *testing.T) {
-	phaseIAM7_Cleanup(t, requireSingleNodeFixture(t))
+func TestSerialConsoleAccess(t *testing.T) {
+	t.Parallel()
+	runSerialConsoleAccess(t, requireSingleNodeFixture(t))
 }
 
-// Account scoping.
+func TestKeyPairs(t *testing.T) {
+	t.Parallel()
+	runKeyPairs(t, requireSingleNodeFixture(t))
+}
+
+func TestImage(t *testing.T) {
+	t.Parallel()
+	runImage(t, requireSingleNodeFixture(t))
+}
+
+func TestTagManagement(t *testing.T) {
+	t.Parallel()
+	runTagManagement(t, requireSingleNodeFixture(t))
+}
+
 func TestAccountScoping(t *testing.T) {
-	phase8Acct_AccountScoping(t, requireSingleNodeFixture(t))
+	t.Parallel()
+	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
-// VPC / NAT / datapath.
 func TestVPCSubnetE2E(t *testing.T) {
-	phase8b_VPCSubnetE2E(t, requireSingleNodeFixture(t))
+	t.Parallel()
+	runVPCSubnetE2E(t, requireSingleNodeFixture(t))
 }
-func TestRouteTableValidation(t *testing.T) {
-	phase8c_RouteTableValidation(t, requireSingleNodeFixture(t))
-}
-func TestNATGateway(t *testing.T)     { phase8d_NATGateway(t, requireSingleNodeFixture(t)) }
-func TestSGToSGDatapath(t *testing.T) { phase8e_SGToSGDatapath(t, requireSingleNodeFixture(t)) }
 
-// Final cluster sanity (replaces the umbrella's phase9b — phase9 + phase9a
-// deleted; harness.Fixture.Close drains cleanups at process exit).
+func TestRouteTableValidation(t *testing.T) {
+	t.Parallel()
+	runRouteTableValidation(t, requireSingleNodeFixture(t))
+}
+
+// --- Sequential: singleton VM lifecycle ---
+
+func TestInstanceLaunch(t *testing.T) {
+	runInstanceLaunch(t, requireSingleNodeFixture(t))
+}
+
+func TestInstanceClusterStats(t *testing.T) {
+	runInstanceClusterStats(t, requireSingleNodeFixture(t))
+}
+
+func TestInstanceMetadata(t *testing.T) {
+	runInstanceMetadata(t, requireSingleNodeFixture(t))
+}
+
+func TestSSHProbe(t *testing.T) {
+	runSSHProbe(t, requireSingleNodeFixture(t))
+}
+
+func TestConsoleOutput(t *testing.T) {
+	runConsoleOutput(t, requireSingleNodeFixture(t))
+}
+
+func TestVolumeLifecycle(t *testing.T) {
+	runVolumeLifecycle(t, requireSingleNodeFixture(t))
+}
+
+func TestVolumeStatus(t *testing.T) {
+	runVolumeStatus(t, requireSingleNodeFixture(t))
+}
+
+func TestSnapshotLifecycle(t *testing.T) {
+	runSnapshotLifecycle(t, requireSingleNodeFixture(t))
+}
+
+func TestSnapshotBackedLaunch(t *testing.T) {
+	runSnapshotBackedLaunch(t, requireSingleNodeFixture(t))
+}
+
+func TestCreateImage(t *testing.T) {
+	runCreateImage(t, requireSingleNodeFixture(t))
+}
+
+func TestSecurityGroupEgress(t *testing.T) {
+	runSecurityGroupEgress(t, requireSingleNodeFixture(t))
+}
+
+func TestStopStart(t *testing.T) {
+	runStopStart(t, requireSingleNodeFixture(t))
+}
+
+func TestAttachToStoppedError(t *testing.T) {
+	runAttachToStoppedError(t, requireSingleNodeFixture(t))
+}
+
+func TestModifyInstanceAttribute(t *testing.T) {
+	runModifyInstanceAttribute(t, requireSingleNodeFixture(t))
+}
+
+func TestRebootInstance(t *testing.T) {
+	runRebootInstance(t, requireSingleNodeFixture(t))
+}
+
+func TestRunInstancesMultiCount(t *testing.T) {
+	runRunInstancesMultiCount(t, requireSingleNodeFixture(t))
+}
+
+// --- Sequential: shared-state / sub-test-parallel Tests ---
+
+func TestNegativeErrorPaths(t *testing.T) {
+	runNegativeErrorPaths(t, requireSingleNodeFixture(t))
+}
+
+func TestNATGateway(t *testing.T) {
+	runNATGateway(t, requireSingleNodeFixture(t))
+}
+
+func TestSGToSGDatapath(t *testing.T) {
+	runSGToSGDatapath(t, requireSingleNodeFixture(t))
+}
+
+// IAM Tests share the package-scoped IAM fixture; sub-tests inside each
+// runIAM* already use t.Parallel for fan-out.
+func TestIAMUserCRUD(t *testing.T) {
+	runIAMUserCRUD(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMAccessKeyLifecycle(t *testing.T) {
+	runIAMAccessKeyLifecycle(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMUserAuthentication(t *testing.T) {
+	runIAMUserAuthentication(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMPolicyCRUD(t *testing.T) {
+	runIAMPolicyCRUD(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
+	runIAMPolicyAttachmentEnforcement(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMPolicyLifecycle(t *testing.T) {
+	runIAMPolicyLifecycle(t, requireSingleNodeFixture(t))
+}
+
+func TestIAMCleanup(t *testing.T) {
+	runIAMCleanup(t, requireSingleNodeFixture(t))
+}
+
+// TestFinalClusterStats runs as the last sequential test (parallel bucket
+// runs afterwards, but those Tests are read-only / own-everything so a
+// later cluster-stats snapshot would still be valid).
 func TestFinalClusterStats(t *testing.T) {
-	phase9b_FinalClusterStats(t, requireSingleNodeFixture(t))
+	runFinalClusterStats(t, requireSingleNodeFixture(t))
 }

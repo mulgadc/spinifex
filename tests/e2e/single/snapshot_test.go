@@ -14,12 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5c_SnapshotLifecycle creates, describes, copies, and deletes a
+// runSnapshotLifecycle creates, describes, copies, and deletes a
 // snapshot off the running instance's root volume (the only volume that's
 // definitely backed by a mounted viperblock instance — create-snapshot
 // requires that). Maps to run-e2e.sh ~627–786.
-func phase5c_SnapshotLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5c — Snapshot Lifecycle")
+func runSnapshotLifecycle(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Snapshot Lifecycle")
 
 	_, rootVolumeID := needInstance(t, fix)
 
@@ -140,14 +140,14 @@ func phase5c_SnapshotLifecycle(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "deleted_original", snapshotID)
 }
 
-// phase5d_SnapshotBackedLaunch verifies the AMI used for the live instance
+// runSnapshotBackedLaunch verifies the AMI used for the live instance
 // carries a snapshot reference — proof the launch went through the
 // cloneAMIToVolume → OpenFromSnapshot path. Maps to run-e2e.sh ~788–803.
 //
 // Bash's prose mentions verifying the predastore-side snapshot config, but
 // the actual bash only checks the EC2 API. We follow the bash.
-func phase5d_SnapshotBackedLaunch(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5d — Snapshot-Backed Instance Launch")
+func runSnapshotBackedLaunch(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Snapshot-Backed Instance Launch")
 
 	amiID := needAMI(t, fix)
 

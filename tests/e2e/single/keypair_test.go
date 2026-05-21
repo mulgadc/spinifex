@@ -17,13 +17,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// phase3_KeyPairs exercises CreateKeyPair / ImportKeyPair / DescribeKeyPairs /
+// runKeyPairs exercises CreateKeyPair / ImportKeyPair / DescribeKeyPairs /
 // DeleteKeyPair. The primary key pair is materialised via harness.EnsureKeyPair
 // — it owns the create path's assertions, memoizes for downstream Phase 5+
 // callers, and registers TestSingleNode-scoped cleanup. test-key-2 is created
 // via import then deleted within this phase. Maps to run-e2e.sh ~204–231.
-func phase3_KeyPairs(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 3 — SSH Key Management")
+func runKeyPairs(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — SSH Key Management")
 
 	const key2 = "test-key-2"
 

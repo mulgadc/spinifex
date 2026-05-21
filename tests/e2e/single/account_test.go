@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase8Acct_AccountScoping ports run-e2e.sh Phase 8 EC2 Account Scoping
+// runAccountScoping ports run-e2e.sh Phase 8 EC2 Account Scoping
 // (lines 1915–2624). Validates that EC2 resources (instances, volumes, key
 // pairs, snapshots, VPCs, IGWs, EIGWs) are isolated between tenant accounts
 // created via `spx admin account create`.
@@ -41,8 +41,8 @@ import (
 //	Step9_GlobalResources     — regions/AZs/instance types identical
 //	Step10_EdgeCases          — empty Gamma + non-existent resource ids
 //	Step11_Cleanup            — explicit best-effort teardown (also runs via t.Cleanup)
-func phase8Acct_AccountScoping(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 8 (acct) — EC2 Account Scoping")
+func runAccountScoping(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — EC2 Account Scoping")
 
 	amiID := needAMI(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)

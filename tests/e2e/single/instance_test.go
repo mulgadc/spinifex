@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase5_LaunchInstance bootstraps the suite's primary instance and asserts
+// runInstanceLaunch bootstraps the suite's primary instance and asserts
 // that the live row exposes the AMI / type / key the launch was given.
 // Delegates the launch + memoization to needInstance so any sibling Test*
 // hits the same cached row. Maps to run-e2e.sh ~257–343.
-func phase5_LaunchInstance(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5 — Instance Lifecycle")
+func runInstanceLaunch(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Instance Lifecycle")
 
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.SGID, "default SG ID required")
@@ -35,11 +35,11 @@ func phase5_LaunchInstance(t *testing.T, fix *Fixture) {
 		"root_device", aws.StringValue(inst.RootDeviceName))
 }
 
-// phase5aPre_ClusterStats re-runs `spx get vms` now that a VM is running.
+// runInstanceClusterStats re-runs `spx get vms` now that a VM is running.
 // Single-node only — multinode uses a different cluster surface. Maps to
 // run-e2e.sh ~345–353.
-func phase5aPre_ClusterStats(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5a-pre — Cluster Stats CLI (with running VM)")
+func runInstanceClusterStats(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Cluster Stats CLI (with running VM)")
 	if fix.Env.Mode != harness.ModeSingle {
 		t.Skipf("Phase 5a-pre is single-node only (mode=%s)", fix.Env.Mode)
 	}
@@ -52,10 +52,10 @@ func phase5aPre_ClusterStats(t *testing.T, fix *Fixture) {
 		"spx get vms should list running instance %s\n%s", instanceID, vms)
 }
 
-// phase5a_Metadata round-trips DescribeInstances and asserts the basic
+// runInstanceMetadata round-trips DescribeInstances and asserts the basic
 // metadata fields match what RunInstances saw. Maps to run-e2e.sh ~355–379.
-func phase5a_Metadata(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5a — Instance Metadata Validation")
+func runInstanceMetadata(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Instance Metadata Validation")
 
 	want, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(want.InstanceId)
@@ -85,11 +85,11 @@ func phase5a_Metadata(t *testing.T, fix *Fixture) {
 	)
 }
 
-// phase5aii_SSHProbe waits for SSH to become reachable, then runs `id`,
+// runSSHProbe waits for SSH to become reachable, then runs `id`,
 // `lsblk`, and `hostname` against the guest to confirm the VM booted and
 // presents the expected root volume. Maps to run-e2e.sh ~381–463.
-func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5a-ii — SSH Connectivity & Volume Verification")
+func runSSHProbe(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — SSH Connectivity Phase 5a-ii — SSH Connectivity & Volume Verification Volume Verification")
 
 	inst, rootVolumeID := needInstance(t, fix)
 	_, keyPath := needKeyPair(t, fix)
@@ -147,11 +147,11 @@ func phase5aii_SSHProbe(t *testing.T, fix *Fixture) {
 	}
 }
 
-// phase5aiii_ConsoleOutput verifies GetConsoleOutput round-trips the
+// runConsoleOutput verifies GetConsoleOutput round-trips the
 // instance ID. The payload itself is base64 cloud-init output; bash doesn't
 // decode it and neither do we. Maps to run-e2e.sh ~465–478.
-func phase5aiii_ConsoleOutput(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 5a-iii — Console Output")
+func runConsoleOutput(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Console Output")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)

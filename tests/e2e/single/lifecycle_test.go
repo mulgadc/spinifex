@@ -18,13 +18,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase7_StopStart stops fix.Instance and waits for it to reach the
+// runStopStart stops fix.Instance and waits for it to reach the
 // "stopped" state, then asserts that rebooting a stopped instance is
 // rejected with IncorrectInstanceState. Leaves the instance stopped so
 // Phase 7a / 7b can act against the stopped state. Maps to run-e2e.sh
 // ~1027–1053.
-func phase7_StopStart(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 7 — Instance State Transitions (Stop)")
+func runStopStart(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Instance State Transitions (Stop)")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
@@ -58,13 +58,13 @@ func phase7_StopStart(t *testing.T, fix *Fixture) {
 	harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 }
 
-// phase7a_AttachToStoppedError creates a fresh 10 GiB volume and attempts
+// runAttachToStoppedError creates a fresh 10 GiB volume and attempts
 // to attach it to the (currently stopped) primary instance. The attach
 // must fail with IncorrectInstanceState. The test volume is deleted
 // in-line on success and via t.Cleanup on early failure. Maps to
 // run-e2e.sh ~1054–1068.
-func phase7a_AttachToStoppedError(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 7a — Attach Volume to Stopped Instance (Error Path)")
+func runAttachToStoppedError(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Attach Volume to Stopped Instance (Error Path)")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
@@ -128,13 +128,13 @@ func phase7a_AttachToStoppedError(t *testing.T, fix *Fixture) {
 	cleaned = true
 }
 
-// phase7b_ModifyInstanceAttribute changes the (stopped) instance type to
+// runModifyInstanceAttribute changes the (stopped) instance type to
 // the same-family ".small" upsize, starts the instance, SSHes in to
 // verify the new vCPU + memory budget, then stops the instance again so
 // Phase 7c-pre can drive its own start/reboot cycle. Maps to run-e2e.sh
 // ~1070–1177.
-func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 7b — ModifyInstanceAttribute")
+func runModifyInstanceAttribute(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — ModifyInstanceAttribute")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
@@ -252,14 +252,14 @@ func phase7b_ModifyInstanceAttribute(t *testing.T, fix *Fixture) {
 	// Cleanup restores original type + running state for sibling Test*.
 }
 
-// phase7cPre_Reboot starts the (stopped) primary instance, captures its
+// runRebootInstance starts the (stopped) primary instance, captures its
 // pre-reboot private IP, issues a reboot, asserts the API never reports a
 // non-running state during a short polling window, waits for SSH to come
 // back, and verifies the guest actually rebooted (uptime < 120s) without
 // changing its private IP. Leaves the instance running. Maps to
 // run-e2e.sh ~1178–1236.
-func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 7c-pre — Reboot Running Instance")
+func runRebootInstance(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Reboot Running Instance")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
@@ -326,13 +326,13 @@ func phase7cPre_Reboot(t *testing.T, fix *Fixture) {
 	// and Phase 8 expects the primary instance to still be up.
 }
 
-// phase7c_RunInstancesMultiCount launches 2 sibling instances in a single
+// runRunInstancesMultiCount launches 2 sibling instances in a single
 // RunInstances call, waits for both to reach "running", then terminates
 // them and waits for both to reach "terminated". The primary fix.Instance
 // is untouched and remains running for Phase 8. Maps to run-e2e.sh
 // ~1238–1296.
-func phase7c_RunInstancesMultiCount(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 7c — RunInstances with MinCount/MaxCount > 1")
+func runRunInstancesMultiCount(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — RunInstances with MinCount/MaxCount > 1")
 
 	amiID := needAMI(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase8d_NATGateway ports run-e2e.sh ~3017–3161 (Phase 8d).
+// runNATGateway ports run-e2e.sh ~3017–3161 (Phase 8d).
 //
 // Stands up its own bastion + private-instance pair in the default VPC,
 // allocates a NAT Gateway in the default (public) subnet, attaches a
@@ -30,11 +30,11 @@ import (
 // sibling Stage F file). Everything launched here is torn down LIFO by
 // the registered t.Cleanup so a failure mid-flight still releases the
 // EIP and terminates both VMs.
-func phase8d_NATGateway(t *testing.T, fix *Fixture) {
+func runNATGateway(t *testing.T, fix *Fixture) {
 	if !fix.PoolMode {
 		t.Skip("Phase 8d requires pool-mode networking")
 	}
-	harness.Phase(t, "Phase 8d — NAT Gateway E2E")
+	harness.Phase(t, "Single — NAT Gateway E2E")
 
 	amiID := needAMI(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)

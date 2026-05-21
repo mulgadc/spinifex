@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// phase8_NegativeErrorPaths ports run-e2e.sh Phase 8 (lines ~1298–1399):
+// runNegativeErrorPaths ports run-e2e.sh Phase 8 (lines ~1298–1399):
 // every sub-test exercises a single error code on the gateway. Each case
 // runs in its own t.Run so one failure doesn't poison the others; cleanup
 // is defensive (calls that unexpectedly succeed get torn down).
@@ -36,8 +36,8 @@ import (
 //	8p (idempotent)                 — DeleteKeyPair for unknown key must succeed
 //	8q InvalidInstanceID.NotFound   — ModifyInstanceAttribute on running inst
 //	8r InvalidInstanceID.NotFound   — RebootInstances on unknown id
-func phase8_NegativeErrorPaths(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Phase 8 — Negative / Error Path Tests")
+func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Negative / Error Path Tests")
 
 	// Bootstrap every prereq up front so the parallel sub-tests below all
 	// see populated locals.

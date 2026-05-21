@@ -92,15 +92,15 @@ const (
     }`
 )
 
-// phaseIAM1_UserCRUD ports run-e2e.sh IAM Phase 1 (~1405–1459):
+// runIAMUserCRUD ports run-e2e.sh IAM Phase 1 (~1405–1459):
 // CreateUser, GetUser, ListUsers, UpdateUser (rename+path), DeleteUser
 // plus the EntityAlreadyExists / NoSuchEntity negative paths. Each
 // created user is scheduled for cleanup so a mid-phase failure can't
 // poison later runs. UpdateUser exercises an out-of-band rename +
 // rename-back so Phase 2+ continue to find "alice" by the well-known
 // name.
-func phaseIAM1_UserCRUD(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 1 — User CRUD")
+func runIAMUserCRUD(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM User CRUD")
 
 	// Defensive: drop leftovers from a prior failed run before recreate.
 	iamDeleteUserBestEffort(fix, iamUserAlice)
@@ -217,13 +217,13 @@ func phaseIAM1_UserCRUD(t *testing.T, fix *Fixture) {
 	})
 }
 
-// phaseIAM2_AccessKeyLifecycle ports IAM Phase 2 (~1463–1534):
+// runIAMAccessKeyLifecycle ports IAM Phase 2 (~1463–1534):
 // CreateAccessKey, ListAccessKeys, UpdateAccessKey (deactivate/activate),
 // DeleteAccessKey plus LimitExceeded / NoSuchEntity negative paths.
 // Captures alice's primary key into the Fixture so Phase 3 can sign
 // requests with it.
-func phaseIAM2_AccessKeyLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 2 — Access Key Lifecycle")
+func runIAMAccessKeyLifecycle(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Access Key Lifecycle")
 	iamEnsureAlice(t, fix)
 	iamEnsureBob(t, fix)
 
@@ -315,13 +315,13 @@ func phaseIAM2_AccessKeyLifecycle(t *testing.T, fix *Fixture) {
 	require.Len(t, after.AccessKeyMetadata, 1, "alice should have 1 key after delete")
 }
 
-// phaseIAM3_UserAuthentication ports IAM Phase 3 (~1538–1579):
+// runIAMUserAuthentication ports IAM Phase 3 (~1538–1579):
 // build a scoped AWS client with alice's key and confirm signing
 // works (active key) / fails (deactivated key, bad secret, bogus ID).
 // Also creates bob's key so Phase 5 enforcement / Phase 7 cleanup
 // can use it.
-func phaseIAM3_UserAuthentication(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 3 — User Authentication")
+func runIAMUserAuthentication(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM User Authentication")
 	// Daemon does not yet honour active-key signatures created via the IAM
 	// API — every scoped DescribeInstances returns 403. Skip-gate until
 	// the handler lands; mulga-siv-100 tracks the daemon-side work.
@@ -375,14 +375,14 @@ func phaseIAM3_UserAuthentication(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "root describe-instances")
 }
 
-// phaseIAM4_PolicyCRUD ports IAM Phase 4 (~1583–1698):
+// runIAMPolicyCRUD ports IAM Phase 4 (~1583–1698):
 // CreatePolicy (5 variants), CreatePolicyVersion / ListPolicyVersions /
 // SetDefaultPolicyVersion / DeletePolicyVersion (extends bash, per
 // task spec), GetPolicy, GetPolicyVersion, ListPolicies plus
 // EntityAlreadyExists / MalformedPolicyDocument / NoSuchEntity errors.
 // Captures the admin account ID into the Fixture for Phase 5–7.
-func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 4 — Policy CRUD")
+func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Policy CRUD")
 
 	// Defensive: drop any leftover test policies from a prior failed run.
 	// Detach-then-delete isn't worth the round trips here — the cleanup
@@ -553,12 +553,12 @@ func phaseIAM4_PolicyCRUD(t *testing.T, fix *Fixture) {
 		"expected >=5 policies, got %d (%v)", len(all.Policies), iamPolicyNames(all.Policies))
 }
 
-// phaseIAM5_PolicyAttachmentEnforcement ports IAM Phase 5 (~1702–1833):
+// runIAMPolicyAttachmentEnforcement ports IAM Phase 5 (~1702–1833):
 // AttachUserPolicy idempotency, ListAttachedUserPolicies, enforcement
 // (default deny / explicit allow / wildcard / explicit deny / root
 // bypass / prefix wildcard / FullAdmin), DetachUserPolicy.
-func phaseIAM5_PolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 5 — Policy Attachment & Enforcement")
+func runIAMPolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Policy Attachment IAM Phase 5 — Policy Attachment & Enforcement Enforcement")
 	// Enforcement depends on scoped-credential signing (Phase 3) which the
 	// daemon doesn't honour yet — mulga-siv-100. Skip-gate the whole phase
 	// until the upstream gap closes.
@@ -727,12 +727,12 @@ func phaseIAM5_PolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "charlie iam:ListUsers after FullAdmin")
 }
 
-// phaseIAM6_PolicyLifecycle ports IAM Phase 6 (~1837–1864):
+// runIAMPolicyLifecycle ports IAM Phase 6 (~1837–1864):
 // detach alice's policy and confirm she loses access; deleting a
 // still-attached policy must surface DeleteConflict; after detach +
 // delete the policy is gone (NoSuchEntity).
-func phaseIAM6_PolicyLifecycle(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 6 — Policy Lifecycle (Detach & Delete)")
+func runIAMPolicyLifecycle(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Policy Lifecycle (Detach IAM Phase 6 — Policy Lifecycle (Detach & Delete) Delete)")
 	// DetachUserPolicy returns 404 NoSuchEntity even for attachments
 	// confirmed by Phase 5 — daemon's attachment ledger isn't persisted
 	// across the API boundary. Skip-gate; mulga-siv-100 tracks the fix.
@@ -776,15 +776,15 @@ func phaseIAM6_PolicyLifecycle(t *testing.T, fix *Fixture) {
 	})
 }
 
-// phaseIAM7_Cleanup ports IAM Phase 7 (~1868–1911): tear down every
+// runIAMCleanup ports IAM Phase 7 (~1868–1911): tear down every
 // user, key, and policy created by Phases 1–6 even if intermediate
 // phases failed. Each step is best-effort so a missing resource
 // (already torn down or never created) doesn't fail the cleanup pass.
 // The final list-users / list-policies assertions are commented
 // expectations rather than hard checks because Phase 7 may run with
 // residual state from a partial Phase 1–6 failure.
-func phaseIAM7_Cleanup(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "IAM Phase 7 — Cleanup")
+func runIAMCleanup(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — IAM Cleanup")
 
 	// Resolve account ID before deleting users — iamEnsureAdminAccountID
 	// probes via GetUser(alice), and the user is gone after the loop below.

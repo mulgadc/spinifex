@@ -40,6 +40,39 @@ func TestNewNATManager_RejectsUnknownMode(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNATManager_AddEIP_FlowsBarrier_Fires(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var calls int
+	nm, err := NewNATManager(m, NATModeDistributed, WithFlowsBarrier(func() error {
+		calls++
+		return nil
+	}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID:      "vpc-1",
+		ExternalIP: "1.2.3.4",
+		LogicalIP:  "10.0.0.5",
+		PortName:   "port-eni-abc",
+		MAC:        "aa:bb:cc:dd:ee:ff",
+	}))
+	assert.Equal(t, 1, calls, "FlowsBarrier must fire once per AddEIP")
+}
+
+func TestNATManager_AddEIP_NoBarrier_Default(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeDistributed)
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+	}))
+}
+
 func TestNATManager_AddEIP_Distributed_SetsPortAndMAC(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

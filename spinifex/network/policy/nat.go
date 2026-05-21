@@ -76,9 +76,31 @@ type NATManager interface {
 	DeleteSNAT(ctx context.Context, vpcID, vpcCIDR string) error
 }
 
+// FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
+// chassis has installed the resulting flows. Production wiring passes a
+// closure over `ovn-nbctl --wait=hv sync`; tests leave it nil.
+type FlowsBarrier func() error
+
+// Option configures a natManager at construction.
+type Option func(*natManager)
+
+// WithFlowsBarrier injects the post-AddEIP flow-install barrier. The
+// barrier fires after the dnat_and_snat row is committed so the NATS
+// reply only returns once every chassis has the rewrite flow. Required
+// for the vpc.add-nat subscriber to match the legacy waitForFlowsHV
+// behaviour.
+func WithFlowsBarrier(b FlowsBarrier) Option {
+	return func(m *natManager) {
+		if b != nil {
+			m.barrier = b
+		}
+	}
+}
+
 type natManager struct {
-	ovn  ovn.Client
-	mode NATMode
+	ovn     ovn.Client
+	mode    NATMode
+	barrier FlowsBarrier
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -86,11 +108,19 @@ var _ NATManager = (*natManager)(nil)
 // NewNATManager constructs a NATManager bound to one NAT mode. mode is
 // resolved at startup from host.Wiring.UplinkMode() via NATModeFromUplinkMode
 // and must not be NATModeUnknown.
-func NewNATManager(client ovn.Client, mode NATMode) (NATManager, error) {
+func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager, error) {
 	if mode == NATModeUnknown {
 		return nil, fmt.Errorf("NAT mode is unknown; resolve from host.Wiring.UplinkMode()")
 	}
-	return &natManager{ovn: client, mode: mode}, nil
+	m := &natManager{
+		ovn:     client,
+		mode:    mode,
+		barrier: func() error { return nil },
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m, nil
 }
 
 func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
@@ -123,6 +153,9 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 
 	if err := m.ovn.AddNAT(ctx, router, natRule); err != nil {
 		return fmt.Errorf("add dnat_and_snat %s -> %s on %s: %w", eip.LogicalIP, eip.ExternalIP, router, err)
+	}
+	if err := m.barrier(); err != nil {
+		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	return nil
 }

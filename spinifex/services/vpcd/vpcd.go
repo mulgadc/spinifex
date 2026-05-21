@@ -534,7 +534,7 @@ func launchService(cfg *Config) error {
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
 
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
-	natMgr, err := policy.NewNATManager(liveClient, natMode)
+	natMgr, err := policy.NewNATManager(liveClient, natMode, policy.WithFlowsBarrier(waitForFlowsHV))
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}

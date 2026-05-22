@@ -1013,6 +1013,16 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Tombstone the spinifex-dhcp-leases bucket left over from the upstream-DHCP
+	// client removed in Phase 2.3 (bead mulga-siv-125.3.3). Idempotent — first
+	// daemon start on an upgraded cluster sweeps the bucket; later restarts are
+	// no-ops.
+	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
+		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
+			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
+		}
+	}
+
 	// Write service manifest so other nodes know what this node runs
 	if d.jsManager != nil {
 		if err := d.jsManager.WriteServiceManifest(

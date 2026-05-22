@@ -85,3 +85,17 @@ func GetOrCreateKVBucket(js nats.JetStreamContext, bucketName string, history in
 	}
 	return kv, nil
 }
+
+// DeleteKVBucketIfExists deletes a NATS KV bucket by name. Returns nil if the
+// bucket does not exist (idempotent). Used by daemon startup to tombstone
+// obsolete buckets after a subsystem is removed in a schema migration.
+func DeleteKVBucketIfExists(js nats.JetStreamContext, bucketName string) error {
+	err := js.DeleteKeyValue(bucketName)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, nats.ErrBucketNotFound) || errors.Is(err, nats.ErrStreamNotFound) {
+		return nil
+	}
+	return err
+}

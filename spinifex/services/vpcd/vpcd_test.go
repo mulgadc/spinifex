@@ -258,15 +258,15 @@ func TestVerifyBridgeMode_DirectMissingExternalIface(t *testing.T) {
 
 func TestVerifyBridgeMode_DirectMissingBindBridge(t *testing.T) {
 	err := verifyBridgeMode(BridgeModeDirect, "enp0s3", "")
-	if err == nil || !strings.Contains(err.Error(), "dhcp_bind_bridge") {
-		t.Fatalf("expected dhcp_bind_bridge error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "WAN bridge") {
+		t.Fatalf("expected WAN bridge error, got: %v", err)
 	}
 }
 
 func TestVerifyBridgeMode_VethMissingBindBridge(t *testing.T) {
 	err := verifyBridgeMode(BridgeModeVeth, "", "")
-	if err == nil || !strings.Contains(err.Error(), "dhcp_bind_bridge") {
-		t.Fatalf("expected dhcp_bind_bridge error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "wan_bridge") {
+		t.Fatalf("expected wan_bridge error, got: %v", err)
 	}
 }
 

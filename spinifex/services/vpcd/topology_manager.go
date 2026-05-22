@@ -120,10 +120,9 @@ func (h *TopologyHandler) natManager() (policy.NATManager, error) {
 	return h.natm, h.natmErr
 }
 
-// igwManager returns the lazily-constructed external.IGWManager. Only the
-// static-pool / distributed-NAT IGW subscriber path goes through it; the
-// DHCP-coupled centralised path is held in attachIGWLegacy until bead
-// mulga-siv-125.3.3 removes the vpcd-local DHCP manager.
+// igwManager returns the lazily-constructed external.IGWManager. The
+// static-pool / distributed-NAT IGW subscriber path goes through it;
+// attachIGWLegacy in topology.go is dead code awaiting Slice D deletion.
 func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 	h.igwmOnce.Do(func() {
 		nm, err := h.natManager()
@@ -139,7 +138,6 @@ func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 		if p := h.findExternalPool("", ""); p != nil {
 			shared := external.ExternalPoolConfig{
 				Name:            p.Name,
-				Source:          p.Source,
 				RangeStart:      p.RangeStart,
 				RangeEnd:        p.RangeEnd,
 				Gateway:         p.Gateway,
@@ -148,7 +146,6 @@ func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 				DNSServers:      p.DNSServers,
 				Region:          p.Region,
 				AZ:              p.AZ,
-				DhcpBindBridge:  p.DhcpBindBridge,
 				GwLrpRangeStart: p.GwLrpRangeStart,
 				GwLrpRangeEnd:   p.GwLrpRangeEnd,
 			}

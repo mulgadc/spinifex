@@ -19,9 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 // sudoCommand wraps exec.Command with sudo when running as non-root.
@@ -86,7 +84,6 @@ type Config struct {
 // ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
 type ExternalPoolConfig struct {
 	Name            string
-	Source          string // "static" (default) or "dhcp"
 	RangeStart      string
 	RangeEnd        string
 	Gateway         string
@@ -95,13 +92,13 @@ type ExternalPoolConfig struct {
 	DNSServers      []string
 	Region          string
 	AZ              string
-	DhcpBindBridge  string // Bridge where the DHCP AF_PACKET socket binds (e.g. "br-wan"). Required for source="dhcp".
 	GwLrpRangeStart string // Sub-range for OVN gateway LRP IPs in centralized NAT mode (mulga-siv-36).
 	GwLrpRangeEnd   string
 }
 
-// IsDHCP is retained until Slice C removes the DHCP-source code paths; loader
-// rejects source="dhcp" so this always returns false in steady state.
+// IsDHCP is a dead stub retained for the unreachable attachIGWLegacy
+// dispatcher branch in topology.go; Slice D deletes both together
+// (mulga-siv-125.3.3).
 func (p *ExternalPoolConfig) IsDHCP() bool {
 	return false
 }
@@ -413,16 +410,16 @@ func launchService(cfg *Config) error {
 	defer liveClient.Close()
 	slog.Info("Connected to OVN NB DB", "endpoint", cfg.OVNNBAddr)
 
-	bridgeMode, dhcpBindBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
-	slog.Info("External bridge mode", "mode", bridgeMode, "dhcp_bind_bridge", dhcpBindBridge)
-	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, dhcpBindBridge); err != nil {
+	bridgeMode, wanBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
+	slog.Info("External bridge mode", "mode", bridgeMode, "wan_bridge", wanBridge)
+	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, wanBridge); err != nil {
 		slog.Error("vpcd: bridge mode sanity check failed", "err", err)
 		return err
 	}
 
 	// Resolve external CIDR from the WAN bridge before any reconcile. Skipped
 	// when external networking is disabled (overlay-only deployments).
-	if err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, dhcpBindBridge); err != nil {
+	if err := ensureExternalCIDRReady(ctx, cfg.ExternalMode, wanBridge); err != nil {
 		return err
 	}
 
@@ -449,7 +446,6 @@ func launchService(cfg *Config) error {
 	topoOpts = append(topoOpts, WithChassisNames(chassisNames))
 	slog.Info("vpcd: gateway chassis discovered", "chassis", chassisNames)
 	topoOpts = append(topoOpts, WithBridgeMode(bridgeMode))
-	topoOpts = append(topoOpts, WithNATSConn(nc))
 	topo := NewTopologyHandler(liveClient, topoOpts...)
 
 	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in a
@@ -472,51 +468,11 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
-	// DHCP manager: services vpc.dhcp.acquire/release requests from the
-	// daemon-side ExternalIPAM handlers and (mulga-siv-38) topology's gw-LRP
-	// allocator. MUST subscribe before any reconcile pass — bootstrap
-	// reconcile, ReconcileFromKV, and retrofit all call into reconcileIGW /
-	// expectedGatewayPortNetwork which fan out vpc.dhcp.acquire on
-	// source="dhcp" pools. Without a live subscription those requests hit
-	// "no responders" and burn the 60-attempt cold-boot retry budget per
-	// existing IGW. Started unconditionally — pools with source="static"
-	// never issue acquire requests, so the Manager sits idle until
-	// something actually wants DHCP.
 	js, err := nc.JetStream()
 	if err != nil {
-		slog.Error("Failed to get JetStream context for DHCP manager", "err", err)
+		slog.Error("Failed to get JetStream context", "err", err)
 		return err
 	}
-	// timeout/retry args are legacy no-ops (mulga-siv-39): DHCPManager
-	// owns DORA retransmission via acquireWithBackoff.
-	//
-	// Retry on JetStream-not-ready: NewDHCPManager creates the DHCP-leases
-	// KV bucket, which fails immediately if the JetStream cluster has not
-	// reached quorum. On multi-node bring-up vpcd's launchService runs
-	// before all peers are reachable, so we mirror the daemon's
-	// initJetStream backoff (500ms→10s, 5 min cap) instead of crashing the
-	// service and aborting the rest of the node bring-up.
-	dhcpManager, err := newDHCPManagerWithRetry(ctx, nc, js)
-	if err != nil {
-		slog.Error("Failed to create DHCP manager", "err", err)
-		return err
-	}
-	defer dhcpManager.Close()
-
-	if err := dhcpManager.Bootstrap(ctx); err != nil {
-		slog.Error("DHCP manager bootstrap failed", "err", err)
-		return err
-	}
-	dhcpSubs, err := dhcpManager.Subscribe(nc)
-	if err != nil {
-		slog.Error("DHCP manager subscribe failed", "err", err)
-		return err
-	}
-	defer func() {
-		for _, s := range dhcpSubs {
-			_ = s.Unsubscribe()
-		}
-	}()
 
 	// Construct the network/reconcile manager stack. The reconciler replaces
 	// the five-pass startup sequence (Reconcile + ReconcileFromKV +
@@ -598,7 +554,7 @@ func launchService(cfg *Config) error {
 	}()
 
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
-		"subscriptions", len(subs), "dhcp_subscriptions", len(dhcpSubs))
+		"subscriptions", len(subs))
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
@@ -611,48 +567,6 @@ func launchService(cfg *Config) error {
 	return nil
 }
 
-// newDHCPManagerWithRetry constructs a DHCPManager, retrying on transient
-// JetStream-not-ready errors with exponential backoff (500ms→10s, capped
-// at 5 min). NewDHCPManager creates the spinifex-dhcp-leases KV bucket;
-// on multi-node bring-up the JetStream cluster may not yet have quorum
-// when vpcd starts, and a single-shot CreateKeyValue would otherwise crash
-// the service before the rest of the node finishes coming up.
-//
-// Mirrors daemon.initJetStream's backoff so vpcd waits as patiently as the
-// daemon does for the cluster to form.
-func newDHCPManagerWithRetry(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) (*DHCPManager, error) {
-	const maxWait = 5 * time.Minute
-	retryDelay := 500 * time.Millisecond
-	start := time.Now()
-	attempt := 0
-
-	for {
-		attempt++
-		mgr, err := NewDHCPManager(nc, js, dhcp.NewNClient4(0, 0))
-		if err == nil {
-			if attempt > 1 {
-				slog.Info("vpcd: DHCP manager ready", "attempts", attempt, "elapsed", time.Since(start).Round(time.Second))
-			}
-			return mgr, nil
-		}
-
-		elapsed := time.Since(start)
-		if elapsed >= maxWait {
-			return nil, fmt.Errorf("DHCP manager init timed out after %s (%d attempts): %w", elapsed.Round(time.Second), attempt, err)
-		}
-
-		slog.Warn("vpcd: DHCP manager not ready (waiting for JetStream cluster quorum)",
-			"err", err, "attempt", attempt, "elapsed", elapsed.Round(time.Second), "retryIn", retryDelay)
-
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("DHCP manager init cancelled: %w", ctx.Err())
-		case <-time.After(retryDelay):
-		}
-		retryDelay = min(retryDelay*2, 10*time.Second)
-	}
-}
-
 // externalPoolConfigToShared translates the vpcd-local ExternalPoolConfig
 // into the network/external package's shared shape. The two will merge
 // once topology.go is split (bead mulga-siv-125.3.4 — see external.go's
@@ -660,7 +574,6 @@ func newDHCPManagerWithRetry(ctx context.Context, nc *nats.Conn, js nats.JetStre
 func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
 	return external.ExternalPoolConfig{
 		Name:            p.Name,
-		Source:          p.Source,
 		RangeStart:      p.RangeStart,
 		RangeEnd:        p.RangeEnd,
 		Gateway:         p.Gateway,
@@ -669,7 +582,6 @@ func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfi
 		DNSServers:      p.DNSServers,
 		Region:          p.Region,
 		AZ:              p.AZ,
-		DhcpBindBridge:  p.DhcpBindBridge,
 		GwLrpRangeStart: p.GwLrpRangeStart,
 		GwLrpRangeEnd:   p.GwLrpRangeEnd,
 	}
@@ -744,37 +656,36 @@ var readLinkMaster = func(iface string) (string, error) {
 // verifyBridgeMode is the post-detect sanity check. It refuses to start vpcd
 // when the chosen bridge mode does not match the host plumbing (D4+D18):
 //
-//   - direct: ExternalInterface must be an OVS port on DhcpBindBridge. That is
-//     the whole contract of direct mode.
+//   - direct: ExternalInterface must be an OVS port on the WAN bridge. That
+//     is the whole contract of direct mode.
 //   - veth: (a) veth-wan-ovs must be an OVS port on OvnExternalBridge — the
 //     OVN side, owned by setup-ovn.sh's ovn-bridge-mappings. (b) veth-wan-br
-//     must be enslaved to DhcpBindBridge — the Linux side, where the DHCP
-//     client sees LAN frames.
+//     must be enslaved to the WAN bridge — the Linux side.
 //   - empty / unknown: fail with the list of supported values.
 //
 // Fail-start, not soft-degrade — the distributed-NAT-on-veth-host footgun is
 // exactly what this plan set out to kill.
-func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
+func verifyBridgeMode(mode, externalIface, wanBridge string) error {
 	switch mode {
 	case BridgeModeDirect:
 		if externalIface == "" {
 			return fmt.Errorf("vpcd: direct bridge mode requires external_interface (the WAN NIC name)")
 		}
-		if dhcpBindBridge == "" {
-			return fmt.Errorf("vpcd: direct bridge mode requires dhcp_bind_bridge (the OVS bridge holding the WAN NIC)")
+		if wanBridge == "" {
+			return fmt.Errorf("vpcd: direct bridge mode requires the WAN bridge (the OVS bridge holding the WAN NIC)")
 		}
 		br, err := portToBr(externalIface)
 		if err != nil {
 			return fmt.Errorf("vpcd: direct bridge mode: %w", err)
 		}
-		if br != dhcpBindBridge {
-			return fmt.Errorf("vpcd: direct bridge mode: %q is on OVS bridge %q, expected %q (dhcp_bind_bridge)",
-				externalIface, br, dhcpBindBridge)
+		if br != wanBridge {
+			return fmt.Errorf("vpcd: direct bridge mode: %q is on OVS bridge %q, expected %q",
+				externalIface, br, wanBridge)
 		}
 		return nil
 	case BridgeModeVeth:
-		if dhcpBindBridge == "" {
-			return fmt.Errorf("vpcd: veth bridge mode requires dhcp_bind_bridge (the Linux bridge holding the WAN NIC)")
+		if wanBridge == "" {
+			return fmt.Errorf("vpcd: veth bridge mode requires wan_bridge (the Linux bridge holding the WAN NIC)")
 		}
 		br, err := portToBr("veth-wan-ovs")
 		if err != nil {
@@ -788,9 +699,9 @@ func verifyBridgeMode(mode, externalIface, dhcpBindBridge string) error {
 		if err != nil {
 			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br missing or has no master — is spinifex-veth-wan.service running? %w", err)
 		}
-		if master != dhcpBindBridge {
-			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br master is %q, expected %q (dhcp_bind_bridge)",
-				master, dhcpBindBridge)
+		if master != wanBridge {
+			return fmt.Errorf("vpcd: veth bridge mode: veth-wan-br master is %q, expected %q (wan_bridge)",
+				master, wanBridge)
 		}
 		return nil
 	default:

@@ -11,12 +11,10 @@
 //     grows those methods, IGWManager calls L1 directly for those L2 objects.
 //     This is documented and tracked for cleanup in a follow-on bead.
 //
-//   - DHCP-sourced pools (source="dhcp") use upstream router DHCP to acquire
-//     the gateway LRP IP. The DHCP client and JetStream lease store live in
-//     services/vpcd/dhcp; this package keeps the dependency out by accepting
-//     a GatewayIPAllocator interface. StaticRangeAllocator is provided here;
-//     the DHCP-backed allocator stays in vpcd until bead mulga-siv-125.3.3
-//     (DHCP removal) is unblocked.
+//   - Gateway LRP IP allocation goes through a GatewayIPAllocator interface.
+//     StaticRangeAllocator (this package) picks from pool.gw_lrp_range;
+//     LinkLocalAllocator returns ok=false for distributed-NAT deployments
+//     where the gateway LRP never goes on the wire.
 //
 // See docs/development/feature/spinifex-network-redesign.md §10 and
 // docs/development/feature/spinifex-network-redesign-phase2.md §2.4.

@@ -1097,14 +1097,9 @@ func (d *Daemon) startCluster() error {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []handlers_ec2_vpc.ExternalPoolConfig
-			gwMAC := ""
-			if d.clusterConfig.Bootstrap.VpcId != "" {
-				gwMAC = utils.HashMAC("gw-" + d.clusterConfig.Bootstrap.VpcId)
-			}
 			for _, p := range d.clusterConfig.Network.ExternalPools {
 				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
 					Name:            p.Name,
-					Source:          p.Source,
 					RangeStart:      p.RangeStart,
 					RangeEnd:        p.RangeEnd,
 					Gateway:         p.Gateway,
@@ -1112,12 +1107,11 @@ func (d *Daemon) startCluster() error {
 					PrefixLen:       p.PrefixLen,
 					Region:          p.Region,
 					AZ:              p.AZ,
-					GatewayMAC:      gwMAC,
 					GwLrpRangeStart: p.GwLrpRangeStart,
 					GwLrpRangeEnd:   p.GwLrpRangeEnd,
 				})
 			}
-			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(d.natsConn, js, pools)
+			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(js, pools)
 			if err != nil {
 				slog.Warn("Failed to initialize external IPAM", "err", err)
 			} else {

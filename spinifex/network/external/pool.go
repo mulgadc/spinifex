@@ -64,10 +64,6 @@ func FindPool(pools []ExternalPoolConfig, region, az string) *ExternalPoolConfig
 //     pool.gw_lrp_range, persisting the assignment via the LRP's
 //     external_ids so reconciles see it on retry.
 //
-//   - DHCP-backed allocator (lives in services/vpcd until bead
-//     mulga-siv-125.3.3 lands): requests an upstream DHCP lease and reuses
-//     it on idempotent re-attach.
-//
 //   - LinkLocalAllocator (this package): always returns ok=false; callers
 //     fall back to linkLocalGatewayNetwork. Useful for distributed-NAT
 //     deployments where the gateway LRP never goes on the wire.

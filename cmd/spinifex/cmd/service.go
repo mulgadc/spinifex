@@ -728,7 +728,6 @@ var vpcdStartCmd = &cobra.Command{
 		for _, p := range clusterConfig.Network.ExternalPools {
 			extPools = append(extPools, vpcd.ExternalPoolConfig{
 				Name:            p.Name,
-				Source:          p.Source,
 				RangeStart:      p.RangeStart,
 				RangeEnd:        p.RangeEnd,
 				Gateway:         p.Gateway,

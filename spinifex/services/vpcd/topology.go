@@ -14,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -160,7 +159,7 @@ const (
 	BridgeModeVeth = "veth"
 	// OvnExternalBridge is the OVS bridge that ovn-bridge-mappings targets
 	// for the "external" localnet. Owned by setup-ovn.sh's ovn-bridge-mappings
-	// setup and independent of dhcp_bind_bridge (which is Linux-side in veth
+	// setup and independent of the WAN bridge (which is Linux-side in veth
 	// mode). Named as a constant so the vpcd sanity check refers to the
 	// contract, not a hardcoded string (D18).
 	OvnExternalBridge = "br-ext"
@@ -173,11 +172,6 @@ type TopologyHandler struct {
 	externalPools []ExternalPoolConfig
 	chassisNames  []string // OVN chassis names for gateway HA scheduling
 	bridgeMode    string   // "direct" or "veth" — controls NAT mode and localnet options
-	// nc is used to talk to vpcd's DHCPManager via vpc.dhcp.acquire /
-	// vpc.dhcp.release for gateway LRP IPs in centralized NAT on
-	// source="dhcp" pools (mulga-siv-38). nil when no DHCP pool is wired or
-	// the test stack supplies a static-only mock.
-	nc *nats.Conn
 
 	// lm + lmOnce cache the topology.Manager produced from h.ovn so each
 	// adapter call doesn't re-construct (Phase 2.6, mulga-siv-129).
@@ -197,9 +191,8 @@ type TopologyHandler struct {
 	natmErr  error
 
 	// igwm + igwmOnce cache the external.IGWManager. Handler routes the
-	// static-pool / distributed branches through it; the DHCP-coupled
-	// centralised path keeps using attachIGWLegacy until bead
-	// mulga-siv-125.3.3 lands and the DHCP manager goes away.
+	// static-pool / distributed branches through it; attachIGWLegacy is a
+	// dead branch retained for Slice D's deletion (mulga-siv-125.3.3).
 	igwmOnce sync.Once
 	igwm     external.IGWManager
 	igwmErr  error
@@ -237,15 +230,6 @@ func WithChassisNames(names []string) TopologyOption {
 func WithBridgeMode(mode string) TopologyOption {
 	return func(h *TopologyHandler) {
 		h.bridgeMode = mode
-	}
-}
-
-// WithNATSConn wires the NATS connection used to talk to vpcd's DHCPManager
-// for gateway-LRP DHCP-acquire (mulga-siv-38). Tests with mock OVN clients
-// can omit this — the static / auto-derive paths still work.
-func WithNATSConn(nc *nats.Conn) TopologyOption {
-	return func(h *TopologyHandler) {
-		h.nc = nc
 	}
 }
 
@@ -301,11 +285,10 @@ func (h *TopologyHandler) ensureLocalnetOptions(ctx context.Context, extPortName
 
 // expectedGatewayPortNetwork returns the Networks CIDR a gateway LRP for
 // vpcId should carry. In direct mode, or in centralized mode without a pool,
-// it is the link-local fallback. In centralized mode with a DHCP pool the
-// gateway IP is acquired via vpc.dhcp.acquire (mulga-siv-38). With a static
-// pool the IP comes from gw_lrp_range or the auto-derived top-of-subnet
-// block (mulga-siv-36). Returns the gw IP (empty when link-local) so
-// callers can persist it to external_ids.
+// it is the link-local fallback. In centralized mode with a static pool the
+// IP comes from gw_lrp_range or the auto-derived top-of-subnet block
+// (mulga-siv-36). Returns the gw IP (empty when link-local) so callers can
+// persist it to external_ids.
 func (h *TopologyHandler) expectedGatewayPortNetwork(ctx context.Context, vpcId string) (network, gwIP string, err error) {
 	if !h.useCentralizedNAT() {
 		return gatewayPortNetwork, "", nil
@@ -313,13 +296,6 @@ func (h *TopologyHandler) expectedGatewayPortNetwork(ctx context.Context, vpcId 
 	pool := h.findExternalPool("", "")
 	if pool == nil {
 		return gatewayPortNetwork, "", nil
-	}
-	if pool.IsDHCP() {
-		ip, prefix, dhcpErr := h.allocateGatewayLRPIPViaDHCP(ctx, vpcId, pool)
-		if dhcpErr != nil {
-			return "", "", dhcpErr
-		}
-		return fmt.Sprintf("%s/%d", ip, prefix), ip, nil
 	}
 	ip, prefix, ok, allocErr := h.allocateGatewayLRPIP(ctx, vpcId, pool)
 	if allocErr != nil {
@@ -704,18 +680,10 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 
 // --- Internet Gateway (external connectivity + NAT) ---
 
-// handleIGWAttach decodes the event and chooses a path:
-//
-//   - Centralised NAT + DHCP-sourced pool: stays on attachIGWLegacy
-//     because the gateway LRP IP is allocated via vpc.dhcp.acquire, and
-//     that DHCP client lives in services/vpcd. Bead mulga-siv-125.3.3
-//     removes the DHCP manager; the legacy branch goes away then.
-//
-//   - All other cases (distributed NAT, static-range pool, no pool):
-//     delegate to external.IGWManager.AttachIGW. Behaviour is identical
-//     end-to-end — same external switch, same localnet port options,
-//     same gateway LRP networks, same default route, same chassis HA,
-//     same waitForFlowsHV tail barrier.
+// handleIGWAttach decodes the event and delegates to
+// external.IGWManager.AttachIGW. The legacy DHCP-coupled path is dead
+// (pool.IsDHCP() now always returns false) and is removed in Slice D
+// (mulga-siv-125.3.3).
 func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
@@ -753,9 +721,9 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// attachIGWLegacy is the DHCP-coupled centralised-NAT IGW attach path.
-// Kept inline until the vpcd-local DHCP manager goes away in bead
-// mulga-siv-125.3.3. The caller pre-resolved pool.
+// attachIGWLegacy is the dead legacy centralised-NAT IGW attach path.
+// Unreachable since pool.IsDHCP() always returns false; retained only
+// for Slice D's deletion (mulga-siv-125.3.3).
 func (h *TopologyHandler) attachIGWLegacy(ctx context.Context, msg *nats.Msg, evt types.IGWEvent, pool *ExternalPoolConfig) {
 	routerName := "vpc-" + evt.VpcId
 	extSwitchName := "ext-" + evt.VpcId
@@ -848,7 +816,6 @@ func (h *TopologyHandler) attachIGWLegacy(ctx context.Context, msg *nats.Msg, ev
 		}
 		slog.Info("vpcd: using external pool for IGW",
 			"pool", pool.Name,
-			"source", pool.Source,
 			"lrp_network", gatewayNetwork,
 			"wan_gateway", wanGateway,
 		)
@@ -962,12 +929,9 @@ func (h *TopologyHandler) attachIGWLegacy(ctx context.Context, msg *nats.Msg, ev
 	respond(msg, nil)
 }
 
-// handleIGWDetach decodes the event, delegates the OVN teardown to
-// external.IGWManager.DetachIGW, and unconditionally calls
-// releaseGatewayLRPLease afterwards. The DHCP lease release stays here
-// because the upstream client lives in services/vpcd; both attach paths
-// (legacy + manager-driven) tear down through the same exit so we don't
-// need to branch.
+// handleIGWDetach decodes the event and delegates the OVN teardown to
+// external.IGWManager.DetachIGW. Static gateway LRP IPs live in OVN
+// external_ids and are cleared when the LRP itself is deleted.
 func (h *TopologyHandler) handleIGWDetach(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
@@ -992,7 +956,6 @@ func (h *TopologyHandler) handleIGWDetach(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	h.releaseGatewayLRPLease(evt.VpcId)
 	slog.Info("vpcd: detached internet gateway from VPC",
 		"igw_id", evt.InternetGatewayId, "vpc_id", evt.VpcId)
 	respond(msg, nil)
@@ -1325,69 +1288,6 @@ func gwLrpRange(pool *ExternalPoolConfig) (start, end net.IP, prefix int, ok boo
 	}
 
 	return uint32ToIPv4(autoStartU), uint32ToIPv4(autoEndU), prefix, true
-}
-
-// gwLrpClientID is the DHCP client-id used for a VPC's gateway LRP lease.
-// Stable across reboots — DHCPManager reuses the same lease on idempotent
-// re-attach so the LRP IP doesn't change unless the upstream server
-// reassigns it.
-func gwLrpClientID(vpcId string) string { return "gw-lrp-" + vpcId }
-
-// allocateGatewayLRPIPViaDHCP requests a DHCP lease from vpcd's DHCPManager
-// for the gateway LRP of vpcId. The handler-side acquire is idempotent on
-// client-id so retries return the same IP without a fresh DORA. Prefix
-// comes from the lease's SubnetMask, falling back to pool.PrefixLen when
-// the server omits option 1 (rare; should not happen in practice).
-func (h *TopologyHandler) allocateGatewayLRPIPViaDHCP(ctx context.Context, vpcId string, pool *ExternalPoolConfig) (ip string, prefix int, err error) {
-	_ = ctx
-	if h.nc == nil {
-		return "", 0, fmt.Errorf("vpcd: no NATS conn for DHCP gw LRP allocation (vpc %s, pool %s)", vpcId, pool.Name)
-	}
-	clientID := gwLrpClientID(vpcId)
-	hostname := "spinifex-gw-" + vpcId
-	vendorClass := "mulga-spinifex-gw-lrp"
-	lease, dhcpErr := dhcp.RequestAcquire(h.nc, pool.DhcpBindBridge, clientID, hostname, vendorClass, pool.Name, "")
-	if dhcpErr != nil {
-		return "", 0, fmt.Errorf("dhcp acquire gw LRP IP for vpc %s: %w", vpcId, dhcpErr)
-	}
-	prefix = prefixFromMask(lease.SubnetMask)
-	if prefix == 0 {
-		prefix = pool.PrefixLen
-	}
-	if prefix <= 0 || prefix > 32 {
-		return "", 0, fmt.Errorf("dhcp gw LRP for vpc %s: cannot determine prefix (mask=%q pool prefix=%d)", vpcId, lease.SubnetMask, pool.PrefixLen)
-	}
-	return lease.IP, prefix, nil
-}
-
-// releaseGatewayLRPLease asks vpcd's DHCPManager to drop the lease held for
-// vpcId's gateway LRP. Best-effort — log on failure but never block IGW
-// detach, since the upstream server will eventually expire the lease on
-// its own.
-func (h *TopologyHandler) releaseGatewayLRPLease(vpcId string) {
-	if h.nc == nil {
-		return
-	}
-	if err := dhcp.RequestRelease(h.nc, gwLrpClientID(vpcId)); err != nil {
-		slog.Warn("vpcd: dhcp release for gw LRP failed", "vpc_id", vpcId, "err", err)
-	}
-}
-
-// prefixFromMask converts a dotted-decimal mask ("255.255.255.0") to a
-// prefix length. Returns 0 when the mask is empty or unparseable.
-func prefixFromMask(mask string) int {
-	if mask == "" {
-		return 0
-	}
-	ip := net.ParseIP(mask).To4()
-	if ip == nil {
-		return 0
-	}
-	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 {
-		return 0
-	}
-	return ones
 }
 
 // allocateGatewayLRPIP picks the next free IP in pool.GwLrpRange for the

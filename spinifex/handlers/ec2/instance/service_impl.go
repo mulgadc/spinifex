@@ -680,7 +680,14 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
 						portName := "port-" + *eni.NetworkInterfaceId
-						utils.PublishNATEvent(s.natsConn, "vpc.add-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
+							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
+								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+							s.rollbackAutoAssignedPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName)
+							lastRunErr = errors.New("nat_rule_create_failed")
+							s.resourceMgr.Deallocate(instanceType)
+							continue
+						}
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
 						instance.PublicIP = publicIP
 						instance.PublicIPPool = poolName
@@ -2260,6 +2267,28 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 		}
 	}
 	_ = instanceID
+}
+
+// rollbackAutoAssignedPublicIP unwinds an auto-assign that proceeded past
+// IPAM allocation + ENI update but failed at the vpc.add-nat barrier. Order
+// matters: clear the ENI record first so any concurrent DescribeNetworkInterfaces
+// stops surfacing the unreachable IP, then release the IPAM lease so the
+// pool slot can be reused. Errors here are logged but not propagated — the
+// launch is already failing and the caller needs to keep unwinding the rest
+// of the per-instance state.
+func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(accountID, eniID, publicIP, poolName string) {
+	if s.eniCreator != nil {
+		if err := s.eniCreator.UpdateENIPublicIP(accountID, eniID, "", ""); err != nil {
+			slog.Warn("PrepareRunInstances: failed to clear ENI public IP during NAT-failure rollback",
+				"eniId", eniID, "publicIp", publicIP, "err", err)
+		}
+	}
+	if s.ipReleaser != nil {
+		if err := s.ipReleaser.ReleaseIP(poolName, publicIP); err != nil {
+			slog.Warn("PrepareRunInstances: failed to release public IP during NAT-failure rollback",
+				"publicIp", publicIP, "pool", poolName, "err", err)
+		}
+	}
 }
 
 func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceID string) {

@@ -385,17 +385,39 @@ func PublishEvent(nc *nats.Conn, topic string, event any) {
 	}
 }
 
+// natEvent is the wire payload for vpc.add-nat / vpc.delete-nat.
+type natEvent struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
+}
+
+// AddNAT requests vpcd commit the OVN dnat_and_snat rule for (externalIP →
+// logicalIP) via NATS request-reply and waits up to 10 s for the ack. A
+// non-nil return means the rule was NOT committed: the caller MUST roll back
+// any state that assumes the public IP is routable (IPAM allocation, ENI
+// public IP record, EC2 response fields) — there is no reconciler that
+// repairs a black-holed external IP after the fact.
+func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
+	return RequestEvent(nc, "vpc.add-nat", natEvent{
+		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
+		PortName: portName, MAC: mac,
+	}, 10*time.Second)
+}
+
 // PublishNATEvent sends a NAT lifecycle event (vpc.add-nat or vpc.delete-nat)
 // to NATS. vpc.add-nat uses request-reply to commit the OVN NAT rule before
 // returning (prevents ARP propagation races); vpc.delete-nat is fire-and-forget.
+//
+// Callers that MUST react to an add-nat failure (e.g. roll back a launch)
+// should use AddNAT instead — this helper only logs the failure.
 func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portName, mac string) {
-	evt := struct {
-		VpcId      string `json:"vpc_id"`
-		ExternalIP string `json:"external_ip"`
-		LogicalIP  string `json:"logical_ip"`
-		PortName   string `json:"port_name"`
-		MAC        string `json:"mac"`
-	}{VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac}
+	evt := natEvent{
+		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
+		PortName: portName, MAC: mac,
+	}
 
 	if topic == "vpc.add-nat" {
 		if err := RequestEvent(nc, topic, evt, 10*time.Second); err != nil {

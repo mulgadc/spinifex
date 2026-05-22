@@ -98,3 +98,11 @@ func TestMultinodeVPCNetworking(t *testing.T) {
 	t.Parallel()
 	runVPCNetworking(t, requireMultiNodeFixture(t))
 }
+
+// TestMultinodeIPSec is read-only over SSH — verifies the OVN native IPsec
+// wiring (OVS DB cert pointers, xfrm SAs, ESP traffic) without launching
+// any AWS resources. Safe to run alongside the parallel bucket.
+func TestMultinodeIPSec(t *testing.T) {
+	t.Parallel()
+	runIPSec(t, requireMultiNodeFixture(t))
+}

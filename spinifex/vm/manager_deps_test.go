@@ -8,7 +8,11 @@ import (
 )
 
 // fakeStateStore is a minimal in-memory StateStore used to verify Deps wiring.
+// The mutex covers all map accessors so StopAll's per-instance fan-out
+// goroutines (each calling WriteStoppedInstance via MigrateStoppedToSharedKV)
+// stay race-free.
 type fakeStateStore struct {
+	mu         sync.Mutex
 	saved      map[string]map[string]*VM
 	stopped    map[string]*VM
 	terminated map[string]*VM
@@ -24,6 +28,8 @@ func newFakeStateStore() *fakeStateStore {
 }
 
 func (f *fakeStateStore) SaveRunningState(nodeID string, snap map[string]*VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.saveErr != nil {
 		return f.saveErr
 	}
@@ -34,6 +40,8 @@ func (f *fakeStateStore) SaveRunningState(nodeID string, snap map[string]*VM) er
 }
 
 func (f *fakeStateStore) LoadRunningState(nodeID string) (map[string]*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if v, ok := f.saved[nodeID]; ok {
 		return v, nil
 	}
@@ -41,11 +49,15 @@ func (f *fakeStateStore) LoadRunningState(nodeID string) (map[string]*VM, error)
 }
 
 func (f *fakeStateStore) WriteStoppedInstance(id string, v *VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopped[id] = v
 	return nil
 }
 
 func (f *fakeStateStore) LoadStoppedInstance(id string) (*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if v, ok := f.stopped[id]; ok {
 		return v, nil
 	}
@@ -53,11 +65,15 @@ func (f *fakeStateStore) LoadStoppedInstance(id string) (*VM, error) {
 }
 
 func (f *fakeStateStore) DeleteStoppedInstance(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.stopped, id)
 	return nil
 }
 
 func (f *fakeStateStore) ListStoppedInstances() ([]*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]*VM, 0, len(f.stopped))
 	for _, v := range f.stopped {
 		out = append(out, v)
@@ -66,11 +82,15 @@ func (f *fakeStateStore) ListStoppedInstances() ([]*VM, error) {
 }
 
 func (f *fakeStateStore) WriteTerminatedInstance(id string, v *VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.terminated[id] = v
 	return nil
 }
 
 func (f *fakeStateStore) ListTerminatedInstances() ([]*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]*VM, 0, len(f.terminated))
 	for _, v := range f.terminated {
 		out = append(out, v)

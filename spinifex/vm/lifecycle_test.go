@@ -797,19 +797,11 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
-// TestNbdkitPreExecWait locks in the per-mode pre-exec sleep budget: direct-boot
-// is zero (no drives, no nbdkit) and the PC-machine path keeps the 2 s wait that
-// the rest of the launch flow depends on.
-func TestNbdkitPreExecWait(t *testing.T) {
-	assert.Equal(t, time.Duration(0), nbdkitPreExecWait(true))
-	assert.Equal(t, 2*time.Second, nbdkitPreExecWait(false))
-}
-
-// TestQemuStartSettleWait locks in the per-mode post-fork settle: direct-boot
-// trims to 50 ms (QMP socket binds within a few ms when there is no firmware,
-// ROM, or block layer setup) and the PC-machine path retains the historical
-// 1 s buffer that catches bad-cmdline crashes before the QMP dial.
-func TestQemuStartSettleWait(t *testing.T) {
-	assert.Equal(t, 50*time.Millisecond, qemuStartSettleWait(true))
-	assert.Equal(t, time.Second, qemuStartSettleWait(false))
+// TestQemuStartupTimeout pins the post-fork bound. The poll loop races
+// QMP socket appearance against early process exit; the timeout is the
+// outer safety net that prevents a wedged QEMU from orphaning resources
+// indefinitely.
+func TestQemuStartupTimeout(t *testing.T) {
+	assert.Equal(t, 5*time.Second, qemuStartupTimeout)
+	assert.Equal(t, 5*time.Second, nbdReadyTimeout)
 }

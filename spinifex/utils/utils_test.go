@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -218,6 +219,48 @@ func TestWaitForUnixSocket(t *testing.T) {
 		}()
 
 		require.NoError(t, WaitForUnixSocket(path, time.Second))
+	})
+}
+
+func TestWaitForNBDReady(t *testing.T) {
+	t.Run("unix socket ready", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "nbd.sock")
+		ln, err := net.Listen("unix", path)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+
+		require.NoError(t, WaitForNBDReady(FormatNBDSocketURI(path), time.Second))
+	})
+
+	t.Run("unix socket times out", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "missing.sock")
+		err := WaitForNBDReady(FormatNBDSocketURI(path), 100*time.Millisecond)
+		require.Error(t, err)
+	})
+
+	t.Run("tcp listener ready", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		_, portStr, err := net.SplitHostPort(ln.Addr().String())
+		require.NoError(t, err)
+		port, err := strconv.Atoi(portStr)
+		require.NoError(t, err)
+
+		require.NoError(t, WaitForNBDReady(FormatNBDTCPURI("127.0.0.1", port), time.Second))
+	})
+
+	t.Run("tcp listener times out", func(t *testing.T) {
+		// Port 1 is unprivileged-bind reserved; nothing will be listening.
+		err := WaitForNBDReady(FormatNBDTCPURI("127.0.0.1", 1), 100*time.Millisecond)
+		require.Error(t, err)
+	})
+
+	t.Run("rejects malformed uri", func(t *testing.T) {
+		err := WaitForNBDReady("garbage://nope", time.Second)
+		require.Error(t, err)
 	})
 }
 

@@ -73,6 +73,42 @@ func FormatNBDTCPURI(host string, port int) string {
 	return "nbd://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
+// WaitForNBDReady polls until the NBD endpoint at uri is reachable, or the
+// timeout expires. Unix-socket URIs use existence-on-disk (matching
+// WaitForUnixSocket so we don't consume the listener's accept queue before
+// QEMU dials); TCP URIs use a brief dial-and-close probe. Used by the launch
+// path to confirm nbdkit finished binding before exec'ing QEMU, replacing
+// the previous fixed 2 s sleep.
+func WaitForNBDReady(uri string, timeout time.Duration) error {
+	serverType, path, host, port, err := ParseNBDURI(uri)
+	if err != nil {
+		return err
+	}
+	switch serverType {
+	case "unix":
+		return WaitForUnixSocket(path, timeout)
+	case "inet":
+		return waitForTCPListener(net.JoinHostPort(host, strconv.Itoa(port)), timeout)
+	default:
+		return fmt.Errorf("unsupported NBD server type %q for uri %s", serverType, uri)
+	}
+}
+
+func waitForTCPListener(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for tcp listener %s: %w", addr, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // ParseNBDURI parses an NBD URI into its components for QMP blockdev-add.
 // Supported formats:
 //   - "nbd:unix:/path/to/socket.sock" → serverType="unix", path="/path/to/socket.sock"

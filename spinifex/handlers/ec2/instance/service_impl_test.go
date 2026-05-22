@@ -2364,6 +2364,7 @@ type fakeENICreator struct {
 	subnet        *SubnetInfo
 	createOut     *ec2.CreateNetworkInterfaceOutput
 	createErr     error
+	attachErr     error
 	attachCalls   int
 	updateCalls   int
 	clearCalls    int // updateCalls where publicIP is ""
@@ -2393,6 +2394,9 @@ func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInp
 
 func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
 	f.attachCalls++
+	if f.attachErr != nil {
+		return "", f.attachErr
+	}
 	return "attached", nil
 }
 
@@ -2630,6 +2634,49 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	// AWS code for raw ENI failure).
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
+}
+
+// TestPrepareRunInstances_ENIAttachFailureRollsBack regresses the silent
+// corruption where AttachENI failure was logged-and-ignored, leaving the
+// auto-created ENI unattached in vpcService. Later RegisterTargets with
+// TargetType=instance enumerates ENIs by attachment.instance-id, finds
+// none, and drops the target — the customer's ALB has 0 healthy targets
+// with no log line connecting the two events. The dangling ENI also leaks
+// its auto-assigned EIP on terminate because DeleteNetworkInterface
+// cannot resolve the instance link. With the fix, AttachENI failure must
+// delete the auto-created ENI, deallocate capacity, and drop the instance
+// from the reservation.
+func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
+	eni := &fakeENICreator{
+		attachErr: errors.New("vpc attach refused"),
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-attach-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:01"),
+				PrivateIpAddress:   aws.String("10.0.0.40"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed AttachENI must not be returned")
+
+	assert.Equal(t, 1, eni.attachCalls, "AttachENI must be attempted exactly once")
+	assert.Equal(t, []string{"eni-attach-fail"}, deleter.calls, "auto-created ENI must be deleted on attach failure")
+	require.Len(t, prov.deallocated, 1, "AttachENI failure must trigger Deallocate")
 }
 
 func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {

@@ -638,7 +638,20 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			instance.ENIMac = *eni.MacAddress
 
 			if _, attachErr := s.eniCreator.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
-				slog.Error("PrepareRunInstances: failed to attach ENI to instance record — ELBv2 target IP resolution will fail", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+				// Without the attachment, RegisterTargets (TargetType=instance)
+				// resolves ENIs via attachment.instance-id, finds none, and
+				// silently drops the target; terminate leaks the auto-EIP.
+				slog.Error("PrepareRunInstances: AttachENI failed — aborting launch",
+					"eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+				if _, delErr := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+					NetworkInterfaceId: &instance.ENIId,
+				}, accountID); delErr != nil {
+					slog.Warn("PrepareRunInstances: failed to delete auto-created ENI after attach failure",
+						"eniId", instance.ENIId, "err", delErr)
+				}
+				lastRunErr = attachErr
+				s.resourceMgr.Deallocate(instanceType)
+				continue
 			}
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
 			ec2Instance.SetSubnetId(*input.SubnetId)

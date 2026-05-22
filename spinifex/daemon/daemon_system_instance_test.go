@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -448,4 +452,104 @@ func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 	err = d.refreshSystemInstanceState(inst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rewrite fw_cfg blobs")
+}
+
+// TestLaunchSystemInstance_NATFailureRollsBackPublicIP regresses the silent
+// corruption where an internet-facing ALB launch committed the IPAM
+// allocation and surfaced the public IP on the ENI record even when
+// vpc.add-nat failed — the OVN dnat_and_snat rule was never created and the
+// public IP black-holed with no reconciler. With the fix, NAT NACK must roll
+// back the ENI public IP and release the IPAM lease before returning.
+func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
+	d := createVPCTestDaemon(t)
+
+	// Wire an ExternalIPAM against a fresh JS server. The pool gives us a
+	// known IP that the rollback must release back.
+	jsNS, err := server.NewServer(&server.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	require.NoError(t, err)
+	go jsNS.Start()
+	require.True(t, jsNS.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { jsNS.Shutdown() })
+
+	jsNC, err := nats.Connect(jsNS.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { jsNC.Close() })
+
+	js, err := jsNC.JetStream()
+	require.NoError(t, err)
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(jsNC, js, []handlers_ec2_vpc.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	d.externalIPAM = ipam
+
+	// Create a VPC + subnet + ENI so LaunchSystemInstance has a real ENI to
+	// attach to and to update with the public IP.
+	vpcOut, err := d.vpcService.CreateVpc(&ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.50.0.0/16"),
+	}, testAccountID)
+	require.NoError(t, err)
+	subnetOut, err := d.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     vpcOut.Vpc.VpcId,
+		CidrBlock: aws.String("10.50.1.0/24"),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniOut, err := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId:    subnetOut.Subnet.SubnetId,
+		Description: aws.String("nat-fail-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniID := aws.StringValue(eniOut.NetworkInterface.NetworkInterfaceId)
+	eniMac := aws.StringValue(eniOut.NetworkInterface.MacAddress)
+	eniIP := aws.StringValue(eniOut.NetworkInterface.PrivateIpAddress)
+
+	// Stand up a vpcd-shaped NACK responder on the daemon's NATS conn —
+	// utils.AddNAT publishes on d.natsConn, so the responder must live there.
+	sub, err := d.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	input := &handlers_elbv2.SystemInstanceInput{
+		InstanceType: getTestInstanceType(t),
+		SubnetID:     aws.StringValue(subnetOut.Subnet.SubnetId),
+		Scheme:       handlers_elbv2.SchemeInternetFacing,
+		AccountID:    testAccountID,
+		ENIID:        eniID,
+		ENIMac:       eniMac,
+		ENIIP:        eniIP,
+	}
+
+	out, err := d.LaunchSystemInstance(input)
+	require.Error(t, err, "NAT NACK must fail the launch")
+	assert.Nil(t, out, "no SystemInstanceOutput should be returned on NAT failure")
+	assert.Contains(t, err.Error(), "northd unavailable", "error must propagate the vpcd reason")
+
+	// ENI public IP record must be cleared so subsequent DescribeNetworkInterfaces
+	// does not surface the unreachable address.
+	descOut, err := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, descOut.NetworkInterfaces, 1)
+	// Association is built only when the underlying record has a public IP;
+	// rollback clears that field, so the helper omits Association entirely.
+	assert.Nil(t, descOut.NetworkInterfaces[0].Association,
+		"ENI must not carry the unreachable public IP after rollback")
+
+	// IPAM lease must be back in the pool so the next allocation can reuse
+	// it. .10 is the gateway (reserved at init); the first allocable IP is
+	// .11, which is what the launch grabbed and the rollback released.
+	rec, err := ipam.GetPoolRecord("wan-test")
+	require.NoError(t, err)
+	_, stillAllocated := rec.Allocated["203.0.113.11"]
+	assert.False(t, stillAllocated, "rollback must release the allocated IP back to the pool")
 }

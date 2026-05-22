@@ -2367,6 +2367,7 @@ type fakeENICreator struct {
 	attachCalls   int
 	updateCalls   int
 	clearCalls    int // updateCalls where publicIP is ""
+	detachCalls   int
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
@@ -2393,6 +2394,11 @@ func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInp
 func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
 	f.attachCalls++
 	return "attached", nil
+}
+
+func (f *fakeENICreator) DetachENI(_, _ string) error {
+	f.detachCalls++
+	return nil
 }
 
 func (f *fakeENICreator) UpdateENIPublicIP(_, _, publicIP, _ string) error {
@@ -2522,8 +2528,10 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	}
 	ipam := &fakeIPAllocator{publicIP: "203.0.113.7", poolName: "pool-a"}
 	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
 	svc, prov := prepareSvcWithENI(t, eni, ipam)
 	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
 
 	// Stand up a vpcd-shaped responder that NACKs every add-nat — simulates
 	// vpcd online but unable to commit the OVN rule (northd lag, port
@@ -2543,10 +2551,10 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	}, "acc")
 
 	// MinCount=1 with a single launch attempt that NAT-failed must drop
-	// below minimum and return a server error (nat_rule_create_failed is
-	// not an AWS-known code, so PrepareRunInstances falls back to
-	// ServerInternal — matches the ENI-create-failure path). The critical
-	// invariant is that no instance with the unreachable IP is surfaced.
+	// below minimum and return ServerInternal — the wrapped natErr is not
+	// an AWS-known code, so the lookup misses and the wire fallback kicks
+	// in. The critical invariant is that no instance with the unreachable
+	// IP is surfaced.
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Empty(t, instances, "instance with failed NAT must not be returned")
@@ -2558,6 +2566,12 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	// ENI record cleared: 2 update calls total (set + clear), 1 clear.
 	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
 	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
+
+	// ENI itself must be detached + deleted; otherwise the dropped instance
+	// leaks an eniKV record (vmMgr.Insert never runs, so terminateCleanup
+	// never fires) and the subnet exhausts private IPs under vpcd brown-out.
+	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
 
 	// Capacity deallocated so subsequent launches can use the slot.
 	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")

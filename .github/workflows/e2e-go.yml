@@ -112,6 +112,16 @@ jobs:
         # Go self-heal by fetching the named minor on demand.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
+      - name: Prune rootless docker cache
+        # Self-hosted runner uses rootless docker; build-microvm-image.sh
+        # leaks ~100 MiB overlay2 layer per failed build. Prune before each
+        # run keeps /home/<ciuser>/.local/share/docker bounded.
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker buildx prune -af --filter "until=24h" || true
+          docker system df || true
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -442,6 +452,16 @@ jobs:
 
       - name: Re-enable Go toolchain auto-download
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Prune rootless docker cache
+        # Self-hosted runner uses rootless docker; build-microvm-image.sh
+        # leaks ~100 MiB overlay2 layer per failed build. Prune before each
+        # run keeps /home/<ciuser>/.local/share/docker bounded.
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker buildx prune -af --filter "until=24h" || true
+          docker system df || true
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -798,6 +818,16 @@ jobs:
 
       - name: Re-enable Go toolchain auto-download
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Prune rootless docker cache
+        # Self-hosted runner uses rootless docker; build-microvm-image.sh
+        # leaks ~100 MiB overlay2 layer per failed build. Prune before each
+        # run keeps /home/<ciuser>/.local/share/docker bounded.
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker buildx prune -af --filter "until=24h" || true
+          docker system df || true
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster

@@ -2616,6 +2616,25 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
+// TestStartInstance_NotFound verifies that when vmMgr.Start cannot find the
+// instance (e.g. it was terminated between the daemon's pre-dispatch lookup
+// and the manager call), the service returns InvalidInstanceID.NotFound
+// rather than collapsing to a generic Server.InternalError. The AWS SDK
+// retries 500s, so the prior behaviour produced duplicate Start attempts
+// before the client surfaced the failure.
+func TestStartInstance_NotFound(t *testing.T) {
+	id := "i-missing"
+	mgr := mgrWith(nil)
+	svc := &InstanceServiceImpl{
+		vmMgr:       mgr,
+		resourceMgr: &fakeResourceCapacityProvider{},
+	}
+	instance := &vm.VM{ID: id, Status: vm.StateStopped, InstanceType: "unknown"}
+	err := svc.StartInstance(instance, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
 // TestRunInstances_PrepareError covers the InstanceService-level RunInstances
 // (sync convenience method) error propagation when PrepareRunInstances rejects.
 func TestRunInstances_PrepareError(t *testing.T) {

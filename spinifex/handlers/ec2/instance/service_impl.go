@@ -870,11 +870,18 @@ func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC
 	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Attributes = command.Attributes })
 
 	if err := s.vmMgr.Start(instance.ID); err != nil {
-		slog.Error("StartInstance: vmMgr.Start failed", "err", err)
 		if ok {
 			s.resourceMgr.Deallocate(instanceType)
 		}
-		return errors.New(awserrors.ErrorServerInternal)
+		switch {
+		case errors.Is(err, vm.ErrInstanceNotFound):
+			slog.Warn("StartInstance: instance not found in manager",
+				"instanceId", command.ID, "err", err)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		default:
+			slog.Error("StartInstance: vmMgr.Start failed", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	s.vmMgr.UpdateGuestDeviceNames(instance)

@@ -31,10 +31,12 @@ func (m *Manager) Run(instance *VM) error {
 
 // Start re-launches a stopped instance held in the manager's map by id. Used
 // by the EC2 StartInstances handler when the instance is already local.
+// Returns ErrInstanceNotFound when id is unknown so callers can map the
+// failure to InvalidInstanceID.NotFound rather than a generic 500.
 func (m *Manager) Start(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
-		return fmt.Errorf("instance %s not found", id)
+		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
 	return m.launch(instance)
 }

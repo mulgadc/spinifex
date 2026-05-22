@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/admin"
@@ -109,7 +110,14 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(accountID string) {
 	// Find the default VPC for this account
 	descOut, err := d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{}, accountID)
 	if err != nil {
-		return
+		slog.Warn("DescribeVpcs failed for default VPC infrastructure, retrying", "accountID", accountID, "err", err)
+		time.Sleep(500 * time.Millisecond)
+		descOut, err = d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{}, accountID)
+		if err != nil {
+			slog.Error("DescribeVpcs failed for default VPC infrastructure after retry",
+				"accountID", accountID, "err", err)
+			return
+		}
 	}
 	var defaultVpcId string
 	for _, vpc := range descOut.Vpcs {
@@ -125,7 +133,15 @@ func (d *Daemon) ensureDefaultVPCInfrastructureFor(accountID string) {
 	// Check if IGW already attached
 	igwOut, err := d.igwService.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, accountID)
 	if err != nil {
-		return
+		slog.Warn("DescribeInternetGateways failed for default VPC infrastructure, retrying",
+			"accountID", accountID, "err", err)
+		time.Sleep(500 * time.Millisecond)
+		igwOut, err = d.igwService.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, accountID)
+		if err != nil {
+			slog.Error("DescribeInternetGateways failed for default VPC infrastructure after retry",
+				"accountID", accountID, "err", err)
+			return
+		}
 	}
 	hasIGW := false
 	for _, igw := range igwOut.InternetGateways {

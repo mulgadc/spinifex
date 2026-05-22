@@ -73,7 +73,7 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 	if input.PublicIpv4Pool != nil && *input.PublicIpv4Pool != "" {
 		// Allocate from a specific named pool.
 		poolName = *input.PublicIpv4Pool
-		publicIP, err = s.externalIPAM.AllocateFromPool(poolName, "elastic_ip", allocID, "", "")
+		publicIP, err = s.externalIPAM.AllocateFromPool(poolName, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.Error("AllocateAddress: IPAM pool allocation failed", "pool", poolName, "err", err)
 			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)
@@ -82,7 +82,7 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 		// Allocate from the best pool matching region/AZ (empty strings = global fallback).
 		region := ""
 		az := ""
-		publicIP, poolName, err = s.externalIPAM.AllocateIP(region, az, "elastic_ip", allocID, "", "")
+		publicIP, poolName, err = s.externalIPAM.AllocateIP(region, az, handlers_ec2_vpc.PurposeEIP, allocID, "", "")
 		if err != nil {
 			slog.Error("AllocateAddress: IPAM allocation failed", "err", err)
 			return nil, errors.New(awserrors.ErrorInsufficientAddressCapacity)

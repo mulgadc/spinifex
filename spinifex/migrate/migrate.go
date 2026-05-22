@@ -21,9 +21,12 @@ type KVMigration struct {
 }
 
 // KVContext provides KV migration functions access to the bucket being migrated.
+// JetStream is non-nil only when the caller used RunKVWithJetStream — used by
+// migrations that need to read sibling buckets (e.g. owner-attribution lookups).
 type KVContext struct {
-	KV     nats.KeyValue
-	Logger *slog.Logger
+	KV        nats.KeyValue
+	JetStream nats.JetStreamContext
+	Logger    *slog.Logger
 }
 
 // ConfigMigration represents a versioned transformation of on-disk config files.
@@ -97,6 +100,13 @@ func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
 	})
 }
 
+// RunKVWithJetStream is RunKV with a JetStream handle attached to each
+// migration's KVContext, enabling cross-bucket reads (e.g. owner-attribution
+// during a backfill). Prefer plain RunKV when the migration is self-contained.
+func (r *Registry) RunKVWithJetStream(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {
+	return r.runKV(bucket, kv, js, targetVersion)
+}
+
 // RunKV executes all pending migrations for a KV bucket up to targetVersion.
 // It reads the current version via utils.ReadVersion, runs each migration in
 // order, and stamps the version via utils.WriteVersion after each step.
@@ -109,6 +119,10 @@ func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
 // an error — migration authors must register migrations before bumping version
 // constants.
 func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) error {
+	return r.runKV(bucket, kv, nil, targetVersion)
+}
+
+func (r *Registry) runKV(bucket string, kv nats.KeyValue, js nats.JetStreamContext, targetVersion int) error {
 	current, err := utils.ReadVersion(kv)
 	if err != nil {
 		return fmt.Errorf("read version for %s: %w", bucket, err)
@@ -168,7 +182,7 @@ func (r *Registry) RunKV(bucket string, kv nats.KeyValue, targetVersion int) err
 	logger := slog.Default()
 	for _, m := range pending {
 		logger.Info("Running KV migration", "bucket", bucket, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
-		ctx := KVContext{KV: kv, Logger: logger}
+		ctx := KVContext{KV: kv, JetStream: js, Logger: logger}
 		if err := m.Run(ctx); err != nil {
 			return fmt.Errorf("KV migration %s %d→%d failed: %w", bucket, m.FromVersion, m.ToVersion, err)
 		}

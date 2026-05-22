@@ -33,16 +33,16 @@ func TestExternalIPAM_AllocateSequential(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
 
 	// .150 is reserved for gateway, so first allocable is .151
-	ip1, poolName, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-1", "i-1")
+	ip1, poolName, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.151", ip1)
 	assert.Equal(t, "wan", poolName)
 
-	ip2, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-2", "i-2")
+	ip2, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-2", "i-2")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.152", ip2)
 
-	ip3, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-3", "i-3")
+	ip3, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-3", "i-3")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.153", ip3)
 }
@@ -57,7 +57,7 @@ func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
 	// Gateway IP (.150) should be reserved
 	alloc, ok := record.Allocated["192.168.1.150"]
 	assert.True(t, ok, "gateway IP should be in allocated map")
-	assert.Equal(t, "gateway", alloc.Type)
+	assert.Equal(t, PurposeIGWLRP, alloc.Purpose)
 
 	// Cannot release gateway IP
 	err = ipam.ReleaseIP("wan", "192.168.1.150")
@@ -79,7 +79,7 @@ func TestExternalIPAM_ExplicitGatewayIP(t *testing.T) {
 	assert.False(t, ok)
 
 	// First allocable is .150 since .155 is the gateway
-	ip1, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-1", "i-1")
+	ip1, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.150", ip1)
 }
@@ -88,11 +88,11 @@ func TestExternalIPAM_Release(t *testing.T) {
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
 
-	ip1, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-1", "i-1")
+	ip1, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.151", ip1)
 
-	ip2, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-2", "i-2")
+	ip2, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-2", "i-2")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.152", ip2)
 
@@ -101,7 +101,7 @@ func TestExternalIPAM_Release(t *testing.T) {
 	require.NoError(t, err)
 
 	// Next allocation reuses released IP
-	ip3, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-3", "i-3")
+	ip3, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-3", "i-3")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.151", ip3)
 }
@@ -117,16 +117,16 @@ func TestExternalIPAM_Exhaustion(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
 
 	// .1 reserved for gateway, .2 and .3 allocable
-	ip1, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-1", "i-1")
+	ip1, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.2", ip1)
 
-	ip2, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-2", "i-2")
+	ip2, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-2", "i-2")
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.3", ip2)
 
 	// Pool exhausted
-	_, _, err = ipam.AllocateIP("", "", "auto_assign", "", "eni-3", "i-3")
+	_, _, err = ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-3", "i-3")
 	assert.ErrorContains(t, err, "InsufficientAddressCapacity")
 }
 
@@ -143,7 +143,7 @@ func TestExternalIPAM_CASConflict(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			ip, _, err := ipam.AllocateIP("", "", "auto_assign", "", "eni-"+itoa(idx), "i-"+itoa(idx))
+			ip, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-"+itoa(idx), "i-"+itoa(idx))
 			results[idx] = ip
 			errs[idx] = err
 		}(i)
@@ -187,13 +187,13 @@ func TestExternalIPAM_MultiPool(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, pools)
 
 	// Allocate from US pool
-	ip1, poolName1, err := ipam.AllocateIP("us-east-1", "us-east-1a", "auto_assign", "", "eni-1", "i-1")
+	ip1, poolName1, err := ipam.AllocateIP("us-east-1", "us-east-1a", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "203.0.113.3", ip1) // .2 reserved for gateway
 	assert.Equal(t, "us-east", poolName1)
 
 	// Allocate from EU pool
-	ip2, poolName2, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", "auto_assign", "", "eni-2", "i-2")
+	ip2, poolName2, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-2", "i-2")
 	require.NoError(t, err)
 	assert.Equal(t, "198.51.100.3", ip2)
 	assert.Equal(t, "eu-west", poolName2)
@@ -229,19 +229,19 @@ func TestExternalIPAM_PoolFallback(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, pools)
 
 	// AZ match: us-east-1a → az-pool
-	ip1, pool1, err := ipam.AllocateIP("us-east-1", "us-east-1a", "auto_assign", "", "eni-1", "i-1")
+	ip1, pool1, err := ipam.AllocateIP("us-east-1", "us-east-1a", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "az-pool", pool1)
 	assert.Equal(t, "10.0.0.2", ip1) // .1 reserved for gw
 
 	// Region match (different AZ): us-east-1b → region-pool
-	ip2, pool2, err := ipam.AllocateIP("us-east-1", "us-east-1b", "auto_assign", "", "eni-2", "i-2")
+	ip2, pool2, err := ipam.AllocateIP("us-east-1", "us-east-1b", PurposeENIPublic, "", "eni-2", "i-2")
 	require.NoError(t, err)
 	assert.Equal(t, "region-pool", pool2)
 	assert.Equal(t, "10.0.1.2", ip2)
 
 	// No match: eu-west-1 → global-pool
-	ip3, pool3, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", "auto_assign", "", "eni-3", "i-3")
+	ip3, pool3, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-3", "i-3")
 	require.NoError(t, err)
 	assert.Equal(t, "global-pool", pool3)
 	assert.Equal(t, "10.0.2.2", ip3)
@@ -267,7 +267,7 @@ func TestExternalIPAM_SpecificPool(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, pools)
 
 	// Allocate specifically from pool-b
-	ip, err := ipam.AllocateFromPool("pool-b", "elastic_ip", "eipalloc-test-b", "", "")
+	ip, err := ipam.AllocateFromPool("pool-b", PurposeEIP, "eipalloc-test-b", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.1.2", ip) // .1 reserved for gw
 }
@@ -341,7 +341,7 @@ func TestExternalIPAM_InitFromConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Allocate an IP
-	ip, _, err := ipam1.AllocateIP("", "", "auto_assign", "", "eni-1", "i-1")
+	ip, _, err := ipam1.AllocateIP("", "", PurposeENIPublic, "", "eni-1", "i-1")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.151", ip)
 
@@ -376,7 +376,7 @@ func TestExternalIPAM_NoPoolAvailable(t *testing.T) {
 	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
 
 	// No pool matches eu-west
-	_, _, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", "auto_assign", "", "eni-1", "i-1")
+	_, _, err := ipam.AllocateIP("eu-west-1", "eu-west-1a", PurposeENIPublic, "", "eni-1", "i-1")
 	assert.ErrorContains(t, err, "InsufficientAddressCapacity")
 }
 
@@ -388,7 +388,7 @@ func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
 	// has no KV record, so getRecord fails.
 	kv := ipam.kv
 	ipam2 := NewExternalIPAMWithKV(kv, []ExternalPoolConfig{pool})
-	_, err := ipam2.AllocateFromPool("nonexistent", "auto_assign", "", "eni-1", "i-1")
+	_, err := ipam2.AllocateFromPool("nonexistent", PurposeENIPublic, "", "eni-1", "i-1")
 	assert.Error(t, err)
 }
 

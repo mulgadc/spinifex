@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -209,7 +210,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				region = d.config.Region
 				az = d.config.AZ
 			}
-			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(region, az, "auto_assign", "", instance.ENIId, instance.ID)
+			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: failed to allocate public IP for internet-facing ALB", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)

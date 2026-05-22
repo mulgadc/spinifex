@@ -78,20 +78,20 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		return nil, err
 	}
 
+	eniId := utils.GenerateResourceID("eni")
+
 	// Allocate IP from subnet
 	var privateIP string
 	if input.PrivateIpAddress != nil && *input.PrivateIpAddress != "" {
 		// TODO: validate the requested IP is in the subnet range and not already allocated
 		privateIP = *input.PrivateIpAddress
 	} else {
-		ip, err := s.ipam.AllocateIP(subnetId, subnet.CidrBlock)
+		ip, err := s.ipam.AllocateIP(subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		privateIP = ip
 	}
-
-	eniId := utils.GenerateResourceID("eni")
 
 	// Generate a deterministic MAC address
 	macAddr := generateENIMac(eniId)

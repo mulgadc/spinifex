@@ -15,12 +15,13 @@ import (
 
 const (
 	KVBucketExternalIPAM        = "spinifex-external-ipam"
-	KVBucketExternalIPAMVersion = 1
+	KVBucketExternalIPAMVersion = 2
 )
 
-// ExternalIPAllocation describes how an external IP is being used.
+// ExternalIPAllocation describes how an external IP is being used. Purpose
+// values come from the Purpose enum in purpose.go.
 type ExternalIPAllocation struct {
-	Type         string `json:"type"`                    // "gateway", "auto_assign", "elastic_ip"
+	Purpose      string `json:"purpose"`                 // Purpose enum: igw-lrp, eni-public, eip, natgw-external
 	AllocationID string `json:"allocation_id,omitempty"` // For elastic IPs
 	Association  string `json:"association,omitempty"`   // ENI ID for elastic IPs
 	ENIId        string `json:"eni_id,omitempty"`        // ENI owning this IP
@@ -156,7 +157,7 @@ func (m *ExternalIPAM) initPool(pool ExternalPoolConfig) error {
 		GwLrpRangeStart: pool.GwLrpRangeStart,
 		GwLrpRangeEnd:   pool.GwLrpRangeEnd,
 		Allocated: map[string]ExternalIPAllocation{
-			gwIP: {Type: "gateway", Note: "OVN router SNAT address"},
+			gwIP: {Purpose: PurposeIGWLRP, Note: "OVN router SNAT address"},
 		},
 	}
 
@@ -179,13 +180,14 @@ func (m *ExternalIPAM) initPool(pool ExternalPoolConfig) error {
 
 // AllocateIP allocates the next available external IP from the best pool
 // matching the given region/AZ. Returns the allocated IP and pool name.
-// allocID is the EIP allocation ID (for elastic IPs); pass "" for other types.
-func (m *ExternalIPAM) AllocateIP(region, az, allocType, allocID, eniID, instanceID string) (string, string, error) {
+// purpose is one of the Purpose* constants in purpose.go; allocID is the
+// EIP allocation ID (for PurposeEIP) and "" otherwise.
+func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
 	pool := m.findPool(region, az)
 	if pool == nil {
 		return "", "", fmt.Errorf("InsufficientAddressCapacity: no external pool available for region=%q az=%q", region, az)
 	}
-	ip, err := m.allocateFromPool(pool.Name, allocType, allocID, eniID, instanceID)
+	ip, err := m.allocateFromPool(pool.Name, purpose, allocID, eniID, instanceID)
 	if err != nil {
 		return "", "", err
 	}
@@ -193,11 +195,11 @@ func (m *ExternalIPAM) AllocateIP(region, az, allocType, allocID, eniID, instanc
 }
 
 // AllocateFromPool allocates an IP from a specific named pool.
-func (m *ExternalIPAM) AllocateFromPool(poolName, allocType, allocID, eniID, instanceID string) (string, error) {
-	return m.allocateFromPool(poolName, allocType, allocID, eniID, instanceID)
+func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
+	return m.allocateFromPool(poolName, purpose, allocID, eniID, instanceID)
 }
 
-func (m *ExternalIPAM) allocateFromPool(poolName, allocType, allocID, eniID, instanceID string) (string, error) {
+func (m *ExternalIPAM) allocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
 	for attempt := range 5 {
 		record, revision, err := m.getRecord(poolName)
 		if err != nil {
@@ -210,7 +212,7 @@ func (m *ExternalIPAM) allocateFromPool(poolName, allocType, allocID, eniID, ins
 		}
 
 		record.Allocated[ip] = ExternalIPAllocation{
-			Type:         allocType,
+			Purpose:      purpose,
 			AllocationID: allocID,
 			ENIId:        eniID,
 			InstanceId:   instanceID,
@@ -226,7 +228,7 @@ func (m *ExternalIPAM) allocateFromPool(poolName, allocType, allocID, eniID, ins
 			continue
 		}
 
-		slog.Info("external IPAM allocated IP", "pool", poolName, "ip", ip, "type", allocType)
+		slog.Info("external IPAM allocated IP", "pool", poolName, "ip", ip, "purpose", purpose)
 		return ip, nil
 	}
 
@@ -245,7 +247,7 @@ func (m *ExternalIPAM) ReleaseIP(poolName, ip string) error {
 		if !ok {
 			return fmt.Errorf("IP %s not allocated in pool %s", ip, poolName)
 		}
-		if alloc.Type == "gateway" {
+		if alloc.Purpose == PurposeIGWLRP {
 			return fmt.Errorf("cannot release gateway IP %s in pool %s", ip, poolName)
 		}
 

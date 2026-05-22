@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -689,7 +690,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 				if wantPublic {
 					region := s.config.Region
 					az := s.config.AZ
-					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, "auto_assign", "", *eni.NetworkInterfaceId, instance.ID)
+					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
 					if allocErr != nil {
 						slog.Warn("PrepareRunInstances: failed to allocate public IP", "instanceId", instance.ID, "err", allocErr)
 					} else {

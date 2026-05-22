@@ -71,6 +71,11 @@ type NetworkConfig struct {
 	PoolPrefixLen  int      `json:"pool_prefix_len"`
 	PoolDNSServers []string `json:"pool_dns_servers,omitempty"`
 
+	// IPSecEnabled propagates the cluster-wide intra-AZ IPsec toggle so the
+	// joining node provisions strongSwan and flips OVS ipsec_encapsulation to
+	// match the rest of the cluster.
+	IPSecEnabled bool `json:"ipsec_enabled"`
+
 	BootstrapAccountId  string `json:"bootstrap_account_id,omitempty"`
 	BootstrapVpcId      string `json:"bootstrap_vpc_id,omitempty"`
 	BootstrapSubnetId   string `json:"bootstrap_subnet_id,omitempty"`

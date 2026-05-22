@@ -46,6 +46,10 @@ type ExternalPool struct {
 type NetworkConfig struct {
 	ExternalMode  string         `mapstructure:"external_mode"`  // "pool" or "" (disabled)
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
+	// IPSecEnabled toggles OVN native IPsec on every node for intra-AZ Geneve
+	// (AES-256-GCM via strongSwan). Default true. Operators can flip off for
+	// trusted single-rack lab topologies; production edge stays on.
+	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
 }
 
 // BootstrapConfig holds the default VPC infrastructure IDs written by admin init.
@@ -204,6 +208,10 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	// Set environment variable prefix
 	viper.SetEnvPrefix("SPINIFEX")
 	viper.AutomaticEnv()
+
+	// network.ipsec_enabled defaults to true (intra-AZ Geneve encrypted via OVN
+	// native IPsec). Operators must explicitly set false to disable.
+	viper.SetDefault("network.ipsec_enabled", true)
 
 	// Try to load config file if it exists
 	if configPath != "" {

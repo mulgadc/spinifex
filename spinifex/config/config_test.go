@@ -375,6 +375,48 @@ external_interface = "enp0s3"
 	assert.Equal(t, "enp0s3", n.VPCD.ExternalInterface)
 }
 
+func TestLoadConfig_NetworkIPSecEnabledDefaultsTrue(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	// No [network] block at all — IPSec must default to true so AWS-parity
+	// edge deployments encrypt intra-AZ Geneve without operator opt-in.
+	toml := `
+node = "n1"
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Network.IPSecEnabled, "default")
+}
+
+func TestLoadConfig_NetworkIPSecEnabledExplicitFalse(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	// Operator escape hatch for trusted single-rack lab deployments.
+	toml := `
+node = "n1"
+
+[network]
+ipsec_enabled = false
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Network.IPSecEnabled)
+}
+
 func TestLoadConfig_NetworkPoolDHCPSourceRejected(t *testing.T) {
 	resetViper(t)
 	dir := t.TempDir()

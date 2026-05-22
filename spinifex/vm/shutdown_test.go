@@ -206,25 +206,38 @@ func TestStopAll_EmptyMap_FastPath(t *testing.T) {
 	assert.Empty(t, cleaner.cleanupMgmt, "empty StopAll must not invoke cleaner")
 }
 
-// TestStopAll_DoesNotFireOnInstanceDown verifies StopAll's fan-out
-// shutdown path — used by coordinated DRAIN and SIGTERM — leaves the
-// hook contract alone. Per the plan's hook contract, Stop fires
-// OnInstanceDown but StopAll does not (it leaves instances in the
-// running map for restoreInstances to pick up on next boot).
-func TestStopAll_DoesNotFireOnInstanceDown(t *testing.T) {
-	m, _, _, _, _ := shutdownTestManager(t)
-	var down atomic.Int64
-	rt := (&recordedTransitions{}).bind(m)
+// TestStopAll_FiresOnInstanceDownAndMigratesPerVM verifies the DRAIN
+// hook contract: every Running VM transitions through Stopping → Stopped,
+// is migrated to the cluster-shared "stopped" bucket, fires
+// OnInstanceDown once, and is removed from the local running map. The
+// pre-fix StopAll only ran stopCleanup and left every VM stuck in
+// Running, so a daemon restart promoted user-stopped VMs through the
+// failed-recovery path and surfaced them as terminated — data-equivalent
+// loss for the customer.
+func TestStopAll_FiresOnInstanceDownAndMigratesPerVM(t *testing.T) {
+	m, store, _, _, rt := shutdownTestManager(t)
+	var (
+		mu      sync.Mutex
+		downIDs []string
+	)
 	m.SetDeps(Deps{
 		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: &recordingInstanceCleaner{},
 		TransitionState: rt.apply,
 		ShutdownSignal:  func() bool { return false },
 		Hooks: ManagerHooks{
-			OnInstanceDown: func(string) { down.Add(1) },
+			OnInstanceDown: func(id string) {
+				mu.Lock()
+				downIDs = append(downIDs, id)
+				mu.Unlock()
+			},
 		},
 	})
 
-	for _, id := range []string{"i-1", "i-2", "i-3"} {
+	ids := []string{"i-1", "i-2", "i-3"}
+	for _, id := range ids {
 		m.Insert(&VM{
 			ID:           id,
 			Status:       StateRunning,
@@ -235,10 +248,119 @@ func TestStopAll_DoesNotFireOnInstanceDown(t *testing.T) {
 
 	require.NoError(t, m.StopAll())
 
+	mu.Lock()
+	defer mu.Unlock()
+	assert.ElementsMatch(t, ids, downIDs,
+		"StopAll must fire OnInstanceDown once per migrated VM")
+	assert.Zero(t, m.Count(),
+		"StopAll must remove migrated VMs from the local running map")
+	for _, id := range ids {
+		stored, err := store.LoadStoppedInstance(id)
+		require.NoError(t, err)
+		require.NotNil(t, stored, "VM %s must be migrated to the stopped KV bucket", id)
+		assert.Equal(t, StateStopped, stored.Status,
+			"VM %s must be persisted in StateStopped", id)
+	}
+}
+
+// TestStopAll_SkipsNonRunningWithoutFiringHook verifies the precheck
+// skip path: non-Running VMs (Pending, Stopping mid-flight, Stopped,
+// Error, ShuttingDown, Terminated) surface as ErrInvalidTransition from
+// stopOne and must not fire OnInstanceDown nor migrate to the shared
+// bucket. Other in-flight handlers own those instances.
+func TestStopAll_SkipsNonRunningWithoutFiringHook(t *testing.T) {
+	m, store, _, _, rt := shutdownTestManager(t)
+	var down atomic.Int64
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: &recordingInstanceCleaner{},
+		TransitionState: rt.apply,
+		ShutdownSignal:  func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(string) { down.Add(1) },
+		},
+	})
+
+	skipped := map[string]InstanceState{
+		"i-pending":      StatePending,
+		"i-stopping":     StateStopping,
+		"i-stopped":      StateStopped,
+		"i-shuttingdown": StateShuttingDown,
+		"i-error":        StateError,
+		"i-terminated":   StateTerminated,
+	}
+	for id, status := range skipped {
+		m.Insert(&VM{
+			ID:           id,
+			Status:       status,
+			InstanceType: "t3.micro",
+			Instance:     &ec2.Instance{},
+		})
+	}
+
+	require.NoError(t, m.StopAll())
+
 	assert.Zero(t, down.Load(),
-		"StopAll must not fire OnInstanceDown — instances stay in the running map")
-	assert.Equal(t, 3, m.Count(),
-		"StopAll must leave instances in the local map for restoreInstances")
+		"StopAll must not fire OnInstanceDown for non-Running VMs")
+	assert.Equal(t, len(skipped), m.Count(),
+		"StopAll must leave non-Running VMs in the local map for their owning handler")
+	for id := range skipped {
+		stored, err := store.LoadStoppedInstance(id)
+		require.NoError(t, err)
+		assert.Nil(t, stored,
+			"non-Running VM %s must not migrate to the stopped KV bucket", id)
+	}
+}
+
+// TestStopAll_WriteRunningStateFailure covers the post-fan-out persist
+// guard at shutdown.go:129-132. Per-VM migration to the shared "stopped"
+// bucket must still happen (so the fix's data-loss prevention contract
+// holds), but the terminal writeRunningState failure must surface to
+// the caller so DRAIN's ACK to the coordinator reflects the partial
+// failure rather than silently advancing past the drain phase.
+func TestStopAll_WriteRunningStateFailure(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	saveErr := errors.New("save failed")
+	store := &failingSaveRunningStore{fakeStateStore: newFakeStateStore(), err: saveErr}
+	m := NewManager()
+	rt := (&recordedTransitions{}).bind(m)
+	var down atomic.Int64
+	m.SetDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		VolumeMounter:   &fakeVolumeMounter{},
+		InstanceCleaner: &recordingInstanceCleaner{},
+		TransitionState: rt.apply,
+		ShutdownSignal:  func() bool { return false },
+		Hooks: ManagerHooks{
+			OnInstanceDown: func(string) { down.Add(1) },
+		},
+	})
+
+	ids := []string{"i-1", "i-2", "i-3"}
+	for _, id := range ids {
+		m.Insert(&VM{
+			ID:           id,
+			Status:       StateRunning,
+			InstanceType: "t3.micro",
+			Instance:     &ec2.Instance{},
+		})
+	}
+
+	require.ErrorIs(t, m.StopAll(), saveErr,
+		"writeRunningState failure must surface so DRAIN's ACK reflects the partial failure")
+
+	assert.Equal(t, int64(len(ids)), down.Load(),
+		"per-VM migration must still complete even when the terminal persist fails")
+	for _, id := range ids {
+		stored, err := store.LoadStoppedInstance(id)
+		require.NoError(t, err)
+		require.NotNil(t, stored,
+			"VM %s must be persisted in the shared stopped bucket regardless of the running-state persist failure", id)
+		assert.Equal(t, StateStopped, stored.Status)
+	}
 }
 
 // TestMigrateStoppedToSharedKV_SlotReclaim covers the DeleteIf-mismatch

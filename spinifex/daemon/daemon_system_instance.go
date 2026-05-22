@@ -230,6 +230,12 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			if natErr := utils.AddNAT(d.natsConn, vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
 				slog.Error("LaunchSystemInstance: vpc.add-nat failed for ALB public IP — rolling back to avoid surfacing an unreachable address",
 					"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+				// A timeout is indistinguishable from NACK here; vpcd's
+				// waitForFlowsHV barrier may have committed the rule after our
+				// 10s window. Fire-and-forget delete-nat before releasing the
+				// IP so a half-committed rule does not outlive its allocation
+				// in the pool.
+				utils.PublishNATEvent(d.natsConn, "vpc.delete-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
 				if clearErr := d.vpcService.UpdateENIPublicIP(eniAccountID, instance.ENIId, "", ""); clearErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)

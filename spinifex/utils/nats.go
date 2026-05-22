@@ -396,10 +396,13 @@ type natEvent struct {
 
 // AddNAT requests vpcd commit the OVN dnat_and_snat rule for (externalIP →
 // logicalIP) via NATS request-reply and waits up to 10 s for the ack. A
-// non-nil return means the rule was NOT committed: the caller MUST roll back
-// any state that assumes the public IP is routable (IPAM allocation, ENI
-// public IP record, EC2 response fields) — there is no reconciler that
-// repairs a black-holed external IP after the fact.
+// non-nil return means the rule was either NOT committed (NACK / no
+// responders) OR may have been committed after the timeout fired (vpcd's
+// waitForFlowsHV barrier is unbounded). Callers MUST roll back any state
+// that assumes the public IP is routable AND publish a best-effort
+// vpc.delete-nat for the same (vpcID, externalIP, logicalIP, portName) to
+// neutralise a half-committed rule — there is no reconciler that repairs
+// a black-holed external IP after the fact.
 func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
 	return RequestEvent(nc, "vpc.add-nat", natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,

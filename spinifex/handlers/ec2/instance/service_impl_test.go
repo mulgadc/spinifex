@@ -2542,6 +2542,20 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()
 
+	// Record vpc.delete-nat to assert the rollback neutralises any
+	// half-committed rule from a waitForFlowsHV timeout.
+	deleteNATCh := make(chan natWirePayload, 1)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
 	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
@@ -2575,6 +2589,29 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 
 	// Capacity deallocated so subsequent launches can use the slot.
 	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
+
+	// vpc.delete-nat must be published so vpcd reaps any rule it committed
+	// after the AddNAT timeout — otherwise the orphan rule outlives the
+	// IPAM allocation and routes traffic for the next tenant that grabs
+	// the released IP.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "vpc-1", got.VpcId)
+		assert.Equal(t, "203.0.113.7", got.ExternalIP)
+		assert.Equal(t, "10.0.0.30", got.LogicalIP)
+		assert.Equal(t, "port-eni-nat-fail", got.PortName)
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
+	}
+}
+
+// natWirePayload mirrors utils.natEvent for test-side decoding.
+type natWirePayload struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
 }
 
 func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {

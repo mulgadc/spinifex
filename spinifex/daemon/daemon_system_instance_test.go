@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -518,6 +519,20 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
+	// Capture vpc.delete-nat so we can assert the rollback neutralises any
+	// rule vpcd may have committed after the AddNAT timeout window.
+	deleteNATCh := make(chan map[string]string, 1)
+	delSub, err := d.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p map[string]string
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = delSub.Unsubscribe() })
+
 	input := &handlers_elbv2.SystemInstanceInput{
 		InstanceType: getTestInstanceType(t),
 		SubnetID:     aws.StringValue(subnetOut.Subnet.SubnetId),
@@ -552,4 +567,15 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	require.NoError(t, err)
 	_, stillAllocated := rec.Allocated["203.0.113.11"]
 	assert.False(t, stillAllocated, "rollback must release the allocated IP back to the pool")
+
+	// vpc.delete-nat must be published with the same external IP that AddNAT
+	// targeted so vpcd reaps any rule committed after the request timeout.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "203.0.113.11", got["external_ip"])
+		assert.Equal(t, eniIP, got["logical_ip"])
+		assert.Equal(t, "port-"+eniID, got["port_name"])
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
+	}
 }

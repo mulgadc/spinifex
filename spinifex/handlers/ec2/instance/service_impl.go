@@ -683,6 +683,12 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
 							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+							// A timeout is indistinguishable from NACK here; vpcd's
+							// waitForFlowsHV barrier may have committed the rule after
+							// our 10s window. Fire-and-forget delete-nat before
+							// releasing the IP so a half-committed rule does not
+							// outlive its allocation in the pool.
+							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
 							lastRunErr = natErr
 							s.resourceMgr.Deallocate(instanceType)

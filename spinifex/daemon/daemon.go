@@ -759,26 +759,6 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.GetSerialConsoleAccessStatus", d.handleEC2GetSerialConsoleAccessStatus, "spinifex-workers"},
 		{"ec2.EnableSerialConsoleAccess", d.handleEC2EnableSerialConsoleAccess, "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", d.handleEC2DisableSerialConsoleAccess, "spinifex-workers"},
-		// ELBv2 operations
-		{"elbv2.CreateLoadBalancer", d.handleELBv2CreateLoadBalancer, "spinifex-workers"},
-		{"elbv2.DeleteLoadBalancer", d.handleELBv2DeleteLoadBalancer, "spinifex-workers"},
-		{"elbv2.DescribeLoadBalancers", d.handleELBv2DescribeLoadBalancers, "spinifex-workers"},
-		{"elbv2.CreateTargetGroup", d.handleELBv2CreateTargetGroup, "spinifex-workers"},
-		{"elbv2.DeleteTargetGroup", d.handleELBv2DeleteTargetGroup, "spinifex-workers"},
-		{"elbv2.DescribeTargetGroups", d.handleELBv2DescribeTargetGroups, "spinifex-workers"},
-		{"elbv2.RegisterTargets", d.handleELBv2RegisterTargets, "spinifex-workers"},
-		{"elbv2.DeregisterTargets", d.handleELBv2DeregisterTargets, "spinifex-workers"},
-		{"elbv2.DescribeTargetHealth", d.handleELBv2DescribeTargetHealth, "spinifex-workers"},
-		{"elbv2.CreateListener", d.handleELBv2CreateListener, "spinifex-workers"},
-		{"elbv2.DeleteListener", d.handleELBv2DeleteListener, "spinifex-workers"},
-		{"elbv2.DescribeListeners", d.handleELBv2DescribeListeners, "spinifex-workers"},
-		{"elbv2.DescribeTags", d.handleELBv2DescribeTags, "spinifex-workers"},
-		{"elbv2.LBAgentHeartbeat", d.handleELBv2LBAgentHeartbeat, "spinifex-workers"},
-		{"elbv2.GetLBConfig", d.handleELBv2GetLBConfig, "spinifex-workers"},
-		{"elbv2.ModifyTargetGroupAttributes", d.handleELBv2ModifyTargetGroupAttributes, "spinifex-workers"},
-		{"elbv2.DescribeTargetGroupAttributes", d.handleELBv2DescribeTargetGroupAttributes, "spinifex-workers"},
-		{"elbv2.ModifyLoadBalancerAttributes", d.handleELBv2ModifyLoadBalancerAttributes, "spinifex-workers"},
-		{"elbv2.DescribeLoadBalancerAttributes", d.handleELBv2DescribeLoadBalancerAttributes, "spinifex-workers"},
 		{fmt.Sprintf("spinifex.admin.%s.health", d.node), d.handleHealthCheck, ""},
 		{"spinifex.nodes.discover", d.handleNodeDiscover, ""},
 		{"spinifex.node.status", d.handleNodeStatus, ""},
@@ -792,6 +772,32 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.cluster.shutdown.storage", d.handleShutdownStorage, ""},
 		{"spinifex.cluster.shutdown.persist", d.handleShutdownPersist, ""},
 		{"spinifex.cluster.shutdown.infra", d.handleShutdownInfra, ""},
+	}
+
+	// ELBv2 operations require a resolved gateway URL.
+	// Without a subscriber the gateway returns nats.ErrNoResponders → ServiceUnavailable.
+	if d.elbv2Service.GatewayURL != "" {
+		subs = append(subs,
+			natsSub{"elbv2.CreateLoadBalancer", d.handleELBv2CreateLoadBalancer, "spinifex-workers"},
+			natsSub{"elbv2.DeleteLoadBalancer", d.handleELBv2DeleteLoadBalancer, "spinifex-workers"},
+			natsSub{"elbv2.DescribeLoadBalancers", d.handleELBv2DescribeLoadBalancers, "spinifex-workers"},
+			natsSub{"elbv2.CreateTargetGroup", d.handleELBv2CreateTargetGroup, "spinifex-workers"},
+			natsSub{"elbv2.DeleteTargetGroup", d.handleELBv2DeleteTargetGroup, "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetGroups", d.handleELBv2DescribeTargetGroups, "spinifex-workers"},
+			natsSub{"elbv2.RegisterTargets", d.handleELBv2RegisterTargets, "spinifex-workers"},
+			natsSub{"elbv2.DeregisterTargets", d.handleELBv2DeregisterTargets, "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetHealth", d.handleELBv2DescribeTargetHealth, "spinifex-workers"},
+			natsSub{"elbv2.CreateListener", d.handleELBv2CreateListener, "spinifex-workers"},
+			natsSub{"elbv2.DeleteListener", d.handleELBv2DeleteListener, "spinifex-workers"},
+			natsSub{"elbv2.DescribeListeners", d.handleELBv2DescribeListeners, "spinifex-workers"},
+			natsSub{"elbv2.DescribeTags", d.handleELBv2DescribeTags, "spinifex-workers"},
+			natsSub{"elbv2.LBAgentHeartbeat", d.handleELBv2LBAgentHeartbeat, "spinifex-workers"},
+			natsSub{"elbv2.GetLBConfig", d.handleELBv2GetLBConfig, "spinifex-workers"},
+			natsSub{"elbv2.ModifyTargetGroupAttributes", d.handleELBv2ModifyTargetGroupAttributes, "spinifex-workers"},
+			natsSub{"elbv2.DescribeTargetGroupAttributes", d.handleELBv2DescribeTargetGroupAttributes, "spinifex-workers"},
+			natsSub{"elbv2.ModifyLoadBalancerAttributes", d.handleELBv2ModifyLoadBalancerAttributes, "spinifex-workers"},
+			natsSub{"elbv2.DescribeLoadBalancerAttributes", d.handleELBv2DescribeLoadBalancerAttributes, "spinifex-workers"},
+		)
 	}
 
 	// EIP operations require external IPAM (pool mode). Only subscribe when available;

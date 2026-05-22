@@ -2366,6 +2366,8 @@ type fakeENICreator struct {
 	createErr     error
 	attachCalls   int
 	updateCalls   int
+	clearCalls    int // updateCalls where publicIP is ""
+	detachCalls   int
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
@@ -2394,8 +2396,16 @@ func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
 	return "attached", nil
 }
 
-func (f *fakeENICreator) UpdateENIPublicIP(_, _, _, _ string) error {
+func (f *fakeENICreator) DetachENI(_, _ string) error {
+	f.detachCalls++
+	return nil
+}
+
+func (f *fakeENICreator) UpdateENIPublicIP(_, _, publicIP, _ string) error {
 	f.updateCalls++
+	if publicIP == "" {
+		f.clearCalls++
+	}
 	return nil
 }
 
@@ -2476,6 +2486,14 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
 	svc, _ := prepareSvcWithENI(t, eni, ipam)
 
+	// vpc.add-nat is now request-reply: the helper waits for vpcd to ack
+	// before the launch proceeds. The happy path needs a success responder.
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
 	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
@@ -2488,6 +2506,112 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
 	assert.Equal(t, "pool-a", instances[0].PublicIPPool)
 	assert.Equal(t, 1, eni.updateCalls)
+}
+
+// TestPrepareRunInstances_NATFailureRollsBackPublicIP regresses the silent
+// corruption where vpc.add-nat NACKs (or vpcd is offline) but the launch
+// returned an ec2.Instance carrying the unreachable IP, the ENI record was
+// updated with that IP, and the IPAM pool entry stayed allocated. With the
+// fix in place, NAT failure must drop the instance from the response, clear
+// the ENI public IP, release the IPAM lease, and deallocate capacity.
+func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-nat-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.30"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIP: "203.0.113.7", poolName: "pool-a"}
+	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
+
+	// Stand up a vpcd-shaped responder that NACKs every add-nat — simulates
+	// vpcd online but unable to commit the OVN rule (northd lag, port
+	// missing, etc.).
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	// Record vpc.delete-nat to assert the rollback neutralises any
+	// half-committed rule from a waitForFlowsHV timeout.
+	deleteNATCh := make(chan natWirePayload, 1)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+
+	// MinCount=1 with a single launch attempt that NAT-failed must drop
+	// below minimum and return ServerInternal — the wrapped natErr is not
+	// an AWS-known code, so the lookup misses and the wire fallback kicks
+	// in. The critical invariant is that no instance with the unreachable
+	// IP is surfaced.
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed NAT must not be returned")
+
+	// IPAM lease released back to the pool.
+	assert.Equal(t, "pool-a", releaser.pool, "IPAM ReleaseIP must be called with the originally allocated pool")
+	assert.Equal(t, "203.0.113.7", releaser.ip, "IPAM ReleaseIP must be called with the originally allocated IP")
+
+	// ENI record cleared: 2 update calls total (set + clear), 1 clear.
+	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
+	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
+
+	// ENI itself must be detached + deleted; otherwise the dropped instance
+	// leaks an eniKV record (vmMgr.Insert never runs, so terminateCleanup
+	// never fires) and the subnet exhausts private IPs under vpcd brown-out.
+	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+
+	// Capacity deallocated so subsequent launches can use the slot.
+	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
+
+	// vpc.delete-nat must be published so vpcd reaps any rule it committed
+	// after the AddNAT timeout — otherwise the orphan rule outlives the
+	// IPAM allocation and routes traffic for the next tenant that grabs
+	// the released IP.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "vpc-1", got.VpcId)
+		assert.Equal(t, "203.0.113.7", got.ExternalIP)
+		assert.Equal(t, "10.0.0.30", got.LogicalIP)
+		assert.Equal(t, "port-eni-nat-fail", got.PortName)
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
+	}
+}
+
+// natWirePayload mirrors utils.natEvent for test-side decoding.
+type natWirePayload struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
 }
 
 func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {

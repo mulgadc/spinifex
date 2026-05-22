@@ -680,7 +680,16 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
 						portName := "port-" + *eni.NetworkInterfaceId
-						utils.PublishNATEvent(s.natsConn, "vpc.add-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
+							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
+								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+							// Timeout may have committed the rule after our window; neutralise before releasing the IP.
+							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
+							lastRunErr = natErr
+							s.resourceMgr.Deallocate(instanceType)
+							continue
+						}
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
 						instance.PublicIP = publicIP
 						instance.PublicIPPool = poolName
@@ -2260,6 +2269,43 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 		}
 	}
 	_ = instanceID
+}
+
+// rollbackAutoAssignedPublicIP unwinds an auto-assign that proceeded past
+// ENI create + attach + IPAM allocation + ENI update but failed at the
+// vpc.add-nat barrier. Order matters: clear the ENI record first so any
+// concurrent DescribeNetworkInterfaces stops surfacing the unreachable IP,
+// then release the IPAM lease so the pool slot can be reused, then detach
+// and delete the ENI itself — the failing instance never enters vmMgr, so
+// terminateCleanup will not run and the ENI would otherwise leak. Detach
+// must precede DeleteNetworkInterface; the latter rejects in-use ENIs.
+func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(accountID, instanceID, eniID, publicIP, poolName string) {
+	if s.eniCreator != nil {
+		if err := s.eniCreator.UpdateENIPublicIP(accountID, eniID, "", ""); err != nil {
+			slog.Warn("PrepareRunInstances: failed to clear ENI public IP during NAT-failure rollback",
+				"eniId", eniID, "publicIp", publicIP, "err", err)
+		}
+	}
+	if s.ipReleaser != nil {
+		if err := s.ipReleaser.ReleaseIP(poolName, publicIP); err != nil {
+			slog.Warn("PrepareRunInstances: failed to release public IP during NAT-failure rollback",
+				"publicIp", publicIP, "pool", poolName, "err", err)
+		}
+	}
+	if s.eniCreator != nil {
+		if err := s.eniCreator.DetachENI(accountID, eniID); err != nil {
+			slog.Warn("PrepareRunInstances: failed to detach ENI during NAT-failure rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+		}
+	}
+	if s.eniDeleter != nil {
+		if _, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		}, accountID); err != nil {
+			slog.Warn("PrepareRunInstances: failed to delete ENI during NAT-failure rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+		}
+	}
 }
 
 func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceID string) {

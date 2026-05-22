@@ -47,6 +47,10 @@ func (a *daemonENICreator) AttachENI(accountID, eniID, instanceID string, device
 	return a.d.vpcService.AttachENI(accountID, eniID, instanceID, deviceIndex)
 }
 
+func (a *daemonENICreator) DetachENI(accountID, eniID string) error {
+	return a.d.vpcService.DetachENI(accountID, eniID)
+}
+
 func (a *daemonENICreator) UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error {
 	return a.d.vpcService.UpdateENIPublicIP(accountID, eniID, publicIP, poolName)
 }

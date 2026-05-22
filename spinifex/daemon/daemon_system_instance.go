@@ -227,7 +227,22 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				vpcID = *result.NetworkInterfaces[0].VpcId
 			}
 			portName := "port-" + instance.ENIId
-			utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+			if natErr := utils.AddNAT(d.natsConn, vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
+				slog.Error("LaunchSystemInstance: vpc.add-nat failed for ALB public IP — rolling back to avoid surfacing an unreachable address",
+					"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+				// Timeout may have committed the rule after our window; neutralise before releasing the IP.
+				utils.PublishNATEvent(d.natsConn, "vpc.delete-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				if clearErr := d.vpcService.UpdateENIPublicIP(eniAccountID, instance.ENIId, "", ""); clearErr != nil {
+					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
+						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
+				}
+				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP); relErr != nil {
+					slog.Warn("LaunchSystemInstance: failed to release public IP during NAT-failure rollback",
+						"publicIp", publicIP, "pool", poolName, "err", relErr)
+				}
+				d.cleanupFailedSystemInstance(instance, instanceType)
+				return nil, fmt.Errorf("commit NAT rule for internet-facing ALB public IP %s: %w", publicIP, natErr)
+			}
 			instance.PublicIP = publicIP
 			instance.PublicIPPool = poolName
 			slog.Info("LaunchSystemInstance: allocated public IP via direct IPAM",

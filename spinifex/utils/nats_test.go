@@ -821,3 +821,61 @@ func TestConnectNATSWithRetry_NoEscalation_BelowThreshold(t *testing.T) {
 	assert.NotContains(t, logs, "NATS still disconnected", "should not escalate before threshold")
 	assert.Contains(t, logs, "NATS not ready, retrying...", "should still log warn lines")
 }
+
+// TestAddNAT_Success pins that AddNAT returns nil only when vpcd acks the
+// add-nat request with {"success":true}. The wire payload must match the
+// natEvent shape vpcd unmarshals on the other end.
+func TestAddNAT_Success(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	var got natEvent
+	_, err = nc.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = json.Unmarshal(msg.Data, &got)
+		_ = msg.Respond([]byte(`{"success":true}`))
+	})
+	require.NoError(t, err)
+
+	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	require.NoError(t, err)
+	assert.Equal(t, "vpc-1", got.VpcId)
+	assert.Equal(t, "203.0.113.5", got.ExternalIP)
+	assert.Equal(t, "10.0.0.5", got.LogicalIP)
+	assert.Equal(t, "port-eni-1", got.PortName)
+	assert.Equal(t, "02:00:00:00:00:01", got.MAC)
+}
+
+// TestAddNAT_NACK is the core regression for the silent-corruption bug: when
+// vpcd reports failure, callers MUST see a non-nil error so they can roll
+// back the IPAM allocation and the ENI public IP record. Before the fix the
+// helper logged a warning and returned nothing, leaving an unreachable
+// public IP surfaced to the AWS client.
+func TestAddNAT_NACK(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	_, err = nc.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+
+	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "northd unavailable")
+}
+
+// TestAddNAT_NoResponders ensures a vpcd outage (no subscriber on the topic)
+// surfaces as an error rather than a swallowed warning.
+func TestAddNAT_NoResponders(t *testing.T) {
+	ns := startTestNATSServer(t)
+	nc, err := nats.Connect(ns.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	require.Error(t, err)
+}

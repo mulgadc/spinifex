@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -263,8 +262,6 @@ func (d *Daemon) handleShutdownInfra(msg *nats.Msg) {
 
 	slog.Info("Shutdown INFRA phase complete, exiting", "node", d.node)
 
-	// Give a moment for log flush
-	time.Sleep(500 * time.Millisecond)
 	os.Exit(0)
 }
 

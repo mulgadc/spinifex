@@ -1753,7 +1753,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		}
 
 		fmt.Printf("   Waiting for cluster formation... (%d/%d nodes joined)\n", statusResp.Joined, statusResp.Expected)
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	fmt.Printf("✅ Cluster formation complete! (%d nodes)\n\n", statusResp.Expected)

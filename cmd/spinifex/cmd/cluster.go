@@ -98,7 +98,7 @@ func runClusterShutdown(cmd *cobra.Command, args []string) {
 			}
 			nc.Flush()
 			// Wait briefly for messages to propagate
-			time.Sleep(2 * time.Second)
+			time.Sleep(200 * time.Millisecond)
 			fmt.Printf("[INFRA] Complete\n")
 			break
 		}

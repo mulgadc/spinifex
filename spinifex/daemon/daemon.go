@@ -1023,6 +1023,15 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
+	// Enable OVN native IPsec on intra-AZ Geneve when the cluster flag is set.
+	// Idempotent — ovs-monitor-ipsec materialises strongSwan configs from the
+	// cert pointers each time ovn-controller programs a tunnel.
+	if d.clusterConfig != nil && d.clusterConfig.Network.IPSecEnabled {
+		if err := d.enableOVNIPSec(); err != nil {
+			slog.Warn("Failed to enable OVN native IPsec; intra-AZ Geneve will be plaintext", "err", err)
+		}
+	}
+
 	// Write service manifest so other nodes know what this node runs
 	if d.jsManager != nil {
 		if err := d.jsManager.WriteServiceManifest(

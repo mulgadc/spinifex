@@ -190,9 +190,8 @@ type TopologyHandler struct {
 	natm     policy.NATManager
 	natmErr  error
 
-	// igwm + igwmOnce cache the external.IGWManager. Handler routes the
-	// static-pool / distributed branches through it; attachIGWLegacy is a
-	// dead branch retained for Slice D's deletion (mulga-siv-125.3.3).
+	// igwm + igwmOnce cache the external.IGWManager. All IGW attach/detach
+	// paths route through it.
 	igwmOnce sync.Once
 	igwm     external.IGWManager
 	igwmErr  error
@@ -681,9 +680,7 @@ func (h *TopologyHandler) handleUpdatePortSGs(msg *nats.Msg) {
 // --- Internet Gateway (external connectivity + NAT) ---
 
 // handleIGWAttach decodes the event and delegates to
-// external.IGWManager.AttachIGW. The legacy DHCP-coupled path is dead
-// (pool.IsDHCP() now always returns false) and is removed in Slice D
-// (mulga-siv-125.3.3).
+// external.IGWManager.AttachIGW.
 func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 	if h.ovn == nil {
 		respond(msg, fmt.Errorf("OVN client not connected"))
@@ -696,12 +693,6 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 		return
 	}
 	ctx := context.Background()
-
-	pool := h.findExternalPool("", "")
-	if pool != nil && pool.IsDHCP() && h.useCentralizedNAT() {
-		h.attachIGWLegacy(ctx, msg, evt, pool)
-		return
-	}
 
 	igw, err := h.igwManager()
 	if err != nil {
@@ -718,214 +709,6 @@ func (h *TopologyHandler) handleIGWAttach(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	respond(msg, nil)
-}
-
-// attachIGWLegacy is the dead legacy centralised-NAT IGW attach path.
-// Unreachable since pool.IsDHCP() always returns false; retained only
-// for Slice D's deletion (mulga-siv-125.3.3).
-func (h *TopologyHandler) attachIGWLegacy(ctx context.Context, msg *nats.Msg, evt types.IGWEvent, pool *ExternalPoolConfig) {
-	routerName := "vpc-" + evt.VpcId
-	extSwitchName := "ext-" + evt.VpcId
-	extPortName := "ext-port-" + evt.VpcId
-	gwPortName := "gw-" + evt.VpcId
-	switchGWPortName := "gw-port-" + evt.VpcId
-
-	// Idempotent: skip if external switch already exists
-	if _, err := h.ovn.GetLogicalSwitch(ctx, extSwitchName); err == nil {
-		slog.Debug("vpcd: IGW topology already exists, skipping", "switch", extSwitchName)
-		respond(msg, nil)
-		return
-	}
-
-	// 1. Create external logical switch (localnet for physical uplink)
-	extSwitch := &nbdb.LogicalSwitch{
-		Name: extSwitchName,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": evt.VpcId,
-			"spinifex:igw_id": evt.InternetGatewayId,
-			"spinifex:role":   "external",
-		},
-	}
-	if err := h.ovn.CreateLogicalSwitch(ctx, extSwitch); err != nil {
-		slog.Error("vpcd: failed to create external switch", "switch", extSwitchName, "err", err)
-		respond(msg, err)
-		return
-	}
-
-	// 2. Create localnet port on external switch (maps to physical network)
-	localnetOpts := map[string]string{
-		"network_name": "external",
-	}
-	// nat-addresses=router: OVN sends gratuitous ARPs for all NAT external IPs
-	// using the router port MAC. Required for centralized NAT (veth mode) so
-	// that ARP replies for NAT IPs reach hosts correctly. Not needed for
-	// direct bridge since OVS sees all traffic on the wire without MAC
-	// filtering and distributed NAT handles ARP per-chassis.
-	if h.useCentralizedNAT() {
-		localnetOpts["nat-addresses"] = "router"
-	}
-	localnetPort := &nbdb.LogicalSwitchPort{
-		Name:      extPortName,
-		Type:      "localnet",
-		Addresses: []string{"unknown"},
-		Options:   localnetOpts,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": evt.VpcId,
-			"spinifex:igw_id": evt.InternetGatewayId,
-		},
-	}
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, localnetPort); err != nil {
-		slog.Error("vpcd: failed to create localnet port", "port", extPortName, "err", err)
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		respond(msg, err)
-		return
-	}
-
-	// Resolve external pool for this VPC's WAN nexthop and gw LRP IP.
-	//
-	// Direct mode: link-local LRP is fine — distributed NAT puts a per-VM
-	// dnat_and_snat row with external_mac/logical_port on every chassis, so
-	// the LRP IP itself never goes on the wire.
-	//
-	// Centralized mode (veth): the LRP is the on-wire egress, so it
-	// must hold a WAN-subnet IP. Allocate one from pool.GwLrpRange (or
-	// auto-derive from the WAN subnet) so each VPC gets a distinct sender
-	// IP (mulga-siv-36). Without this the upstream router silently drops
-	// ARP for the WAN nexthop (RFC 826) and the default route never
-	// resolves.
-	// TODO: use VPC's region/AZ once we track it; for now use first matching pool.
-	gatewayNetwork := gatewayPortNetwork
-	wanGateway := "169.254.0.2"
-	gwLrpIP := ""
-
-	switch {
-	case pool != nil:
-		wanGateway = pool.Gateway
-		if h.useCentralizedNAT() {
-			network, ip, allocErr := h.expectedGatewayPortNetwork(ctx, evt.VpcId)
-			if allocErr != nil {
-				slog.Error("vpcd: failed to allocate gw LRP IP for centralized NAT",
-					"vpc_id", evt.VpcId, "pool", pool.Name, "err", allocErr)
-				_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-				respond(msg, allocErr)
-				return
-			}
-			gwLrpIP = ip
-			gatewayNetwork = network
-		}
-		slog.Info("vpcd: using external pool for IGW",
-			"pool", pool.Name,
-			"lrp_network", gatewayNetwork,
-			"wan_gateway", wanGateway,
-		)
-	case h.externalMode == "pool":
-		slog.Warn("vpcd: external mode is set but no matching pool found, using link-local fallback")
-	}
-
-	// 3. Create gateway router port on the VPC router connecting to external switch
-	gwMAC := generateMAC("gw-" + evt.VpcId)
-	lrpExtIDs := map[string]string{
-		"spinifex:vpc_id": evt.VpcId,
-		"spinifex:igw_id": evt.InternetGatewayId,
-		"spinifex:role":   "gateway",
-	}
-	if gwLrpIP != "" {
-		lrpExtIDs[gatewayIPExtID] = gwLrpIP
-	}
-	lrp := &nbdb.LogicalRouterPort{
-		Name:        gwPortName,
-		MAC:         gwMAC,
-		Networks:    []string{gatewayNetwork},
-		ExternalIDs: lrpExtIDs,
-	}
-	if err := h.ovn.CreateLogicalRouterPort(ctx, routerName, lrp); err != nil {
-		slog.Error("vpcd: failed to create gateway router port", "port", gwPortName, "err", err)
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		respond(msg, err)
-		return
-	}
-
-	// 4. Create switch port connecting external switch to router
-	switchGWPort := &nbdb.LogicalSwitchPort{
-		Name:      switchGWPortName,
-		Type:      "router",
-		Addresses: []string{"router"},
-		Options: map[string]string{
-			"router-port": gwPortName,
-		},
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": evt.VpcId,
-			"spinifex:igw_id": evt.InternetGatewayId,
-		},
-	}
-	if err := h.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, switchGWPort); err != nil {
-		slog.Error("vpcd: failed to create switch gateway port", "port", switchGWPortName, "err", err)
-		_ = h.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName)
-		_ = h.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		respond(msg, err)
-		return
-	}
-
-	// 5. No blanket SNAT rule — AWS behavior requires that only instances with
-	// public IPs (via MapPublicIpOnLaunch or EIPs) can route through the IGW.
-	// Per-VM dnat_and_snat rules created by handleAddNAT provide both inbound
-	// DNAT and outbound SNAT for public instances. Private subnet instances
-	// (no public IP, no NAT rule) cannot reach the internet — their packets
-	// leave the router with a private source IP that the upstream router drops.
-	// A future NAT Gateway feature will add scoped SNAT for private subnets.
-
-	// 6. Add default route pointing to the WAN gateway
-	// OutputPort must be set explicitly because the gateway router port uses
-	// link-local 169.254.0.1/30, whose network does not contain the WAN
-	// nexthop (e.g. 192.168.1.1). Without it OVN northd silently drops the
-	// route from the southbound DB.
-	defaultRoute := &nbdb.LogicalRouterStaticRoute{
-		IPPrefix:   "0.0.0.0/0",
-		Nexthop:    wanGateway,
-		OutputPort: &gwPortName,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": evt.VpcId,
-			"spinifex:igw_id": evt.InternetGatewayId,
-		},
-	}
-	if err := h.ovn.AddStaticRoute(ctx, routerName, defaultRoute); err != nil {
-		slog.Warn("vpcd: failed to add default route", "router", routerName, "err", err)
-	}
-
-	// 7. Schedule gateway chassis for HA — tells OVN which hosts can handle external traffic
-	if len(h.chassisNames) > 0 {
-		for i, chassis := range h.chassisNames {
-			priority := max(
-				// First chassis gets highest priority
-				20-(i*5), 1)
-			if err := h.ovn.SetGatewayChassis(ctx, gwPortName, chassis, priority); err != nil {
-				slog.Warn("vpcd: failed to set gateway chassis", "port", gwPortName, "chassis", chassis, "priority", priority, "err", err)
-			} else {
-				slog.Info("vpcd: set gateway chassis", "port", gwPortName, "chassis", chassis, "priority", priority)
-			}
-		}
-	} else {
-		slog.Warn("vpcd: no chassis names configured — gateway port has no chassis binding, external traffic will not flow")
-	}
-
-	slog.Info("vpcd: attached internet gateway to VPC",
-		"igw_id", evt.InternetGatewayId,
-		"vpc_id", evt.VpcId,
-		"ext_switch", extSwitchName,
-		"gw_port", gwPortName,
-		"lrp_network", gatewayNetwork,
-		"wan_gateway", wanGateway,
-		"chassis_count", len(h.chassisNames),
-	)
-
-	// Block until ovn-northd compiles + the gateway chassis has installed
-	// flows for this VPC. Without this, a subsequent RunInstances ->
-	// vpc.add-nat can complete while the datapath is still dark, and the
-	// new VM is unreachable on its public IP for the duration of the
-	// flow-install latency (typically seconds; observed up to minutes when
-	// the chassis was loaded during CI). mulga-siv-105.
-	_ = waitForFlowsHV()
 	respond(msg, nil)
 }
 

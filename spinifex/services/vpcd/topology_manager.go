@@ -120,9 +120,8 @@ func (h *TopologyHandler) natManager() (policy.NATManager, error) {
 	return h.natm, h.natmErr
 }
 
-// igwManager returns the lazily-constructed external.IGWManager. The
-// static-pool / distributed-NAT IGW subscriber path goes through it;
-// attachIGWLegacy in topology.go is dead code awaiting Slice D deletion.
+// igwManager returns the lazily-constructed external.IGWManager. All
+// IGW attach/detach paths route through it.
 func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 	h.igwmOnce.Do(func() {
 		nm, err := h.natManager()

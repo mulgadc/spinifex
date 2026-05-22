@@ -96,13 +96,6 @@ type ExternalPoolConfig struct {
 	GwLrpRangeEnd   string
 }
 
-// IsDHCP is a dead stub retained for the unreachable attachIGWLegacy
-// dispatcher branch in topology.go; Slice D deletes both together
-// (mulga-siv-125.3.3).
-func (p *ExternalPoolConfig) IsDHCP() bool {
-	return false
-}
-
 // Service implements the Spinifex service interface for vpcd.
 type Service struct {
 	Config *Config

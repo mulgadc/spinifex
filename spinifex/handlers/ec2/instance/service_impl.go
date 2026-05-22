@@ -682,7 +682,11 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 
 			if s.ipAllocator != nil {
 				subnet, subErr := s.eniCreator.GetSubnet(accountID, *input.SubnetId)
-				if subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch {
+				wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
+				if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
+					wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
+				}
+				if wantPublic {
 					region := s.config.Region
 					az := s.config.AZ
 					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, "auto_assign", "", *eni.NetworkInterfaceId, instance.ID)

@@ -797,11 +797,7 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
-// TestQemuStartupTimeout pins the post-fork bound. The poll loop races
-// QMP socket appearance against early process exit; the timeout is the
-// outer safety net that prevents a wedged QEMU from orphaning resources
-// indefinitely.
-func TestQemuStartupTimeout(t *testing.T) {
+func TestStartupTimeouts(t *testing.T) {
 	assert.Equal(t, 5*time.Second, qemuStartupTimeout)
 	assert.Equal(t, 5*time.Second, nbdReadyTimeout)
 }

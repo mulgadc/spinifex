@@ -173,18 +173,10 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
-// nbdReadyTimeout bounds the per-volume wait for nbdkit's listening
-// socket to appear before exec'ing QEMU. Viperblockd already sleeps 1 s
-// post-fork before responding, so the socket normally exists by the time
-// we get here; the budget covers post-response bind lag under recovery
-// load.
-const nbdReadyTimeout = 5 * time.Second
-
-// qemuStartupTimeout bounds the post-fork wait for either the QMP socket
-// to appear or the QEMU process to exit. Direct-boot binds QMP within a
-// few ms; PC-machine boots typically take a few hundred ms; recovery-load
-// stragglers can take longer. Past this, treat the launch as wedged.
-const qemuStartupTimeout = 5 * time.Second
+const (
+	nbdReadyTimeout    = 5 * time.Second
+	qemuStartupTimeout = 5 * time.Second
+)
 
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
@@ -331,8 +323,6 @@ func (m *Manager) startQEMU(instance *VM) error {
 	}
 	instance.Config.QMPSocket = qmpSocket
 
-	// Confirm each volume's NBD endpoint is reachable before exec'ing QEMU.
-	// Direct-boot has no EBS requests, so the loop is a no-op.
 	instance.EBSRequests.Mu.Lock()
 	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
 	for _, req := range instance.EBSRequests.Requests {
@@ -429,11 +419,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return fmt.Errorf("failed to start qemu")
 	}
 
-	// Race QMP-socket appearance against early process exit. A bad cmdline
-	// or missing kernel surfaces as a closed exitChan within tens of ms;
-	// a healthy QEMU binds its QMP socket within a few hundred ms. Bounded
-	// at qemuStartupTimeout so a wedged QEMU is killed rather than left to
-	// orphan the tap / volumes indefinitely.
+	// Race QMP-socket appearance against early process exit; SIGKILL on timeout
+	// so a wedged QEMU does not orphan its tap / volumes.
 	timeoutTimer := time.NewTimer(qemuStartupTimeout)
 	defer timeoutTimer.Stop()
 	pollTicker := time.NewTicker(20 * time.Millisecond)

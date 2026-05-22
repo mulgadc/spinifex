@@ -73,12 +73,9 @@ func FormatNBDTCPURI(host string, port int) string {
 	return "nbd://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
-// WaitForNBDReady polls until the NBD endpoint at uri is reachable, or the
-// timeout expires. Unix-socket URIs use existence-on-disk (matching
-// WaitForUnixSocket so we don't consume the listener's accept queue before
-// QEMU dials); TCP URIs use a brief dial-and-close probe. Used by the launch
-// path to confirm nbdkit finished binding before exec'ing QEMU, replacing
-// the previous fixed 2 s sleep.
+// WaitForNBDReady polls until the NBD endpoint at uri is reachable or the
+// timeout expires. Unix sockets use existence-on-disk to avoid consuming
+// the listener's accept queue before QEMU dials; TCP uses a dial-and-close.
 func WaitForNBDReady(uri string, timeout time.Duration) error {
 	serverType, path, host, port, err := ParseNBDURI(uri)
 	if err != nil {

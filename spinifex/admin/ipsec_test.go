@@ -1,0 +1,117 @@
+package admin
+
+import (
+	"crypto/x509"
+	"encoding/pem"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestGenerateIPSecPeerCert shares a CA across subtests so the 4096-bit
+// CA-key generation runs once (~0.7s).
+func TestGenerateIPSecPeerCert(t *testing.T) {
+	t.Parallel()
+
+	caDir := t.TempDir()
+	caCertPath := filepath.Join(caDir, "ca.pem")
+	caKeyPath := filepath.Join(caDir, "ca.key")
+	require.NoError(t, GenerateCACert(caCertPath, caKeyPath))
+
+	t.Run("happy path", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "10.0.0.5"))
+
+		certPath, keyPath := IPSecCertPaths(dir)
+		certPEM, err := os.ReadFile(certPath)
+		require.NoError(t, err)
+		block, _ := pem.Decode(certPEM)
+		require.NotNil(t, block)
+		cert, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(t, err)
+
+		assert.Equal(t, "node-1", cert.Subject.CommonName)
+		assert.Equal(t, []string{"node-1"}, cert.DNSNames)
+		require.Len(t, cert.IPAddresses, 1)
+		assert.True(t, cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.5")))
+
+		// IPSec EKU must be present so strongSwan accepts the cert as an IKEv2 peer.
+		var hasIPSecIKE bool
+		for _, oid := range cert.UnknownExtKeyUsage {
+			if oid.Equal(oidExtKeyUsageIPSecIKE) {
+				hasIPSecIKE = true
+				break
+			}
+		}
+		assert.True(t, hasIPSecIKE, "cert missing id-kp-ipsecIKE EKU")
+
+		caCertPEM, _ := os.ReadFile(caCertPath)
+		caBlock, _ := pem.Decode(caCertPEM)
+		caCert, _ := x509.ParseCertificate(caBlock.Bytes)
+		pool := x509.NewCertPool()
+		pool.AddCert(caCert)
+		_, err = cert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+		assert.NoError(t, err, "cert must verify against cluster CA")
+
+		info, err := os.Stat(keyPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "key must be 0600")
+	})
+
+	t.Run("idempotent overwrite", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.6"))
+		require.NoError(t, GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-2", "10.0.0.7"))
+
+		certPath, _ := IPSecCertPaths(dir)
+		certPEM, _ := os.ReadFile(certPath)
+		block, _ := pem.Decode(certPEM)
+		cert, _ := x509.ParseCertificate(block.Bytes)
+		assert.True(t, cert.IPAddresses[0].Equal(net.ParseIP("10.0.0.7")), "second call should rotate the SAN IP")
+	})
+
+	t.Run("rejects missing hostname", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "", "10.0.0.5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hostname required")
+	})
+
+	t.Run("rejects missing nodeIP", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nodeIP required")
+	})
+
+	t.Run("rejects invalid nodeIP", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		err := GenerateIPSecPeerCert(dir, caCertPath, caKeyPath, "node-1", "not-an-ip")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid nodeIP")
+	})
+
+	t.Run("missing CA file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		err := GenerateIPSecPeerCert(dir, filepath.Join(dir, "ghost-ca.pem"), caKeyPath, "node-1", "10.0.0.5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read CA cert")
+	})
+}
+
+func TestIPSecCertPaths(t *testing.T) {
+	t.Parallel()
+	certPath, keyPath := IPSecCertPaths("/etc/spinifex")
+	assert.Equal(t, "/etc/spinifex/ipsec/peer.pem", certPath)
+	assert.Equal(t, "/etc/spinifex/ipsec/peer.key", keyPath)
+}

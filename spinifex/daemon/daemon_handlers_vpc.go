@@ -82,82 +82,88 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) {
 		// startup or handleAccountCreated event will retry.
 		return
 	}
-	d.ensureDefaultVPCInfrastructure(nil)
+	d.ensureDefaultVPCInfrastructureFor(evt.AccountID)
 }
 
 // ensureDefaultVPCInfrastructure attaches an IGW and a default 0.0.0.0/0 route
-// to each account's default VPC. The default SG is provisioned by
+// to each well-known account's default VPC. The default SG is provisioned by
 // EnsureDefaultVPC / CreateVpc itself, so this routine is IGW-only. Accounts
 // in skipAccounts are not touched — used to avoid attaching infrastructure to
 // a half-built VPC when EnsureDefaultVPC failed earlier in startup.
 func (d *Daemon) ensureDefaultVPCInfrastructure(skipAccounts map[string]struct{}) {
-	if d.igwService == nil || d.vpcService == nil {
-		return
-	}
-
 	for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
 		if _, skip := skipAccounts[accountID]; skip {
 			continue
 		}
-		// Find the default VPC for this account
-		descOut, err := d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{}, accountID)
-		if err != nil {
-			continue
+		d.ensureDefaultVPCInfrastructureFor(accountID)
+	}
+}
+
+// ensureDefaultVPCInfrastructureFor attaches an IGW and 0.0.0.0/0 route to the
+// given account's default VPC if not already present.
+func (d *Daemon) ensureDefaultVPCInfrastructureFor(accountID string) {
+	if d.igwService == nil || d.vpcService == nil {
+		return
+	}
+
+	// Find the default VPC for this account
+	descOut, err := d.vpcService.DescribeVpcs(&ec2.DescribeVpcsInput{}, accountID)
+	if err != nil {
+		return
+	}
+	var defaultVpcId string
+	for _, vpc := range descOut.Vpcs {
+		if vpc.IsDefault != nil && *vpc.IsDefault {
+			defaultVpcId = *vpc.VpcId
+			break
 		}
-		var defaultVpcId string
-		for _, vpc := range descOut.Vpcs {
-			if vpc.IsDefault != nil && *vpc.IsDefault {
-				defaultVpcId = *vpc.VpcId
+	}
+	if defaultVpcId == "" {
+		return
+	}
+
+	// Check if IGW already attached
+	igwOut, err := d.igwService.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, accountID)
+	if err != nil {
+		return
+	}
+	hasIGW := false
+	for _, igw := range igwOut.InternetGateways {
+		for _, att := range igw.Attachments {
+			if att.VpcId != nil && *att.VpcId == defaultVpcId {
+				hasIGW = true
 				break
 			}
 		}
-		if defaultVpcId == "" {
-			continue
+	}
+	if !hasIGW {
+		// Create and attach an IGW — use bootstrap ID if available
+		var createOut *ec2.CreateInternetGatewayOutput
+		var err error
+		if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.IgwId != "" {
+			createOut, err = d.igwService.CreateInternetGatewayWithID(&ec2.CreateInternetGatewayInput{}, accountID, d.clusterConfig.Bootstrap.IgwId)
+		} else {
+			createOut, err = d.igwService.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, accountID)
 		}
-
-		// Check if IGW already attached
-		igwOut, err := d.igwService.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{}, accountID)
 		if err != nil {
-			continue
+			slog.Error("Failed to create default IGW", "accountID", accountID, "err", err)
+			return
 		}
-		hasIGW := false
-		for _, igw := range igwOut.InternetGateways {
-			for _, att := range igw.Attachments {
-				if att.VpcId != nil && *att.VpcId == defaultVpcId {
-					hasIGW = true
-					break
-				}
-			}
+		igwId := *createOut.InternetGateway.InternetGatewayId
+		_, err = d.igwService.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+			InternetGatewayId: &igwId,
+			VpcId:             &defaultVpcId,
+		}, accountID)
+		if err != nil {
+			slog.Error("Failed to attach default IGW", "igwId", igwId, "vpcId", defaultVpcId, "err", err)
+		} else {
+			slog.Info("Attached default IGW to default VPC", "igwId", igwId, "vpcId", defaultVpcId, "accountID", accountID)
 		}
-		if !hasIGW {
-			// Create and attach an IGW — use bootstrap ID if available
-			var createOut *ec2.CreateInternetGatewayOutput
-			var err error
-			if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.IgwId != "" {
-				createOut, err = d.igwService.CreateInternetGatewayWithID(&ec2.CreateInternetGatewayInput{}, accountID, d.clusterConfig.Bootstrap.IgwId)
-			} else {
-				createOut, err = d.igwService.CreateInternetGateway(&ec2.CreateInternetGatewayInput{}, accountID)
-			}
-			if err != nil {
-				slog.Error("Failed to create default IGW", "accountID", accountID, "err", err)
-				continue
-			}
-			igwId := *createOut.InternetGateway.InternetGatewayId
-			_, err = d.igwService.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
-				InternetGatewayId: &igwId,
-				VpcId:             &defaultVpcId,
-			}, accountID)
-			if err != nil {
-				slog.Error("Failed to attach default IGW", "igwId", igwId, "vpcId", defaultVpcId, "err", err)
-			} else {
-				slog.Info("Attached default IGW to default VPC", "igwId", igwId, "vpcId", defaultVpcId, "accountID", accountID)
-			}
-		}
+	}
 
-		// Add 0.0.0.0/0 → IGW route to the main route table (if not already present)
-		if d.routeTableService != nil {
-			d.ensureDefaultIGWRoute(accountID, defaultVpcId)
-		}
+	// Add 0.0.0.0/0 → IGW route to the main route table (if not already present)
+	if d.routeTableService != nil {
+		d.ensureDefaultIGWRoute(accountID, defaultVpcId)
 	}
 }
 

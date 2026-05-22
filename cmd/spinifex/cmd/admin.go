@@ -300,6 +300,7 @@ func init() {
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("no-external", false, "Disable external networking (overlay-only, no internet for VMs)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
+	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -844,6 +845,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
 	noExternal, _ := cmd.Flags().GetBool("no-external")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
+	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
 
 	// Fire telemetry in background (completes during init work, waited at end)
 	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
@@ -1085,6 +1087,16 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Generate SSL certificates (with bind IP in SANs for multi-node support)
 	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP)
 
+	// Generate per-node IPsec peer cert when cluster-wide IPsec is enabled
+	// (default true). Reuses the cluster CA — no intermediate strongSwan PKI.
+	if err := admin.GenerateIPSecPeerCertIfEnabled(ipsecEnabled, configDir, node, bindIP); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+		os.Exit(1)
+	}
+	if ipsecEnabled {
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
 	// Install CA certificate into system trust store
 	installCACertificate(filepath.Join(configDir, "ca.pem"))
 
@@ -1106,29 +1118,31 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	isMultiNode := nodes >= 2
 
 	if isMultiNode {
-		// Build cluster-wide network config for propagation to joining nodes
-		var networkConfig *formation.NetworkConfig
+		// Build cluster-wide network config for propagation to joining nodes.
+		// Always emit so the IPSecEnabled flag reaches joiners even when
+		// external networking is disabled.
+		networkConfig := &formation.NetworkConfig{
+			IPSecEnabled: ipsecEnabled,
+		}
 		if externalMode != "" {
 			bootstrapVpcId := utils.GenerateResourceID("vpc")
 			bootstrapSubnetId := utils.GenerateResourceID("subnet")
 			bootstrapIgwId := utils.GenerateResourceID("igw")
-			networkConfig = &formation.NetworkConfig{
-				ExternalMode:        externalMode,
-				PoolName:            "wan",
-				PoolSource:          externalSource,
-				PoolStart:           poolStart,
-				PoolEnd:             poolEnd,
-				PoolGateway:         externalGateway,
-				PoolGatewayIP:       gatewayIP,
-				PoolPrefixLen:       externalPrefixLen,
-				PoolDNSServers:      dnsServers,
-				BootstrapAccountId:  admin.DefaultAccountID(),
-				BootstrapVpcId:      bootstrapVpcId,
-				BootstrapSubnetId:   bootstrapSubnetId,
-				BootstrapIgwId:      bootstrapIgwId,
-				BootstrapCidr:       handlers_ec2_vpc.DefaultVPCCidr,
-				BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
-			}
+			networkConfig.ExternalMode = externalMode
+			networkConfig.PoolName = "wan"
+			networkConfig.PoolSource = externalSource
+			networkConfig.PoolStart = poolStart
+			networkConfig.PoolEnd = poolEnd
+			networkConfig.PoolGateway = externalGateway
+			networkConfig.PoolGatewayIP = gatewayIP
+			networkConfig.PoolPrefixLen = externalPrefixLen
+			networkConfig.PoolDNSServers = dnsServers
+			networkConfig.BootstrapAccountId = admin.DefaultAccountID()
+			networkConfig.BootstrapVpcId = bootstrapVpcId
+			networkConfig.BootstrapSubnetId = bootstrapSubnetId
+			networkConfig.BootstrapIgwId = bootstrapIgwId
+			networkConfig.BootstrapCidr = handlers_ec2_vpc.DefaultVPCCidr
+			networkConfig.BootstrapSubnetCidr = handlers_ec2_vpc.DefaultSubnetCidr
 		}
 
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, natsToken, clusterName,
@@ -1246,6 +1260,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
 
 		GPUPassthrough: gpuPassthrough,
+		IPSecEnabled:   ipsecEnabled,
 	}
 
 	// Print external networking summary
@@ -1837,6 +1852,22 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("✅ Server certificate generated with bind IP: %s\n\n", bindIP)
 
+	// Match the leader's intra-AZ IPsec posture: NetworkConfig.IPSecEnabled is
+	// authoritative. When the formation response omits NetworkConfig entirely
+	// (no current code path; defensive guard against future regressions) fall
+	// back to the AWS-parity default of ON.
+	ipsecEnabled := true
+	if statusResp.NetworkConfig != nil {
+		ipsecEnabled = statusResp.NetworkConfig.IPSecEnabled
+	}
+	if err := admin.GenerateIPSecPeerCertIfEnabled(ipsecEnabled, configDir, node, bindIP); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+		os.Exit(1)
+	}
+	if ipsecEnabled {
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
 	// Build cluster topology from formation data
 	clusterRoutes := formation.BuildClusterRoutes(statusResp.Nodes)
 	predastoreNodes := formation.BuildPredastoreNodes(statusResp.Nodes)
@@ -2246,6 +2277,7 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // applyNetworkConfig copies cluster-wide network settings from a formation
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
+	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
 	settings.PoolName = nc.PoolName
 	settings.PoolSource = nc.PoolSource

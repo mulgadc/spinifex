@@ -7,9 +7,10 @@ node = "{{.Node}}"
 [operator]
 email = "{{.OperatorEmail}}"
 {{- end}}
-{{- if .ExternalMode}}
 
 [network]
+ipsec_enabled = {{.IPSecEnabled}}
+{{- if .ExternalMode}}
 external_mode = "{{.ExternalMode}}"
 
 [[network.external_pools]]

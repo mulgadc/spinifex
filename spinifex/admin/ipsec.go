@@ -48,6 +48,18 @@ func IPSecCertPaths(configDir string) (certPath, keyPath string) {
 // SANs discovered from the local machine's interfaces are not added here —
 // IPSec peer identity should be the explicit cluster identity only, not
 // every interface address, to keep peer-identity matching strict.
+// GenerateIPSecPeerCertIfEnabled is a no-op when enabled is false. Used by
+// admin init and admin join so the call site reads as a single guarded line
+// keyed off the cluster's network.ipsec_enabled flag.
+func GenerateIPSecPeerCertIfEnabled(enabled bool, configDir, hostname, nodeIP string) error {
+	if !enabled {
+		return nil
+	}
+	caCertPath := filepath.Join(configDir, "ca.pem")
+	caKeyPath := filepath.Join(configDir, "ca.key")
+	return GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP)
+}
+
 func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP string) error {
 	if hostname == "" {
 		return fmt.Errorf("ipsec peer cert: hostname required")

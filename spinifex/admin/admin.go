@@ -102,6 +102,11 @@ type ConfigSettings struct {
 	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
 	// Sets gpu_passthrough = true under [nodes.<node>.daemon].
 	GPUPassthrough bool
+
+	// IPSecEnabled toggles cluster-wide OVN native IPsec on intra-AZ Geneve
+	// (default true). Surfaced under [network] in spinifex.toml so the value
+	// is visible/auditable; the daemon reads it via cluster config.
+	IPSecEnabled bool
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.

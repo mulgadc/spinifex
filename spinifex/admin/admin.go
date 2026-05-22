@@ -72,14 +72,12 @@ type ConfigSettings struct {
 	// External networking for public subnets
 	ExternalMode   string   // "pool" or "" (disabled)
 	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
-	DhcpBindBridge string   // Bridge where the DHCP AF_PACKET socket binds (Linux bridge in veth mode, OVS bridge in direct mode; never "br-ext")
-	ExternalDHCP   bool     // Obtain gateway IP via DHCP on the WAN bridge
 	PoolName       string   // External pool name (e.g., "wan")
-	PoolSource     string   // IP source: "static" (default) or "dhcp" (from router DHCP)
-	PoolStart      string   // First IP in external pool range (static source only)
-	PoolEnd        string   // Last IP in external pool range (static source only)
+	PoolSource     string   // IP source: "static" (default; only valid value)
+	PoolStart      string   // First IP in external pool range
+	PoolEnd        string   // Last IP in external pool range
 	PoolGateway    string   // WAN gateway IP
-	PoolGatewayIP  string   // Explicit SNAT IP (for nat mode without DHCP)
+	PoolGatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
 	PoolPrefixLen  int      // Subnet prefix length (default 24)
 	PoolDNSServers []string // DNS servers for VM DHCP (auto-detected from host)
 

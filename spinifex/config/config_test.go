@@ -375,7 +375,7 @@ external_interface = "enp0s3"
 	assert.Equal(t, "enp0s3", n.VPCD.ExternalInterface)
 }
 
-func TestLoadConfig_NetworkPoolDHCPMode(t *testing.T) {
+func TestLoadConfig_NetworkPoolDHCPSourceRejected(t *testing.T) {
 	resetViper(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spinifex.toml")
@@ -399,12 +399,117 @@ region = "us-east-1"
 	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
 
 	cfg, err := LoadConfig(path)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "source=")
+	assert.Contains(t, err.Error(), "dhcp")
+}
 
-	assert.Equal(t, "pool", cfg.Network.ExternalMode)
-	require.Len(t, cfg.Network.ExternalPools, 1)
-	assert.Equal(t, "dhcp", cfg.Network.ExternalPools[0].Source)
-	assert.Equal(t, "192.168.1.100", cfg.Network.ExternalPools[0].GatewayIP)
+func TestLoadConfig_ExternalDHCPRejected(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+external_dhcp = true
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "external_dhcp")
+}
+
+func TestLoadConfig_DhcpBindBridgeRejected(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[nodes.n1.vpcd]
+dhcp_bind_bridge = "br-wan"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "dhcp_bind_bridge")
+}
+
+func TestLoadConfig_PoolRangeOutsideCIDR(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "wan"
+range_start = "10.99.0.10"
+range_end = "10.99.0.50"
+gateway = "192.168.1.1"
+prefix_len = 24
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "not inside")
+}
+
+func TestLoadConfig_PoolsOverlap(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "a"
+range_start = "192.168.1.10"
+range_end = "192.168.1.50"
+gateway = "192.168.1.1"
+prefix_len = 24
+
+[[network.external_pools]]
+name = "b"
+range_start = "192.168.1.40"
+range_end = "192.168.1.80"
+gateway = "192.168.1.1"
+prefix_len = 24
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "overlaps")
 }
 
 func TestLoadConfig_NetworkDisabledByDefault(t *testing.T) {

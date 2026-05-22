@@ -1097,11 +1097,6 @@ func (d *Daemon) startCluster() error {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []handlers_ec2_vpc.ExternalPoolConfig
-			// Resolve DHCP bind bridge name for DHCP pools (where AF_PACKET binds).
-			dhcpBindBridge := ""
-			if node, ok := d.clusterConfig.Nodes[d.clusterConfig.Node]; ok {
-				dhcpBindBridge = node.VPCD.DhcpBindBridge
-			}
 			gwMAC := ""
 			if d.clusterConfig.Bootstrap.VpcId != "" {
 				gwMAC = utils.HashMAC("gw-" + d.clusterConfig.Bootstrap.VpcId)
@@ -1117,7 +1112,6 @@ func (d *Daemon) startCluster() error {
 					PrefixLen:       p.PrefixLen,
 					Region:          p.Region,
 					AZ:              p.AZ,
-					DhcpBindBridge:  dhcpBindBridge,
 					GatewayMAC:      gwMAC,
 					GwLrpRangeStart: p.GwLrpRangeStart,
 					GwLrpRangeEnd:   p.GwLrpRangeEnd,

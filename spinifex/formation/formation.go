@@ -62,7 +62,6 @@ type StatusResponse struct {
 // propagated from the init node to joining nodes during formation.
 type NetworkConfig struct {
 	ExternalMode   string   `json:"external_mode"`
-	ExternalDHCP   bool     `json:"external_dhcp,omitempty"`
 	PoolName       string   `json:"pool_name"`
 	PoolSource     string   `json:"pool_source,omitempty"`
 	PoolStart      string   `json:"pool_start,omitempty"`

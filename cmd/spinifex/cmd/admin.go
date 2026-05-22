@@ -910,13 +910,11 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 					externalPrefixLen = detected.WAN.PrefixLen
 				}
 
-				// Default mode: always "pool" — with static range if --external-pool
-				// is given, otherwise with source=dhcp (gateway IP from router DHCP)
+				// Default mode: always "pool". Source defaults to "static"; if
+				// --external-pool is omitted the validator below will error with
+				// a SuggestPoolRange hint.
 				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
 					externalMode = "pool"
-					if externalPool == "" && externalSource == "" {
-						externalSource = "dhcp"
-					}
 				}
 			}
 		}
@@ -928,42 +926,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	if externalMode == "pool" {
-		// Resolve source: if not explicitly set, infer from whether a pool range was given
-		if externalSource == "" {
-			if externalPool != "" {
-				externalSource = "static"
-			} else {
-				externalSource = "dhcp"
-			}
+		if externalSource != "" && externalSource != "static" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' (only supported value), got: %s\n", externalSource)
+			os.Exit(1)
 		}
-		if externalSource == "dhcp" {
-			// DHCP source: no static range needed, just gateway
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
-				os.Exit(1)
+		externalSource = "static"
+		if externalPool == "" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required when --external-mode=pool (e.g., 192.168.1.150-192.168.1.250)\n")
+			if detectedNet != nil && detectedNet.WAN != nil {
+				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
 			}
-		} else {
-			// Static source: need pool range
-			if externalPool == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required when --external-mode=pool (e.g., 192.168.1.150-192.168.1.250)\n")
-				fmt.Fprintf(os.Stderr, "   Or use --external-source=dhcp to get IPs from router DHCP\n")
-				if detectedNet != nil && detectedNet.WAN != nil {
-					sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
-					fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
-				}
-				os.Exit(1)
-			}
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
-				os.Exit(1)
-			}
-			parts := strings.SplitN(externalPool, "-", 2)
-			if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
-				os.Exit(1)
-			}
-			poolStart, poolEnd = parts[0], parts[1]
+			os.Exit(1)
 		}
+		if externalGateway == "" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
+			os.Exit(1)
+		}
+		parts := strings.SplitN(externalPool, "-", 2)
+		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
+			os.Exit(1)
+		}
+		poolStart, poolEnd = parts[0], parts[1]
 	}
 	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
@@ -982,10 +967,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
 	}
-
-	// For pool/dhcp source, the gateway IP is obtained via DHCP on the
-	// WAN bridge interface (no static pool range or explicit gateway-ip).
-	useExternalDHCP := externalMode == "pool" && externalSource == "dhcp" && gatewayIP == ""
 
 	// Validate IP address format
 	if net.ParseIP(bindIP) == nil {
@@ -1133,7 +1114,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			bootstrapIgwId := utils.GenerateResourceID("igw")
 			networkConfig = &formation.NetworkConfig{
 				ExternalMode:        externalMode,
-				ExternalDHCP:        useExternalDHCP,
 				PoolName:            "wan",
 				PoolSource:          externalSource,
 				PoolStart:           poolStart,
@@ -1248,8 +1228,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		ExternalMode:   externalMode,
 		ExternalIface:  externalIface,
-		DhcpBindBridge: detectedDhcpBindBridge(detectedNet),
-		ExternalDHCP:   useExternalDHCP,
 		PoolName:       "wan",
 		PoolSource:     externalSource,
 		PoolStart:      poolStart,
@@ -1278,10 +1256,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			fmt.Printf("  Source:        static (IP range)\n")
 			fmt.Printf("  IP pool:       %s - %s\n", poolStart, poolEnd)
 			fmt.Printf("  ⚠️  Ensure %s-%s is excluded from your router's DHCP range.\n", poolStart, poolEnd)
-		} else if useExternalDHCP {
-			fmt.Printf("  Source:        dhcp (from router DHCP)\n")
-			fmt.Println("  Gateway IP:    DHCP (obtained during OVN setup)")
-		} else if gatewayIP != "" {
+		}
+		if gatewayIP != "" {
 			fmt.Printf("  Gateway IP:    %s (static)\n", gatewayIP)
 		}
 	}
@@ -2271,7 +2247,6 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.ExternalMode = nc.ExternalMode
-	settings.ExternalDHCP = nc.ExternalDHCP
 	settings.PoolName = nc.PoolName
 	settings.PoolSource = nc.PoolSource
 	settings.PoolStart = nc.PoolStart
@@ -2292,7 +2267,6 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 		detected, err := admin.DetectNetwork()
 		if err == nil && detected.WAN != nil {
 			settings.ExternalIface = detected.WAN.Name
-			settings.DhcpBindBridge = detectedDhcpBindBridge(detected)
 		}
 	}
 }
@@ -2399,29 +2373,6 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	}
 
 	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
-}
-
-// detectedDhcpBindBridge returns the bridge name where the vpcd DHCP client
-// should bind its AF_PACKET socket — i.e. the interface that physically sees
-// LAN DHCP traffic.
-//
-//   - Default route on a bridge (Linux or OVS, `br-*` prefix): return the
-//     bridge name verbatim. In veth mode this is the Linux bridge holding the
-//     WAN NIC; in direct mode this is the OVS bridge holding the WAN NIC.
-//   - Default route on a bare physical NIC: return "br-wan" as the name the
-//     installer will create.
-//
-// Never returns "br-ext". br-ext is the OVN-side bridge owned by
-// setup-ovn.sh's ovn-bridge-mappings and never sees LAN DHCP frames.
-func detectedDhcpBindBridge(detected *admin.DetectedNetwork) string {
-	if detected == nil || detected.WAN == nil {
-		return ""
-	}
-	name := detected.WAN.Name
-	if strings.HasPrefix(name, "br-") {
-		return name
-	}
-	return "br-wan"
 }
 
 // detectDNSServers auto-detects DNS servers from the host for the specified

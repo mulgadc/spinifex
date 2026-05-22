@@ -1442,6 +1442,7 @@ func newDHCPStub(t *testing.T, nc *nats.Conn) *dhcpStub {
 // sharing one DHCP pool must each get a distinct lease IP and persist it
 // on external_ids:spinifex:gateway_ip. IGW detach must release the lease.
 func TestTopologyHandler_IGWAttach_DHCPGwLrpIP(t *testing.T) {
+	t.Skip("DHCP source no longer supported; Slice C deletes attachIGWLegacy + DHCP gateway-LRP path")
 	_, nc := startTestNATS(t)
 	stub := newDHCPStub(t, nc)
 	mock := NewMockOVNClient()
@@ -1542,6 +1543,7 @@ func TestTopologyHandler_IGWAttach_DHCPGwLrpIP(t *testing.T) {
 // loud instead of falling back to link-local. Otherwise we silently restore
 // the broken pre-siv-36 behavior.
 func TestTopologyHandler_IGWAttach_DHCPAcquireFailureAborts(t *testing.T) {
+	t.Skip("DHCP source no longer supported; Slice C deletes attachIGWLegacy + DHCP gateway-LRP path")
 	_, nc := startTestNATS(t)
 	sub, err := nc.Subscribe(dhcp.TopicAcquire, func(msg *nats.Msg) {
 		reply := dhcp.AcquireReplyMsg{Error: "no leases available"}

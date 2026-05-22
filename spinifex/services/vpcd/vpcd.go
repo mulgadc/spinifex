@@ -73,11 +73,6 @@ type Config struct {
 	// ExternalInterface is the WAN NIC name (e.g., "enp0s3"). Used by
 	// detectBridgeMode for veth/direct auto-detection.
 	ExternalInterface string
-	// DhcpBindBridge is the bridge where the DHCP client binds its AF_PACKET
-	// socket. In veth mode this is the Linux bridge that holds the WAN NIC
-	// (e.g. "br-wan"); in direct mode this is the OVS bridge holding the
-	// WAN NIC. Never the OVN-side "br-ext" — that never sees LAN DHCP.
-	DhcpBindBridge string
 	// BridgeMode is "direct" or "veth". Direct bridge adds the WAN NIC
 	// directly to the OVS bridge; veth uses a veth pair to link a Linux bridge
 	// to OVS. When empty, auto-detected at startup.
@@ -105,9 +100,10 @@ type ExternalPoolConfig struct {
 	GwLrpRangeEnd   string
 }
 
-// IsDHCP returns true if this pool obtains IPs from upstream DHCP.
+// IsDHCP is retained until Slice C removes the DHCP-source code paths; loader
+// rejects source="dhcp" so this always returns false in steady state.
 func (p *ExternalPoolConfig) IsDHCP() bool {
-	return p.Source == "dhcp"
+	return false
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -417,7 +413,7 @@ func launchService(cfg *Config) error {
 	defer liveClient.Close()
 	slog.Info("Connected to OVN NB DB", "endpoint", cfg.OVNNBAddr)
 
-	bridgeMode, dhcpBindBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface, cfg.DhcpBindBridge)
+	bridgeMode, dhcpBindBridge := resolveBridgeConfig(cfg.BridgeMode, cfg.ExternalInterface)
 	slog.Info("External bridge mode", "mode", bridgeMode, "dhcp_bind_bridge", dhcpBindBridge)
 	if err := verifyBridgeMode(bridgeMode, cfg.ExternalInterface, dhcpBindBridge); err != nil {
 		slog.Error("vpcd: bridge mode sanity check failed", "err", err)
@@ -679,20 +675,17 @@ func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfi
 	}
 }
 
-// resolveBridgeConfig picks the bridge mode and DHCP-bind-bridge to use,
+// resolveBridgeConfig picks the bridge mode and WAN bridge name to use,
 // auto-detecting mode when unset. Empty mode stays empty — verifyBridgeMode
-// rejects it with a list of supported values (D12). Empty bind bridge
-// defaults to "br-wan", the consumer-router convention.
-func resolveBridgeConfig(cfgBridgeMode, externalIface, cfgDhcpBindBridge string) (string, string) {
+// rejects it with a list of supported values (D12). The WAN bridge name is
+// always "br-wan" (the consumer-router convention) since vpcd no longer
+// accepts a per-node override.
+func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
 	bridgeMode := cfgBridgeMode
 	if bridgeMode == "" && externalIface != "" {
 		bridgeMode = detectBridgeMode(externalIface)
 	}
-	dhcpBindBridge := cfgDhcpBindBridge
-	if dhcpBindBridge == "" {
-		dhcpBindBridge = "br-wan"
-	}
-	return bridgeMode, dhcpBindBridge
+	return bridgeMode, "br-wan"
 }
 
 // ifaceExists returns true when the kernel reports the named link.

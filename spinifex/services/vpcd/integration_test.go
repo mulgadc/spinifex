@@ -542,3 +542,62 @@ func TestIntegration_IGWErrorPaths(t *testing.T) {
 		InternetGatewayId: aws.String(igwID),
 	}, testIGWAccountID)
 }
+
+// TestIntegration_SubnetBeforeVPC asserts that vpc.create-subnet does not
+// fail when it arrives before the matching vpc.create-vpc (mulga-siv-133).
+// The subnet handler must idempotently EnsureVPC so the parent logical
+// router is in place by the time CreateLogicalRouterPort runs.
+func TestIntegration_SubnetBeforeVPC(t *testing.T) {
+	_, nc := startTestJetStreamNATS(t)
+	mock := NewMockOVNClient()
+	_ = mock.Connect(context.Background())
+	ctx := context.Background()
+
+	topo := NewTopologyHandler(mock)
+	subs, err := topo.Subscribe(nc)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	// Subnet event arrives first — no prior vpc.create-vpc.
+	subEvt := SubnetEvent{SubnetId: "subnet-race", VpcId: "vpc-race", CidrBlock: "10.0.1.0/24"}
+	subData, _ := json.Marshal(subEvt)
+	resp, err := nc.Request(TopicSubnetCreate, subData, 5*time.Second)
+	if err != nil {
+		t.Fatalf("vpc.create-subnet (race): %v", err)
+	}
+	assertSuccess(t, resp, "subnet-before-vpc create")
+
+	// Router was created defensively.
+	router, err := mock.GetLogicalRouter(ctx, "vpc-vpc-race")
+	if err != nil {
+		t.Fatalf("expected VPC router after subnet pre-create: %v", err)
+	}
+	// Subnet topology landed.
+	if _, err := mock.GetLogicalSwitch(ctx, "subnet-subnet-race"); err != nil {
+		t.Fatalf("expected subnet switch: %v", err)
+	}
+	if len(router.Ports) != 1 {
+		t.Errorf("router ports = %d, want 1", len(router.Ports))
+	}
+
+	// Now publish the (delayed) vpc.create-vpc with full metadata. EnsureVPC
+	// must short-circuit on the existing LR — no duplicate, no error.
+	vpcEvt := VPCEvent{VpcId: "vpc-race", CidrBlock: "10.0.0.0/16", VNI: 4242}
+	vpcData, _ := json.Marshal(vpcEvt)
+	resp, err = nc.Request(TopicVPCCreate, vpcData, 5*time.Second)
+	if err != nil {
+		t.Fatalf("vpc.create (late): %v", err)
+	}
+	assertSuccess(t, resp, "late VPC create")
+
+	routerList, _ := mock.ListLogicalRouters(ctx)
+	if len(routerList) != 1 {
+		t.Errorf("routers = %d, want 1 (duplicate after race-loser create)", len(routerList))
+	}
+}

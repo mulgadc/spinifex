@@ -281,20 +281,28 @@ distro-clean:
 
 # Ansible dev lifecycle (experimental, parallel to dev-*.sh / reset-dev-env.sh).
 # See scripts/ansible/README.md and docs/development/improvements/ansible-dev-lifecycle.md.
+#
+# Variable overrides: pass EXTRA_VARS="key=val key2=val2" to forward as
+# `--extra-vars` to ansible-playbook. Plain `-e` on the make command line is
+# make's own flag and does NOT reach ansible.
+#   make ansible-dev-install EXTRA_VARS="spinifex_external_pool_start=192.168.1.90 spinifex_external_pool_end=192.168.1.99"
+EXTRA_VARS ?=
+_ANSIBLE_EXTRA = $(if $(strip $(EXTRA_VARS)),--extra-vars "$(EXTRA_VARS)",)
+
 ansible-dev-preflight:
-	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-teardown:
-	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-install:
-	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-reset:
-	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-deploy:
-	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml $(_ANSIBLE_EXTRA)
 
 .PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \

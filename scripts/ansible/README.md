@@ -83,12 +83,39 @@ Useful overrides:
 | `teardown_process_wait_seconds` | `30` | Grace period for processes to exit |
 | `spinifex_region` | `ap-southeast-2` | Region passed to `spx admin init` |
 | `spinifex_az` | `{{ region }}a` | AZ passed to `spx admin init` |
-| `spinifex_external_mode` | `pool` | `pool` \| `nat` external networking |
+| `spinifex_external_mode` | `pool` | External networking mode — `pool` or empty (NAT removed) |
+| `spinifex_external_no_external` | `false` | `true` → emit `--no-external` and skip external networking |
+| `spinifex_external_pool_start` | `""` | **Required** for `pool` mode — first IP of the static WAN pool |
+| `spinifex_external_pool_end` | `""` | **Required** for `pool` mode — last IP of the static WAN pool |
+| `spinifex_external_gateway` | `""` | WAN gateway (auto-detected when blank) |
+| `spinifex_external_prefix_len` | `""` | WAN prefix length (auto-detected when blank) |
+| `spinifex_external_gateway_ip` | `""` | OVN router external-IP override (`--gateway-ip`) |
+
+`pool` mode is mandatory unless you set `spinifex_external_no_external=true`.
+`spx admin init` rejects the run without a `--external-pool` range, so the
+init role asserts `spinifex_external_pool_start/_end` upfront. Either persist
+them in `vars/defaults.yml`, or pass them at invocation:
+
+Direct `ansible-playbook` (use `-e` here — this is ansible's flag):
+
+```
+ansible-playbook playbooks/dev-install.yml \
+  -e spinifex_external_pool_start=192.168.1.150 \
+  -e spinifex_external_pool_end=192.168.1.250
+```
+
+Via `make` (use `EXTRA_VARS=` — make eats its own `-e`):
+
+```
+make ansible-dev-install \
+  EXTRA_VARS="spinifex_external_pool_start=192.168.1.150 spinifex_external_pool_end=192.168.1.250"
+```
 
 `dev-reset.yml` automatically captures `region`, `az`, `external_mode`,
-pool range, gateway, prefix-len, nat gateway_ip from the existing
+pool range, gateway, prefix-len and `gateway_ip` from the existing
 `/etc/spinifex/spinifex.toml` before teardown and replays them into
-`init`. Use `-e` to override.
+`init`. Legacy `external_mode = "nat"` is coerced to `"pool"` with a warn.
+Use `-e` to override.
 
 ## Leak catalog
 

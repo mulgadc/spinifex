@@ -224,27 +224,20 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 	}
 }
 
-// applyIGWs rebinds Gateway_Chassis on every intent IGW whose OVN topology
-// already exists. Fresh-IGW creation flows through the NATS handler path
-// (handlers/ec2/igw → vpc.igw-attach event → TopologyHandler.reconcileIGW)
-// for the duration of Phase 2 — that path retains DHCP-uplink awareness
-// via dhcpManager, which network/external.NewIGWManager does not yet have
-// (bead mulga-siv-125.3.3 will remove the DHCP manager entirely; Phase 4
-// then migrates the handler onto external.IGWManager).
-//
-// Chassis-rebind drift handling stays in the reconciler because it's a
-// pure NB-DB-only fix-up: a system-id change across reboot leaves
-// Gateway_Chassis rows pointing at a chassis no ovn-controller owns
-// (mulga-999), and SetGatewayChassis is idempotent.
-//
-// The igw manager field stays wired (config requires it) so this stage
-// can grow into a full AttachIGW path once DHCP awareness lands in
-// network/external.
+// applyIGWs ensures every intent IGW has its OVN topology (external switch,
+// localnet LSP, gateway LRP, default route, Gateway_Chassis bindings) and
+// rebinds chassis on existing IGWs. AttachIGW is idempotent (short-circuits
+// when the external switch already exists), so calling it when actual state
+// is missing converges bootstrap-time default-VPC IGWs whose vpc.igw-attach
+// NATS event arrived before vpcd's subscriber was ready (mulga-siv-132).
 func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual ActualState) {
-	for vpcID := range intent.IGWs {
+	for vpcID, spec := range intent.IGWs {
 		if _, ok := actual.ExternalSwch[vpcID]; !ok {
-			slog.Debug("reconcile/apply: IGW topology missing in OVN, deferring to NATS handler path", "vpc_id", vpcID)
-			continue
+			if err := r.igw.AttachIGW(ctx, spec); err != nil {
+				slog.Error("reconcile/apply: AttachIGW failed", "vpc_id", vpcID, "err", err)
+				continue
+			}
+			actual.ExternalSwch[vpcID] = struct{}{}
 		}
 		r.rebindGatewayChassis(ctx, vpcID)
 	}

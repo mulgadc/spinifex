@@ -225,6 +225,62 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	}
 }
 
+func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
+	m := mock.New()
+	sg := policy.NewSecurityGroupManager(m)
+	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
+	routes := policy.NewRouteManager(m)
+	igw, _ := external.NewIGWManager(external.IGWManagerConfig{
+		OVN: m, Routes: routes, NAT: nat,
+		Allocator: external.LinkLocalAllocator{},
+		NATMode:   policy.NATModeDistributed,
+	})
+	topo := topology.NewLiveManager(m)
+	rec, err := New(Config{
+		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topo,
+		LocalAZ: "us-east-1a", NodeHostname: "test-host",
+		Chassis: []string{"chassis-1"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	intent := IntentState{
+		VPCs: map[string]topology.VPCSpec{
+			"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100},
+		},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{},
+		IGWs:    map[string]external.IGWSpec{"vpc-a": {VPCID: "vpc-a", InternetGatewayID: "igw-a"}},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if _, ok := m.Switches[topology.ExternalSwitch("vpc-a")]; !ok {
+		t.Errorf("external switch not created by reconciler AttachIGW path")
+	}
+	gwPort := topology.GatewayRouterPort("vpc-a")
+	if _, ok := m.RouterPorts[gwPort]; !ok {
+		t.Errorf("gateway LRP %s not created", gwPort)
+	}
+
+	// Second pass must be idempotent — AttachIGW's first-line short-circuit
+	// fires once the external switch exists, so total switch count stays put.
+	switchCount := len(m.Switches)
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #2: %v", err)
+	}
+	if len(m.Switches) != switchCount {
+		t.Errorf("second reconcile created duplicate switches: %d → %d", switchCount, len(m.Switches))
+	}
+}
+
 func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()

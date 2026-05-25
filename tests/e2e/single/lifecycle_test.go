@@ -3,11 +3,11 @@
 package single
 
 import (
-	"fmt"
 	"net"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +17,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// sshDatapathBroken is set the first time a single-node SSH probe times
+// out. Downstream SSH-dependent tests call requireSSHHealthy(t) and skip
+// rather than re-running the same 3-minute timeout against the same
+// broken datapath (mulga-siv-134, mulga-siv-137).
+var sshDatapathBroken atomic.Bool
+
+// requireSSHHealthy skips the calling test if a prior SSH probe on this
+// single-node VM has already failed. Cuts the cascade cost of a broken
+// datapath from 4×3min down to one fail + four skips.
+func requireSSHHealthy(t *testing.T) {
+	t.Helper()
+	if sshDatapathBroken.Load() {
+		t.Skipf("skipping: earlier single-node SSH probe failed " +
+			"(mulga-siv-134); not retrying to keep suite time bounded")
+	}
+}
 
 // runStopStart stops fix.Instance and waits for it to reach the
 // "stopped" state, then asserts that rebooting a stopped instance is
@@ -394,21 +411,15 @@ func runRunInstancesMultiCount(t *testing.T, fix *Fixture) {
 // Proper hoist to harness.WaitForSSH is tracked under mulga-siv-101.
 func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 	t.Helper()
+	requireSSHHealthy(t)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	harness.Step(t, "waiting for SSH handshake %s", addr)
-	harness.Eventually(t, func() bool {
-		cmd := exec.Command("ssh",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "LogLevel=ERROR",
-			"-o", "ConnectTimeout=5",
-			"-o", "BatchMode=yes",
-			"-p", strconv.Itoa(port),
-			"-i", keyPath,
-			"ec2-user@"+host,
-			"true")
-		return cmd.Run() == nil
-	}, 3*time.Minute, 3*time.Second, fmt.Sprintf("SSH handshake %s never completed", addr))
+	if !trySSHReady(host, port, keyPath, 3*time.Minute) {
+		sshDatapathBroken.Store(true)
+		t.Fatalf("Eventually: condition not met within 3m0s: "+
+			"[SSH handshake %s never completed] "+
+			"(sticky-skip enabled for downstream — see mulga-siv-134)", addr)
+	}
 }
 
 // waitForSSHHandshake is an alias kept for instance_test.go's call site.
@@ -423,6 +434,9 @@ func waitForSSHHandshake(t *testing.T, host string, port int, keyPath string) {
 // flow installation is timing-sensitive on shared CI runners and not part
 // of the EC2 surface contract this test exists to validate.
 func trySSHReady(host string, port int, keyPath string, timeout time.Duration) bool {
+	if sshDatapathBroken.Load() {
+		return false
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		cmd := exec.Command("ssh",

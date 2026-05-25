@@ -136,6 +136,44 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return fmt.Errorf("ipsec peer cert: write key: %w", err)
 	}
 
+	// Symlink the cluster CA into charon's default cacerts scan dir.
+	// ovs-monitor-ipsec writes per-conn `cacert=` references, but
+	// strongSwan 6.0 only loads CAs declared in standalone `ca` sections
+	// or files placed in /etc/ipsec.d/cacerts at startup. Without this,
+	// charon authenticates the local side OK but rejects every inbound
+	// peer cert as `no trusted RSA public key found for '<peer>'` and
+	// no SAs negotiate. The dir is on charon's default AppArmor allowlist
+	// so no profile change is needed (unlike /etc/spinifex/).
+	if err := installCAIntoCharonTrustStore(caCertPath); err != nil {
+		return fmt.Errorf("ipsec peer cert: install CA into charon trust store: %w", err)
+	}
+
+	return nil
+}
+
+// charonCATrustDir is the strongSwan default cacerts scan dir. Overridden
+// in tests so they don't pollute the real /etc/ipsec.d/cacerts.
+var charonCATrustDir = "/etc/ipsec.d/cacerts"
+
+const charonCATrustLink = "spinifex-ca.pem"
+
+func installCAIntoCharonTrustStore(caCertPath string) error {
+	if err := os.MkdirAll(charonCATrustDir, 0750); err != nil {
+		return fmt.Errorf("mkdir %s: %w", charonCATrustDir, err)
+	}
+	link := filepath.Join(charonCATrustDir, charonCATrustLink)
+	tmp, err := os.MkdirTemp(charonCATrustDir, ".cainstall-")
+	if err != nil {
+		return fmt.Errorf("tmpdir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	staging := filepath.Join(tmp, charonCATrustLink)
+	if err := os.Symlink(caCertPath, staging); err != nil {
+		return fmt.Errorf("symlink %s -> %s: %w", staging, caCertPath, err)
+	}
+	if err := os.Rename(staging, link); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", staging, link, err)
+	}
 	return nil
 }
 

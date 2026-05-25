@@ -15,7 +15,12 @@ import (
 // TestGenerateIPSecPeerCert shares a CA across subtests so the 4096-bit
 // CA-key generation runs once (~0.7s).
 func TestGenerateIPSecPeerCert(t *testing.T) {
-	t.Parallel()
+	// Redirect the charon trust-store symlink at a temp dir so the test
+	// doesn't try to write to /etc/ipsec.d/cacerts on the host. Restored
+	// in cleanup. Cannot use t.Parallel() with this var override.
+	origTrustDir := charonCATrustDir
+	charonCATrustDir = t.TempDir()
+	t.Cleanup(func() { charonCATrustDir = origTrustDir })
 
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
@@ -110,7 +115,9 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 }
 
 func TestGenerateIPSecPeerCertIfEnabled(t *testing.T) {
-	t.Parallel()
+	origTrustDir := charonCATrustDir
+	charonCATrustDir = t.TempDir()
+	t.Cleanup(func() { charonCATrustDir = origTrustDir })
 
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")

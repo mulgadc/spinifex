@@ -104,7 +104,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 		}
 
-		if existing, err := r.ovn.FindDHCPOptionsByCIDR(ctx, spec.CIDR.String()); err != nil || existing == nil {
+		if existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID); err != nil || existing == nil {
 			opts := &nbdb.DHCPOptions{
 				CIDR: spec.CIDR.String(),
 				Options: map[string]string{

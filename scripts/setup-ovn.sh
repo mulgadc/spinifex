@@ -206,10 +206,17 @@ echo "Step 1: Checking OVN/OVS packages..."
 
 install_packages() {
     local missing=()
-    # strongswan: IKE daemon required by ovs-monitor-ipsec. openvswitch-ipsec
-    # only Recommends it, so install explicitly so a Recommends-disabled apt
-    # config can't leave openvswitch-ipsec.service failing on missing IKE.
-    for pkg in openvswitch-switch ovn-host openvswitch-ipsec strongswan; do
+    # strongswan-charon: ovs-monitor-ipsec is invoked with
+    # `--ike-daemon=strongswan` and shells out to /usr/sbin/ipsec (the legacy
+    # starter command, from strongswan-starter) which in turn execs
+    # /usr/lib/ipsec/charon (from strongswan-charon). Picking
+    # strongswan-charon explicitly avoids apt's default of pulling the
+    # alternative charon-systemd, which ships /usr/sbin/charon-systemd
+    # instead and leaves the starter unable to find a daemon to exec.
+    # strongswan-charon brings strongswan-starter, strongswan-libcharon,
+    # libstrongswan, strongswan-swanctl, and the strongswan metapackage
+    # transitively.
+    for pkg in openvswitch-switch ovn-host openvswitch-ipsec strongswan-charon; do
         if ! dpkg -s "$pkg" >/dev/null 2>&1; then
             missing+=("$pkg")
         fi
@@ -728,7 +735,13 @@ sudo systemctl enable ovn-controller 2>/dev/null || true
 # enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
 # tunnel traffic if this unit isn't already up — enable at provision time so
 # daemon never needs systemd-write capability (only is-active read).
-sudo systemctl enable --now openvswitch-ipsec.service 2>/dev/null || true
+sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
+# When openvswitch-ipsec is installed before strongswan-starter, the deb
+# post-install starts the service against a missing /usr/sbin/ipsec and
+# leaves it in 'failed' state. Clear the failure and restart unconditionally
+# now that strongswan-starter is present.
+sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
+sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
 echo "  openvswitch-switch:   enabled on boot"
 echo "  ovn-controller:       enabled on boot"
 echo "  openvswitch-ipsec:    enabled on boot"

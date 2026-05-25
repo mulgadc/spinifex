@@ -277,6 +277,23 @@ jobs:
           echo "rc=${E2E_RC}" >> "$GITHUB_OUTPUT"
           exit 0  # don't fail the step — artifact upload + final gate happen below
 
+      - name: Capture network/IPsec diagnostics on VM
+        if: always()
+        run: |
+          set +e
+          # shellcheck source=/dev/null
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          # Ship the diag script, run it into the VM's ARTIFACT_DIR, leave the
+          # output for the next step's tar to pull down. Captures OVN/OVS/IPsec
+          # state at failure time — before teardown destroys the VM.
+          scp "${SSH_OPTS[@]}" \
+            "${GITHUB_WORKSPACE}/spinifex/.github/scripts/capture-net-diag.sh" \
+            "$VM":/tmp/capture-net-diag.sh
+          ssh "${SSH_OPTS[@]}" "$VM" "bash /tmp/capture-net-diag.sh '${ARTIFACT_DIR}/net-diag'"
+          ok "net diagnostics captured"
+
       - name: Collect artifacts from VM
         if: always()
         run: |
@@ -653,6 +670,42 @@ jobs:
           echo "rc=${E2E_RC}" >> "$GITHUB_OUTPUT"
           exit 0
 
+      - name: Capture network/IPsec diagnostics on all nodes
+        if: always()
+        run: |
+          set +e
+          # shellcheck source=/dev/null
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
+          # Capture per-node into the node1 ARTIFACT_DIR (where Collect pulls
+          # from). One subdir per node so xfrm SA state is comparable across
+          # peers — critical for diagnosing the IPsec wiring (mulga-siv-136).
+          IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
+          NODE1_IP="${NODE_LIST[0]}"
+          scp "${SSH_OPTS[@]}" \
+            "${GITHUB_WORKSPACE}/spinifex/.github/scripts/capture-net-diag.sh" \
+            tf-user@"$NODE1_IP":/tmp/capture-net-diag.sh
+          for i in "${!NODE_LIST[@]}"; do
+            idx=$((i + 1))
+            ip="${NODE_LIST[$i]}"
+            if [ "$idx" -ne 1 ]; then
+              scp "${SSH_OPTS[@]}" \
+                "${GITHUB_WORKSPACE}/spinifex/.github/scripts/capture-net-diag.sh" \
+                tf-user@"$ip":/tmp/capture-net-diag.sh
+            fi
+            ssh "${SSH_OPTS[@]}" tf-user@"$ip" \
+              "bash /tmp/capture-net-diag.sh '${ARTIFACT_DIR}/net-diag-node${idx}'"
+            # node1 keeps its diag locally; pull node2..N back into node1's
+            # ARTIFACT_DIR so the existing tar-pull below catches everything.
+            if [ "$idx" -ne 1 ]; then
+              ssh "${SSH_OPTS[@]}" tf-user@"$ip" \
+                "tar -C '${ARTIFACT_DIR}' -cf - 'net-diag-node${idx}' 2>/dev/null || true" \
+                | ssh "${SSH_OPTS[@]}" tf-user@"$NODE1_IP" \
+                  "tar -C '${ARTIFACT_DIR}' -xf - 2>/dev/null"
+            fi
+            ok "net diagnostics node${idx} captured"
+          done
+
       - name: Collect artifacts from node1
         if: always()
         run: |
@@ -674,6 +727,13 @@ jobs:
             ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
             ok "journal node${idx}: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null || echo 0) lines"
+          done
+          # ovs-monitor-ipsec journal per node (separate file — bead 136).
+          for i in "${!NODE_LIST[@]}"; do
+            idx=$((i + 1))
+            ip="${NODE_LIST[$i]}"
+            ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo journalctl -u ovs-monitor-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
+              > "${ARTIFACT_DIR}/ovs-monitor-ipsec-node${idx}.log" 2>/dev/null
           done
 
       - name: Convert test logs to JUnit XML

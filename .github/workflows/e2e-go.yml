@@ -17,6 +17,10 @@ on:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb')"
         required: false
         default: "e2e-single e2e-multinode e2e-cert e2e-lb"
+      test_run:
+        description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ concurrency:
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
+  TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
   e2e_go_single:
@@ -226,6 +231,13 @@ jobs:
             echo "rc=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Optional regex passed through to `go test -test.run`. Empty input
+          # means run all tests in the suite (default behaviour).
+          if [ -n "${TEST_RUN}" ]; then
+            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+          else
+            TEST_RUN_FLAG=""
+          fi
           VM_HOST="tf-user@${{ steps.vm.outputs.wan_ip }}"
           SSH_KEY="${{ steps.vm.outputs.ssh_key }}"
           # On cancel / runner SIGTERM / step timeout, force-kill any test
@@ -258,7 +270,7 @@ jobs:
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
-                 ./\$SUITE.test -test.v -test.timeout=30m \
+                 ./\$SUITE.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \
                       | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
                rc=\${PIPESTATUS[0]}; \
@@ -622,6 +634,11 @@ jobs:
             echo "rc=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ -n "${TEST_RUN}" ]; then
+            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+          else
+            TEST_RUN_FLAG=""
+          fi
           VM_HOST="tf-user@${{ steps.cluster.outputs.node1_ip }}"
           SSH_KEY="${{ steps.cluster.outputs.ssh_key }}"
           NODES_CSV="${{ steps.cluster.outputs.nodes_csv }}"
@@ -651,7 +668,7 @@ jobs:
                  SPINIFEX_SSH_USER=tf-user \
                  SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
-                 ./\$SUITE.test -test.v -test.timeout=30m \
+                 ./\$SUITE.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \
                       | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
                rc=\${PIPESTATUS[0]}; \
@@ -981,6 +998,11 @@ jobs:
           R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'
           printf '\n%s%s━━ suite reboot ━━%s\n' "$B" "$C" "$R"
 
+          if [ -n "${TEST_RUN}" ]; then
+            TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+          else
+            TEST_RUN_FLAG=""
+          fi
           GITHUB_ACTIONS=true FORCE_COLOR=1 \
             SPINIFEX_E2E=1 SPINIFEX_MODE=single \
             SPINIFEX_WAN_IP="${{ steps.vm.outputs.wan_ip }}" \
@@ -989,7 +1011,7 @@ jobs:
             SPINIFEX_AWS_ACCESS_KEY_ID="${{ steps.creds.outputs.ak }}" \
             SPINIFEX_AWS_SECRET_ACCESS_KEY="${{ steps.creds.outputs.sk }}" \
             ARTIFACT_DIR="${ARTIFACT_DIR}" \
-            ./spinifex/tests/e2e/_bin/reboot.test -test.v -test.timeout=30m \
+            ./spinifex/tests/e2e/_bin/reboot.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
             2>&1 | tee "${ARTIFACT_DIR}/test-reboot.log" \
                  | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'
           rc=${PIPESTATUS[0]}

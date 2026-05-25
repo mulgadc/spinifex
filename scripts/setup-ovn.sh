@@ -206,7 +206,10 @@ echo "Step 1: Checking OVN/OVS packages..."
 
 install_packages() {
     local missing=()
-    for pkg in openvswitch-switch ovn-host; do
+    # strongswan: IKE daemon required by ovs-monitor-ipsec. openvswitch-ipsec
+    # only Recommends it, so install explicitly so a Recommends-disabled apt
+    # config can't leave openvswitch-ipsec.service failing on missing IKE.
+    for pkg in openvswitch-switch ovn-host openvswitch-ipsec strongswan; do
         if ! dpkg -s "$pkg" >/dev/null 2>&1; then
             missing+=("$pkg")
         fi

@@ -65,23 +65,21 @@ func TestEnableOVNIPSec(t *testing.T) {
 	require.NoError(t, d.enableOVNIPSec())
 
 	// Expected sudo invocations in order:
-	//   systemctl enable --now openvswitch-ipsec.service
-	//   systemctl is-active openvswitch-ipsec.service
+	//   systemctl is-active openvswitch-ipsec.service     (unit enabled at provision time)
 	//   ovs-vsctl set Open_vSwitch . other_config:certificate=... private_key=... ca_cert=...
 	//   ovs-vsctl set Open_vSwitch . other_config:ipsec_encapsulation=true
-	require.Len(t, recorder.runs, 4)
-	assert.Equal(t, []string{"systemctl", "enable", "--now", "openvswitch-ipsec.service"}, recorder.runs[0])
-	assert.Equal(t, []string{"systemctl", "is-active", "openvswitch-ipsec.service"}, recorder.runs[1])
-	for _, run := range recorder.runs[2:] {
+	require.Len(t, recorder.runs, 3)
+	assert.Equal(t, []string{"systemctl", "is-active", "openvswitch-ipsec.service"}, recorder.runs[0])
+	for _, run := range recorder.runs[1:] {
 		assert.Equal(t, "ovs-vsctl", run[0])
 		assert.Equal(t, "set", run[1])
 		assert.Equal(t, "Open_vSwitch", run[2])
 	}
-	joined := strings.Join(recorder.runs[2], " ")
+	joined := strings.Join(recorder.runs[1], " ")
 	assert.Contains(t, joined, "other_config:certificate="+filepath.Join(configDir, "ipsec", "peer.pem"))
 	assert.Contains(t, joined, "other_config:private_key="+filepath.Join(configDir, "ipsec", "peer.key"))
 	assert.Contains(t, joined, "other_config:ca_cert="+filepath.Join(configDir, "ca.pem"))
-	assert.Contains(t, strings.Join(recorder.runs[3], " "), "other_config:ipsec_encapsulation=true")
+	assert.Contains(t, strings.Join(recorder.runs[2], " "), "other_config:ipsec_encapsulation=true")
 }
 
 func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {

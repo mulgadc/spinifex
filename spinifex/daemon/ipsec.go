@@ -12,8 +12,10 @@ import (
 )
 
 // systemctlActiveTimeout bounds how long enableOVNIPSec waits for
-// openvswitch-ipsec.service to report active after a `systemctl enable
-// --now`. Overridden in tests.
+// openvswitch-ipsec.service to report active. The unit is enabled at
+// provision time (scripts/setup-ovn.sh) so the daemon only needs read
+// capability (systemctl is-active); this poll absorbs boot-time races
+// where the unit hasn't finished starting yet. Overridden in tests.
 var systemctlActiveTimeout = 5 * time.Second
 
 // enableOVNIPSec wires the per-node IPsec peer cert into the local OVS DB and
@@ -79,14 +81,12 @@ func (d *Daemon) enableOVNIPSec() error {
 	return nil
 }
 
-// ensureOVSMonitorIPSecActive enables + starts openvswitch-ipsec.service and
-// waits for it to report active. Without this guarantee, ipsec_encapsulation
-// silently drops all tunnel traffic because no userspace daemon is reading
-// the OVS DB cert pointers to drive strongSwan IKE.
+// ensureOVSMonitorIPSecActive polls openvswitch-ipsec.service for "active".
+// The unit is enabled at provision time (scripts/setup-ovn.sh); the daemon
+// has read-only sudoers scope (systemctl is-active). If the unit is inactive
+// here, operator intervention is required — daemon refuses to flip
+// ipsec_encapsulation=true and silently drop tunnel traffic.
 func ensureOVSMonitorIPSecActive() error {
-	if out, err := sudoCommand("systemctl", "enable", "--now", "openvswitch-ipsec.service").CombinedOutput(); err != nil {
-		return fmt.Errorf("enable --now: %s: %w", strings.TrimSpace(string(out)), err)
-	}
 	deadline := time.Now().Add(systemctlActiveTimeout)
 	var lastOut string
 	for time.Now().Before(deadline) {
@@ -97,5 +97,5 @@ func ensureOVSMonitorIPSecActive() error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("not active after %s: %s", systemctlActiveTimeout, lastOut)
+	return fmt.Errorf("not active after %s: %s (provision via scripts/setup-ovn.sh)", systemctlActiveTimeout, lastOut)
 }

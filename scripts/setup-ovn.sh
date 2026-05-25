@@ -721,8 +721,14 @@ echo ""
 echo "Step 10: Enabling OVN auto-start on boot..."
 sudo systemctl enable openvswitch-switch 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
-echo "  openvswitch-switch: enabled on boot"
-echo "  ovn-controller: enabled on boot"
+# ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
+# enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
+# tunnel traffic if this unit isn't already up — enable at provision time so
+# daemon never needs systemd-write capability (only is-active read).
+sudo systemctl enable --now openvswitch-ipsec.service 2>/dev/null || true
+echo "  openvswitch-switch:   enabled on boot"
+echo "  ovn-controller:       enabled on boot"
+echo "  openvswitch-ipsec:    enabled on boot"
 
 # --- Step 11: Health check ---
 echo ""

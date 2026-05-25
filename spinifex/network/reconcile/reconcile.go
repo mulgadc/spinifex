@@ -8,8 +8,8 @@
 // The reconciler replaces the legacy five-pass startup sequence
 // (`Reconcile` + `ReconcileFromKV` + `ReconcileSGsOnce` +
 // `RetrofitAllExternalLocalnetOptions` + `RetrofitAllGatewayPortNetworks`)
-// in `services/vpcd`. A 5-minute drift goroutine drives the same call
-// periodically, replacing the 30-second `ReconcileSGsLoop`.
+// the vpcd daemon ran on boot. A 5-minute drift goroutine drives the same
+// call periodically, replacing the 30-second `ReconcileSGsLoop`.
 //
 // Multi-AZ scoping: `IntentState` is built by `LoadIntentFromKV(ctx, js,
 // localAZ)`. The filter rule is `vpc.AZ == "" || vpc.AZ == localAZ` —

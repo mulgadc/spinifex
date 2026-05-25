@@ -293,9 +293,7 @@ func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ Actu
 }
 
 // subnetGatewayCIDR returns the .1 host of the subnet's CIDR and the
-// prefix bit count. Matches the legacy services/vpcd/topology.go's
-// subnetGateway, kept local to the reconcile package so the cross-package
-// dependency on services/vpcd can be dropped.
+// prefix bit count. Kept local to the reconcile package.
 func subnetGatewayCIDR(prefix netip.Prefix) (string, int, error) {
 	if !prefix.IsValid() {
 		return "", 0, fmt.Errorf("invalid prefix")

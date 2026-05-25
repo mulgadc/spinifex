@@ -32,8 +32,8 @@ var (
 // elected=false so a follow-up retry (systemd Restart=on-failure) can run.
 //
 // Exported with the same contract as the legacy
-// services/vpcd.AcquireReconcileLeader — call sites in services/vpcd/vpcd.go
-// switch to this package by changing the import path only.
+// AcquireReconcileLeader; spinifex/vpcd/vpcd.go is the sole production
+// caller via launchService.
 func AcquireLeader(nc *nats.Conn, holder string) (func(), bool) {
 	js, _ := nc.JetStream()
 

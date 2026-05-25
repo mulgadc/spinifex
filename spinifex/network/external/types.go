@@ -6,9 +6,8 @@ package external
 // from GwLrpRangeStart..GwLrpRangeEnd (auto-derived from the WAN subnet
 // when unset). The upstream-DHCP source model is gone (mulga-siv-125.3.3).
 //
-// This type duplicates services/vpcd/vpcd.go's ExternalPoolConfig. Dedup is
-// out of scope for this bead; the two will merge when L2 (topology) grows
-// the L5-driving methods and vpcd's local copy disappears.
+// Duplicates spinifex/vpcd.ExternalPoolConfig pending dedup when vpcd's
+// Config grows to use this shared type directly.
 type ExternalPoolConfig struct {
 	Name            string
 	RangeStart      string

@@ -29,7 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd"
+	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

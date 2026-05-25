@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
@@ -442,7 +443,7 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("OVN NB DB address not configured (ovn_nb_addr is empty)")
 	}
 
-	liveClient := NewLiveOVNClient(cfg.OVNNBAddr)
+	liveClient := ovn.NewLiveClient(cfg.OVNNBAddr)
 	ctx := context.Background()
 	if err := liveClient.Connect(ctx); err != nil {
 		slog.Error("Failed to connect to OVN NB DB", "endpoint", cfg.OVNNBAddr, "err", err)
@@ -576,9 +577,9 @@ func launchService(cfg *Config) error {
 	// Startup reconcile: leader-gated read of NATS KV intent state, applied
 	// once against OVN NB DB. The drift loop below handles the recovery case
 	// (KV not yet populated when this fires — daemon's EnsureDefaultVPC may
-	// race with vpcd's startup). Per-event NATS subscribers (TopologyHandler)
-	// already route through the same network/* managers, so the startup pass
-	// and the runtime fast path share one implementation.
+	// race with vpcd's startup). Per-event NATS subscribers route through
+	// the same network/* managers, so the startup pass and the runtime fast
+	// path share one implementation.
 	if isLeader {
 		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		if intentErr != nil {

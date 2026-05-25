@@ -24,7 +24,7 @@ var DriftInterval = 5 * time.Minute
 // missed acquire (another vpcd is leader, or JetStream is unreachable) is
 // logged at Debug and the tick is skipped — the next tick retries.
 //
-// Replaces services/vpcd.ReconcileSGsLoop (30s, SG-only). The 5-minute
+// Replaces the legacy ReconcileSGsLoop (30s, SG-only). The 5-minute
 // interval matches parent plan §11.4.
 func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, holder string) {
 	js, err := nc.JetStream()

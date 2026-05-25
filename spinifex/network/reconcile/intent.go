@@ -90,7 +90,7 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 }
 
 // keyIsVersion skips the per-bucket version-marker key. Mirrors what every
-// other KV consumer in the tree does (services/vpcd/reconcile.go etc).
+// other KV consumer in the tree does.
 func keyIsVersion(key string) bool { return key == utils.VersionKey }
 
 func loadVPCs(js nats.JetStreamContext, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {

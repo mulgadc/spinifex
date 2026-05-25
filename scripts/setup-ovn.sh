@@ -249,17 +249,20 @@ install_packages
 # strongswan-charon ships an AppArmor profile for /usr/lib/ipsec/charon that
 # only allows reading from /etc/ipsec.*, /etc/strongswan.*, and a few other
 # fixed paths. ovs-monitor-ipsec writes the per-tunnel strongSwan config with
-# absolute paths to our cert + key under /etc/spinifex/ipsec/, so charon hits
-# "Permission denied" when loading them and no SAs come up. The profile
-# includes a 'local' override file expressly for site additions — drop a
-# read grant for our cert dir there and reload the profile.
+# absolute paths to our peer cert + key under /etc/spinifex/ipsec/ AND to the
+# cluster CA at /etc/spinifex/ca.pem, so charon hits "Permission denied" on
+# both load paths and surfaces as `no trusted RSA public key found for
+# '<peer>'` (CA can't be loaded → can't validate peer cert chain → no SAs).
+# The profile includes a 'local' override file expressly for site additions
+# — grant reads on /etc/spinifex/** (covers ca.pem AND ipsec/peer.{pem,key})
+# and reload.
 if [ -d /etc/apparmor.d/local ]; then
     LOCAL_OVERRIDE=/etc/apparmor.d/local/usr.lib.ipsec.charon
-    if ! grep -q '/etc/spinifex/ipsec/' "$LOCAL_OVERRIDE" 2>/dev/null; then
-        echo "  Adding AppArmor read grant for /etc/spinifex/ipsec to charon profile"
-        echo "/etc/spinifex/ipsec/** r," | sudo tee "$LOCAL_OVERRIDE" >/dev/null
-        sudo apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon 2>/dev/null || true
-    fi
+    # Always rewrite — re-runs may have an older, narrower rule (e.g. the
+    # initial /etc/spinifex/ipsec/** only) that misses /etc/spinifex/ca.pem.
+    echo "  Adding AppArmor read grant for /etc/spinifex (cert + CA) to charon profile"
+    echo "/etc/spinifex/** r," | sudo tee "$LOCAL_OVERRIDE" >/dev/null
+    sudo apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon 2>/dev/null || true
 fi
 
 # --- Step 2: Enable services ---

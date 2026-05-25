@@ -462,9 +462,7 @@ func (c *LiveClient) GetLogicalRouterPort(ctx context.Context, name string) (*nb
 }
 
 // UpdateLogicalRouterPort rewrites mutable columns on an existing LRP.
-// Used by ensureGatewayPortNetworks to retrofit the link-local Networks
-// CIDR onto gateway ports created by older code that used pool IPs
-// (mulga-siv-26 D8). Mirrors UpdateLogicalSwitchPort.
+// Mirrors UpdateLogicalSwitchPort.
 func (c *LiveClient) UpdateLogicalRouterPort(ctx context.Context, lrp *nbdb.LogicalRouterPort) error {
 	if lrp.UUID == "" {
 		existing, err := c.GetLogicalRouterPort(ctx, lrp.Name)

@@ -106,16 +106,12 @@ func (h *TopologyHandler) securityGroupManager() policy.SecurityGroupManager {
 }
 
 // natManager returns the lazily-constructed policy.NATManager. NAT mode is
-// derived from the configured bridge mode (veth → centralized, direct →
-// distributed) and the FlowsBarrier is bound to waitForFlowsHV so the EIP
-// subscriber blocks on hypervisor flow-install before responding.
+// the value injected via WithNATMode; the FlowsBarrier is bound to
+// waitForFlowsHV so the EIP subscriber blocks on hypervisor flow-install
+// before responding.
 func (h *TopologyHandler) natManager() (policy.NATManager, error) {
 	h.natmOnce.Do(func() {
-		mode := policy.NATModeDistributed
-		if h.useCentralizedNAT() {
-			mode = policy.NATModeCentralized
-		}
-		h.natm, h.natmErr = policy.NewNATManager(h.ovn, mode, policy.WithFlowsBarrier(waitForFlowsHV))
+		h.natm, h.natmErr = policy.NewNATManager(h.ovn, h.natMode, policy.WithFlowsBarrier(waitForFlowsHV))
 	})
 	return h.natm, h.natmErr
 }
@@ -128,10 +124,6 @@ func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 		if err != nil {
 			h.igwmErr = err
 			return
-		}
-		mode := policy.NATModeDistributed
-		if h.useCentralizedNAT() {
-			mode = policy.NATModeCentralized
 		}
 		var poolCfg *external.ExternalPoolConfig
 		if p := h.findExternalPool("", ""); p != nil {
@@ -157,7 +149,7 @@ func (h *TopologyHandler) igwManager() (external.IGWManager, error) {
 			Pool:         poolCfg,
 			Allocator:    external.NewStaticRangeAllocator(h.ovn),
 			Chassis:      h.chassisNames,
-			NATMode:      mode,
+			NATMode:      h.natMode,
 			FlowsBarrier: waitForFlowsHV,
 		})
 	})

@@ -438,7 +438,12 @@ func launchService(cfg *Config) error {
 	}
 	topoOpts = append(topoOpts, WithChassisNames(chassisNames))
 	slog.Info("vpcd: gateway chassis discovered", "chassis", chassisNames)
-	topoOpts = append(topoOpts, WithBridgeMode(bridgeMode))
+	uplinkMode := host.UplinkModePhysical
+	if bridgeMode == BridgeModeVeth {
+		uplinkMode = host.UplinkModeVeth
+	}
+	natMode := policy.NATModeFromUplinkMode(uplinkMode)
+	topoOpts = append(topoOpts, WithNATMode(natMode))
 	topo := NewTopologyHandler(liveClient, topoOpts...)
 
 	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in a
@@ -467,17 +472,10 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
-	// Construct the network/reconcile manager stack. The reconciler replaces
-	// the five-pass startup sequence (Reconcile + ReconcileFromKV +
-	// ReconcileSGsOnce + RetrofitAllExternalLocalnetOptions +
-	// RetrofitAllGatewayPortNetworks) with a single intent-driven pass that
-	// also runs on a 5-minute drift ticker (replaces the 30s ReconcileSGsLoop).
-	uplinkMode := host.UplinkModePhysical
-	if bridgeMode == BridgeModeVeth {
-		uplinkMode = host.UplinkModeVeth
-	}
-	natMode := policy.NATModeFromUplinkMode(uplinkMode)
-
+	// Construct the network/reconcile manager stack. The reconciler is the
+	// single intent-driven pass that runs once at startup (leader-gated) and
+	// then on a 5-minute drift ticker; together they replace the five
+	// separate passes the old vpcd ran on boot (mulga-siv-125, Phase 2).
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
 	natMgr, err := policy.NewNATManager(liveClient, natMode, policy.WithFlowsBarrier(waitForFlowsHV))
 	if err != nil {
@@ -522,9 +520,9 @@ func launchService(cfg *Config) error {
 	// Startup reconcile: leader-gated read of NATS KV intent state, applied
 	// once against OVN NB DB. The drift loop below handles the recovery case
 	// (KV not yet populated when this fires — daemon's EnsureDefaultVPC may
-	// race with vpcd's startup). Subscribers above keep handling per-event
-	// NATS messages via the legacy TopologyHandler path; phase 4 migrates
-	// those onto the new managers.
+	// race with vpcd's startup). Per-event NATS subscribers (TopologyHandler)
+	// already route through the same network/* managers, so the startup pass
+	// and the runtime fast path share one implementation.
 	if isLeader {
 		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		if intentErr != nil {

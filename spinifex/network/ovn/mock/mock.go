@@ -29,13 +29,11 @@ type Client struct {
 	GatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
 
 	// UpdateLogicalSwitchPortCalls counts UpdateLogicalSwitchPort invocations
-	// so tests can assert idempotent read-before-write paths (e.g.
-	// ensureLocalnetOptions — mulga-998.b Fix 3).
+	// so tests can assert idempotent read-before-write paths.
 	UpdateLogicalSwitchPortCalls int
 
 	// UpdateLogicalRouterPortCalls counts UpdateLogicalRouterPort invocations
-	// so tests can assert ensureGatewayPortNetworks only writes on drift
-	// (mulga-siv-26 D8).
+	// so tests can assert writers only emit on drift.
 	UpdateLogicalRouterPortCalls int
 
 	// SetGatewayChassisCalls / DeleteGatewayChassisCalls /

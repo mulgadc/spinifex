@@ -597,11 +597,26 @@ else
         external_ids:ovn-encap-type="geneve"
 fi
 
-# system-id is owned by the openvswitch-switch package (persisted in
-# /etc/openvswitch/system-id.conf and re-applied on every boot). Read it back
-# rather than overriding — overriding here would drift from the on-disk value
-# and the next reboot would silently flip the chassis identity (mulga-999).
-echo "  system-id:      $(sudo ovs-vsctl get open . external_ids:system-id)"
+# Pin OVS system-id (= OVN chassis-id) to the node's hostname. Two reasons:
+#   1. IPsec identity: ovs-monitor-ipsec uses chassis-id as the IKEv2
+#      `@<name>` peer identity. Our per-node IPsec peer cert
+#      (admin.GenerateIPSecPeerCert) carries the node name as CN + dnsName
+#      SAN — see spx admin init/join, which pass --node as the cert
+#      identity. Leaving chassis-id as the package-generated UUID would
+#      cause `received AUTHENTICATION_FAILED` because charon validates
+#      `@<UUID>` against a cert dnsName=<hostname>.
+#   2. Ops legibility: `ovn-sbctl show` lists chassis by name, not UUID.
+# Both the on-disk file (read by ovs-ctl on boot) and the running OVS DB
+# value must be updated atomically — writing only one drifts on the next
+# reboot.
+NODE_SYSTEM_ID="$(hostname -s)"
+if [ -z "$NODE_SYSTEM_ID" ]; then
+    echo "  ERROR: hostname -s returned empty; cannot pin OVS system-id." >&2
+    exit 1
+fi
+echo "$NODE_SYSTEM_ID" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
+sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_SYSTEM_ID"
+echo "  system-id:      $NODE_SYSTEM_ID (pinned to hostname for IPsec cert identity)"
 echo "  ovn-remote:     $OVN_REMOTE"
 echo "  ovn-encap-ip:   $ENCAP_IP"
 echo "  ovn-encap-type: geneve"

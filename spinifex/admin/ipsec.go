@@ -48,6 +48,15 @@ func IPSecCertPaths(configDir string) (certPath, keyPath string) {
 // SANs discovered from the local machine's interfaces are not added here —
 // IPSec peer identity should be the explicit cluster identity only, not
 // every interface address, to keep peer-identity matching strict.
+//
+// Cross-cutting invariant: this dnsName SAN must equal the OVS chassis-id
+// (Open_vSwitch.external_ids:system-id) on every node, because
+// ovs-monitor-ipsec generates strongSwan configs with leftid=@<chassis-id>
+// / rightid=@<chassis-id> and charon validates those names against the
+// peer cert's dnsName SAN. setup-ovn.sh pins system-id to `hostname -s`
+// for exactly this reason — see the comment in setup-ovn.sh near
+// `system-id.conf`. Changing the cert identity here without updating
+// setup-ovn.sh (or vice versa) breaks IKE with AUTHENTICATION_FAILED.
 // GenerateIPSecPeerCertIfEnabled is a no-op when enabled is false. Used by
 // admin init and admin join so the call site reads as a single guarded line
 // keyed off the cluster's network.ipsec_enabled flag.

@@ -115,7 +115,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	extSwitchName := topology.ExternalSwitch(spec.VPCID)
 	extPortName := topology.ExternalLocalnetPort(spec.VPCID)
 	gwPortName := topology.GatewayRouterPort(spec.VPCID)
-	switchGWPortName := "gw-port-" + spec.VPCID
+	switchGWPortName := topology.GatewaySwitchPort(spec.VPCID)
 	routerName := topology.VPCRouter(spec.VPCID)
 
 	if _, err := m.ovn.GetLogicalSwitch(ctx, extSwitchName); err == nil {
@@ -235,7 +235,7 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	extSwitchName := topology.ExternalSwitch(vpcID)
 	extPortName := topology.ExternalLocalnetPort(vpcID)
 	gwPortName := topology.GatewayRouterPort(vpcID)
-	switchGWPortName := "gw-port-" + vpcID
+	switchGWPortName := topology.GatewaySwitchPort(vpcID)
 	routerName := topology.VPCRouter(vpcID)
 
 	if err := m.routes.DeleteDefaultRoute(ctx, vpcID); err != nil {

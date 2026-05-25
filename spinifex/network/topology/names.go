@@ -30,6 +30,10 @@ func Port(portID string) string { return "port-" + portID }
 // GatewayRouterPort is the OVN LRP name for the VPC's uplink/gateway port.
 func GatewayRouterPort(vpcID string) string { return "gw-" + vpcID }
 
+// GatewaySwitchPort is the OVN LSP (type=router) on the external switch
+// peered with GatewayRouterPort.
+func GatewaySwitchPort(vpcID string) string { return "gw-port-" + vpcID }
+
 // ExternalSwitch is the OVN logical switch name for the per-VPC external
 // switch bridging the gateway LRP to the localnet.
 func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }

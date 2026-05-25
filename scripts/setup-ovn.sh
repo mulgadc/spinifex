@@ -238,6 +238,22 @@ install_packages() {
 
 install_packages
 
+# strongswan-charon ships an AppArmor profile for /usr/lib/ipsec/charon that
+# only allows reading from /etc/ipsec.*, /etc/strongswan.*, and a few other
+# fixed paths. ovs-monitor-ipsec writes the per-tunnel strongSwan config with
+# absolute paths to our cert + key under /etc/spinifex/ipsec/, so charon hits
+# "Permission denied" when loading them and no SAs come up. The profile
+# includes a 'local' override file expressly for site additions — drop a
+# read grant for our cert dir there and reload the profile.
+if [ -d /etc/apparmor.d/local ]; then
+    LOCAL_OVERRIDE=/etc/apparmor.d/local/usr.lib.ipsec.charon
+    if ! grep -q '/etc/spinifex/ipsec/' "$LOCAL_OVERRIDE" 2>/dev/null; then
+        echo "  Adding AppArmor read grant for /etc/spinifex/ipsec to charon profile"
+        echo "/etc/spinifex/ipsec/** r," | sudo tee "$LOCAL_OVERRIDE" >/dev/null
+        sudo apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon 2>/dev/null || true
+    fi
+fi
+
 # --- Step 2: Enable services ---
 echo ""
 echo "Step 2: Enabling services..."

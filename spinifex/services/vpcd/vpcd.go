@@ -19,8 +19,56 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
+
+// Bridge mode constants for external connectivity. Bridge mode selects how
+// the WAN NIC reaches the OVS integration bridge:
+//   - Direct: WAN NIC is added directly to br-external as an OVS port.
+//     Enables distributed NAT. Only safe when the WAN NIC is NOT the SSH/
+//     management NIC.
+//   - Veth: a veth pair links a Linux bridge (br-wan) to the OVS bridge
+//     (br-ext). Requires centralized NAT — the Linux bridge intermediary
+//     breaks distributed NAT hairpin routing.
+const (
+	BridgeModeDirect = "direct"
+	BridgeModeVeth   = "veth"
+	// OvnExternalBridge is the OVS bridge that ovn-bridge-mappings targets
+	// for the "external" localnet. Owned by setup-ovn.sh and independent of
+	// the WAN bridge (which is Linux-side in veth mode).
+	OvnExternalBridge = "br-ext"
+)
+
+// waitForFlowsHV shells out to `ovn-nbctl --wait=hv sync`, bumping
+// NB_Global.nb_cfg and blocking until every connected chassis has acknowledged
+// the new sequence — i.e. ovn-northd has compiled NB→SB and ovn-controller
+// has installed the resulting flows. Used as the NAT manager's flows barrier
+// so newly-launched VMs aren't unreachable while their gateway chassis is
+// still catching up (mulga-siv-105). Bounded by ovn-nbctl --timeout=30; on
+// overrun we log a Warn and return nil so the caller continues.
+//
+// Declared as a var so tests can stub it.
+var waitForFlowsHV = func() error {
+	start := time.Now()
+	cmd := sudoCommand("ovn-nbctl",
+		"--no-leader-only",
+		"--timeout=30",
+		"--wait=hv",
+		"sync",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+			"elapsed", time.Since(start),
+			"err", err,
+			"output", strings.TrimSpace(string(out)),
+		)
+		return nil
+	}
+	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed", time.Since(start))
+	return nil
+}
 
 // sudoCommand wraps exec.Command with sudo when running as non-root.
 // OVS/OVN commands require elevated privileges; when running as root
@@ -416,12 +464,7 @@ func launchService(cfg *Config) error {
 		return err
 	}
 
-	// Reconcile OVN topology from bootstrap config before subscribing.
-	// This ensures the default VPC topology exists even if admin init ran
-	// before services were started (first-install case).
-	var topoOpts []TopologyOption
 	if cfg.ExternalMode != "" {
-		topoOpts = append(topoOpts, WithExternalNetwork(cfg.ExternalMode, cfg.ExternalPools))
 		slog.Info("External network enabled", "mode", cfg.ExternalMode, "pools", len(cfg.ExternalPools))
 	}
 	// Discover chassis from OVN SBDB. The OVS-managed system-id (persisted at
@@ -436,46 +479,24 @@ func launchService(cfg *Config) error {
 	if len(chassisNames) == 0 {
 		return fmt.Errorf("vpcd: no OVN chassis registered in SBDB — is ovn-controller running and connected?")
 	}
-	topoOpts = append(topoOpts, WithChassisNames(chassisNames))
 	slog.Info("vpcd: gateway chassis discovered", "chassis", chassisNames)
+
 	uplinkMode := host.UplinkModePhysical
 	if bridgeMode == BridgeModeVeth {
 		uplinkMode = host.UplinkModeVeth
 	}
 	natMode := policy.NATModeFromUplinkMode(uplinkMode)
-	topoOpts = append(topoOpts, WithNATMode(natMode))
-	topo := NewTopologyHandler(liveClient, topoOpts...)
 
-	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in a
-	// multi-node cluster all hit Get-then-Create on Logical_Router with no
-	// atomicity, producing duplicate rows that ovn-nbctl rejects with
-	// "Multiple logical routers named '...'. Use a UUID." (mulga-siv-29).
-	// Runtime VPC events still fan out via the vpcd-workers queue group, so
-	// non-leaders remain functional after Subscribe below.
-	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(nc, holder)
-
-	subs, err := topo.Subscribe(nc)
-	if err != nil {
-		slog.Error("Failed to subscribe to VPC topics", "err", err)
-		return err
+	// Construct the network manager stack. The reconciler is the single
+	// intent-driven pass that runs once at startup (leader-gated) and then
+	// on a 5-minute drift ticker; together they replace the five separate
+	// passes the old vpcd ran on boot (mulga-siv-125, Phase 2).
+	var topoOpts []topology.Option
+	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
+		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
+	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
-	js, err := nc.JetStream()
-	if err != nil {
-		slog.Error("Failed to get JetStream context", "err", err)
-		return err
-	}
-
-	// Construct the network/reconcile manager stack. The reconciler is the
-	// single intent-driven pass that runs once at startup (leader-gated) and
-	// then on a 5-minute drift ticker; together they replace the five
-	// separate passes the old vpcd ran on boot (mulga-siv-125, Phase 2).
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
 	natMgr, err := policy.NewNATManager(liveClient, natMode, policy.WithFlowsBarrier(waitForFlowsHV))
 	if err != nil {
@@ -502,13 +523,48 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("construct IGW manager: %w", err)
 	}
 
+	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in
+	// a multi-node cluster all hit Get-then-Create on Logical_Router with no
+	// atomicity, producing duplicate rows that ovn-nbctl rejects with
+	// "Multiple logical routers named '...'. Use a UUID." (mulga-siv-29).
+	// Runtime VPC events still fan out via the vpcd-workers queue group, so
+	// non-leaders remain functional after Subscribe below.
+	holder, _ := os.Hostname()
+	releaseLeader, isLeader := reconcile.AcquireLeader(nc, holder)
+
+	subscriber, err := subscribers.New(subscribers.Config{
+		Topology: topoMgr,
+		SG:       sgMgr,
+		NAT:      natMgr,
+		IGW:      igwMgr,
+	})
+	if err != nil {
+		return fmt.Errorf("construct subscriber: %w", err)
+	}
+	subs, err := subscriber.Subscribe(nc)
+	if err != nil {
+		slog.Error("Failed to subscribe to VPC topics", "err", err)
+		return err
+	}
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		slog.Error("Failed to get JetStream context", "err", err)
+		return err
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:          liveClient,
 		SG:           sgMgr,
 		NAT:          natMgr,
 		Routes:       routeMgr,
 		IGW:          igwMgr,
-		Topology:     topo,
+		Topology:     topoMgr,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
@@ -556,6 +612,19 @@ func launchService(cfg *Config) error {
 	loopCancel()
 	<-loopDone
 	return nil
+}
+
+// pickDNSServer returns the OVN dhcp_options dns_server string ("{a, b}")
+// from the first unscoped (no region, no AZ) pool with DNS servers set.
+// Empty string falls back to topology.NewLiveManager's default
+// ("{8.8.8.8, 1.1.1.1}").
+func pickDNSServer(pools []ExternalPoolConfig) string {
+	for _, p := range pools {
+		if p.Region == "" && p.AZ == "" && len(p.DNSServers) > 0 {
+			return "{" + strings.Join(p.DNSServers, ", ") + "}"
+		}
+	}
+	return ""
 }
 
 // externalPoolConfigToShared translates the vpcd-local ExternalPoolConfig

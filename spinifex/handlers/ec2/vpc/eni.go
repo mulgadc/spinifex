@@ -588,8 +588,8 @@ func generateENIMac(eniId string) string {
 }
 
 // portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.
-// Mirrors vpcd.PortEvent — duplicated here to avoid a vpcd → handlers import
-// cycle.
+// Mirrors network/subscribers.PortEvent — duplicated here to avoid a
+// subscribers → handlers import cycle.
 type portEventPayload struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`

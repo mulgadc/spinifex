@@ -1,14 +1,14 @@
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
-After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service ovs-monitor-ipsec.service
-# Wants=ovs-monitor-ipsec.service so systemd brings the IPsec userspace
+After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service openvswitch-ipsec.service
+# Wants=openvswitch-ipsec.service so systemd brings the IPsec userspace
 # daemon up before spinifex flips other_config:ipsec_encapsulation=true.
 # Without that daemon, OVS holds the cert pointers unused and strongSwan
 # never gets IKE config — tunnel traffic is encrypted with no SAs and
 # silently dropped. Wants= (not Requires=) keeps daemon bootable on
 # single-node / lab hosts where the package is intentionally absent.
-Wants=ovs-monitor-ipsec.service
+Wants=openvswitch-ipsec.service
 # No Wants=spinifex-nats.service: Wants= reactivates a stopped unit during
 # `systemctl restart spinifex-daemon`, which would mask the standalone-startup
 # path the Tier 1 DDIL Scenario B exercises. spinifex.target Wants= covers

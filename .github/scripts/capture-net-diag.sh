@@ -6,8 +6,8 @@
 # binary on one path doesn't abort the rest of the capture.
 #
 # Output layout (under $1/net-diag/):
-#   ovs-monitor-ipsec.status         systemctl status (output-only)
-#   ovs-monitor-ipsec.journal        last 200 journal lines
+#   openvswitch-ipsec.status         systemctl status (output-only)
+#   openvswitch-ipsec.journal        last 200 journal lines
 #   ipsec.openvswitch_conf           ovs-vsctl get Open_vSwitch . other_config
 #   ipsec.xfrm_state                 ip xfrm state list
 #   ipsec.xfrm_policy                ip xfrm policy list
@@ -32,8 +32,8 @@ run() {
     } > "$OUT/$label" || true
 }
 
-run ovs-monitor-ipsec.status            sudo systemctl status ovs-monitor-ipsec.service --no-pager --full --lines=50
-run ovs-monitor-ipsec.journal           sudo journalctl -u ovs-monitor-ipsec.service --no-pager --output=short-iso -n 200
+run openvswitch-ipsec.status            sudo systemctl status openvswitch-ipsec.service --no-pager --full --lines=50
+run openvswitch-ipsec.journal           sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso -n 200
 run ipsec.openvswitch_conf              sudo ovs-vsctl get Open_vSwitch . other_config
 run ipsec.xfrm_state                    sudo ip xfrm state list
 run ipsec.xfrm_policy                   sudo ip xfrm policy list

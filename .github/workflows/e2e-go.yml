@@ -728,12 +728,14 @@ jobs:
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
             ok "journal node${idx}: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null || echo 0) lines"
           done
-          # ovs-monitor-ipsec journal per node (separate file — bead 136).
+          # openvswitch-ipsec journal per node (separate file — bead 136).
+          # Debian unit name; the binary inside is /usr/share/openvswitch/scripts/ovs-ctl
+          # which spawns ovs-monitor-ipsec as a child.
           for i in "${!NODE_LIST[@]}"; do
             idx=$((i + 1))
             ip="${NODE_LIST[$i]}"
-            ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo journalctl -u ovs-monitor-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
-              > "${ARTIFACT_DIR}/ovs-monitor-ipsec-node${idx}.log" 2>/dev/null
+            ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
+              > "${ARTIFACT_DIR}/openvswitch-ipsec-node${idx}.log" 2>/dev/null
           done
 
       - name: Convert test logs to JUnit XML

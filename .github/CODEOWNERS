@@ -6,8 +6,8 @@
 # Set the matching branch protection rule on `dev` and `main` to
 # "Require review from Code Owners" or this file is advisory only.
 
-# Fall-through: any change needs a maintainer review.
-*                           @joshsiv-mulga
+# Fall-through: any change needs a team review.
+*                           @mulgadc/mulgadc-engineers
 
 # Network layer is governed by ADR-0006 invariant tests.
 # Changes here must respect those clauses — see

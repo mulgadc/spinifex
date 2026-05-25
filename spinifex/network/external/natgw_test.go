@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 )
 
 func TestNewNATGWManager_RejectsNilNAT(t *testing.T) {

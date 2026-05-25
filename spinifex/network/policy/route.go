@@ -6,8 +6,8 @@ import (
 	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 )
 
 // defaultRoutePrefix is the IPv4 default-route prefix used by AddDefaultRoute

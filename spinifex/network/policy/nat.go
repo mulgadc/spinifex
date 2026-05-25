@@ -7,8 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 )
 
 // EIPSpec is a 1:1 Elastic IP NAT (dnat_and_snat) attaching ExternalIP to

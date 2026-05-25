@@ -7,7 +7,7 @@
 // To regenerate from the full OVN NB schema (requires OVN installed):
 //
 //	go install github.com/ovn-kubernetes/libovsdb/cmd/modelgen@latest
-//	modelgen -p nbdb -o spinifex/services/vpcd/nbdb /usr/share/ovn/ovn-nb.ovsschema
+//	modelgen -p nbdb -o spinifex/network/ovn/nbdb /usr/share/ovn/ovn-nb.ovsschema
 package nbdb
 
 import "github.com/ovn-kubernetes/libovsdb/model"

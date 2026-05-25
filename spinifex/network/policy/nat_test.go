@@ -9,8 +9,8 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 )
 
 func seedRouter(t *testing.T, m *mock.Client, vpcID string) string {

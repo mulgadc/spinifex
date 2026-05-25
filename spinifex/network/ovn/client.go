@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
 
 // ErrNATNotFound is returned by DeleteNAT / DeleteNATByExternalIP when the

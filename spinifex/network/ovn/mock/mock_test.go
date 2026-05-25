@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
 
 func TestClient_DeleteAllNATsByExternalIP(t *testing.T) {

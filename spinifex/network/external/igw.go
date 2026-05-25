@@ -7,9 +7,9 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 )
 
 // FlowsBarrier blocks until ovn-northd has compiled NB → SB and every

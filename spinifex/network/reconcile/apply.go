@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/netip"
 
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

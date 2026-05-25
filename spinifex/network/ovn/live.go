@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"

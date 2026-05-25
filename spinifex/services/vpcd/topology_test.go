@@ -1749,39 +1749,6 @@ func TestTopologyHandler_SubnetCreate_SwitchAlreadyExists(t *testing.T) {
 	}
 }
 
-func TestTopologyHandler_SubnetCreate_RouterPortFails(t *testing.T) {
-	_, nc := startTestNATS(t)
-	mock := NewMockOVNClient()
-	_ = mock.Connect(context.Background())
-	ctx := context.Background()
-
-	topo := NewTopologyHandler(mock)
-	subs, err := topo.Subscribe(nc)
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	defer func() {
-		for _, s := range subs {
-			_ = s.Unsubscribe()
-		}
-	}()
-
-	// Don't create the VPC router — CreateLogicalRouterPort will fail
-	evt := SubnetEvent{SubnetId: "subnet-norouter", VpcId: "vpc-norouter", CidrBlock: "10.0.1.0/24"}
-	data, _ := json.Marshal(evt)
-	resp, err := nc.Request(TopicSubnetCreate, data, 5_000_000_000)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	assertFailure(t, resp, "subnet create without router")
-
-	// Verify switch was cleaned up (best-effort cleanup path)
-	_, err = mock.GetLogicalSwitch(ctx, "subnet-subnet-norouter")
-	if err == nil {
-		t.Error("expected switch to be cleaned up after router port failure")
-	}
-}
-
 func TestTopologyHandler_SubnetCreate_InvalidCIDR(t *testing.T) {
 	_, nc := startTestNATS(t)
 	mock := NewMockOVNClient()

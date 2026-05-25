@@ -58,6 +58,13 @@ MGMT_CIDR="10.15.8.1/24"
 MGMT_IFACE=""
 OVN_REMOTE="tcp:127.0.0.1:6642"
 ENCAP_IP=""
+# NODE_NAME defaults to the short hostname so direct invocations (manual
+# single-node bring-up, dev workstations) still work. Bootstrap callers
+# (bootstrap-install.sh, ansible install role) MUST pass --node-name=NAME
+# with the cluster identity used at `spx admin init/join --node NAME`,
+# because that is the dnsName SAN baked into the IPsec peer cert and it
+# must equal the OVS chassis-id (see Step 4 below).
+NODE_NAME="$(hostname -s 2>/dev/null || true)"
 
 # Parse arguments
 for arg in "$@"; do
@@ -72,6 +79,7 @@ for arg in "$@"; do
         --no-mgmt-bridge)   MGMT_BRIDGE_ENABLED=false ;;
         --ovn-remote=*)     OVN_REMOTE="${arg#*=}" ;;
         --encap-ip=*)       ENCAP_IP="${arg#*=}" ;;
+        --node-name=*)      NODE_NAME="${arg#*=}" ;;
         --help|-h)
             head -50 "$0" | tail -48
             exit 0
@@ -597,26 +605,30 @@ else
         external_ids:ovn-encap-type="geneve"
 fi
 
-# Pin OVS system-id (= OVN chassis-id) to the node's hostname. Two reasons:
+# Pin OVS system-id (= OVN chassis-id) to NODE_NAME. Two reasons:
 #   1. IPsec identity: ovs-monitor-ipsec uses chassis-id as the IKEv2
 #      `@<name>` peer identity. Our per-node IPsec peer cert
-#      (admin.GenerateIPSecPeerCert) carries the node name as CN + dnsName
-#      SAN — see spx admin init/join, which pass --node as the cert
-#      identity. Leaving chassis-id as the package-generated UUID would
-#      cause `received AUTHENTICATION_FAILED` because charon validates
-#      `@<UUID>` against a cert dnsName=<hostname>.
+#      (admin.GenerateIPSecPeerCert) carries the cluster node name as CN
+#      + dnsName SAN — see spx admin init/join, which take --node NAME and
+#      bake NAME into the cert. Leaving chassis-id as the package-generated
+#      UUID would cause `received AUTHENTICATION_FAILED` because charon
+#      validates `@<UUID>` against a cert dnsName=<NODE_NAME>.
 #   2. Ops legibility: `ovn-sbctl show` lists chassis by name, not UUID.
+# NODE_NAME comes from --node-name=NAME (set by bootstrap-install.sh and
+# the ansible install role) and MUST match the value passed to
+# `spx admin init --node` / `spx admin join --node`. Falling back to
+# `hostname -s` only works for setups where hostname == cluster node name
+# (manual single-node bring-up); CI hostnames are bead-themed and differ.
 # Both the on-disk file (read by ovs-ctl on boot) and the running OVS DB
 # value must be updated atomically — writing only one drifts on the next
 # reboot.
-NODE_SYSTEM_ID="$(hostname -s)"
-if [ -z "$NODE_SYSTEM_ID" ]; then
-    echo "  ERROR: hostname -s returned empty; cannot pin OVS system-id." >&2
+if [ -z "$NODE_NAME" ]; then
+    echo "  ERROR: --node-name not given and hostname -s is empty; cannot pin OVS system-id." >&2
     exit 1
 fi
-echo "$NODE_SYSTEM_ID" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
-sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_SYSTEM_ID"
-echo "  system-id:      $NODE_SYSTEM_ID (pinned to hostname for IPsec cert identity)"
+echo "$NODE_NAME" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
+sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_NAME"
+echo "  system-id:      $NODE_NAME (pinned for IPsec cert identity)"
 echo "  ovn-remote:     $OVN_REMOTE"
 echo "  ovn-encap-ip:   $ENCAP_IP"
 echo "  ovn-encap-type: geneve"

@@ -18,6 +18,11 @@ import (
 // where the unit hasn't finished starting yet. Overridden in tests.
 var systemctlActiveTimeout = 5 * time.Second
 
+// ovnNBSocketPath gates the NB_Global ipsec=true write to the management
+// node — workers don't run ovn-central and have no local socket.
+// Overridden in tests.
+var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
+
 // enableOVNIPSec wires the per-node IPsec peer cert into the local OVS DB and
 // flips ipsec_encapsulation=true. ovs-monitor-ipsec (shipped by the
 // openvswitch-ipsec package) reads the cert/key/CA pointers and materialises
@@ -71,6 +76,19 @@ func (d *Daemon) enableOVNIPSec() error {
 		"other_config:ipsec_encapsulation=true",
 	).CombinedOutput(); err != nil {
 		return fmt.Errorf("enable ipsec_encapsulation: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	// NB_Global.ipsec=true triggers ovn-controller on every chassis to add
+	// options:remote_name to the Geneve tunnel ports, which is what
+	// ovs-monitor-ipsec keys off to materialise the per-peer strongSwan
+	// connections. Without it, xfrm stays empty and Geneve runs plaintext
+	// even with ipsec_encapsulation=true set locally. Only the management
+	// node has a local NB socket; on workers, skip silently — the flag is
+	// cluster-wide and one writer is enough.
+	if _, err := os.Stat(ovnNBSocketPath); err == nil {
+		if out, err := sudoCommand("ovn-nbctl", "set", "NB_Global", ".", "ipsec=true").CombinedOutput(); err != nil {
+			return fmt.Errorf("set NB_Global ipsec=true: %s: %w", strings.TrimSpace(string(out)), err)
+		}
 	}
 
 	slog.Info("OVN native IPsec enabled on intra-AZ Geneve",

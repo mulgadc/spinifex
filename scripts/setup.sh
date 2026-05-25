@@ -187,6 +187,7 @@ spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/systemctl is-active openvswitch-ipsec.service
+spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl set NB_Global . ipsec=true
 
 # Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd

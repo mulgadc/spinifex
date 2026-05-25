@@ -61,6 +61,13 @@ func TestEnableOVNIPSec(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
+	// Point the NB-socket gate at a non-existent path so this test runs the
+	// worker path (no ovn-nbctl). TestEnableOVNIPSec_Management covers the
+	// management-node branch.
+	origNBSock := ovnNBSocketPath
+	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
+	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
+
 	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
 	require.NoError(t, d.enableOVNIPSec())
 
@@ -80,6 +87,36 @@ func TestEnableOVNIPSec(t *testing.T) {
 	assert.Contains(t, joined, "other_config:private_key="+filepath.Join(configDir, "ipsec", "peer.key"))
 	assert.Contains(t, joined, "other_config:ca_cert="+filepath.Join(configDir, "ca.pem"))
 	assert.Contains(t, strings.Join(recorder.runs[2], " "), "other_config:ipsec_encapsulation=true")
+}
+
+func TestEnableOVNIPSec_Management(t *testing.T) {
+	recorder := &recordingSudo{}
+	orig := sudoCommand
+	sudoCommand = recorder.stub
+	t.Cleanup(func() { sudoCommand = orig })
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
+	for _, rel := range []string{"ca.pem", "ipsec/peer.pem", "ipsec/peer.key"} {
+		full := filepath.Join(configDir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0750))
+		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
+	}
+
+	// Simulate a local NB socket so enableOVNIPSec runs the management
+	// branch and writes NB_Global.ipsec=true.
+	sockPath := filepath.Join(configDir, "ovnnb_db.sock")
+	require.NoError(t, os.WriteFile(sockPath, []byte{}, 0600))
+	origNBSock := ovnNBSocketPath
+	ovnNBSocketPath = sockPath
+	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
+
+	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
+	require.NoError(t, d.enableOVNIPSec())
+
+	require.Len(t, recorder.runs, 4)
+	assert.Equal(t, []string{"ovn-nbctl", "set", "NB_Global", ".", "ipsec=true"}, recorder.runs[3])
 }
 
 func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {

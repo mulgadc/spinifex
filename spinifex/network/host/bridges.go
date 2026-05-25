@@ -9,8 +9,7 @@ import (
 // settings ovn-controller requires:
 //   - br-int: fail-mode=secure (preserve flows across ovn-controller restart)
 //     and other-config:disable-in-band=true (no OVS-installed flows). These
-//     are the same settings daemon.SetupComputeNode applies today; the
-//     responsibility moves here in Phase 2.
+//     are the canonical settings for an OVN integration bridge.
 //   - uplinkBridge: created if missing. ovn-bridge-mappings (managed by
 //     setup-ovn.sh) targets it; the localnet port LSPs will reference it
 //     once L5 lands.

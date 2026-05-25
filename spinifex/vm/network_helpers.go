@@ -66,6 +66,13 @@ func GenerateDevMAC(instanceID string) string {
 	return utils.HashMAC("dev:" + instanceID)
 }
 
+// GenerateMgmtMAC returns the locally-administered unicast MAC for the
+// management NIC. The "mgmt:" tag disambiguates from the dev NIC of the
+// same instance (which shares instanceID).
+func GenerateMgmtMAC(instanceID string) string {
+	return utils.HashMAC("mgmt:" + instanceID)
+}
+
 // setupExtraENINICs creates tap devices on br-int and appends matching QEMU
 // virtio-net device entries to instance.Config for each additional ENI a
 // system VM spans. The primary ENI is handled separately by the launch

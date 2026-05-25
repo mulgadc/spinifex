@@ -291,7 +291,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 			}
 			slog.Warn("LaunchSystemInstance: failed to allocate mgmt IP, skipping mgmt NIC", "instanceId", instance.ID, "err", allocErr)
 		} else {
-			instance.MgmtMAC = generateMgmtMAC(instance.ID)
+			instance.MgmtMAC = vm.GenerateMgmtMAC(instance.ID)
 			instance.MgmtIP = mgmtIP
 
 			// Inject the allocated MAC and CIDR into NIC[1] so writeFwCfgBlobs

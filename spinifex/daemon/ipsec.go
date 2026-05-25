@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // systemctlActiveTimeout bounds how long enableOVNIPSec waits for
@@ -64,18 +66,12 @@ func (d *Daemon) enableOVNIPSec() error {
 		return fmt.Errorf("ovs-monitor-ipsec: %w", err)
 	}
 
-	if out, err := sudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
-		fmt.Sprintf("other_config:certificate=%s", certPath),
-		fmt.Sprintf("other_config:private_key=%s", keyPath),
-		fmt.Sprintf("other_config:ca_cert=%s", caCertPath),
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("set IPsec cert pointers: %s: %w", strings.TrimSpace(string(out)), err)
+	if err := host.SetIPSecCertPaths(certPath, keyPath, caCertPath); err != nil {
+		return err
 	}
 
-	if out, err := sudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
-		"other_config:ipsec_encapsulation=true",
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("enable ipsec_encapsulation: %s: %w", strings.TrimSpace(string(out)), err)
+	if err := host.EnableIPSecEncapsulation(); err != nil {
+		return err
 	}
 
 	// NB_Global.ipsec=true triggers ovn-controller on every chassis to add
@@ -86,8 +82,8 @@ func (d *Daemon) enableOVNIPSec() error {
 	// node has a local NB socket; on workers, skip silently — the flag is
 	// cluster-wide and one writer is enough.
 	if _, err := os.Stat(ovnNBSocketPath); err == nil {
-		if out, err := sudoCommand("ovn-nbctl", "set", "NB_Global", ".", "ipsec=true").CombinedOutput(); err != nil {
-			return fmt.Errorf("set NB_Global ipsec=true: %s: %w", strings.TrimSpace(string(out)), err)
+		if err := host.SetNBGlobalIPSec(true); err != nil {
+			return err
 		}
 	}
 
@@ -108,7 +104,7 @@ func ensureOVSMonitorIPSecActive() error {
 	deadline := time.Now().Add(systemctlActiveTimeout)
 	var lastOut string
 	for time.Now().Before(deadline) {
-		out, _ := sudoCommand("systemctl", "is-active", "openvswitch-ipsec.service").CombinedOutput()
+		out, _ := utils.SudoCommand("systemctl", "is-active", "openvswitch-ipsec.service").CombinedOutput()
 		lastOut = strings.TrimSpace(string(out))
 		if lastOut == "active" {
 			return nil

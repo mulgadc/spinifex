@@ -49,6 +49,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -343,7 +344,7 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 }
 
 // execCommand wraps exec.Command so tests can substitute a fake builder.
-// Mirrors the sudoCommand seam in network.go — getSystemMemory shells out to
+// Mirrors the utils.SudoCommand seam — getSystemMemory shells out to
 // sysctl (darwin) or grep /proc/meminfo (linux), neither of which can be
 // faked without an indirection that the test can swap.
 var execCommand = exec.Command
@@ -884,7 +885,7 @@ func (d *Daemon) startLocal() error {
 	if d.config.Daemon.MgmtBridge != "" {
 		mgmtBridge = d.config.Daemon.MgmtBridge
 	}
-	bridgeIP, bridgeErr := GetBridgeIPv4(mgmtBridge)
+	bridgeIP, bridgeErr := host.GetBridgeIPv4(mgmtBridge)
 	if bridgeErr != nil {
 		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)
 	} else if bridgeIP == "" {
@@ -902,7 +903,7 @@ func (d *Daemon) startLocal() error {
 
 	// Initialise OVS network plumber (no NATS dep).
 	if d.networkPlumber == nil {
-		d.networkPlumber = &OVSNetworkPlumber{}
+		d.networkPlumber = host.NewOVSPlumber()
 	}
 
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
@@ -1564,7 +1565,7 @@ func (d *Daemon) ClusterManager() error {
 		}
 
 		// Check OVN networking readiness
-		ovnHealth := CheckOVNHealth()
+		ovnHealth := host.HealthStatus()
 		if ovnHealth.BrIntExists {
 			serviceHealth["br-int"] = "ok"
 		} else {

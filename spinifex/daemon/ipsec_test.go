@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func multiNodeClusterConfig() *config.ClusterConfig {
 	}
 }
 
-// recordingSudo is a sudoCommand stub that records every invocation and
+// recordingSudo is a utils.SudoCommand stub that records every invocation and
 // returns canned stdout for `systemctl is-active`. Tests that need a dead
 // daemon override the activeOutput.
 type recordingSudo struct {
@@ -47,9 +48,7 @@ func (r *recordingSudo) stub(name string, args ...string) *exec.Cmd {
 
 func TestEnableOVNIPSec(t *testing.T) {
 	recorder := &recordingSudo{}
-	orig := sudoCommand
-	sudoCommand = recorder.stub
-	t.Cleanup(func() { sudoCommand = orig })
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -91,9 +90,7 @@ func TestEnableOVNIPSec(t *testing.T) {
 
 func TestEnableOVNIPSec_Management(t *testing.T) {
 	recorder := &recordingSudo{}
-	orig := sudoCommand
-	sudoCommand = recorder.stub
-	t.Cleanup(func() { sudoCommand = orig })
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -120,12 +117,10 @@ func TestEnableOVNIPSec_Management(t *testing.T) {
 }
 
 func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
-	orig := sudoCommand
-	sudoCommand = func(name string, args ...string) *exec.Cmd {
-		t.Fatalf("sudoCommand must not run on single-node short-circuit; got %s %v", name, args)
+	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("utils.SudoCommand must not run on single-node short-circuit; got %s %v", name, args)
 		return exec.Command("true")
-	}
-	t.Cleanup(func() { sudoCommand = orig })
+	}))
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -143,9 +138,7 @@ func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
 
 func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 	recorder := &recordingSudo{activeOutput: "inactive\n"}
-	orig := sudoCommand
-	sudoCommand = recorder.stub
-	t.Cleanup(func() { sudoCommand = orig })
+	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
 
 	origTimeout := systemctlActiveTimeout
 	systemctlActiveTimeout = 100 * time.Millisecond
@@ -174,12 +167,10 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 }
 
 func TestEnableOVNIPSec_MissingCert(t *testing.T) {
-	orig := sudoCommand
-	sudoCommand = func(name string, args ...string) *exec.Cmd {
-		t.Fatalf("sudoCommand must not run when cert files are absent")
+	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("utils.SudoCommand must not run when cert files are absent")
 		return exec.Command("true")
-	}
-	t.Cleanup(func() { sudoCommand = orig })
+	}))
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")

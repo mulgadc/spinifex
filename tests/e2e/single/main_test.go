@@ -79,6 +79,11 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 			TmpDir:    tmpDir,
 		}
 		fix.PoolMode = detectPoolMode(env)
+		// admin init leaves the default SG closed (AWS parity); the e2e suite
+		// drives SSH + ICMP probes from the test runner's external IP, so open
+		// both on the default VPC's default SG once per process. Idempotent —
+		// mirrors run-e2e.sh Phase 5 (mulga-siv-134).
+		harness.EnsureDefaultSGOpen(t, awsCli)
 		pkgFix = fix
 	})
 	if pkgFixErr != nil {

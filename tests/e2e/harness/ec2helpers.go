@@ -226,6 +226,40 @@ func AuthorizeSSHIngress(t *testing.T, c *AWSClient, sgID string) {
 	t.Fatalf("authorize-security-group-ingress tcp/22 on %s: %v", sgID, err)
 }
 
+// AuthorizeICMPIngress idempotently authorizes ICMP (all types) ingress from
+// 0.0.0.0/0 on sgID. Same Duplicate-tolerant contract as AuthorizeSSHIngress.
+func AuthorizeICMPIngress(t *testing.T, c *AWSClient, sgID string) {
+	t.Helper()
+	_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("icmp"),
+			FromPort:   aws.Int64(-1),
+			ToPort:     aws.Int64(-1),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	})
+	if err == nil {
+		return
+	}
+	var aerr awserr.Error
+	if asErr(err, &aerr) && aerr.Code() == "InvalidPermission.Duplicate" {
+		return
+	}
+	t.Fatalf("authorize-security-group-ingress icmp on %s: %v", sgID, err)
+}
+
+// EnsureDefaultSGOpen authorizes tcp/22 + ICMP on the default VPC's default
+// SG. AWS default SGs only admit same-SG members; e2e probes come from the
+// test runner's external IP, so without this every SSH/ping hits the OVN
+// port-group ACL drop. Mirrors the Phase-5 block in run-e2e.sh.
+func EnsureDefaultSGOpen(t *testing.T, c *AWSClient) {
+	t.Helper()
+	_, sgID, _ := DiscoverDefaultVPC(t, c)
+	AuthorizeSSHIngress(t, c, sgID)
+	AuthorizeICMPIngress(t, c, sgID)
+}
+
 // asErr is a thin errors.As that lets the helper stay testify-free.
 func asErr(err error, target *awserr.Error) bool {
 	if a, ok := err.(awserr.Error); ok {

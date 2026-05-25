@@ -285,6 +285,21 @@ if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Du
 fi
 echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
+# Phase 5f exercises ICMP egress through OVN; the reply path needs explicit
+# ICMP ingress on the default SG even though SGs are stateful in AWS — keeps
+# parity with the Go single-suite fixture (mulga-siv-134).
+set +e
+ICMP_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE5" \
+    --protocol icmp --port -1 --cidr 0.0.0.0/0 2>&1)
+ICMP_EXIT=$?
+set -e
+if [ $ICMP_EXIT -ne 0 ] && ! echo "$ICMP_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize ICMP ingress on default SG: $ICMP_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: icmp from 0.0.0.0/0"
+
 # Launch a VM (run-instances)
 echo "Running: aws ec2 run-instances --image-id $AMI_ID --instance-type $INSTANCE_TYPE --key-name test-key-1"
 # Capture full output for debugging

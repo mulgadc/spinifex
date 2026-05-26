@@ -1,4 +1,4 @@
-package daemon
+package host
 
 import (
 	"fmt"
@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// systemctlActiveTimeout bounds how long enableOVNIPSec waits for
+// systemctlActiveTimeout bounds how long EnableOVNIPSec waits for
 // openvswitch-ipsec.service to report active. The unit is enabled at
 // provision time (scripts/setup-ovn.sh) so the daemon only needs read
 // capability (systemctl is-active); this poll absorbs boot-time races
@@ -25,7 +25,7 @@ var systemctlActiveTimeout = 5 * time.Second
 // Overridden in tests.
 var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
 
-// enableOVNIPSec wires the per-node IPsec peer cert into the local OVS DB and
+// EnableOVNIPSec wires the per-node IPsec peer cert into the local OVS DB and
 // flips ipsec_encapsulation=true. ovs-monitor-ipsec (shipped by the
 // openvswitch-ipsec package) reads the cert/key/CA pointers and materialises
 // a strongSwan config for every Geneve tunnel that ovn-controller programs.
@@ -33,7 +33,7 @@ var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
 // Idempotent: ovs-vsctl set is repeatable; on restart the values are
 // overwritten with the same paths.
 //
-// Caller is expected to gate on d.clusterConfig.Network.IPSecEnabled. If the
+// Caller is expected to gate on clusterConfig.Network.IPSecEnabled. If the
 // admin init / admin join step never produced an IPsec peer cert (e.g.
 // because the cluster was bootstrapped before this feature landed), the
 // function returns an error so the daemon can log it and continue; the
@@ -44,15 +44,21 @@ var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
 // tunnels to encrypt, and flipping ipsec_encapsulation=true on a host where
 // ovs-monitor-ipsec is absent or dead would create the silent-drop trap that
 // triggers mulga-siv-136.
-func (d *Daemon) enableOVNIPSec() error {
-	if d.configPath == "" {
+//
+// Lives in L0 (network/host) per ADR-0006 S8: "IPSec is OVN-native only…
+// IPSec SA lifecycle is delegated entirely to OVN native IPSec and is
+// invisible above L0." The daemon only chooses whether to invoke it; the
+// orchestration sequence (verify monitor → set cert pointers → enable
+// encapsulation → flip NB_Global) belongs in L0.
+func EnableOVNIPSec(configPath string, clusterConfig *config.ClusterConfig) error {
+	if configPath == "" {
 		return fmt.Errorf("config path unset")
 	}
-	if d.clusterConfig != nil && len(d.clusterConfig.Nodes) <= 1 {
+	if clusterConfig != nil && len(clusterConfig.Nodes) <= 1 {
 		slog.Info("ipsec: single-node cluster, skipping enable (no peers)")
 		return nil
 	}
-	configDir := filepath.Dir(d.configPath)
+	configDir := filepath.Dir(configPath)
 	certPath, keyPath := admin.IPSecCertPaths(configDir)
 	caCertPath := filepath.Join(configDir, "ca.pem")
 
@@ -66,11 +72,11 @@ func (d *Daemon) enableOVNIPSec() error {
 		return fmt.Errorf("ovs-monitor-ipsec: %w", err)
 	}
 
-	if err := host.SetIPSecCertPaths(certPath, keyPath, caCertPath); err != nil {
+	if err := SetIPSecCertPaths(certPath, keyPath, caCertPath); err != nil {
 		return err
 	}
 
-	if err := host.EnableIPSecEncapsulation(); err != nil {
+	if err := EnableIPSecEncapsulation(); err != nil {
 		return err
 	}
 
@@ -82,7 +88,7 @@ func (d *Daemon) enableOVNIPSec() error {
 	// node has a local NB socket; on workers, skip silently — the flag is
 	// cluster-wide and one writer is enough.
 	if _, err := os.Stat(ovnNBSocketPath); err == nil {
-		if err := host.SetNBGlobalIPSec(true); err != nil {
+		if err := SetNBGlobalIPSec(true); err != nil {
 			return err
 		}
 	}

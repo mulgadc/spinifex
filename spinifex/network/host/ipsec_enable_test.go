@@ -1,4 +1,4 @@
-package daemon
+package host
 
 import (
 	"os"
@@ -15,7 +15,7 @@ import (
 )
 
 // multiNodeClusterConfig returns a ClusterConfig with two nodes so
-// enableOVNIPSec runs its full path (single-node would short-circuit).
+// EnableOVNIPSec runs its full path (single-node would short-circuit).
 func multiNodeClusterConfig() *config.ClusterConfig {
 	return &config.ClusterConfig{
 		Node: "node1",
@@ -67,8 +67,7 @@ func TestEnableOVNIPSec(t *testing.T) {
 	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
 	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
 
-	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
-	require.NoError(t, d.enableOVNIPSec())
+	require.NoError(t, EnableOVNIPSec(configPath, multiNodeClusterConfig()))
 
 	// Expected sudo invocations in order:
 	//   systemctl is-active openvswitch-ipsec.service     (unit enabled at provision time)
@@ -101,7 +100,7 @@ func TestEnableOVNIPSec_Management(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
-	// Simulate a local NB socket so enableOVNIPSec runs the management
+	// Simulate a local NB socket so EnableOVNIPSec runs the management
 	// branch and writes NB_Global.ipsec=true.
 	sockPath := filepath.Join(configDir, "ovnnb_db.sock")
 	require.NoError(t, os.WriteFile(sockPath, []byte{}, 0600))
@@ -109,8 +108,7 @@ func TestEnableOVNIPSec_Management(t *testing.T) {
 	ovnNBSocketPath = sockPath
 	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
 
-	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
-	require.NoError(t, d.enableOVNIPSec())
+	require.NoError(t, EnableOVNIPSec(configPath, multiNodeClusterConfig()))
 
 	require.Len(t, recorder.runs, 4)
 	assert.Equal(t, []string{"ovn-nbctl", "set", "NB_Global", ".", "ipsec=true"}, recorder.runs[3])
@@ -126,14 +124,11 @@ func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
 	configPath := filepath.Join(configDir, "spinifex.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
 
-	d := &Daemon{
-		configPath: configPath,
-		clusterConfig: &config.ClusterConfig{
-			Node:  "node1",
-			Nodes: map[string]config.Config{"node1": {}},
-		},
+	cfg := &config.ClusterConfig{
+		Node:  "node1",
+		Nodes: map[string]config.Config{"node1": {}},
 	}
-	require.NoError(t, d.enableOVNIPSec())
+	require.NoError(t, EnableOVNIPSec(configPath, cfg))
 }
 
 func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
@@ -153,8 +148,7 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
-	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
-	err := d.enableOVNIPSec()
+	err := EnableOVNIPSec(configPath, multiNodeClusterConfig())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ovs-monitor-ipsec")
 	assert.Contains(t, err.Error(), "not active")
@@ -177,15 +171,13 @@ func TestEnableOVNIPSec_MissingCert(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath, []byte("placeholder"), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "ca.pem"), []byte("x"), 0600))
 
-	d := &Daemon{configPath: configPath, clusterConfig: multiNodeClusterConfig()}
-	err := d.enableOVNIPSec()
+	err := EnableOVNIPSec(configPath, multiNodeClusterConfig())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing IPsec credential")
 }
 
 func TestEnableOVNIPSec_NoConfigPath(t *testing.T) {
-	d := &Daemon{}
-	err := d.enableOVNIPSec()
+	err := EnableOVNIPSec("", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config path unset")
 }

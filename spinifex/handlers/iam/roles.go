@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -274,19 +275,113 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 }
 
 // ---------------------------------------------------------------------------
-// Role Policy Attachment (Step 5)
+// Role Policy Attachment
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	return nil, errors.New(awserrors.ErrorInvalidAction)
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	roleName := *input.RoleName
+	policyARN := *input.PolicyArn
+
+	if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+		return nil, err
+	}
+
+	role, err := s.getRole(accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	if slices.Contains(role.AttachedPolicies, policyARN) {
+		return &iam.AttachRolePolicyOutput{}, nil
+	}
+
+	role.AttachedPolicies = append(role.AttachedPolicies, policyARN)
+	data, err := json.Marshal(role)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role: %w", err)
+	}
+	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
+		return nil, fmt.Errorf("update role: %w", err)
+	}
+
+	slog.Info("IAM policy attached to role", "accountID", accountID, "roleName", roleName, "policyArn", policyARN)
+	return &iam.AttachRolePolicyOutput{}, nil
 }
 
 func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	return nil, errors.New(awserrors.ErrorInvalidAction)
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.PolicyArn == nil || *input.PolicyArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	roleName := *input.RoleName
+	policyARN := *input.PolicyArn
+
+	role, err := s.getRole(accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	found := false
+	remaining := make([]string, 0, len(role.AttachedPolicies))
+	for _, arn := range role.AttachedPolicies {
+		if arn == policyARN {
+			found = true
+		} else {
+			remaining = append(remaining, arn)
+		}
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	}
+
+	role.AttachedPolicies = remaining
+	data, err := json.Marshal(role)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role: %w", err)
+	}
+	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
+		return nil, fmt.Errorf("update role: %w", err)
+	}
+
+	slog.Info("IAM policy detached from role", "accountID", accountID, "roleName", roleName, "policyArn", policyARN)
+	return &iam.DetachRolePolicyOutput{}, nil
 }
 
 func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	return nil, errors.New(awserrors.ErrorInvalidAction)
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	role, err := s.getRole(accountID, *input.RoleName)
+	if err != nil {
+		return nil, err
+	}
+
+	var attached []*iam.AttachedPolicy
+	for _, arn := range role.AttachedPolicies {
+		policy, err := s.getPolicyByARN(accountID, arn)
+		if err != nil {
+			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
+			continue
+		}
+		attached = append(attached, &iam.AttachedPolicy{
+			PolicyArn:  aws.String(policy.ARN),
+			PolicyName: aws.String(policy.PolicyName),
+		})
+	}
+
+	return &iam.ListAttachedRolePoliciesOutput{
+		AttachedPolicies: attached,
+		IsTruncated:      aws.Bool(false),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

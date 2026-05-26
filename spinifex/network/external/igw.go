@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
@@ -171,7 +172,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	}
 	if err := m.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
 		Name:        gwPortName,
-		MAC:         generateMAC(gwPortName),
+		MAC:         utils.HashMAC(gwPortName),
 		Networks:    []string{gwNetwork},
 		ExternalIDs: lrpExtIDs,
 	}); err != nil {

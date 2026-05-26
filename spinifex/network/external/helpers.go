@@ -2,16 +2,7 @@ package external
 
 import (
 	"net"
-
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
-
-// generateMAC builds a deterministic locally-administered unicast MAC from
-// a resource ID. The same algorithm vpcd has used since the L1/L2 split —
-// callers within this package use it for gateway-LRP MAC assignment.
-func generateMAC(resourceID string) string {
-	return utils.HashMAC(resourceID)
-}
 
 func ipv4ToUint32(ip net.IP) uint32 {
 	v := ip.To4()

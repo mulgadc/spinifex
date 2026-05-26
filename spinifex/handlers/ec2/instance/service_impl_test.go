@@ -1895,7 +1895,7 @@ type fakeGPUClaimer struct {
 	attachment gpu.GPUAttachment
 }
 
-func (f *fakeGPUClaimer) Claim(instanceID string) (*gpu.GPUAttachment, error) {
+func (f *fakeGPUClaimer) Claim(instanceID, _ string) (*gpu.GPUAttachment, error) {
 	f.claimed = append(f.claimed, instanceID)
 	if f.claimErr != nil {
 		return nil, f.claimErr

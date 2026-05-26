@@ -794,7 +794,8 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 		}
 
 		if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
-			att, gpuErr := s.gpuClaimer.Claim(instance.ID)
+			profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
+			att, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName)
 			if gpuErr != nil {
 				slog.Error("LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "err", gpuErr)
 				s.vmMgr.MarkFailed(instance, "gpu_claim_failed")
@@ -2136,7 +2137,8 @@ func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceIn
 	// Claim GPU for GPU instance types.
 	gpuClaimed := false
 	if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
-		att, gpuErr := s.gpuClaimer.Claim(instance.ID)
+		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
+		att, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName)
 		if gpuErr != nil {
 			slog.Error("StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "err", gpuErr)
 			s.resourceMgr.Deallocate(instanceType)

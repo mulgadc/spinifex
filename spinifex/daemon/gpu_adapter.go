@@ -14,8 +14,8 @@ type daemonGPUClaimer struct {
 
 var _ handlers_ec2_instance.GPUClaimer = (*daemonGPUClaimer)(nil)
 
-func (g *daemonGPUClaimer) Claim(instanceID string) (*gpu.GPUAttachment, error) {
-	dev, mig, err := g.d.gpuManager.Claim(instanceID)
+func (g *daemonGPUClaimer) Claim(instanceID, profileName string) (*gpu.GPUAttachment, error) {
+	dev, mig, err := g.d.gpuManager.Claim(instanceID, profileName)
 	if err != nil {
 		return nil, err
 	}

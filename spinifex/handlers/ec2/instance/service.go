@@ -64,7 +64,7 @@ type InstanceTypeAllocator interface {
 // descriptor. For whole-GPU passthrough the descriptor carries the PCI address;
 // for MIG slices it carries the mdev path. nil claimer means no GPU passthrough.
 type GPUClaimer interface {
-	Claim(instanceID string) (*gpu.GPUAttachment, error)
+	Claim(instanceID, profileName string) (*gpu.GPUAttachment, error)
 	Release(instanceID string) error
 }
 

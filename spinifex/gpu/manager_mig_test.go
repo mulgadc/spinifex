@@ -86,7 +86,7 @@ func TestMIGClaim_Success(t *testing.T) {
 		{GIID: 1, MdevPath: mdev, Profile: MIGProfile{Name: "1g.10gb", MemoryMiB: 10240}},
 	})
 
-	claimedDev, mig, err := m.Claim("i-001")
+	claimedDev, mig, err := m.Claim("i-001", "1g.10gb")
 	require.NoError(t, err)
 	require.NotNil(t, mig)
 	assert.Equal(t, mdev, mig.MdevPath)
@@ -101,7 +101,7 @@ func TestMIGClaim_MdevPathMissing_ReturnsError(t *testing.T) {
 		{GIID: 1, MdevPath: "/nonexistent/mdev/uuid", Profile: MIGProfile{Name: "1g.10gb"}},
 	})
 
-	_, _, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001", "1g.10gb")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not accessible")
 	// The pool entry must still be available (no state change on failure).
@@ -119,11 +119,11 @@ func TestMIGClaim_MultipleSlices_ClaimsInOrder(t *testing.T) {
 		{GIID: 2, MdevPath: mdev2, Profile: MIGProfile{Name: "1g.10gb"}},
 	})
 
-	_, mig1, err := m.Claim("i-001")
+	_, mig1, err := m.Claim("i-001", "1g.10gb")
 	require.NoError(t, err)
-	_, mig2, err := m.Claim("i-002")
+	_, mig2, err := m.Claim("i-002", "1g.10gb")
 	require.NoError(t, err)
-	_, _, err = m.Claim("i-003")
+	_, _, err = m.Claim("i-003", "1g.10gb")
 	require.Error(t, err, "pool exhausted after two claims")
 
 	assert.NotEqual(t, mig1.MdevPath, mig2.MdevPath)
@@ -140,7 +140,7 @@ func TestMIGRelease_ClearsInstanceAndRestoresAvailability(t *testing.T) {
 		{GIID: 1, MdevPath: mdev, Profile: MIGProfile{Name: "1g.10gb"}},
 	})
 
-	_, _, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001", "1g.10gb")
 	require.NoError(t, err)
 	assert.Equal(t, 0, m.Available())
 
@@ -173,7 +173,7 @@ func TestMarkMIGFailed_TargetsOnlyNamedSlice(t *testing.T) {
 	// First slice is failed, second is still available.
 	assert.Equal(t, 1, m.Available())
 
-	_, mig, err := m.Claim("i-001")
+	_, mig, err := m.Claim("i-001", "1g.10gb")
 	require.NoError(t, err)
 	assert.Equal(t, mdev2, mig.MdevPath, "claim must skip failed slice and pick the healthy one")
 }
@@ -187,7 +187,7 @@ func TestMarkMIGFailed_AlreadyClaimedSlice_NoChange(t *testing.T) {
 		{GIID: 1, MdevPath: mdev, Profile: MIGProfile{Name: "1g.10gb"}},
 	})
 
-	_, _, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001", "1g.10gb")
 	require.NoError(t, err)
 
 	// MarkMIGFailed on a claimed slice must be a no-op (condition: InstanceID == "").

@@ -22,18 +22,41 @@ import (
 func TestBuildBaseVMConfig(t *testing.T) {
 	for _, arch := range []string{"x86_64", "arm64"} {
 		t.Run(arch, func(t *testing.T) {
-			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, 2, 4096)
+			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, "", 2, 4096)
 
 			assert.True(t, cfg.EnableKVM)
 			assert.True(t, cfg.NoGraphic)
 			assert.Equal(t, "q35", cfg.MachineType)
 			assert.Equal(t, "host", cfg.CPUType)
+			assert.False(t, cfg.UseUEFI, "empty bootMode must default to BIOS")
 
 			require.Len(t, cfg.Devices, 11, "PCIe hot-plug requires 11 pre-allocated root ports")
 			for i, dev := range cfg.Devices {
 				expected := fmt.Sprintf("pcie-root-port,id=hotplug%d,chassis=%d,slot=0", i+1, i+1)
 				assert.Equal(t, expected, dev.Value)
 			}
+		})
+	}
+}
+
+// TestBuildBaseVMConfig_BootMode pins the bootMode → UseUEFI mapping.
+// "uefi" and AWS's "uefi-preferred" both flip the firmware flag; "bios" and
+// any unrecognised value (including "") fall through as BIOS.
+func TestBuildBaseVMConfig_BootMode(t *testing.T) {
+	tests := []struct {
+		bootMode    string
+		wantUseUEFI bool
+	}{
+		{"", false},
+		{"bios", false},
+		{"uefi", true},
+		{"uefi-preferred", true},
+		{"garbage", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.bootMode, func(t *testing.T) {
+			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", "x86_64", tc.bootMode, 2, 4096)
+			assert.Equal(t, tc.wantUseUEFI, cfg.UseUEFI)
 		})
 	}
 }
@@ -74,11 +97,14 @@ func TestBuildDrives(t *testing.T) {
 			},
 		},
 		{
-			name: "EFI volume skipped",
+			name: "EFI volume emits pflash unit=1",
 			requests: []types.EBSRequest{
-				{Name: "vol-efi", EFI: true},
+				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 2,
+			wantDrives: []Drive{
+				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
+			},
 		},
 		{
 			name: "missing NBDURI returns error",
@@ -89,16 +115,25 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "NBDURI not set for volume vol-bad",
 		},
 		{
+			name: "missing NBDURI on EFI returns error",
+			requests: []types.EBSRequest{
+				{Name: "vol-efi-bad", EFI: true},
+			},
+			cpuCount: 2,
+			wantErr:  "NBDURI not set for volume vol-efi-bad",
+		},
+		{
 			name: "mixed boot + cloud-init + EFI",
 			requests: []types.EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-ci", NBDURI: "nbd:unix:/tmp/ci.sock", CloudInit: true},
-				{Name: "vol-efi", EFI: true},
+				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 4,
 			wantDrives: []Drive{
 				{File: "nbd:unix:/tmp/boot.sock", Format: "raw", If: "none", Media: "disk", ID: "os", Cache: "none"},
 				{File: "nbd:unix:/tmp/ci.sock", Format: "raw", If: "virtio", Media: "cdrom", ID: "cloudinit"},
+				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
 			},
 			wantIOThreads: []IOThread{{ID: "ioth-os"}},
 			wantDevices: []Device{
@@ -762,19 +797,7 @@ func (p *scriptedNetworkPlumber) CleanupTap(_ string) error { return nil }
 
 var _ NetworkPlumber = (*scriptedNetworkPlumber)(nil)
 
-// TestNbdkitPreExecWait locks in the per-mode pre-exec sleep budget: direct-boot
-// is zero (no drives, no nbdkit) and the PC-machine path keeps the 2 s wait that
-// the rest of the launch flow depends on.
-func TestNbdkitPreExecWait(t *testing.T) {
-	assert.Equal(t, time.Duration(0), nbdkitPreExecWait(true))
-	assert.Equal(t, 2*time.Second, nbdkitPreExecWait(false))
-}
-
-// TestQemuStartSettleWait locks in the per-mode post-fork settle: direct-boot
-// trims to 50 ms (QMP socket binds within a few ms when there is no firmware,
-// ROM, or block layer setup) and the PC-machine path retains the historical
-// 1 s buffer that catches bad-cmdline crashes before the QMP dial.
-func TestQemuStartSettleWait(t *testing.T) {
-	assert.Equal(t, 50*time.Millisecond, qemuStartSettleWait(true))
-	assert.Equal(t, time.Second, qemuStartSettleWait(false))
+func TestStartupTimeouts(t *testing.T) {
+	assert.Equal(t, 5*time.Second, qemuStartupTimeout)
+	assert.Equal(t, 5*time.Second, nbdReadyTimeout)
 }

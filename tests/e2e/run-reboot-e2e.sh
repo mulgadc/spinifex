@@ -258,13 +258,45 @@ printf '%s' "$KEY_MATERIAL" | put_to_node "$NODE_KEY_PATH"
 node_ssh "chmod 600 $NODE_KEY_PATH" || { fail "chmod key"; exit 1; }
 pass "key pair: reboot-e2e-key"
 
-# Stage user-data on the node (HTTP responder for round-robin verification)
+# Stage user-data on the node (HTTP responder for round-robin verification).
+# Installed as a systemd unit so the responder survives guest VM reboots —
+# nohup-from-cloud-init only runs on first boot (cloud-init's per-instance
+# semaphore) and would leave the app silent after host_reboot, even though
+# OVN/HAProxy recover correctly.
 APP_USER_DATA=$(cat <<'USERDATA'
 #!/bin/bash
+set -e
 INSTANCE_ID=$(hostname)
-mkdir -p /tmp/httpd && cd /tmp/httpd
-echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > index.html
-nohup python3 -m http.server 80 --bind 0.0.0.0 > /dev/null 2>&1 &
+install -d -m 0755 /var/lib/httpd
+echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > /var/lib/httpd/index.html
+cat > /etc/systemd/system/reboot-e2e-httpd.service <<'UNIT'
+[Unit]
+Description=Reboot E2E HTTP responder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 80 --bind 0.0.0.0 --directory /var/lib/httpd
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now reboot-e2e-httpd.service
+
+# Workaround for viperblock WAL <4MB skip-upload bug (mulga-siv-122):
+# WriteWALToChunk(false) is a no-op when the WAL is under 4MB so small
+# user-data writes (the unit file, index.html) sit in the on-host WAL
+# and are lost when the host reboots before the WAL hits the threshold.
+# Write 8MB of zeros + sync to push WAL over the threshold so the
+# unit-file write definitely lands in predastore before the host reboot.
+# Drop when upstream fix lands.
+dd if=/dev/zero of=/var/lib/spinifex-e2e-pad bs=1M count=8 status=none
+sync
+rm -f /var/lib/spinifex-e2e-pad
+sync
 USERDATA
 )
 printf '%s' "$APP_USER_DATA" | put_to_node "$NODE_USERDATA_PATH"
@@ -544,9 +576,31 @@ wait_for_lb_active "$ALB_LB_ARN" "ALB post-reboot" "$LB_RECOVER_SECS" || true
 # 8.5: targets healthy again
 wait_for_targets_healthy "$ALB_TG_ARN" 2 "ALB post-reboot" "$LB_RECOVER_SECS" || true
 
-# 8.6: re-run the traffic burst
-echo ""
+# 8.6: wait for the ALB to *actually* serve traffic before the burst.
+# `wait_for_targets_healthy` reads cached state from spinifex's TG store —
+# post-reboot the cache still shows pre-reboot "healthy" until the lb-agent
+# inside the ALB system VM sends a fresh report. Without this wait, the burst
+# fires while the VM is still booting (HAProxy not yet bound to :80), the
+# guest kernel sends RST for every SYN, and the test sees 0/20 even though
+# OVN is fine — see histogram diagnosis on run 25899285589.
+log "Waiting for ALB to actually serve HTTP (up to 90s)..."
+ALB_READY=0
+for attempt in $(seq 1 45); do
+    BODY=$(node_ssh "curl -s --connect-timeout 2 --max-time 3 'http://${ALB_PUBLIC_IP}:80/' 2>/dev/null" || true)
+    if echo "$BODY" | jq -e '.instance_id' >/dev/null 2>&1; then
+        log "  ALB serving HTTP at attempt ${attempt}"
+        ALB_READY=1
+        break
+    fi
+    sleep 2
+done
+if [ "$ALB_READY" -ne 1 ]; then
+    fail "ALB did not begin serving HTTP within 90s post-reboot"
+    dump_diagnostics
+fi
+
 log "Re-running traffic burst against same ALB..."
+
 PRE_BURST_FAILED=$FAILED
 run_http_burst "http://${ALB_PUBLIC_IP}:80" "ALB post-reboot"
 if [ "$FAILED" -gt "$PRE_BURST_FAILED" ]; then

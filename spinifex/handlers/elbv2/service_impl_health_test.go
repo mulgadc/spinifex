@@ -160,3 +160,50 @@ func TestRegisterTargets_MultipleInstances(t *testing.T) {
 	assert.Equal(t, "10.0.1.50", tg.Targets[0].PrivateIP)
 	assert.Equal(t, "10.0.1.51", tg.Targets[1].PrivateIP)
 }
+
+// TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial verifies
+// that the startup reset rewrites every non-draining target's HealthState
+// back to "initial" so a daemon restart can't surface stale "healthy" claims
+// before the lb-agent has posted a fresh report. Refs mulga-siv-119.
+func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testing.T) {
+	store := setupTestNATS(t)
+	svc := &ELBv2ServiceImpl{store: store}
+
+	tg := &TargetGroupRecord{
+		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:000:targetgroup/test/tg-reset",
+		TargetGroupID:  "tg-reset",
+		Port:           80,
+		HealthCheck:    DefaultHealthCheck(),
+		Targets: []Target{
+			{Id: "i-h", HealthState: TargetHealthHealthy, HealthDesc: "Target is healthy", PrivateIP: "10.0.0.1"},
+			{Id: "i-u", HealthState: TargetHealthUnhealthy, HealthDesc: "Health check failed", PrivateIP: "10.0.0.2"},
+			{Id: "i-d", HealthState: TargetHealthDraining, HealthDesc: "Draining", PrivateIP: "10.0.0.3"},
+			{Id: "i-i", HealthState: TargetHealthInitial, PrivateIP: "10.0.0.4"},
+		},
+	}
+	require.NoError(t, store.PutTargetGroup(tg))
+
+	require.NoError(t, svc.ResetTargetHealthOnStartup(t.Context()))
+
+	got, err := store.GetTargetGroup("tg-reset")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Targets, 4)
+
+	byID := map[string]Target{}
+	for _, t := range got.Targets {
+		byID[t.Id] = t
+	}
+	assert.Equal(t, TargetHealthInitial, byID["i-h"].HealthState, "previously healthy must reset")
+	assert.Equal(t, TargetHealthInitial, byID["i-u"].HealthState, "previously unhealthy must reset")
+	assert.Equal(t, TargetHealthDraining, byID["i-d"].HealthState, "draining must be preserved")
+	assert.Equal(t, TargetHealthInitial, byID["i-i"].HealthState, "initial stays initial")
+}
+
+func TestResetTargetHealthOnStartup_NilSafe(t *testing.T) {
+	var svc *ELBv2ServiceImpl
+	assert.NoError(t, svc.ResetTargetHealthOnStartup(t.Context()))
+
+	svc2 := &ELBv2ServiceImpl{}
+	assert.NoError(t, svc2.ResetTargetHealthOnStartup(t.Context()))
+}

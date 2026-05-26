@@ -79,10 +79,6 @@ SPINIFEX_AZ="${SPINIFEX_AZ:-${SPINIFEX_REGION}a}"
 echo "=== Initializing (region=$SPINIFEX_REGION az=$SPINIFEX_AZ) ==="
 sudo spx admin init --force --region "$SPINIFEX_REGION" --az "$SPINIFEX_AZ" --node node1 --nodes 1
 
-echo "=== Installing CA certificate ==="
-sudo cp /etc/spinifex/ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt
-sudo update-ca-certificates
-
 echo "=== Starting services ==="
 sudo systemctl start spinifex.target
 

@@ -1,7 +1,9 @@
 package vm
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -375,11 +377,6 @@ func TestExecute_MicrovmFileChardev(t *testing.T) {
 }
 
 func TestExecute_ARM64_Q35(t *testing.T) {
-	const uefiPath = "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-	if _, err := os.Stat(uefiPath); err != nil {
-		t.Skipf("aarch64 UEFI firmware missing at %s: %v", uefiPath, err)
-	}
-
 	cfg := Config{
 		CPUCount:     1,
 		Memory:       512,
@@ -395,7 +392,99 @@ func TestExecute_ARM64_Q35(t *testing.T) {
 	args := cmd.Args[1:]
 	assert.Contains(t, cmd.Path, "qemu-system-aarch64")
 	assert.Equal(t, "virt", argValue(args, "-M"))
-	assert.Equal(t, uefiPath, argValue(args, "-bios"))
+	// Firmware is no longer auto-loaded via -bios on arm64 q35; it flows
+	// from cfg.UseUEFI as pflash CODE+VARS instead.
+	assert.False(t, argExists(args, "-bios"), "-bios must not be emitted")
+}
+
+// installFakeFirmware seeds a temp directory with code+vars files matching the
+// pflash split-file shape and swaps FirmwarePathCandidates so tests don't
+// depend on whatever firmware happens to be installed on the host.
+func installFakeFirmware(t *testing.T, arch string, varsBytes []byte) (codePath, varsPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	codePath = filepath.Join(dir, "CODE.fd")
+	varsPath = filepath.Join(dir, "VARS.fd")
+	require.NoError(t, os.WriteFile(codePath, []byte("fake-code"), 0o644))
+	require.NoError(t, os.WriteFile(varsPath, varsBytes, 0o644))
+
+	orig := FirmwarePathCandidates
+	FirmwarePathCandidates = map[string][]FirmwareCandidate{
+		arch: {{Code: codePath, VarsTemplate: varsPath}},
+	}
+	t.Cleanup(func() { FirmwarePathCandidates = orig })
+	return codePath, varsPath
+}
+
+func TestExecute_x86_64_UEFI(t *testing.T) {
+	codePath, _ := installFakeFirmware(t, "x86_64", make([]byte, 540_672))
+
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+		MachineType:  "q35",
+		UseUEFI:      true,
+		Drives:       []Drive{{File: "disk.img", Format: "raw", If: "none", ID: "os"}},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+	require.NotNil(t, cmd)
+	args := cmd.Args[1:]
+
+	driveArgs := allArgValues(args, "-drive")
+	require.GreaterOrEqual(t, len(driveArgs), 1)
+	assert.Equal(t, fmt.Sprintf("file=%s,format=raw,if=pflash,unit=0,readonly=on", codePath), driveArgs[0],
+		"first -drive must be pflash CODE readonly unit=0")
+	assert.False(t, argExists(args, "-bios"), "-bios must not be emitted under UEFI")
+}
+
+func TestExecute_x86_64_UEFI_MissingFirmware(t *testing.T) {
+	orig := FirmwarePathCandidates
+	FirmwarePathCandidates = map[string][]FirmwareCandidate{
+		"x86_64": {{Code: "/nonexistent/CODE.fd", VarsTemplate: "/nonexistent/VARS.fd"}},
+	}
+	t.Cleanup(func() { FirmwarePathCandidates = orig })
+
+	cfg := Config{
+		CPUCount:     1,
+		Memory:       512,
+		Architecture: "x86_64",
+		MachineType:  "q35",
+		UseUEFI:      true,
+		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
+	}
+
+	cmd, err := cfg.Execute()
+	assert.Nil(t, cmd)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x86_64", "error must name the architecture so operators know which firmware to install")
+}
+
+func TestExecute_ARM64_UEFI_pflash(t *testing.T) {
+	codePath, _ := installFakeFirmware(t, "arm64", make([]byte, 67_108_864))
+
+	cfg := Config{
+		CPUCount:     1,
+		Memory:       512,
+		Architecture: "arm64",
+		MachineType:  "q35",
+		UseUEFI:      true,
+		Drives:       []Drive{{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1}},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+	require.NotNil(t, cmd)
+	args := cmd.Args[1:]
+	assert.Contains(t, cmd.Path, "qemu-system-aarch64")
+	assert.Equal(t, "virt", argValue(args, "-M"))
+
+	driveArgs := allArgValues(args, "-drive")
+	require.Len(t, driveArgs, 2, "expect pflash CODE + VARS")
+	assert.Equal(t, fmt.Sprintf("file=%s,format=raw,if=pflash,unit=0,readonly=on", codePath), driveArgs[0])
+	assert.Equal(t, "file=nbd:unix:/tmp/efi.sock,format=raw,if=pflash,unit=1", driveArgs[1])
 }
 
 func TestExecute_MissingArchitecture(t *testing.T) {

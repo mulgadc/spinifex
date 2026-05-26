@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
 // scenarioLetters is the canonical ordered list of scenarios the suite

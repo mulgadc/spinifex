@@ -39,7 +39,7 @@ users:
   - name: {{.Username}}
     shell: /bin/sh
     groups:
-      - sudo
+      - {{.SudoGroup}}
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     ssh_authorized_keys:
       - {{.SSHKey}}
@@ -60,15 +60,21 @@ ca_certs:
 {{.UserDataCloudConfig}}
 {{end}}
 
-{{if .UserDataScript}}
+{{if or .RHELWriteFiles .UserDataScript}}
 write_files:
+{{- if .RHELWriteFiles}}
+{{.RHELWriteFiles}}{{end}}{{if .UserDataScript}}
   - path: /tmp/cloud-init-startup.sh
     permissions: '0755'
     content: |
-{{.UserDataScript}}
-
+{{.UserDataScript}}{{end}}
+{{end}}
+{{if or .RHELRunCmd .UserDataScript}}
 runcmd:
+{{- if .RHELRunCmd}}
+{{.RHELRunCmd}}{{end}}{{if .UserDataScript}}
   - [ "/bin/bash", "/tmp/cloud-init-startup.sh" ]
+{{end}}
 {{end}}
 `
 
@@ -90,6 +96,26 @@ const cloudInitNetworkConfigWildcard = `network:
       dhcp4: true
       dhcp-identifier: mac
 `
+
+// cloudInitNetworkConfigDisabled tells cloud-init to do no network rendering
+// at all. Used on RHEL-family guests where Spinifex writes NM keyfiles via
+// user-data write_files; without this stub cloud-init's RHEL network module
+// falls back to autodetect-DHCP and drops a second keyfile next to ours.
+const cloudInitNetworkConfigDisabled = `network:
+  config: disabled
+`
+
+// selectNetworkConfigForFamily returns the cloud-init network-config payload
+// for the given distro family. RHEL-family guests get an explicit
+// "config: disabled" stub because their NM keyfiles are written via user-data
+// write_files; shipping a netplan config alongside would let cloud-init's RHEL
+// network module drop a competing cloud-init-enpXsY.nmconnection.
+func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
+	if distroFamily == "rhel" {
+		return cloudInitNetworkConfigDisabled
+	}
+	return generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP, extraENIMACs)
+}
 
 // generateNetworkConfig produces the cloud-init network-config for the instance.
 //
@@ -163,6 +189,116 @@ type CloudInitData struct {
 	UserDataCloudConfig string
 	UserDataScript      string
 	CACertPEM           string
+	// DistroFamily selects per-distro branches in the cloud-init template.
+	// "debian" | "rhel" | "alpine". Empty falls through to debian rendering
+	// (legacy AMIs registered before the field existed).
+	DistroFamily string
+	// SudoGroup is the OS group cloud-init adds the user to for passwordless
+	// sudo. "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
+	SudoGroup string
+	// RHELWriteFiles is the pre-indented YAML block of NM keyfile entries
+	// (one per NIC) appended under the merged write_files: key. Empty on
+	// non-RHEL guests; the network-config ISO file carries the YAML netplan
+	// equivalent instead.
+	RHELWriteFiles string
+	// RHELRunCmd is the pre-indented YAML block of runcmd entries (restorecon
+	// + nmcli reload/up) needed to load and bring up the keyfiles. Empty on
+	// non-RHEL guests.
+	RHELRunCmd string
+}
+
+// buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
+// runcmd (restorecon + nmcli) blocks needed to bring up networking on a
+// RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
+// non-VPC path) so NM's default autoconnect handles the interface.
+//
+// Mirrors generateNetworkConfig's per-interface structure: vpc0 + optional
+// vpc1..N for extra ENIs, dev0 (DHCP with route/DNS suppression), mgmt0
+// (static). Owning the keyfile bytes directly avoids relying on cloud-init's
+// v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
+// which OVN's MAC-keyed DHCP requires.
+//
+// File mode 0600 root:root is load-bearing — NM ignores keyfiles otherwise.
+// restorecon defers to host SELinux policy (no-op on non-SELinux systems);
+// nmcli reload forces NM to rescan system-connections after write_files
+// completes in cloud-init's config stage, and nmcli up brings each interface
+// online without waiting on autoconnect heuristics.
+func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) (writeFiles, runCmd string) {
+	if eniMAC == "" {
+		return "", ""
+	}
+
+	var wf, rc strings.Builder
+
+	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
+	rc.WriteString("  - [ nmcli, connection, reload ]\n")
+
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
+	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
+
+	for i, mac := range extraENIMACs {
+		if mac == "" {
+			continue
+		}
+		name := fmt.Sprintf("vpc%d", i+1)
+		appendRHELDHCPKeyfile(&wf, name, mac, false)
+		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
+	}
+
+	if devMAC != "" {
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
+		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
+	}
+
+	if mgmtMAC != "" && mgmtIP != "" {
+		appendRHELStaticKeyfile(&wf, "mgmt0", mgmtMAC, mgmtIP)
+		rc.WriteString("  - [ nmcli, connection, up, mgmt0 ]\n")
+	}
+
+	// Trim trailing newline so the template's {{.RHELWriteFiles}} doesn't
+	// produce a blank line before the user-script write_files entry on
+	// instances that have both.
+	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
+}
+
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=auto\n")
+	b.WriteString("      dhcp-client-id=mac\n")
+	if suppressDefaults {
+		// Equivalent to netplan dhcp4-overrides {use-routes: false, use-dns: false}:
+		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
+		b.WriteString("      never-default=true\n")
+		b.WriteString("      ignore-auto-dns=true\n")
+	}
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
+}
+
+func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
+	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
+	b.WriteString("    owner: root:root\n")
+	b.WriteString("    permissions: '0600'\n")
+	b.WriteString("    content: |\n")
+	b.WriteString("      [connection]\n")
+	fmt.Fprintf(b, "      id=%s\n", name)
+	b.WriteString("      type=ethernet\n")
+	b.WriteString("      [ethernet]\n")
+	fmt.Fprintf(b, "      mac-address=%s\n", mac)
+	b.WriteString("      [ipv4]\n")
+	b.WriteString("      method=manual\n")
+	fmt.Fprintf(b, "      addresses=%s/24\n", ip)
+	b.WriteString("      [ipv6]\n")
+	b.WriteString("      method=disabled\n")
 }
 
 type CloudInitMetaData struct {
@@ -188,6 +324,33 @@ type volumeParams struct {
 	imageId             string
 	snapshotId          string
 	deleteOnTermination bool
+}
+
+// floorVolumeSizeToAMI ensures requested is at least the AMI's snapshot size.
+// Cloud images embed a fixed-size partition table; truncating below it (e.g.
+// a 10 GiB Rocky image requested at the 4 GiB default) hangs the guest in
+// dracut waiting on a root UUID that lives past the cut-off. AWS rejects
+// under-sized requests with InvalidParameterValue — spinifex silently rounds
+// up since we don't surface that error code today and the user-visible
+// failure (dracut hang) is worse than a slightly bigger volume.
+func floorVolumeSizeToAMI(loader AMIMetaLoader, imageID string, requested int) int {
+	if loader == nil || !strings.HasPrefix(imageID, "ami-") {
+		return requested
+	}
+	amiMeta, err := loader.GetAMIConfig(imageID)
+	if err != nil {
+		slog.Warn("floorVolumeSizeToAMI: AMI metadata fetch failed; using requested size — guest may dracut-hang if requested is smaller than the AMI snapshot", "imageId", imageID, "err", err)
+		return requested
+	}
+	if amiMeta.VolumeSizeGiB == 0 {
+		return requested
+	}
+	amiSize := utils.SafeUint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	if amiSize <= int64(requested) {
+		return requested
+	}
+	slog.Info("floorVolumeSizeToAMI: rounding up to AMI snapshot size", "imageId", imageID, "requestedBytes", requested, "amiBytes", amiSize)
+	return int(amiSize)
 }
 
 // parseVolumeParams extracts volume parameters from RunInstancesInput,
@@ -402,6 +565,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	launchCount := allocatableCount
 	slog.Info("PrepareRunInstances: count determined", "min", minCount, "max", maxCount, "launching", launchCount)
 
+	// Allocate is atomic per call (check + commit under a single write lock),
+	// so this loop can never overcommit. Under contention it may allocate
+	// fewer than allocatableCount; the < minCount branch below rolls back.
 	var allocatedCount int
 	for i := 0; i < launchCount; i++ {
 		if err := s.resourceMgr.Allocate(instanceType); err != nil {
@@ -431,6 +597,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			s.resourceMgr.Deallocate(instanceType)
 			continue
 		}
+		instance.BootMode = amiMeta.BootMode
 
 		// Terraform with associate_public_ip_address sends subnet/SG via
 		// NetworkInterfaces[0]; lift to top-level so the rest works uniformly.
@@ -471,7 +638,20 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			instance.ENIMac = *eni.MacAddress
 
 			if _, attachErr := s.eniCreator.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
-				slog.Error("PrepareRunInstances: failed to attach ENI to instance record — ELBv2 target IP resolution will fail", "eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+				// Without the attachment, RegisterTargets (TargetType=instance)
+				// resolves ENIs via attachment.instance-id, finds none, and
+				// silently drops the target; terminate leaks the auto-EIP.
+				slog.Error("PrepareRunInstances: AttachENI failed — aborting launch",
+					"eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+				if _, delErr := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+					NetworkInterfaceId: &instance.ENIId,
+				}, accountID); delErr != nil {
+					slog.Warn("PrepareRunInstances: failed to delete auto-created ENI after attach failure",
+						"eniId", instance.ENIId, "err", delErr)
+				}
+				lastRunErr = attachErr
+				s.resourceMgr.Deallocate(instanceType)
+				continue
 			}
 			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
 			ec2Instance.SetSubnetId(*input.SubnetId)
@@ -513,7 +693,16 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
 						portName := "port-" + *eni.NetworkInterfaceId
-						utils.PublishNATEvent(s.natsConn, "vpc.add-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
+							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
+								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+							// Timeout may have committed the rule after our window; neutralise before releasing the IP.
+							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
+							lastRunErr = natErr
+							s.resourceMgr.Deallocate(instanceType)
+							continue
+						}
 						ec2Instance.PublicIpAddress = aws.String(publicIP)
 						instance.PublicIP = publicIP
 						instance.PublicIPPool = poolName
@@ -703,11 +892,18 @@ func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC
 	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Attributes = command.Attributes })
 
 	if err := s.vmMgr.Start(instance.ID); err != nil {
-		slog.Error("StartInstance: vmMgr.Start failed", "err", err)
 		if ok {
 			s.resourceMgr.Deallocate(instanceType)
 		}
-		return errors.New(awserrors.ErrorServerInternal)
+		switch {
+		case errors.Is(err, vm.ErrInstanceNotFound):
+			slog.Warn("StartInstance: instance not found in manager",
+				"instanceId", command.ID, "err", err)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		default:
+			slog.Error("StartInstance: vmMgr.Start failed", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	s.vmMgr.UpdateGuestDeviceNames(instance)
@@ -801,6 +997,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
 	p := parseVolumeParams(input)
+	if input.ImageId != nil {
+		p.size = floorVolumeSizeToAMI(s.amiLoader, *input.ImageId, p.size)
+	}
 
 	// Capture attach time for the root volume
 	attachTime := time.Now()
@@ -830,10 +1029,14 @@ func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, inst
 		return nil, err
 	}
 
-	// Step 2: Create EFI partition
-	err = s.prepareEFIVolume(imageId, volumeConfig, instance)
-	if err != nil {
-		return nil, err
+	// Step 2: Create EFI variable store (only when the AMI is UEFI; BIOS
+	// guests must not allocate an orphan VARS volume).
+	if instance.BootMode == "uefi" || instance.BootMode == "uefi-preferred" {
+		arch := instanceArchitecture(s.instanceTypes[*input.InstanceType])
+		err = s.prepareEFIVolume(imageId, volumeConfig, instance, arch)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Step 3: Create cloud-init volume if needed
@@ -992,73 +1195,96 @@ func (s *InstanceServiceImpl) cloneAMIToVolume(input *ec2.RunInstancesInput, siz
 	return nil
 }
 
-// prepareEFIVolume creates the EFI boot partition
-func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM) error {
-	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
-	efiSize := 64 * 1024 * 1024 // 64MB
+// prepareEFIVolume creates the per-VM EFI variable store. The volume is
+// sized to match the firmware's VARS template (QEMU pflash refuses any other
+// size) and seeded with the template bytes so EFI variables — BootOrder,
+// BootNext, secure-boot state — survive across reboots. arch is the AMI
+// architecture string ("x86_64" | "arm64").
+func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
+	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
+	if err != nil {
+		slog.Error("UEFI firmware not installed on this host", "arch", arch, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	template, err := os.ReadFile(varsTemplate)
+	if err != nil {
+		slog.Error("Failed to read VARS template", "path", varsTemplate, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if int64(len(template)) != varsSize {
+		slog.Error("VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.Info("Preparing EFI variable store", "arch", arch, "code", codePath, "varsTemplate", varsTemplate, "size", varsSize)
 
-	// Update VolumeID to match the EFI volume name
+	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig
 	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
+	// Zero SizeGiB so viperblock's LoadState doesn't reconcile the EFI
+	// volume's persisted byte-exact size up to the parent root volume's
+	// GiB-rounded size — QEMU pflash rejects any VARS volume larger than
+	// the firmware's expected variable region.
+	efiVolumeConfig.VolumeMetadata.SizeGiB = 0
 
-	efiVb, err := s.newViperblock(efiVolumeName, efiSize, efiVolumeConfig)
+	efiVb, err := s.newViperblock(efiVolumeName, int(varsSize), efiVolumeConfig)
 	if err != nil {
 		slog.Error("Could not create EFI viperblock", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Initialize the backend
 	slog.Debug("Initializing EFI Viperblock store backend")
-	err = efiVb.Backend.Init()
-	if err != nil {
+	if err := efiVb.Backend.Init(); err != nil {
 		slog.Error("Failed to initialize EFI Viperblock store backend", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Load the state from the remote backend
-	_, err = efiVb.LoadStateRequest("")
-	slog.Info("LoadStateRequest", "error", err)
+	// Distinguish "not found" (seed from template) from any other backend
+	// failure (transient S3 5xx, JSON unmarshal, etc.). Treating a transient
+	// failure as "not found" would silently re-seed a volume on every retry,
+	// clobbering guest-set BootOrder. Backends signal missing-object by
+	// wrapping os.ErrNotExist (see viperblock.classifyStateLoad).
+	_, loadErr := efiVb.LoadStateRequest("")
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		slog.Error("Failed to load EFI volume state from backend", "name", efiVolumeName, "err", loadErr)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if loadErr != nil {
+		slog.Info("EFI volume does not yet exist, seeding from firmware VARS template", "name", efiVolumeName)
 
-	// Create EFI volume if it doesn't exist
-	if err != nil {
-		slog.Info("Volume does not yet exist, creating EFI disk ...")
-
-		// Open the chunk WAL (sharded or legacy)
+		var walErr error
 		if efiVb.UseShardedWAL {
-			err = efiVb.OpenShardedWAL()
+			walErr = efiVb.OpenShardedWAL()
 		} else {
-			err = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
+			walErr = efiVb.OpenWAL(&efiVb.WAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALChunk, efiVb.WAL.WallNum.Load(), efiVb.GetVolume())))
 		}
-		if err != nil {
-			slog.Error("Failed to load WAL", "err", err)
+		if walErr != nil {
+			slog.Error("Failed to load WAL", "err", walErr)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
-		// Open the block to object WAL
-		err = efiVb.OpenWAL(&efiVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, efiVb.BlockToObjectWAL.WallNum.Load(), efiVb.GetVolume())))
-		if err != nil {
+		if err := efiVb.OpenWAL(&efiVb.BlockToObjectWAL, fmt.Sprintf("%s/%s", efiVb.WAL.BaseDir, types.GetFilePath(types.FileTypeWALBlock, efiVb.BlockToObjectWAL.WallNum.Load(), efiVb.GetVolume()))); err != nil {
 			slog.Error("Failed to load block WAL", "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 
-		// Write an empty block to the EFI volume
-		if err := efiVb.WriteAt(0, make([]byte, efiVb.BlockSize)); err != nil {
-			slog.Error("Failed to write empty EFI block", "err", err)
+		if err := efiVb.WriteAt(0, template); err != nil {
+			slog.Error("Failed to seed EFI volume with VARS template", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if err := efiVb.Flush(); err != nil {
 			slog.Error("Failed to flush EFI volume", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	slog.Info("Closing EFI")
-	err = efiVb.Close()
-	slog.Info("Close", "error", err)
-	if err != nil {
+	// Close is the durability boundary after WriteAt+Flush; if it fails the
+	// VARS volume may be partially written and QEMU pflash will refuse to
+	// start. Fail the launch loudly rather than enqueueing a corrupt volume.
+	if err := efiVb.Close(); err != nil {
 		slog.Error("Failed to close EFI Viperblock store", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
 	}
-
-	err = efiVb.RemoveLocalFiles()
-	if err != nil {
+	if err := efiVb.RemoveLocalFiles(); err != nil {
 		slog.Error("Failed to remove local files", "err", err)
 	}
 
@@ -1071,6 +1297,17 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 	instance.EBSRequests.Mu.Unlock()
 
 	return nil
+}
+
+// instanceArchitecture pulls the AWS architecture string off an
+// ec2.InstanceTypeInfo. Returns "" when the spec is nil or malformed; the
+// caller's firmware probe surfaces that as a clear error rather than a
+// silent BIOS fallback.
+func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
+	if it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 || it.ProcessorInfo.SupportedArchitectures[0] == nil {
+		return ""
+	}
+	return *it.ProcessorInfo.SupportedArchitectures[0]
 }
 
 // prepareCloudInitVolume creates cloud-init ISO with SSH keys and user data.
@@ -1214,11 +1451,40 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
 	}
 
+	// Re-read AMI metadata for DistroFamily rather than persisting it on
+	// vm.VM — cloud-init renders once at first launch and the ISO is sealed,
+	// so no consumer needs DistroFamily after this point.
+	var distroFamily string
+	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
+		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
+		if err != nil {
+			slog.Warn("createCloudInitISO: AMI metadata fetch failed; cloud-init will render with debian-family defaults (RHEL guests will boot without networking and with wrong sudo group)", "imageId", *input.ImageId, "err", err)
+		} else {
+			distroFamily = amiMeta.DistroFamily
+		}
+	}
+
+	extraMACs := make([]string, 0, len(instance.ExtraENIs))
+	for _, extra := range instance.ExtraENIs {
+		extraMACs = append(extraMACs, extra.ENIMac)
+	}
+
+	sudoGroup := "sudo"
+	var rhelWriteFiles, rhelRunCmd string
+	if distroFamily == "rhel" {
+		sudoGroup = "wheel"
+		rhelWriteFiles, rhelRunCmd = buildRHELCloudInit(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	}
+
 	userData := CloudInitData{
-		Username:  "ec2-user",
-		SSHKey:    string(sshKey),
-		Hostname:  hostname,
-		CACertPEM: caCertPEM,
+		Username:       "ec2-user",
+		SSHKey:         string(sshKey),
+		Hostname:       hostname,
+		CACertPEM:      caCertPEM,
+		DistroFamily:   distroFamily,
+		SudoGroup:      sudoGroup,
+		RHELWriteFiles: rhelWriteFiles,
+		RHELRunCmd:     rhelRunCmd,
 	}
 
 	// Decode and classify user-data from RunInstances (base64-encoded).
@@ -1280,12 +1546,10 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 
 	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
 	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
-	// multi-subnet system VMs (multi-AZ ALBs).
-	extraMACs := make([]string, 0, len(instance.ExtraENIs))
-	for _, extra := range instance.ExtraENIs {
-		extraMACs = append(extraMACs, extra.ENIMac)
-	}
-	networkConfig := generateNetworkConfig(instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
+	// multi-subnet system VMs (multi-AZ ALBs). RHEL-family guests get a
+	// "config: disabled" stub here so cloud-init doesn't drop a second NM
+	// keyfile alongside the ones we wrote via user-data write_files.
+	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
 	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
 	if err != nil {
 		slog.Error("failed to add network-config file", "err", err)
@@ -2018,6 +2282,43 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 		}
 	}
 	_ = instanceID
+}
+
+// rollbackAutoAssignedPublicIP unwinds an auto-assign that proceeded past
+// ENI create + attach + IPAM allocation + ENI update but failed at the
+// vpc.add-nat barrier. Order matters: clear the ENI record first so any
+// concurrent DescribeNetworkInterfaces stops surfacing the unreachable IP,
+// then release the IPAM lease so the pool slot can be reused, then detach
+// and delete the ENI itself — the failing instance never enters vmMgr, so
+// terminateCleanup will not run and the ENI would otherwise leak. Detach
+// must precede DeleteNetworkInterface; the latter rejects in-use ENIs.
+func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(accountID, instanceID, eniID, publicIP, poolName string) {
+	if s.eniCreator != nil {
+		if err := s.eniCreator.UpdateENIPublicIP(accountID, eniID, "", ""); err != nil {
+			slog.Warn("PrepareRunInstances: failed to clear ENI public IP during NAT-failure rollback",
+				"eniId", eniID, "publicIp", publicIP, "err", err)
+		}
+	}
+	if s.ipReleaser != nil {
+		if err := s.ipReleaser.ReleaseIP(poolName, publicIP); err != nil {
+			slog.Warn("PrepareRunInstances: failed to release public IP during NAT-failure rollback",
+				"publicIp", publicIP, "pool", poolName, "err", err)
+		}
+	}
+	if s.eniCreator != nil {
+		if err := s.eniCreator.DetachENI(accountID, eniID); err != nil {
+			slog.Warn("PrepareRunInstances: failed to detach ENI during NAT-failure rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+		}
+	}
+	if s.eniDeleter != nil {
+		if _, err := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		}, accountID); err != nil {
+			slog.Warn("PrepareRunInstances: failed to delete ENI during NAT-failure rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+		}
+	}
 }
 
 func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceID string) {

@@ -1,14 +1,23 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -307,5 +316,266 @@ func TestWriteFwCfgBlobs_InvalidNICs_NoDefault(t *testing.T) {
 	for _, e := range entries {
 		assert.False(t, strings.HasPrefix(e.Name(), "fwcfg-i-bad-nics"),
 			"unexpected tmpfile left behind: %s", e.Name())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// refreshSystemInstanceState
+// ---------------------------------------------------------------------------
+
+// newRefreshTestDaemon returns a Daemon wired with vmMgr + a fresh ELBv2
+// service, with XDG_RUNTIME_DIR pointed at a per-test tmpdir so
+// writeFwCfgBlobs is sandboxed. The returned nats.Conn lets the caller seed
+// LB records via a separate Store handle sharing the same KV bucket.
+func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	t.Cleanup(svc.Close)
+	return &Daemon{vmMgr: vm.NewManager(), elbv2Service: svc}, nc, tmpDir
+}
+
+func TestRefreshSystemInstanceState_NonELBv2IsNoop(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager()}
+	require.NoError(t, d.refreshSystemInstanceState(&vm.VM{ID: "i-customer", ManagedBy: ""}))
+}
+
+func TestRefreshSystemInstanceState_NilELBv2ServiceErrors(t *testing.T) {
+	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: nil}
+	err := d.refreshSystemInstanceState(&vm.VM{ID: "i-no-svc", ManagedBy: tags.ManagedByELBv2})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "elbv2 service unavailable")
+}
+
+func TestRefreshSystemInstanceState_NoLBRecord(t *testing.T) {
+	d, _, tmpDir := newRefreshTestDaemon(t)
+	inst := &vm.VM{ID: "i-orphan-alb", ManagedBy: tags.ManagedByELBv2, InstanceType: "sys.micro"}
+
+	err := d.refreshSystemInstanceState(inst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rebuild system instance input")
+	assert.Contains(t, err.Error(), "no LB record references instance i-orphan-alb")
+
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), "fwcfg-i-orphan-alb"),
+			"stale tmpfile left behind on rebuild failure: %s", e.Name())
+	}
+}
+
+func TestRefreshSystemInstanceState_RewritesBlobs(t *testing.T) {
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+	d.elbv2Service.SystemAccessKey = "AKID-recover"
+	d.elbv2Service.SystemSecretKey = "SECRET-recover"
+	d.elbv2Service.GatewayURL = "https://10.0.0.1:9999"
+	d.elbv2Service.CACert = "-----BEGIN CERTIFICATE-----\nfake-ca\n-----END CERTIFICATE-----\n"
+
+	seedStore, err := handlers_elbv2.NewStore(nc)
+	require.NoError(t, err)
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+		LoadBalancerID: "lb-recover",
+		Name:           "recover-alb",
+		Scheme:         handlers_elbv2.SchemeInternal,
+		Type:           handlers_elbv2.LoadBalancerTypeApplication,
+		State:          handlers_elbv2.StateActive,
+		Subnets:        []string{"subnet-aaa"},
+		ENIs:           []string{"eni-primary"},
+		InstanceID:     "i-recover-blobs",
+		VPCIP:          "10.0.1.5",
+		AccountID:      "123456789012",
+	}))
+
+	inst := &vm.VM{
+		ID:           "i-recover-blobs",
+		ManagedBy:    tags.ManagedByELBv2,
+		InstanceType: "sys.micro",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
+	}
+	require.NoError(t, d.refreshSystemInstanceState(inst))
+
+	netcfg, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-netcfg.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(netcfg), "NIC0_MAC=02:aa:bb:cc:dd:01")
+	assert.Contains(t, string(netcfg), "NIC1_MAC=02:a0:00:11:22:33")
+
+	lbenv, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-lbenv.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(lbenv), "LB_LB_ID=lb-recover")
+	assert.Contains(t, string(lbenv), "LB_ACCESS_KEY=AKID-recover")
+
+	cacert, err := os.ReadFile(filepath.Join(tmpDir, "fwcfg-i-recover-blobs-cacert.tmp"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cacert), "fake-ca")
+}
+
+// TestRefreshSystemInstanceState_WriteErrorPropagates exercises the
+// writeFwCfgBlobs error path (plan §3): a write failure under the tmpfs
+// path must surface as a wrapped error so MarkRecoveryFailed gets called.
+func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
+	d, nc, tmpDir := newRefreshTestDaemon(t)
+
+	seedStore, err := handlers_elbv2.NewStore(nc)
+	require.NoError(t, err)
+	require.NoError(t, seedStore.PutLoadBalancer(&handlers_elbv2.LoadBalancerRecord{
+		LoadBalancerID: "lb-werr",
+		Name:           "werr-alb",
+		Scheme:         handlers_elbv2.SchemeInternal,
+		Type:           handlers_elbv2.LoadBalancerTypeApplication,
+		State:          handlers_elbv2.StateActive,
+		Subnets:        []string{"subnet-aaa"},
+		ENIs:           []string{"eni-primary"},
+		InstanceID:     "i-werr",
+		VPCIP:          "10.0.1.5",
+		AccountID:      "123456789012",
+	}))
+
+	// Replace XDG_RUNTIME_DIR with a regular file so os.WriteFile in
+	// writeFwCfgBlobs fails with ENOTDIR. tmpDir from the helper is no
+	// longer the runtime dir for this test.
+	_ = tmpDir
+	notADir := filepath.Join(t.TempDir(), "blocking-file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0600))
+	t.Setenv("XDG_RUNTIME_DIR", notADir)
+
+	inst := &vm.VM{
+		ID:           "i-werr",
+		ManagedBy:    tags.ManagedByELBv2,
+		InstanceType: "sys.micro",
+		ENIMac:       "02:aa:bb:cc:dd:01",
+		MgmtMAC:      "02:a0:00:11:22:33",
+		MgmtIP:       "172.31.0.7",
+	}
+	err = d.refreshSystemInstanceState(inst)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rewrite fw_cfg blobs")
+}
+
+// TestLaunchSystemInstance_NATFailureRollsBackPublicIP regresses the silent
+// corruption where an internet-facing ALB launch committed the IPAM
+// allocation and surfaced the public IP on the ENI record even when
+// vpc.add-nat failed — the OVN dnat_and_snat rule was never created and the
+// public IP black-holed with no reconciler. With the fix, NAT NACK must roll
+// back the ENI public IP and release the IPAM lease before returning.
+func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
+	d := createVPCTestDaemon(t)
+
+	// Wire an ExternalIPAM against a fresh JS server. The pool gives us a
+	// known IP that the rollback must release back.
+	jsNS, err := server.NewServer(&server.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	require.NoError(t, err)
+	go jsNS.Start()
+	require.True(t, jsNS.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { jsNS.Shutdown() })
+
+	jsNC, err := nats.Connect(jsNS.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { jsNC.Close() })
+
+	js, err := jsNC.JetStream()
+	require.NoError(t, err)
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(jsNC, js, []handlers_ec2_vpc.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	d.externalIPAM = ipam
+
+	// Create a VPC + subnet + ENI so LaunchSystemInstance has a real ENI to
+	// attach to and to update with the public IP.
+	vpcOut, err := d.vpcService.CreateVpc(&ec2.CreateVpcInput{
+		CidrBlock: aws.String("10.50.0.0/16"),
+	}, testAccountID)
+	require.NoError(t, err)
+	subnetOut, err := d.vpcService.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:     vpcOut.Vpc.VpcId,
+		CidrBlock: aws.String("10.50.1.0/24"),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniOut, err := d.vpcService.CreateNetworkInterface(&ec2.CreateNetworkInterfaceInput{
+		SubnetId:    subnetOut.Subnet.SubnetId,
+		Description: aws.String("nat-fail-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	eniID := aws.StringValue(eniOut.NetworkInterface.NetworkInterfaceId)
+	eniMac := aws.StringValue(eniOut.NetworkInterface.MacAddress)
+	eniIP := aws.StringValue(eniOut.NetworkInterface.PrivateIpAddress)
+
+	// Stand up a vpcd-shaped NACK responder on the daemon's NATS conn —
+	// utils.AddNAT publishes on d.natsConn, so the responder must live there.
+	sub, err := d.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	// Capture vpc.delete-nat so we can assert the rollback neutralises any
+	// rule vpcd may have committed after the AddNAT timeout window.
+	deleteNATCh := make(chan map[string]string, 1)
+	delSub, err := d.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p map[string]string
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = delSub.Unsubscribe() })
+
+	input := &handlers_elbv2.SystemInstanceInput{
+		InstanceType: getTestInstanceType(t),
+		SubnetID:     aws.StringValue(subnetOut.Subnet.SubnetId),
+		Scheme:       handlers_elbv2.SchemeInternetFacing,
+		AccountID:    testAccountID,
+		ENIID:        eniID,
+		ENIMac:       eniMac,
+		ENIIP:        eniIP,
+	}
+
+	out, err := d.LaunchSystemInstance(input)
+	require.Error(t, err, "NAT NACK must fail the launch")
+	assert.Nil(t, out, "no SystemInstanceOutput should be returned on NAT failure")
+	assert.Contains(t, err.Error(), "northd unavailable", "error must propagate the vpcd reason")
+
+	// ENI public IP record must be cleared so subsequent DescribeNetworkInterfaces
+	// does not surface the unreachable address.
+	descOut, err := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, descOut.NetworkInterfaces, 1)
+	// Association is built only when the underlying record has a public IP;
+	// rollback clears that field, so the helper omits Association entirely.
+	assert.Nil(t, descOut.NetworkInterfaces[0].Association,
+		"ENI must not carry the unreachable public IP after rollback")
+
+	// IPAM lease must be back in the pool so the next allocation can reuse
+	// it. .10 is the gateway (reserved at init); the first allocable IP is
+	// .11, which is what the launch grabbed and the rollback released.
+	rec, err := ipam.GetPoolRecord("wan-test")
+	require.NoError(t, err)
+	_, stillAllocated := rec.Allocated["203.0.113.11"]
+	assert.False(t, stillAllocated, "rollback must release the allocated IP back to the pool")
+
+	// vpc.delete-nat must be published with the same external IP that AddNAT
+	// targeted so vpcd reaps any rule committed after the request timeout.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "203.0.113.11", got["external_ip"])
+		assert.Equal(t, eniIP, got["logical_ip"])
+		assert.Equal(t, "port-"+eniID, got["port_name"])
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
 	}
 }

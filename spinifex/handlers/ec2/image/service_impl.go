@@ -246,7 +246,9 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 			ownerID = utils.GlobalAccountID
 		}
 
-		// Build EC2 Image from AMIMetadata
+		// Build EC2 Image from AMIMetadata. Empty BootMode passes through as
+		// empty so legacy AMIs registered before this field existed don't get
+		// a synthesized value.
 		image := &ec2.Image{
 			ImageId:            aws.String(amiMeta.ImageID),
 			Name:               aws.String(amiMeta.Name),
@@ -262,6 +264,7 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 			State:              aws.String("available"),
 			ImageType:          aws.String("machine"),
 			Hypervisor:         aws.String("xen"), // Default hypervisor
+			BootMode:           aws.String(amiMeta.BootMode),
 		}
 
 		if bdms := synthesizeRootBlockDeviceMapping(amiMeta); bdms != nil {
@@ -445,6 +448,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		CreationDate:    time.Now(),
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
+		BootMode:        sourceAMI.BootMode,
 	}
 
 	if err := s.putAMIConfig(amiID, meta); err != nil {
@@ -831,6 +835,7 @@ func (s *ImageServiceImpl) CopyImage(input *ec2.CopyImageInput, accountID string
 		RootDeviceType:  rootDeviceType,
 		ImageOwnerAlias: accountID,
 		CreationDate:    time.Now(),
+		BootMode:        srcMeta.BootMode,
 		Tags:            tags,
 	}
 

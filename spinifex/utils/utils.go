@@ -270,7 +270,7 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		var written int64
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
 			written += int64(n)
-			spin.UpdateText(fmt.Sprintf("Downloading %s (%s) ...", name, humanBytes(SafeInt64ToUint64(written))))
+			spin.UpdateText(fmt.Sprintf("Downloading %s (%s) ...", name, HumanBytes(SafeInt64ToUint64(written))))
 		}))
 		_, err = io.Copy(f, reader)
 		_ = spin.Stop()
@@ -291,7 +291,9 @@ func (pw progressWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func humanBytes(b uint64) string {
+// HumanBytes formats a byte count using IEC binary suffixes (KiB, MiB, ...).
+// Values below 1024 render as exact bytes.
+func HumanBytes(b uint64) string {
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%d B", b)

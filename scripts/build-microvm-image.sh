@@ -35,9 +35,15 @@ done
 
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
+CONTAINER_TOOL=""
+CONTAINER_CID=""
 cleanup() {
     echo "[build-microvm-image] cleaning up chroot: $CHROOT_DIR"
     rm -rf "$CHROOT_DIR"
+    if [ -n "$CONTAINER_CID" ] && [ -n "$CONTAINER_TOOL" ]; then
+        echo "[build-microvm-image] cleaning up container: $CONTAINER_CID"
+        $CONTAINER_TOOL rm -f "$CONTAINER_CID" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup EXIT
 
@@ -63,7 +69,6 @@ EOF
 
 # Strategy 2/3: container runtime (dev machines)
 else
-    CONTAINER_TOOL=""
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         CONTAINER_TOOL=docker
     elif command -v podman >/dev/null 2>&1; then
@@ -75,19 +80,17 @@ else
     fi
 
     echo "[build-microvm-image] rootfs: $CONTAINER_TOOL export (alpine:${ALPINE_VERSION})"
-    cid=$($CONTAINER_TOOL run -d \
+    CONTAINER_CID=$($CONTAINER_TOOL run -d \
         "alpine:${ALPINE_VERSION}" \
         sh -c "apk add --no-cache ${ALPINE_PACKAGES}")
 
-    exit_code=$($CONTAINER_TOOL wait "$cid")
+    exit_code=$($CONTAINER_TOOL wait "$CONTAINER_CID")
     if [ "$exit_code" != "0" ]; then
         echo "ERROR: package installation failed in container (exit $exit_code)" >&2
-        $CONTAINER_TOOL rm "$cid" >/dev/null 2>&1 || true
         exit 1
     fi
 
-    $CONTAINER_TOOL export "$cid" | tar -x -C "$CHROOT_DIR"
-    $CONTAINER_TOOL rm "$cid" >/dev/null 2>&1
+    $CONTAINER_TOOL export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
 fi
 
 # --- Fix /dev device nodes ---

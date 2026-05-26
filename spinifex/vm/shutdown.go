@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,8 +34,38 @@ func (m *Manager) Stop(id string) error {
 		return ErrInstanceNotFound
 	}
 
-	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
+	migrated, err := m.stopOne(instance)
+	if err != nil {
 		return err
+	}
+	if !migrated {
+		return nil
+	}
+
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("Failed to persist state after stop, re-adding to local map for consistency",
+			"instanceId", instance.ID, "err", err)
+		m.InsertIfAbsent(instance)
+		return nil
+	}
+	slog.Info("Released instance ownership to KV",
+		"instanceId", instance.ID, "state", string(StateStopped), "lastNode", m.deps.NodeID)
+	return nil
+}
+
+// stopOne runs the per-instance stop sequence shared by Stop and StopAll:
+// transition to Stopping → stopCleanup → transition to Stopped → migrate
+// to the cluster-shared "stopped" KV bucket → fire OnInstanceDown.
+// Returns (true, nil) when the migration removed the instance from the
+// local map under this caller's ownership; the caller must then persist
+// the running state. Returns (false, nil) when migration was skipped
+// (KV write failure or slot reclaim) — see MigrateStoppedToSharedKV for
+// why OnInstanceDown must not fire in that case. Returns (false, err)
+// when the precheck rejects the transition; non-Running VMs surface as
+// ErrInvalidTransition so fan-out callers can skip them.
+func (m *Manager) stopOne(instance *VM) (bool, error) {
+	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
+		return false, err
 	}
 
 	m.stopCleanup(instance)
@@ -52,34 +83,28 @@ func (m *Manager) Stop(id string) error {
 		// VM). Either way, do not fire OnInstanceDown — firing it would
 		// unsubscribe the per-id NATS subscriptions of the reclaimed
 		// instance.
-		return nil
+		return false, nil
 	}
 
 	if m.deps.Hooks.OnInstanceDown != nil {
 		m.deps.Hooks.OnInstanceDown(instance.ID)
 	}
-
-	if err := m.writeRunningState(); err != nil {
-		slog.Error("Failed to persist state after stop, re-adding to local map for consistency",
-			"instanceId", instance.ID, "err", err)
-		m.InsertIfAbsent(instance)
-		return nil
-	}
-	slog.Info("Released instance ownership to KV",
-		"instanceId", instance.ID, "state", string(StateStopped), "lastNode", m.deps.NodeID)
-	return nil
+	return true, nil
 }
 
-// StopAll fans Stop's per-instance shutdown out across every VM the
-// manager currently holds. Used by the coordinated shutdown DRAIN phase
-// and by the SIGTERM signal handler. Each instance shuts down in its own
-// goroutine so total wall-time is bounded by the slowest VM; errors are
-// logged per instance and never abort the fan-out.
+// StopAll fans stopOne out across every VM the manager currently holds.
+// Used by the coordinated shutdown DRAIN phase. Each instance transitions
+// through Stopping → Stopped, is migrated to the cluster-shared "stopped"
+// KV bucket, and fires OnInstanceDown — matching Stop's contract so that
+// a daemon restart sees the instances as stopped rather than promoting
+// them through the failed-recovery path. The fan-out runs one goroutine
+// per VM so total wall-time is bounded by the slowest, and per-VM errors
+// (e.g. non-Running precheck failures) are logged but never abort the
+// fan-out. writeRunningState is called once at the end rather than per
+// VM to avoid O(N²) marshalling of the running map.
 //
-// Volume + tap teardown only — instances persist locally so the cluster
-// sees them as stopped after the daemon restarts. AWS resources (ENI,
-// public IP, placement group) are not released because the instance is
-// not being terminated.
+// Volume + tap teardown only — AWS resources (ENI, public IP, placement
+// group) are not released because the instance is not being terminated.
 func (m *Manager) StopAll() error {
 	snapshot := m.Snapshot()
 	if len(snapshot) == 0 {
@@ -90,10 +115,21 @@ func (m *Manager) StopAll() error {
 		wg.Add(1)
 		go func(v *VM) {
 			defer wg.Done()
-			m.stopCleanup(v)
+			if _, err := m.stopOne(v); err != nil {
+				if errors.Is(err, ErrInvalidTransition) {
+					slog.Debug("StopAll: skipping non-running instance",
+						"instanceId", v.ID, "state", string(m.Status(v)))
+					return
+				}
+				slog.Error("StopAll: stopOne failed", "instanceId", v.ID, "err", err)
+			}
 		}(instance)
 	}
 	wg.Wait()
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("StopAll: failed to persist running state after fan-out", "err", err)
+		return err
+	}
 	return nil
 }
 

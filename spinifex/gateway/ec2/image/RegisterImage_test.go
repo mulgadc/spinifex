@@ -124,8 +124,23 @@ func TestValidateRegisterImageInput(t *testing.T) {
 			errMsg:  awserrors.ErrorInvalidParameterValue,
 		},
 		{
-			name:    "BootModeRejected",
+			name:    "BootModeAcceptedBios",
+			mutate:  func(i *ec2.RegisterImageInput) { i.BootMode = aws.String("bios") },
+			wantErr: false,
+		},
+		{
+			name:    "BootModeAcceptedUEFI",
 			mutate:  func(i *ec2.RegisterImageInput) { i.BootMode = aws.String("uefi") },
+			wantErr: false,
+		},
+		{
+			name:    "BootModeAcceptedUEFIPreferred",
+			mutate:  func(i *ec2.RegisterImageInput) { i.BootMode = aws.String("uefi-preferred") },
+			wantErr: false,
+		},
+		{
+			name:    "BootModeRejectedInvalidValue",
+			mutate:  func(i *ec2.RegisterImageInput) { i.BootMode = aws.String("legacy-bios") },
 			wantErr: true,
 			errMsg:  awserrors.ErrorInvalidParameterValue,
 		},

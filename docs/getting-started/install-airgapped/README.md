@@ -57,6 +57,7 @@ sudo apt update
 sudo apt install --download-only -y \
   nbdkit nbdkit-plugin-dev pkg-config \
   qemu-system-x86 qemu-utils qemu-kvm \
+  ovmf qemu-efi-aarch64 \
   libvirt-daemon-system libvirt-clients libvirt-dev \
   ovn-central ovn-host openvswitch-switch \
   dhcpcd-base make gcc jq curl iproute2 netcat-openbsd \
@@ -74,7 +75,7 @@ Mirror the cloud image you intend to run as guest VMs:
 
 ```bash
 mkdir -p images
-curl -fsSL "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-amd64-20260501-2465.qcow2" \
+curl -fsSL "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.qcow2" \
   -o images/debian-13-amd64.qcow2
 ```
 
@@ -141,7 +142,7 @@ Register the pre-staged image with Spinifex:
 
 ```bash
 sudo spx admin images import --file /mnt/usb/images/debian-13-amd64.qcow2 \
-  --distro debian --version 13 --arch x86_64
+  --distro debian --version 13 --arch x86_64 --boot-mode uefi
 ```
 
 ## Step 9. Verify
@@ -183,4 +184,4 @@ sudo INSTALL_SPINIFEX_TARBALL=/mnt/usb/tarball/spinifex-...tar.gz \
 
 ### Image Import Fails
 
-`spx admin images import --file` requires the distro/version/arch flags so the image registers in the catalogue. If the import succeeds but `aws ec2 describe-images` returns empty, check `journalctl -u spinifex-daemon -f` for predastore upload errors.
+`spx admin images import --file` requires the distro/version/arch/boot-mode flags so the image registers in the catalogue. If the import succeeds but `aws ec2 describe-images` returns empty, check `journalctl -u spinifex-daemon -f` for predastore upload errors.

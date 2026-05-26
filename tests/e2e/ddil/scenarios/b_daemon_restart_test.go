@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/ddil/fault"
 )
 
 // TestScenarioB_DaemonRestartWithoutNATS — kill spinifex-nats, restart
@@ -26,7 +28,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 	deps := requireLiveCluster(t)
 	c, ssh, dc, w := deps.cluster, deps.ssh, deps.dc, deps.witness
 
-	harness.Run(t, c, ssh, "B", func(t *testing.T) {
+	ddilh.Run(t, c, ssh, "B", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
@@ -35,7 +37,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 		node3 := c.Nodes[2]
 		_ = launchWitnesses(ctx, t, w, node3)
 
-		pre, err := harness.TakeSnapshot(ctx, dc, node3)
+		pre, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("pre-fault snapshot on %s: %v", node3.Name, err)
 		}
@@ -43,20 +45,20 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 			t.Fatalf("pre-fault /local/instances on %s empty — witness launch did not register", node3.Name)
 		}
 
-		if err := harness.KillNATS(ctx, ssh, node3); err != nil {
+		if err := fault.KillNATS(ctx, ssh, node3); err != nil {
 			t.Fatalf("kill nats on %s: %v", node3.Name, err)
 		}
 		t.Cleanup(func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer ccancel()
-			_ = harness.StartNATS(cctx, ssh, node3)
+			_ = fault.StartNATS(cctx, ssh, node3)
 		})
 
 		// 1d's promise is "daemon comes up without NATS". The 30s budget is
 		// the plan's threshold — if it slips, the new startup path has
 		// regressed back to the 5-minute NATS-wait abort.
 		restartStart := time.Now()
-		if err := harness.RestartDaemonOnly(ctx, ssh, node3); err != nil {
+		if err := fault.RestartDaemonOnly(ctx, ssh, node3); err != nil {
 			t.Fatalf("restart daemon on %s: %v", node3.Name, err)
 		}
 		if err := harness.WaitForMode(ctx, dc, node3, harness.ModeStandalone, 30*time.Second); err != nil {
@@ -64,7 +66,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 		}
 		t.Logf("daemon on %s reached standalone in %s", node3.Name, time.Since(restartStart))
 
-		post, err := harness.TakeSnapshot(ctx, dc, node3)
+		post, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("post-restart snapshot on %s: %v", node3.Name, err)
 		}
@@ -80,7 +82,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 			}
 		}
 
-		if err := harness.StartNATS(ctx, ssh, node3); err != nil {
+		if err := fault.StartNATS(ctx, ssh, node3); err != nil {
 			t.Fatalf("restart nats on %s: %v", node3.Name, err)
 		}
 		if err := harness.WaitForMode(ctx, dc, node3, harness.ModeCluster, 60*time.Second); err != nil {

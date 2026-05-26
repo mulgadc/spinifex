@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="20" failures="17" skipped="0">
+	<testsuite name="" tests="20" failures="17" errors="0" id="0" hostname="banksia" skipped="0" time="600.000" timestamp="2026-04-12T12:30:00+10:00">
+		<testcase name="TestSingleNode" classname="" time="600.000">
+			<failure message="Failed"></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase1_Environment" classname="" time="0.300">
+			<system-out><![CDATA[
+&#x2501;&#x2501; Phase 1 &#x2501;&#x2501;]]></system-out>
+		</testcase>
+		<testcase name="TestSingleNode/Phase2_Discovery" classname="" time="0.010"/>
+		<testcase name="TestSingleNode/Phase3_KeyPairs" classname="" time="0.540"/>
+		<testcase name="TestSingleNode/Phase4_Image" classname="" time="0.060"/>
+		<testcase name="TestSingleNode/Phase5_LaunchInstance" classname="" time="2.500">
+			<failure message="Failed"><![CDATA[
+    ec2helpers.go:164: describe-vpcs: InvalidParameterValue: Filter 'is_default' is invalid (status 400)
+    	Error Trace:	tests/e2e/harness/ec2helpers.go:164
+    	Error:      	Received unexpected error:
+    	            	InvalidParameterValue (HTTP 400)
+    	Test:       	TestSingleNode/Phase5_LaunchInstance]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_pre_ClusterStats" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    lifecycle_test.go:28:
+        Error Trace:	tests/e2e/single/lifecycle_test.go:28
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase5a_pre_ClusterStats]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5a_Metadata" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    lifecycle_test.go:57:
+        Error Trace:	tests/e2e/single/lifecycle_test.go:57
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase5a_Metadata]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5b_DescribeInstances" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    lifecycle_test.go:109:
+        Error Trace:	tests/e2e/single/lifecycle_test.go:109
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase5b_DescribeInstances]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase5c_StopStart" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    lifecycle_test.go:222:
+        Error Trace:	tests/e2e/single/lifecycle_test.go:222
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase5c_StopStart]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase6_Volumes" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    volume_test.go:23:
+        Error Trace:	tests/e2e/single/volume_test.go:23
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase6_Volumes]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase6b_AttachVolume" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    volume_test.go:24:
+        Error Trace:	tests/e2e/single/volume_test.go:24
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase6b_AttachVolume]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7_Tags" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    tags_test.go:23:
+        Error Trace:	tests/e2e/single/tags_test.go:23
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7_Tags]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7a_Snapshots" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    snapshot_test.go:23:
+        Error Trace:	tests/e2e/single/snapshot_test.go:23
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7a_Snapshots]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7b_DescribeInstanceAttribute" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    instance_test.go:81:
+        Error Trace:	tests/e2e/single/instance_test.go:81
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7b_DescribeInstanceAttribute]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7c_ModifyInstanceAttribute" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    instance_test.go:92:
+        Error Trace:	tests/e2e/single/instance_test.go:92
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7c_ModifyInstanceAttribute]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7d_Console" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    instance_test.go:121:
+        Error Trace:	tests/e2e/single/instance_test.go:121
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7d_Console]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase7e_Negative" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    negative_test.go:43:
+        Error Trace:	tests/e2e/single/negative_test.go:43
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase7e_Negative]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8_NatGW" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    natgw_test.go:39:
+        Error Trace:	tests/e2e/single/natgw_test.go:39
+        Error:      	Should NOT be empty
+        Messages:   	Phase 2 must populate fix.AZName
+        Test:       	TestSingleNode/Phase8_NatGW]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase8a_DataPath" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    datapath_test.go:48:
+        Error Trace:	tests/e2e/single/datapath_test.go:48
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase8a_DataPath]]></failure>
+		</testcase>
+		<testcase name="TestSingleNode/Phase9_SecurityGroups" classname="" time="0.020">
+			<failure message="Failed"><![CDATA[
+    securitygroup_test.go:35:
+        Error Trace:	tests/e2e/single/securitygroup_test.go:35
+        Error:      	Should NOT be empty
+        Messages:   	Phase 5 must populate fix.InstanceID
+        Test:       	TestSingleNode/Phase9_SecurityGroups]]></failure>
+		</testcase>
+	</testsuite>
+</testsuites>

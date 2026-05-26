@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
 // NodeInfo describes a node participating in cluster formation.
@@ -233,7 +235,9 @@ func (fs *FormationServer) Start(bindAddr string) error {
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{tlsCert},
+			Certificates:     []tls.Certificate{tlsCert},
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
 		},
 	}
 

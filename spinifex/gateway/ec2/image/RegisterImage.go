@@ -17,6 +17,14 @@ var validRegisterImageArchitectures = map[string]bool{
 	"i386":   true,
 }
 
+// uefi-preferred is accepted and treated as uefi at launch (single host, single
+// firmware path — the BIOS-fallback ambiguity AWS resolves doesn't apply here).
+var validRegisterImageBootModes = map[string]bool{
+	"bios":           true,
+	"uefi":           true,
+	"uefi-preferred": true,
+}
+
 // ValidateRegisterImageInput rejects inputs that ask for behaviour spinifex
 // doesn't have (PV, S3 bundles, kernel/ramdisk, IMDS/TPM/ENA hints) rather
 // than silently discarding them. Registration is pointer-only: caller supplies
@@ -48,7 +56,9 @@ func ValidateRegisterImageInput(input *ec2.RegisterImageInput) error {
 	}
 
 	if input.BootMode != nil && *input.BootMode != "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		if !validRegisterImageBootModes[*input.BootMode] {
+			return errors.New(awserrors.ErrorInvalidParameterValue)
+		}
 	}
 	if input.KernelId != nil && *input.KernelId != "" {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

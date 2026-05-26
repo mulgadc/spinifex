@@ -81,33 +81,23 @@ jobs:
 
       - name: Cache VM images
         run: |
-          UBUNTU_IMG="${BM_ISO_CACHE}/ubuntu-24.04-cloudimg-amd64.img"
+          UBUNTU_IMG="${BM_ISO_CACHE}/ubuntu-26.04-cloudimg-amd64.img"
           if [ ! -f "$UBUNTU_IMG" ]; then
-            echo "Downloading Ubuntu 24.04 cloud image..."
+            echo "Downloading Ubuntu 26.04 cloud image..."
             sudo curl -fsSL -o "$UBUNTU_IMG" \
-              "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+              "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img"
             echo "  Downloaded $(du -h "$UBUNTU_IMG" | cut -f1)"
           else
-            echo "Ubuntu 24.04 cloud image cached ($(du -h "$UBUNTU_IMG" | cut -f1))"
+            echo "Ubuntu 26.04 cloud image cached ($(du -h "$UBUNTU_IMG" | cut -f1))"
           fi
 
-          LB_IMG="${BM_ISO_CACHE}/lb-alpine-3.21.6-x86_64.raw"
-          if [ ! -f "$LB_IMG" ]; then
-            echo "Downloading lb-alpine image..."
-            sudo curl -fsSL -o "$LB_IMG" \
-              "https://iso.mulgadc.com/system-ami/lb-alpine-3.21.6-x86_64.raw"
-            echo "  Downloaded $(du -h "$LB_IMG" | cut -f1)"
-          else
-            echo "lb-alpine image cached ($(du -h "$LB_IMG" | cut -f1))"
-          fi
 
       - name: Run Bare-Metal E2E
         env:
           BM_CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
           BM_SSH_KEY: ${{ runner.temp }}/bm-ci
           BM_EPDU_ENV: ${{ runner.temp }}/epdu.env
-          BM_UBUNTU_IMAGE: ${{ env.BM_ISO_CACHE }}/ubuntu-24.04-cloudimg-amd64.img
-          BM_LB_ALPINE_IMAGE: ${{ env.BM_ISO_CACHE }}/lb-alpine-3.21.6-x86_64.raw
+          BM_UBUNTU_IMAGE: ${{ env.BM_ISO_CACHE }}/ubuntu-26.04-cloudimg-amd64.img
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
         run: |
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/predastore/ratelimit"
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
@@ -190,8 +191,10 @@ func launchService(config *config.ClusterConfig) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2", "http/1.1"},
+			Certificates:     []tls.Certificate{cert},
+			NextProtos:       []string{"h2", "http/1.1"},
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
 		},
 	}
 

@@ -199,6 +199,47 @@ func WaitForProcessExit(pid int, timeout time.Duration) error {
 	}
 }
 
+// WaitForPidFile polls until QEMU writes its pidfile or the timeout expires.
+// Direct-boot microvms need ~50ms in the happy path, but under post-reboot
+// recovery load (multiple VMs launching, nbdkit binding sockets, fwcfg blobs
+// being written) the kernel may not schedule QEMU's pidfile write within a
+// single settle window. A short blocking poll keeps the fast-start latency
+// intact while avoiding premature launch-failure cascades that tear down the
+// tap before QEMU finishes opening it.
+func WaitForPidFile(instanceID string, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		pid, err := ReadPidFile(instanceID)
+		if err == nil {
+			return pid, nil
+		}
+		if time.Now().After(deadline) {
+			return 0, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// WaitForUnixSocket polls until a Unix socket exists at path or the timeout
+// expires. QEMU binds its QMP socket after writing the pidfile, so callers
+// that gate on WaitForPidFile can still race the socket bind under recovery
+// load. Existence is checked via os.Stat rather than a dial probe so we don't
+// consume the listener's accept queue before the real client connects.
+func WaitForUnixSocket(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for unix socket %s", path)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func WaitForPidFileRemoval(instanceID string, timeout time.Duration) error {
 	timeoutCh := time.After(timeout)
 	ticker := time.NewTicker(100 * time.Millisecond)

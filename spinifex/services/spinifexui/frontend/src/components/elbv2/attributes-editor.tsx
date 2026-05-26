@@ -162,6 +162,7 @@ export function AttributesEditor({
                 </FieldTitle>
                 {spec.type === "bool" && (
                   <input
+                    aria-label={spec.label}
                     checked={value === "true"}
                     id={id}
                     onChange={(e) =>

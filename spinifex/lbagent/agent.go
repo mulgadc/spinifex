@@ -22,6 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
 const (
@@ -77,7 +78,8 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion:       tls.VersionTLS13,
+				CurvePreferences: tlsconfig.Curves,
 			},
 			MaxIdleConns:    2,
 			IdleConnTimeout: 30 * time.Second,

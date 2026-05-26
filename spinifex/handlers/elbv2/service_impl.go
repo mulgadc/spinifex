@@ -117,6 +117,9 @@ type ELBv2ServiceImpl struct {
 	ctx                        context.Context
 	cancel                     context.CancelFunc
 	hc                         *healthChecker
+
+	recoveryLBIndexMu sync.Mutex
+	recoveryLBIndex   map[string]*LoadBalancerRecord
 }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
@@ -155,6 +158,77 @@ func (s *ELBv2ServiceImpl) Close() {
 	if s.cancel != nil {
 		s.cancel()
 	}
+}
+
+// ResetTargetHealthOnStartup invalidates persisted target HealthState across
+// all target groups by resetting every non-draining target to "initial". Run
+// once during daemon startup before the service begins serving requests.
+//
+// Rationale: target HealthState is persisted in JetStream KV, but the
+// healthChecker's per-target counters live only in process memory. After a
+// daemon restart (e.g. host reboot), the counters are gone but the stored
+// "healthy" claim remains — DescribeTargetHealth returns "healthy"
+// immediately even though the daemon has zero active health observations
+// and the LB system VM's lb-agent hasn't posted a fresh report yet. Tests
+// that gate on WaitForTargetsHealthy advance prematurely, then ALB traffic
+// lands on a backend that isn't actually up.
+//
+// Resetting to "initial" is the correct AWS-semantics representation of
+// "we don't know yet, give us a moment" — the next lb-agent heartbeat
+// drives the state machine forward through evaluateHealth.
+//
+// Multi-node caveat: in a multi-daemon cluster, each daemon that restarts
+// resets the SHARED KV state. A sibling daemon's in-memory counters would
+// then be out-of-sync with the persisted "initial" state until the next
+// heartbeat re-converges. Acceptable trade-off — heartbeats arrive within
+// one health-check interval (default 5-30s) and round-robin transiently
+// excluding a backend is safer than serving traffic to a dead one.
+//
+// Refs mulga-siv-119.
+func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	tgs, err := s.store.ListTargetGroups()
+	if err != nil {
+		return fmt.Errorf("list target groups: %w", err)
+	}
+	resetTGs := 0
+	resetTargets := 0
+	for _, tg := range tgs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		changed := false
+		for i := range tg.Targets {
+			t := &tg.Targets[i]
+			// Skip targets actively being drained — that state is driven by
+			// DeregisterTargets and must not be clobbered by a daemon restart.
+			if t.HealthState == TargetHealthDraining {
+				continue
+			}
+			if t.HealthState == TargetHealthInitial {
+				continue
+			}
+			t.HealthState = TargetHealthInitial
+			t.HealthDesc = "Target registration is in progress"
+			changed = true
+			resetTargets++
+		}
+		if changed {
+			if err := s.store.PutTargetGroup(tg); err != nil {
+				slog.Error("ResetTargetHealthOnStartup: persist failed",
+					"tgId", tg.TargetGroupID, "err", err)
+				continue
+			}
+			resetTGs++
+		}
+	}
+	if resetTargets > 0 {
+		slog.Info("ELBv2: reset target health on startup",
+			"targetsReset", resetTargets, "targetGroupsTouched", resetTGs)
+	}
+	return nil
 }
 
 // SetSystemInstanceTypeFunc sets a function that resolves the smallest available
@@ -288,6 +362,146 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 	}
 
 	return nics
+}
+
+// describeENIs resolves the supplied ENI IDs in one VPC describe call and
+// returns them keyed by NetworkInterfaceId. Returns an empty map when the
+// VPC service is unwired or the describe errors — callers must tolerate
+// missing entries.
+func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[string]*ec2.NetworkInterface {
+	eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
+	if s.VPCService == nil || len(eniIDs) == 0 {
+		return eniDetails
+	}
+	eniPtrs := make([]*string, 0, len(eniIDs))
+	for _, id := range eniIDs {
+		eniPtrs = append(eniPtrs, aws.String(id))
+	}
+	result, err := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: eniPtrs,
+	}, accountID)
+	if err != nil {
+		slog.Error("VPC describe ENIs failed", "count", len(eniIDs), "err", err)
+		return eniDetails
+	}
+	for _, eni := range result.NetworkInterfaces {
+		if eni.NetworkInterfaceId != nil {
+			eniDetails[*eni.NetworkInterfaceId] = eni
+		}
+	}
+	return eniDetails
+}
+
+// buildExtraENIInputs threads every non-primary ENI in eniIDs into an
+// ExtraENIInput, using eniDetails as the MAC/IP/SubnetID source. eniIDs[0]
+// is the primary ENI and is intentionally excluded. ENIs missing from
+// eniDetails are skipped (matching CreateLoadBalancer's original behaviour
+// when DescribeNetworkInterfaces drops an entry).
+func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInterface) []ExtraENIInput {
+	if len(eniIDs) <= 1 {
+		return nil
+	}
+	extras := make([]ExtraENIInput, 0, len(eniIDs)-1)
+	for i := 1; i < len(eniIDs); i++ {
+		eni := eniDetails[eniIDs[i]]
+		if eni == nil {
+			continue
+		}
+		extras = append(extras, ExtraENIInput{
+			ENIID:    eniIDs[i],
+			ENIMac:   aws.StringValue(eni.MacAddress),
+			ENIIP:    aws.StringValue(eni.PrivateIpAddress),
+			SubnetID: aws.StringValue(eni.SubnetId),
+		})
+	}
+	return extras
+}
+
+// loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
+// first successful call. Errors are not cached: a transient JetStream
+// failure at startup must not condemn every subsequent recovery candidate
+// in the same batch — the next caller retries.
+func (s *ELBv2ServiceImpl) loadRecoveryLBIndex() (map[string]*LoadBalancerRecord, error) {
+	s.recoveryLBIndexMu.Lock()
+	defer s.recoveryLBIndexMu.Unlock()
+	if s.recoveryLBIndex != nil {
+		return s.recoveryLBIndex, nil
+	}
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		return nil, fmt.Errorf("list lb records: %w", err)
+	}
+	index := make(map[string]*LoadBalancerRecord, len(lbs))
+	for _, r := range lbs {
+		if r.InstanceID != "" {
+			index[r.InstanceID] = r
+		}
+	}
+	s.recoveryLBIndex = index
+	return s.recoveryLBIndex, nil
+}
+
+// RebuildSystemInstanceInput reconstructs the launch input for an existing
+// system instance during host-reboot recovery. The instance->LB map is
+// memoised in s.recoveryLBIndex so N concurrent recovery candidates share a
+// single ListLoadBalancers call instead of issuing N×L JetStream round-trips.
+func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*SystemInstanceInput, error) {
+	index, err := s.loadRecoveryLBIndex()
+	if err != nil {
+		return nil, err
+	}
+	lb := index[ctx.InstanceID]
+	if lb == nil {
+		return nil, fmt.Errorf("no LB record references instance %s", ctx.InstanceID)
+	}
+	if len(lb.Subnets) == 0 || len(lb.ENIs) == 0 {
+		return nil, fmt.Errorf("lb %s has no subnets/ENIs to rebuild from", lb.LoadBalancerID)
+	}
+
+	eniDetails := s.describeENIs(lb.ENIs, lb.AccountID)
+	// Multi-ENI rebuild needs an authoritative MAC/IP/subnet per extra, which
+	// only the VPC store supplies. Single-ENI ALBs can fall back to ctx.ENIMac
+	// + lb.VPCIP for the primary, so we only enforce the strict count match
+	// when extras are present.
+	if len(lb.ENIs) > 1 && len(eniDetails) < len(lb.ENIs) {
+		return nil, fmt.Errorf("describe lb %s ENIs: got %d/%d", lb.LoadBalancerID, len(eniDetails), len(lb.ENIs))
+	}
+	primaryMAC := ctx.ENIMac
+	if primary := eniDetails[lb.ENIs[0]]; primary != nil {
+		if mac := aws.StringValue(primary.MacAddress); mac != "" {
+			primaryMAC = mac
+		}
+	}
+	if primaryMAC == "" {
+		return nil, fmt.Errorf("no MAC for primary ENI %s of lb %s", lb.ENIs[0], lb.LoadBalancerID)
+	}
+	extraENIs := buildExtraENIInputs(lb.ENIs, eniDetails)
+
+	nics := s.buildMicrovmNICs(lb.VPCIP, primaryMAC, lb.Subnets[0], lb.ENIs[0], lb.Scheme, extraENIs, lb.AccountID)
+	// Re-inject the daemon-allocated mgmt NIC values so writeFwCfgBlobs
+	// emits the same netcfg the original launch produced — buildMicrovmNICs
+	// leaves NIC[1] MAC/CIDR blank because they are only known after the
+	// daemon's per-instance mgmt IP allocation.
+	if len(nics) > 1 && ctx.MgmtMAC != "" {
+		nics[1].MAC = ctx.MgmtMAC
+		if ctx.MgmtIP != "" {
+			nics[1].CIDR = ctx.MgmtIP + "/24"
+		}
+	}
+
+	return &SystemInstanceInput{
+		InstanceType: ctx.InstanceType,
+		SubnetID:     lb.Subnets[0],
+		ENIID:        lb.ENIs[0],
+		ENIMac:       primaryMAC,
+		ENIIP:        lb.VPCIP,
+		ExtraENIs:    extraENIs,
+		Scheme:       lb.Scheme,
+		AccountID:    lb.AccountID,
+		NICs:         nics,
+		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
+		CACert:       s.CACert,
+	}, nil
 }
 
 // resolveENIBindAddr looks up the private IP of the first ENI belonging to the ALB.
@@ -706,24 +920,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var hostPorts map[int]int
 	var launchFailed bool
 	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		// Resolve MAC/IP for every ENI in one describe call.
-		eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
-		if s.VPCService != nil {
-			eniPtrs := make([]*string, 0, len(eniIDs))
-			for _, id := range eniIDs {
-				eniPtrs = append(eniPtrs, aws.String(id))
-			}
-			result, descErr := s.VPCService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
-				NetworkInterfaceIds: eniPtrs,
-			}, accountID)
-			if descErr == nil {
-				for _, eni := range result.NetworkInterfaces {
-					if eni.NetworkInterfaceId != nil {
-						eniDetails[*eni.NetworkInterfaceId] = eni
-					}
-				}
-			}
-		}
+		eniDetails := s.describeENIs(eniIDs, accountID)
 
 		primary := eniDetails[eniIDs[0]]
 		primaryIP := ""
@@ -733,19 +930,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			primaryMAC = aws.StringValue(primary.MacAddress)
 		}
 
-		extraENIInputs := make([]ExtraENIInput, 0, len(eniIDs)-1)
-		for i := 1; i < len(eniIDs); i++ {
-			eni := eniDetails[eniIDs[i]]
-			if eni == nil {
-				continue
-			}
-			extraENIInputs = append(extraENIInputs, ExtraENIInput{
-				ENIID:    eniIDs[i],
-				ENIMac:   aws.StringValue(eni.MacAddress),
-				ENIIP:    aws.StringValue(eni.PrivateIpAddress),
-				SubnetID: aws.StringValue(eni.SubnetId),
-			})
-		}
+		extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
 
 		var launchInput *SystemInstanceInput
 		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {

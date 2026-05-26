@@ -133,7 +133,9 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
                 <th className="px-4 py-2 font-medium">Port</th>
                 <th className="px-4 py-2 font-medium">Default action</th>
                 <th className="px-4 py-2 font-medium">Listener ARN</th>
-                <th className="px-4 py-2 font-medium" />
+                <th className="px-4 py-2 font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>

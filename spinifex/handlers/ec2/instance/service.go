@@ -118,12 +118,16 @@ type SubnetInfo struct {
 
 // ENICreator covers the VPC/ENI operations RunInstances performs while
 // auto-attaching a primary interface. Implemented via an adapter over
-// handlers/ec2/vpc.VPCServiceImpl on the daemon.
+// handlers/ec2/vpc.VPCServiceImpl on the daemon. DetachENI lives here (not on
+// ENIDeleter) because the launch-time NAT-rollback path needs to flip the ENI
+// to "available" before ENIDeleter.DeleteNetworkInterface, which rejects
+// in-use ENIs.
 type ENICreator interface {
 	GetDefaultSubnet(accountID string) (*SubnetInfo, error)
 	GetSubnet(accountID, subnetID string) (*SubnetInfo, error)
 	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	AttachENI(accountID, eniID, instanceID string, deviceIndex int64) (string, error)
+	DetachENI(accountID, eniID string) error
 	UpdateENIPublicIP(accountID, eniID, publicIP, poolName string) error
 }
 

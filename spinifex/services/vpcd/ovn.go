@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -11,6 +12,12 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 )
+
+// ErrNATNotFound is returned by DeleteNAT / DeleteNATByExternalIP when the
+// rule is already absent. Callers that want idempotent semantics (e.g. the
+// vpc.delete-nat NATS handler, which races with vm-cleanup paths that emit
+// the same delete) match it with errors.Is and treat as success.
+var ErrNATNotFound = errors.New("NAT not found")
 
 // transactOps executes a set of OVSDB operations as a single transaction,
 // checking both the RPC error and individual operation results.
@@ -841,7 +848,7 @@ func (c *LiveOVNClient) DeleteNAT(ctx context.Context, routerName string, natTyp
 		return fmt.Errorf("find NAT: %w", err)
 	}
 	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s %s not found", natType, logicalIP)
+		return fmt.Errorf("NAT %s %s: %w", natType, logicalIP, ErrNATNotFound)
 	}
 
 	nat := &nats[0]
@@ -883,7 +890,7 @@ func (c *LiveOVNClient) DeleteNATByExternalIP(ctx context.Context, routerName st
 		return fmt.Errorf("find NAT by external IP: %w", err)
 	}
 	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s external_ip=%s not found", natType, externalIP)
+		return fmt.Errorf("NAT %s external_ip=%s: %w", natType, externalIP, ErrNATNotFound)
 	}
 
 	lr, err := c.GetLogicalRouter(ctx, routerName)

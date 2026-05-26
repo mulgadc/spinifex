@@ -603,6 +603,8 @@ Tests that EC2 resources are properly isolated between the Alpha/Beta accounts. 
 
 Runs on a real 3-node libvirt cluster provisioned by OpenTofu (`scripts/tofu-cluster/`). Each node is a separate VM with its own OVN, NATS, Predastore, and Spinifex daemon. Bootstrap (`bootstrap.sh`) handles all provisioning before the test script runs.
 
+> **Go port:** every phase below has a `TestMultinode*` counterpart in `tests/e2e/multinode/` (phase N -> `phaseN_*` helper). CI runs the Go suite via the `e2e_go_multinode` job in `.github/workflows/e2e-go.yml`; the bash driver stays in place as the executable spec until the Go run has a soak-tested cadence on `ci-multi`.
+
 ### Bootstrap (pre-test)
 
 1. OpenTofu provisions 3 libvirt VMs (bottlebrush, ironbark, casuarina) with cloud-init
@@ -785,10 +787,19 @@ live state — update it in the same PR that changes the test body.
 |--------|----------|---------------------|--------|
 | A | NATS-only kill (daemon stays up, standalone mode) | Finding 1 | ENABLED |
 | B | Daemon restart without NATS (recovers from local state) | Finding 1 | ENABLED |
-| C | Clean cluster-network partition (majority + isolated both progress) | Finding 1/2 | ENABLED |
+| C | Clean cluster-network partition (majority + isolated both progress) | Finding 1/2 | SKIPPED (needs predastore §2 — see notes) |
 | D | Degraded link under SATCOM profile (fan-out + Raft) | Finding 3 | SKIPPED |
 | E | Predastore write under partition (repair journal drains on heal) | Finding 2 | SKIPPED |
 | F | Raft under SATCOM latency (≤1 election over 5 min) | Finding 3 | SKIPPED |
+
+**Scenario C quarantine note:** the witness VM's block I/O is backed by
+distributed predastore, so an iptables peer-partition (PartitionNode's
+OUTPUT DROP rules) also severs the witness disk writes. The result is
+`BLOCK_IO_ERROR` → QEMU power-down → daemon termination → ssh handshake
+EOF on the next `AssertProgressed`. Needs
+[predastore-ddil-hardening §2](../../../docs/development/feature/predastore-ddil-hardening.md)
+(write-quorum with deferred parity repair) before C can assert without
+flapping; flip the row back to ENABLED in the same PR that lands §2.
 
 ### Link profile validation
 

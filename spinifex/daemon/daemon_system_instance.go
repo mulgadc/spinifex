@@ -80,6 +80,10 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	instance.Reservation.SetReservationId(utils.GenerateResourceID("r"))
 	instance.Reservation.SetOwnerId(accountID)
 	instance.Reservation.Instances = []*ec2.Instance{ec2Instance}
+	// Mirror the customer-instance path (handlers/ec2/instance/service_impl.go:334)
+	// so consumers reading instance.Instance (e.g. onInstanceUpHook's NAT
+	// republish, device_map, volumes) see the same metadata for system VMs.
+	instance.Instance = ec2Instance
 
 	// Attach ENI — either use pre-created one or auto-create
 	privateIP := ""
@@ -91,6 +95,17 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		ec2Instance.SetPrivateIpAddress(privateIP)
 		if input.SubnetID != "" {
 			ec2Instance.SetSubnetId(input.SubnetID)
+		}
+		// The auto-create-ENI branch below populates VpcId from the freshly
+		// created ENI; do the same for pre-created ENIs so consumers reading
+		// instance.Instance.VpcId (notably onInstanceUpHook's NAT republish)
+		// work uniformly across both paths.
+		if d.vpcService != nil {
+			if eniOut, descErr := d.vpcService.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+				NetworkInterfaceIds: []*string{aws.String(input.ENIID)},
+			}, eniAccountID); descErr == nil && len(eniOut.NetworkInterfaces) > 0 && eniOut.NetworkInterfaces[0].VpcId != nil {
+				ec2Instance.SetVpcId(*eniOut.NetworkInterfaces[0].VpcId)
+			}
 		}
 		// Mark ENI as attached to this instance
 		if d.vpcService != nil {
@@ -212,7 +227,22 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				vpcID = *result.NetworkInterfaces[0].VpcId
 			}
 			portName := "port-" + instance.ENIId
-			utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+			if natErr := utils.AddNAT(d.natsConn, vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
+				slog.Error("LaunchSystemInstance: vpc.add-nat failed for ALB public IP — rolling back to avoid surfacing an unreachable address",
+					"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+				// Timeout may have committed the rule after our window; neutralise before releasing the IP.
+				utils.PublishNATEvent(d.natsConn, "vpc.delete-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				if clearErr := d.vpcService.UpdateENIPublicIP(eniAccountID, instance.ENIId, "", ""); clearErr != nil {
+					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
+						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
+				}
+				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP); relErr != nil {
+					slog.Warn("LaunchSystemInstance: failed to release public IP during NAT-failure rollback",
+						"publicIp", publicIP, "pool", poolName, "err", relErr)
+				}
+				d.cleanupFailedSystemInstance(instance, instanceType)
+				return nil, fmt.Errorf("commit NAT rule for internet-facing ALB public IP %s: %w", publicIP, natErr)
+			}
 			instance.PublicIP = publicIP
 			instance.PublicIPPool = poolName
 			slog.Info("LaunchSystemInstance: allocated public IP via direct IPAM",
@@ -374,6 +404,37 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	}
 
 	slog.Info("TerminateSystemInstance completed", "instanceId", instanceID)
+	return nil
+}
+
+// refreshSystemInstanceState regenerates the tmpfs-backed fw_cfg blobs that
+// QEMU loads at boot. The blobs live under utils.RuntimeDir() (tmpfs on
+// production hosts) and are wiped on host reboot while the persisted
+// vm.Config still references the same paths. Customer VMs use only paths
+// under /var/lib/spinifex/ and are a no-op.
+func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
+	if inst.ManagedBy != tags.ManagedByELBv2 {
+		return nil
+	}
+	if d.elbv2Service == nil {
+		return fmt.Errorf("elbv2 service unavailable: cannot refresh fw_cfg blobs for system VM %s", inst.ID)
+	}
+	ctx := handlers_elbv2.RecoveryContext{
+		InstanceID:   inst.ID,
+		InstanceType: inst.InstanceType,
+		ENIMac:       inst.ENIMac,
+		MgmtMAC:      inst.MgmtMAC,
+		MgmtIP:       inst.MgmtIP,
+	}
+	input, err := d.elbv2Service.RebuildSystemInstanceInput(ctx)
+	if err != nil {
+		return fmt.Errorf("rebuild system instance input: %w", err)
+	}
+	if _, err := d.writeFwCfgBlobs(inst.ID, input); err != nil {
+		return fmt.Errorf("rewrite fw_cfg blobs: %w", err)
+	}
+	slog.Info("Refreshed system instance state",
+		"instanceId", inst.ID, "managedBy", inst.ManagedBy)
 	return nil
 }
 

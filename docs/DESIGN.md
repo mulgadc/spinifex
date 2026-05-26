@@ -16,14 +16,14 @@ Users interact with Spinifex using standard AWS SDKs or the AWS CLI by using the
 
 ```bash
 AWS_PROFILE=spinifex aws ec2 run-instances \
-    --image-id ami-debian12 \
+    --image-id ami-debian13 \
     --instance-type t3.micro \
     --key-name my-keypair
 ```
 
 The AWS SDK formats this as an HTTPS POST with:
 - AWS SigV4 authentication headers
-- EC2 Query Protocol body (`Action=RunInstances&ImageId=ami-debian12&...`)
+- EC2 Query Protocol body (`Action=RunInstances&ImageId=ami-debian13&...`)
 
 ### 2. AWS Gateway
 
@@ -83,6 +83,13 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 ```
 
 ### 4. NATS Messaging
+
+The full service-to-subject map — which service subscribes to what, what
+each one publishes downstream, what each depends on — is captured in
+[`service-interfaces.yaml`](./service-interfaces.yaml). It is the source
+of truth for targeted e2e suite selection (see
+`docs/development/improvements/e2e-targeted-suite-selection.md`) and is
+validated by `make manifest-check`.
 
 The gateway communicates with daemons via NATS request/response. Most calls go through `utils.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
@@ -297,7 +304,7 @@ sudo systemctl start spinifex.target
 export AWS_PROFILE=spinifex
 
 # Run instance
-aws ec2 run-instances --image-id ami-debian12 --instance-type t3.micro
+aws ec2 run-instances --image-id ami-debian13 --instance-type t3.micro
 
 # List instances (queries all nodes)
 aws ec2 describe-instances

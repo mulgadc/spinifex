@@ -31,10 +31,12 @@ func (m *Manager) Run(instance *VM) error {
 
 // Start re-launches a stopped instance held in the manager's map by id. Used
 // by the EC2 StartInstances handler when the instance is already local.
+// Returns ErrInstanceNotFound when id is unknown so callers can map the
+// failure to InvalidInstanceID.NotFound rather than a generic 500.
 func (m *Manager) Start(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
-		return fmt.Errorf("instance %s not found", id)
+		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
 	return m.launch(instance)
 }
@@ -171,27 +173,10 @@ func (m *Manager) launch(instance *VM) error {
 	return nil
 }
 
-// nbdkitPreExecWait returns how long startQEMU sleeps before exec'ing QEMU to
-// give nbdkit time to bind its sockets. Direct-boot instances have no drives
-// and no nbdkit, so the wait collapses to zero and the boot-time budget is
-// preserved.
-func nbdkitPreExecWait(directBoot bool) time.Duration {
-	if directBoot {
-		return 0
-	}
-	return 2 * time.Second
-}
-
-// qemuStartSettleWait returns the post-fork sleep that lets QEMU surface an
-// immediate-start crash (bad cmdline, missing kernel) before we attempt QMP.
-// Direct-boot binds the QMP socket within a few ms because there is no
-// firmware, ROM, or block layer setup, so a full second is unnecessary.
-func qemuStartSettleWait(directBoot bool) time.Duration {
-	if directBoot {
-		return 50 * time.Millisecond
-	}
-	return time.Second
-}
+const (
+	nbdReadyTimeout    = 5 * time.Second
+	qemuStartupTimeout = 5 * time.Second
+)
 
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
@@ -222,7 +207,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.PIDFile = pidFile
 		instance.Config.ConsoleLogPath = consoleLogPath
 	} else {
-		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, spec.VCPUs, spec.MemoryMiB)
+		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
 
 		instance.EBSRequests.Mu.Lock()
 		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
@@ -338,9 +323,19 @@ func (m *Manager) startQEMU(instance *VM) error {
 	}
 	instance.Config.QMPSocket = qmpSocket
 
-	// Wait briefly for nbdkit to start.
-	// TODO: Improve, confirm nbdkit started for each volume.
-	time.Sleep(nbdkitPreExecWait(instance.DirectBoot))
+	instance.EBSRequests.Mu.Lock()
+	nbdEndpoints := make([]struct{ name, uri string }, 0, len(instance.EBSRequests.Requests))
+	for _, req := range instance.EBSRequests.Requests {
+		if req.NBDURI != "" {
+			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
+		}
+	}
+	instance.EBSRequests.Mu.Unlock()
+	for _, ep := range nbdEndpoints {
+		if err := utils.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
+			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
+		}
+	}
 
 	processChan := make(chan int, 1)
 	exitChan := make(chan int, 1)
@@ -424,26 +419,41 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return fmt.Errorf("failed to start qemu")
 	}
 
-	// Catch immediate-start crashes (bad cmdline, missing kernel, etc.) before
-	// attempting QMP.
-	time.Sleep(qemuStartSettleWait(instance.DirectBoot))
-
-	select {
-	case exitErr := <-exitChan:
-		startupConfirmed <- false
-		if exitErr != 0 {
-			errorMsg := fmt.Errorf("failed: %v", exitErr)
-			slog.Error("Failed to launch qemu", "err", errorMsg)
-			return errorMsg
+	// Race QMP-socket appearance against early process exit; SIGKILL on timeout
+	// so a wedged QEMU does not orphan its tap / volumes.
+	timeoutTimer := time.NewTimer(qemuStartupTimeout)
+	defer timeoutTimer.Stop()
+	pollTicker := time.NewTicker(20 * time.Millisecond)
+	defer pollTicker.Stop()
+	for {
+		if _, err := os.Stat(instance.Config.QMPSocket); err == nil {
+			startupConfirmed <- true
+			slog.Info("QEMU started successfully and is running",
+				"console_log", instance.Config.ConsoleLogPath,
+				"serial_socket", instance.Config.SerialSocket)
+			break
 		}
-	default:
-		startupConfirmed <- true
-		slog.Info("QEMU started successfully and is running",
-			"console_log", instance.Config.ConsoleLogPath,
-			"serial_socket", instance.Config.SerialSocket)
+		select {
+		case exitErr := <-exitChan:
+			startupConfirmed <- false
+			errorMsg := fmt.Errorf("qemu exited during startup (code=%d)", exitErr)
+			slog.Error("Failed to launch qemu", "err", errorMsg, "instanceId", instance.ID)
+			return errorMsg
+		case <-timeoutTimer.C:
+			startupConfirmed <- false
+			if proc, findErr := os.FindProcess(pid); findErr == nil {
+				_ = proc.Signal(syscall.SIGKILL)
+			}
+			return fmt.Errorf("timeout waiting for QMP socket %s", instance.Config.QMPSocket)
+		case <-pollTicker.C:
+		}
 	}
 
-	if _, err := utils.ReadPidFile(instance.ID); err != nil {
+	// QEMU writes its pidfile after parsing args and mmap'ing the kernel/initrd/
+	// fwcfg blobs. Direct-boot is usually <50ms, but under post-reboot recovery
+	// load it can exceed the settle wait — block briefly so we don't tear down
+	// the tap before QEMU finishes attaching to it.
+	if _, err := utils.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
 		slog.Error("Failed to read PID file", "err", err)
 		return err
 	}
@@ -525,6 +535,14 @@ func (m *Manager) AttachQMP(instance *VM) error {
 // qmp_capabilities handshake. The caller owns starting the heartbeat
 // goroutine on the returned client.
 func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
+	// QEMU binds the QMP listening socket after writing its pidfile and parsing
+	// args; under post-reboot recovery load the bind can lag behind startQEMU's
+	// pidfile gate, leaving an "ENOENT on dial" race that tears down the VM
+	// before it finishes coming up. Block briefly so the dial only runs once
+	// the socket inode exists.
+	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
+		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
+	}
 	client, err := qmp.NewQMPClient(v.Config.QMPSocket)
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
@@ -616,8 +634,10 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 }
 
 // buildBaseVMConfig creates a vm.Config with base QEMU settings and PCIe
-// hotplug root ports.
-func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture string, vCPUs, memoryMiB int) Config {
+// hotplug root ports. bootMode is the AMI's boot mode string ("bios" | "uefi"
+// | "uefi-preferred"); "uefi" and "uefi-preferred" flip cfg.UseUEFI. Any other
+// value (including "") defaults to BIOS.
+func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
 	cfg := Config{
 		Name:           instanceID,
 		PIDFile:        pidFile,
@@ -630,6 +650,7 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 		Memory:         memoryMiB,
 		CPUCount:       vCPUs,
 		Architecture:   architecture,
+		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
 	}
 	// 11 PCIe root ports for /dev/sd[f-p] hotplug slots, starting at chassis 1.
 	for i := 1; i <= 11; i++ {
@@ -641,18 +662,15 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 }
 
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and
-// device configurations. Returns an error if any non-EFI volume is missing
-// its NBDURI.
+// device configurations. Returns an error if any volume is missing its
+// NBDURI. EFI volumes are emitted as pflash unit=1 (per-VM EFI variable
+// store); the readonly pflash CODE blob (unit=0) is added by Config.Execute.
 func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread
 	var devices []Device
 
 	for _, v := range requests {
-		// TODO: Add EFI support
-		if v.EFI {
-			continue
-		}
 		if v.NBDURI == "" {
 			return nil, nil, nil, fmt.Errorf("NBDURI not set for volume %s - was volume mounted?", v.Name)
 		}
@@ -676,6 +694,12 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			drive.If = "virtio"
 			drive.Media = "cdrom"
 			drive.ID = "cloudinit"
+		}
+
+		if v.EFI {
+			drive.Format = "raw"
+			drive.If = "pflash"
+			drive.Unit = 1
 		}
 
 		slog.Info("Using NBD URI for drive", "volume", v.Name, "uri", v.NBDURI)

@@ -71,6 +71,53 @@ type Statement struct {
 	Resource StringOrArr `json:"Resource"`
 }
 
+// Role is an assumable IAM identity stored in JetStream KV.
+// The trust policy (AssumeRolePolicyDocument) is stored opaque in v1;
+// it is parsed only for shape validation and is not evaluated until STS lands.
+type Role struct {
+	RoleName                 string   `json:"role_name"`
+	RoleID                   string   `json:"role_id"`
+	AccountID                string   `json:"account_id"`
+	ARN                      string   `json:"arn"`
+	Path                     string   `json:"path"`
+	Description              string   `json:"description,omitempty"`
+	AssumeRolePolicyDocument string   `json:"assume_role_policy_document"`
+	MaxSessionDuration       int64    `json:"max_session_duration,omitempty"`
+	CreatedAt                string   `json:"created_at"`
+	AttachedPolicies         []string `json:"attached_policies"` // policy ARNs
+	Tags                     []Tag    `json:"tags"`
+}
+
+// InstanceProfile is a container for at most one Role, attachable to EC2 instances.
+// AWS limits a profile to exactly one role; AddRoleToInstanceProfile enforces that.
+type InstanceProfile struct {
+	InstanceProfileName string `json:"instance_profile_name"`
+	InstanceProfileID   string `json:"instance_profile_id"`
+	AccountID           string `json:"account_id"`
+	ARN                 string `json:"arn"`
+	Path                string `json:"path"`
+	RoleName            string `json:"role_name,omitempty"` // empty until AddRoleToInstanceProfile
+	CreatedAt           string `json:"created_at"`
+	Tags                []Tag  `json:"tags"`
+}
+
+// TrustPolicyDocument is the parsed AssumeRolePolicyDocument shape used for
+// validation in CreateRole / UpdateAssumeRolePolicy. Principal and Condition
+// are kept as RawMessage because trust-policy evaluation is deferred to STS.
+type TrustPolicyDocument struct {
+	Version   string           `json:"Version"`
+	Statement []TrustStatement `json:"Statement"`
+}
+
+// TrustStatement is a single statement within a trust policy document.
+type TrustStatement struct {
+	Sid       string          `json:"Sid,omitempty"`
+	Effect    string          `json:"Effect"`
+	Principal json.RawMessage `json:"Principal"`
+	Action    StringOrArr     `json:"Action"`
+	Condition json.RawMessage `json:"Condition,omitempty"`
+}
+
 // StringOrArr handles JSON fields that can be either a string or an array of strings.
 type StringOrArr []string
 

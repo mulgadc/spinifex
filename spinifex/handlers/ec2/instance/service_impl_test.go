@@ -272,6 +272,187 @@ func TestCloudInitTemplateRendering(t *testing.T) {
 	}
 }
 
+func TestFloorVolumeSizeToAMI(t *testing.T) {
+	loader := &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+		"ami-rocky":   {VolumeSizeGiB: 10},
+		"ami-debian":  {VolumeSizeGiB: 3},
+		"ami-no-size": {VolumeSizeGiB: 0},
+	}}
+	const fourGiB = 4 * 1024 * 1024 * 1024
+	const tenGiB = 10 * 1024 * 1024 * 1024
+	const twentyGiB = 20 * 1024 * 1024 * 1024
+
+	t.Run("ami larger than requested rounds up", func(t *testing.T) {
+		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(loader, "ami-rocky", fourGiB))
+	})
+	t.Run("ami smaller than requested keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-debian", fourGiB))
+	})
+	t.Run("requested larger than ami keeps requested", func(t *testing.T) {
+		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(loader, "ami-rocky", twentyGiB))
+	})
+	t.Run("missing VolumeSizeGiB keeps requested (legacy AMI)", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-no-size", fourGiB))
+	})
+	t.Run("unknown AMI keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "ami-unknown", fourGiB))
+	})
+	t.Run("non-ami image id keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(loader, "vol-123", fourGiB))
+	})
+	t.Run("nil loader keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(nil, "ami-rocky", fourGiB))
+	})
+}
+
+func TestBuildRHELCloudInit(t *testing.T) {
+	t.Run("empty eniMAC returns empty (wildcard path)", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("", "", "", "", nil)
+		assert.Empty(t, wf)
+		assert.Empty(t, rc)
+	})
+
+	t.Run("vpc0 only", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit("02:00:00:00:00:01", "", "", "", nil)
+		// File mode + ownership are load-bearing — NM ignores anything else.
+		assert.Contains(t, wf, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, wf, "owner: root:root")
+		assert.Contains(t, wf, "permissions: '0600'")
+		assert.Contains(t, wf, "mac-address=02:00:00:00:00:01")
+		assert.Contains(t, wf, "dhcp-client-id=mac")
+		assert.Contains(t, wf, "method=auto")
+		assert.NotContains(t, wf, "never-default")
+		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
+		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
+	})
+
+	t.Run("vpc0 + extra ENIs + dev + mgmt", func(t *testing.T) {
+		wf, rc := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"02:00:00:00:00:aa", "10.250.0.5",
+			[]string{"02:00:00:00:00:02", "02:00:00:00:00:03"},
+		)
+		for _, name := range []string{"vpc0", "vpc1", "vpc2", "dev0", "mgmt0"} {
+			assert.Contains(t, wf, "/etc/NetworkManager/system-connections/"+name+".nmconnection", name)
+			assert.Contains(t, rc, "  - [ nmcli, connection, up, "+name+" ]", name)
+		}
+		// dev NIC must not install default route or DNS.
+		assert.Contains(t, wf, "never-default=true")
+		assert.Contains(t, wf, "ignore-auto-dns=true")
+		// mgmt NIC is static with the supplied IP.
+		assert.Contains(t, wf, "method=manual")
+		assert.Contains(t, wf, "addresses=10.250.0.5/24")
+	})
+
+	t.Run("empty extra MAC skipped", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01", "", "", "",
+			[]string{"", "02:00:00:00:00:02"},
+		)
+		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
+		assert.NotContains(t, wf, "vpc1.nmconnection")
+		assert.Contains(t, wf, "vpc2.nmconnection")
+	})
+}
+
+func TestCloudInitTemplate_FamilyBranching(t *testing.T) {
+	rhelWF, rhelRC := buildRHELCloudInit("02:00:00:11:22:33", "", "", "", nil)
+
+	t.Run("debian family: sudo group, no NM keyfiles", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-deb",
+			DistroFamily: "debian", SudoGroup: "sudo",
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- sudo")
+		assert.NotContains(t, out, "- wheel")
+		assert.NotContains(t, out, "NetworkManager/system-connections")
+		assert.NotContains(t, out, "nmcli")
+		assert.NotContains(t, out, "restorecon")
+	})
+
+	t.Run("rhel family: wheel group, NM keyfile write_files + runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+		}))
+		out := buf.String()
+		assert.Contains(t, out, "- wheel")
+		assert.NotContains(t, out, "- sudo\n")
+		assert.Contains(t, out, "write_files:")
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "permissions: '0600'")
+		assert.Contains(t, out, "dhcp-client-id=mac")
+		assert.Contains(t, out, "runcmd:")
+		assert.Contains(t, out, "restorecon")
+		assert.Contains(t, out, "nmcli, connection, reload")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+	})
+
+	t.Run("rhel + user script: both blocks merged under single write_files/runcmd", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := template.Must(template.New("c").Parse(cloudInitUserDataTemplate))
+		require.NoError(t, tmpl.Execute(&buf, CloudInitData{
+			Username: "ec2-user", SSHKey: "ssh-rsa AAA", Hostname: "spinifex-vm-rhel",
+			DistroFamily: "rhel", SudoGroup: "wheel",
+			RHELWriteFiles: rhelWF, RHELRunCmd: rhelRC,
+			UserDataScript: "      #!/bin/bash\n      echo hi\n",
+		}))
+		out := buf.String()
+		// YAML disallows duplicate top-level keys; assert each appears exactly once.
+		assert.Equal(t, 1, strings.Count(out, "\nwrite_files:"))
+		assert.Equal(t, 1, strings.Count(out, "\nruncmd:"))
+		assert.Contains(t, out, "/etc/NetworkManager/system-connections/vpc0.nmconnection")
+		assert.Contains(t, out, "/tmp/cloud-init-startup.sh")
+		assert.Contains(t, out, "nmcli, connection, up, vpc0")
+		assert.Contains(t, out, `"/bin/bash", "/tmp/cloud-init-startup.sh"`)
+	})
+}
+
+func TestSelectNetworkConfigForFamily(t *testing.T) {
+	const eniMAC = "02:00:00:00:00:01"
+
+	t.Run("rhel returns disabled stub", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("rhel", eniMAC, "", "", "", nil)
+		assert.Equal(t, cloudInitNetworkConfigDisabled, out)
+		assert.Contains(t, out, "config: disabled")
+		// Must not emit any netplan v2 keys — those would render alongside
+		// our NM keyfile and produce a competing cloud-init-enpXsY connection.
+		assert.NotContains(t, out, "ethernets:")
+		assert.NotContains(t, out, "version: 2")
+	})
+
+	t.Run("debian returns per-interface netplan", func(t *testing.T) {
+		out := selectNetworkConfigForFamily("debian", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.Contains(t, out, "ethernets:")
+		assert.Contains(t, out, "vpc0:")
+		assert.Contains(t, out, "dhcp-identifier: mac")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("empty family falls through to netplan", func(t *testing.T) {
+		// Legacy AMIs without DistroFamily populated must keep today's behaviour.
+		out := selectNetworkConfigForFamily("", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+
+	t.Run("alpine falls through to netplan", func(t *testing.T) {
+		// Alpine has no RHEL-style NM keyfile path; reuses netplan.
+		out := selectNetworkConfigForFamily("alpine", eniMAC, "", "", "", nil)
+		assert.Contains(t, out, "version: 2")
+		assert.NotContains(t, out, "config: disabled")
+	})
+}
+
 func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	data := CloudInitMetaData{
 		InstanceID: "i-0123456789abcdef0",
@@ -2067,6 +2248,48 @@ func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
 	}
 }
 
+// TestPrepareRunInstances_BootModePropagated pins that the AMI's BootMode
+// flows onto every prepared VM, so the launch path picks UEFI vs BIOS without
+// a second AMI lookup. Empty AMI BootMode (legacy) flows through as empty.
+func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
+	tests := []struct {
+		name         string
+		amiBootMode  string
+		wantBootMode string
+	}{
+		{"legacy empty", "", ""},
+		{"bios", "bios", "bios"},
+		{"uefi", "uefi", "uefi"},
+		{"uefi-preferred", "uefi-preferred", "uefi-preferred"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			types, _ := defaultPrepareInstanceTypes()
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: types,
+				canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+			}
+			svc := &InstanceServiceImpl{
+				config:        &config.Config{},
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]viperblock.AMIMetadata{
+					"ami-1": {ImageOwnerAlias: "acc", BootMode: tc.amiBootMode},
+				}},
+				resourceMgr: prov,
+			}
+			_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc")
+			require.NoError(t, err)
+			require.Len(t, instances, 1)
+			assert.Equal(t, tc.wantBootMode, instances[0].BootMode)
+		})
+	}
+}
+
 func TestStartInstance_NotStopped(t *testing.T) {
 	id := "i-running"
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
@@ -2141,8 +2364,11 @@ type fakeENICreator struct {
 	subnet        *SubnetInfo
 	createOut     *ec2.CreateNetworkInterfaceOutput
 	createErr     error
+	attachErr     error
 	attachCalls   int
 	updateCalls   int
+	clearCalls    int // updateCalls where publicIP is ""
+	detachCalls   int
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ string) (*SubnetInfo, error) {
@@ -2168,11 +2394,22 @@ func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInp
 
 func (f *fakeENICreator) AttachENI(_, _, _ string, _ int64) (string, error) {
 	f.attachCalls++
+	if f.attachErr != nil {
+		return "", f.attachErr
+	}
 	return "attached", nil
 }
 
-func (f *fakeENICreator) UpdateENIPublicIP(_, _, _, _ string) error {
+func (f *fakeENICreator) DetachENI(_, _ string) error {
+	f.detachCalls++
+	return nil
+}
+
+func (f *fakeENICreator) UpdateENIPublicIP(_, _, publicIP, _ string) error {
 	f.updateCalls++
+	if publicIP == "" {
+		f.clearCalls++
+	}
 	return nil
 }
 
@@ -2253,6 +2490,14 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
 	svc, _ := prepareSvcWithENI(t, eni, ipam)
 
+	// vpc.add-nat is now request-reply: the helper waits for vpcd to ack
+	// before the launch proceeds. The happy path needs a success responder.
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
 	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
@@ -2265,6 +2510,112 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
 	assert.Equal(t, "pool-a", instances[0].PublicIPPool)
 	assert.Equal(t, 1, eni.updateCalls)
+}
+
+// TestPrepareRunInstances_NATFailureRollsBackPublicIP regresses the silent
+// corruption where vpc.add-nat NACKs (or vpcd is offline) but the launch
+// returned an ec2.Instance carrying the unreachable IP, the ENI record was
+// updated with that IP, and the IPAM pool entry stayed allocated. With the
+// fix in place, NAT failure must drop the instance from the response, clear
+// the ENI public IP, release the IPAM lease, and deallocate capacity.
+func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-nat-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.30"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIP: "203.0.113.7", poolName: "pool-a"}
+	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
+
+	// Stand up a vpcd-shaped responder that NACKs every add-nat — simulates
+	// vpcd online but unable to commit the OVN rule (northd lag, port
+	// missing, etc.).
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	// Record vpc.delete-nat to assert the rollback neutralises any
+	// half-committed rule from a waitForFlowsHV timeout.
+	deleteNATCh := make(chan natWirePayload, 1)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+
+	// MinCount=1 with a single launch attempt that NAT-failed must drop
+	// below minimum and return ServerInternal — the wrapped natErr is not
+	// an AWS-known code, so the lookup misses and the wire fallback kicks
+	// in. The critical invariant is that no instance with the unreachable
+	// IP is surfaced.
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed NAT must not be returned")
+
+	// IPAM lease released back to the pool.
+	assert.Equal(t, "pool-a", releaser.pool, "IPAM ReleaseIP must be called with the originally allocated pool")
+	assert.Equal(t, "203.0.113.7", releaser.ip, "IPAM ReleaseIP must be called with the originally allocated IP")
+
+	// ENI record cleared: 2 update calls total (set + clear), 1 clear.
+	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
+	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
+
+	// ENI itself must be detached + deleted; otherwise the dropped instance
+	// leaks an eniKV record (vmMgr.Insert never runs, so terminateCleanup
+	// never fires) and the subnet exhausts private IPs under vpcd brown-out.
+	assert.Equal(t, 1, eni.detachCalls, "rollback must detach the ENI before delete")
+	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+
+	// Capacity deallocated so subsequent launches can use the slot.
+	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
+
+	// vpc.delete-nat must be published so vpcd reaps any rule it committed
+	// after the AddNAT timeout — otherwise the orphan rule outlives the
+	// IPAM allocation and routes traffic for the next tenant that grabs
+	// the released IP.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "vpc-1", got.VpcId)
+		assert.Equal(t, "203.0.113.7", got.ExternalIP)
+		assert.Equal(t, "10.0.0.30", got.LogicalIP)
+		assert.Equal(t, "port-eni-nat-fail", got.PortName)
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
+	}
+}
+
+// natWirePayload mirrors utils.natEvent for test-side decoding.
+type natWirePayload struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
 }
 
 func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
@@ -2283,6 +2634,49 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	// AWS code for raw ENI failure).
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
+}
+
+// TestPrepareRunInstances_ENIAttachFailureRollsBack regresses the silent
+// corruption where AttachENI failure was logged-and-ignored, leaving the
+// auto-created ENI unattached in vpcService. Later RegisterTargets with
+// TargetType=instance enumerates ENIs by attachment.instance-id, finds
+// none, and drops the target — the customer's ALB has 0 healthy targets
+// with no log line connecting the two events. The dangling ENI also leaks
+// its auto-assigned EIP on terminate because DeleteNetworkInterface
+// cannot resolve the instance link. With the fix, AttachENI failure must
+// delete the auto-created ENI, deallocate capacity, and drop the instance
+// from the reservation.
+func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
+	eni := &fakeENICreator{
+		attachErr: errors.New("vpc attach refused"),
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-attach-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:01"),
+				PrivateIpAddress:   aws.String("10.0.0.40"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed AttachENI must not be returned")
+
+	assert.Equal(t, 1, eni.attachCalls, "AttachENI must be attempted exactly once")
+	assert.Equal(t, []string{"eni-attach-fail"}, deleter.calls, "auto-created ENI must be deleted on attach failure")
+	require.Len(t, prov.deallocated, 1, "AttachENI failure must trigger Deallocate")
 }
 
 func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {
@@ -2389,6 +2783,25 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	mgr := mgrWith(nil)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 	err := svc.RebootInstance(&vm.VM{ID: id}, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestStartInstance_NotFound verifies that when vmMgr.Start cannot find the
+// instance (e.g. it was terminated between the daemon's pre-dispatch lookup
+// and the manager call), the service returns InvalidInstanceID.NotFound
+// rather than collapsing to a generic Server.InternalError. The AWS SDK
+// retries 500s, so the prior behaviour produced duplicate Start attempts
+// before the client surfaced the failure.
+func TestStartInstance_NotFound(t *testing.T) {
+	id := "i-missing"
+	mgr := mgrWith(nil)
+	svc := &InstanceServiceImpl{
+		vmMgr:       mgr,
+		resourceMgr: &fakeResourceCapacityProvider{},
+	}
+	instance := &vm.VM{ID: id, Status: vm.StateStopped, InstanceType: "unknown"}
+	err := svc.StartInstance(instance, spxtypes.EC2InstanceCommand{ID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -2627,4 +3040,34 @@ func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
+}
+
+// TestInstanceArchitecture pins the safe-extraction contract: malformed
+// InstanceTypeInfo returns "" rather than panicking, and the firmware probe
+// surfaces "" as a clear error on the launch path.
+func TestInstanceArchitecture(t *testing.T) {
+	tests := []struct {
+		name string
+		it   *ec2.InstanceTypeInfo
+		want string
+	}{
+		{"nil", nil, ""},
+		{"nil processor info", &ec2.InstanceTypeInfo{}, ""},
+		{"empty supported archs", &ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{}}, ""},
+		{
+			"x86_64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}}},
+			"x86_64",
+		},
+		{
+			"arm64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}}},
+			"arm64",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
+		})
+	}
 }

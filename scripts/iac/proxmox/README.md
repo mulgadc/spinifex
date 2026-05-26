@@ -8,9 +8,9 @@ OpenTofu/Terraform templates for provisioning Spinifex development clusters on P
 - 1 or more Proxmox VE nodes with:
   - A Terraform API token (`Datacenter > Permissions > API Tokens`)
   - SSH access for a `terraform` user on each node
-  - Debian 12 cloud image uploaded to `local:iso/` on each node
+  - Debian 13 cloud image uploaded to `local:iso/` on each node
 - SSH keypair for cloud-init VM access
-- A hardcoded Debian ISO is used, which needs to be pre-installed on each Proxmox host ("debian-12-genericcloud-amd64-20240211-1654.img") https://cdimage.debian.org/images/cloud/bookworm/20240211-1654/debian-12-genericcloud-amd64-20240211-1654.qcow2
+- A hardcoded Debian ISO is used, which needs to be pre-installed on each Proxmox host ("debian-13-genericcloud-amd64-20260518-2482.img") https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.qcow2
 
 ## Quick Start (spinifex-test.sh)
 

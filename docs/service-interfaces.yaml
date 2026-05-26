@@ -1,0 +1,305 @@
+# Service interface manifest.
+#
+# Source of truth for "which services produce/consume which NATS subjects"
+# and "which e2e suites cover which services". Consumed by
+# tests/e2e/select-suites (Bead 4) to derive targeted suite selection from
+# a PR diff.
+#
+# See docs/development/improvements/e2e-targeted-suite-selection.md.
+#
+# Editing rules
+# -------------
+# - subscribes / publishes: subjects this service receives / sends. Both
+#   lists use the literal subject string, or a "<prefix>.*" wildcard for
+#   pattern subscriptions (e.g. "ebs.snapshot.*").
+# - depends_on: subjects this service requires from peers. Used by the
+#   selector to compute "if X changes, which suites might break".
+# - Subjects must match what is actually referenced in source. The lint
+#   in Bead 5 greps `"(ec2|vpc|ebs|s3|iam|elbv2|spinifex)\.[a-zA-Z._-]+"`
+#   and fails if any subject is absent from this manifest.
+
+version: 1
+
+services:
+
+  awsgw:
+    path: spinifex/services/awsgw
+    # TLS frontend, SigV4 auth. Pure router: HTTP → NATS request/response.
+    # No subscribes; only publishes (via NATSRequest).
+    subscribes: []
+    publishes:
+      - "ec2.*"
+      - "elbv2.*"
+      - "iam.*"
+    depends_on:
+      - "ec2.*"
+      - "elbv2.*"
+      - "iam.*"
+
+  spinifex_daemon:
+    path: spinifex/services/spinifex
+    # Orchestrator. Owns most ec2.* + all elbv2.* + iam event publication.
+    # Translates VPC / EBS / S3 operations into vpc.* / ebs.* / s3.* and
+    # forwards to vpcd / viperblockd / predastore.
+    #
+    # Source layout: spinifex/services/spinifex (entry), spinifex/daemon
+    # (subscribe registration), spinifex/handlers/{ec2,elbv2,iam} (per-
+    # subject handler bodies). Selector treats all four paths as belonging
+    # to this service via the `additional_paths` field.
+    additional_paths:
+      - spinifex/daemon
+      - spinifex/handlers/ec2
+      - spinifex/handlers/elbv2
+      - spinifex/handlers/iam
+    subscribes:
+      # EC2 instance lifecycle.
+      - "ec2.RunInstances"
+      - "ec2.DescribeInstances"
+      - "ec2.DescribeStoppedInstances"
+      - "ec2.DescribeTerminatedInstances"
+      - "ec2.DescribeInstanceAttribute"
+      - "ec2.DescribeInstanceStatus"
+      - "ec2.DescribeInstanceTypes"
+      - "ec2.ModifyInstanceAttribute"
+      - "ec2.ModifyVolume"
+      - "ec2.start"
+      - "ec2.terminate"
+      - "ec2.launch"
+      - "ec2.cmd.*"
+      # EC2 VPC / network ops handled by daemon before delegation to vpcd.
+      - "ec2.CreateVpc"
+      - "ec2.DescribeVpcs"
+      - "ec2.CreateSubnet"
+      - "ec2.CreateInternetGateway"
+      - "ec2.CreateKeyPair"
+      - "ec2.CreateImage"
+      - "ec2.DescribePlacementGroups"
+      # Cluster coordination subjects.
+      - "ec2.ReserveClusterNode"
+      - "ec2.FinalizeClusterInstances"
+      - "spinifex.node.status"
+      - "spinifex.node.vms"
+      - "spinifex.nodes.discover"
+      - "spinifex.cluster.shutdown.progress"
+      - "spinifex.storage.config"
+      # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
+      - "elbv2.CreateLoadBalancer"
+      - "elbv2.DeleteLoadBalancer"
+      - "elbv2.DescribeLoadBalancers"
+      - "elbv2.CreateTargetGroup"
+      - "elbv2.DeleteTargetGroup"
+      - "elbv2.DescribeTargetGroups"
+      - "elbv2.RegisterTargets"
+      - "elbv2.DeregisterTargets"
+      - "elbv2.DescribeTargetHealth"
+      - "elbv2.CreateListener"
+      - "elbv2.DeleteListener"
+      - "elbv2.DescribeListeners"
+    publishes:
+      # → vpcd
+      - "vpc.create"
+      - "vpc.delete"
+      - "vpc.create-subnet"
+      - "vpc.delete-subnet"
+      - "vpc.create-sg"
+      - "vpc.delete-sg"
+      - "vpc.update-sg"
+      - "vpc.create-port"
+      - "vpc.delete-port"
+      - "vpc.update-port-sgs"
+      - "vpc.igw-attach"
+      - "vpc.igw-detach"
+      - "vpc.add-nat-gateway"
+      - "vpc.delete-nat-gateway"
+      - "vpc.add-nat"
+      - "vpc.delete-nat"
+      - "vpc.dhcp.acquire"
+      - "vpc.dhcp.release"
+      # → viperblockd
+      - "ebs.mount"
+      - "ebs.unmount"
+      - "ebs.delete"
+      - "ebs.sync"
+      - "ebs.snapshot.*"
+      # → predastore (S3 / AMI / keypair store)
+      - "s3.*"
+      # IAM lifecycle event
+      - "iam.account.created"
+    depends_on:
+      - "vpc.*"
+      - "ebs.*"
+      - "s3.*"
+
+  vpcd:
+    path: spinifex/services/vpcd
+    # OVN-backed VPC / subnet / SG / NAT / IGW data plane.
+    subscribes:
+      - "vpc.create"
+      - "vpc.delete"
+      - "vpc.create-subnet"
+      - "vpc.delete-subnet"
+      - "vpc.create-sg"
+      - "vpc.delete-sg"
+      - "vpc.update-sg"
+      - "vpc.create-port"
+      - "vpc.delete-port"
+      - "vpc.update-port-sgs"
+      - "vpc.igw-attach"
+      - "vpc.igw-detach"
+      - "vpc.add-nat-gateway"
+      - "vpc.delete-nat-gateway"
+      - "vpc.add-nat"
+      - "vpc.delete-nat"
+      - "vpc.dhcp.acquire"
+      - "vpc.dhcp.release"
+    publishes:
+      - "vpc.port-status"
+      - "vpc.dhcp.lease-expired"
+    depends_on: []
+
+  viperblockd:
+    path: spinifex/services/viperblockd
+    # EBS data plane. Backed by the viperblock storage engine in the
+    # mulga/viperblock submodule. Submodule pointer bump → selector forces
+    # "run all" (contract changes can be invisible at the spinifex source
+    # level).
+    subscribes:
+      - "ebs.mount"
+      - "ebs.unmount"
+      - "ebs.delete"
+      - "ebs.sync"
+      - "ebs.snapshot.*"
+    publishes:
+      - "ebs.mount.response"
+      - "ebs.unmount.response"
+    depends_on: []
+
+  predastore:
+    path: spinifex/services/predastore
+    # S3 / AMI / keypair storage. External submodule under mulga/predastore;
+    # this dir contains only the spinifex-side adapter. Submodule pointer
+    # bump → selector forces "run all".
+    subscribes:
+      - "s3.*"
+    publishes: []
+    depends_on: []
+
+  nats:
+    path: spinifex/services/nats
+    # NATS broker bootstrap / cluster config. Not a NATS pub/sub
+    # participant. Any change here is infra-path; selector forces
+    # "run all".
+    subscribes: []
+    publishes: []
+    depends_on: []
+
+  spinifexui:
+    path: spinifex/services/spinifexui
+    # Web UI. Talks to awsgw over HTTP, never NATS. Diffs limited to this
+    # dir do not need any e2e suite to run.
+    subscribes: []
+    publishes: []
+    depends_on: []
+    covers_no_suite: true
+
+
+# Fixture → service mapping. Each Ensure* helper in
+# tests/e2e/harness/fixtures.go exercises this set of services; the
+# Bead 4 selector AST-scans test files for harness.Ensure* call sites
+# and resolves coverage via this block.
+fixtures:
+
+  EnsureKeyPair:
+    services: [spinifex_daemon, predastore]
+
+  EnsureAMI:
+    services: [spinifex_daemon, predastore, viperblockd]
+
+  EnsureDefaultVPC:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureSubnet:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureSG:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureInstance:
+    services: [spinifex_daemon, viperblockd, vpcd]
+
+  EnsureVolume:
+    services: [spinifex_daemon, viperblockd]
+
+  EnsureSnapshot:
+    services: [spinifex_daemon, viperblockd, predastore]
+
+  EnsureNATGateway:
+    services: [vpcd, spinifex_daemon]
+
+  EnsureLoadBalancer:
+    services: [spinifex_daemon, awsgw]
+
+
+suites:
+
+  e2e-cert:
+    path: tests/e2e/cert
+    covers: [awsgw, spinifex_daemon, vpcd, predastore]
+
+  e2e-lb:
+    path: tests/e2e/lb
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # Exercises full ELBv2 control plane (handlers/elbv2) + data plane
+    # (LB agent on the system VM). ELBv2 is part of spinifex_daemon in
+    # this manifest; revisit if it splits into a standalone service.
+
+  e2e-single:
+    path: tests/e2e/single
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # Full single-node lifecycle: VPC, AMI, keypair, instance, volume,
+    # snapshot, IAM. Currently runs all phases sequentially under one
+    # `TestSingleNode`. Bead 3 (single-fixture-migration) splits this
+    # into per-test fixture-driven coverage so the selector can pick
+    # subtests, not just whole suites.
+
+  e2e-ddil:
+    path: tests/e2e/ddil
+    covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+    # DDIL = degraded / disconnected / intermittent / low-bandwidth.
+    # Exercises the full daemon stack under network failure injection;
+    # any service touching the wire path is in scope.
+
+  # Suites below are bash-only today. Entries activate as the Go ports
+  # land (Bead 2 fixtures unblock new-shape ports for multinode etc.).
+  #
+  # e2e-multinode:
+  #   path: spinifex/tests/e2e/multinode
+  #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+  # e2e-reboot:
+  #   path: spinifex/tests/e2e/reboot
+  #   covers: [spinifex_daemon, viperblockd]
+  # e2e-tofu:
+  #   path: spinifex/tests/e2e/tofu
+  #   covers: [awsgw, spinifex_daemon, vpcd]
+  # e2e-bm:
+  #   path: spinifex/tests/e2e/baremetal
+  #   covers: [awsgw, spinifex_daemon, vpcd, viperblockd, predastore]
+
+
+# Special-case rules consumed by the selector (Bead 4). Hard-coded in
+# the tool, listed here for visibility.
+#
+# infra_paths_force_all:
+#   - spinifex/services/nats/**
+#   - spinifex/tests/e2e/harness/**
+#   - spinifex/tests/e2e/lib/**
+#   - spinifex/.github/workflows/e2e-go.yml
+#   - spinifex/.github/scripts/**
+#   - spinifex/Makefile
+#   - mulga/scripts/tofu-cluster/**
+#
+# submodule_force_all:
+#   - mulga/predastore (submodule pointer)
+#   - mulga/viperblock (submodule pointer)
+#
+# many_services_force_all_threshold: 3   # ≥ N services touched → run all

@@ -127,7 +127,7 @@ export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
       <Collapsible>
         <CollapsibleTrigger
           className="text-left text-sm font-medium text-muted-foreground hover:text-foreground"
-          render={<button type="button" />}
+          render={<button aria-label="Health check settings" type="button" />}
         >
           Health check settings
         </CollapsibleTrigger>

@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/tlsconfig"
 	"github.com/nats-io/nats.go"
 )
 
@@ -79,7 +80,9 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 			return nil, fmt.Errorf("%w from %s", ErrCACertParse, caCertPath)
 		}
 		natsOpts = append(natsOpts, nats.Secure(&tls.Config{
-			RootCAs: pool,
+			RootCAs:          pool,
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
 		}))
 	}
 
@@ -382,17 +385,42 @@ func PublishEvent(nc *nats.Conn, topic string, event any) {
 	}
 }
 
+// natEvent is the wire payload for vpc.add-nat / vpc.delete-nat.
+type natEvent struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
+}
+
+// AddNAT requests vpcd commit the OVN dnat_and_snat rule for (externalIP →
+// logicalIP) via NATS request-reply and waits up to 10 s for the ack. A
+// non-nil return means the rule was either NOT committed (NACK / no
+// responders) OR may have been committed after the timeout fired (vpcd's
+// waitForFlowsHV barrier is unbounded). Callers MUST roll back any state
+// that assumes the public IP is routable AND publish a best-effort
+// vpc.delete-nat for the same (vpcID, externalIP, logicalIP, portName) to
+// neutralise a half-committed rule — there is no reconciler that repairs
+// a black-holed external IP after the fact.
+func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
+	return RequestEvent(nc, "vpc.add-nat", natEvent{
+		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
+		PortName: portName, MAC: mac,
+	}, 10*time.Second)
+}
+
 // PublishNATEvent sends a NAT lifecycle event (vpc.add-nat or vpc.delete-nat)
 // to NATS. vpc.add-nat uses request-reply to commit the OVN NAT rule before
 // returning (prevents ARP propagation races); vpc.delete-nat is fire-and-forget.
+//
+// Callers that MUST react to an add-nat failure (e.g. roll back a launch)
+// should use AddNAT instead — this helper only logs the failure.
 func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portName, mac string) {
-	evt := struct {
-		VpcId      string `json:"vpc_id"`
-		ExternalIP string `json:"external_ip"`
-		LogicalIP  string `json:"logical_ip"`
-		PortName   string `json:"port_name"`
-		MAC        string `json:"mac"`
-	}{VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac}
+	evt := natEvent{
+		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
+		PortName: portName, MAC: mac,
+	}
 
 	if topic == "vpc.add-nat" {
 		if err := RequestEvent(nc, topic, evt, 10*time.Second); err != nil {

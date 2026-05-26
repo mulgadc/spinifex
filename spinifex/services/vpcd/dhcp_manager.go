@@ -397,7 +397,7 @@ func (m *DHCPManager) trackAndRenew(lease *dhcp.Lease) {
 	}
 
 	// cancel is stored in tracker.renewStop and fired from forget() or Close().
-	ctx, cancel := context.WithCancel(m.stopCtx) //nolint:gosec // G118: cancel stored in tracker.renewStop, fired via forget()/Close()
+	ctx, cancel := context.WithCancel(m.stopCtx)
 	tracker := &managedLease{
 		lease:     lease,
 		renewStop: cancel,

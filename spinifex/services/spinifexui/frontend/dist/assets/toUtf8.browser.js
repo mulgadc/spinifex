@@ -1,1 +1,0 @@
-var e=e=>{if(typeof e==`string`)return e;if(typeof e!=`object`||typeof e.byteOffset!=`number`||typeof e.byteLength!=`number`)throw Error(`@smithy/util-utf8: toUtf8 encoder function only accepts string | Uint8Array.`);return new TextDecoder(`utf-8`).decode(e)};export{e as t};

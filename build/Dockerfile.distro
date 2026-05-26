@@ -30,13 +30,13 @@ COPY viperblock/ ./viperblock/
 
 # Build spinifex binary (spx)
 RUN COMMIT=$(cd spinifex && git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
-    cd spinifex && go build -ldflags "-s -w \
+    cd spinifex && GOFIPS140=v1.0.0 go build -ldflags "-s -w \
     -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=${VERSION} \
     -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Commit=${COMMIT}" \
     -o /out/spx cmd/spinifex/main.go
 
 # Build nbdkit viperblock plugin (.so)
-RUN cd viperblock && go build -o /out/nbdkit-viperblock-plugin.so -buildmode=c-shared nbd/viperblock.go
+RUN cd viperblock && GOFIPS140=v1.0.0 go build -o /out/nbdkit-viperblock-plugin.so -buildmode=c-shared nbd/viperblock.go
 
 # Copy setup scripts and systemd units
 RUN cp spinifex/scripts/setup.sh /out/setup.sh 2>/dev/null || true

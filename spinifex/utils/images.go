@@ -182,13 +182,21 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	return digest, nil
 }
 
-// parseSumsFile scans a coreutils-style sums file and returns the hex digest
-// matching filename. Filename match is case-sensitive: upstream Debian/Ubuntu/
-// Alpine sums are consistently lowercase and a divergence is a real signal.
+// parseSumsFile scans a sums file and returns the hex digest matching filename.
+// Filename match is case-sensitive: upstream Debian/Ubuntu/Alpine sums are
+// consistently lowercase and a divergence is a real signal.
 //
-// Accepts three on-the-wire shapes: "<hex>  <name>" (text mode), "<hex> *<name>"
-// (binary mode), and a bare single-token "<hex>" line (single-file .sha512 from
-// Alpine, which does not carry a filename).
+// Accepts four on-the-wire shapes: "<hex>  <name>" (coreutils text mode),
+// "<hex> *<name>" (coreutils binary mode), "<algo> (<name>) = <hex>" (BSD
+// style, used by Rocky/RHEL/Alma/Fedora/CentOS Stream CHECKSUM files), and a
+// bare single-token "<hex>" line (single-file .sha512 from Alpine, which does
+// not carry a filename).
+//
+// GPG cleartext-signed armor is tolerated implicitly: the BEGIN/END markers
+// and "Hash:" header don't match any shape's structural guards, and signature
+// body lines are individually single tokens but always appear in pairs
+// (base64 + the =CRC trailer at minimum), so bareCount stays ≥ 2 and the
+// bare-digest fallback never fires on a signed file.
 func parseSumsFile(body []byte, filename string) (string, error) {
 	var bareDigest string
 	bareCount := 0
@@ -209,10 +217,21 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 			if name == filename {
 				return fields[0], nil
 			}
+		case 4:
+			// BSD-style: "<algo> (<name>) = <hex>". The "=" guard also rejects
+			// armor lines like "-----BEGIN PGP SIGNED MESSAGE-----" that happen
+			// to tokenise into 4 fields. Filenames have no spaces in upstream
+			// usage (Rocky/Alma/Fedora pin dated builds).
+			if fields[2] != "=" || !strings.HasPrefix(fields[1], "(") || !strings.HasSuffix(fields[1], ")") {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimPrefix(fields[1], "("), ")")
+			if name == filename {
+				return fields[3], nil
+			}
 		default:
-			// More than two fields: not a format we recognise. Skip rather than
-			// reject outright — signed sums files occasionally have trailing
-			// commentary we want to tolerate.
+			// Unrecognised shape. Skip rather than reject outright — signed sums
+			// files occasionally have trailing commentary we want to tolerate.
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -266,11 +285,38 @@ type Images struct {
 	Checksum     string    `json:"checksum"`
 	ChecksumType string    `json:"checksum_type"`
 	BootMode     string    `json:"boot_mode"`
-	Starred      bool      `json:"starred"`
 	// Tags are copied onto the imported AMI's AMIMetadata.Tags so the UI
 	// can filter/classify the image. Used to mark system-owned AMIs
 	// (e.g. the LB/HAProxy image) via spinifex:managed-by.
 	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// distroFamilies maps a distro name to its cloud-init family. Family selects
+// the per-distro branches in the cloud-init template (sudoers group,
+// NetworkManager keyfile vs netplan). Keep keys lowercase; callers normalise.
+var distroFamilies = map[string]string{
+	"debian": "debian",
+	"ubuntu": "debian",
+	"rocky":  "rhel",
+	"rhel":   "rhel",
+	"alma":   "rhel",
+	"fedora": "rhel",
+	"centos": "rhel",
+	"alpine": "alpine",
+}
+
+// DistroFamily returns the cloud-init family for distro. Unknown or empty
+// distro maps to "debian" (today's default rendering) and logs a warning so
+// operators using --file imports for custom appliances aren't broken by a
+// missing --distro flag; explicit RHEL-family rendering requires
+// --distro rocky|rhel|alma|fedora|centos.
+func DistroFamily(distro string) string {
+	d := strings.ToLower(strings.TrimSpace(distro))
+	if family, ok := distroFamilies[d]; ok {
+		return family
+	}
+	slog.Warn("unknown distro, defaulting to debian-family cloud-init", "distro", distro)
+	return "debian"
 }
 
 var AvailableImages = map[string]Images{
@@ -282,12 +328,11 @@ var AvailableImages = map[string]Images{
 		Version:      "13",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-amd64-20260501-2465.tar.xz",
-		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260501-2465/SHA512SUMS",
+		CreatedAt:    time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-amd64-20260518-2482.tar.xz",
+		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
-		Starred:      true,
+		BootMode:     "uefi",
 	},
 
 	"debian-13-arm64": {
@@ -297,12 +342,11 @@ var AvailableImages = map[string]Images{
 		Version:      "13",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud.debian.org/images/cloud/trixie/20260501-2465/debian-13-genericcloud-arm64-20260501-2465.tar.xz",
-		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260501-2465/SHA512SUMS",
+		CreatedAt:    time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud.debian.org/images/cloud/trixie/20260518-2482/debian-13-genericcloud-arm64-20260518-2482.tar.xz",
+		Checksum:     "https://cloud.debian.org/images/cloud/trixie/20260518-2482/SHA512SUMS",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
-		Starred:      true,
+		BootMode:     "uefi",
 	},
 
 	"ubuntu-26.04-x86_64": {
@@ -312,12 +356,11 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/current/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-amd64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
-		Starred:      false,
+		BootMode:     "uefi",
 	},
 
 	"ubuntu-26.04-arm64": {
@@ -327,67 +370,67 @@ var AvailableImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "arm64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-		URL:          "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-arm64.img",
-		Checksum:     "https://cloud-images.ubuntu.com/resolute/current/SHA256SUMS",
+		CreatedAt:    time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
+		URL:          "https://cloud-images.ubuntu.com/resolute/20260421/resolute-server-cloudimg-arm64.img",
+		Checksum:     "https://cloud-images.ubuntu.com/resolute/20260421/SHA256SUMS",
 		ChecksumType: "sha256",
-		BootMode:     "bios",
-		Starred:      false,
+		BootMode:     "uefi",
 	},
 
-	"alpine-3.22.2-x86_64": {
-		Name:         "alpine-3.22.2-x86_64",
-		Description:  "Alpine Linux 3.22.2 x86_64 cloud image",
+	"alpine-3.22.4-x86_64": {
+		Name:         "alpine-3.22.4-x86_64",
+		Description:  "Alpine Linux 3.22.4 x86_64 cloud image",
 		Distro:       "alpine",
-		Version:      "3.22.2",
+		Version:      "3.22.4",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2025, 10, 6, 0, 0, 0, 0, time.UTC),
-		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.2-x86_64-bios-cloudinit-r0.qcow2",
-		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.2-x86_64-bios-cloudinit-r0.qcow2.sha512",
+		CreatedAt:    time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-x86_64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-x86_64-uefi-cloudinit-r0.qcow2.sha512",
 		ChecksumType: "sha512",
-		BootMode:     "bios",
-		Starred:      false,
+		BootMode:     "uefi",
 	},
 
-	/*
-		"alpine-3.22.2-arm64":
-		// Alpine Linux (cloud init) arm64 (Requires UEFI boot, TODO)
-		{
-			Name:         "alpine-3.22.2-arm64",
-			Description:  "Alpine Linux 3.22.2 arm64 cloud image",
-			Distro:       "alpine",
-			Version:      "3.22.2",
-			Arch:         "arm64",
-			Platform:     "Linux/UNIX",
-			CreatedAt:    time.Date(2025, 10, 6, 0, 0, 0, 0, time.UTC),
-			URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/gcp_alpine-3.22.2-aarch64-uefi-cloudinit-metal-r0.raw.tar.gz",
-			Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/gcp_alpine-3.22.2-aarch64-uefi-cloudinit-metal-r0.raw.tar.gz.sha512",
-			ChecksumType: "sha512",
-			BootMode:     "uefi",
-			Starred:      false,
-		},
-	*/
-
-	// Alpine Linux (cloud init) x86_64 — LB system image with HAProxy and lb-agent
-	"lb-alpine-3.21.6-x86_64": {
-		Name:         "lb-alpine-3.21.6-x86_64",
-		Description:  "LB Alpine Linux 3.21.6 x86_64 system image",
+	"alpine-3.22.4-arm64": {
+		Name:         "alpine-3.22.4-arm64",
+		Description:  "Alpine Linux 3.22.4 arm64 cloud image",
 		Distro:       "alpine",
-		Version:      "3.21.6",
+		Version:      "3.22.4",
+		Arch:         "arm64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2",
+		Checksum:     "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/generic_alpine-3.22.4-aarch64-uefi-cloudinit-r0.qcow2.sha512",
+		ChecksumType: "sha512",
+		BootMode:     "uefi",
+	},
+
+	"rocky-10-x86_64": {
+		Name:         "rocky-10-x86_64",
+		Description:  "Rocky Linux 10 x86_64 cloud image",
+		Distro:       "rocky",
+		Version:      "10",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 03, 27, 0, 0, 0, 0, time.UTC),
-		URL:          "https://iso.mulgadc.com/system-ami/lb-alpine-3.21.6-x86_64.raw",
-		Checksum:     "https://iso.mulgadc.com/system-ami/lb-alpine-3.21.6-x86_64.raw.sha512",
-		ChecksumType: "sha512",
-		BootMode:     "bios",
-		Starred:      false,
-		// Marked system-managed: the UI hides this AMI from the Images
-		// page so customers don't mistake it for a bootable OS image.
-		Tags: map[string]string{
-			"spinifex:managed-by": "elbv2",
-		},
+		CreatedAt:    time.Date(2025, 11, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2",
+		Checksum:     "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2.CHECKSUM",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+	},
+
+	"rocky-10-arm64": {
+		Name:         "rocky-10-arm64",
+		Description:  "Rocky Linux 10 arm64 cloud image",
+		Distro:       "rocky",
+		Version:      "10",
+		Arch:         "arm64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2025, 11, 16, 0, 0, 0, 0, time.UTC),
+		URL:          "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2",
+		Checksum:     "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2.CHECKSUM",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
 	},
 }
 

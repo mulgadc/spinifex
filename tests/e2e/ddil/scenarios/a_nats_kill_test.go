@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/ddil/fault"
 )
 
 // TestScenarioA_NATSKill — stop spinifex-nats on a single node without
@@ -19,7 +21,7 @@ func TestScenarioA_NATSKill(t *testing.T) {
 	deps := requireLiveCluster(t)
 	c, ssh, dc, w := deps.cluster, deps.ssh, deps.dc, deps.witness
 
-	harness.Run(t, c, ssh, "A", func(t *testing.T) {
+	ddilh.Run(t, c, ssh, "A", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
@@ -28,12 +30,12 @@ func TestScenarioA_NATSKill(t *testing.T) {
 		node1, node2, node3 := c.Nodes[0], c.Nodes[1], c.Nodes[2]
 		witnesses := launchWitnesses(ctx, t, w, node1, node2, node3)
 
-		pre, err := harness.TakeSnapshot(ctx, dc, node3)
+		pre, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("pre-fault snapshot on %s: %v", node3.Name, err)
 		}
 
-		if err := harness.KillNATS(ctx, ssh, node3); err != nil {
+		if err := fault.KillNATS(ctx, ssh, node3); err != nil {
 			t.Fatalf("kill nats on %s: %v", node3.Name, err)
 		}
 		// Restore NATS in cleanup so a mid-scenario failure does not leave
@@ -41,7 +43,7 @@ func TestScenarioA_NATSKill(t *testing.T) {
 		t.Cleanup(func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer ccancel()
-			_ = harness.StartNATS(cctx, ssh, node3)
+			_ = fault.StartNATS(cctx, ssh, node3)
 		})
 
 		if err := harness.WaitForMode(ctx, dc, node3, harness.ModeStandalone, 30*time.Second); err != nil {
@@ -68,14 +70,14 @@ func TestScenarioA_NATSKill(t *testing.T) {
 			}
 		}
 
-		if err := harness.StartNATS(ctx, ssh, node3); err != nil {
+		if err := fault.StartNATS(ctx, ssh, node3); err != nil {
 			t.Fatalf("restart nats on %s: %v", node3.Name, err)
 		}
 		if err := harness.WaitForMode(ctx, dc, node3, harness.ModeCluster, 60*time.Second); err != nil {
 			t.Fatalf("%s did not return to cluster mode: %v", node3.Name, err)
 		}
 
-		post, err := harness.TakeSnapshot(ctx, dc, node3)
+		post, err := fault.TakeSnapshot(ctx, dc, node3)
 		if err != nil {
 			t.Fatalf("post-heal snapshot on %s: %v", node3.Name, err)
 		}

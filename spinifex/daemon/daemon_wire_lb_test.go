@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -242,4 +244,53 @@ func TestWireLBAgentConfig_GatewayURL_SingleNodeBindMatchesAdvertise(t *testing.
 	assert.Empty(t, d.mgmtRouteVia)
 	assert.Empty(t, d.elbv2Service.MgmtRouteGateway)
 	assert.Empty(t, d.elbv2Service.MgmtRouteTarget)
+}
+
+// newSubscribeTestDaemon creates a minimal Daemon wired enough for subscribeAll.
+func newSubscribeTestDaemon(t *testing.T, nc *nats.Conn, gatewayURL, accessKey string) *Daemon {
+	t.Helper()
+	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Close() })
+	svc.GatewayURL = gatewayURL
+
+	return &Daemon{
+		node:              "test-node",
+		config:            &config.Config{},
+		natsConn:          nc,
+		natsSubscriptions: make(map[string]*nats.Subscription),
+		elbv2Service:      svc,
+		systemAccessKey:   accessKey,
+	}
+}
+
+func hasELBv2Subs(subs map[string]*nats.Subscription) bool {
+	for topic := range subs {
+		if strings.HasPrefix(topic, "elbv2.") {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSubscribeAll_SkipsELBv2WhenGatewayURLEmpty(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	d := newSubscribeTestDaemon(t, nc, "", "AKID-test")
+
+	err := d.subscribeAll()
+	require.NoError(t, err)
+
+	assert.False(t, hasELBv2Subs(d.natsSubscriptions),
+		"elbv2 subscriptions must be skipped when GatewayURL is empty")
+}
+
+func TestSubscribeAll_RegistersELBv2WhenConfigured(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	d := newSubscribeTestDaemon(t, nc, "https://10.0.0.1:9999", "AKID-test")
+
+	err := d.subscribeAll()
+	require.NoError(t, err)
+
+	assert.True(t, hasELBv2Subs(d.natsSubscriptions),
+		"elbv2 subscriptions must be registered when GatewayURL and systemAccessKey are set")
 }

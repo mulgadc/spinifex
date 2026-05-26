@@ -274,14 +274,28 @@ $AWS_EC2 authorize-security-group-ingress \
     --group-id "$MULTINODE_SG" --protocol icmp --port -1 --cidr 0.0.0.0/0 > /dev/null
 echo "  SG created: $MULTINODE_SG (tcp/22 + icmp from 0.0.0.0/0)"
 
-# Import Ubuntu image (use node1's config and spinifex-dir)
+# Import Ubuntu image (use node1's config and spinifex-dir). v6+ gold image
+# stages ubuntu-26.04 (resolute); v3 staged ubuntu-24.04 (noble). Detect
+# which is present so we can keep running both during the v3→v6 transition.
 echo ""
 echo "Importing Ubuntu image..."
+if [ -f "$HOME/images/ubuntu-26.04.img" ]; then
+    UBUNTU_IMG="$HOME/images/ubuntu-26.04.img"
+    UBUNTU_VER="26.04"
+elif [ -f "$HOME/images/ubuntu-24.04.img" ]; then
+    UBUNTU_IMG="$HOME/images/ubuntu-24.04.img"
+    UBUNTU_VER="24.04"
+else
+    echo "ERROR: no ubuntu cloud image at ~/images/ubuntu-{24,26}.04.img" >&2
+    exit 1
+fi
+echo "  Using: $UBUNTU_IMG (version $UBUNTU_VER)"
 IMPORT_LOG=$(./bin/spx admin images import \
-    --file ~/images/ubuntu-24.04.img \
+    --file "$UBUNTU_IMG" \
     --arch "$ARCH" \
     --distro ubuntu \
-    --version 24.04 \
+    --version "$UBUNTU_VER" \
+    --boot-mode uefi \
     --config "$HOME/node1/config/spinifex.toml" \
     --spinifex-dir "$HOME/node1/" \
     --force 2>/dev/null)
@@ -1309,32 +1323,36 @@ fi
 
 echo "  Cluster shutdown + restart test passed"
 
-# Test 6d: Instance relaunch and terminate after restart
+# Test 6d: Restart instances after cluster restart, then terminate
 echo ""
-echo "Test 6d: Instance Relaunch + Terminate"
+echo "Test 6d: Instance Restart + Terminate"
 echo "----------------------------------------"
-echo "Waiting for instances to relaunch after cluster restart..."
 
-# All 3 instances were running before shutdown — the daemon will relaunch them.
-# Must wait for them to finish launching (pending → running) before terminate
-# will work, because the NATS per-instance subscription is only created after
-# QEMU starts.
+# DRAIN persists Running VMs as Stopped and migrates them to the cluster-shared
+# stopped KV bucket, so Restore does not auto-relaunch them. Verify the new
+# contract: instances come back as stopped, then explicitly start them.
+echo "Verifying instances are in stopped state after restart..."
 for instance_id in "${INSTANCE_IDS[@]}"; do
-    echo "  Waiting for $instance_id to finish relaunching..."
-    COUNT=0
-    while [ $COUNT -lt 60 ]; do
-        STATE=$($AWS_EC2 describe-instances --instance-ids "$instance_id" \
-            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "unknown")
-        if [ "$STATE" = "running" ]; then
-            echo "  $instance_id relaunched successfully: $STATE"
-            break
-        fi
-        sleep 1
-        COUNT=$((COUNT + 1))
-    done
-    if [ $COUNT -ge 60 ]; then
-        echo "  WARNING: $instance_id still in $STATE after 60s"
-    fi
+    wait_for_instance_state "$instance_id" "stopped" 30 || {
+        echo "  ERROR: $instance_id did not surface as stopped after restart"
+        dump_all_node_logs
+        exit 1
+    }
+done
+
+echo ""
+echo "Starting instances..."
+$AWS_EC2 start-instances --instance-ids "${INSTANCE_IDS[@]}" > /dev/null || {
+    echo "  ERROR: start-instances failed"
+    dump_all_node_logs
+    exit 1
+}
+for instance_id in "${INSTANCE_IDS[@]}"; do
+    wait_for_instance_state "$instance_id" "running" 60 || {
+        echo "  ERROR: $instance_id did not reach running after start-instances"
+        dump_all_node_logs
+        exit 1
+    }
 done
 
 # Terminate all instances
@@ -1347,7 +1365,7 @@ if ! terminate_and_wait "${INSTANCE_IDS[@]}"; then
     exit 1
 fi
 
-echo "  Instance relaunch + terminate after restart passed"
+echo "  Instance restart + terminate after cluster restart passed"
 
 # Run certificate validation E2E while services are still up (before cleanup trap).
 echo ""

@@ -49,7 +49,16 @@ var _ Manager = (*liveManager)(nil)
 
 func defaultDNSServer() string { return "{8.8.8.8, 1.1.1.1}" }
 
-// EnsureVPC creates the OVN logical router for the VPC, idempotently.
+// EnsureVPC creates the OVN logical router for the VPC, idempotently. Uses
+// the wait-op-protected EnsureLogicalRouter primitive so concurrent invocations
+// across nodes (vpc.create on one node + vpc.create-subnet's defensive call on
+// another, see subscribers/topology.go) cannot produce duplicate routers per
+// VPC (bead mulga-siv-146).
+//
+// If the surviving row was created with an empty `spinifex:cidr` ExternalID
+// (the defensive vpc.create-subnet path passes VPCSpec{VPCID: ...} with no
+// CIDR) and the current spec carries a valid CIDR, the ExternalIDs are
+// patched so the canonical row always reflects the most-complete metadata.
 func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -58,9 +67,6 @@ func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 		return fmt.Errorf("EnsureVPC: empty VPCID")
 	}
 	routerName := VPCRouter(spec.VPCID)
-	if _, err := m.ovn.GetLogicalRouter(ctx, routerName); err == nil {
-		return nil
-	}
 	cidr := ""
 	if spec.CIDR.IsValid() {
 		cidr = spec.CIDR.String()
@@ -73,11 +79,44 @@ func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 			"spinifex:cidr":   cidr,
 		},
 	}
-	if err := m.ovn.CreateLogicalRouter(ctx, lr); err != nil {
-		return fmt.Errorf("create logical router %q: %w", routerName, err)
+	existing, err := m.ovn.EnsureLogicalRouter(ctx, lr)
+	if err != nil {
+		return fmt.Errorf("ensure logical router %q: %w", routerName, err)
 	}
-	slog.Info("topology: EnsureVPC created router", "router", routerName, "vpc_id", spec.VPCID, "cidr", cidr)
+	if existing.UUID == lr.UUID {
+		slog.Info("topology: EnsureVPC created router", "router", routerName, "vpc_id", spec.VPCID, "cidr", cidr)
+		return nil
+	}
+	if err := m.backfillRouterMetadata(ctx, existing, lr.ExternalIDs); err != nil {
+		slog.Warn("topology: EnsureVPC metadata backfill failed",
+			"router", routerName, "vpc_id", spec.VPCID, "err", err)
+	}
 	return nil
+}
+
+// backfillRouterMetadata copies non-empty ExternalIDs from spec into the
+// existing row when the row's value for that key is empty. Required because
+// the wait-op fix makes EnsureLogicalRouter a single-shot create — if the
+// race loser supplied richer metadata than the winner, those fields would
+// otherwise be lost.
+func (m *liveManager) backfillRouterMetadata(ctx context.Context, existing *nbdb.LogicalRouter, spec map[string]string) error {
+	if existing.ExternalIDs == nil {
+		existing.ExternalIDs = map[string]string{}
+	}
+	changed := false
+	for k, v := range spec {
+		if v == "" {
+			continue
+		}
+		if cur := existing.ExternalIDs[k]; cur == "" {
+			existing.ExternalIDs[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return m.ovn.UpdateLogicalRouterExternalIDs(ctx, existing.Name, existing.ExternalIDs)
 }
 
 // DeleteVPC removes the OVN logical router for the VPC and cascades through
@@ -147,10 +186,6 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 	routerPortName := SubnetRouterPort(spec.SubnetID)
 	switchRouterPortName := SubnetSwitchRouterPort(spec.SubnetID)
 
-	if _, err := m.ovn.GetLogicalSwitch(ctx, switchName); err == nil {
-		return nil
-	}
-
 	ls := &nbdb.LogicalSwitch{
 		Name: switchName,
 		ExternalIDs: map[string]string{
@@ -158,8 +193,12 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 			"spinifex:vpc_id":    spec.VPCID,
 		},
 	}
-	if err := m.ovn.CreateLogicalSwitch(ctx, ls); err != nil {
-		return fmt.Errorf("create logical switch %q: %w", switchName, err)
+	existingSwitch, err := m.ovn.EnsureLogicalSwitch(ctx, ls)
+	if err != nil {
+		return fmt.Errorf("ensure logical switch %q: %w", switchName, err)
+	}
+	if existingSwitch.UUID != ls.UUID {
+		return nil
 	}
 
 	lrp := &nbdb.LogicalRouterPort{
@@ -347,15 +386,10 @@ func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) err
 		return fmt.Errorf("EnsureSGPortGroup: empty groupID")
 	}
 	pgName := SecurityGroupPortGroup(groupID)
-	if _, err := m.ovn.GetPortGroup(ctx, pgName); err == nil {
-		return nil
-	} else if !errors.Is(err, ovn.ErrPortGroupNotFound) {
-		return fmt.Errorf("get port group %s: %w", pgName, err)
+	if _, err := m.ovn.EnsurePortGroup(ctx, pgName, nil); err != nil {
+		return fmt.Errorf("ensure port group %s: %w", pgName, err)
 	}
-	if err := m.ovn.CreatePortGroup(ctx, pgName, nil); err != nil {
-		return fmt.Errorf("create port group %s: %w", pgName, err)
-	}
-	slog.Info("topology: created SG port group", "pg", pgName, "group_id", groupID)
+	slog.Info("topology: ensured SG port group", "pg", pgName, "group_id", groupID)
 	return nil
 }
 

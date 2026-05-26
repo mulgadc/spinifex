@@ -4,6 +4,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 
@@ -104,6 +105,25 @@ func (m *Client) CreateLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 	stored := *ls
 	m.Switches[ls.Name] = &stored
 	return nil
+}
+
+// EnsureLogicalSwitch mirrors the live client's wait-op semantics under the
+// mock's single mutex: any concurrent caller observing absence will be
+// serialised here, so the second arrival sees the row and returns existing.
+func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.Switches[ls.Name]; ok {
+		result := *existing
+		return &result, nil
+	}
+	if ls.UUID == "" {
+		ls.UUID = utils.GenerateResourceID("ovn")
+	}
+	stored := *ls
+	m.Switches[ls.Name] = &stored
+	result := stored
+	return &result, nil
 }
 
 func (m *Client) DeleteLogicalSwitch(_ context.Context, name string) error {
@@ -265,6 +285,25 @@ func (m *Client) CreateLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 	return nil
 }
 
+// EnsureLogicalRouter mirrors the live client's wait-op semantics under the
+// mock's single mutex: concurrent callers observing absence are serialised by
+// the mutex, so the second arrival sees the row and returns the existing one.
+func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.Routers[lr.Name]; ok {
+		result := *existing
+		return &result, nil
+	}
+	if lr.UUID == "" {
+		lr.UUID = utils.GenerateResourceID("ovn")
+	}
+	stored := *lr
+	m.Routers[lr.Name] = &stored
+	result := stored
+	return &result, nil
+}
+
 func (m *Client) DeleteLogicalRouter(_ context.Context, name string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -294,6 +333,18 @@ func (m *Client) ListLogicalRouters(_ context.Context) ([]nbdb.LogicalRouter, er
 		result = append(result, *lr)
 	}
 	return result, nil
+}
+
+func (m *Client) UpdateLogicalRouterExternalIDs(_ context.Context, name string, externalIDs map[string]string) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, ok := m.Routers[name]
+	if !ok {
+		return fmt.Errorf("logical router %q not found", name)
+	}
+	lr.ExternalIDs = make(map[string]string, len(externalIDs))
+	maps.Copy(lr.ExternalIDs, externalIDs)
+	return nil
 }
 
 // Logical Router Port
@@ -623,6 +674,25 @@ func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string)
 	}
 	m.PortGroups[name] = pg
 	return nil
+}
+
+// EnsurePortGroup mirrors the live client's wait-op semantics under the
+// mock's single mutex.
+func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.PortGroups[name]; ok {
+		result := *existing
+		return &result, nil
+	}
+	pg := &nbdb.PortGroup{
+		UUID:  utils.GenerateResourceID("pg"),
+		Name:  name,
+		Ports: ports,
+	}
+	m.PortGroups[name] = pg
+	result := *pg
+	return &result, nil
 }
 
 func (m *Client) DeletePortGroup(_ context.Context, name string) error {

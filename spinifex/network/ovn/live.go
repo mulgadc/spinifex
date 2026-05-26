@@ -5,12 +5,54 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 )
+
+// ensureRefetchTimeout bounds how long an Ensure* method retries the
+// post-conflict refetch. The libovsdb cache catches up via monitor updates
+// within a few milliseconds in practice; 200ms tolerates a clustered NB raft
+// follower lag without keeping the request blocked under steady-state.
+const ensureRefetchTimeout = 200 * time.Millisecond
+
+// ensureRefetchInterval is the polling cadence inside the refetch window. 20ms
+// matches the libovsdb monitor flush cadence: faster polls are wasted, slower
+// polls inflate the worst-case latency observed by the racing-loser caller.
+const ensureRefetchInterval = 20 * time.Millisecond
+
+// ensureWaitTimeoutMS is the server-side timeout passed in the wait-op
+// envelope. We rely on the predicate being evaluable immediately at commit
+// (no blocking wait): a timeout of 0 fails fast if the row appeared, letting
+// us fall through to the refetch path and reuse the canonical row.
+const ensureWaitTimeoutMS = 0
+
+// ensureNamedRowOps returns the ops for "wait until table has no row matching
+// Name == name, then insert createObj". OVN NB lacks a unique constraint on
+// Name; pairing the wait with the create in one transaction lets ovsdb-server
+// serialise concurrent writers. If a competing transaction commits a matching
+// row first, the wait predicate fails and the whole transaction is rejected,
+// which the caller handles by refetching the existing row.
+func (c *LiveClient) ensureNamedRowOps(table, name string, createObj model.Model) ([]ovsdb.Operation, error) {
+	createOps, err := c.client.Create(createObj)
+	if err != nil {
+		return nil, fmt.Errorf("create %s ops: %w", table, err)
+	}
+	timeout := ensureWaitTimeoutMS
+	waitOp := ovsdb.Operation{
+		Op:      ovsdb.OperationWait,
+		Table:   table,
+		Timeout: &timeout,
+		Where:   []ovsdb.Condition{{Column: "name", Function: ovsdb.ConditionEqual, Value: name}},
+		Columns: []string{"name"},
+		Until:   string(ovsdb.WaitConditionEqual),
+		Rows:    []ovsdb.Row{},
+	}
+	return append([]ovsdb.Operation{waitOp}, createOps...), nil
+}
 
 // transactOps executes a set of OVSDB operations as a single transaction,
 // checking both the RPC error and individual operation results.
@@ -124,6 +166,48 @@ func (c *LiveClient) CreateLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSw
 		return fmt.Errorf("create logical switch transact: %w", err)
 	}
 	return nil
+}
+
+func (c *LiveClient) EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
+	if existing, err := c.GetLogicalSwitch(ctx, ls.Name); err == nil {
+		return existing, nil
+	}
+	if ls.UUID == "" {
+		ls.UUID = namedUUID("ls_", ls.Name)
+	}
+	ops, err := c.ensureNamedRowOps("Logical_Switch", ls.Name, ls)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedSwitch(ctx, ls.Name); refErr == nil {
+			slog.Info("ovn: EnsureLogicalSwitch lost race, reusing existing",
+				"name", ls.Name, "existing_uuid", existing.UUID)
+			return existing, nil
+		}
+		return nil, fmt.Errorf("ensure logical switch %q: %w", ls.Name, err)
+	}
+	return ls, nil
+}
+
+func (c *LiveClient) waitForCachedSwitch(ctx context.Context, name string) (*nbdb.LogicalSwitch, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	var lastErr error
+	for {
+		v, err := c.GetLogicalSwitch(ctx, name)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
 }
 
 func (c *LiveClient) DeleteLogicalSwitch(ctx context.Context, name string) error {
@@ -337,6 +421,64 @@ func (c *LiveClient) CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRo
 		return fmt.Errorf("create logical router transact: %w", err)
 	}
 	return nil
+}
+
+func (c *LiveClient) EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
+	if existing, err := c.GetLogicalRouter(ctx, lr.Name); err == nil {
+		return existing, nil
+	}
+	if lr.UUID == "" {
+		lr.UUID = namedUUID("lr_", lr.Name)
+	}
+	ops, err := c.ensureNamedRowOps("Logical_Router", lr.Name, lr)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedRouter(ctx, lr.Name); refErr == nil {
+			slog.Info("ovn: EnsureLogicalRouter lost race, reusing existing",
+				"name", lr.Name, "existing_uuid", existing.UUID)
+			return existing, nil
+		}
+		return nil, fmt.Errorf("ensure logical router %q: %w", lr.Name, err)
+	}
+	return lr, nil
+}
+
+func (c *LiveClient) UpdateLogicalRouterExternalIDs(ctx context.Context, name string, externalIDs map[string]string) error {
+	lr, err := c.GetLogicalRouter(ctx, name)
+	if err != nil {
+		return fmt.Errorf("get logical router for external_ids update: %w", err)
+	}
+	lr.ExternalIDs = externalIDs
+	ops, err := c.client.Where(lr).Update(lr, &lr.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("update logical router external_ids ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update logical router external_ids transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveClient) waitForCachedRouter(ctx context.Context, name string) (*nbdb.LogicalRouter, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	var lastErr error
+	for {
+		v, err := c.GetLogicalRouter(ctx, name)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
 }
 
 func (c *LiveClient) DeleteLogicalRouter(ctx context.Context, name string) error {
@@ -996,6 +1138,51 @@ func (c *LiveClient) CreatePortGroup(ctx context.Context, name string, ports []s
 		return fmt.Errorf("create port group transact: %w", err)
 	}
 	return nil
+}
+
+func (c *LiveClient) EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
+	if existing, err := c.getPortGroup(ctx, name); err == nil {
+		return existing, nil
+	}
+	pg := &nbdb.PortGroup{
+		UUID:        namedUUID("pg_", name),
+		Name:        name,
+		Ports:       ports,
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.ensureNamedRowOps("Port_Group", name, pg)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedPortGroup(ctx, name); refErr == nil {
+			slog.Info("ovn: EnsurePortGroup lost race, reusing existing",
+				"name", name, "existing_uuid", existing.UUID)
+			return existing, nil
+		}
+		return nil, fmt.Errorf("ensure port group %q: %w", name, err)
+	}
+	return pg, nil
+}
+
+func (c *LiveClient) waitForCachedPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	var lastErr error
+	for {
+		v, err := c.getPortGroup(ctx, name)
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
 }
 
 func (c *LiveClient) DeletePortGroup(ctx context.Context, name string) error {

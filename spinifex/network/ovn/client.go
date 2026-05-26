@@ -43,6 +43,14 @@ type Client interface {
 
 	// Logical Switch (subnet)
 	CreateLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) error
+	// EnsureLogicalSwitch atomically creates a logical switch if no row with
+	// the same Name already exists, or returns the existing row. Wraps the
+	// insert in an OVSDB wait-op that asserts "zero rows match Name == ls.Name"
+	// at commit time; concurrent writers across nodes are serialised by
+	// ovsdb-server rather than by the local libovsdb cache (which can be
+	// stale relative to another node's just-committed insert). See
+	// EnsureLogicalRouter for the rationale.
+	EnsureLogicalSwitch(ctx context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error)
 	DeleteLogicalSwitch(ctx context.Context, name string) error
 	GetLogicalSwitch(ctx context.Context, name string) (*nbdb.LogicalSwitch, error)
 	ListLogicalSwitches(ctx context.Context) ([]nbdb.LogicalSwitch, error)
@@ -64,9 +72,29 @@ type Client interface {
 
 	// Logical Router (VPC router)
 	CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) error
+	// EnsureLogicalRouter atomically creates a logical router if no row with
+	// the same Name already exists, or returns the existing row. The insert
+	// is bundled with an OVSDB wait-op that asserts "zero rows match
+	// Name == lr.Name" at commit time, so two writers (different goroutines
+	// or different nodes) that both observe absence cannot both succeed —
+	// ovsdb-server rejects the second transaction. The returned pointer is
+	// the canonical row: newly created with the supplied fields, or the
+	// pre-existing row when a competing writer raced us.
+	//
+	// Required because OVN NB has no unique constraint on Name. Without the
+	// wait-op, the cross-handler / cross-node race between vpc.create and
+	// vpc.create-subnet's defensive EnsureVPC call produced duplicate routers
+	// per VPC (bead mulga-siv-146).
+	EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error)
 	DeleteLogicalRouter(ctx context.Context, name string) error
 	GetLogicalRouter(ctx context.Context, name string) (*nbdb.LogicalRouter, error)
 	ListLogicalRouters(ctx context.Context) ([]nbdb.LogicalRouter, error)
+	// UpdateLogicalRouterExternalIDs rewrites the ExternalIDs map of an
+	// existing logical router. Used by topology.EnsureVPC to backfill the
+	// `spinifex:cidr` / `spinifex:vni` keys when the row was first created by
+	// a defensive EnsureVPC call that did not carry the parent VPC's full
+	// metadata. The whole map is replaced; callers must pass the merged set.
+	UpdateLogicalRouterExternalIDs(ctx context.Context, name string, externalIDs map[string]string) error
 
 	// Logical Router Port
 	CreateLogicalRouterPort(ctx context.Context, routerName string, lrp *nbdb.LogicalRouterPort) error
@@ -96,6 +124,10 @@ type Client interface {
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
+	// EnsurePortGroup is the wait-op-protected create-or-get analogue of
+	// CreatePortGroup. Returns the canonical row. See EnsureLogicalRouter for
+	// the wait-op pattern and rationale.
+	EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, error)
 	DeletePortGroup(ctx context.Context, name string) error
 	// UpdatePortGroupMemberships applies all port-group joins and leaves for a
 	// single LSP in one atomic OVSDB transaction. Required by reconcilePortSGs

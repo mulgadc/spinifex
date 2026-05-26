@@ -118,21 +118,22 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	switchGWPortName := topology.GatewaySwitchPort(spec.VPCID)
 	routerName := topology.VPCRouter(spec.VPCID)
 
-	if _, err := m.ovn.GetLogicalSwitch(ctx, extSwitchName); err == nil {
-		slog.Debug("external: IGW topology already exists, skipping",
-			"vpc_id", spec.VPCID, "ext_switch", extSwitchName)
-		return nil
-	}
-
-	if err := m.ovn.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+	extSwitch := &nbdb.LogicalSwitch{
 		Name: extSwitchName,
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": spec.VPCID,
 			"spinifex:igw_id": spec.InternetGatewayID,
 			"spinifex:role":   "external",
 		},
-	}); err != nil {
-		return fmt.Errorf("create external switch %s: %w", extSwitchName, err)
+	}
+	existingSwitch, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch)
+	if err != nil {
+		return fmt.Errorf("ensure external switch %s: %w", extSwitchName, err)
+	}
+	if existingSwitch.UUID != extSwitch.UUID {
+		slog.Debug("external: IGW topology already exists, skipping",
+			"vpc_id", spec.VPCID, "ext_switch", extSwitchName)
+		return nil
 	}
 
 	localnetOpts := map[string]string{"network_name": "external"}

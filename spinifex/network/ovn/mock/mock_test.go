@@ -2,6 +2,7 @@ package mock
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
@@ -126,5 +127,168 @@ func TestSetGatewayChassis_UpdatesPriority(t *testing.T) {
 	}
 	if m.UpdateGatewayChassisPriorityCalls != 1 {
 		t.Errorf("expected 1 priority update, got %d", m.UpdateGatewayChassisPriorityCalls)
+	}
+}
+
+// TestEnsureLogicalRouter_ConcurrentSingleSurvivor proves that N goroutines
+// calling EnsureLogicalRouter for the same Name converge to a single OVN row.
+// Mirrors the production race between vpc.create on one node and the
+// defensive vpc.create-subnet EnsureVPC call on another — both observe
+// absence and both attempt to create. Without the Ensure primitive, both
+// succeed (bead mulga-siv-146). With it, one creates and the rest reuse.
+func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
+	const callers = 50
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	uuids := make([]string, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			lr, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+				Name:        "vpc-vpc-X",
+				ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-X"},
+			})
+			if err != nil {
+				t.Errorf("EnsureLogicalRouter[%d]: %v", i, err)
+				return
+			}
+			uuids[i] = lr.UUID
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	first := uuids[0]
+	if first == "" {
+		t.Fatalf("caller 0 got empty UUID")
+	}
+	for i, u := range uuids {
+		if u != first {
+			t.Errorf("caller %d UUID mismatch: %q vs %q", i, u, first)
+		}
+	}
+
+	rows, err := m.ListLogicalRouters(ctx)
+	if err != nil {
+		t.Fatalf("ListLogicalRouters: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 router after concurrent EnsureLogicalRouter, got %d", len(rows))
+	}
+}
+
+// TestEnsureLogicalRouter_ReturnsExistingOnSecondCall covers the
+// sequential-but-already-present path used by handleVPCCreate when the
+// defensive vpc.create-subnet handler beat it to the create.
+func TestEnsureLogicalRouter_ReturnsExistingOnSecondCall(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	first, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        "vpc-vpc-Y",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": ""},
+	})
+	if err != nil {
+		t.Fatalf("EnsureLogicalRouter first call: %v", err)
+	}
+	second, err := m.EnsureLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        "vpc-vpc-Y",
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-Y", "spinifex:cidr": "10.0.0.0/16"},
+	})
+	if err != nil {
+		t.Fatalf("EnsureLogicalRouter second call: %v", err)
+	}
+	if first.UUID != second.UUID {
+		t.Errorf("second call returned different UUID: %q vs %q", second.UUID, first.UUID)
+	}
+}
+
+func TestEnsureLogicalSwitch_ConcurrentSingleSurvivor(t *testing.T) {
+	const callers = 30
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	uuids := make([]string, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ls, err := m.EnsureLogicalSwitch(ctx, &nbdb.LogicalSwitch{
+				Name:        "subnet-subnet-Z",
+				ExternalIDs: map[string]string{"spinifex:subnet_id": "subnet-Z"},
+			})
+			if err != nil {
+				t.Errorf("EnsureLogicalSwitch[%d]: %v", i, err)
+				return
+			}
+			uuids[i] = ls.UUID
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	first := uuids[0]
+	for i, u := range uuids {
+		if u != first {
+			t.Errorf("caller %d UUID mismatch: %q vs %q", i, u, first)
+		}
+	}
+	rows, err := m.ListLogicalSwitches(ctx)
+	if err != nil {
+		t.Fatalf("ListLogicalSwitches: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 switch, got %d", len(rows))
+	}
+}
+
+func TestEnsurePortGroup_ConcurrentSingleSurvivor(t *testing.T) {
+	const callers = 30
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	uuids := make([]string, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			pg, err := m.EnsurePortGroup(ctx, "sg-pg-A", nil)
+			if err != nil {
+				t.Errorf("EnsurePortGroup[%d]: %v", i, err)
+				return
+			}
+			uuids[i] = pg.UUID
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	first := uuids[0]
+	for i, u := range uuids {
+		if u != first {
+			t.Errorf("caller %d UUID mismatch: %q vs %q", i, u, first)
+		}
+	}
+	rows, err := m.ListPortGroups(ctx)
+	if err != nil {
+		t.Fatalf("ListPortGroups: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 port group, got %d", len(rows))
 	}
 }

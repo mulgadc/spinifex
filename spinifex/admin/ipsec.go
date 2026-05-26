@@ -8,10 +8,13 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -173,6 +176,30 @@ func installCAIntoCharonTrustStore(caCertPath string) error {
 	}
 	if err := os.Rename(staging, link); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", staging, link, err)
+	}
+
+	// strongSwan scans /etc/ipsec.d/cacerts only at charon startup. If
+	// openvswitch-ipsec.service started before this install (the common
+	// case — the unit is enabled at provision time), charon is running
+	// with zero CAs loaded and every IKE_AUTH ends in `no trusted RSA
+	// public key found for '<peer>'`. Trigger a stroke rereadcacerts so
+	// the symlink we just placed is loaded without bouncing charon.
+	// Silent failure is expected when charon isn't running yet (admin
+	// init can run before setup-ovn.sh enables the unit); a later charon
+	// start will scan cacerts naturally.
+	if err := charonRereadCAs(); err != nil {
+		slog.Debug("ipsec: rereadcacerts skipped", "err", err)
+	}
+	return nil
+}
+
+// charonRereadCAs triggers strongSwan to re-scan /etc/ipsec.d/cacerts so a
+// freshly-symlinked CA is picked up by an already-running charon. Overridden
+// in tests to avoid execing ipsec.
+var charonRereadCAs = func() error {
+	out, err := exec.Command("/usr/sbin/ipsec", "rereadcacerts").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ipsec rereadcacerts: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

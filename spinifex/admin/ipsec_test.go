@@ -22,6 +22,12 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	charonCATrustDir = t.TempDir()
 	t.Cleanup(func() { charonCATrustDir = origTrustDir })
 
+	// Stub the ipsec rereadcacerts shell-out so tests don't depend on
+	// strongSwan being installed/running on the test host.
+	origReread := charonRereadCAs
+	charonRereadCAs = func() error { return nil }
+	t.Cleanup(func() { charonRereadCAs = origReread })
+
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
 	caKeyPath := filepath.Join(caDir, "ca.key")
@@ -119,6 +125,10 @@ func TestGenerateIPSecPeerCertIfEnabled(t *testing.T) {
 	charonCATrustDir = t.TempDir()
 	t.Cleanup(func() { charonCATrustDir = origTrustDir })
 
+	origReread := charonRereadCAs
+	charonRereadCAs = func() error { return nil }
+	t.Cleanup(func() { charonRereadCAs = origReread })
+
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
 	caKeyPath := filepath.Join(caDir, "ca.key")
@@ -155,3 +165,64 @@ func TestIPSecCertPaths(t *testing.T) {
 	assert.Equal(t, "/etc/spinifex/ipsec/peer.pem", certPath)
 	assert.Equal(t, "/etc/spinifex/ipsec/peer.key", keyPath)
 }
+
+// TestInstallCAIntoCharonTrustStore_TriggersRereadCAs locks the fix for the
+// race where openvswitch-ipsec started before admin init's CA install: every
+// IKE_AUTH failed with `no trusted RSA public key found for '<peer>'` because
+// charon had scanned cacerts before the symlink was placed. The trust-store
+// installer must trigger `ipsec rereadcacerts` so an already-running charon
+// picks up the CA without a restart.
+func TestInstallCAIntoCharonTrustStore_TriggersRereadCAs(t *testing.T) {
+	origTrustDir := charonCATrustDir
+	charonCATrustDir = t.TempDir()
+	t.Cleanup(func() { charonCATrustDir = origTrustDir })
+
+	origReread := charonRereadCAs
+	var called int
+	charonRereadCAs = func() error {
+		called++
+		return nil
+	}
+	t.Cleanup(func() { charonRereadCAs = origReread })
+
+	caDir := t.TempDir()
+	caCertPath := filepath.Join(caDir, "ca.pem")
+	require.NoError(t, os.WriteFile(caCertPath, []byte("dummy"), 0644))
+
+	require.NoError(t, installCAIntoCharonTrustStore(caCertPath))
+	assert.Equal(t, 1, called, "rereadcacerts must be invoked exactly once after symlink placement")
+
+	link := filepath.Join(charonCATrustDir, charonCATrustLink)
+	target, err := os.Readlink(link)
+	require.NoError(t, err)
+	assert.Equal(t, caCertPath, target, "symlink target must match CA cert path")
+}
+
+// TestInstallCAIntoCharonTrustStore_SwallowsRereadError verifies that a failed
+// rereadcacerts (e.g. charon not running, ipsec binary missing on a fresh
+// install) does not break admin init. The CA symlink must still be in place so
+// a later charon start picks it up via the normal cacerts scan.
+func TestInstallCAIntoCharonTrustStore_SwallowsRereadError(t *testing.T) {
+	origTrustDir := charonCATrustDir
+	charonCATrustDir = t.TempDir()
+	t.Cleanup(func() { charonCATrustDir = origTrustDir })
+
+	origReread := charonRereadCAs
+	charonRereadCAs = func() error { return stubError("charon not running") }
+	t.Cleanup(func() { charonRereadCAs = origReread })
+
+	caDir := t.TempDir()
+	caCertPath := filepath.Join(caDir, "ca.pem")
+	require.NoError(t, os.WriteFile(caCertPath, []byte("dummy"), 0644))
+
+	require.NoError(t, installCAIntoCharonTrustStore(caCertPath),
+		"reread failure must not propagate; admin init has to succeed even when charon is offline")
+
+	link := filepath.Join(charonCATrustDir, charonCATrustLink)
+	_, err := os.Readlink(link)
+	require.NoError(t, err, "symlink must persist even when reread fails")
+}
+
+type stubError string
+
+func (e stubError) Error() string { return string(e) }

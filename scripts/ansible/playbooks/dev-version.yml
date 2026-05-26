@@ -1,0 +1,11 @@
+---
+# Detailed build-vs-install drift report. Faster than dev-status (no AWS,
+# OVN, or port probing). Answers "do I need to ansible-dev-deploy?".
+- name: Dev version — build vs install drift (read-only)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+
+  roles:
+    - version

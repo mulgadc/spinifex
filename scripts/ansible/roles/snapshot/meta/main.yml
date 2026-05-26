@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: snapshot
+  description: Quiesce spinifex + ovn + ovs, tar state paths, restart.
+  license: BSD-3-Clause
+  min_ansible_version: "2.14"
+dependencies: []

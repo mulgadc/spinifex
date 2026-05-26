@@ -76,8 +76,44 @@ teardown_process_wait_seconds: 30
 spinifex_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../..') }}"
 mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }}"
 
+# Wrappers around `aws` and `spx` that re-enter a shell with the
+# `spinifex` supplementary group active. Needed because ansible's
+# `become_user` is a no-op when target user equals current user, so
+# supplementary groups are never re-initialised and /etc/spinifex/ca.pem
+# (drwxr-x--- root:spinifex) is unreadable. See mulga-siv-92.
+spinifex_aws_cli: "{{ playbook_dir }}/../scripts/aws-as-spinifex.sh"
+spinifex_spx_cli: "{{ playbook_dir }}/../scripts/spx-as-spinifex.sh"
+
+# dev-vpc fixture. Deterministic VPC + public subnet + IGW + default
+# route. Idempotent: re-running detects existing resources by Name tag.
+# Used by smoketest's launch path (which looks for any
+# map-public-ip-on-launch=true subnet).
+dev_vpc_name: spinifex-dev-vpc
+dev_vpc_cidr: 10.99.0.0/16
+dev_vpc_subnet_cidr: 10.99.1.0/24
+dev_vpc_subnet_az: "{{ spinifex_az }}"
+dev_vpc_state: present  # present | absent
+
 # Build output.
 build_tarball_path: /tmp/spinifex-local.tar.gz
+
+# Snapshot / restore. Snapshots quiesce the full spinifex+ovn+ovs stack,
+# tar these paths, then restart services. Restore wipes + untars + restarts.
+# Default snapshot dir is root-owned so it survives `dev-teardown`
+# (teardown only removes the four spinifex_*_dir paths above).
+snapshot_dir: /var/lib/spinifex-snapshots
+snapshot_paths:
+    - "{{ spinifex_etc_dir }}"
+    - "{{ spinifex_data_dir }}"
+    - "{{ ovn_db_dir }}"
+    - /etc/openvswitch/conf.db
+# Order matters: stop spinifex first (depends on OVN/OVS), then OVN, then OVS.
+# Restart in reverse.
+snapshot_services_stop_order:
+    - spinifex.target
+    - ovn-controller
+    - ovn-central
+    - openvswitch-switch
 
 # Smoketest image — parameterised so tofu examples can share the same base.
 spinifex_smoketest_distro: debian

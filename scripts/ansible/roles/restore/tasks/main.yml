@@ -1,0 +1,140 @@
+---
+# Inverse of the snapshot role: stop services, wipe the same path set,
+# untar the named bundle, refresh CA trust (because /etc/spinifex/ca.pem
+# came from the snapshot but the system trust store didn't), restart.
+
+- name: restore — require snapshot_name
+  ansible.builtin.assert:
+    that:
+      - snapshot_name is defined
+      - snapshot_name | length > 0
+      - snapshot_name is match('^[A-Za-z0-9._-]+$')
+    fail_msg: "snapshot_name required (alphanumeric/._-): -e snapshot_name=<name>"
+
+- name: restore — resolve bundle path
+  ansible.builtin.set_fact:
+    snapshot_bundle_path: "{{ snapshot_dir }}/{{ snapshot_name }}.tar.gz"
+
+- name: restore — assert bundle exists
+  become: true
+  ansible.builtin.stat:
+    path: "{{ snapshot_bundle_path }}"
+  register: restore_bundle_stat
+
+- name: restore — fail if missing
+  ansible.builtin.assert:
+    that: restore_bundle_stat.stat.exists
+    fail_msg: |
+      Snapshot bundle missing: {{ snapshot_bundle_path }}.
+      Available bundles:
+        ls -lh {{ snapshot_dir }}/*.tar.gz 2>/dev/null
+
+- name: restore — stop services in dependency order
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop: "{{ snapshot_services_stop_order }}"
+  failed_when: false
+
+- name: restore — kill lingering QEMU VMs
+  become: true
+  ansible.builtin.command: "pkill -x {{ item }}"
+  loop: "{{ spinifex_qemu_processes }}"
+  changed_when: false
+  failed_when: false
+
+- name: restore — wait for QEMU exit
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    for i in $(seq 1 {{ teardown_process_wait_seconds }}); do
+      alive=0
+      for proc in {{ spinifex_qemu_processes | join(' ') }}; do
+        if pgrep -x "$proc" >/dev/null 2>&1; then alive=1; break; fi
+      done
+      if [ "$alive" = "0" ]; then exit 0; fi
+      sleep 1
+    done
+    exit 1
+  changed_when: false
+
+- name: restore — wipe target paths (only those the snapshot will replace)
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ snapshot_paths }}"
+
+- name: restore — recreate parent dirs that tar will refill
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ ovn_db_dir }}"
+    - /etc/openvswitch
+
+- name: restore — extract bundle (preserve permissions/ACLs)
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      tar --acls --xattrs -xzpf {{ snapshot_bundle_path | quote }}
+      -C /
+  changed_when: true
+
+- name: restore — refresh spinifex CA in system trust
+  become: true
+  ansible.builtin.stat:
+    path: "{{ spinifex_ca_src }}"
+  register: restore_ca_stat
+
+- name: restore — copy CA back to trust path
+  become: true
+  ansible.builtin.copy:
+    src: "{{ spinifex_ca_src }}"
+    dest: "{{ spinifex_ca_trust_path }}"
+    mode: "0644"
+    remote_src: true
+  when: restore_ca_stat.stat.exists
+
+- name: restore — rebuild CA bundle
+  become: true
+  ansible.builtin.command: update-ca-certificates
+  changed_when: true
+  when: restore_ca_stat.stat.exists
+
+- name: restore — daemon-reload (covers any unit file delta in the snapshot)
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: restore — restart services in reverse order
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+  loop: "{{ snapshot_services_stop_order | reverse | list }}"
+  failed_when: false
+
+- name: restore — wait for AWS gateway readiness
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions"
+  register: restore_gw_ready
+  retries: 30
+  delay: 2
+  until: restore_gw_ready.rc == 0
+  changed_when: false
+  failed_when: false
+
+- name: restore — summary
+  ansible.builtin.debug:
+    msg: |
+      Restore complete:
+        snapshot : {{ snapshot_name }}
+        bundle   : {{ snapshot_bundle_path }}
+        paths    : {{ snapshot_paths | join(', ') }}
+        CA       : {{ 'refreshed' if restore_ca_stat.stat.exists else 'not in bundle — system trust unchanged' }}
+        gateway  : {{ 'ready' if restore_gw_ready.rc == 0 else 'NOT ready after restart — investigate' }}

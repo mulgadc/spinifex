@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: restore
+  description: Restore a spinifex+ovn+ovs snapshot bundle, refresh CA trust, restart.
+  license: BSD-3-Clause
+  min_ansible_version: "2.14"
+dependencies: []

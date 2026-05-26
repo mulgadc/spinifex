@@ -119,6 +119,17 @@ type VM struct {
 	// filters out tagged VMs from customer-facing listings.
 	ManagedBy string `json:"managed_by,omitempty"`
 
+	// IamInstanceProfileArn is the ARN of the instance profile attached at
+	// launch or via AssociateIamInstanceProfile. Empty when no profile is
+	// attached. Auto-cleared on TerminateInstances; preserved across stop/start.
+	IamInstanceProfileArn string `json:"iam_instance_profile_arn,omitempty"`
+
+	// IamInstanceProfileAssociationId is the synthesized AWS-style association
+	// ID (iip-assoc-...) used by DescribeIamInstanceProfileAssociations and
+	// Disassociate/Replace. Empty when no profile is attached. Regenerated on
+	// every Associate/Replace — never reused.
+	IamInstanceProfileAssociationId string `json:"iam_instance_profile_association_id,omitempty"`
+
 	// DirectBoot signals that this VM was configured with a pre-built
 	// vm.Config by the launcher (microvm direct-boot path). When true,
 	// startQEMU skips buildBaseVMConfig and uses the existing Config

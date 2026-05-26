@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
@@ -793,20 +794,20 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 		}
 
 		if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
-			pciAddr, xvga, gpuErr := s.gpuClaimer.Claim(instance.ID)
+			att, gpuErr := s.gpuClaimer.Claim(instance.ID)
 			if gpuErr != nil {
 				slog.Error("LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "err", gpuErr)
 				s.vmMgr.MarkFailed(instance, "gpu_claim_failed")
 				continue
 			}
-			instance.GPUPCIAddresses = []string{pciAddr}
-			instance.GPUXVGAEnabled = xvga
-			slog.Info("LaunchRunInstances: GPU claimed for instance", "instanceId", instance.ID, "gpu", pciAddr, "xvga", xvga)
+			instance.GPUAttachments = []gpu.GPUAttachment{*att}
+			slog.Info("LaunchRunInstances: GPU claimed for instance", "instanceId", instance.ID,
+				"pci", att.PCIAddress, "mdev", att.MdevPath)
 		}
 
 		if err := s.vmMgr.Run(instance); err != nil {
 			slog.Error("LaunchRunInstances: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
-			if len(instance.GPUPCIAddresses) > 0 && s.gpuClaimer != nil {
+			if len(instance.GPUAttachments) > 0 && s.gpuClaimer != nil {
 				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
 					slog.Error("LaunchRunInstances: GPU release failed after launch failure",
 						"instanceId", instance.ID, "err", releaseErr)
@@ -2132,20 +2133,20 @@ func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceIn
 	instance.Attributes = spxtypes.EC2CommandAttributes{StartInstance: true}
 	s.vmMgr.Insert(instance)
 
-	// Claim GPU for GPU instance types — binds the full IOMMU group to vfio-pci.
+	// Claim GPU for GPU instance types.
 	gpuClaimed := false
 	if s.gpuClaimer != nil && instancetypes.IsGPUType(instanceType) {
-		pciAddr, xvga, gpuErr := s.gpuClaimer.Claim(instance.ID)
+		att, gpuErr := s.gpuClaimer.Claim(instance.ID)
 		if gpuErr != nil {
 			slog.Error("StartStoppedInstance: GPU claim failed", "instanceId", input.InstanceID, "err", gpuErr)
 			s.resourceMgr.Deallocate(instanceType)
 			s.vmMgr.Delete(instance.ID)
 			return nil, errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 		}
-		instance.GPUPCIAddresses = []string{pciAddr}
-		instance.GPUXVGAEnabled = xvga
+		instance.GPUAttachments = []gpu.GPUAttachment{*att}
 		gpuClaimed = true
-		slog.Info("GPU claimed for instance", "instanceId", input.InstanceID, "gpu", pciAddr, "xvga", xvga)
+		slog.Info("GPU claimed for instance", "instanceId", input.InstanceID,
+			"pci", att.PCIAddress, "mdev", att.MdevPath)
 	}
 
 	if err := s.vmMgr.Run(instance); err != nil {

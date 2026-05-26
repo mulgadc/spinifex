@@ -608,11 +608,7 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 				"iommu", gpuProbe.IOMMUActive, "vfio", gpuProbe.VFIOPresent,
 				"gpus", len(gpuProbe.Devices))
 		} else {
-			for _, dev := range gpuProbe.Devices {
-				gpuModels = append(gpuModels, resolveGPUModel(dev, nodeCfg.Daemon.GPUModelOverrides))
-			}
-			gpuMgr = gpu.NewManager(gpuProbe.Devices)
-			slog.Info("GPU passthrough enabled", "gpus", len(gpuProbe.Devices), "knownModels", len(gpuModels))
+			gpuMgr, gpuModels = buildGPUPool(gpuProbe.Devices, nodeCfg.Daemon)
 		}
 	} else if gpuProbe.Capable {
 		slog.Info("GPU hardware detected, passthrough not enabled",
@@ -1751,11 +1747,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
 			return
 		}
-		var models []instancetypes.GPUModel
-		for _, dev := range probe.Devices {
-			models = append(models, resolveGPUModel(dev, d.config.Daemon.GPUModelOverrides))
-		}
-		mgr := gpu.NewManager(probe.Devices)
+		mgr, models := buildGPUPool(probe.Devices, d.config.Daemon)
 		d.gpuManager = mgr
 		d.resourceMgr.reloadGPUTypes(models, mgr)
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
@@ -2164,6 +2156,99 @@ func (d *Daemon) wireLBAgentConfig() {
 	}
 }
 
+// migProfileForDevice returns the MIG profile name configured for dev.
+// Per-GPU overrides take priority over the daemon-wide setting.
+func migProfileForDevice(dev gpu.GPUDevice, cfg config.DaemonConfig) string {
+	for _, o := range cfg.GPUModelOverrides {
+		if o.VendorID == dev.VendorID && o.DeviceID == dev.DeviceID && o.MIGProfile != "" {
+			return o.MIGProfile
+		}
+	}
+	return cfg.MIGProfile
+}
+
+// setupMIGInstances returns the live MIG instances on dev, creating them when
+// the GPU is MIG-enabled but has no instances yet. A mismatch between the
+// configured profile and existing instances is logged but tolerated — the
+// operator must destroy and recreate instances to re-profile.
+func setupMIGInstances(dev gpu.GPUDevice, profileName string) ([]gpu.MIGInstance, error) {
+	instances, err := gpu.ListInstances(dev.PCIAddress)
+	if err != nil {
+		return nil, fmt.Errorf("list MIG instances on %s: %w", dev.PCIAddress, err)
+	}
+	if len(instances) > 0 {
+		if instances[0].Profile.Name != profileName {
+			slog.Warn("Existing MIG instances use a different profile than configured; using existing",
+				"gpu", dev.PCIAddress, "existing", instances[0].Profile.Name, "configured", profileName)
+		}
+		return instances, nil
+	}
+	profiles, err := gpu.ListProfiles(dev.PCIAddress)
+	if err != nil {
+		return nil, fmt.Errorf("list MIG profiles on %s: %w", dev.PCIAddress, err)
+	}
+	for _, p := range profiles {
+		if p.Name == profileName {
+			return gpu.CreateInstances(dev.PCIAddress, p)
+		}
+	}
+	return nil, fmt.Errorf("MIG profile %q not supported on %s", profileName, dev.PCIAddress)
+}
+
+// buildGPUPool partitions devices into whole-GPU and MIG entries, constructs a
+// Manager, and returns GPU models for instance-type generation. MIG devices are
+// attached via Manager.AddMIGInstances; their models carry per-slice VRAM.
+func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manager, []instancetypes.GPUModel) {
+	var wholeGPU []gpu.GPUDevice
+	var migDevs []gpu.GPUDevice
+	var migGroups [][]gpu.MIGInstance
+	var models []instancetypes.GPUModel
+
+	for _, dev := range devices {
+		profileName := migProfileForDevice(dev, cfg)
+		if dev.MIGCapable && dev.MIGEnabled && profileName != "" {
+			instances, err := setupMIGInstances(dev, profileName)
+			if err != nil {
+				slog.Error("MIG setup failed, falling back to whole-GPU passthrough",
+					"gpu", dev.PCIAddress, "err", err)
+				wholeGPU = append(wholeGPU, dev)
+			} else {
+				migDevs = append(migDevs, dev)
+				migGroups = append(migGroups, instances)
+			}
+		} else {
+			if dev.MIGCapable && profileName != "" && !dev.MIGEnabled {
+				slog.Warn("MIG profile configured but MIG mode not active on GPU",
+					"gpu", dev.PCIAddress, "profile", profileName,
+					"hint", "run 'spx admin gpu mig enable'")
+			}
+			wholeGPU = append(wholeGPU, dev)
+		}
+	}
+
+	for _, dev := range wholeGPU {
+		models = append(models, resolveGPUModel(dev, cfg.GPUModelOverrides))
+	}
+	for i, dev := range migDevs {
+		model := resolveGPUModel(dev, cfg.GPUModelOverrides)
+		if len(migGroups[i]) > 0 {
+			model.MemoryMiB = migGroups[i][0].Profile.MemoryMiB
+		}
+		models = append(models, model)
+	}
+
+	mgr := gpu.NewManager(wholeGPU)
+	sliceCount := 0
+	for i, dev := range migDevs {
+		mgr.AddMIGInstances(dev, migGroups[i])
+		sliceCount += len(migGroups[i])
+	}
+
+	slog.Info("GPU pool built",
+		"whole_gpu", len(wholeGPU), "mig_gpus", len(migDevs), "mig_slices", sliceCount)
+	return mgr, models
+}
+
 // resolveGPUModel maps a discovered GPU to an instance type model.
 // Overrides take priority, then the production model list, then a g5 default.
 // Any GPU device that reaches the default path is treated as a g5 instance,
@@ -2253,6 +2338,15 @@ func probeGPU() gpuProbeResult {
 	_, err = os.Stat("/sys/module/vfio_pci")
 	r.VFIOPresent = err == nil
 
-	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
+	// MIG-enabled GPUs are capable without vfio-pci: the NVIDIA driver owns
+	// isolation via the mdev subsystem, so vfio-pci is not required.
+	hasMIG := false
+	for _, d := range r.Devices {
+		if d.MIGEnabled {
+			hasMIG = true
+			break
+		}
+	}
+	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
 	return r
 }

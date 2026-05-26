@@ -405,10 +405,17 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// when the same instance already owns the slot, so the launch and
 		// start-stopped paths (which Claim before Run) are unaffected.
 		if d.gpuManager != nil {
-			for _, addr := range instance.GPUPCIAddresses {
-				if err := d.gpuManager.ReclaimByAddress(addr, instance.ID); err != nil {
-					slog.Warn("Failed to re-claim GPU on instance up",
-						"gpu", addr, "instanceId", instance.ID, "err", err)
+			for _, att := range instance.GPUAttachments {
+				if att.MdevPath != "" {
+					if err := d.gpuManager.ReclaimByMdev(att.MdevPath, instance.ID); err != nil {
+						slog.Warn("Failed to re-claim MIG instance on restart",
+							"mdev", att.MdevPath, "instanceId", instance.ID, "err", err)
+					}
+				} else if att.PCIAddress != "" {
+					if err := d.gpuManager.ReclaimByAddress(att.PCIAddress, instance.ID); err != nil {
+						slog.Warn("Failed to re-claim GPU on instance up",
+							"gpu", att.PCIAddress, "instanceId", instance.ID, "err", err)
+					}
 				}
 			}
 		}
@@ -656,13 +663,13 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) {
 // original host driver. No-op for instances without a GPU allocation or
 // when GPU passthrough is disabled.
 func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) {
-	if a.d.gpuManager == nil || len(instance.GPUPCIAddresses) == 0 {
+	if a.d.gpuManager == nil || len(instance.GPUAttachments) == 0 {
 		return
 	}
 	if err := a.d.gpuManager.Release(instance.ID); err != nil {
 		slog.Error("Failed to release GPU on stop, device may need manual rebind",
-			"gpus", instance.GPUPCIAddresses, "instanceId", instance.ID, "err", err)
+			"gpus", instance.GPUAttachments, "instanceId", instance.ID, "err", err)
 		return
 	}
-	slog.Info("GPU released", "gpus", instance.GPUPCIAddresses, "instanceId", instance.ID)
+	slog.Info("GPU released", "gpus", instance.GPUAttachments, "instanceId", instance.ID)
 }

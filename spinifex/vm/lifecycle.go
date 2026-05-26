@@ -304,16 +304,21 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.Devices = append(instance.Config.Devices, RngDevice(instance.Config.MachineType))
 	}
 
-	for i, addr := range instance.GPUPCIAddresses {
-		xvga := "off"
-		if instance.GPUXVGAEnabled {
-			xvga = "on"
+	for i, att := range instance.GPUAttachments {
+		var devSpec string
+		if att.MdevPath != "" {
+			devSpec = fmt.Sprintf("vfio-pci,sysfsdev=%s,id=gpu%d,x-vga=off", att.MdevPath, i)
+			slog.Info("MIG device configured", "mdev", att.MdevPath, "index", i, "instanceId", instance.ID)
+		} else {
+			xvga := "off"
+			if att.XVGAEnabled {
+				xvga = "on"
+			}
+			devSpec = fmt.Sprintf("vfio-pci,host=%s,id=gpu%d,x-vga=%s", att.PCIAddress, i, xvga)
+			slog.Info("GPU passthrough device configured",
+				"pci", att.PCIAddress, "index", i, "instanceId", instance.ID, "xvga", xvga)
 		}
-		instance.Config.Devices = append(instance.Config.Devices, Device{
-			Value: fmt.Sprintf("vfio-pci,host=%s,id=gpu%d,x-vga=%s", addr, i, xvga),
-		})
-		slog.Info("GPU passthrough device configured",
-			"pci", addr, "index", i, "instanceId", instance.ID, "xvga", xvga)
+		instance.Config.Devices = append(instance.Config.Devices, Device{Value: devSpec})
 	}
 
 	qmpSocket, err := utils.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))

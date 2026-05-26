@@ -48,7 +48,7 @@ func TestManagerClaim_Success(t *testing.T) {
 		t.Fatalf("want Available=1 before claim, got %d", m.Available())
 	}
 
-	dev, err := m.Claim("i-001")
+	dev, _, err := m.Claim("i-001")
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestManagerClaim_NoGPUAvailable(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("first Claim: %v", err)
 	}
 
 	// Second claim on a pool with only one GPU.
-	_, err := m.Claim("i-002")
+	_, _, err := m.Claim("i-002")
 	if err == nil {
 		t.Error("want error when no GPU available, got nil")
 	}
@@ -86,7 +86,7 @@ func TestManagerClaim_NoIOMMU(t *testing.T) {
 	gpu := GPUDevice{PCIAddress: "0000:03:00.0", IOMMUGroup: -1}
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	_, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001")
 	if err == nil {
 		t.Error("want error for GPU with no IOMMU group, got nil")
 	}
@@ -96,7 +96,7 @@ func TestManagerRelease_Success(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestManagerRelease_FailureMarksUnavailable(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestManagerClaim_RollbackOnPartialFailure(t *testing.T) {
 	}
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	_, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001")
 	if err == nil {
 		t.Error("want error when partial IOMMU group bind fails, got nil")
 	}
@@ -199,7 +199,7 @@ func TestManagerClaim_GroupMembersError(t *testing.T) {
 	gpu := GPUDevice{PCIAddress: "0000:03:00.0", IOMMUGroup: 99, OriginalDriver: "nvidia"}
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	_, err := m.Claim("i-001")
+	_, _, err := m.Claim("i-001")
 	if err == nil {
 		t.Error("want error when IOMMU group directory is missing, got nil")
 	}
@@ -227,7 +227,7 @@ func TestManagerRelease_PreBound(t *testing.T) {
 	}
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestManagerCounts_MultiGPU(t *testing.T) {
 		t.Fatalf("want TotalCount=2, got %d", m.TotalCount())
 	}
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("first Claim: %v", err)
 	}
 	if m.Available() != 1 || m.AllocatedCount() != 1 {
@@ -275,7 +275,7 @@ func TestManagerCounts_MultiGPU(t *testing.T) {
 			m.Available(), m.AllocatedCount())
 	}
 
-	if _, err := m.Claim("i-002"); err != nil {
+	if _, _, err := m.Claim("i-002"); err != nil {
 		t.Fatalf("second Claim: %v", err)
 	}
 	if m.Available() != 0 || m.AllocatedCount() != 2 {
@@ -314,7 +314,7 @@ func TestManagerMarkFailed_ClaimedEntryIgnored(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-running"); err != nil {
+	if _, _, err := m.Claim("i-running"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	// MarkFailed on a claimed (non-empty InstanceID) entry must not mark it unavailable.
@@ -343,7 +343,7 @@ func TestManagerReclaim_AlreadyClaimed(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestManagerReclaim_SameInstanceIsNoop(t *testing.T) {
 	root, gpu := buildManagerSysfs(t)
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 
-	if _, err := m.Claim("i-001"); err != nil {
+	if _, _, err := m.Claim("i-001"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 

@@ -52,16 +52,57 @@ Must be run as root.`,
 	Run: runAdminGpuSetup,
 }
 
+var adminGpuMigCmd = &cobra.Command{
+	Use:   "mig",
+	Short: "Manage NVIDIA MIG partitioning on this node",
+}
+
+var adminGpuMigStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show MIG capability, mode, and slice state for all GPUs on this node",
+	Run:   runAdminGpuMigStatus,
+}
+
+var adminGpuMigEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Enable MIG mode and create GPU instances with the given profile",
+	Long: `Enable NVIDIA MIG mode on all MIG-capable GPUs (or a specific one) and
+partition them into slices using the requested profile.
+
+Must be run as root.`,
+	Run: runAdminGpuMigEnable,
+}
+
+var adminGpuMigDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Destroy all MIG instances and disable MIG mode",
+	Long: `Destroy all GPU instances and disable NVIDIA MIG mode on all MIG-capable
+GPUs (or a specific one). Blocked while GPU instances are running.
+
+Must be run as root.`,
+	Run: runAdminGpuMigDisable,
+}
+
 func init() {
 	adminCmd.AddCommand(adminGpuCmd)
 	adminGpuCmd.AddCommand(adminGpuStatusCmd)
 	adminGpuCmd.AddCommand(adminGpuEnableCmd)
 	adminGpuCmd.AddCommand(adminGpuDisableCmd)
 	adminGpuCmd.AddCommand(adminGpuSetupCmd)
+	adminGpuCmd.AddCommand(adminGpuMigCmd)
+	adminGpuMigCmd.AddCommand(adminGpuMigStatusCmd)
+	adminGpuMigCmd.AddCommand(adminGpuMigEnableCmd)
+	adminGpuMigCmd.AddCommand(adminGpuMigDisableCmd)
 
 	adminGpuStatusCmd.Flags().String("node", "", "Target node name (default: local node)")
-	// enable, disable, and setup write to the local spinifex.toml and signal the
-	// local daemon — they must be run directly on the target host.
+
+	adminGpuMigEnableCmd.Flags().String("profile", "", "MIG profile to use (e.g. \"1g.10gb\") (required)")
+	adminGpuMigEnableCmd.Flags().String("gpu", "", "PCI address of GPU to configure (default: all MIG-capable GPUs)")
+	_ = adminGpuMigEnableCmd.MarkFlagRequired("profile")
+
+	adminGpuMigDisableCmd.Flags().String("gpu", "", "PCI address of GPU to configure (default: all MIG-capable GPUs)")
+	// enable, disable, setup, and mig subcommands write to the local spinifex.toml
+	// and signal the local daemon — they must be run directly on the target host.
 }
 
 // gpuNodeStatus queries NATS and returns the NodeStatusResponse for the target node.
@@ -415,6 +456,267 @@ func runAdminGpuSetup(_ *cobra.Command, _ []string) {
 
 	fmt.Println("==> Enabling GPU passthrough")
 	gpuToggle(nil, true)
+}
+
+func runAdminGpuMigStatus(_ *cobra.Command, _ []string) {
+	devices, err := gpu.Discover()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GPU discovery failed: %v\n", err)
+		os.Exit(1)
+	}
+	if len(devices) == 0 {
+		fmt.Println("No GPUs detected on this node.")
+		return
+	}
+
+	anyMIG := false
+	for _, d := range devices {
+		if d.MIGCapable {
+			anyMIG = true
+		}
+		migMode := "N/A"
+		if d.MIGCapable {
+			if d.MIGEnabled {
+				migMode = "enabled"
+			} else {
+				migMode = "disabled"
+			}
+		}
+		fmt.Printf("GPU:           %s\n", d.PCIAddress)
+		fmt.Printf("  Model:       %s\n", d.Model)
+		fmt.Printf("  MIG capable: %v\n", d.MIGCapable)
+		fmt.Printf("  MIG mode:    %s\n", migMode)
+
+		if d.MIGEnabled {
+			instances, listErr := gpu.ListInstances(d.PCIAddress)
+			if listErr != nil {
+				fmt.Printf("  Slices:      (error: %v)\n", listErr)
+			} else {
+				fmt.Printf("  Slices:      %d\n", len(instances))
+				for _, inst := range instances {
+					fmt.Printf("    GI %d: %-12s  mdev: %s\n",
+						inst.GIID, inst.Profile.Name, inst.MdevPath)
+				}
+			}
+		}
+		fmt.Println()
+	}
+
+	if !anyMIG {
+		fmt.Println("No MIG-capable GPUs found. MIG requires an NVIDIA A100, A30, or H100 GPU.")
+	}
+}
+
+func runAdminGpuMigEnable(cmd *cobra.Command, _ []string) {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "Error: spx admin gpu mig enable must be run as root.")
+		os.Exit(1)
+	}
+
+	profileName, _ := cmd.Flags().GetString("profile")
+	targetPCI, _ := cmd.Flags().GetString("gpu")
+
+	cfgPath := viper.GetString("config")
+	if cfgPath == "" {
+		cfgPath = DefaultConfigFile()
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	resp, err := gpuNodeStatus(cfg.Node)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.AllocGPUs > 0 {
+		fmt.Fprintf(os.Stderr, "Error: %d GPU instance(s) are running. Terminate them first.\n", resp.AllocGPUs)
+		os.Exit(1)
+	}
+
+	devices, err := gpu.Discover()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GPU discovery failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	targets := migFilterTargets(devices, targetPCI)
+	if len(targets) == 0 {
+		if targetPCI != "" {
+			fmt.Fprintf(os.Stderr, "Error: no MIG-capable GPU found at PCI address %s\n", targetPCI)
+		} else {
+			fmt.Fprintln(os.Stderr, "Error: no MIG-capable GPUs found. MIG requires an NVIDIA A100, A30, or H100 GPU.")
+		}
+		os.Exit(1)
+	}
+
+	for _, d := range targets {
+		fmt.Printf("==> Configuring MIG on %s (%s)\n", d.PCIAddress, d.Model)
+
+		if !d.MIGEnabled {
+			fmt.Println("    Enabling MIG mode...")
+			if err := gpu.EnableMIGMode(d.PCIAddress); err != nil {
+				fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println("    MIG mode already enabled")
+		}
+
+		profiles, err := gpu.ListProfiles(d.PCIAddress)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "    Error listing profiles: %v\n", err)
+			os.Exit(1)
+		}
+
+		var selected *gpu.MIGProfile
+		for i, p := range profiles {
+			if p.Name == profileName {
+				selected = &profiles[i]
+				break
+			}
+		}
+		if selected == nil {
+			names := make([]string, len(profiles))
+			for i, p := range profiles {
+				names[i] = p.Name
+			}
+			fmt.Fprintf(os.Stderr, "    Error: profile %q not found. Available: %s\n",
+				profileName, strings.Join(names, ", "))
+			os.Exit(1)
+		}
+
+		existing, _ := gpu.ListInstances(d.PCIAddress)
+		if len(existing) > 0 {
+			fmt.Printf("    Destroying %d existing instance(s)...\n", len(existing))
+			if err := gpu.DestroyAllInstances(d.PCIAddress); err != nil {
+				fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		fmt.Printf("    Creating MIG instances (profile: %s)...\n", selected.Name)
+		instances, err := gpu.CreateInstances(d.PCIAddress, *selected)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("    Created %d instance(s)\n", len(instances))
+		for _, inst := range instances {
+			fmt.Printf("      GI %d: %s  mdev: %s\n", inst.GIID, inst.Profile.Name, inst.MdevPath)
+		}
+	}
+
+	fmt.Println("==> Writing mig_profile to config...")
+	if err := admin.SetMIGProfile(cfgPath, cfg.Node, profileName); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
+		os.Exit(1)
+	}
+
+	migReloadDaemon()
+	fmt.Println("MIG enabled. Run 'spx admin gpu mig status' to verify.")
+}
+
+func runAdminGpuMigDisable(cmd *cobra.Command, _ []string) {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "Error: spx admin gpu mig disable must be run as root.")
+		os.Exit(1)
+	}
+
+	targetPCI, _ := cmd.Flags().GetString("gpu")
+
+	cfgPath := viper.GetString("config")
+	if cfgPath == "" {
+		cfgPath = DefaultConfigFile()
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	resp, err := gpuNodeStatus(cfg.Node)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.AllocGPUs > 0 {
+		fmt.Fprintf(os.Stderr, "Error: %d GPU instance(s) are running. Terminate them first.\n", resp.AllocGPUs)
+		os.Exit(1)
+	}
+
+	devices, err := gpu.Discover()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GPU discovery failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	targets := migFilterTargets(devices, targetPCI)
+	if len(targets) == 0 {
+		if targetPCI != "" {
+			fmt.Fprintf(os.Stderr, "Error: no MIG-capable GPU found at PCI address %s\n", targetPCI)
+		} else {
+			fmt.Fprintln(os.Stderr, "Error: no MIG-capable GPUs found on this node.")
+		}
+		os.Exit(1)
+	}
+
+	for _, d := range targets {
+		fmt.Printf("==> Disabling MIG on %s (%s)\n", d.PCIAddress, d.Model)
+		if !d.MIGEnabled {
+			fmt.Println("    MIG mode not active — skipping")
+			continue
+		}
+		fmt.Println("    Destroying all GPU instances...")
+		if err := gpu.DestroyAllInstances(d.PCIAddress); err != nil {
+			fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("    Disabling MIG mode...")
+		if err := gpu.DisableMIGMode(d.PCIAddress); err != nil {
+			fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Println("==> Clearing mig_profile from config...")
+	if err := admin.SetMIGProfile(cfgPath, cfg.Node, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
+		os.Exit(1)
+	}
+
+	migReloadDaemon()
+	fmt.Println("MIG disabled. GPUs will operate in whole-GPU passthrough mode.")
+}
+
+// migFilterTargets returns all MIG-capable GPUs, optionally filtered to a
+// specific PCI address.
+func migFilterTargets(devices []gpu.GPUDevice, targetPCI string) []gpu.GPUDevice {
+	var out []gpu.GPUDevice
+	for _, d := range devices {
+		if !d.MIGCapable {
+			continue
+		}
+		if targetPCI != "" && d.PCIAddress != targetPCI {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// migReloadDaemon sends SIGHUP to spinifex-daemon so it picks up the updated
+// MIG configuration without a full restart.
+func migReloadDaemon() {
+	out, err := exec.Command("systemctl", "kill", "-s", "HUP", "spinifex-daemon").CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to signal daemon: %v\n%s\n", err, out)
+		fmt.Fprintln(os.Stderr, "Restart the daemon manually: sudo systemctl restart spinifex-daemon")
+		return
+	}
+	fmt.Println("==> Daemon signalled (SIGHUP) — MIG pool will be rebuilt on next request.")
 }
 
 // gpuSetupCollectVFIOIDs collects vendor:device PCI ID pairs for each GPU and

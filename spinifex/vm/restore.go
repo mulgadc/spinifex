@@ -88,6 +88,7 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 
 	for _, instance := range m.Snapshot() {
 		instance.EBSRequests.Mu = sync.Mutex{}
+		instance.ENIRequests.Mu = sync.Mutex{}
 		instance.QMPClient = &qmp.QMPClient{}
 
 		if instance.Status == StateTerminated {

@@ -17,13 +17,16 @@ import (
 // Example: "/machine/peripheral-anon/device[0]/virtio-backend" → 0
 var pciAddrRegexp = regexp.MustCompile(`device\[(\d+)\]`)
 
-// hotplugPortRegexp extracts the hotplug port number from a hot-plugged QDev path.
-// Example: "/machine/peripheral/vdisk-vol-xxx/hotplug3/virtio-backend" or
+// hotplugPortRegexp extracts the EBS hot-plug port number from a QDev path.
+// Example: "/machine/peripheral/vdisk-vol-xxx/hotplug-ebs3/virtio-backend" or
 //
 //	"/machine/peripheral/vdisk-vol-xxx/virtio-backend" (bus assigned by QEMU)
 //
 // The chassis number from the QEMU command line determines PCI slot order.
-var hotplugPortRegexp = regexp.MustCompile(`hotplug(\d+)`)
+// ENI hot-plug ports (`hotplug-eni{N}`) are explicitly excluded — virtio-net
+// devices are not surfaced through query-block, but the explicit suffix
+// guards against future query callers conflating the two pools.
+var hotplugPortRegexp = regexp.MustCompile(`hotplug-ebs(\d+)`)
 
 // queryGuestDeviceMap uses QMP query-block to build a map from QEMU device ID
 // (e.g. "os", "cloudinit", "vdisk-vol-xxx") to the guest device path
@@ -232,9 +235,9 @@ func extractPeripheralName(qdev string) string {
 	return ""
 }
 
-// extractHotplugPort extracts the hotplug port number from a QDev path.
-// For example: "/machine/peripheral/vdisk-vol-xxx/hotplug3/virtio-backend" → 3
-// Returns -1 if no hotplug port is found.
+// extractHotplugPort extracts the EBS hot-plug port number from a QDev path.
+// For example: "/machine/peripheral/vdisk-vol-xxx/hotplug-ebs3/virtio-backend" → 3
+// Returns -1 if no EBS hot-plug port is found.
 func extractHotplugPort(qdev string) int {
 	matches := hotplugPortRegexp.FindStringSubmatch(qdev)
 	if len(matches) < 2 {

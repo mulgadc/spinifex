@@ -145,6 +145,9 @@ func (s *stubIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInst
 func (s *stubIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
 }
+func (s *stubIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+	return nil, nil
+}
 
 func TestCreateUser(t *testing.T) {
 	svc := &stubIAMService{}

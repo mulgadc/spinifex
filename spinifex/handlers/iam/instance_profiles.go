@@ -251,6 +251,60 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 	}, nil
 }
 
+// ResolveInstanceProfile dereferences an instance-profile reference (the
+// {Name, Arn} shape from RunInstancesInput.IamInstanceProfile and related
+// EC2 association ops) to the canonical InstanceProfile record. Accepts
+// either the friendly name or the full ARN.
+//
+// When given an ARN, the embedded account ID must match the caller — this
+// is a defence-in-depth check; the gateway also rejects cross-account
+// references with AccessDenied before reaching this helper.
+func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error) {
+	if nameOrARN == "" {
+		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
+	}
+
+	if !strings.HasPrefix(nameOrARN, "arn:") {
+		return s.getInstanceProfile(accountID, nameOrARN)
+	}
+
+	profileAccountID, profileName, err := parseInstanceProfileARN(nameOrARN)
+	if err != nil {
+		return nil, err
+	}
+	if profileAccountID != accountID {
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+	return s.getInstanceProfile(accountID, profileName)
+}
+
+// parseInstanceProfileARN extracts the account ID and profile name from an
+// IAM instance-profile ARN of the form
+// `arn:aws:iam::<accountID>:instance-profile/<path>/<name>` (path optional).
+// Returns InvalidIamInstanceProfileArn.Malformed for any deviation.
+func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "iam" || parts[3] != "" {
+		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
+	}
+	resource := parts[5]
+	const prefix = "instance-profile/"
+	if !strings.HasPrefix(resource, prefix) {
+		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
+	}
+	pathAndName := resource[len(prefix):]
+	slash := strings.LastIndex(pathAndName, "/")
+	if slash == -1 {
+		name = pathAndName
+	} else {
+		name = pathAndName[slash+1:]
+	}
+	if name == "" {
+		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
+	}
+	return parts[4], name, nil
+}
+
 func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*InstanceProfile, error) {
 	entry, err := s.instanceProfilesBucket.Get(accountID + "." + profileName)
 	if err != nil {

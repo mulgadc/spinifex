@@ -21,6 +21,8 @@ func TestS4_HasOVNPrefix(t *testing.T) {
 		// fmt.Sprintf format-string position. This test confirms the
 		// prefix matcher is intentionally broad; precision comes from
 		// the AST context, not the matcher.
+		{"vpc-cidr-assoc-", false},         // AWS resource ID prefix, not OVN
+		{"vpc-cidr-assoc-deadbeef", false}, // AWS resource ID, not OVN
 	}
 	for _, tc := range cases {
 		if got := hasOVNPrefix(tc.in); got != tc.want {

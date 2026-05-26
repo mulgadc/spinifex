@@ -43,9 +43,17 @@ func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 	compliant := regexp.MustCompile(`^vpc\.\{`)
 	subjectLike := regexp.MustCompile(`^vpc\.[a-zA-Z]`)
 
+	// Scan covers vpcd's own publishers plus every upstack consumer that
+	// publishes or subscribes to vpc.* subjects. The gap report is
+	// intentionally wide so the eventual cluster-wide rename has a complete
+	// inventory.
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "network"),
 		filepath.Join(repoRoot(t), "spinifex", "vpcd"),
+		filepath.Join(repoRoot(t), "spinifex", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "handlers"),
+		filepath.Join(repoRoot(t), "spinifex", "testutil"),
+		filepath.Join(repoRoot(t), "spinifex", "utils"),
 	}
 
 	type hit struct {

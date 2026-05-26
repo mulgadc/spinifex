@@ -15,3 +15,7 @@
 # docs/development/proposals/az-local-architecture/0006-spinifex-network-layer-contract.md
 /spinifex/network/          @joshsiv-mulga
 /spinifex/vpcd/             @joshsiv-mulga
+
+# Invariants suite is the executable ADR-0006 fence — any widening or
+# narrowing of the scan roots needs an explicit owner review.
+/spinifex/network/invariants/ @joshsiv-mulga

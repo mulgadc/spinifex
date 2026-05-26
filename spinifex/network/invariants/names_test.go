@@ -192,7 +192,22 @@ var ovnNamePrefixes = []string{
 	"trp-",
 }
 
+// awsIDPrefixes are AWS resource-ID prefixes that share leading bytes with
+// the OVN contract table (notably `vpc-`). The handler tree legitimately
+// constructs these as AWS-facing identifiers; they are not OVN NB DB object
+// names and are out of S4's scope. A literal matching any prefix here is
+// excluded from hasOVNPrefix. Keep this list tight — only multi-token AWS
+// IDs that demonstrably collide with the contract.
+var awsIDPrefixes = []string{
+	"vpc-cidr-assoc-",
+}
+
 func hasOVNPrefix(s string) bool {
+	for _, a := range awsIDPrefixes {
+		if strings.HasPrefix(s, a) {
+			return false
+		}
+	}
 	for _, p := range ovnNamePrefixes {
 		if len(s) > len(p) && strings.HasPrefix(s, p) {
 			return true
@@ -249,16 +264,22 @@ func isVendoredOrGenerated(dir string) bool {
 	return false
 }
 
-// s4ScanRoots returns the directories S4 enforces over: the network layer
-// tree and vpcd. Anything else (handlers, daemon, services) is out of
-// scope — those packages legitimately deal in AWS resource ID prefixes
-// like `vpc-cidr-assoc-` that share leading bytes with OVN object names.
+// s4ScanRoots returns the directories S4 enforces over. The fence covers
+// the network layer tree, vpcd, and the upstack consumers (daemon, handlers,
+// vm) that historically grew their own OVN-name string literals. Those
+// upstack packages do legitimately deal in AWS resource ID prefixes like
+// `vpc-cidr-assoc-` — hasOVNPrefix requires an exact ADR-table match, so
+// AWS IDs do not collide. Any OVN-name construction in upstack code is a
+// real S4 violation and must move into network/topology/names.go.
 func s4ScanRoots(t *testing.T) []string {
 	t.Helper()
 	root := repoRoot(t)
 	return []string{
 		filepath.Join(root, "spinifex", "network"),
 		filepath.Join(root, "spinifex", "vpcd"),
+		filepath.Join(root, "spinifex", "daemon"),
+		filepath.Join(root, "spinifex", "handlers"),
+		filepath.Join(root, "spinifex", "vm"),
 	}
 }
 

@@ -24,10 +24,10 @@ import (
 // are ignored — only argument literals in exec.Command / SudoCommand /
 // Run-style calls are checked.
 //
-// Scope: network/ and daemon/. daemon/ is an L0 consumer (it launches
-// VMs and tap plumbing) but is not itself a layer; S2 still applies
-// because shell-outs from daemon/ bypass network/host/'s contract.
-// vpcd/ is the entrypoint and lives outside the layer model.
+// Scope: network/, daemon/, vm/. daemon/ and vm/ are L0 consumers (they
+// launch VMs and tap plumbing) but are not themselves layers; S2 still
+// applies because shell-outs from those packages bypass network/host/'s
+// contract. vpcd/ is the entrypoint and lives outside the layer model.
 func TestS2_BridgeModeContainedInL0(t *testing.T) {
 	const clause = `ADR-0006 S2: "Bridge mode is contained in L0. No layer ` +
 		`above L0 reads uplink type, bridge mode, or physical NIC state ` +
@@ -44,6 +44,7 @@ func TestS2_BridgeModeContainedInL0(t *testing.T) {
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "network"),
 		filepath.Join(repoRoot(t), "spinifex", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "vm"),
 	}
 	type hit struct {
 		file string

@@ -44,7 +44,11 @@ func TestS6_FederationIsolated(t *testing.T) {
 		"ovn-icsbctl",
 	}
 
-	root := filepath.Join(repoRoot(t), "spinifex", "network")
+	roots := []string{
+		filepath.Join(repoRoot(t), "spinifex", "network"),
+		filepath.Join(repoRoot(t), "spinifex", "daemon"),
+		filepath.Join(repoRoot(t), "spinifex", "handlers"),
+	}
 	type hit struct {
 		file string
 		line int
@@ -52,64 +56,66 @@ func TestS6_FederationIsolated(t *testing.T) {
 	}
 	var hits []hit
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if isVendoredOrGenerated(d.Name()) {
-				return filepath.SkipDir
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		if isS6Exempt(path) {
-			return nil
-		}
-		fset := token.NewFileSet()
-		file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if perr != nil {
-			t.Fatalf("parse %s: %v", path, perr)
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.SelectorExpr:
-				if _, bad := forbiddenIdents[x.Sel.Name]; bad {
-					pos := fset.Position(x.Pos())
-					hits = append(hits, hit{pos.Filename, pos.Line, x.Sel.Name})
+			if d.IsDir() {
+				if isVendoredOrGenerated(d.Name()) {
+					return filepath.SkipDir
 				}
-			case *ast.Ident:
-				if _, bad := forbiddenIdents[x.Name]; bad {
-					pos := fset.Position(x.Pos())
-					hits = append(hits, hit{pos.Filename, pos.Line, x.Name})
-				}
-			case *ast.BasicLit:
-				if x.Kind != token.STRING {
-					return true
-				}
-				lit, ok := stringLit(x)
-				if !ok {
-					return true
-				}
-				for _, sub := range forbiddenLiterals {
-					if strings.Contains(lit, sub) {
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") {
+				return nil
+			}
+			if strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			if isS6Exempt(path) {
+				return nil
+			}
+			fset := token.NewFileSet()
+			file, perr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if perr != nil {
+				t.Fatalf("parse %s: %v", path, perr)
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.SelectorExpr:
+					if _, bad := forbiddenIdents[x.Sel.Name]; bad {
 						pos := fset.Position(x.Pos())
-						hits = append(hits, hit{pos.Filename, pos.Line, "\"" + lit + "\""})
-						break
+						hits = append(hits, hit{pos.Filename, pos.Line, x.Sel.Name})
+					}
+				case *ast.Ident:
+					if _, bad := forbiddenIdents[x.Name]; bad {
+						pos := fset.Position(x.Pos())
+						hits = append(hits, hit{pos.Filename, pos.Line, x.Name})
+					}
+				case *ast.BasicLit:
+					if x.Kind != token.STRING {
+						return true
+					}
+					lit, ok := stringLit(x)
+					if !ok {
+						return true
+					}
+					for _, sub := range forbiddenLiterals {
+						if strings.Contains(lit, sub) {
+							pos := fset.Position(x.Pos())
+							hits = append(hits, hit{pos.Filename, pos.Line, "\"" + lit + "\""})
+							break
+						}
 					}
 				}
-			}
-			return true
+				return true
+			})
+			return nil
 		})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
 	}
 
 	if len(hits) == 0 {

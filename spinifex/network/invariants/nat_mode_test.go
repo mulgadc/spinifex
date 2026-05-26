@@ -42,6 +42,7 @@ func TestS3_NATModeInitTimeConstant(t *testing.T) {
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "network"),
 		filepath.Join(repoRoot(t), "spinifex", "vpcd"),
+		filepath.Join(repoRoot(t), "spinifex", "daemon"),
 	}
 	for _, root := range roots {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

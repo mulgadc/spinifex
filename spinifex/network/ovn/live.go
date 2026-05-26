@@ -30,12 +30,22 @@ const ensureRefetchInterval = 20 * time.Millisecond
 // us fall through to the refetch path and reuse the canonical row.
 const ensureWaitTimeoutMS = 0
 
-// ensureNamedRowOps returns the ops for "wait until table has no row matching
+// ensureNamedRowOps returns the ops for "fail unless table has no row matching
 // Name == name, then insert createObj". OVN NB lacks a unique constraint on
 // Name; pairing the wait with the create in one transaction lets ovsdb-server
 // serialise concurrent writers. If a competing transaction commits a matching
 // row first, the wait predicate fails and the whole transaction is rejected,
 // which the caller handles by refetching the existing row.
+//
+// The predicate is expressed as `until=!=` with a single-row projection
+// containing the name we want absent. RFC 7047 §5.2.6 requires the `rows`
+// member; an empty slice would be dropped by the libovsdb JSON encoder
+// (`json:"rows,omitempty"`), so we use the inverse formulation:
+//
+//   - no matching row → server projection `[]` ≠ `[{name:foo}]` → predicate
+//     holds, transaction proceeds.
+//   - matching row exists → projection `[{name:foo}]` == `[{name:foo}]` →
+//     predicate fails, transaction aborted.
 func (c *LiveClient) ensureNamedRowOps(table, name string, createObj model.Model) ([]ovsdb.Operation, error) {
 	createOps, err := c.client.Create(createObj)
 	if err != nil {
@@ -48,8 +58,8 @@ func (c *LiveClient) ensureNamedRowOps(table, name string, createObj model.Model
 		Timeout: &timeout,
 		Where:   []ovsdb.Condition{{Column: "name", Function: ovsdb.ConditionEqual, Value: name}},
 		Columns: []string{"name"},
-		Until:   string(ovsdb.WaitConditionEqual),
-		Rows:    []ovsdb.Row{},
+		Until:   string(ovsdb.WaitConditionNotEqual),
+		Rows:    []ovsdb.Row{{"name": name}},
 	}
 	return append([]ovsdb.Operation{waitOp}, createOps...), nil
 }

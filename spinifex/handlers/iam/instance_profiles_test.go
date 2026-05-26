@@ -57,14 +57,6 @@ func TestCreateInstanceProfile_DefaultPath(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::"+testAccountID+":instance-profile/default-profile", *out.InstanceProfile.Arn)
 }
 
-func TestCreateInstanceProfile_MissingName(t *testing.T) {
-	svc := setupTestIAMService(t)
-
-	_, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
-}
-
 func TestCreateInstanceProfile_InvalidName(t *testing.T) {
 	svc := setupTestIAMService(t)
 	longName := strings.Repeat("a", 129)

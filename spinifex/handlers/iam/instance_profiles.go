@@ -15,14 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ---------------------------------------------------------------------------
-// InstanceProfile CRUD
-// ---------------------------------------------------------------------------
-
 func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
-	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	profileName := *input.InstanceProfileName
 
 	if err := validatePolicyName(profileName); err != nil {
@@ -73,20 +66,24 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 	slog.Info("IAM instance profile created",
 		"accountID", accountID, "instanceProfileName", profileName, "instanceProfileID", profile.InstanceProfileID)
 
-	return &iam.CreateInstanceProfileOutput{InstanceProfile: s.profileToSDK(accountID, &profile)}, nil
+	sdkProfile, err := s.profileToSDK(accountID, &profile)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.CreateInstanceProfileOutput{InstanceProfile: sdkProfile}, nil
 }
 
 func (s *IAMServiceImpl) GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	profile, err := s.getInstanceProfile(accountID, *input.InstanceProfileName)
 	if err != nil {
 		return nil, err
 	}
 
-	return &iam.GetInstanceProfileOutput{InstanceProfile: s.profileToSDK(accountID, profile)}, nil
+	sdkProfile, err := s.profileToSDK(accountID, profile)
+	if err != nil {
+		return nil, err
+	}
+	return &iam.GetInstanceProfileOutput{InstanceProfile: sdkProfile}, nil
 }
 
 func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
@@ -136,7 +133,11 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 			continue
 		}
 
-		profiles = append(profiles, s.profileToSDK(accountID, &profile))
+		sdkProfile, err := s.profileToSDK(accountID, &profile)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, sdkProfile)
 	}
 
 	return &iam.ListInstanceProfilesOutput{
@@ -146,9 +147,6 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 }
 
 func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
-	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	profileName := *input.InstanceProfileName
 
 	profile, err := s.getInstanceProfile(accountID, profileName)
@@ -168,17 +166,7 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 	return &iam.DeleteInstanceProfileOutput{}, nil
 }
 
-// ---------------------------------------------------------------------------
-// InstanceProfile ↔ Role binding
-// ---------------------------------------------------------------------------
-
 func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
-	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
@@ -210,12 +198,6 @@ func (s *IAMServiceImpl) AddRoleToInstanceProfile(accountID string, input *iam.A
 }
 
 func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
-	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	profileName := *input.InstanceProfileName
 	roleName := *input.RoleName
 
@@ -243,9 +225,6 @@ func (s *IAMServiceImpl) RemoveRoleFromInstanceProfile(accountID string, input *
 }
 
 func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 
 	if _, err := s.getRole(accountID, roleName); err != nil {
@@ -259,7 +238,11 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 
 	out := make([]*iam.InstanceProfile, 0, len(profiles))
 	for _, p := range profiles {
-		out = append(out, s.profileToSDK(accountID, p))
+		sdkProfile, err := s.profileToSDK(accountID, p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sdkProfile)
 	}
 
 	return &iam.ListInstanceProfilesForRoleOutput{
@@ -267,10 +250,6 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 		IsTruncated:      aws.Bool(false),
 	}, nil
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*InstanceProfile, error) {
 	entry, err := s.instanceProfilesBucket.Get(accountID + "." + profileName)
@@ -291,10 +270,9 @@ func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*Ins
 // profileToSDK converts the internal InstanceProfile record into the AWS SDK
 // shape. The SDK requires a Roles array (0 or 1 element in our model); when
 // a role is attached the role's full record is dereferenced and embedded.
-// A missing role record is treated as no-role rather than failing the call —
-// the caller is typically already aware of the inconsistency from a separate
-// DeleteRole / RemoveRole codepath.
-func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) *iam.InstanceProfile {
+// Propagates errors from the role lookup — DeleteRole's no-orphan-ref guard
+// makes this an invariant violation that must not be silently degraded.
+func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
 	out := &iam.InstanceProfile{
 		InstanceProfileName: aws.String(p.InstanceProfileName),
 		InstanceProfileId:   aws.String(p.InstanceProfileID),
@@ -312,11 +290,9 @@ func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) *iam
 	if p.RoleName != "" {
 		role, err := s.getRole(accountID, p.RoleName)
 		if err != nil {
-			slog.Warn("profileToSDK: attached role not found",
-				"accountID", accountID, "instanceProfileName", p.InstanceProfileName, "roleName", p.RoleName, "err", err)
-			return out
+			return nil, fmt.Errorf("resolve attached role %q on profile %q: %w", p.RoleName, p.InstanceProfileName, err)
 		}
 		out.Roles = append(out.Roles, roleToSDK(role))
 	}
-	return out
+	return out, nil
 }

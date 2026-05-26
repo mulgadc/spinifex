@@ -81,26 +81,6 @@ func TestCreateRole_DefaultMaxSessionDuration(t *testing.T) {
 	assert.Equal(t, defaultMaxSessionDuration, *out.Role.MaxSessionDuration)
 }
 
-func TestCreateRole_MissingName(t *testing.T) {
-	svc := setupTestIAMService(t)
-
-	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
-		AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
-}
-
-func TestCreateRole_MissingTrustPolicy(t *testing.T) {
-	svc := setupTestIAMService(t)
-
-	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
-		RoleName: aws.String("no-trust"),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
-}
-
 func TestCreateRole_InvalidName(t *testing.T) {
 	svc := setupTestIAMService(t)
 	longName := strings.Repeat("a", 65)

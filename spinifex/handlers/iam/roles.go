@@ -26,18 +26,7 @@ const (
 	maxMaxSessionDuration     = int64(43200)
 )
 
-// ---------------------------------------------------------------------------
-// Role CRUD
-// ---------------------------------------------------------------------------
-
 func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.AssumeRolePolicyDocument == nil || *input.AssumeRolePolicyDocument == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	roleName := *input.RoleName
 	if err := validateUserName(roleName); err != nil {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -108,10 +97,6 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 }
 
 func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	role, err := s.getRole(accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
@@ -177,9 +162,6 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 }
 
 func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 
 	role, err := s.getRole(accountID, roleName)
@@ -208,9 +190,6 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 }
 
 func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 
 	role, err := s.getRole(accountID, roleName)
@@ -242,12 +221,6 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 }
 
 func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.PolicyDocument == nil || *input.PolicyDocument == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 
 	if _, err := ValidateTrustPolicyDocument(*input.PolicyDocument); err != nil {
@@ -274,17 +247,7 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 	return &iam.UpdateAssumeRolePolicyOutput{}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Role Policy Attachment
-// ---------------------------------------------------------------------------
-
 func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.PolicyArn == nil || *input.PolicyArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
@@ -315,12 +278,6 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 }
 
 func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.PolicyArn == nil || *input.PolicyArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
@@ -356,10 +313,6 @@ func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRol
 }
 
 func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-	if input.RoleName == nil || *input.RoleName == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	role, err := s.getRole(accountID, *input.RoleName)
 	if err != nil {
 		return nil, err
@@ -384,10 +337,6 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 	}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
 	entry, err := s.rolesBucket.Get(accountID + "." + roleName)
 	if err != nil {
@@ -404,10 +353,10 @@ func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
 	return &role, nil
 }
 
-// findInstanceProfilesForRole scans the instance profiles bucket for all
-// profiles in the caller's account whose RoleName matches the given role.
-// Used by DeleteRole to enforce the no-orphan-references invariant and by
-// ListInstanceProfilesForRole to satisfy the SDK reverse-lookup operation.
+// findInstanceProfilesForRole scans the instance-profiles bucket for any
+// profile in the account that references the given role. Fails closed on
+// per-key Get or unmarshal errors so DeleteRole cannot succeed while a
+// real-but-unreadable reference exists.
 func (s *IAMServiceImpl) findInstanceProfilesForRole(accountID, roleName string) ([]*InstanceProfile, error) {
 	keys, err := s.instanceProfilesBucket.Keys()
 	if err != nil {
@@ -433,13 +382,11 @@ func (s *IAMServiceImpl) findInstanceProfilesForRole(accountID, roleName string)
 				slog.Debug("findInstanceProfilesForRole: profile key disappeared", "key", key)
 				continue
 			}
-			slog.Warn("findInstanceProfilesForRole: failed to get profile", "key", key, "err", err)
-			continue
+			return nil, fmt.Errorf("get instance profile %q: %w", key, err)
 		}
 		var profile InstanceProfile
 		if err := json.Unmarshal(entry.Value(), &profile); err != nil {
-			slog.Warn("findInstanceProfilesForRole: failed to unmarshal profile", "key", key, "err", err)
-			continue
+			return nil, fmt.Errorf("unmarshal instance profile %q: %w", key, err)
 		}
 		if profile.RoleName == roleName {
 			p := profile
@@ -459,12 +406,10 @@ func roleToSDK(r *Role) *iam.Role {
 		Path:                     aws.String(r.Path),
 		AssumeRolePolicyDocument: aws.String(r.AssumeRolePolicyDocument),
 		CreateDate:               aws.Time(parseCreatedAt(r.CreatedAt)),
+		MaxSessionDuration:       aws.Int64(r.MaxSessionDuration),
 	}
 	if r.Description != "" {
 		out.Description = aws.String(r.Description)
-	}
-	if r.MaxSessionDuration > 0 {
-		out.MaxSessionDuration = aws.Int64(r.MaxSessionDuration)
 	}
 	for _, t := range r.Tags {
 		out.Tags = append(out.Tags, &iam.Tag{

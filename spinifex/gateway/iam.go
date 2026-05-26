@@ -93,6 +93,62 @@ var iamActions = map[string]IAMHandler{
 	"ListAttachedUserPolicies": iamHandler(func(accountID string, input *iam.ListAttachedUserPoliciesInput, svc handlers_iam.IAMService) (any, error) {
 		return gateway_iam.ListAttachedUserPolicies(accountID, input, svc)
 	}),
+
+	// Role CRUD
+	"CreateRole": iamHandler(func(accountID string, input *iam.CreateRoleInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.CreateRole(accountID, input, svc)
+	}),
+	"GetRole": iamHandler(func(accountID string, input *iam.GetRoleInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.GetRole(accountID, input, svc)
+	}),
+	"ListRoles": iamHandler(func(accountID string, input *iam.ListRolesInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.ListRoles(accountID, input, svc)
+	}),
+	"DeleteRole": iamHandler(func(accountID string, input *iam.DeleteRoleInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.DeleteRole(accountID, input, svc)
+	}),
+	"UpdateRole": iamHandler(func(accountID string, input *iam.UpdateRoleInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.UpdateRole(accountID, input, svc)
+	}),
+	"UpdateAssumeRolePolicy": iamHandler(func(accountID string, input *iam.UpdateAssumeRolePolicyInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.UpdateAssumeRolePolicy(accountID, input, svc)
+	}),
+
+	// Role policy attachment
+	"AttachRolePolicy": iamHandler(func(accountID string, input *iam.AttachRolePolicyInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.AttachRolePolicy(accountID, input, svc)
+	}),
+	"DetachRolePolicy": iamHandler(func(accountID string, input *iam.DetachRolePolicyInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.DetachRolePolicy(accountID, input, svc)
+	}),
+	"ListAttachedRolePolicies": iamHandler(func(accountID string, input *iam.ListAttachedRolePoliciesInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.ListAttachedRolePolicies(accountID, input, svc)
+	}),
+
+	// Instance profile CRUD
+	"CreateInstanceProfile": iamHandler(func(accountID string, input *iam.CreateInstanceProfileInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.CreateInstanceProfile(accountID, input, svc)
+	}),
+	"GetInstanceProfile": iamHandler(func(accountID string, input *iam.GetInstanceProfileInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.GetInstanceProfile(accountID, input, svc)
+	}),
+	"ListInstanceProfiles": iamHandler(func(accountID string, input *iam.ListInstanceProfilesInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.ListInstanceProfiles(accountID, input, svc)
+	}),
+	"DeleteInstanceProfile": iamHandler(func(accountID string, input *iam.DeleteInstanceProfileInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.DeleteInstanceProfile(accountID, input, svc)
+	}),
+	"ListInstanceProfilesForRole": iamHandler(func(accountID string, input *iam.ListInstanceProfilesForRoleInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.ListInstanceProfilesForRole(accountID, input, svc)
+	}),
+
+	// Instance profile ↔ role binding
+	"AddRoleToInstanceProfile": iamHandler(func(accountID string, input *iam.AddRoleToInstanceProfileInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.AddRoleToInstanceProfile(accountID, input, svc)
+	}),
+	"RemoveRoleFromInstanceProfile": iamHandler(func(accountID string, input *iam.RemoveRoleFromInstanceProfileInput, svc handlers_iam.IAMService) (any, error) {
+		return gateway_iam.RemoveRoleFromInstanceProfile(accountID, input, svc)
+	}),
 }
 
 func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {

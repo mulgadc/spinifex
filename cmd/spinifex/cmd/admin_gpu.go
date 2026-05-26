@@ -65,9 +65,15 @@ var adminGpuMigStatusCmd = &cobra.Command{
 
 var adminGpuMigEnableCmd = &cobra.Command{
 	Use:   "enable",
-	Short: "Enable MIG mode and create GPU instances with the given profile",
-	Long: `Enable NVIDIA MIG mode on all MIG-capable GPUs (or a specific one) and
-partition them into slices using the requested profile.
+	Short: "Enable MIG mode on all MIG-capable GPUs (or a specific one)",
+	Long: `Enable NVIDIA MIG mode on all MIG-capable GPUs (or a specific one).
+
+Without --profile the daemon handles slice creation dynamically: each
+RunInstances call for a mig.* instance type carves the right profile on
+demand and destroys the slices when the last instance stops.
+
+With --profile, slices are pre-carved immediately. The daemon recovers
+these slices on restart and serves them as a static pool for that profile.
 
 Must be run as root.`,
 	Run: runAdminGpuMigEnable,
@@ -96,9 +102,8 @@ func init() {
 
 	adminGpuStatusCmd.Flags().String("node", "", "Target node name (default: local node)")
 
-	adminGpuMigEnableCmd.Flags().String("profile", "", "MIG profile to use (e.g. \"1g.10gb\") (required)")
+	adminGpuMigEnableCmd.Flags().String("profile", "", "MIG profile to pre-carve (e.g. \"1g.10gb\"); omit for fully dynamic slice management")
 	adminGpuMigEnableCmd.Flags().String("gpu", "", "PCI address of GPU to configure (default: all MIG-capable GPUs)")
-	_ = adminGpuMigEnableCmd.MarkFlagRequired("profile")
 
 	adminGpuMigDisableCmd.Flags().String("gpu", "", "PCI address of GPU to configure (default: all MIG-capable GPUs)")
 	// enable, disable, setup, and mig subcommands write to the local spinifex.toml
@@ -565,6 +570,22 @@ func runAdminGpuMigEnable(cmd *cobra.Command, _ []string) {
 			fmt.Println("    MIG mode already enabled")
 		}
 
+		if profileName == "" {
+			// Dynamic mode: the daemon carves slices on demand at RunInstances time.
+			// Destroy any pre-carved slices so the daemon starts with a free GPU.
+			existing, _ := gpu.ListInstances(d.PCIAddress)
+			if len(existing) > 0 {
+				fmt.Printf("    Destroying %d pre-carved instance(s) so daemon can manage slices dynamically...\n", len(existing))
+				if err := gpu.DestroyAllInstances(d.PCIAddress); err != nil {
+					fmt.Fprintf(os.Stderr, "    Error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			fmt.Println("    Dynamic slice management enabled — use 'mig.*' instance types at RunInstances time.")
+			continue
+		}
+
+		// Static pre-carve: create a fixed set of slices for the given profile.
 		profiles, err := gpu.ListProfiles(d.PCIAddress)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "    Error listing profiles: %v\n", err)
@@ -607,12 +628,6 @@ func runAdminGpuMigEnable(cmd *cobra.Command, _ []string) {
 		for _, inst := range instances {
 			fmt.Printf("      GI %d: %s  mdev: %s\n", inst.GIID, inst.Profile.Name, inst.MdevPath)
 		}
-	}
-
-	fmt.Println("==> Writing mig_profile to config...")
-	if err := admin.SetMIGProfile(cfgPath, cfg.Node, profileName); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
-		os.Exit(1)
 	}
 
 	migReloadDaemon()

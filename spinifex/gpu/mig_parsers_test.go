@@ -1,6 +1,8 @@
 package gpu
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -372,6 +374,118 @@ func TestParseCreatedCIID(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- enrichMdevPaths ---
+
+func TestEnrichMdevPaths_MatchesBySymlinkTarget(t *testing.T) {
+	// Simulate /sys/bus/mdev/devices with two symlinks whose targets contain a
+	// PCI address. Only the one matching our target GPU should be matched.
+	root := t.TempDir()
+	pciAddr := "0000:01:00.0"
+	otherPCI := "0000:02:00.0"
+
+	// Fake mdev device directories — one per GPU.
+	devDir1 := t.TempDir()
+	devDir2 := t.TempDir()
+
+	uuid1 := "aaaaaaaa-0000-0000-0000-000000000001"
+	uuid2 := "bbbbbbbb-0000-0000-0000-000000000002"
+
+	// Write gpu_instance_id files so readMdevGIID succeeds.
+	require.NoError(t, os.WriteFile(filepath.Join(devDir1, "gpu_instance_id"), []byte("1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(devDir2, "gpu_instance_id"), []byte("3\n"), 0o644))
+
+	// Symlink targets embed the PCI address the way the real NVIDIA driver does.
+	target1 := filepath.Join("../../../../devices/pci0000:00/0000:00:03.1", pciAddr, uuid1)
+	target2 := filepath.Join("../../../../devices/pci0000:00/0000:00:04.0", otherPCI, uuid2)
+
+	require.NoError(t, os.Symlink(devDir1, filepath.Join(root, uuid1)))
+	require.NoError(t, os.Symlink(devDir2, filepath.Join(root, uuid2)))
+
+	// But os.Readlink reads the raw target string, not the resolved path. Create
+	// a helper directory whose name contains the PCI address so Readlink returns a
+	// string that contains pciAddr.
+	_ = target1
+	_ = target2
+
+	// Re-create the symlinks with targets that contain the PCI address as a string
+	// component (simulating the real sysfs layout).
+	require.NoError(t, os.Remove(filepath.Join(root, uuid1)))
+	require.NoError(t, os.Remove(filepath.Join(root, uuid2)))
+
+	fakeTarget1 := "../../../../devices/pci0000:00/0000:00:03.1/" + pciAddr + "/" + uuid1
+	fakeTarget2 := "../../../../devices/pci0000:00/0000:00:04.0/" + otherPCI + "/" + uuid2
+	require.NoError(t, os.Symlink(fakeTarget1, filepath.Join(root, uuid1)))
+	require.NoError(t, os.Symlink(fakeTarget2, filepath.Join(root, uuid2)))
+
+	// Also create the actual device directories so readMdevGIID can read from them.
+	// Since the symlink targets are relative and don't resolve in our temp dir,
+	// we recreate the symlinks pointing directly at devDir1/devDir2 but with
+	// a target string containing the PCI address.
+	// Simplest: just point to absolute paths that contain pciAddr in the string.
+	// We can't do that cleanly with os.Symlink + absolute paths, so test the
+	// parent-matching logic in isolation instead: re-point to absolute devDirs
+	// but patch the symlink target string to include pciAddr.
+	//
+	// The only part enrichMdevPaths uses from the symlink is
+	// strings.Contains(target, pciAddr). We need the target string to contain it;
+	// the path doesn't need to resolve. But we DO need to read gpu_instance_id, so
+	// the mdev path must resolve to devDir. Use a two-level layout: the symlink
+	// target embeds pciAddr in its string even though Go will not resolve through
+	// relative components in this temp dir.
+	//
+	// Easiest correct approach: the symlinks already point to the fakeTargets which
+	// contain the PCI address. For reading gpu_instance_id, use the resolved mdev
+	// path = filepath.Join(root, uuid) which Go resolves through the symlink.
+	// Since fakeTarget1 is relative and doesn't resolve within root, create the
+	// gpu_instance_id inside root/<uuid>/... instead. Just put the attribute files
+	// directly in the symlink source path isn't possible for broken symlinks.
+	//
+	// Use absolute symlinks that contain pciAddr in the path string.
+	require.NoError(t, os.Remove(filepath.Join(root, uuid1)))
+	require.NoError(t, os.Remove(filepath.Join(root, uuid2)))
+
+	// Build absolute paths that contain pciAddr but resolve to our temp devDirs.
+	// We use a subdirectory named after pciAddr inside root.
+	pciDir := filepath.Join(root, "devices", pciAddr)
+	otherDir := filepath.Join(root, "devices", otherPCI)
+	require.NoError(t, os.MkdirAll(filepath.Join(pciDir, uuid1), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(otherDir, uuid2), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pciDir, uuid1, "gpu_instance_id"), []byte("1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(otherDir, uuid2, "gpu_instance_id"), []byte("3\n"), 0o644))
+
+	// Symlinks whose targets (absolute) contain the respective PCI address.
+	require.NoError(t, os.Symlink(filepath.Join(pciDir, uuid1), filepath.Join(root, uuid1)))
+	require.NoError(t, os.Symlink(filepath.Join(otherDir, uuid2), filepath.Join(root, uuid2)))
+
+	instances := []MIGInstance{
+		{GIID: 1, Profile: MIGProfile{Name: "1g.10gb"}},
+	}
+	require.NoError(t, enrichMdevPaths(root, pciAddr, instances))
+	assert.Equal(t, filepath.Join(root, uuid1), instances[0].MdevPath)
+	assert.Equal(t, uuid1, instances[0].UUID)
+}
+
+func TestEnrichMdevPaths_MissingMdevBase_ReturnsError(t *testing.T) {
+	instances := []MIGInstance{{GIID: 1}}
+	err := enrichMdevPaths("/nonexistent/mdev/path", "0000:01:00.0", instances)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mdev subsystem not present")
+}
+
+func TestEnrichMdevPaths_NoMatchingUUID_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	// Create a symlink for a different GPU — should not match.
+	devDir := t.TempDir()
+	uuid := "cccccccc-0000-0000-0000-000000000001"
+	require.NoError(t, os.MkdirAll(filepath.Join(devDir, "gpu_instance_id"), 0o755))
+	require.NoError(t, os.Symlink(devDir, filepath.Join(root, uuid)))
+
+	instances := []MIGInstance{{GIID: 1}}
+	err := enrichMdevPaths(root, "0000:01:00.0", instances)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no mdev path found")
 }
 
 // --- IsMIGCapable ---

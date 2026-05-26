@@ -90,7 +90,7 @@ func CreateInstances(pciAddr string, profile MIGProfile) ([]MIGInstance, error) 
 	}
 
 	// Enumerate mdev UUIDs for the created instances.
-	if err := enrichMdevPaths(pciAddr, instances); err != nil {
+	if err := enrichMdevPaths(mdevBasePath, pciAddr, instances); err != nil {
 		return nil, fmt.Errorf("enumerate mdev paths on %s: %w", pciAddr, err)
 	}
 
@@ -109,7 +109,7 @@ func ListInstances(pciAddr string) ([]MIGInstance, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := enrichMdevPaths(pciAddr, instances); err != nil {
+	if err := enrichMdevPaths(mdevBasePath, pciAddr, instances); err != nil {
 		return nil, fmt.Errorf("enumerate mdev paths on %s: %w", pciAddr, err)
 	}
 	return instances, nil
@@ -166,18 +166,21 @@ func createComputeInstance(pciAddr string, giID int) (int, error) {
 	return parseCreatedCIID(string(out))
 }
 
-// enrichMdevPaths walks /sys/bus/mdev/devices and matches UUIDs to instances
-// by consulting the parent GPU's sysfs link and the GI ID.
-func enrichMdevPaths(pciAddr string, instances []MIGInstance) error {
-	entries, err := os.ReadDir(mdevBasePath)
+// enrichMdevPaths walks basePath (/sys/bus/mdev/devices) and matches UUIDs to
+// instances by reading each entry's symlink target (which contains the parent
+// GPU's PCI address) and the GI ID from the gpu_instance_id sysfs attribute.
+// basePath is parameterised so tests can inject a temp directory with fake
+// symlinks without touching real sysfs.
+func enrichMdevPaths(basePath, pciAddr string, instances []MIGInstance) error {
+	entries, err := os.ReadDir(basePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("mdev subsystem not present at %s — is the NVIDIA driver loaded?", mdevBasePath)
+			return fmt.Errorf("mdev subsystem not present at %s — is the NVIDIA driver loaded?", basePath)
 		}
 		return fmt.Errorf("read mdev devices: %w", err)
 	}
 
-	// Build a map from (GIID) → *MIGInstance for fast matching.
+	// Build a map from GIID → *MIGInstance for fast matching.
 	byGI := make(map[int]*MIGInstance, len(instances))
 	for i := range instances {
 		byGI[instances[i].GIID] = &instances[i]
@@ -185,18 +188,17 @@ func enrichMdevPaths(pciAddr string, instances []MIGInstance) error {
 
 	for _, entry := range entries {
 		uuid := entry.Name()
-		mdevPath := filepath.Join(mdevBasePath, uuid)
-
-		// Check the mdev device's parent GPU matches our target.
-		parentLink, err := os.Readlink(filepath.Join(mdevPath, "parent_bus_0"))
-		if err != nil {
-			// Try alternate sysfs layout used by older driver versions.
-			parentLink, err = os.Readlink(filepath.Join(mdevPath, ".."))
-		}
-		if err != nil || !strings.Contains(parentLink, pciAddr) {
+		// Each entry under /sys/bus/mdev/devices is a symlink whose target path
+		// includes the parent GPU's PCI address, e.g.:
+		//   ../../../../devices/pci0000:00/0000:00:03.1/0000:01:00.0/<uuid>
+		// Reading the symlink directly is the only portable way to identify the
+		// parent GPU — the mdev directory itself exposes no stable "parent" file.
+		target, err := os.Readlink(filepath.Join(basePath, uuid))
+		if err != nil || !strings.Contains(target, pciAddr) {
 			continue
 		}
 
+		mdevPath := filepath.Join(basePath, uuid)
 		giID, err := readMdevGIID(mdevPath)
 		if err != nil {
 			slog.Debug("mig: cannot read GI ID from mdev", "uuid", uuid, "err", err)

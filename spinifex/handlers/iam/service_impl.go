@@ -22,32 +22,38 @@ import (
 )
 
 const (
-	KVBucketUsers          = "spinifex-iam-users"
-	KVBucketAccessKeys     = "spinifex-iam-access-keys"
-	KVBucketPolicies       = "spinifex-iam-policies"
-	KVBucketAccounts       = "spinifex-accounts"
-	KVBucketAccountCounter = "spinifex-account-counter"
+	KVBucketUsers            = "spinifex-iam-users"
+	KVBucketAccessKeys       = "spinifex-iam-access-keys"
+	KVBucketPolicies         = "spinifex-iam-policies"
+	KVBucketAccounts         = "spinifex-accounts"
+	KVBucketAccountCounter   = "spinifex-account-counter"
+	KVBucketRoles            = "spinifex-iam-roles"
+	KVBucketInstanceProfiles = "spinifex-iam-instance-profiles"
 
-	KVBucketUsersVersion          = 1
-	KVBucketAccessKeysVersion     = 1
-	KVBucketPoliciesVersion       = 1
-	KVBucketAccountsVersion       = 1
-	KVBucketAccountCounterVersion = 1
+	KVBucketUsersVersion            = 1
+	KVBucketAccessKeysVersion       = 1
+	KVBucketPoliciesVersion         = 1
+	KVBucketAccountsVersion         = 1
+	KVBucketAccountCounterVersion   = 1
+	KVBucketRolesVersion            = 1
+	KVBucketInstanceProfilesVersion = 1
 
 	maxAccessKeysPerUser = 2
 )
 
 // IAMServiceImpl implements IAM operations using NATS JetStream KV.
 type IAMServiceImpl struct {
-	js                   nats.JetStreamContext
-	natsConn             *nats.Conn
-	usersBucket          nats.KeyValue
-	accessKeysBucket     nats.KeyValue
-	policiesBucket       nats.KeyValue
-	accountsBucket       nats.KeyValue
-	accountCounterBucket nats.KeyValue
-	masterKey            []byte
-	decrypter            *Decrypter
+	js                     nats.JetStreamContext
+	natsConn               *nats.Conn
+	usersBucket            nats.KeyValue
+	accessKeysBucket       nats.KeyValue
+	policiesBucket         nats.KeyValue
+	accountsBucket         nats.KeyValue
+	accountCounterBucket   nats.KeyValue
+	rolesBucket            nats.KeyValue
+	instanceProfilesBucket nats.KeyValue
+	masterKey              []byte
+	decrypter              *Decrypter
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
@@ -108,6 +114,22 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccountCounter, err)
 	}
 
+	rolesBucket, err := getOrCreateBucket(js, KVBucketRoles, 10, replicas)
+	if err != nil {
+		return nil, fmt.Errorf("init roles bucket: %w", err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(KVBucketRoles, rolesBucket, KVBucketRolesVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketRoles, err)
+	}
+
+	instanceProfilesBucket, err := getOrCreateBucket(js, KVBucketInstanceProfiles, 10, replicas)
+	if err != nil {
+		return nil, fmt.Errorf("init instance profiles bucket: %w", err)
+	}
+	if err := migrate.DefaultRegistry.RunKV(KVBucketInstanceProfiles, instanceProfilesBucket, KVBucketInstanceProfilesVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
+	}
+
 	decrypter, err := NewDecrypter(masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("init decrypter: %w", err)
@@ -118,18 +140,22 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		"access_keys_bucket", KVBucketAccessKeys,
 		"policies_bucket", KVBucketPolicies,
 		"accounts_bucket", KVBucketAccounts,
+		"roles_bucket", KVBucketRoles,
+		"instance_profiles_bucket", KVBucketInstanceProfiles,
 		"replicas", replicas)
 
 	return &IAMServiceImpl{
-		js:                   js,
-		natsConn:             natsConn,
-		usersBucket:          usersBucket,
-		accessKeysBucket:     accessKeysBucket,
-		policiesBucket:       policiesBucket,
-		accountsBucket:       accountsBucket,
-		accountCounterBucket: accountCounterBucket,
-		masterKey:            masterKey,
-		decrypter:            decrypter,
+		js:                     js,
+		natsConn:               natsConn,
+		usersBucket:            usersBucket,
+		accessKeysBucket:       accessKeysBucket,
+		policiesBucket:         policiesBucket,
+		accountsBucket:         accountsBucket,
+		accountCounterBucket:   accountCounterBucket,
+		rolesBucket:            rolesBucket,
+		instanceProfilesBucket: instanceProfilesBucket,
+		masterKey:              masterKey,
+		decrypter:              decrypter,
 	}, nil
 }
 

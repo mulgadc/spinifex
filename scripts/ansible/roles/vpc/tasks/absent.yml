@@ -1,0 +1,128 @@
+---
+# Tear down the dev VPC fixture. Deletes in reverse dependency order:
+# route-table associations, route table, subnet, IGW (detach + delete),
+# VPC. Each step is best-effort so a partially-converged fixture still
+# converges to "gone" on re-run.
+
+- name: vpc — find VPC by Name tag
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-vpcs
+    --filters Name=tag:Name,Values={{ dev_vpc_name }}
+    --query Vpcs[0].VpcId --output text
+  register: absent_vpc
+  changed_when: false
+
+- name: vpc — nothing to do
+  ansible.builtin.debug:
+    msg: "VPC tagged Name={{ dev_vpc_name }} not found; nothing to delete."
+  when: absent_vpc.stdout | trim in ['', 'None']
+
+- name: vpc — short-circuit when no VPC
+  ansible.builtin.meta: end_play
+  when: absent_vpc.stdout | trim in ['', 'None']
+
+- name: vpc — set VPC id fact
+  ansible.builtin.set_fact:
+    absent_vpc_id: "{{ absent_vpc.stdout | trim }}"
+
+- name: vpc — find subnet
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-subnets
+    --filters Name=vpc-id,Values={{ absent_vpc_id }}
+    Name=tag:Name,Values={{ dev_vpc_name }}-public
+    --query Subnets[0].SubnetId --output text
+  register: absent_subnet
+  changed_when: false
+
+# Enumerate ALL non-main route tables in the VPC (main RT can't be
+# deleted; it goes when the VPC does). Catches orphans from earlier
+# runs that landed before the create-tags workaround.
+- name: vpc — find all non-main route tables in VPC
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-route-tables
+    --filters Name=vpc-id,Values={{ absent_vpc_id }}
+    --query RouteTables[?!(Associations[?Main==`true`])].RouteTableId
+    --output text
+  register: absent_rt_list
+  changed_when: false
+
+- name: vpc — split RT id list
+  ansible.builtin.set_fact:
+    absent_rt_ids: "{{ absent_rt_list.stdout.split() | reject('equalto', '') | list }}"
+
+- name: vpc — find all subnet/RT associations to disassociate
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-route-tables
+    --route-table-ids {{ item }}
+    --query RouteTables[0].Associations[?SubnetId!=null].RouteTableAssociationId
+    --output text
+  register: absent_assocs
+  loop: "{{ absent_rt_ids }}"
+  changed_when: false
+  failed_when: false
+
+- name: vpc — disassociate subnets from route tables
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 disassociate-route-table
+    --association-id {{ item }}
+  loop: "{{ absent_assocs.results
+            | map(attribute='stdout')
+            | map('default', '')
+            | map('split')
+            | flatten
+            | reject('equalto', '')
+            | list }}"
+  changed_when: true
+  failed_when: false
+
+- name: vpc — delete all non-main route tables
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 delete-route-table
+    --route-table-id {{ item }}
+  loop: "{{ absent_rt_ids }}"
+  changed_when: true
+  failed_when: false
+
+- name: vpc — delete subnet
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 delete-subnet
+    --subnet-id {{ absent_subnet.stdout | trim }}
+  when: absent_subnet.stdout | trim not in ['', 'None']
+  changed_when: true
+  failed_when: false
+
+- name: vpc — find IGW
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 describe-internet-gateways
+    --filters Name=attachment.vpc-id,Values={{ absent_vpc_id }}
+    --query InternetGateways[0].InternetGatewayId --output text
+  register: absent_igw
+  changed_when: false
+
+- name: vpc — detach IGW
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 detach-internet-gateway
+    --internet-gateway-id {{ absent_igw.stdout | trim }}
+    --vpc-id {{ absent_vpc_id }}
+  when: absent_igw.stdout | trim not in ['', 'None']
+  changed_when: true
+  failed_when: false
+
+- name: vpc — delete IGW
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 delete-internet-gateway
+    --internet-gateway-id {{ absent_igw.stdout | trim }}
+  when: absent_igw.stdout | trim not in ['', 'None']
+  changed_when: true
+  failed_when: false
+
+- name: vpc — delete VPC
+  ansible.builtin.command: >-
+    {{ spinifex_aws_cli }} ec2 delete-vpc
+    --vpc-id {{ absent_vpc_id }}
+  changed_when: true
+  failed_when: false
+
+- name: vpc — summary (absent)
+  ansible.builtin.debug:
+    msg: "Dev VPC {{ dev_vpc_name }} (was {{ absent_vpc_id }}) torn down."

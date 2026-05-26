@@ -73,11 +73,7 @@
 # to NATS + daemons after that. Bash start-dev.sh has internal wait loops;
 # systemd path does not. Poll a benign call until gateway is fully ready.
 - name: init — wait for AWS gateway readiness
-  become: true
-  become_user: "{{ spinifex_invoking_user }}"
-  environment:
-    AWS_PROFILE: spinifex
-  ansible.builtin.command: aws ec2 describe-regions
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions"
   register: init_gw_ready
   until: init_gw_ready.rc == 0
   retries: 30

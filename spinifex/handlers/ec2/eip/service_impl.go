@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -579,7 +580,7 @@ func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, en
 		VpcId:      vpcID,
 		ExternalIP: externalIP,
 		LogicalIP:  logicalIP,
-		PortName:   "port-" + eniID,
+		PortName:   topology.Port(eniID),
 		MAC:        mac,
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -43,7 +44,7 @@ func MgmtTapName(instanceID string) string {
 // OVSIfaceID returns the OVS external_ids:iface-id value for an ENI.
 // This must match the OVN LogicalSwitchPort name for ovn-controller binding.
 func OVSIfaceID(eniID string) string {
-	return "port-" + eniID
+	return topology.Port(eniID)
 }
 
 // VPCTapSpec returns the TapSpec for a VPC ENI's tap on br-int. The

@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -697,7 +698,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
-						portName := "port-" + *eni.NetworkInterfaceId
+						portName := topology.Port(*eni.NetworkInterfaceId)
 						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
 							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
@@ -2330,7 +2331,7 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceI
 	if instance.PublicIP == "" || instance.PublicIPPool == "" || s.ipReleaser == nil {
 		return
 	}
-	portName := "port-" + instance.ENIId
+	portName := topology.Port(instance.ENIId)
 	vpcID := ""
 	logicalIP := ""
 	if instance.Instance != nil {

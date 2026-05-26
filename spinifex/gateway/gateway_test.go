@@ -942,7 +942,7 @@ func TestImportKeyPair_Base64PaddingWorkaround(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, NATSConn: nil}
 	// The handler will fail because NATS is nil, but we can verify the
 	// workaround ran by checking that q["PublicKeyMaterial"] was modified.
-	_, _ = handler("ImportKeyPair", q, gw, "123456789012")
+	_, _ = handler("ImportKeyPair", q, gw, "123456789012", nil)
 
 	// After the workaround, the URL-encoded padding should be decoded
 	assert.True(t, strings.HasSuffix(q["PublicKeyMaterial"], "=="),

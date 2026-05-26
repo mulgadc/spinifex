@@ -8,8 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -150,6 +152,50 @@ func DescribeInstances(input *ec2.DescribeInstancesInput, natsConn *nats.Conn, e
 
 	slog.Info("DescribeInstances: Aggregated response", "total_reservations", len(allReservations))
 	return output, nil
+}
+
+// EnrichInstanceProfileIDs fills Instance.IamInstanceProfile.Id for every
+// instance whose daemon-side payload carried only the profile ARN. Daemons
+// have no IAM access, so they emit Arn only; the gateway resolves Id via
+// IAMService per unique ARN (cached to avoid one RPC per instance). Misses
+// are warn-logged and leave Id empty per the AWS contract — this happens
+// when an instance still references a deleted profile (graceful degradation).
+//
+// Safe to call with a nil output or nil IAMService (no-op).
+func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_iam.IAMService, accountID string) {
+	if out == nil || iamSvc == nil {
+		return
+	}
+	cache := map[string]string{} // ARN → InstanceProfileID; "" means miss
+	for _, res := range out.Reservations {
+		if res == nil {
+			continue
+		}
+		for _, inst := range res.Instances {
+			if inst == nil || inst.IamInstanceProfile == nil {
+				continue
+			}
+			arn := aws.StringValue(inst.IamInstanceProfile.Arn)
+			if arn == "" {
+				continue
+			}
+			id, cached := cache[arn]
+			if !cached {
+				profile, err := iamSvc.ResolveInstanceProfile(accountID, arn)
+				if err != nil || profile == nil {
+					slog.Warn("DescribeInstances: failed to resolve instance profile ID",
+						"arn", arn, "err", err)
+					cache[arn] = ""
+				} else {
+					id = profile.InstanceProfileID
+					cache[arn] = id
+				}
+			}
+			if id != "" {
+				inst.IamInstanceProfile.Id = aws.String(id)
+			}
+		}
+	}
 }
 
 // queryInstanceBucket sends a NATS request to a describe topic and returns the reservations.

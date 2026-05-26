@@ -165,6 +165,7 @@ var (
 	ErrorInvalidID                                             = "InvalidID"
 	ErrorInvalidIPAddressInUse                                 = "InvalidIPAddress.InUse"
 	ErrorInvalidIamInstanceProfileArnMalformed                 = "InvalidIamInstanceProfileArn.Malformed"
+	ErrorInvalidIamInstanceProfileNotFound                     = "InvalidIamInstanceProfile.NotFound"
 	ErrorInvalidInput                                          = "InvalidInput"
 	ErrorInvalidInstanceAttributeValue                         = "InvalidInstanceAttributeValue"
 	ErrorInvalidInstanceConnectEndpointIdMalformed             = "InvalidInstanceConnectEndpointId.Malformed"
@@ -625,6 +626,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidID:                                             {HTTPCode: 400, Message: "The specified ID for the resource you are trying to tag is not valid. Ensure that you provide the full resource ID; for example, ami-2bb65342 for an AMI. If you're using the command line tools on a Windows system, you might need to use quotation marks for the key-value pair; for example, \"Name=TestTag\"."},
 	ErrorInvalidIPAddressInUse:                                 {HTTPCode: 409, Message: "The specified IP address is already in use. If you are trying to release an address, you must first disassociate it from the instance."},
 	ErrorInvalidIamInstanceProfileArnMalformed:                 {HTTPCode: 400, Message: "The specified IAM instance profile ARN is not valid. For more information about valid ARN formats, see Amazon Resource Names (ARNs)."},
+	ErrorInvalidIamInstanceProfileNotFound:                     {HTTPCode: 404, Message: "The specified IAM instance profile name or ARN does not exist."},
 	ErrorInvalidInput:                                          {HTTPCode: 400, Message: "An input parameter in the request is not valid. For example, you may have specified an incorrect Reserved Instance listing ID in the request or the Reserved Instance you tried to list cannot be sold in the Reserved Instances Marketplace (for example, if it has a scope of Region, or is a Convertible Reserved Instance)."},
 	ErrorInvalidInstanceAttributeValue:                         {HTTPCode: 400, Message: "The specified instance attribute value is not valid. This error is most commonly encountered when trying to set the InstanceType/--instance-type attribute to an unrecognized value."},
 	ErrorInvalidInstanceConnectEndpointIdMalformed:             {HTTPCode: 400, Message: "The specified EC2 Instance Connect Endpoint ID is malformed. Ensure that you specify the ID in the form eice-xxxxxxxxxxxxxxxxx."},

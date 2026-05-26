@@ -492,6 +492,22 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	ec2Instance.State.SetCode(0)
 	ec2Instance.State.SetName("pending")
 
+	// IAM instance profile attached at launch: gateway has already resolved
+	// the reference to a canonical ARN and enforced iam:PassRole; here we
+	// just persist it on the VM and generate the association ID. Id is left
+	// for the gateway to enrich on DescribeInstances since daemons have no
+	// IAM service access.
+	if input.IamInstanceProfile != nil {
+		arn := aws.StringValue(input.IamInstanceProfile.Arn)
+		if arn != "" {
+			instance.IamInstanceProfileArn = arn
+			instance.IamInstanceProfileAssociationId = utils.GenerateResourceID("iip-assoc")
+			ec2Instance.IamInstanceProfile = &ec2.IamInstanceProfile{
+				Arn: aws.String(arn),
+			}
+		}
+	}
+
 	// Store EC2 API metadata in VM for DescribeInstances compatibility
 	instance.RunInstancesInput = input
 	instance.Instance = ec2Instance

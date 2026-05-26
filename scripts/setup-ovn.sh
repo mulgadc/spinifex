@@ -209,42 +209,12 @@ echo "  OVN Remote (SB):  $OVN_REMOTE"
 echo "  Encap IP:         $ENCAP_IP"
 echo ""
 
-# --- Step 1: Install packages ---
-echo "Step 1: Checking OVN/OVS packages..."
-
-install_packages() {
-    local missing=()
-    # strongswan-charon: ovs-monitor-ipsec is invoked with
-    # `--ike-daemon=strongswan` and shells out to /usr/sbin/ipsec (the legacy
-    # starter command, from strongswan-starter) which in turn execs
-    # /usr/lib/ipsec/charon (from strongswan-charon). Picking
-    # strongswan-charon explicitly avoids apt's default of pulling the
-    # alternative charon-systemd, which ships /usr/sbin/charon-systemd
-    # instead and leaves the starter unable to find a daemon to exec.
-    # strongswan-charon brings strongswan-starter, strongswan-libcharon,
-    # libstrongswan, strongswan-swanctl, and the strongswan metapackage
-    # transitively.
-    for pkg in openvswitch-switch ovn-host openvswitch-ipsec strongswan-charon; do
-        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-            missing+=("$pkg")
-        fi
-    done
-    if [ "$MANAGEMENT" = true ]; then
-        if ! dpkg -s ovn-central >/dev/null 2>&1; then
-            missing+=("ovn-central")
-        fi
-    fi
-
-    if [ ${#missing[@]} -gt 0 ]; then
-        echo "  Installing: ${missing[*]}"
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq "${missing[@]}"
-    else
-        echo "  All packages installed"
-    fi
-}
-
-install_packages
+# Packages (openvswitch-switch, ovn-host, openvswitch-ipsec, strongswan-charon,
+# and ovn-central on management nodes) are baked into the gold image via
+# scripts/tofu-cluster/image-builder/scripts/provision.sh. Runtime apt-get
+# was removed to keep CI off the (flaky) apt-cacher-ng path. If a package is
+# missing, the downstream ovs/ovn commands will fail loudly — the fix is to
+# rebuild the gold image, not to re-add apt-get here.
 
 # strongswan-charon ships an AppArmor profile for /usr/lib/ipsec/charon that
 # only allows reading from /etc/ipsec.*, /etc/strongswan.*, and a few other

@@ -753,6 +753,12 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
 		{"ec2.DescribeInstanceStatus", d.handleEC2DescribeInstanceStatus, ""},
 		{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
+		// IAM instance profile associations: Disassociate/Replace mutate the
+		// owning daemon's vm.VM (non-owners NoOp with Found=false); Describe
+		// returns per-daemon matches that the gateway concatenates.
+		{"ec2.IamProfileAssociation.disassociate", d.handleIamProfileDisassociate, ""},
+		{"ec2.IamProfileAssociation.replace", d.handleIamProfileReplace, ""},
+		{"ec2.IamProfileAssociation.describe", d.handleIamProfileDescribe, ""},
 		{"ec2.EnableEbsEncryptionByDefault", d.handleEC2EnableEbsEncryptionByDefault, "spinifex-workers"},
 		{"ec2.DisableEbsEncryptionByDefault", d.handleEC2DisableEbsEncryptionByDefault, "spinifex-workers"},
 		{"ec2.GetEbsEncryptionByDefault", d.handleEC2GetEbsEncryptionByDefault, "spinifex-workers"},

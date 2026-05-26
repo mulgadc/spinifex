@@ -101,6 +101,24 @@ var ec2Actions = map[string]EC2Handler{
 		}
 		return gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
+	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_instance.AssociateIamInstanceProfile(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
+	}),
+	"DisassociateIamInstanceProfile": ec2Handler(func(input *ec2.DisassociateIamInstanceProfileInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.DisassociateIamInstanceProfile(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+	}),
+	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(), accountID, passRoleCheck)
+	}),
+	"DescribeIamInstanceProfileAssociations": ec2Handler(func(input *ec2.DescribeIamInstanceProfileAssociationsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+	}),
 	"StartInstances": ec2Handler(func(input *ec2.StartInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.StartInstances(input, gw.NATSConn, accountID)
 	}),

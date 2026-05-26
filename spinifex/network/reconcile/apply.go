@@ -131,10 +131,22 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 }
 
 // applySGs runs the SG stage in two halves: first ensure every intent SG's
-// port group exists in OVN, then push the ACL set via the policy manager.
-// Orphan port groups (sg_* with no matching intent SG) are torn down via
-// topology.Manager so port-group lifecycle is centralised in one place.
-func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual ActualState) {
+// port group exists in OVN, then (when pruneOrphans is true) tear down any
+// sg_* port group with no matching intent SG via topology.Manager so
+// port-group lifecycle is centralised in one place.
+//
+// pruneOrphans=false is the startup mode. The daemon's EnsureDefaultVPC
+// writes SG records to JetStream KV and publishes vpc.create-sg on each
+// node in parallel with vpcd starting up. The reconcile leader can win
+// the lock and load intent before any SG row is visible on its node,
+// while subscribers on peer nodes are concurrently creating port groups
+// from the same vpc.create-sg events. A startup orphan sweep then deletes
+// port groups that intent hasn't caught up to — production-fatal because
+// every subsequent RunInstances → vpc.create-port lookup fails until the
+// 5-minute drift loop re-creates them. Drift always prunes (pruneOrphans
+// is true at that point); legitimate orphans get garbage-collected on
+// the next tick.
+func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual ActualState, pruneOrphans bool) {
 	for groupID, spec := range intent.SGs {
 		if err := r.topology.EnsureSGPortGroup(ctx, groupID); err != nil {
 			slog.Error("reconcile/apply: EnsureSGPortGroup failed", "sg", groupID, "err", err)
@@ -144,6 +156,10 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 		if err := r.sg.EnsureSG(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: EnsureSG failed", "sg", groupID, "err", err)
 		}
+	}
+
+	if !pruneOrphans {
+		return
 	}
 
 	wantPGs := make(map[string]struct{}, len(intent.SGs))

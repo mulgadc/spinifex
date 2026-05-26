@@ -580,11 +580,19 @@ func launchService(cfg *Config) error {
 	// race with vpcd's startup). Per-event NATS subscribers route through
 	// the same network/* managers, so the startup pass and the runtime fast
 	// path share one implementation.
+	//
+	// ReconcileApplyOnly (not Reconcile) — orphan pruning is unsafe at
+	// startup because intent may be stale: daemon EnsureDefaultVPC on a
+	// peer node can be mid-flight (KV write committed but not yet visible
+	// here) while a peer subscriber concurrently creates port groups from
+	// its vpc.create-sg event. A startup prune then sweeps those port
+	// groups as orphans, breaking every subsequent RunInstances until the
+	// 5-minute drift tick recreates them. Drift uses full Reconcile.
 	if isLeader {
 		intent, intentErr := reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
 		if intentErr != nil {
 			slog.Warn("vpcd: startup intent load failed", "err", intentErr)
-		} else if err := rec.Reconcile(ctx, intent); err != nil {
+		} else if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
 			slog.Warn("vpcd: startup reconcile failed", "err", err)
 		}
 		releaseLeader()

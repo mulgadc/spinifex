@@ -38,6 +38,15 @@ import (
 // are idempotent: a second call with the same IntentState is a no-op.
 type Reconciler interface {
 	Reconcile(ctx context.Context, intent IntentState) error
+	// ReconcileApplyOnly performs the same apply pass as Reconcile but
+	// skips orphan-resource pruning. vpcd startup uses this to avoid a
+	// race with daemon EnsureDefaultVPC: a leader can load intent before
+	// peer subscribers have processed in-flight vpc.create-sg events,
+	// and a startup orphan sweep would then delete port groups the
+	// matching subscribers just created. Drift calls Reconcile (full
+	// prune); legitimate orphans get cleaned up on the next 5-minute
+	// drift tick.
+	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
 // Config is the construction-time bag for the reconciler. Every field
@@ -120,6 +129,15 @@ func New(cfg Config) (Reconciler, error) {
 // the function only returns an error when the actual-state scan fails. This
 // matches the legacy 5-pass behaviour: partial progress beats no progress.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
+	return r.reconcile(ctx, intent, true)
+}
+
+// ReconcileApplyOnly is documented on the Reconciler interface.
+func (r *reconciler) ReconcileApplyOnly(ctx context.Context, intent IntentState) error {
+	return r.reconcile(ctx, intent, false)
+}
+
+func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrphans bool) error {
 	actual, err := scanActual(ctx, r.ovn)
 	if err != nil {
 		return fmt.Errorf("scan actual OVN state: %w", err)
@@ -127,6 +145,7 @@ func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 
 	slog.Info("reconcile: starting",
 		"local_az", r.localAZ,
+		"prune_orphans", pruneOrphans,
 		"intent_vpcs", len(intent.VPCs),
 		"intent_subnets", len(intent.Subnets),
 		"intent_ports", len(intent.Ports),
@@ -138,7 +157,7 @@ func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 
 	r.applyVPCs(ctx, intent, actual)
 	r.applySubnets(ctx, intent, actual)
-	r.applySGs(ctx, intent, actual)
+	r.applySGs(ctx, intent, actual, pruneOrphans)
 	r.applyPorts(ctx, intent, actual)
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)

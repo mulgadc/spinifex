@@ -162,6 +162,47 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	}
 }
 
+// TestReconcile_ApplyOnlyKeepsOrphanPortGroup guards the vpcd startup path:
+// ReconcileApplyOnly must not prune managed sg_* port groups even when intent
+// is empty. The race it protects against is daemon EnsureDefaultVPC on a peer
+// node having written the SG KV row + driven a peer subscriber to create the
+// port group while this node's leader-gated intent load still returned no
+// SGs. Drift (full Reconcile) cleans up legitimate orphans on the next tick.
+func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	if err := m.CreatePortGroup(ctx, "sg_orphan", nil); err != nil {
+		t.Fatalf("seed orphan port group: %v", err)
+	}
+
+	intent := IntentState{
+		VPCs:    map[string]topology.VPCSpec{},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{},
+		IGWs:    map[string]external.IGWSpec{},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+
+	if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
+		t.Fatalf("ReconcileApplyOnly: %v", err)
+	}
+
+	if _, ok := m.PortGroups["sg_orphan"]; !ok {
+		t.Errorf("ReconcileApplyOnly pruned port group; startup race fix regressed")
+	}
+
+	// Full Reconcile must still prune — drift loop's contract.
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if _, ok := m.PortGroups["sg_orphan"]; ok {
+		t.Errorf("Reconcile failed to prune orphan after ApplyOnly path")
+	}
+}
+
 func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m)

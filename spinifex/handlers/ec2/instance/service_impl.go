@@ -1041,7 +1041,7 @@ func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, comma
 	timestamp := time.Now().UTC()
 
 	var alreadyAssociated bool
-	_, err := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+	found, err := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
 		if v.IamInstanceProfileArn != "" {
 			alreadyAssociated = true
 			return false
@@ -1056,6 +1056,9 @@ func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, comma
 	}
 	if alreadyAssociated {
 		return nil, errors.New(awserrors.ErrorIamInstanceProfileAlreadyAssociated)
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	}
 
 	slog.Info("AssociateIamInstanceProfile: associated",

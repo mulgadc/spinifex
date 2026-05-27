@@ -326,12 +326,19 @@ func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamIn
 				code = *errPayload.Code
 			}
 			// Capture the first deterministic client error so the caller sees the
-			// invalid-filter response instead of an empty success list.
+			// invalid-filter response instead of an empty success list. 5xx and
+			// unknown codes are dropped (treated as transient per-daemon noise)
+			// but logged so flaky daemons don't silently corrupt the aggregate
+			// — important for CountInstanceProfileAssociations which feeds
+			// DeleteInstanceProfile's live-instance gate.
 			if clientError == "" && code != "" {
 				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
 					clientError = code
+					continue
 				}
 			}
+			slog.Warn("Describe fan-out: daemon error dropped from aggregate",
+				"subject", "ec2.IamProfileAssociation.describe", "code", code)
 			continue
 		}
 

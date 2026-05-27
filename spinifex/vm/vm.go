@@ -41,6 +41,7 @@ type VM struct {
 	Config       Config        `json:"config"`
 
 	EBSRequests types.EBSRequests `json:"ebs_requests"`
+	ENIRequests types.ENIRequests `json:"eni_requests"`
 
 	QMPClient *qmp.QMPClient `json:"-"`
 
@@ -158,6 +159,7 @@ func (v *VM) ResetNodeLocalState() {
 	v.MetadataServerAddress = ""
 	v.QMPClient = &qmp.QMPClient{}
 	v.EBSRequests.Mu = sync.Mutex{}
+	v.ENIRequests.Mu = sync.Mutex{}
 }
 
 // IsTerminationProtected reports whether the instance was launched with

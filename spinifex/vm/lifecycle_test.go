@@ -16,13 +16,16 @@ import (
 )
 
 // TestBuildBaseVMConfig pins the non-pass-through invariants buildBaseVMConfig
-// must enforce: KVM + no-graphic, q35 + host CPU regardless of arch, and 11
+// must enforce: KVM + no-graphic, q35 + host CPU regardless of arch, and
 // pre-allocated PCIe root ports for hot-plug (Linux's PCIe hot-plug requires
 // pre-allocated ports — removing one silently breaks AttachVolume/AttachENI).
+//
+// Default instanceType ("") falls through to instancetypes.defaultMaxENIs (4)
+// → 3 hot-plug-eni slots, alongside the fixed 11 hot-plug-ebs slots.
 func TestBuildBaseVMConfig(t *testing.T) {
 	for _, arch := range []string{"x86_64", "arm64"} {
 		t.Run(arch, func(t *testing.T) {
-			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, "", 2, 4096)
+			cfg := buildBaseVMConfig("i-x", "", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", arch, "", 2, 4096)
 
 			assert.True(t, cfg.EnableKVM)
 			assert.True(t, cfg.NoGraphic)
@@ -30,11 +33,47 @@ func TestBuildBaseVMConfig(t *testing.T) {
 			assert.Equal(t, "host", cfg.CPUType)
 			assert.False(t, cfg.UseUEFI, "empty bootMode must default to BIOS")
 
-			require.Len(t, cfg.Devices, 11, "PCIe hot-plug requires 11 pre-allocated root ports")
-			for i, dev := range cfg.Devices {
-				expected := fmt.Sprintf("pcie-root-port,id=hotplug%d,chassis=%d,slot=0", i+1, i+1)
-				assert.Equal(t, expected, dev.Value)
+			// 11 EBS slots + 3 ENI slots (default fallback) = 14 root ports.
+			require.Len(t, cfg.Devices, 14)
+			for i := range EBSHotPlugSlotCount {
+				expected := fmt.Sprintf("pcie-root-port,id=hotplug-ebs%d,chassis=%d,slot=0", i+1, i+1)
+				assert.Equal(t, expected, cfg.Devices[i].Value)
 			}
+			for i := range 3 {
+				idx := EBSHotPlugSlotCount + i
+				expected := fmt.Sprintf("pcie-root-port,id=hotplug-eni%d,chassis=%d,slot=0", i+1, EBSHotPlugSlotCount+i+1)
+				assert.Equal(t, expected, cfg.Devices[idx].Value)
+			}
+		})
+	}
+}
+
+// TestBuildBaseVMConfig_ENISlotCountPerType pins the per-instance-type ENI
+// hot-plug pool sizing. The slot count must equal MaxENIs - 1; the chassis
+// numbers must continue from EBSHotPlugSlotCount+1 without colliding.
+func TestBuildBaseVMConfig_ENISlotCountPerType(t *testing.T) {
+	tests := []struct {
+		instanceType string
+		wantENISlots int
+	}{
+		{"t3.nano", 2},
+		{"t3a.2xlarge", 2},
+		{"m5.large", 2},
+		{"m5.2xlarge", 3},
+		{"m5.4xlarge", 7},
+		{"m5.8xlarge", 14},
+		{"", 3}, // unknown → defaultMaxENIs (4) - 1
+	}
+	for _, tc := range tests {
+		t.Run(tc.instanceType, func(t *testing.T) {
+			cfg := buildBaseVMConfig("i-x", tc.instanceType, "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", "x86_64", "", 2, 4096)
+			require.Len(t, cfg.Devices, EBSHotPlugSlotCount+tc.wantENISlots)
+			for i := range tc.wantENISlots {
+				idx := EBSHotPlugSlotCount + i
+				expected := fmt.Sprintf("pcie-root-port,id=hotplug-eni%d,chassis=%d,slot=0", i+1, EBSHotPlugSlotCount+i+1)
+				assert.Equal(t, expected, cfg.Devices[idx].Value)
+			}
+			assert.Equal(t, tc.instanceType, cfg.InstanceType)
 		})
 	}
 }
@@ -55,7 +94,7 @@ func TestBuildBaseVMConfig_BootMode(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.bootMode, func(t *testing.T) {
-			cfg := buildBaseVMConfig("i-x", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", "x86_64", tc.bootMode, 2, 4096)
+			cfg := buildBaseVMConfig("i-x", "", "/tmp/x.pid", "/tmp/x.log", "/tmp/x.sock", "x86_64", tc.bootMode, 2, 4096)
 			assert.Equal(t, tc.wantUseUEFI, cfg.UseUEFI)
 		})
 	}

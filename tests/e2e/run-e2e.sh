@@ -1977,9 +1977,9 @@ if [ "${UPDATED_DESC}" != "updated" ]; then
     exit 1
 fi
 
-# UpdateRole — out-of-range max-session-duration
-expect_error "ValidationError" aws iam update-role \
-    --role-name "${ROLE_NAME}" --max-session-duration 60
+# UpdateRole — out-of-range MaxSessionDuration is enforced by the AWS CLI
+# client-side (min 3600) before the request leaves the host. Server-side
+# range validation (900-43200) is exercised in handlers/iam/roles_test.go.
 
 # UpdateAssumeRolePolicy
 echo "  Updating trust policy..."

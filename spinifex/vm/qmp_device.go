@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sync"
@@ -76,11 +77,57 @@ func (c *QMPDeviceController) NetdevDel(netdevID string) error {
 	return err
 }
 
-// QueryPCI is unwired in Sprint 3a; the live query-pci response parser
-// lands alongside the hot-plug pipeline in Sprint 3b. Callers (the stub
-// backend below + future eni_hotplug.go) get the contract today.
+// QueryPCI issues query-pci and flattens the nested QEMU response into a
+// list of PCIDevice entries. The response is a per-bus list whose devices
+// may themselves carry a "pci_bridge" subfield containing a nested
+// "devices" list (every pcie-root-port surfaces this way), so the parse
+// recurses through bridges. Only devices with a non-empty qdev_id are
+// returned — the hot-plug pipeline only needs to detect materialization
+// of a known id.
 func (c *QMPDeviceController) QueryPCI() ([]PCIDevice, error) {
-	return nil, fmt.Errorf("QueryPCI: live query-pci wiring lands in Sprint 3b (enihotplug)")
+	resp, err := sendQMPCommand(c.client, qmp.QMPCommand{Execute: "query-pci"}, c.instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("query-pci: %w", err)
+	}
+	var buses []pciBusInfo
+	if err := json.Unmarshal(resp.Return, &buses); err != nil {
+		return nil, fmt.Errorf("parse query-pci response: %w", err)
+	}
+	var out []PCIDevice
+	for _, bus := range buses {
+		out = appendPCIDevices(out, bus.Devices)
+	}
+	return out, nil
+}
+
+// pciBusInfo and pciDeviceInfo mirror only the fields the hot-plug
+// pipeline reads from query-pci. Full QEMU output is much richer
+// (class_info, regions, irq, …) but we ignore everything else to keep the
+// parser stable against QMP version drift.
+type pciBusInfo struct {
+	Bus     int             `json:"bus"`
+	Devices []pciDeviceInfo `json:"devices"`
+}
+
+type pciDeviceInfo struct {
+	Bus       int    `json:"bus"`
+	Slot      int    `json:"slot"`
+	QDevID    string `json:"qdev_id"`
+	PCIBridge *struct {
+		Devices []pciDeviceInfo `json:"devices"`
+	} `json:"pci_bridge,omitempty"`
+}
+
+func appendPCIDevices(dst []PCIDevice, devs []pciDeviceInfo) []PCIDevice {
+	for _, d := range devs {
+		if d.QDevID != "" {
+			dst = append(dst, PCIDevice{Bus: d.Bus, Slot: d.Slot, QDevID: d.QDevID})
+		}
+		if d.PCIBridge != nil {
+			dst = appendPCIDevices(dst, d.PCIBridge.Devices)
+		}
+	}
+	return dst
 }
 
 // StubDeviceController is an in-memory DeviceController for unit tests. It

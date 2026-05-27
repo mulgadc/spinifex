@@ -86,6 +86,10 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 		d.handleAttachVolume(msg, command, instance)
 	case command.Attributes.DetachVolume:
 		d.handleDetachVolume(msg, command, instance)
+	case command.Attributes.AttachENI:
+		d.handleAttachNetworkInterface(msg, command, instance)
+	case command.Attributes.DetachENI:
+		d.handleDetachNetworkInterface(msg, command, instance)
 	case command.Attributes.StartInstance:
 		if err := d.instanceService.StartInstance(instance, command); err != nil {
 			respondWithError(msg, awserrors.ValidErrorCode(err.Error()))

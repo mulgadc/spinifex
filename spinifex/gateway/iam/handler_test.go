@@ -12,8 +12,11 @@ import (
 
 const testAccountID = "000000000000"
 
-// stubIAMService returns empty non-nil outputs for all methods.
-type stubIAMService struct{}
+// stubIAMService returns empty non-nil outputs for all methods. Individual
+// tests can override a method by setting the matching function field.
+type stubIAMService struct {
+	getInstanceProfile func(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
+}
 
 func (s *stubIAMService) CreateUser(_ string, _ *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	return &iam.CreateUserOutput{}, nil
@@ -127,8 +130,11 @@ func (s *stubIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedR
 func (s *stubIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
 	return &iam.CreateInstanceProfileOutput{}, nil
 }
-func (s *stubIAMService) GetInstanceProfile(_ string, _ *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
-	return &iam.GetInstanceProfileOutput{}, nil
+func (s *stubIAMService) GetInstanceProfile(accountID string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+	if s.getInstanceProfile != nil {
+		return s.getInstanceProfile(accountID, in)
+	}
+	return &iam.GetInstanceProfileOutput{InstanceProfile: &iam.InstanceProfile{}}, nil
 }
 func (s *stubIAMService) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
 	return &iam.ListInstanceProfilesOutput{}, nil

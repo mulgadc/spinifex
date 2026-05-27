@@ -155,6 +155,25 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 	}, nil
 }
 
+// CountInstanceProfileAssociations returns the number of live associations
+// across all daemons in the caller's account that currently reference
+// profileARN. The IAM DeleteInstanceProfile gateway uses this to refuse delete
+// while the profile is still attached to any instance. Cross-account records
+// are not visible to the daemon walker, so the count is naturally scoped.
+func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, accountID, profileARN string) (int, error) {
+	records, err := broadcastDescribeAssociations(natsConn, spxtypes.IamProfileDescribeRequest{}, expectedNodes, accountID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, r := range records {
+		if r.InstanceProfileArn == profileARN {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // DescribeIamInstanceProfileAssociations aggregates associations across all
 // daemons. Filters are forwarded to the daemons so each daemon only walks
 // its own vmMgr once; the gateway then concatenates the results.

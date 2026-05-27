@@ -73,21 +73,50 @@ func matchesAny(patterns []string, value string) bool {
 	return false
 }
 
-// matchWildcard performs simple wildcard matching where "*" can appear at the
-// end of a pattern as a suffix wildcard, or alone to match everything.
+// matchWildcard performs AWS IAM-style wildcard matching where "*" matches
+// zero or more characters at any position in the pattern. Matching is
+// case-insensitive, matching the convention used for action names and
+// extended to resource ARNs for our internal use.
+//
 // Examples:
 //
-//	"*"              matches anything
-//	"ec2:*"          matches "ec2:RunInstances"
-//	"s3:Get*"        matches "s3:GetObject"
-//	"ec2:RunInstances" matches only "ec2:RunInstances"
+//	"*"                              matches anything
+//	"ec2:*"                          matches "ec2:RunInstances"
+//	"s3:Get*"                        matches "s3:GetObject"
+//	"arn:aws:iam::*:role/app-*"      matches "arn:aws:iam::123456789012:role/app-foo"
+//	"ec2:RunInstances"               matches only "ec2:RunInstances"
 func matchWildcard(pattern, value string) bool {
 	if pattern == "*" {
 		return true
 	}
-	if strings.HasSuffix(pattern, "*") {
-		prefix := strings.ToLower(pattern[:len(pattern)-1])
-		return strings.HasPrefix(strings.ToLower(value), prefix)
+	if !strings.Contains(pattern, "*") {
+		return strings.EqualFold(pattern, value)
 	}
-	return strings.EqualFold(pattern, value)
+
+	lp := strings.ToLower(pattern)
+	lv := strings.ToLower(value)
+	parts := strings.Split(lp, "*")
+	last := len(parts) - 1
+
+	if !strings.HasPrefix(lv, parts[0]) {
+		return false
+	}
+	if !strings.HasSuffix(lv, parts[last]) {
+		return false
+	}
+
+	remaining := lv[len(parts[0]):]
+	if len(remaining) < len(parts[last]) {
+		return false
+	}
+	remaining = remaining[:len(remaining)-len(parts[last])]
+
+	for i := 1; i < last; i++ {
+		idx := strings.Index(remaining, parts[i])
+		if idx < 0 {
+			return false
+		}
+		remaining = remaining[idx+len(parts[i]):]
+	}
+	return true
 }

@@ -249,6 +249,17 @@ func TestMatchWildcard(t *testing.T) {
 		{"EC2:RunInstances", "ec2:RunInstances", true},
 		{"ec2:runinstances", "ec2:RunInstances", true},
 
+		// Embedded wildcards (AWS IAM-style — required for iam:PassRole ARN matching).
+		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/app-foo", true},
+		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::999999999999:role/app-bar", true},
+		{"arn:aws:iam::*:role/*", "arn:aws:iam::123456789012:role/anything", true},
+		{"arn:aws:iam::123456789012:role/app-*", "arn:aws:iam::123456789012:role/app-foo", true},
+		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/admin-foo", false},
+		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:user/app-foo", false},
+		{"arn:aws:iam::*:role/app-*", "arn:aws:iam::123456789012:role/app-", true},
+		{"a*b*c", "axxbyyc", true},
+		{"a*b*c", "axxbyy", false},
+
 		// Edge cases
 		{"", "", true},
 		{"", "something", false},
@@ -258,6 +269,90 @@ func TestMatchWildcard(t *testing.T) {
 		got := matchWildcard(tt.pattern, tt.value)
 		if got != tt.want {
 			t.Errorf("matchWildcard(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+		}
+	}
+}
+
+// TestEvaluateAccess_PassRoleResourceARN exercises the resource-ARN matching
+// path used by iam:PassRole enforcement (iam-roles-v1-ec2 step 7). The caller's
+// policy will typically scope PassRole to a wildcard ARN; the evaluator must
+// match a concrete role ARN against it.
+func TestEvaluateAccess_PassRoleResourceARN(t *testing.T) {
+	policies := []handlers_iam.PolicyDocument{
+		{
+			Version: "2012-10-17",
+			Statement: []handlers_iam.Statement{
+				{
+					Effect:   "Allow",
+					Action:   handlers_iam.StringOrArr{"iam:PassRole"},
+					Resource: handlers_iam.StringOrArr{"arn:aws:iam::*:role/app-*"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		resource string
+		want     Decision
+	}{
+		{"arn:aws:iam::123456789012:role/app-foo", Allow},
+		{"arn:aws:iam::999999999999:role/app-bar", Allow},
+		{"arn:aws:iam::123456789012:role/admin-foo", Deny},
+		{"arn:aws:iam::123456789012:user/app-foo", Deny},
+	}
+	for _, tt := range tests {
+		got := EvaluateAccess("alice", "iam:PassRole", tt.resource, policies)
+		if got != tt.want {
+			t.Errorf("PassRole on %s: expected %v, got %v", tt.resource, tt.want, got)
+		}
+	}
+}
+
+// TestEvaluateAccess_IAMRolesV1EC2ActionStrings is a smoke test confirming that
+// the five action strings introduced by iam-roles-v1-ec2 (step 7) flow through
+// the evaluator with the expected names. The strings are produced dynamically
+// from gateway dispatch via policy.IAMAction(service, action); this test pins
+// the expected end-to-end identifiers so a rename of any ec2Actions key or
+// checkPolicyResource call site is caught by policy-layer tests.
+func TestEvaluateAccess_IAMRolesV1EC2ActionStrings(t *testing.T) {
+	actions := []string{
+		"iam:PassRole",
+		"ec2:AssociateIamInstanceProfile",
+		"ec2:DisassociateIamInstanceProfile",
+		"ec2:ReplaceIamInstanceProfileAssociation",
+		"ec2:DescribeIamInstanceProfileAssociations",
+	}
+	policies := []handlers_iam.PolicyDocument{
+		doc("Allow", "*", "*"),
+	}
+	for _, a := range actions {
+		if got := EvaluateAccess("alice", a, "*", policies); got != Allow {
+			t.Errorf("expected Allow for action %q under wildcard policy, got %v", a, got)
+		}
+	}
+
+	scoped := []handlers_iam.PolicyDocument{
+		doc("Allow", "ec2:*IamInstanceProfile*", "*"),
+		doc("Allow", "iam:PassRole", "arn:aws:iam::*:role/*"),
+	}
+	scopedTests := []struct {
+		action   string
+		resource string
+		want     Decision
+	}{
+		{"ec2:AssociateIamInstanceProfile", "*", Allow},
+		{"ec2:DisassociateIamInstanceProfile", "*", Allow},
+		{"ec2:ReplaceIamInstanceProfileAssociation", "*", Allow},
+		{"ec2:DescribeIamInstanceProfileAssociations", "*", Allow},
+		{"iam:PassRole", "arn:aws:iam::123456789012:role/app-foo", Allow},
+		{"iam:PassRole", "arn:aws:iam::123456789012:user/app-foo", Deny},
+		{"ec2:RunInstances", "*", Deny},
+	}
+	for _, tt := range scopedTests {
+		got := EvaluateAccess("alice", tt.action, tt.resource, scoped)
+		if got != tt.want {
+			t.Errorf("scoped policy, action=%s resource=%s: expected %v, got %v",
+				tt.action, tt.resource, tt.want, got)
 		}
 	}
 }

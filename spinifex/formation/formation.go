@@ -62,7 +62,6 @@ type StatusResponse struct {
 // propagated from the init node to joining nodes during formation.
 type NetworkConfig struct {
 	ExternalMode   string   `json:"external_mode"`
-	ExternalDHCP   bool     `json:"external_dhcp,omitempty"`
 	PoolName       string   `json:"pool_name"`
 	PoolSource     string   `json:"pool_source,omitempty"`
 	PoolStart      string   `json:"pool_start,omitempty"`
@@ -71,6 +70,11 @@ type NetworkConfig struct {
 	PoolGatewayIP  string   `json:"pool_gateway_ip,omitempty"`
 	PoolPrefixLen  int      `json:"pool_prefix_len"`
 	PoolDNSServers []string `json:"pool_dns_servers,omitempty"`
+
+	// IPSecEnabled propagates the cluster-wide intra-AZ IPsec toggle so the
+	// joining node provisions strongSwan and flips OVS ipsec_encapsulation to
+	// match the rest of the cluster.
+	IPSecEnabled bool `json:"ipsec_enabled"`
 
 	BootstrapAccountId  string `json:"bootstrap_account_id,omitempty"`
 	BootstrapVpcId      string `json:"bootstrap_vpc_id,omitempty"`

@@ -285,6 +285,21 @@ if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Du
 fi
 echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
+# Phase 5f exercises ICMP egress through OVN; the reply path needs explicit
+# ICMP ingress on the default SG even though SGs are stateful in AWS — keeps
+# parity with the Go single-suite fixture.
+set +e
+ICMP_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE5" \
+    --protocol icmp --port -1 --cidr 0.0.0.0/0 2>&1)
+ICMP_EXIT=$?
+set -e
+if [ $ICMP_EXIT -ne 0 ] && ! echo "$ICMP_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize ICMP ingress on default SG: $ICMP_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: icmp from 0.0.0.0/0"
+
 # Launch a VM (run-instances)
 echo "Running: aws ec2 run-instances --image-id $AMI_ID --instance-type $INSTANCE_TYPE --key-name test-key-1"
 # Capture full output for debugging
@@ -1914,6 +1929,315 @@ fi
 echo "  Policies cleaned up"
 
 echo "IAM Phase 7 passed"
+
+# IAM Phase 8: Roles & Instance Profiles (CRUD + lifecycle guards)
+# Runs against the admin root profile after Phase 7 cleanup, so the only
+# pre-existing policy is bootstrap AdministratorAccess.
+echo ""
+echo "IAM Phase 8: Roles & Instance Profiles"
+
+ROLE_NAME="app-role"
+PROFILE_NAME="app-profile"
+OTHER_PROFILE_NAME="other-profile"
+ADMIN_POLICY_ARN="arn:aws:iam::${ADMIN_ACCOUNT}:policy/AdministratorAccess"
+ROLE_ARN="arn:aws:iam::${ADMIN_ACCOUNT}:role/${ROLE_NAME}"
+
+TRUST_POLICY_DOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+TRUST_POLICY_V2_DOC='{"Version":"2012-10-17","Statement":[{"Sid":"v2","Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+
+# CreateRole — valid trust policy
+echo "  Creating role ${ROLE_NAME}..."
+ROLE_OUT=$(aws iam create-role --role-name "${ROLE_NAME}" \
+    --assume-role-policy-document "${TRUST_POLICY_DOC}" \
+    --description "E2E test role")
+echo "${ROLE_OUT}" | jq -e ".Role.RoleName == \"${ROLE_NAME}\"" > /dev/null
+echo "${ROLE_OUT}" | jq -e ".Role.Arn == \"${ROLE_ARN}\"" > /dev/null
+echo "  Created role: ${ROLE_ARN}"
+
+# CreateRole — duplicate
+echo "  Creating duplicate role (expect EntityAlreadyExists)..."
+expect_error "EntityAlreadyExists" aws iam create-role \
+    --role-name "${ROLE_NAME}" --assume-role-policy-document "${TRUST_POLICY_DOC}"
+
+# CreateRole — malformed trust policy
+echo "  Creating role with malformed trust policy (expect MalformedPolicyDocument)..."
+expect_error "MalformedPolicyDocument" aws iam create-role \
+    --role-name "bad-role" --assume-role-policy-document '{not valid json'
+
+# GetRole
+echo "  Getting role ${ROLE_NAME}..."
+aws iam get-role --role-name "${ROLE_NAME}" \
+    | jq -e ".Role.RoleName == \"${ROLE_NAME}\"" > /dev/null
+
+# GetRole — missing
+expect_error "NoSuchEntity" aws iam get-role --role-name "ghost-role"
+
+# ListRoles (>= 1)
+ROLE_COUNT=$(aws iam list-roles | jq '.Roles | length')
+if [ "${ROLE_COUNT}" -lt 1 ]; then
+    echo "  ERROR: Expected >= 1 role, got ${ROLE_COUNT}"
+    exit 1
+fi
+
+# ListRoles with path-prefix
+aws iam list-roles --path-prefix / | jq -e '.Roles | length >= 1' > /dev/null
+
+# UpdateRole — description + max-session-duration
+echo "  Updating role description and max-session-duration..."
+aws iam update-role --role-name "${ROLE_NAME}" \
+    --description "updated" --max-session-duration 7200
+UPDATED_DESC=$(aws iam get-role --role-name "${ROLE_NAME}" | jq -r '.Role.Description')
+if [ "${UPDATED_DESC}" != "updated" ]; then
+    echo "  ERROR: Expected description 'updated', got '${UPDATED_DESC}'"
+    exit 1
+fi
+
+# UpdateRole — out-of-range MaxSessionDuration is enforced by the AWS CLI
+# client-side (min 3600) before the request leaves the host. Server-side
+# range validation (900-43200) is exercised in handlers/iam/roles_test.go.
+
+# UpdateAssumeRolePolicy
+echo "  Updating trust policy..."
+aws iam update-assume-role-policy --role-name "${ROLE_NAME}" \
+    --policy-document "${TRUST_POLICY_V2_DOC}"
+
+# AttachRolePolicy + ListAttachedRolePolicies
+echo "  Attaching AdministratorAccess to ${ROLE_NAME}..."
+aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
+ATTACHED=$(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+    | jq '.AttachedPolicies | length')
+if [ "${ATTACHED}" -ne 1 ]; then
+    echo "  ERROR: Expected 1 attached policy, got ${ATTACHED}"
+    exit 1
+fi
+
+# Idempotent re-attach
+aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
+RE_ATTACHED=$(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+    | jq '.AttachedPolicies | length')
+if [ "${RE_ATTACHED}" -ne 1 ]; then
+    echo "  ERROR: Idempotent re-attach grew count to ${RE_ATTACHED}"
+    exit 1
+fi
+
+# CreateInstanceProfile — two profiles so Replace has a target in Phase 9
+echo "  Creating instance profile ${PROFILE_NAME}..."
+aws iam create-instance-profile --instance-profile-name "${PROFILE_NAME}" \
+    | jq -e ".InstanceProfile.InstanceProfileName == \"${PROFILE_NAME}\"" > /dev/null
+
+echo "  Creating instance profile ${OTHER_PROFILE_NAME}..."
+aws iam create-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}" > /dev/null
+
+# CreateInstanceProfile — duplicate
+expect_error "EntityAlreadyExists" aws iam create-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# GetInstanceProfile / ListInstanceProfiles
+aws iam get-instance-profile --instance-profile-name "${PROFILE_NAME}" \
+    | jq -e ".InstanceProfile.InstanceProfileName == \"${PROFILE_NAME}\"" > /dev/null
+aws iam list-instance-profiles | jq -e '.InstanceProfiles | length >= 2' > /dev/null
+
+# AddRoleToInstanceProfile
+echo "  Adding ${ROLE_NAME} to ${PROFILE_NAME}..."
+aws iam add-role-to-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+# AddRoleToInstanceProfile — second role rejected (one-role limit)
+expect_error "LimitExceeded" aws iam add-role-to-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+# ListInstanceProfilesForRole — reverse lookup
+PROFILES_FOR_ROLE=$(aws iam list-instance-profiles-for-role --role-name "${ROLE_NAME}" \
+    | jq '.InstanceProfiles | length')
+if [ "${PROFILES_FOR_ROLE}" -ne 1 ]; then
+    echo "  ERROR: Expected 1 profile for role, got ${PROFILES_FOR_ROLE}"
+    exit 1
+fi
+
+# DeleteRole — refused while attached policies + still in profile
+expect_error "DeleteConflict" aws iam delete-role --role-name "${ROLE_NAME}"
+
+# DeleteInstanceProfile — refused while role attached
+expect_error "DeleteConflict" aws iam delete-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# Add role to OTHER_PROFILE_NAME so Phase 9 has a Replace target
+aws iam add-role-to-instance-profile \
+    --instance-profile-name "${OTHER_PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+echo "IAM Phase 8 passed"
+
+# IAM Phase 9: EC2 IAM Instance Profile Association
+# Uses the long-lived
+# singleton $INSTANCE_ID for the Associate/Disassociate/Replace lifecycle,
+# then a dedicated short-lived VM to exercise auto-disassociate on terminate.
+echo ""
+echo "IAM Phase 9: EC2 IAM Instance Profile Association"
+
+# Sanity: singleton must still be running.
+SINGLETON_STATE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text)
+if [ "${SINGLETON_STATE}" != "running" ]; then
+    echo "  ERROR: Expected singleton ${INSTANCE_ID} running, got ${SINGLETON_STATE}"
+    exit 1
+fi
+
+# Associate-iam-instance-profile (post-launch)
+echo "  Associating ${PROFILE_NAME} -> ${INSTANCE_ID}..."
+ASSOC_OUT=$(aws ec2 associate-iam-instance-profile \
+    --instance-id "${INSTANCE_ID}" \
+    --iam-instance-profile "Name=${PROFILE_NAME}")
+ASSOC_ID=$(echo "${ASSOC_OUT}" | jq -r '.IamInstanceProfileAssociation.AssociationId')
+if [[ ! "${ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: AssociationId malformed: ${ASSOC_ID}"
+    exit 1
+fi
+echo "  Got ${ASSOC_ID}"
+
+# Associate again — already associated
+expect_error "IamInstanceProfileAlreadyAssociated" aws ec2 associate-iam-instance-profile \
+    --instance-id "${INSTANCE_ID}" --iam-instance-profile "Name=${PROFILE_NAME}"
+
+# DescribeInstances surfaces IamInstanceProfile
+PROFILE_ARN_FROM_DESC=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
+if [[ "${PROFILE_ARN_FROM_DESC}" != *":instance-profile/${PROFILE_NAME}" ]]; then
+    echo "  ERROR: describe-instances IamInstanceProfile.Arn = '${PROFILE_ARN_FROM_DESC}'"
+    exit 1
+fi
+
+# DescribeIamInstanceProfileAssociations
+DESC_OUT=$(aws ec2 describe-iam-instance-profile-associations \
+    --association-ids "${ASSOC_ID}")
+echo "${DESC_OUT}" | jq -e ".IamInstanceProfileAssociations[0].InstanceId == \"${INSTANCE_ID}\"" > /dev/null
+
+# DeleteInstanceProfile while in-use by a live instance — refused
+expect_error "DeleteConflict" aws iam delete-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# Replace association → other-profile (yields a fresh association id)
+echo "  Replacing association -> ${OTHER_PROFILE_NAME}..."
+REPLACE_OUT=$(aws ec2 replace-iam-instance-profile-association \
+    --association-id "${ASSOC_ID}" \
+    --iam-instance-profile "Name=${OTHER_PROFILE_NAME}")
+NEW_ASSOC_ID=$(echo "${REPLACE_OUT}" | jq -r '.IamInstanceProfileAssociation.AssociationId')
+if [ "${NEW_ASSOC_ID}" = "${ASSOC_ID}" ] || [[ ! "${NEW_ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: Replace must mint a new AssociationId (old=${ASSOC_ID}, new=${NEW_ASSOC_ID})"
+    exit 1
+fi
+
+# Replace with stale id
+expect_error "NoSuchAssociation" aws ec2 replace-iam-instance-profile-association \
+    --association-id "${ASSOC_ID}" --iam-instance-profile "Name=${PROFILE_NAME}"
+
+# Disassociate via the current (new) id
+echo "  Disassociating ${NEW_ASSOC_ID}..."
+aws ec2 disassociate-iam-instance-profile --association-id "${NEW_ASSOC_ID}" > /dev/null
+
+# Disassociate again with stale id
+expect_error "NoSuchAssociation" aws ec2 disassociate-iam-instance-profile \
+    --association-id "${NEW_ASSOC_ID}"
+
+# DescribeInstances no longer carries the profile after Disassociate.
+# AWS CLI --output text prints "None" when the field is null.
+POST_PROFILE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
+if [ "${POST_PROFILE}" != "None" ]; then
+    echo "  ERROR: IamInstanceProfile.Arn still set after disassociate: '${POST_PROFILE}'"
+    exit 1
+fi
+
+# RunInstances --iam-instance-profile at launch + auto-disassociate on terminate.
+# Reuse the AMI/type/key/subnet/SG the singleton was launched against in one
+# describe-instances round trip.
+EPH_DESC=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].[ImageId,InstanceType,KeyName,SubnetId,SecurityGroups[0].GroupId]' \
+    --output text)
+EPH_AMI=$(echo "${EPH_DESC}" | awk '{print $1}')
+EPH_TYPE=$(echo "${EPH_DESC}" | awk '{print $2}')
+EPH_KEY=$(echo "${EPH_DESC}" | awk '{print $3}')
+EPH_SUBNET=$(echo "${EPH_DESC}" | awk '{print $4}')
+EPH_SG=$(echo "${EPH_DESC}" | awk '{print $5}')
+
+echo "  Launching ephemeral VM with --iam-instance-profile ${PROFILE_NAME}..."
+EPH_RUN=$(aws ec2 run-instances \
+    --image-id "${EPH_AMI}" --instance-type "${EPH_TYPE}" \
+    --key-name "${EPH_KEY}" --subnet-id "${EPH_SUBNET}" \
+    --security-group-ids "${EPH_SG}" \
+    --iam-instance-profile "Name=${PROFILE_NAME}" \
+    --count 1)
+EPH_ID=$(echo "${EPH_RUN}" | jq -r '.Instances[0].InstanceId')
+if [[ ! "${EPH_ID}" =~ ^i- ]]; then
+    echo "  ERROR: Failed to launch ephemeral VM (got '${EPH_ID}')"
+    exit 1
+fi
+echo "  Ephemeral VM: ${EPH_ID}"
+
+# Poll until running so DescribeInstances surfaces a stable profile field.
+for i in $(seq 1 60); do
+    EPH_STATE=$(aws ec2 describe-instances --instance-ids "${EPH_ID}" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text)
+    if [ "${EPH_STATE}" = "running" ]; then break; fi
+    sleep 2
+done
+if [ "${EPH_STATE}" != "running" ]; then
+    echo "  ERROR: Ephemeral VM never reached running (last=${EPH_STATE})"
+    aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null || true
+    exit 1
+fi
+
+EPH_ASSOC_ID=$(aws ec2 describe-iam-instance-profile-associations \
+    --filters "Name=instance-id,Values=${EPH_ID}" \
+    --query 'IamInstanceProfileAssociations[0].AssociationId' --output text)
+if [[ ! "${EPH_ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: ephemeral VM has no association (got '${EPH_ASSOC_ID}')"
+    aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null || true
+    exit 1
+fi
+
+# Terminate → auto-disassociate
+echo "  Terminating ${EPH_ID} (expect auto-disassociate)..."
+aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null
+for i in $(seq 1 60); do
+    EPH_STATE=$(aws ec2 describe-instances --instance-ids "${EPH_ID}" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "gone")
+    if [ "${EPH_STATE}" = "terminated" ] || [ "${EPH_STATE}" = "gone" ]; then break; fi
+    sleep 2
+done
+
+# Auto-disassociate is flushed from the daemon's terminate handler — wait
+# until the binding is cleared (up to 30s) so the NoSuchAssociation assertion
+# is deterministic. Matches the Eventually(30s, 1s) loop in the Go port.
+AUTO_DISASSOC_OK=0
+for i in $(seq 1 30); do
+    if aws ec2 disassociate-iam-instance-profile --association-id "${EPH_ASSOC_ID}" 2>&1 \
+            | grep -q "NoSuchAssociation"; then
+        AUTO_DISASSOC_OK=1
+        break
+    fi
+    sleep 1
+done
+if [ "${AUTO_DISASSOC_OK}" -ne 1 ]; then
+    echo "  ERROR: ${EPH_ASSOC_ID} never auto-disassociated after terminate"
+    exit 1
+fi
+echo "  Auto-disassociated ${EPH_ASSOC_ID}"
+
+# Cleanup: profiles + role + policy. Each step is best-effort so a partial
+# failure further up doesn't cascade — matches IAM Phase 7 style.
+aws iam remove-role-from-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
+aws iam remove-role-from-instance-profile \
+    --instance-profile-name "${OTHER_PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
+aws iam delete-instance-profile --instance-profile-name "${PROFILE_NAME}" || true
+aws iam delete-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}" || true
+aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}" || true
+aws iam delete-role --role-name "${ROLE_NAME}" || true
+
+# Verify role gone
+expect_error "NoSuchEntity" aws iam get-role --role-name "${ROLE_NAME}"
+
+echo "IAM Phase 9 passed"
 echo ""
 echo "IAM E2E Tests Completed Successfully"
 
@@ -2931,7 +3255,7 @@ if [ "$PUB_SSH_READY" = true ]; then
         exit 1
     fi
 else
-    echo "WARN: SSH via public IP $PUB_IP not reachable (macvlan isolation or bridge not ready)"
+    echo "WARN: SSH via public IP $PUB_IP not reachable (bridge not ready)"
     echo "Falling back to API-only verification (OVN state already validated above)"
 fi
 
@@ -3128,10 +3452,60 @@ echo "  PASS: Bastion → private instance SSH works (hostname: $PRIV_HOSTNAME)"
     done
     if [ "$NAT_GW_OK" = false ]; then
         echo "  FAIL: Private instance cannot reach internet WITH NAT GW after 10 attempts"
-        echo "  Dumping OVN NAT rules for debugging:"
-        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
-        echo "  OVN routes:"
-        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
+        echo ""
+        echo "==================== Phase 8d failure diagnostics ===================="
+        echo "VPC: vpc-${DEFAULT_VPC}"
+        echo "Private subnet: ${PRIV_SUBNET_ID} (private VM IP: ${PRIV_PRIVATE_IP})"
+        echo "NATGW: ${NAT_GW_ID} → ${NAT_PUB_IP}"
+        echo ""
+        echo "--- ovn-nbctl lr-nat-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl lr-route-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl show ---"
+        sudo ovn-nbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl show ---"
+        sudo ovn-sbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl list chassis ---"
+        sudo ovn-sbctl --no-leader-only list chassis 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Port_Group (membership + ACLs) ---"
+        sudo ovn-nbctl --no-leader-only --columns=name,ports,acls find Port_Group 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl list ACL (all VPC ACLs) ---"
+        sudo ovn-nbctl --no-leader-only list ACL 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Logical_Switch_Port name=*${PRIV_PRIVATE_IP//./_}* (private VM LSP) ---"
+        sudo ovn-nbctl --no-leader-only find Logical_Switch_Port addresses=\"*${PRIV_PRIVATE_IP}*\" 2>&1 || true
+        echo ""
+        echo "--- ovs-vsctl show ---"
+        sudo ovs-vsctl show 2>&1 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int (filtered: NATGW IP/subnet/private IP) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 \
+            | grep -E "${NAT_PUB_IP//./\\.}|172\\.31\\.16\\.|${PRIV_PRIVATE_IP//./\\.}" \
+            | head -200 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int | wc -l (total flows) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 | wc -l || true
+        echo ""
+        echo "--- ip route show ---"
+        ip route show 2>&1 || true
+        echo ""
+        echo "--- ip -br addr show ---"
+        ip -br addr show 2>&1 || true
+        echo ""
+        echo "--- private VM: ip addr / ip route / ip neigh ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ip -br addr; echo ---; ip route; echo ---; ip neigh'" 2>&1 || true
+        echo ""
+        echo "--- private VM: ping -c 1 subnet gateway (172.31.16.1) ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ping -c 1 -W 3 172.31.16.1; echo rc=\$?'" 2>&1 || true
+        echo ""
+        echo "==================== end Phase 8d diagnostics ===================="
         exit 1
     fi
 

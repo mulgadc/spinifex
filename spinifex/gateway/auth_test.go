@@ -155,6 +155,9 @@ func (m *mockIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInst
 func (m *mockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	return nil, nil
 }
+func (m *mockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+	return nil, nil
+}
 
 // testMasterKey is a fixed 32-byte key for deterministic tests.
 var testMasterKey []byte

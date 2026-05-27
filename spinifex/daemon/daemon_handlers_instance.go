@@ -284,6 +284,20 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 					instanceCopy.State.SetName("pending")
 				}
 
+				// Project IamInstanceProfile from vm.VM (single source of truth
+				// across Associate/Disassociate/Replace lifecycle). Id is left
+				// nil — the gateway resolves it via IAMService post-aggregation
+				// since daemons have no IAM access. Empty Arn clears any stale
+				// reference left on stored instance.Instance (e.g. after
+				// Disassociate or auto-clear on terminate).
+				if instance.IamInstanceProfileArn != "" {
+					instanceCopy.IamInstanceProfile = &ec2.IamInstanceProfile{
+						Arn: aws.String(instance.IamInstanceProfileArn),
+					}
+				} else {
+					instanceCopy.IamInstanceProfile = nil
+				}
+
 				// Populate Placement if instance belongs to a placement group
 				if instance.PlacementGroupName != "" {
 					instanceCopy.Placement = &ec2.Placement{
@@ -502,6 +516,16 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 		} else {
 			instanceCopy.State.SetCode(fallbackCode)
 			instanceCopy.State.SetName(fallbackName)
+		}
+
+		// Project IamInstanceProfile from vm.VM (cleared on terminate;
+		// preserved across stop/start). Mirrors handleEC2DescribeInstances.
+		if instance.IamInstanceProfileArn != "" {
+			instanceCopy.IamInstanceProfile = &ec2.IamInstanceProfile{
+				Arn: aws.String(instance.IamInstanceProfileArn),
+			}
+		} else {
+			instanceCopy.IamInstanceProfile = nil
 		}
 
 		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, &instanceCopy, parsedFilters) {

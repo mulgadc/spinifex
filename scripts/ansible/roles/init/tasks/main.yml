@@ -8,28 +8,38 @@
       --node {{ spinifex_node_name }}
       --nodes {{ spinifex_node_count }}
 
+- name: init — no-external opt-out
+  ansible.builtin.set_fact:
+    init_external_flags: "--no-external"
+  when: spinifex_external_no_external | bool
+
+- name: init — assert pool range supplied when mode=pool
+  ansible.builtin.assert:
+    that:
+      - spinifex_external_pool_start | length > 0
+      - spinifex_external_pool_end | length > 0
+    fail_msg: |
+      spx admin init requires --external-pool when --external-mode=pool.
+      Set spinifex_external_pool_start / spinifex_external_pool_end in
+      scripts/ansible/vars/defaults.yml, or pass:
+        -e spinifex_external_pool_start=192.168.1.150
+        -e spinifex_external_pool_end=192.168.1.250
+      Pass -e spinifex_external_no_external=true to skip external networking.
+  when:
+    - not (spinifex_external_no_external | bool)
+    - spinifex_external_mode == 'pool'
+
 - name: init — pool-mode external flags
   ansible.builtin.set_fact:
     init_external_flags: >-
       --external-mode=pool
       --external-pool={{ spinifex_external_pool_start }}-{{ spinifex_external_pool_end }}
-      --external-gateway={{ spinifex_external_gateway }}
-      --external-prefix-len={{ spinifex_external_prefix_len }}
+      {% if spinifex_external_gateway | length > 0 %}--external-gateway={{ spinifex_external_gateway }}{% endif %}
+      {% if spinifex_external_prefix_len | string | length > 0 %}--external-prefix-len={{ spinifex_external_prefix_len }}{% endif %}
+      {% if spinifex_external_gateway_ip | length > 0 %}--gateway-ip={{ spinifex_external_gateway_ip }}{% endif %}
   when:
+    - not (spinifex_external_no_external | bool)
     - spinifex_external_mode == 'pool'
-    - spinifex_external_pool_start | length > 0
-    - spinifex_external_pool_end | length > 0
-
-- name: init — NAT-mode external flags
-  ansible.builtin.set_fact:
-    init_external_flags: >-
-      --external-mode=nat
-      --gateway-ip={{ spinifex_nat_gateway_ip }}
-      --external-gateway={{ spinifex_external_gateway }}
-      --external-prefix-len={{ spinifex_external_prefix_len }}
-  when:
-    - spinifex_external_mode == 'nat'
-    - spinifex_nat_gateway_ip | length > 0
 
 - name: init — assemble full flag string
   ansible.builtin.set_fact:
@@ -75,6 +85,6 @@
     msg: |
       Init complete:
         region={{ spinifex_region }}, az={{ spinifex_az }}, node={{ spinifex_node_name }}
-        external_mode={{ spinifex_external_mode }}
+        external_mode={{ 'disabled' if (spinifex_external_no_external | bool) else spinifex_external_mode }}
         spinifex.target: started
         CA: {{ spinifex_ca_trust_path }}

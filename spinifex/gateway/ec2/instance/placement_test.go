@@ -631,7 +631,7 @@ func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
 		MaxCount:     aws.Int64(1),
 	}
 
-	reservation, err := RunInstances(input, nc, "test-account")
+	reservation, err := RunInstances(input, nc, nil, "test-account", nil)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-single", aws.StringValue(reservation.Instances[0].InstanceId))
@@ -1136,7 +1136,7 @@ func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
 		},
 	}
 
-	reservation, err := RunInstances(input, nc, "test-account")
+	reservation, err := RunInstances(input, nc, nil, "test-account", nil)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 }
@@ -1184,7 +1184,7 @@ func TestRunInstances_MultiInstanceUsesDistribution(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := RunInstances(input, nc, "test-account")
+	reservation, err := RunInstances(input, nc, nil, "test-account", nil)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 	assert.True(t, statusQueried, "multi-instance launch should query node status")

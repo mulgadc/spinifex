@@ -407,6 +407,97 @@ func TestListInstanceProfilesForRole_None(t *testing.T) {
 // Account Scoping
 // ============================================================================
 
+// ============================================================================
+// ResolveInstanceProfile
+// ============================================================================
+
+func TestResolveInstanceProfile_ByName(t *testing.T) {
+	svc := setupTestIAMService(t)
+	created := createTestInstanceProfile(t, svc, "by-name-profile")
+
+	profile, err := svc.ResolveInstanceProfile(testAccountID, "by-name-profile")
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	assert.Equal(t, "by-name-profile", profile.InstanceProfileName)
+	assert.Equal(t, *created.Arn, profile.ARN)
+}
+
+func TestResolveInstanceProfile_ByARN(t *testing.T) {
+	svc := setupTestIAMService(t)
+	created := createTestInstanceProfile(t, svc, "by-arn-profile")
+
+	profile, err := svc.ResolveInstanceProfile(testAccountID, *created.Arn)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	assert.Equal(t, "by-arn-profile", profile.InstanceProfileName)
+}
+
+func TestResolveInstanceProfile_ByARNWithPath(t *testing.T) {
+	svc := setupTestIAMService(t)
+	out, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
+		InstanceProfileName: aws.String("nested-profile"),
+		Path:                aws.String("/service-profiles/team-a/"),
+	})
+	require.NoError(t, err)
+
+	profile, err := svc.ResolveInstanceProfile(testAccountID, *out.InstanceProfile.Arn)
+	require.NoError(t, err)
+	assert.Equal(t, "nested-profile", profile.InstanceProfileName)
+	assert.Equal(t, "/service-profiles/team-a/", profile.Path)
+}
+
+func TestResolveInstanceProfile_CrossAccountARNRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestInstanceProfile(t, svc, "shadow-profile")
+
+	otherAccountARN := "arn:aws:iam::999999999999:instance-profile/shadow-profile"
+	_, err := svc.ResolveInstanceProfile(testAccountID, otherAccountARN)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorAccessDenied)
+}
+
+func TestResolveInstanceProfile_NameNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ResolveInstanceProfile(testAccountID, "ghost-profile")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestResolveInstanceProfile_ARNNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	arn := "arn:aws:iam::" + testAccountID + ":instance-profile/ghost"
+	_, err := svc.ResolveInstanceProfile(testAccountID, arn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestResolveInstanceProfile_MalformedARN(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	cases := []string{
+		"arn:aws:iam::" + testAccountID + ":role/not-a-profile",
+		"arn:aws:iam::" + testAccountID + ":instance-profile/",
+		"arn:aws:s3:::bucket/key",
+		"arn:bogus",
+	}
+	for _, arn := range cases {
+		_, err := svc.ResolveInstanceProfile(testAccountID, arn)
+		require.Error(t, err, "expected error for %q", arn)
+		assert.Contains(t, err.Error(), awserrors.ErrorInvalidIamInstanceProfileArnMalformed,
+			"expected malformed-ARN error for %q", arn)
+	}
+}
+
+func TestResolveInstanceProfile_EmptyReference(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ResolveInstanceProfile(testAccountID, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+}
+
 func TestInstanceProfiles_AccountScoping(t *testing.T) {
 	svc := setupTestIAMService(t)
 

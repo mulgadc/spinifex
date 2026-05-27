@@ -54,6 +54,12 @@ type IAMService interface {
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
 	RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error)
 
+	// ResolveInstanceProfile dereferences a RunInstancesInput.IamInstanceProfile
+	// reference (name or ARN) to the canonical InstanceProfile record. Used by
+	// EC2 paths only. Cross-account ARNs are rejected as a defence-in-depth
+	// check; the gateway also enforces this and returns AccessDenied.
+	ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error)
+
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)
 

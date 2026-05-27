@@ -232,6 +232,15 @@ func TestGenerateDevMAC_Stable(t *testing.T) {
 	assert.NotEqual(t, GenerateDevMAC("i-abc123"), GenerateDevMAC("i-def456"))
 }
 
+func TestGenerateMgmtMAC_Stable(t *testing.T) {
+	a := GenerateMgmtMAC("i-abc123")
+	b := GenerateMgmtMAC("i-abc123")
+	assert.Equal(t, a, b, "MAC must be deterministic for the same instance ID")
+	assert.NotEqual(t, GenerateMgmtMAC("i-abc123"), GenerateMgmtMAC("i-def456"))
+	// Dev and mgmt MACs for the same instance must differ — class separation.
+	assert.NotEqual(t, GenerateDevMAC("i-abc123"), GenerateMgmtMAC("i-abc123"))
+}
+
 func TestStartReturnsErrorWhenInstanceUnknown(t *testing.T) {
 	m := NewManager()
 	err := m.Start("i-missing")

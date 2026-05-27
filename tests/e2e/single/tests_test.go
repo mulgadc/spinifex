@@ -202,6 +202,22 @@ func TestIAMCleanup(t *testing.T) {
 	runIAMCleanup(t, requireSingleNodeFixture(t))
 }
 
+// TestIAMRolesAndProfiles + TestIAMInstanceProfileAssociation form the
+// companion-plan suite (docs/development/archive/feature/iam-roles-v1.md and
+// docs/development/feature/iam-roles-v1-ec2.md). Sequential: the second test
+// recreates the same role/profile names the first tore down, so concurrent
+// runs would race the EntityAlreadyExists / NoSuchEntity boundaries.
+func TestIAMRolesAndProfiles(t *testing.T) {
+	runIAMRolesAndProfiles(t, requireSingleNodeFixture(t))
+}
+
+// TestIAMInstanceProfileAssociation also briefly mutates the singleton VM
+// (Associate/Disassociate), so it can't share the parallel bucket with
+// instance-mutation tests.
+func TestIAMInstanceProfileAssociation(t *testing.T) {
+	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
+}
+
 // TestFinalClusterStats runs as the last sequential test (parallel bucket
 // runs afterwards, but those Tests are read-only / own-everything so a
 // later cluster-stats snapshot would still be valid).

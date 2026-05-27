@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -98,20 +99,20 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		return nil, err
 	}
 
+	eniId := utils.GenerateResourceID("eni")
+
 	// Allocate IP from subnet
 	var privateIP string
 	if input.PrivateIpAddress != nil && *input.PrivateIpAddress != "" {
 		// TODO: validate the requested IP is in the subnet range and not already allocated
 		privateIP = *input.PrivateIpAddress
 	} else {
-		ip, err := s.ipam.AllocateIP(subnetId, subnet.CidrBlock)
+		ip, err := s.ipam.AllocateIP(subnetId, subnet.CidrBlock, PurposeENIPrimary, eniId)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		privateIP = ip
 	}
-
-	eniId := utils.GenerateResourceID("eni")
 
 	// Generate a deterministic MAC address
 	macAddr := generateENIMac(eniId)
@@ -198,7 +199,7 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 		} else if owned {
 			slog.Info("DeleteNetworkInterface: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
 		} else {
-			portName := "port-" + eniId
+			portName := topology.Port(eniId)
 			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
 			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress); err != nil {
 				slog.Warn("Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
@@ -677,8 +678,8 @@ func generateENIMac(eniId string) string {
 }
 
 // portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.
-// Mirrors vpcd.PortEvent — duplicated here to avoid a vpcd → handlers import
-// cycle.
+// Mirrors network/subscribers.PortEvent — duplicated here to avoid a
+// subscribers → handlers import cycle.
 type portEventPayload struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`

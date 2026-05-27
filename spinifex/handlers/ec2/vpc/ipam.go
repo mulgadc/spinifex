@@ -15,14 +15,22 @@ import (
 
 const (
 	KVBucketIPAM        = "spinifex-vpc-ipam"
-	KVBucketIPAMVersion = 1
+	KVBucketIPAMVersion = 2
 )
+
+// IPEntry tags one IP allocation with its Purpose + owner (eni-, eipalloc-,
+// etc) so multi-VPC clusters can reclaim/audit by (owner, purpose).
+type IPEntry struct {
+	IP      string `json:"ip"`
+	Purpose string `json:"purpose"`            // one of the Purpose* constants
+	OwnerID string `json:"owner_id,omitempty"` // ENI / EIP / NATGW / IGW resource ID
+}
 
 // IPAMRecord tracks allocated IPs for a subnet.
 type IPAMRecord struct {
-	SubnetId  string   `json:"subnet_id"`
-	CidrBlock string   `json:"cidr_block"`
-	Allocated []string `json:"allocated"` // List of allocated IPs
+	SubnetId  string    `json:"subnet_id"`
+	CidrBlock string    `json:"cidr_block"`
+	Allocated []IPEntry `json:"allocated"`
 }
 
 // IPAM manages IP address allocation for VPC subnets using NATS KV with CAS.
@@ -36,7 +44,7 @@ func NewIPAM(js nats.JetStreamContext) (*IPAM, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create IPAM KV bucket: %w", err)
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketIPAM, kv, KVBucketIPAMVersion); err != nil {
+	if err := migrate.DefaultRegistry.RunKVWithJetStream(KVBucketIPAM, kv, js, KVBucketIPAMVersion); err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketIPAM, err)
 	}
 	return &IPAM{kv: kv}, nil
@@ -50,8 +58,10 @@ func NewIPAMWithKV(kv nats.KeyValue) *IPAM {
 // AllocateIP allocates an IP address from the given subnet.
 // It reserves the first 4 and last IP per AWS convention:
 // .0=network, .1=gateway, .2=DNS, .3=reserved, .255=broadcast (for /24).
-// Uses CAS for conflict-free allocation across nodes.
-func (m *IPAM) AllocateIP(subnetId, cidrBlock string) (string, error) {
+// Uses CAS for conflict-free allocation across nodes. purpose is one of the
+// Purpose* constants in purpose.go; ownerID is the ENI / instance / EIP
+// resource ID that owns this allocation.
+func (m *IPAM) AllocateIP(subnetId, cidrBlock, purpose, ownerID string) (string, error) {
 	for attempt := range 5 {
 		record, revision, err := m.getRecord(subnetId)
 		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
@@ -71,7 +81,7 @@ func (m *IPAM) AllocateIP(subnetId, cidrBlock string) (string, error) {
 			return "", err
 		}
 
-		record.Allocated = append(record.Allocated, ip)
+		record.Allocated = append(record.Allocated, IPEntry{IP: ip, Purpose: purpose, OwnerID: ownerID})
 
 		// CAS write
 		data, err := json.Marshal(record)
@@ -90,7 +100,7 @@ func (m *IPAM) AllocateIP(subnetId, cidrBlock string) (string, error) {
 			continue // CAS conflict, retry
 		}
 
-		slog.Info("IPAM allocated IP", "subnet", subnetId, "ip", ip)
+		slog.Info("IPAM allocated IP", "subnet", subnetId, "ip", ip, "purpose", purpose, "owner", ownerID)
 		return ip, nil
 	}
 
@@ -109,8 +119,8 @@ func (m *IPAM) ReleaseIP(subnetId, ip string) error {
 		}
 
 		found := false
-		for i, allocated := range record.Allocated {
-			if allocated == ip {
+		for i, entry := range record.Allocated {
+			if entry.IP == ip {
 				record.Allocated = append(record.Allocated[:i], record.Allocated[i+1:]...)
 				found = true
 				break
@@ -137,8 +147,8 @@ func (m *IPAM) ReleaseIP(subnetId, ip string) error {
 	return fmt.Errorf("IPAM release failed after CAS retries for subnet %s", subnetId)
 }
 
-// AllocatedIPs returns the list of allocated IPs for a subnet.
-func (m *IPAM) AllocatedIPs(subnetId string) ([]string, error) {
+// AllocatedIPs returns the list of allocated IP entries for a subnet.
+func (m *IPAM) AllocatedIPs(subnetId string) ([]IPEntry, error) {
 	record, _, err := m.getRecord(subnetId)
 	if err != nil {
 		if errors.Is(err, nats.ErrKeyNotFound) {
@@ -177,8 +187,8 @@ func (m *IPAM) nextAvailableIP(record *IPAMRecord) (string, error) {
 	}
 
 	allocated := make(map[string]bool, len(record.Allocated))
-	for _, ip := range record.Allocated {
-		allocated[ip] = true
+	for _, entry := range record.Allocated {
+		allocated[entry.IP] = true
 	}
 
 	ones, bits := ipNet.Mask.Size()

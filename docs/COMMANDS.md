@@ -1,710 +1,688 @@
-# Command Implementation Matrix
+# Spinifex Command Reference
 
-## Spinifex Admin CLI
+Implementation status of every CLI subcommand (`spx`) and AWS-compatible API
+action served by the Spinifex gateway. Tables list flag coverage only — for
+prerequisites, behaviour, and error semantics, read the linked source or
+`spinifex/docs/DESIGN.md`.
 
-Platform management commands not exposed via the AWS gateway API. These are CLI-only commands.
+**Status legend:** **DONE** — fully implemented · **STARTED** — partially
+implemented (caveat in note) · **NOT STARTED** — not implemented.
+
+---
+
+## Spinifex Admin CLI (`spx`)
+
+Platform-management commands not exposed via the AWS gateway. CLI-only.
 
 ### Service Management
 
-Service lifecycle commands for starting, stopping, and checking status of all Spinifex cluster services. Each service subcommand supports `start`, `stop`, and `status` operations.
+`spx service <name> {start|stop|status}` — lifecycle for each cluster service.
+`stop`/`status` take no flags.
 
-| Command | Flags | Prerequisites | Basic Logic | Status |
-|---------|-------|---------------|-------------|--------|
-| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem, default: distributed), `--node-id` (default: 0), `--pprof`, `--pprof-output` | TLS cert/key, base-path, config-path required | Creates predastore service instance with S3-compatible storage backend → starts service | **DONE** |
-| `spx service predastore stop` | — | Predastore must be running | Stops the predastore service | **DONE** |
-| `spx service predastore status` | — | None | Reports predastore service status | **DONE** |
-| `spx service viperblock start` | `--s3-host` (default: 0.0.0.0:8443), `--s3-bucket` (default: predastore), `--s3-region` (default: ap-southeast-2), `--plugin-path` (auto-detected via `nbdkit --dump-config plugindir`; typically `/usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-viperblock-plugin.so` on amd64, overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in `/etc/spinifex/systemd.env`) | `--config` required, plugin-path must exist on disk | Loads cluster config → connects to NATS and Predastore → starts viperblock block storage service with NBD plugin | **DONE** |
-| `spx service viperblock stop` | — | Viperblock must be running | Stops the viperblock service | **DONE** |
-| `spx service viperblock status` | — | None | Reports viperblock service status | **DONE** |
-| `spx service nats start` | `--port` (default: 4222), `--host` (default: 0.0.0.0), `--debug`, `--data-dir`, `--jetstream` | None | Starts embedded NATS server with optional JetStream | **DONE** |
-| `spx service nats stop` | — | NATS must be running | Stops the NATS service | **DONE** |
-| `spx service nats status` | — | None | Reports NATS service status | **DONE** |
-| `spx service spinifex start` | `--wal-dir` | `--config` required | Loads cluster config → starts spinifex daemon (VM orchestration, NATS subscriptions, health endpoint) | **DONE** |
-| `spx service spinifex stop` | — | Spinifex daemon must be running | Stops the spinifex daemon service | **DONE** |
-| `spx service spinifex status` | — | None | Reports spinifex daemon service status | **DONE** |
-| `spx service awsgw start` | `--host` (default: 0.0.0.0:9999), `--tls-cert`, `--tls-key`, `--debug` | `--config` required | Loads cluster config → starts AWS-compatible gateway with SigV4 auth, IAM policy enforcement, TLS | **DONE** |
-| `spx service awsgw stop` | — | AWS gateway must be running | Stops the AWS gateway service | **DONE** |
-| `spx service awsgw status` | — | None | Reports AWS gateway service status | **DONE** |
-| `spx service spinifex-ui start` | `--port` (default: 3000), `--host` (default: 0.0.0.0), `--tls-cert`, `--tls-key` | None | Starts embedded web UI server serving the React frontend. Aliases: `ui`, `spinifexui` | **DONE** |
-| `spx service spinifex-ui stop` | — | spinifex-ui must be running | Stops the spinifex-ui service | **DONE** |
-| `spx service spinifex-ui status` | — | None | Reports spinifex-ui service status | **DONE** |
-| `spx service vpcd start` | — | `--config` required, OVN/OVS installed | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) | **DONE** |
-| `spx service vpcd stop` | — | vpcd must be running | Stops the vpcd service | **DONE** |
-| `spx service vpcd status` | — | None | Reports vpcd service status | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx service predastore start` | `--port` (8443), `--host` (0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem), `--node-id`, `--pprof`, `--pprof-output` | — | **DONE** |
+| `spx service predastore stop` / `status` | — | — | **DONE** |
+| `spx service viperblock start` | `--s3-host`, `--s3-bucket`, `--s3-region`, `--plugin-path` | — | **DONE** |
+| `spx service viperblock stop` / `status` | — | — | **DONE** |
+| `spx service nats start` | `--port` (4222), `--host`, `--debug`, `--data-dir`, `--jetstream` | — | **DONE** |
+| `spx service nats stop` / `status` | — | — | **DONE** |
+| `spx service spinifex start` | `--wal-dir` | — | **DONE** |
+| `spx service spinifex stop` / `status` | — | — | **DONE** |
+| `spx service awsgw start` | `--host` (0.0.0.0:9999), `--tls-cert`, `--tls-key`, `--debug` | — | **DONE** |
+| `spx service awsgw stop` / `status` | — | — | **DONE** |
+| `spx service spinifex-ui start` | `--port` (3000), `--host`, `--tls-cert`, `--tls-key` | — | **DONE** |
+| `spx service spinifex-ui stop` / `status` | — | — | **DONE** |
+| `spx service vpcd start` / `stop` / `status` | — | — | **DONE** |
+
+Viperblock `--plugin-path` is auto-detected via `nbdkit --dump-config plugindir`
+and overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in
+`/etc/spinifex/systemd.env`.
 
 ### Cluster Inspection
 
-Operational commands for inspecting cluster state. These fan out NATS requests to all nodes and aggregate responses.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx get nodes` | `--timeout` (3s) | — | **DONE** |
+| `spx get vms` (alias: `instances`) | `--timeout` (3s) | — | **DONE** |
+| `spx top nodes` | `--timeout` (3s) | — | **DONE** |
 
-| Command | Flags | Prerequisites | Basic Logic | Output Columns | Status |
-|---------|-------|---------------|-------------|----------------|--------|
-| `spx get nodes` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Loads config → publishes to `spinifex.node.status` fan-out topic → collects responses within timeout → merges config-known nodes with NATS responders → nodes that don't respond shown as `NotReady` | NAME, STATUS, IP, REGION, AZ, UPTIME, VMs, SERVICES | **DONE** |
-| `spx get vms` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Publishes to `spinifex.node.vms` fan-out topic → collects VM info from all nodes → sorts by node then instance ID → prints table. Alias: `spx get instances` | INSTANCE, STATUS, TYPE, VCPU, MEM, NODE, IP, AGE | **DONE** |
+### Cluster Lifecycle
 
-### Resource Monitoring
-
-| Command | Flags | Prerequisites | Basic Logic | Output | Status |
-|---------|-------|---------------|-------------|--------|--------|
-| `spx top nodes` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Publishes to `spinifex.node.status` fan-out topic → collects CPU/memory usage per node → aggregates instance type capacity across all nodes → prints two tables: per-node resource usage and cluster-wide instance type availability | Table 1: NAME, CPU (used/total), MEM (used/total), GPU (used/total), VMs — GPU column shows `allocated/total` when passthrough is enabled, `0/count*` when the node is GPU-capable but passthrough is disabled, or `-` when no GPU is present. Table 2: INSTANCE TYPE, AVAILABLE, VCPU, MEMORY | **DONE** |
-
-### Cluster Initialization
-
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | None (first-time setup) | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` | 1. Init creates all config files<br>2. Root credentials printed once<br>3. master.key is 32 bytes, mode 0600<br>4. bootstrap.json consumed on first start<br>5. `--force` re-initializes existing config<br>6. AWS CLI profile `spx` auto-configured<br>7. Multi-node init generates join token and writes to `<config-dir>/join-token` | **DONE** |
-| `spx admin join` | `--host` (required), `--node` (required), `--token` (required), `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | Leader node must be running | Connects to leader node with join token (Authorization: Bearer header) → retrieves cluster configuration → configures local node to join cluster and participate in distributed operations | 1. Join existing cluster<br>2. Missing host (error)<br>3. Missing node name (error)<br>4. Missing token (error)<br>5. Invalid token (401)<br>6. Expired token (401) | **DONE** |
-
-### Version
-
-| Command | Flags | Prerequisites | Basic Logic | Status |
-|---------|-------|---------------|-------------|--------|
-| `spx version` | — | None | Prints Spinifex version, commit hash, OS, and architecture (populated via build-time ldflags) | **DONE** |
-
-### Cluster Operations
-
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin cluster shutdown` | `--force` (shutdown even if nodes don't respond), `--timeout` (max wait per phase, default 120s), `--dry-run` (print phase plan without executing) | Cluster must be running | Performs coordinated, phased shutdown of entire cluster. Phases execute in order: GATE (stop API/UI) → DRAIN (stop VMs) → STORAGE (stop viperblock) → PERSIST (stop predastore) → INFRA (stop NATS/daemon). Each phase waits for all nodes to ACK before proceeding. Uses JetStream state tracking. | 1. Shutdown running cluster<br>2. All nodes stop cleanly<br>3. Force shutdown with unresponsive nodes<br>4. Dry-run prints plan | **DONE** |
-
-### Certificate Management
-
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin cert renew` | `--extra-ip` (additional IPs for SANs), `--extra-dns` (additional DNS names for SANs) | Existing CA from `spx admin init` | Reads existing CA → regenerates server certificate with all current network interface IPs and machine hostname in SANs → writes new cert. Use after adding a new network interface or changing IP addresses. | 1. Renew with auto-detected IPs<br>2. Renew with extra IPs<br>3. Renew with extra DNS names | **DONE** |
-
-### Upgrade Management
-
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin upgrade` | `--yes` (apply without prompting), `--config-dir` (persistent, default: `~/spinifex/config`), `--spinifex-dir` (persistent, default: `~/spinifex`) | Existing installation (`spinifex.toml` must exist in config dir) | Reads current config versions from registry → computes pending config migrations (from→to per target) → prints version summary and pending list → prompts for confirmation unless `--yes` → runs `migrate.DefaultRegistry.RunAllConfig()` to apply migrations to config files. Intended for upgrades between Spinifex versions. Operators can skip migrations during install by setting `INSTALL_SPINIFEX_SKIP_MIGRATE=1`, then run `spx admin upgrade` manually to review and apply. After completion, services must be restarted with `sudo systemctl restart spinifex.target`. Invoked non-interactively by `scripts/setup.sh` with `--yes`. | 1. No installation present (error, suggests `spx admin init`)<br>2. No pending migrations (prints "No pending config migrations")<br>3. Pending migrations with interactive confirmation (y/yes applies, anything else aborts)<br>4. Pending migrations with `--yes` (applies without prompt)<br>5. Migration failure surfaces error and exits non-zero | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | — | **DONE** |
+| `spx admin join` | `--host`, `--node`, `--token`, `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | — | **DONE** |
+| `spx admin cluster shutdown` | `--force`, `--timeout` (120s), `--dry-run` | — | **DONE** |
+| `spx admin cert renew` | `--extra-ip`, `--extra-dns` | — | **DONE** |
+| `spx admin upgrade` | `--yes`, `--config-dir`, `--spinifex-dir` | — | **DONE** |
+| `spx version` | — | — | **DONE** |
 
 ### Account Management
 
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin account create` | `--name` | Cluster must be running (NATS), master key must exist | Connects to NATS → CAS loop on `spinifex-account-counter:next_id` for sequential 12-digit ID → creates Account record in `spinifex-accounts` KV → creates `admin` user in new account → creates access key for admin → creates AdministratorAccess policy (Action:*, Resource:*) → attaches policy → prints credentials | 1. Create first account (ID 000000000001)<br>2. Sequential IDs (000000000002, etc.)<br>3. Admin user has full access<br>4. Credentials printed once | **DONE** |
-| `spx admin account list` | — | Cluster must be running (NATS), master key must exist | Connects to NATS → IAMService.ListAccounts() → prints table with Account ID, Name, Status, Created | 1. List all accounts<br>2. Empty list (only global account) | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx admin account create` | `--name` | — | **DONE** |
+| `spx admin account list` | — | — | **DONE** |
 
 ### Image Management
 
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Cluster must be running; either `--name` (catalog download) or `--file` (operator-supplied media). `--file` mode additionally requires `--distro`, `--version`, `--arch`, `--boot-mode`. | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. | 1. Import valid catalog image (verifies checksum)<br>2. Tampered cache hit fails with `ErrChecksumMismatch`<br>3. `--force` recovers after a mismatch<br>4. `--file` import skips verification<br>5. `--skip-verify` bypasses checksum with WARN<br>6. `--file` without `--boot-mode` rejected<br>7. `--boot-mode=invalid` rejected | **DONE** |
-| `spx admin images list` | — | None | Lists available OS images that can be imported or downloaded | 1. List available images | **DONE** |
-| `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Cluster must be running; predastore reachable. Targets AMIs imported via `spx admin images import` (non-account `ImageOwnerAlias`, e.g. `"system"`). | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. | 1. Happy path: system AMI, no deps → deleted<br>2. Account-owned → refused with AWS-flow hint<br>3. Missing/corrupt config → `InvalidAMIID.NotFound` (salvageable with `--force`)<br>4. Dependent volume (direct or via copied snap) → refused<br>5. Dependent account AMI → refused<br>6. `--force` overrides dependents<br>7. Idempotent re-run after partial delete | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | — | **DONE** |
+| `spx admin images list` | — | — | **DONE** |
+| `spx admin images remove` | `--image-id`, `--force`, `--yes` | — | **DONE** |
 
 #### Image integrity verification (CMMC SI.L1-3.14.2)
 
-Catalog imports (`spx admin images import --name <name>`) verify the image
-against the catalog-declared SHA-256/SHA-512 digest before extraction. The sums
-file is fetched from the catalog `Checksum` URL over HTTPS only (cross-scheme
-redirects refused), and verification runs on both fresh downloads and cache
-hits so a poisoned cache is caught on the next import.
-
-On mismatch the import exits non-zero, the cached file is left on disk for
-inspection, and the printed guidance is `spx admin images import --name <name>
---force` to re-download.
+Catalog imports (`--name`) verify the image against the catalog-declared
+SHA-256/SHA-512 digest before extraction. The sums file is fetched over HTTPS
+only (cross-scheme redirects refused). Verification runs on fresh downloads
+*and* cache hits, so a poisoned cache is caught on the next import. On
+mismatch the import exits non-zero, the cached file is left for inspection,
+and the guidance is to re-run with `--force`.
 
 `--file` imports skip verification by design: operator-supplied media is
-outside Spinifex's trust boundary and the operator is responsible for
-integrity (e.g. `sha256sum` against a trusted upstream digest before import).
-The skip is recorded as an INFO `slog` event with `reason=local-file-import`
-so a CMMC assessor can audit the decision from journald.
+outside Spinifex's trust boundary. The skip is recorded as an INFO `slog`
+event (`reason=local-file-import`).
 
-`--skip-verify` bypasses the checksum step for catalog imports. The command
-still downloads via the catalog URL but does not compare the image digest
-against the sums file. Intended for narrow cases such as debugging upstream
-mirror issues or running against a transiently-broken `latest/` path; the
-skip is logged at WARN with `reason=skip-verify-flag` and printed to stderr
-so operators and assessors see it. Prefer `--file` with an out-of-band
-verified image over `--skip-verify` whenever possible.
+`--skip-verify` bypasses checksum verification for catalog imports — only for
+debugging upstream mirror issues. Logged at WARN
+(`reason=skip-verify-flag`) and to stderr.
 
 **Limitation:** verification confirms the image matches the digest the mirror
 served. A mirror compromise that swaps both image and sums file is not
-detected; closing that gap requires GPG signature verification of the sums
-file, deferred to a later phase.
+detected; GPG signature verification is a later phase.
 
 #### `spx admin images remove` caveats
 
-Admin-imported AMIs (`ImageOwnerAlias = "system"`) live
-under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
-at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
-(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
-`UnauthorizedOperation`, which is the right behaviour for tenant API callers
-but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
-the admin-trust-boundary counterpart that performs the dependency walk and
-hard-deletes the blocks directly against predastore.
-
-`CopyImage` of a system AMI is metadata-only: it writes a fresh
-`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
-`ami-<acct>/config.json` referencing that snap. Volumes launched from the
-copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
-walks this transitive set and refuses if anything references the target.
+System AMIs (`ImageOwnerAlias = "system"`) cannot be removed via the AWS
+`DeregisterImage`/`DeleteSnapshot` flow — those reject system owners with
+`UnauthorizedOperation`. `spx admin images remove` is the admin-trust-boundary
+counterpart: it walks the transitive dependent set (copied snapshots, derived
+volumes, account AMIs created via `CopyImage`) and refuses if anything
+references the target.
 
 **TOCTOU window:** between the safety scan and the `config.json` delete a
-concurrent `RunInstances` against the AMI could create a new dependent
-volume. The window is sub-second on a healthy cluster. The admin running
-this command is expected to know the fleet's operational state; if the race
-fires the result is a `vol-<id>` with deleted backing blocks, recovered by
-terminating the orphaned instance.
+concurrent `RunInstances` could create a new dependent volume. The window is
+sub-second on a healthy cluster. The admin is expected to know fleet state;
+if the race fires the result is a `vol-<id>` with deleted backing blocks,
+recovered by terminating the orphaned instance.
 
 **`--force` bypasses every safety check** (dependents, ownership, missing /
-corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
-against a live system AMI corrupts every dependent volume on the next disk
-read.
+corrupt `config.json`). Use only for salvage of orphaned blocks. Running
+`--force` against a live system AMI corrupts every dependent volume on the
+next disk read.
 
 ### GPU Management
 
-| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------|---------------|-------------|------------|--------|
-| `spx admin gpu status` | `--node` (default: local node) | Cluster must be running (NATS) | Queries `spinifex.node.status` fan-out → finds the target node response → prints Node, GPU hardware (model list or "none detected"), IOMMU state, vfio-pci state, passthrough enabled/disabled, and GPU pool allocation (`allocated/total`). Also lists GPU-capable instance types when passthrough is active. | 1. Local node with passthrough enabled (shows pool and instance types)<br>2. Local node capable but passthrough disabled (shows "run enable")<br>3. Node without GPU hardware (shows "none detected")<br>4. `--node` targets a remote node<br>5. Node not found or not responding (error) | **DONE** |
-| `spx admin gpu enable` | — | Cluster must be running (NATS); node must be GPU-capable (IOMMU + vfio-pci configured) | Checks current passthrough state via NATS → errors if already enabled or prerequisites not met (directs to `setup`) → writes `gpu_passthrough = true` to `spinifex.toml` via `admin.SetGPUPassthrough` → sends SIGHUP to `spinifex-daemon` via `systemctl kill -s HUP` → polls node status for up to 30 s until daemon confirms new state → prints final `gpu status` output. Must be run directly on the target host. | 1. Enable on capable node<br>2. Already enabled (no-op)<br>3. Prerequisites not met (error, suggests `setup`)<br>4. Daemon does not confirm within 30 s (timeout error) | **DONE** |
-| `spx admin gpu disable` | — | Cluster must be running (NATS); no GPU instances may be running | Checks current passthrough state via NATS → errors if already disabled or if `AllocGPUs > 0` (must terminate GPU instances first) → writes `gpu_passthrough = false` → sends SIGHUP to `spinifex-daemon` → polls for up to 30 s → prints final `gpu status` output. Must be run directly on the target host. | 1. Disable with no GPU instances running<br>2. Already disabled (no-op)<br>3. GPU instances running (error with count)<br>4. Daemon does not confirm within 30 s (timeout error) | **DONE** |
-| `spx admin gpu setup` | — | Must be run as root; NVIDIA or AMD GPU must be present | Idempotent host configuration for GPU passthrough. Steps (skipped if already applied): detect GPUs via `gpu.Discover` → collect PCI IDs for all IOMMU-group siblings → check/enable IOMMU in GRUB (`intel_iommu=on iommu=pt` or `amd_iommu=on iommu=pt`) → write vfio udev rule (`/etc/udev/rules.d/99-spinifex-vfio.rules`) → blacklist nouveau (`/etc/modprobe.d/blacklist-nouveau.conf`) → blacklist amdgpu if AMD GPU present (`/etc/modprobe.d/blacklist-amdgpu.conf`) → write vfio-pci early binding config (`/etc/modprobe.d/vfio-pci.conf`) → add vfio modules to initramfs. If any change requires a reboot: runs `update-initramfs -u` and exits with reboot instructions. After reboot: verifies `vfio_pci` module is loaded → verifies each GPU is bound to `vfio-pci` (binds explicitly via `driver_override` if unbound) → calls `gpu enable` to activate passthrough. | 1. First run on unconfigured host (GRUB updated, reboot required)<br>2. Re-run after reboot (verifies bindings, enables passthrough)<br>3. Already fully configured (all steps skipped, enables passthrough)<br>4. AMD GPU present (blacklists amdgpu in addition to nouveau)<br>5. Not run as root (error)<br>6. No GPU hardware detected (error) | **DONE** |
-
-## AWS Commands
-
-### EC2 - Instance Management
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `run-instances` | `--image-id`, `--instance-type`, `--count` (Min/MaxCount), `--key-name`, `--user-data`, `--subnet-id` (auto-creates ENI, assigns private IP), `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName only — routes via spread or cluster strategy) | `--security-group-ids`, `--tag-specifications`, `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--iam-instance-profile`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | `describe-images` (AMI must exist), `create-key-pair` (optional), VPC/SG (optional) | Gateway parses AWS query → if Placement.GroupName set, looks up strategy: spread → `distributeInstancesSpread()` (1 instance per node, atomic CAS reservation), cluster → `distributeInstancesCluster()` (pin all to single node); otherwise NATS `ec2.runinstances` → daemon creates QEMU/KVM VM with viperblock-backed root volume via NBD → if SubnetId provided, auto-creates ENI with private IP → cloud-init injects user-data/keys → on termination, removes instance from placement group → returns reservation with instance ID | 1. Launch with valid AMI and key pair<br>2. Launch with invalid AMI ID (error)<br>3. Launch with block device mappings (custom volume size)<br>4. Launch multiple instances (MinCount/MaxCount)<br>5. Launch with subnet-id (auto-creates ENI)<br>6. Invalid instance type returns error<br>7. Launch with spread placement group (1 per node)<br>8. Launch with cluster placement group (all on one node)<br>9. Insufficient capacity for placement group (error) | **DONE** |
-| `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:\*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | None | Gateway fans out NATS `ec2.DescribeInstances` to all nodes (no queue group) → each daemon returns local instances → gateway aggregates and returns combined list. Filters applied per-node before aggregation (reduces payload). Also applies to stopped/terminated instances via `describeInstancesFromKV()`. | 1. Describe all instances (no filter)<br>2. Describe by instance ID<br>3. Describe with filters (e.g. instance-state-name)<br>4. Instance not found returns empty set<br>5. Multi-node aggregation returns instances from all nodes<br>6. Filter by tag<br>7. Unknown filter returns InvalidParameterValue | **DONE** |
-| `start-instances` | `--instance-ids` | `--dry-run`, `--force` | `run-instances` (instance must exist in stopped state) | Gateway sends NATS `ec2.cmd.{instance-id}` → daemon restarts stopped QEMU process with same config → state transitions stopped→pending→running | 1. Start a stopped instance<br>2. Start already-running instance (error: IncorrectInstanceState)<br>3. Start with invalid instance ID<br>4. Verify volumes re-mount on start | **DONE** |
-| `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | `run-instances` (instance must be running) | Gateway sends NATS to target node → daemon issues QMP `system_powerdown` for graceful shutdown → monitors heartbeat until QEMU exits → state transitions running→stopping→stopped | 1. Graceful stop of running instance<br>2. Force stop (kills QEMU process)<br>3. Stop already-stopped instance (error)<br>4. Verify ~30s heartbeat detection | **DONE** |
-| `terminate-instances` | `--instance-ids`, `DeleteOnTermination` (per-volume flag, default true) | `--dry-run` | `run-instances` (instance must exist) | Gateway sends NATS to target node → daemon checks `DisableApiTermination` first and rejects with `OperationNotPermitted` if set (running or stopped, no side effects) → kills QEMU process → cleans up NBD mounts → deletes volumes with `DeleteOnTermination=true` via `volumeService.DeleteVolume()` (S3 cleanup of vol/, vol-efi/, vol-cloudinit/) → internal volumes (EFI, cloud-init) always cleaned up via `ebs.delete` NATS → volumes with `DeleteOnTermination=false` left in available state → state→terminated | 1. Terminate running instance<br>2. Terminate stopped instance<br>3. Terminate with DeleteOnTermination=true deletes volumes<br>4. Terminate with DeleteOnTermination=false preserves volumes<br>5. Terminate already-terminated (idempotent)<br>6. Internal volumes (EFI, cloud-init) always cleaned up<br>7. Invalid instance ID<br>8. Running protected instance rejected (OperationNotPermitted, state stays running)<br>9. Stopped protected instance rejected (resources intact) | **DONE** |
-| `reboot-instances` | `--instance-ids` | `--dry-run` | `run-instances` (instance must be running) | Gateway validates instance IDs → sends EC2InstanceCommand with `RebootInstance=true` via NATS `ec2.cmd.{instanceId}` → daemon validates instance is in StateRunning (returns IncorrectInstanceState if stopped) → issues QMP `system_reset` → instance reboots without stopping, stays in running state | 1. Reboot running instance<br>2. Reboot multiple instances<br>3. Reboot stopped instance (error: IncorrectInstanceState)<br>4. Instance not found (error: InvalidInstanceID.NotFound)<br>5. Verify instance stays in running state after reboot | **DONE** |
-| `describe-instance-types` | `--filters` (capacity filter only) | `--instance-types`, `--max-results`, `--next-token`, `--dry-run`, all other filters | None | Gateway fans out NATS `ec2.DescribeInstanceTypes` to all nodes → each daemon reports supported types (t3.micro/small/medium/large) with vCPU/memory specs → gateway deduplicates and returns | 1. List all instance types<br>2. Filter by specific type<br>3. Filter with `capacity=true` shows available slots<br>4. Verify vCPU/memory specs match hardware | **DONE** |
-| `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | Instance must exist; `instance-type` and `user-data` require stopped state, `disable-api-termination` works on running or stopped | Gateway validates input (exactly one attribute per call, instance ID format) → NATS `ec2.ModifyInstanceAttribute` with `spinifex-workers` queue group → daemon dispatches by state: stopped instances loaded from JetStream KV, running instances updated via `vm.Manager.UpdateAndPersist` (atomic flag check + persist under one lock to prevent Modify/Terminate race) → returns `{}` on success. **InstanceType**: updates vm.InstanceType, Config, and Instance fields; clears StateReason (enables recovery from instance-type-missing bug). **UserData**: stores decoded content in vm.UserData and re-encodes to base64 for RunInstancesInput (cloud-init on next start). **DisableApiTermination**: stamps `RunInstancesInput.DisableApiTermination`; flag survives stop/start and daemon restarts. No instance type pre-validation (matches AWS — invalid types accepted, fail at StartInstances time). | 1. Change instance type while stopped<br>2. Change user data while stopped<br>3. Toggle disable-api-termination on running instance<br>4. Toggle disable-api-termination on stopped instance<br>5. Modify instance-type on running instance (error: NotFound — running instances not in KV)<br>6. Instance not found (error: InvalidInstanceID.NotFound)<br>7. Instance not stopped for type/user-data change (error: IncorrectInstanceState)<br>8. Invalid instance type accepted (fails on start with InsufficientInstanceCapacity)<br>9. StateReason cleared on type change (recovery from capacity-unavailable)<br>10. Missing/malformed instance ID (error: InvalidInstanceID.Malformed)<br>11. No attribute set (error: InvalidParameterValue)<br>12. Multiple attributes in one call (error: InvalidParameterValue) | **DONE** |
-| `get-console-output` | `--instance-id` | `--latest` (always returns latest), `--dry-run` | Instance must be running on a node | Gateway sends NATS `ec2.{instanceId}.GetConsoleOutput` (per-instance topic, routed to owning node) → daemon reads console log file from disk → returns last 64KB base64-encoded with timestamp. Always available regardless of serial console access setting (matches AWS behavior). | 1. Get output from running instance<br>2. Empty log file returns empty output<br>3. Instance not found (error: InvalidInstanceID.NotFound) | **DONE** |
-| `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, instanceInitiatedShutdownBehavior, disableApiTermination, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | Instance must exist (running or stopped) | Gateway validates input → NATS `ec2.DescribeInstanceAttribute` with `spinifex-workers` queue group → daemon checks running instances first (`d.Instances.VMS`), then stopped instances in JetStream KV → returns single attribute per call (matches AWS behavior). Stored attributes (`instanceType`, `userData`, `disableApiTermination`) return real values from `RunInstancesInput`; remaining attributes return AWS defaults (`instanceInitiatedShutdownBehavior`=stop, etc.) | 1. Get instanceType from running instance<br>2. Get userData from stopped instance<br>3. Get disableApiTermination (reflects RunInstances flag + Modify updates)<br>4. Invalid attribute name (error)<br>5. Instance not found (error: InvalidInstanceID.NotFound) | **DONE** |
-| `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | None | Gateway-only stub — returns `CpuCredits: "standard"` for each requested instance ID. No daemon round-trip. T-series credit mode is not persisted. | 1. Get credit spec for T-series instance<br>2. Multiple instance IDs | **DONE** |
-| `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:\*) | `--max-results`, `--next-token`, `--dry-run` (silently ignored), `event.*` / `instance-status.*` / `system-status.*` filters (rejected with InvalidParameterValue) | None | Gateway fans out NATS `ec2.DescribeInstanceStatus` to all nodes (no queue group). Each daemon validates input (i- prefix, filter names), iterates local VMs and renders InstanceStatus: `Running`→ok/passed, everything-else-included→not-applicable. When `IncludeAllInstances=true`, gateway also queries `ec2.DescribeStoppedInstances` in parallel and transforms reservation entries into InstanceStatus with `not-applicable`. Aggregated results dedup'd by InstanceId (running > stopped). Terminated and error-state instances never returned. No real health probing — static values reflect Mulga's lifecycle state only. | 1. Status of running instance (ok/passed)<br>2. Filter by instance ID<br>3. Default excludes stopped instances<br>4. IncludeAllInstances=true includes stopped (not-applicable)<br>5. Cross-account instance excluded<br>6. Unknown filter returns InvalidParameterValue<br>7. Malformed instance ID rejected<br>8. Tag filter narrows correctly | **DONE** |
-| `monitor-instances` | — | `--instance-ids` | Instance must exist | Enable basic monitoring (CPU, disk, network) → store metrics in NATS KV → return monitoring state | 1. Enable monitoring<br>2. Verify monitoring state in describe-instances | **NOT STARTED** |
-| `unmonitor-instances` | — | `--instance-ids` | Instance must exist | Disable detailed monitoring → revert to basic monitoring → return monitoring state | 1. Disable monitoring<br>2. Verify monitoring state reverts in describe-instances | **NOT STARTED** |
-
-### EC2 - Key Pair Management
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519) | `--key-format` (pem/ppk), `--tag-specifications`, `--dry-run` | None | NATS `ec2.CreateKeyPair` → daemon generates SSH keypair → stores public key in Predastore S3 (`/bucket/ec2/{name}.pub`) → returns private key material (one-time) | 1. Create RSA key pair<br>2. Create ED25519 key pair<br>3. Duplicate key name (error: InvalidKeyPair.Duplicate)<br>4. Verify key material returned only on creation | **DONE** |
-| `describe-key-pairs` | `--key-names`, `--key-pair-ids`, `--filters` (key-pair-id, key-name, fingerprint, tag:\*) | `--max-results`, `--dry-run` | None | NATS `ec2.DescribeKeyPairs` → daemon lists public keys from Predastore S3 → applies filters → returns key names and fingerprints | 1. List all key pairs<br>2. Filter by key name<br>3. Filter by key pair ID<br>4. Non-existent key returns empty<br>5. Unknown filter returns InvalidParameterValue | **DONE** |
-| `delete-key-pair` | `--key-name`, `--key-pair-id` | `--dry-run` | Key must exist | NATS `ec2.DeleteKeyPair` → daemon deletes public key from Predastore S3 → returns success | 1. Delete existing key pair<br>2. Delete non-existent key (idempotent, no error)<br>3. Verify key no longer in describe-key-pairs | **DONE** |
-| `import-key-pair` | `--key-name`, `--public-key-material` | `--tag-specifications`, `--dry-run` | None | NATS `ec2.ImportKeyPair` → daemon stores provided public key in Predastore S3 → returns key name and fingerprint | 1. Import valid SSH public key<br>2. Import invalid key material (error)<br>3. Import duplicate name (error)<br>4. Verify imported key usable with run-instances | **DONE** |
-
-### EC2 - AMI Image Management
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `describe-images` | `--image-ids` (format validation only), `--owners` (self, account ID, alias), `--filters` (name, state, architecture, image-id, is-public, owner-id, description, image-type, tag:\*) | `--executable-users`, `--include-deprecated`, `--include-disabled`, `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeImages` → daemon reads AMI metadata from Predastore S3 buckets (ami-*) → filters by ImageIds, Owners, and Filters → returns image list with state, architecture, block device mappings | 1. List all images<br>2. Filter by image ID<br>3. Filter by owner (self/amazon)<br>4. Non-existent AMI returns empty<br>5. Verify metadata fields (architecture, state, rootDeviceName)<br>6. Filter by name wildcard<br>7. Unknown filter returns InvalidParameterValue | **DONE** |
-| `create-image` | `--instance-id`, `--name`, `--description`, `--tag-specifications` | `--no-reboot`, `--block-device-mappings`, `--dry-run` | Instance must exist (running or stopped) | Gateway validates input → NATS `ec2.{instanceId}.CreateImage` (per-instance topic) → daemon extracts root volume → snapshots via `ebs.snapshot` NATS (running) or offline S3 copy (stopped) → creates AMI metadata in S3 (`{amiId}/config.json`) → stores tags → returns ami-ID. Duplicate AMI name validation enforced. | 1. Create image from running instance<br>2. Create image from stopped instance<br>3. Invalid instance ID (error)<br>4. Duplicate AMI name (error)<br>5. Verify new AMI appears in describe-images<br>6. Launch new instance from created AMI | **DONE** |
-| `register-image` | `--name`, `--description`, `--architecture` (x86_64/arm64/i386), `--root-device-name`, `--virtualization-type` (hvm only), `--boot-mode` (bios/uefi/uefi-preferred), `--block-device-mappings` (root with `Ebs.SnapshotId`+optional `VolumeSize`), `--tag-specifications` | `--billing-products`, `--uefi-data` | Backing snapshot must exist in Predastore (`{snapshotId}/metadata.json`); caller must own snapshot or it must be system-owned | Gateway validates name length (3–128), `snap-` prefix, architecture/virtualization/boot-mode values → NATS `ec2.RegisterImage` → daemon checks AMI name uniqueness, reads snapshot metadata, verifies snapshot ownership, builds `viperblock.AMIMetadata` (defaults: `Architecture=x86_64`, `Virtualization=hvm`, `PlatformDetails=Linux/UNIX`, `RootDeviceType=ebs`), writes `{amiId}/config.json`. Pointer-only — never touches block data. `BootMode` outside `bios|uefi|uefi-preferred`, `KernelId`, `RamdiskId`, `TpmSupport`, `ImdsSupport`, `EnaSupport`, `SriovNetSupport`, `ImageLocation`, `paravirtual` virtualization rejected with `InvalidParameterValue`. `uefi-preferred` is treated as `uefi` at launch. `VolumeSize` smaller than snapshot rejected. | 1. Register with valid snapshot<br>2. Missing name/snapshot (error)<br>3. Duplicate AMI name (`InvalidAMIName.Duplicate`)<br>4. Snapshot not found (`InvalidSnapshot.NotFound`)<br>5. Cross-account snapshot (`UnauthorizedOperation`)<br>6. Tags from `TagSpecifications` persisted<br>7. Verify registered image in describe-images<br>8. `--boot-mode=uefi` accepted, returned by `describe-images`<br>9. `--boot-mode=invalid` rejected (`InvalidParameterValue`) | **DONE** |
-| `deregister-image` | `--image-id` | `--dry-run` | AMI must exist; caller must own it (system AMIs immutable via this API) | Gateway validates `ami-` prefix → NATS `ec2.DeregisterImage` → daemon hard-deletes `{amiId}/config.json` from Predastore. Backing snapshot is left intact (matches AWS — operators run `delete-snapshot` separately to reclaim block storage). Cross-account/system-AMI mutations rejected with `UnauthorizedOperation`. Re-deregister returns `InvalidAMIID.NotFound` (no tombstone). | 1. Deregister existing AMI<br>2. Deregister non-existent AMI (`InvalidAMIID.NotFound`)<br>3. Re-deregister already-deleted AMI (`InvalidAMIID.NotFound`)<br>4. Cross-account AMI (`UnauthorizedOperation`)<br>5. System AMI (`UnauthorizedOperation`)<br>6. Verify deregistered AMI not in describe-images<br>7. Backing snapshot untouched | **DONE** |
-| `copy-image` | `--source-image-id`, `--source-region` (must equal gateway region), `--name`, `--description`, `--client-token` (accepted, not honoured), `--copy-image-tags`, `--tag-specifications` (image only) | `--encrypted`, `--kms-key-id`, `--destination-outpost-arn`, `--dry-run` | Source AMI must exist and be owned by caller OR be a system AMI; backing snapshot must still exist | Gateway validates `ami-` prefix, name length (3–128), same-region — cross-region / `Encrypted` / `KmsKeyId` / `DestinationOutpostArn` rejected with `InvalidParameterValue`. NATS `ec2.CopyImage` → daemon checks name uniqueness, reads source `ami-xxx/config.json`, visibility-filters cross-account sources as `InvalidAMIID.NotFound`, reads source `{snap-xxx}/metadata.json` (missing or empty SnapshotID → `InvalidAMIID.NotFound`), writes new `snap-yyy/metadata.json` that inherits source `VolumeID` (no block copy), writes new `ami-yyy/config.json` owned by caller. `Description` inherits from source when unset. Tag merge: `CopyImageTags=true` seeds tags from source, explicit image-resource `TagSpecifications` override colliding keys and append new ones; non-image tag specs ignored. | 1. Same-region copy produces new `ami-`/`snap-` pair with distinct IDs<br>2. New snap shares source `VolumeID` (metadata-only)<br>3. New AMI owned by caller, source untouched<br>4. System AMI copied into caller's account<br>5. Cross-account source (`InvalidAMIID.NotFound`)<br>6. Missing source AMI (`InvalidAMIID.NotFound`)<br>7. Orphaned source (missing/empty `SnapshotID`) → `InvalidAMIID.NotFound`<br>8. Duplicate name (`InvalidAMIName.Duplicate`)<br>9. Cross-region / `Encrypted` / `KmsKeyId` rejected (`InvalidParameterValue`)<br>10. `CopyImageTags` true/false tag inheritance semantics | **DONE** |
-| `import-image` | — | `--disk-containers` (Format, Url/S3Bucket+S3Key), `--description`, `--architecture`, `--platform` | S3 bucket with disk image | Download disk image from S3 → convert format (VMDK/VHD/RAW→QCOW2) → create viperblock volume → register as AMI | 1. Import QCOW2 image<br>2. Import RAW image<br>3. Invalid format (error)<br>4. Verify imported image launchable | **NOT STARTED** |
-| `describe-image-attribute` | `--image-id`, `--attribute` (`description`, `blockDeviceMapping` only) | `--dry-run`, `--attribute` for `launchPermission`/`bootMode`/`kernel`/`ramdisk`/`sriovNetSupport`/`productCodes`/`tpmSupport`/`uefiData`/`imdsSupport`/`lastLaunchedTime`/`deregistrationProtection` | AMI must exist and be owned by caller OR be a system AMI | Gateway validates `ami-` prefix + allowlisted attribute → NATS `ec2.DescribeImageAttribute` → daemon reads `ami-xxx/config.json`, hides cross-account reads as `InvalidAMIID.NotFound` (matches `DescribeImages`), returns `description` from stored metadata or synthesises a single root `blockDeviceMapping` from `AMIMetadata` (same shape as `DescribeImages`). Unsupported attributes rejected with `InvalidParameterValue` — notably `launchPermission` is deferred (breaks Terraform's `aws_ami` refresh; multi-account AMI sharing needs a separate design). | 1. Read `description`<br>2. Read synthesised `blockDeviceMapping`<br>3. AMI not found (`InvalidAMIID.NotFound`)<br>4. Cross-account AMI hidden (`InvalidAMIID.NotFound`)<br>5. System AMI readable by any caller<br>6. Unsupported attributes (`launchPermission`, `bootMode`, …) rejected with `InvalidParameterValue` | **DONE** |
-| `modify-image-attribute` | `--image-id`, `--description` (top-level `Value=…` form), `--attribute description --value …` (structured form) | `--launch-permission`, `--imds-support`, `--operation-type`, `--user-ids`, `--user-groups`, `--organization-arns`, `--product-codes`, `--dry-run`, `--attribute` for anything other than `description` | AMI must exist and be owned by caller (system AMIs immutable via this API) | Gateway validates `ami-` prefix, rejects `LaunchPermission`/`ImdsSupport`/`ProductCodes`/org+user-id flags with `InvalidParameterValue`, and normalises the overloaded input shape (top-level `Description` → `Attribute=description`+`Value=…`). Both forms set together → `InvalidParameterCombination`; neither → `MissingParameter`. NATS `ec2.ModifyImageAttribute` → daemon loads AMI, runs ownership check (cross-account → `UnauthorizedOperation`, system AMIs also rejected), writes `AMIMetadata.Description` back to S3. Empty `Value` clears the description. | 1. Modify description (top-level form)<br>2. Modify description (structured form)<br>3. Clear description with empty value<br>4. Both top-level + structured set (`InvalidParameterCombination`)<br>5. Cross-account / system AMI (`UnauthorizedOperation`)<br>6. AMI not found (`InvalidAMIID.NotFound`)<br>7. `LaunchPermission` / `ImdsSupport` / unsupported `Attribute` rejected (`InvalidParameterValue`)<br>8. Round-trips via `describe-image-attribute` | **DONE** |
-| `reset-image-attribute` | `--image-id`, `--attribute description` | `--attribute launchPermission`, `--dry-run` | AMI must exist and be owned by caller | Gateway validates `ami-` prefix; only `description` is accepted (`launchPermission` — AWS's default reset target — is out of scope). NATS `ec2.ResetImageAttribute` → daemon loads AMI, ownership check, clears `AMIMetadata.Description` to empty string, persists. | 1. Reset description to empty<br>2. Cross-account / system AMI (`UnauthorizedOperation`)<br>3. AMI not found (`InvalidAMIID.NotFound`)<br>4. `launchPermission` / other attributes rejected (`InvalidParameterValue`)<br>5. Round-trips via `describe-image-attribute` | **DONE** |
-
-### EC2 - Volume (EBS) Management
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `describe-volumes` | `--volume-ids` (fast-path lookup), `DeleteOnTermination` (from persisted VolumeMetadata), `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:\*) | `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeVolumes` → daemon queries viperblock for volume metadata → applies filters → returns volume list with state, size, attachments, type, DeleteOnTermination flag | 1. List all volumes<br>2. Filter by volume ID<br>3. Filter by attachment state<br>4. Non-existent volume returns empty<br>5. DeleteOnTermination reflects persisted value<br>6. Filter by status, size, volume-type<br>7. Unknown filter returns InvalidParameterValue | **DONE** |
-| `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | Volume must exist | NATS `ec2.ModifyVolume` → daemon sends resize request to viperblock → NBD does not support live resize, instance must be stopped → returns modification state | 1. Increase volume size<br>2. Modify volume type<br>3. Decrease size (error - not supported)<br>4. Modify attached volume (requires stop/start) | **DONE** |
-| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3 only), `--snapshot-id` (creates volume from snapshot) | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput`, `--tag-specifications` | Valid AZ configured via `spinifex init` | Gateway validates input → NATS `ec2.CreateVolume` → daemon generates vol-ID via viperblock → creates volume (empty or from snapshot) of specified size → persists config.json to Predastore S3 → returns vol-ID with state=available | 1. Create 80GB gp3 volume<br>2. Boundary sizes (1 GiB min, 16384 GiB max)<br>3. Invalid AZ (error)<br>4. Verify volume in describe-volumes<br>5. Unsupported volume type (error - only gp3)<br>6. Size out of range (error)<br>7. Create from snapshot | **DONE** |
-| `delete-volume` | `--volume-id` | `--dry-run` | Volume must exist and be detached (state=available) | Gateway validates vol- prefix → NATS `ec2.DeleteVolume` → daemon confirms state=available and no AttachedInstance → NATS `ebs.delete` to viperblockd (stops nbdkit/WAL) → deletes S3 objects under vol-id/, vol-id-efi/, vol-id-cloudinit/ → returns success | 1. Delete detached volume<br>2. Delete attached volume (error: VolumeInUse)<br>3. Delete non-existent volume (error: InvalidVolume.NotFound)<br>4. Verify volume gone from describe-volumes<br>5. Malformed volume ID (error: InvalidVolumeID.Malformed)<br>6. Double delete (idempotent NotFound) | **DONE** |
-| `attach-volume` | `--volume-id`, `--instance-id`, `--device` (optional, auto-assigns `/dev/sd[f-p]`) | `--dry-run` | Volume must exist (available), instance must exist (running) | Gateway sends to `ec2.cmd.{instanceId}` → daemon validates volume (Predastore) → `ebs.mount` via NATS (viperblock starts NBD server) → QMP `blockdev-add` (nbd-{volId}) → QMP `device_add` (virtio-blk-pci, vdisk-{volId}) → three-phase rollback on failure → update EBSRequests + BlockDeviceMappings → persist to JetStream + Predastore → respond with VolumeAttachment | 1. Attach volume to running instance<br>2. Auto-assign device name<br>3. Attach already-attached volume (VolumeInUse)<br>4. Attach to non-existent instance (InvalidInstanceID.NotFound)<br>5. Attach to stopped instance (IncorrectInstanceState)<br>6. Volume not found (InvalidVolume.NotFound)<br>7. All device slots full (AttachmentLimitExceeded)<br>8. Volume persists across stop/start | **DONE** |
-| `detach-volume` | `--volume-id`, `--instance-id` (optional, resolved via DescribeVolumes), `--device` (optional cross-check), `--force` | `--dry-run` | Volume must be attached, instance must be running | Gateway resolves InstanceId if omitted (via DescribeVolumes) → sends to `ec2.cmd.{instanceId}` → daemon validates (running, attached, not boot/EFI/CloudInit, device match) → three-phase hot-unplug: QMP `device_del` (force continues on failure) → QMP `blockdev-del` (abort if fails, preserves state to prevent double-attach) → `ebs.unmount` via NATS (best-effort) → remove from EBSRequests + BlockDeviceMappings → update volume metadata to available → persist state → respond with VolumeAttachment (state=detaching) | 1. Detach with explicit InstanceId<br>2. Detach without InstanceId (gateway resolution)<br>3. Detach with correct --device cross-check<br>4. Missing VolumeId (InvalidParameterValue)<br>5. Volume not attached (IncorrectState)<br>6. Nonexistent volume (InvalidVolume.NotFound)<br>7. Nonexistent instance (InvalidInstanceID.NotFound)<br>8. Instance not running (IncorrectInstanceState)<br>9. Device mismatch (InvalidParameterValue)<br>10. Boot volume protection (OperationNotPermitted)<br>11. Force flag (continues past device_del failure)<br>12. Volume reusability (re-attach after detach) | **DONE** |
-| `describe-volume-status` | `--volume-ids`, `--filters` (volume-id, volume-status.status, availability-zone) | `--max-results`, `--next-token`, `--dry-run` | None | Gateway validates vol- prefix → NATS `ec2.DescribeVolumeStatus` → daemon fetches VolumeConfig from Predastore S3 (parallel for specific IDs, sequential list-all for no IDs) → applies filters → builds VolumeStatusItem per volume (status=ok, io-enabled=passed, io-performance=not-applicable) → returns InvalidVolume.NotFound for missing explicit IDs → skips internal sub-volumes (-efi, -cloudinit) | 1. List all volume statuses<br>2. Filter by specific volume IDs (fast path)<br>3. Non-existent volume ID returns InvalidVolume.NotFound<br>4. Invalid volume ID format (InvalidVolume.Malformed)<br>5. Internal sub-volumes excluded from listing<br>6. Nil/empty input defaults to all volumes<br>7. Unknown filter returns InvalidParameterValue | **DONE** |
-| `describe-volumes-modifications` | — | `--volume-ids`, `--filters`, `--max-results` | None | Query pending/completed volume modifications → return modification state, progress, original/target size | 1. Check in-progress modification<br>2. Check completed modification<br>3. No modifications returns empty | **NOT STARTED** |
-
-### EC2 - Snapshot Management
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-snapshot` | `--volume-id`, `--description`, `--tag-specifications` | `--dry-run` | Volume must exist in Predastore | Gateway validates vol- prefix → NATS `ec2.CreateSnapshot` → daemon reads VolumeConfig from Predastore → generates snap-ID via viperblock → stores SnapshotConfig (metadata-only, points to source volume) as completed → returns Snapshot with state=completed, progress=100% | 1. Snapshot from valid volume<br>2. Missing volume ID (InvalidParameterValue)<br>3. Volume not found (InvalidVolume.NotFound)<br>4. Invalid volume ID format (InvalidVolume.Malformed)<br>5. Snapshot with description<br>6. Snapshot with tag specifications | **DONE** |
-| `create-snapshots` | — | `--instance-specification`, `--description`, `--tag-specifications` | Instance must exist, instance-volume attachment tracking | Create snapshots of all volumes attached to instance → return list of snapshot IDs. Blocked: requires instance-volume attachment tracking to discover which volumes to snapshot. | 1. Snapshot all volumes on instance<br>2. Instance with no volumes | **NOT STARTED** |
-| `delete-snapshot` | `--snapshot-id` | `--dry-run` | Snapshot must exist | Gateway validates snap- prefix → NATS `ec2.DeleteSnapshot` → daemon verifies snapshot exists in Predastore → lists and deletes all objects under snapshot prefix → returns success | 1. Delete existing snapshot<br>2. Delete non-existent snapshot (InvalidSnapshot.NotFound)<br>3. Missing snapshot ID (InvalidParameterValue)<br>4. Invalid snapshot ID format (InvalidSnapshot.Malformed) | **DONE** |
-| `describe-snapshots` | `--snapshot-ids`, `--filters` (snapshot-id, status, volume-id, volume-size, owner-id, tag:\*) | `--owner-ids`, `--max-results`, `--dry-run` | None | Gateway validates snap- prefix on IDs → NATS `ec2.DescribeSnapshots` → daemon lists snap- prefixed objects in Predastore → reads SnapshotConfig for each → applies filters → returns snapshot list | 1. List all snapshots<br>2. Filter by snapshot ID<br>3. Empty snapshot list<br>4. Invalid snapshot ID format (InvalidSnapshot.Malformed)<br>5. Filter by status, volume-id, volume-size<br>6. Unknown filter returns InvalidParameterValue | **DONE** |
-| `copy-snapshot` | `--source-snapshot-id`, `--source-region`, `--description` | `--encrypted`, `--dry-run` | Source snapshot must exist | Gateway validates snap- prefix + source region → NATS `ec2.CopySnapshot` → daemon reads source SnapshotConfig → generates new snap-ID → copies metadata (preserves tags, description override) → stores as completed → returns new snapshot ID | 1. Copy within same region<br>2. Copy non-existent snapshot (InvalidSnapshot.NotFound)<br>3. Missing source ID (InvalidParameterValue)<br>4. Missing source region (MissingParameter)<br>5. Copy preserves tags<br>6. Copy with description override | **DONE** |
-
-### EC2 - Tags
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-tags` | `--resources`, `--tags` (Key=,Value=) | `--dry-run` | None | Gateway validates input (resources non-empty, tags non-empty, keys non-empty) → NATS `ec2.CreateTags` → daemon merges tags into per-resource JSON in Predastore S3 (`tags/{resourceId}.json`) → return success | 1. Tag an instance<br>2. Tag multiple resources at once<br>3. Overwrite existing tag value<br>4. Empty resources list (error: MissingParameter)<br>5. Empty tags list (error: MissingParameter)<br>6. Empty tag key (error: InvalidParameterValue) | **DONE** |
-| `delete-tags` | `--resources`, `--tags` | `--dry-run` | None | Gateway validates input (resources non-empty) → NATS `ec2.DeleteTags` → daemon removes specified tag keys from resource JSON, or all tags if no keys specified → return success | 1. Delete specific tag by key<br>2. Delete all tags (no tags specified)<br>3. Empty resources list (error: MissingParameter) | **DONE** |
-| `describe-tags` | `--filters` (resource-id, resource-type, key, value) | `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeTags` → daemon lists all `tags/*.json` from Predastore S3 → applies filters (resource-id, resource-type, key, value) → returns tag list with resource type auto-detected from ID prefix | 1. List all tags<br>2. Filter by resource-id<br>3. Filter by resource-type (instance, volume, image, snapshot, vpc, subnet, security-group, route-table, internet-gateway, egress-only-internet-gateway)<br>4. Filter by key<br>5. Filter by value<br>6. Empty result when no tags exist | **DONE** |
-
-### EC2 - Regions & Availability Zones
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `describe-regions` | *(returns configured region, endpoint, opt-in status from config — input params ignored)* | `--region-names`, `--filters`, `--all-regions`, `--dry-run` | None | Return configured region from spinifex init config with Endpoint and OptInStatus → local-only response, no NATS | 1. List all regions<br>2. Filter by region name<br>3. Verify endpoint URL returned<br>4. Verify OptInStatus returned | **DONE** |
-| `describe-availability-zones` | *(returns configured AZ, region, zone ID, state, opt-in status from config — input params ignored)* | `--zone-names`, `--filters`, `--all-availability-zones` | None | Return configured AZ from spinifex init config with zone ID, state, group name, network border group → local-only response, no NATS | 1. List all AZs<br>2. Filter by zone name<br>3. Verify zone state is available<br>4. Verify region name matches config | **DONE** |
-
-### EC2 - Account Attributes
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `describe-account-attributes` | `--attribute-names` | `--dry-run` | None | Gateway parses input → returns static account attributes: supported-platforms=VPC, default-vpc=none, max-instances=100, vpc-max-security-groups-per-interface=5, max-elastic-ips=5, vpc-max-elastic-ips=20 → local-only response, no NATS | 1. List all account attributes<br>2. Filter by attribute name<br>3. Verify all 6 attributes returned with correct values | **DONE** |
-
-### EC2 - Account Settings (Deferred)
-
-Persistence layer works (NATS JetStream KV), but stored values are not yet enforced by downstream services. Will be completed post-merge.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `enable-ebs-encryption-by-default` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.EnableEbsEncryptionByDefault` with `spinifex-workers` queue group → daemon stores `EbsEncryptionByDefault=true` in JetStream KV (`spinifex-ec2-account-settings` bucket) → return `EbsEncryptionByDefault=true`. Enforcement deferred: stored value not yet checked by CreateVolume/CreateSnapshot. | 1. Enable encryption<br>2. Verify via get | **STARTED** (enforcement pending) |
-| `disable-ebs-encryption-by-default` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.DisableEbsEncryptionByDefault` with `spinifex-workers` queue group → daemon stores `EbsEncryptionByDefault=false` in JetStream KV → return `EbsEncryptionByDefault=false`. | 1. Disable encryption<br>2. Verify via get | **STARTED** (enforcement pending) |
-| `get-ebs-encryption-by-default` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.GetEbsEncryptionByDefault` with `spinifex-workers` queue group → daemon reads `EbsEncryptionByDefault` from JetStream KV → return current state. | 1. Get default state<br>2. Verify matches last enable/disable | **STARTED** (enforcement pending) |
-| `enable-serial-console-access` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.EnableSerialConsoleAccess` with `spinifex-workers` queue group → daemon stores `SerialConsoleAccessEnabled=true` in JetStream KV (`spinifex-ec2-account-settings` bucket) → return enabled=true. Stored for future interactive serial console support (not currently enforced by any operation). | 1. Enable access<br>2. Verify via get | **STARTED** (enforcement pending) |
-| `disable-serial-console-access` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.DisableSerialConsoleAccess` with `spinifex-workers` queue group → daemon stores `SerialConsoleAccessEnabled=false` in JetStream KV → return enabled=false. Stored for future interactive serial console support (not currently enforced by any operation). | 1. Disable access<br>2. Verify via get | **STARTED** (enforcement pending) |
-| `get-serial-console-access-status` | *(no flags needed)* | `--dry-run` | None | Gateway validates input → NATS `ec2.GetSerialConsoleAccessStatus` with `spinifex-workers` queue group → daemon reads `SerialConsoleAccessEnabled` from JetStream KV → return current state. | 1. Get current status<br>2. Verify matches last enable/disable | **DONE** |
-| `enable-snapshot-block-public-access` | — | `--state` | None | Store snapshot block public access state in JetStream KV | 1. Enable with block-all-sharing<br>2. Enable with block-new-sharing | **NOT STARTED** (enforcement pending) |
-| `disable-snapshot-block-public-access` | — | `--dry-run` | None | Clear snapshot block public access state in JetStream KV | 1. Disable access | **NOT STARTED** (enforcement pending) |
-| `get-snapshot-block-public-access-state` | — | `--dry-run` | None | Read snapshot block public access state from JetStream KV | 1. Get current state | **NOT STARTED** (enforcement pending) |
-| `enable-image-block-public-access` | — | `--image-block-public-access-state` | None | Store image block public access state in JetStream KV | 1. Enable with block-new-sharing | **NOT STARTED** (enforcement pending) |
-| `disable-image-block-public-access` | — | `--dry-run` | None | Clear image block public access state in JetStream KV | 1. Disable access | **NOT STARTED** (enforcement pending) |
-| `get-image-block-public-access-state` | — | `--dry-run` | None | Read image block public access state from JetStream KV | 1. Get current state | **NOT STARTED** (enforcement pending) |
-| `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | None | Store instance metadata defaults in JetStream KV | 1. Set httpTokens=required<br>2. Set hop limit | **NOT STARTED** (enforcement pending) |
-| `get-instance-metadata-defaults` | — | `--dry-run` | None | Read instance metadata defaults from JetStream KV | 1. Get current defaults | **NOT STARTED** (enforcement pending) |
-
-### EC2 - Egress-Only Internet Gateway
-
-Gateway routing and KV CRUD are wired up but no OVN/OVS integration exists. EIGWs are stored in `spinifex-eigw` KV bucket but have no effect on network topology (no vpcd events published, unlike IGW which publishes `vpc.igw-attach`/`vpc.igw-detach`).
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-egress-only-internet-gateway` | `--vpc-id`, `--tag-specifications` | `--client-token`, `--dry-run` | VPC must exist | Gateway validates VpcId → NATS `ec2.CreateEgressOnlyInternetGateway` → daemon generates eigw-ID → creates EgressOnlyIGWRecord in `spinifex-eigw` KV bucket with state=attached (always attached at creation, unlike IGW) → returns EgressOnlyInternetGateway with attachment | 1. Create with valid VpcId<br>2. Missing VpcId (error: MissingParameter)<br>3. Create with inline tags<br>4. Verify ID format eigw-{16hex} | **STARTED** (KV only, no OVN) |
-| `delete-egress-only-internet-gateway` | `--egress-only-internet-gateway-id` | `--dry-run` | EIGW must exist | NATS `ec2.DeleteEgressOnlyInternetGateway` → daemon verifies EIGW exists in KV → deletes from `spinifex-eigw` KV → returns ReturnCode=true. No detach required (unlike IGW). | 1. Delete existing EIGW<br>2. Delete non-existent EIGW (error)<br>3. Missing ID (error: MissingParameter) | **STARTED** (KV only, no OVN) |
-| `describe-egress-only-internet-gateways` | `--egress-only-internet-gateway-ids`, `--filters` (egress-only-internet-gateway-id, tag:\*) | `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeEgressOnlyInternetGateways` → daemon lists all keys from `spinifex-eigw` KV bucket → filters by ID if specified → applies filters → always includes Attachments array → returns list | 1. Describe all EIGWs<br>2. Filter by specific ID<br>3. Non-existent ID returns empty list<br>4. Unknown filter returns InvalidParameterValue | **STARTED** (KV only, no OVN) |
-
-### EC2 - Placement Groups
-
-Placement groups are stored in `spinifex-placement-groups` JetStream KV bucket, keyed by `{accountID}.{groupName}`. All mutations use CAS (compare-and-swap) with 5-retry limit for optimistic concurrency. Supported strategies: **spread** (strict 1 instance per node) and **cluster** (all instances pinned to single node). Partition strategy is rejected. Internal NATS operations (ReserveSpreadNodes, FinalizeSpreadInstances, ReleaseSpreadNodes, RemoveInstanceFromPlacementGroup, ReserveClusterNode, FinalizeClusterInstances) support atomic multi-node coordination for RunInstances and TerminateInstances.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster) | `--partition-count`, `--spread-level` (hardcoded to "host"), `--tag-specifications`, `--dry-run` | None | Gateway validates GroupName + Strategy → NATS `ec2.CreatePlacementGroup` with `spinifex-workers` queue group → daemon generates pg-ID (pg-{16hex}) → stores PlacementGroupRecord in `spinifex-placement-groups` KV with state=available, SpreadLevel="host" for spread → rejects partition strategy (InvalidParameterValue) → rejects duplicate names (InvalidPlacementGroup.Duplicate) → returns PlacementGroup | 1. Create with spread strategy<br>2. Create with cluster strategy<br>3. Create with partition strategy (error: InvalidParameterValue)<br>4. Duplicate name (error: InvalidPlacementGroup.Duplicate)<br>5. Missing GroupName (error)<br>6. Missing Strategy (error) | **DONE** |
-| `delete-placement-group` | `--group-name` | `--dry-run` | Group must exist, no instances in group | NATS `ec2.DeletePlacementGroup` → daemon verifies group exists (InvalidPlacementGroup.Unknown) → counts instances in NodeInstances map → rejects if non-empty (InvalidPlacementGroup.InUse) → deletes from KV → returns success | 1. Delete empty group<br>2. Delete group with instances (error: InvalidPlacementGroup.InUse)<br>3. Delete non-existent group (error: InvalidPlacementGroup.Unknown) | **DONE** |
-| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name) | `--dry-run` | None | NATS `ec2.DescribePlacementGroups` → daemon lists all keys from `spinifex-placement-groups` KV → filters by GroupNames, GroupIds, or Filters → returns list with Strategy, State, SpreadLevel, GroupId | 1. List all groups<br>2. Filter by name<br>3. Filter by group ID<br>4. Filter by strategy<br>5. Filter by state<br>6. Empty result when no groups exist | **DONE** |
-
-### EC2 - Dedicated Hosts
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `allocate-hosts` | — | `--availability-zone`, `--instance-type`, `--quantity`, `--auto-placement`, `--tag-specifications` | None | NATS `ec2.AllocateHosts` → daemon allocates host resources → stores in JetStream KV with h-ID → return host ID list | 1. Allocate single host<br>2. Allocate multiple hosts<br>3. Missing AZ or instance type (error) | **NOT STARTED** |
-| `describe-hosts` | — | `--host-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeHosts` → daemon lists hosts from KV → return host list with capacity and instance info | 1. List all hosts<br>2. Filter by host ID<br>3. Filter by instance type | **NOT STARTED** |
-| `release-hosts` | — | `--host-ids` | Host must exist, no running instances | NATS `ec2.ReleaseHosts` → daemon verifies no instances on host → delete from KV → return success/failure per host | 1. Release empty host<br>2. Release host with instances (error)<br>3. Release non-existent host (error) | **NOT STARTED** |
-
-### EC2 - IPv4 Pools
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-public-ipv4-pool` | — | `--tag-specifications`, `--dry-run` | None | NATS `ec2.CreatePublicIpv4Pool` → daemon creates pool in JetStream KV with ipv4pool-ID → return pool ID | 1. Create pool<br>2. Verify in describe | **NOT STARTED** |
-| `delete-public-ipv4-pool` | — | `--pool-id`, `--dry-run` | Pool must exist and be empty | NATS `ec2.DeletePublicIpv4Pool` → daemon verifies pool empty → delete from KV → return success | 1. Delete empty pool<br>2. Delete pool with addresses (error) | **NOT STARTED** |
-| `describe-public-ipv4-pools` | — | `--pool-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribePublicIpv4Pools` → daemon lists pools from KV → return pool list with address counts | 1. List all pools<br>2. Filter by pool ID | **NOT STARTED** |
-
-### EC2 - DHCP Options
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-dhcp-options` | — | `--dhcp-configurations` (domain-name, domain-name-servers, ntp-servers, netbios-name-servers, netbios-node-type), `--tag-specifications` | None | NATS `ec2.CreateDhcpOptions` → daemon stores DHCP option set in JetStream KV with dopt-ID → return DHCP options with configurations | 1. Create with domain-name + DNS servers<br>2. Create with NTP servers<br>3. Verify in describe | **NOT STARTED** |
-| `delete-dhcp-options` | — | `--dhcp-options-id`, `--dry-run` | DHCP options must exist and not be associated with a VPC | NATS `ec2.DeleteDhcpOptions` → daemon verifies not associated → delete from KV → return success | 1. Delete unassociated options<br>2. Delete associated options (error)<br>3. Delete non-existent (error) | **NOT STARTED** |
-| `describe-dhcp-options` | — | `--dhcp-options-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeDhcpOptions` → daemon lists DHCP options from KV → return list with configurations | 1. List all DHCP options<br>2. Filter by ID | **NOT STARTED** |
-| `associate-dhcp-options` | — | `--dhcp-options-id`, `--vpc-id`, `--dry-run` | DHCP options and VPC must exist | NATS `ec2.AssociateDhcpOptions` → daemon links DHCP options to VPC → update VPC metadata → return success | 1. Associate with VPC<br>2. Missing DHCP options ID (error)<br>3. Missing VPC ID (error) | **NOT STARTED** |
-
-### EC2 - Capacity Reservations
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-capacity-reservation` | — | `--instance-type`, `--instance-platform`, `--availability-zone`, `--instance-count`, `--end-date`, `--end-date-type`, `--instance-match-criteria`, `--tag-specifications` | None | NATS `ec2.CreateCapacityReservation` → daemon stores reservation in JetStream KV with cr-ID → return reservation with state=active | 1. Create with required fields<br>2. Missing instance type (error)<br>3. Verify in describe | **NOT STARTED** |
-| `cancel-capacity-reservation` | — | `--capacity-reservation-id`, `--dry-run` | Reservation must exist | NATS `ec2.CancelCapacityReservation` → daemon marks reservation as cancelled in KV → return success | 1. Cancel active reservation<br>2. Cancel non-existent (error) | **NOT STARTED** |
-| `describe-capacity-reservations` | — | `--capacity-reservation-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeCapacityReservations` → daemon lists reservations from KV → return list with state and counts | 1. List all reservations<br>2. Filter by ID<br>3. Filter by instance type | **NOT STARTED** |
-| `modify-capacity-reservation` | — | `--capacity-reservation-id`, `--instance-count`, `--end-date`, `--end-date-type` | Reservation must exist | NATS `ec2.ModifyCapacityReservation` → daemon updates reservation in KV → return success | 1. Modify instance count<br>2. Modify end date<br>3. Missing reservation ID (error) | **NOT STARTED** |
-
-### EC2 - Elastic IP
-
-EIP operations are conditionally available — only registered when external IPAM is configured (pool mode). EIPs are stored in `spinifex-eip-allocations` KV bucket. Association publishes `vpc.add-nat`/`vpc.delete-nat` events to vpcd for OVN NAT configuration.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `allocate-address` | `--public-ipv4-pool` (optional, specific IPAM pool), `--tag-specifications` | `--domain` (hardcoded vpc), `--dry-run` | EIP service must be initialized (external IPAM configured) | Gateway validates input → NATS `ec2.AllocateAddress` with `spinifex-workers` queue group → daemon allocates IP from external IPAM pool (named or best-matching) → creates EIPRecord with state=allocated in `spinifex-eip-allocations` KV → returns AllocationId, PublicIp, Domain=vpc, PublicIpv4Pool | 1. Allocate EIP from default pool<br>2. Allocate from specific pool<br>3. Pool exhausted (InsufficientAddressCapacity)<br>4. With tag specifications<br>5. Verify in describe-addresses | **DONE** |
-| `release-address` | `--allocation-id` | `--dry-run` | EIP must exist and be disassociated | Gateway validates AllocationId non-empty → NATS `ec2.ReleaseAddress` → daemon retrieves EIP record from KV → checks state != associated (InvalidAddressLocked if still associated) → releases IP back to IPAM pool → deletes KV record → returns success | 1. Release disassociated EIP<br>2. Release associated EIP (error: InvalidAddressLocked)<br>3. Release non-existent (error: InvalidAllocationID.NotFound)<br>4. Missing AllocationId (error: MissingParameter) | **DONE** |
-| `associate-address` | `--allocation-id`, `--network-interface-id` OR `--instance-id`, `--private-ip-address` (optional override) | `--dry-run`, `--allow-reassociation` | EIP and target ENI/instance must exist | Gateway validates AllocationId + one of NetworkInterfaceId/InstanceId required → NATS `ec2.AssociateAddress` → daemon retrieves EIP → resolves target ENI (by ID or instance lookup) → generates AssociationId → updates record state=associated with ENI/instance/VPC/private IP → publishes `vpc.add-nat` event to vpcd (OVN NAT configuration) → returns AssociationId | 1. Associate with instance<br>2. Associate with specific ENI<br>3. Associate with private IP override<br>4. Missing AllocationId (MissingParameter)<br>5. Missing target (MissingParameter)<br>6. Non-existent EIP (InvalidAllocationID.NotFound)<br>7. Non-existent ENI (InvalidNetworkInterfaceID.NotFound) | **DONE** |
-| `disassociate-address` | `--association-id` | `--dry-run` | Association must exist | Gateway validates AssociationId non-empty → NATS `ec2.DisassociateAddress` → daemon scans KV to find EIP by AssociationId → publishes `vpc.delete-nat` event to vpcd → clears association fields → reverts state to allocated → updates KV → returns success | 1. Disassociate existing<br>2. Non-existent association (InvalidAssociationID.NotFound)<br>3. Missing AssociationId (MissingParameter) | **DONE** |
-| `describe-addresses` | `--allocation-ids`, `--public-ips`, `--filters` (allocation-id, public-ip, instance-id, association-id, domain, tag:\*) | `--dry-run` | None | NATS `ec2.DescribeAddresses` → daemon scans all EIP records in account → filters by AllocationIds and/or PublicIps if specified → applies filters → returns Address list with allocation, association, PublicIp, PrivateIpAddress, NetworkInterfaceId, InstanceId, Domain | 1. List all EIPs<br>2. Filter by allocation ID<br>3. Filter by public IP<br>4. Non-existent AllocationId returns error<br>5. Empty result when no EIPs<br>6. Filter by instance-id, domain<br>7. Unknown filter returns InvalidParameterValue | **DONE** |
-| `describe-addresses-attribute` | `--allocation-ids` (optional filter) | `--attribute`, `--dry-run`, `--max-results`, `--next-token` | None | Gateway validates input → NATS `ec2.DescribeAddressesAttribute` with `spinifex-workers` queue group → daemon looks up EIP records by AllocationIds (or scans all account EIPs if none specified) → returns AddressAttribute list with AllocationId and PublicIp per entry. Unlike DescribeAddresses, returns empty list (not error) for non-existent AllocationIds. PtrRecord always nil (reverse-DNS not supported). | 1. List all EIP attributes<br>2. Filter by allocation IDs<br>3. Non-existent AllocationId returns empty (not error)<br>4. Nil input returns error | **DONE** |
-
-### EC2 - NAT Gateway
-
-NAT gateways are stored in `spinifex-vpc-nat-gateways` KV bucket. Deleted gateways are moved to `spinifex-vpc-deleted-nat-gateways` with a 1-hour TTL for Terraform polling. SNAT rule coordination uses `vpc.add-nat-gateway` and `vpc.delete-nat-gateway` NATS events (published via route table service on CreateRoute and during DeleteNatGateway respectively).
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-nat-gateway` | `--subnet-id`, `--allocation-id` | `--connectivity-type` (public only), `--tag-specifications`, `--dry-run` | Subnet must exist, EIP must be allocated and unassociated | Gateway validates SubnetId + AllocationId (required) → NATS `ec2.CreateNatGateway` with `spinifex-workers` queue group → daemon verifies subnet exists in `spinifex-vpc-subnets` KV → verifies EIP exists in `spinifex-vpc-eips` KV and has no AssociationId (Resource.AlreadyAssociated if in use) → generates nat-ID → stores NatGatewayRecord in `spinifex-vpc-nat-gateways` KV with state=available → returns NatGateway with addresses | 1. Create NAT gateway (happy path)<br>2. Subnet not found (InvalidSubnetID.NotFound)<br>3. EIP not found (InvalidAllocationID.NotFound)<br>4. EIP already associated (Resource.AlreadyAssociated)<br>5. Missing SubnetId or AllocationId (MissingParameter) | **DONE** |
-| `delete-nat-gateway` | `--nat-gateway-id` | `--dry-run` | NAT gateway must exist | Gateway validates NatGatewayId (required) → NATS `ec2.DeleteNatGateway` → daemon retrieves record from KV → scans all route tables in VPC for routes targeting this NAT gateway → publishes `vpc.delete-nat-gateway` event per affected subnet (SNAT rule cleanup) → sets state=deleted → stores in `spinifex-vpc-deleted-nat-gateways` with 1-hour TTL → deletes from active KV bucket | 1. Delete existing NAT gateway<br>2. Delete non-existent (InvalidNatGatewayID.NotFound)<br>3. Deleted gateway visible when queried by ID (state=deleted)<br>4. Deleted gateway excluded from general list queries (TTL auto-expire) | **DONE** |
-| `describe-nat-gateways` | `--nat-gateway-ids`, `--filters` (vpc-id, state) | `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeNatGateways` → daemon scans `spinifex-vpc-nat-gateways` KV → applies NatGatewayIds filter and/or vpc-id/state filters → for specific IDs not found in active bucket, checks deleted bucket → returns InvalidNatGatewayID.NotFound if ID never existed → returns list with state, addresses, subnet, VPC | 1. List all NAT gateways<br>2. Filter by specific IDs<br>3. Filter by state<br>4. Filter by vpc-id<br>5. Non-existent ID (InvalidNatGatewayID.NotFound)<br>6. Deleted gateway visible by ID query | **DONE** |
-| `assign-private-nat-gateway-address` | — | `--nat-gateway-id`, `--private-ip-addresses` | NAT gateway must exist (private type) | NATS `ec2.AssignPrivateNatGatewayAddress` → daemon assigns private IPs to NAT gateway → return assigned addresses | 1. Assign address<br>2. Missing NAT gateway ID (error) | **NOT STARTED** |
-| `associate-nat-gateway-address` | — | `--nat-gateway-id`, `--allocation-ids` | NAT gateway and EIPs must exist | NATS `ec2.AssociateNatGatewayAddress` → daemon associates EIPs with NAT gateway → return association info | 1. Associate EIP<br>2. Missing NAT gateway ID (error) | **NOT STARTED** |
-
-### EC2 - VPC Networking (Core)
-
-Requires OVN/OVS (`apt install openvswitch-switch ovn-host`). VPC/Subnet/ENI/SG CRUD stores metadata in NATS KV and publishes events to vpcd (the network topology daemon) which translates to OVN logical switches, ports, routers, and ACLs. Single AZ for Spinifex v1. IPAM uses CAS-based allocation from NATS KV (`spinifex-vpc-ipam` bucket). Security groups stored in `spinifex-vpc-security-groups` KV bucket with optimistic locking on rule updates.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-vpc` | `--cidr-block`, `--tag-specifications` | `--instance-tenancy`, `--dry-run` | None | Gateway validates CidrBlock (required, valid CIDR, /16–/28 prefix) → NATS `ec2.CreateVpc` → daemon allocates unique VNI from `spinifex-vpc-vni-counter` KV → generates vpc-ID → stores VPCRecord in `spinifex-vpc-vpcs` KV → publishes `vpc.create` event to vpcd (creates OVN logical switch) → returns VPC with state=available | 1. Create VPC with /16 CIDR<br>2. Invalid CIDR format (error: InvalidVpcRange)<br>3. CIDR prefix outside /16–/28 (error)<br>4. Verify in describe-vpcs<br>5. Tags applied at creation | **DONE** |
-| `delete-vpc` | `--vpc-id` | `--dry-run` | VPC must be empty (no subnets) | Gateway validates VpcId → NATS `ec2.DeleteVpc` → daemon checks for dependent subnets in `spinifex-vpc-subnets` KV → returns DependencyViolation if subnets exist → deletes from `spinifex-vpc-vpcs` KV → publishes `vpc.delete` event to vpcd (removes OVN resources) | 1. Delete empty VPC<br>2. Delete VPC with subnets (DependencyViolation)<br>3. Delete non-existent VPC (error) | **DONE** |
-| `describe-vpcs` | `--vpc-ids`, `--filters` (vpc-id, state, cidr-block, is-default, owner-id, tag:\*) | `--max-results`, `--dry-run` | None | NATS `ec2.DescribeVpcs` → daemon lists all keys from `spinifex-vpc-vpcs` KV → filters by VPC IDs if specified → applies filters → returns error for non-existent requested IDs → returns VPC list with CIDR, state, CIDR associations | 1. List all VPCs<br>2. Filter by VPC ID<br>3. Non-existent VPC ID returns error<br>4. Filter by state, cidr-block, is-default<br>5. Unknown filter returns InvalidParameterValue | **DONE** |
-| `modify-vpc-attribute` | `--vpc-id`, `--enable-dns-hostnames`, `--enable-dns-support`, `--enable-network-address-usage-metrics` | `--dry-run` | VPC must exist | Gateway validates VpcId non-empty → NATS `ec2.ModifyVpcAttribute` → daemon retrieves VPC record from `spinifex-vpc-vpcs` KV → updates boolean flags if provided → updates KV with optimistic locking → returns empty output | 1. Enable DNS hostnames<br>2. Enable DNS support<br>3. Enable network address usage metrics<br>4. Missing VPC ID (MissingParameter)<br>5. Non-existent VPC (InvalidVpcID.NotFound) | **DONE** |
-| `describe-vpc-attribute` | `--vpc-id`, `--attribute` (enableDnsHostnames, enableDnsSupport, enableNetworkAddressUsageMetrics) | `--dry-run` | VPC must exist | Gateway validates VpcId + Attribute non-empty → NATS `ec2.DescribeVpcAttribute` → daemon retrieves VPC record → returns single attribute as AttributeBooleanValue (one attribute per call, matches AWS behavior) → validates attribute name | 1. Get enableDnsHostnames<br>2. Get enableDnsSupport<br>3. Get enableNetworkAddressUsageMetrics<br>4. Invalid attribute name (InvalidParameterValue)<br>5. Missing VPC ID (MissingParameter)<br>6. Non-existent VPC (InvalidVpcID.NotFound) | **DONE** |
-| `associate-vpc-cidr-block` | — | `--vpc-id`, `--cidr-block` | VPC must exist | NATS `ec2.AssociateVpcCidrBlock` → daemon adds secondary CIDR to VPC metadata → return association | 1. Add secondary CIDR<br>2. Overlapping CIDR (error)<br>3. Max CIDR blocks exceeded (error) | **NOT STARTED** |
-| `disassociate-vpc-cidr-block` | — | `--association-id` | Association must exist | NATS `ec2.DisassociateVpcCidrBlock` → daemon removes secondary CIDR from VPC → return success | 1. Remove secondary CIDR<br>2. Remove primary CIDR (error) | **NOT STARTED** |
-| `create-subnet` | `--vpc-id`, `--cidr-block`, `--availability-zone`, `--tag-specifications` | `--dry-run` | VPC must exist | Gateway validates VpcId + CidrBlock (required, valid CIDR, /16–/28 prefix) → NATS `ec2.CreateSubnet` → daemon verifies parent VPC exists → validates subnet CIDR is within VPC CIDR range → checks for overlapping subnets in same VPC → calculates available IPs (total hosts - 5 AWS-reserved: .0/.1/.2/.3/.255) → generates subnet-ID → stores SubnetRecord in `spinifex-vpc-subnets` KV → publishes `vpc.create-subnet` event to vpcd → defaults AZ from config if omitted | 1. Create subnet within VPC CIDR<br>2. Subnet CIDR outside VPC range (error: InvalidSubnetRange)<br>3. Overlapping subnet CIDRs (error: InvalidSubnetConflict)<br>4. CIDR prefix outside /16–/28 (error)<br>5. Missing VPC or CIDR (error: MissingParameter) | **DONE** |
-| `delete-subnet` | `--subnet-id` | `--dry-run` | Subnet must exist | NATS `ec2.DeleteSubnet` → daemon verifies subnet exists → deletes from `spinifex-vpc-subnets` KV → publishes `vpc.delete-subnet` event to vpcd | 1. Delete existing subnet<br>2. Delete non-existent subnet (error) | **DONE** |
-| `describe-subnets` | `--subnet-ids`, `--filters` (vpc-id, subnet-id, availability-zone, cidr-block, state, default-for-az, tag:\*) | `--max-results`, `--dry-run` | None | NATS `ec2.DescribeSubnets` → daemon lists all keys from `spinifex-vpc-subnets` KV → applies filters → filters by subnet IDs if specified → recalculates available IPs from CIDR → returns error for non-existent requested IDs | 1. List all subnets<br>2. Filter by VPC ID<br>3. Filter by subnet ID<br>4. Non-existent subnet returns error<br>5. Filter by availability-zone, cidr-block, state<br>6. Unknown filter returns InvalidParameterValue | **DONE** |
-| `modify-subnet-attribute` | `--subnet-id`, `--map-public-ip-on-launch` | `--assign-ipv6-address-on-creation`, `--dry-run` | Subnet must exist | Gateway validates SubnetId non-empty → NATS `ec2.ModifySubnetAttribute` → daemon retrieves Subnet record from `spinifex-vpc-subnets` KV → updates MapPublicIpOnLaunch flag if provided → updates KV with optimistic locking → returns empty output | 1. Enable auto-assign public IP<br>2. Disable auto-assign public IP<br>3. Missing SubnetId (MissingParameter)<br>4. Non-existent subnet (InvalidSubnetID.NotFound) | **DONE** |
-| `associate-subnet-cidr-block` | — | `--subnet-id`, `--ipv6-cidr-block` | Subnet must exist | NATS `ec2.AssociateSubnetCidrBlock` → daemon adds IPv6 CIDR to subnet → return association | 1. Add IPv6 CIDR<br>2. Missing subnet ID (error) | **NOT STARTED** |
-| `disassociate-subnet-cidr-block` | — | `--association-id` | Association must exist | NATS `ec2.DisassociateSubnetCidrBlock` → daemon removes IPv6 CIDR from subnet → return success | 1. Remove IPv6 CIDR<br>2. Invalid association (error) | **NOT STARTED** |
-| `create-security-group` | `--group-name`, `--description`, `--vpc-id`, `--tag-specifications` | `--dry-run` | VPC must exist | Gateway validates GroupName + VpcId required → NATS `ec2.CreateSecurityGroup` → daemon verifies VPC exists → checks duplicate name in same VPC → generates sg-ID → creates SecurityGroupRecord in `spinifex-vpc-security-groups` KV with default egress rule (allow all outbound 0.0.0.0/0), no ingress rules → publishes `vpc.create-sg` event to vpcd (OVN ACL configuration) → returns GroupId | 1. Create SG in VPC<br>2. Duplicate name in same VPC (error: InvalidGroup.Duplicate)<br>3. Verify default egress rule (allow all)<br>4. Verify no default ingress rules<br>5. Missing GroupName (MissingParameter)<br>6. Non-existent VPC (InvalidVpcID.NotFound)<br>7. With tag specifications | **DONE** |
-| `delete-security-group` | `--group-id` | `--dry-run` | SG must exist | Gateway validates GroupId non-empty → NATS `ec2.DeleteSecurityGroup` → daemon retrieves SG from KV → deletes from `spinifex-vpc-security-groups` KV → publishes `vpc.delete-sg` event to vpcd → returns success | 1. Delete existing SG<br>2. Delete non-existent SG (error: InvalidGroup.NotFound)<br>3. Missing GroupId (MissingParameter) | **DONE** |
-| `describe-security-groups` | `--group-ids`, `--filters` (vpc-id, group-name, group-id, description, ip-permission.cidr, tag:\*) | `--group-names`, `--max-results`, `--dry-run` | None | NATS `ec2.DescribeSecurityGroups` → daemon scans all SG records in account → applies filters (AND logic across filter names, OR across values) → returns SecurityGroup list with ingress/egress rules → returns error for non-existent requested GroupIds | 1. List all SGs<br>2. Filter by VPC ID<br>3. Filter by group name<br>4. Filter by GroupId<br>5. Non-existent GroupId (InvalidGroup.NotFound)<br>6. Empty result when no SGs<br>7. Filter by description, ip-permission.cidr<br>8. Unknown filter returns InvalidParameterValue | **DONE** |
-| `authorize-security-group-ingress` | `--group-id`, `--ip-permissions` (IpProtocol, FromPort, ToPort, IpRanges/CidrIp, UserIdGroupPairs/GroupId) | `--dry-run` | SG must exist | Gateway validates GroupId non-empty → NATS `ec2.AuthorizeSecurityGroupIngress` → daemon retrieves SG → converts IpPermissions to SGRule objects → appends to IngressRules → updates KV with optimistic locking (revision check) → publishes `vpc.update-sg` event to vpcd → returns true | 1. Allow SSH (port 22) from 0.0.0.0/0<br>2. Allow from specific CIDR<br>3. Allow from source security group<br>4. Missing GroupId (MissingParameter)<br>5. Non-existent SG (InvalidGroup.NotFound) | **DONE** |
-| `authorize-security-group-egress` | `--group-id`, `--ip-permissions` | `--dry-run` | SG must exist | Gateway validates GroupId → NATS `ec2.AuthorizeSecurityGroupEgress` → daemon retrieves SG → appends rules to EgressRules → updates KV with optimistic locking → publishes `vpc.update-sg` event → returns true | 1. Allow HTTPS outbound<br>2. Restrict to specific CIDR<br>3. Missing GroupId (MissingParameter)<br>4. Non-existent SG (InvalidGroup.NotFound) | **DONE** |
-| `revoke-security-group-ingress` | `--group-id`, `--ip-permissions` (matching rules to remove) | `--dry-run` | SG must exist | Gateway validates GroupId → NATS `ec2.RevokeSecurityGroupIngress` → daemon retrieves SG → removes matching rules from IngressRules (set difference) → updates KV with optimistic locking → publishes `vpc.update-sg` event → returns true | 1. Revoke existing rule<br>2. Missing GroupId (MissingParameter)<br>3. Non-existent SG (InvalidGroup.NotFound) | **DONE** |
-| `revoke-security-group-egress` | `--group-id`, `--ip-permissions` (matching rules to remove) | `--dry-run` | SG must exist | Gateway validates GroupId → NATS `ec2.RevokeSecurityGroupEgress` → daemon retrieves SG → removes matching rules from EgressRules (set difference) → updates KV with optimistic locking → publishes `vpc.update-sg` event → returns true | 1. Revoke existing rule<br>2. Missing GroupId (MissingParameter)<br>3. Non-existent SG (InvalidGroup.NotFound) | **DONE** |
-| `describe-security-group-rules` | `--filters` (group-id, security-group-rule-id, tag:\*, tag-key), `--security-group-rule-ids` | `--max-results`, `--next-token`, `--dry-run` | None | Gateway validates `sgr-` format on SecurityGroupRuleIds (nil input = all rules in account) → NATS `ec2.DescribeSecurityGroupRules` → daemon iterates SG records in `spinifex-vpc-security-groups` KV under account → applies filters → emits one `SecurityGroupRule` per ingress (IsEgress=false) and egress (IsEgress=true) rule, each with stable `sgr-` ID, GroupOwnerId=accountID, ReferencedGroupInfo for SG-source rules → returns `InvalidSecurityGroupRuleId.NotFound` if any requested ID missing → v1→v2 KV migration backfills `sgr-` IDs on existing rules at daemon startup; MaxResults/NextToken accepted but ignored | 1. List all rules in account<br>2. Filter by group-id<br>3. Filter by security-group-rule-id<br>4. Non-existent rule ID (InvalidSecurityGroupRuleId.NotFound)<br>5. Malformed sgr- ID at gateway (InvalidParameterValue)<br>6. Tag filters match zero (Tags not yet populated on rules)<br>7. Unknown filter (InvalidParameterValue)<br>8. Migration backfills sgr- IDs on pre-v2 records | **DONE** |
-| `create-internet-gateway` | `--tag-specifications` | `--dry-run` | None | NATS `ec2.CreateInternetGateway` → daemon generates igw-ID → creates IGWRecord in `spinifex-igw` KV bucket with state=available (not attached) → returns InternetGateway with empty Attachments | 1. Create IGW<br>2. Verify in describe-internet-gateways<br>3. Tags applied at creation | **DONE** |
-| `attach-internet-gateway` | `--internet-gateway-id`, `--vpc-id` | `--dry-run` | IGW and VPC must exist | NATS `ec2.AttachInternetGateway` → daemon validates IGW exists and is not already attached (ResourceAlreadyAssociated) → sets VpcId on record → state=attached → publishes `vpc.igw-attach` event to vpcd (creates OVN external switch, gateway port, SNAT rules) | 1. Attach IGW to VPC<br>2. Attach already-attached IGW (ResourceAlreadyAssociated)<br>3. Non-existent IGW (error)<br>4. Missing params (MissingParameter) | **DONE** |
-| `detach-internet-gateway` | `--internet-gateway-id`, `--vpc-id` | `--dry-run` | IGW must be attached to specified VPC | NATS `ec2.DetachInternetGateway` → daemon validates IGW exists and is attached to specified VPC (GatewayNotAttached if wrong VPC) → clears VpcId → state=available → publishes `vpc.igw-detach` event to vpcd (removes OVN resources) | 1. Detach attached IGW<br>2. Detach from wrong VPC (GatewayNotAttached)<br>3. Detach unattached IGW (error) | **DONE** |
-| `delete-internet-gateway` | `--internet-gateway-id` | `--dry-run` | IGW must be detached | NATS `ec2.DeleteInternetGateway` → daemon validates IGW exists and VpcId is empty (DependencyViolation if attached) → deletes from `spinifex-igw` KV | 1. Delete detached IGW<br>2. Delete attached IGW (DependencyViolation)<br>3. Delete non-existent (error) | **DONE** |
-| `describe-internet-gateways` | `--internet-gateway-ids`, `--filters` (internet-gateway-id, attachment.vpc-id, attachment.state, tag:\*) | `--max-results`, `--dry-run` | None | NATS `ec2.DescribeInternetGateways` → daemon lists all keys from `spinifex-igw` KV → filters by IGW IDs if specified → applies filters → returns list with Attachments array (if attached) | 1. List all IGWs<br>2. Filter by IGW ID<br>3. Verify attachment info<br>4. Filter by attachment.vpc-id, attachment.state<br>5. Unknown filter returns InvalidParameterValue | **DONE** |
-
-### EC2 - Route Tables
-
-Route tables are stored in `spinifex-vpc-route-tables` JetStream KV bucket, keyed by `{accountID}.{routeTableId}`. Each route table has a Routes array (with local route pre-populated) and an Associations array. All operations validate VPC consistency. When a route targeting a NAT gateway is created, `vpc.add-nat-gateway` events are published per associated subnet for vpcd SNAT rule creation.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-route-table` | `--vpc-id` | `--tag-specifications`, `--dry-run` | VPC must exist | Gateway validates VpcId (required) → NATS `ec2.CreateRouteTable` with `spinifex-workers` queue group → daemon verifies VPC exists in `spinifex-vpc-vpcs` KV → retrieves VPC CIDR → generates rtb-ID → creates RouteTableRecord with IsMain=false, local route pre-populated (destination=VPC CIDR, gateway="local"), empty associations → stores in `spinifex-vpc-route-tables` KV → returns RouteTable | 1. Create route table with local route (happy path)<br>2. VPC not found (InvalidVpcID.NotFound)<br>3. Missing VpcId (MissingParameter) | **DONE** |
-| `delete-route-table` | `--route-table-id` | `--dry-run` | Route table must exist, not main, no subnet associations | Gateway validates RouteTableId (required) → NATS `ec2.DeleteRouteTable` → daemon retrieves record → rejects if IsMain=true (DependencyViolation) → rejects if has non-main subnet associations (DependencyViolation) → deletes from KV → returns success | 1. Delete custom route table<br>2. Delete main route table (DependencyViolation)<br>3. Delete table with subnet associations (DependencyViolation)<br>4. Delete non-existent (InvalidRouteTableID.NotFound) | **DONE** |
-| `describe-route-tables` | `--route-table-ids`, `--filters` (vpc-id, route-table-id, association.main, association.route-table-association-id, association.subnet-id, route.destination-cidr-block, route.gateway-id) | `--max-results`, `--next-token`, `--dry-run` | None | NATS `ec2.DescribeRouteTables` → daemon scans all keys in `spinifex-vpc-route-tables` KV → filters by RouteTableIds if specified → applies all provided filters (AND logic) → returns error for non-existent requested IDs → converts records to EC2 RouteTable objects | 1. List all route tables<br>2. Filter by vpc-id<br>3. Filter by association.main (true/false)<br>4. Non-existent ID (InvalidRouteTableID.NotFound)<br>5. Empty result when no route tables | **DONE** |
-| `create-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id`, `--nat-gateway-id` | `--egress-only-internet-gateway-id`, `--vpc-peering-connection-id`, `--dry-run` | Route table and target must exist in same VPC | Gateway validates RouteTableId + DestinationCidrBlock (required) → NATS `ec2.CreateRoute` → daemon retrieves route table → checks for duplicate destination (RouteAlreadyExists) → validates exactly one of GatewayId/NatGatewayId provided → if GatewayId: verifies IGW exists in `spinifex-igw` KV and is attached to same VPC → if NatGatewayId: verifies NAT GW exists in `spinifex-vpc-nat-gateways` KV and is in same VPC → for NAT GW routes, publishes `vpc.add-nat-gateway` event per associated subnet → appends RouteRecord (state=active, origin=CreateRoute) → updates KV → returns Return=true | 1. Add IGW route (happy path)<br>2. Duplicate destination (RouteAlreadyExists)<br>3. IGW not found (InvalidInternetGatewayID.NotFound)<br>4. NAT GW not found (InvalidNatGatewayID.NotFound)<br>5. Gateway not in same VPC (InvalidParameterValue)<br>6. Missing RouteTableId or DestinationCidrBlock (MissingParameter) | **DONE** |
-| `delete-route` | `--route-table-id`, `--destination-cidr-block` | `--dry-run` | Route must exist | Gateway validates RouteTableId + DestinationCidrBlock (required) → NATS `ec2.DeleteRoute` → daemon retrieves route table → finds matching route → rejects if gateway is "local" (InvalidParameterValue — local routes cannot be deleted) → removes route from Routes array → updates KV → returns success | 1. Delete IGW route (happy path, local route remains)<br>2. Delete local route (InvalidParameterValue)<br>3. Route not found (InvalidRoute.NotFound)<br>4. Missing parameters (MissingParameter) | **DONE** |
-| `replace-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id` | `--nat-gateway-id`, `--dry-run` | Route must exist, new target must exist in same VPC | Gateway validates RouteTableId + DestinationCidrBlock + GatewayId (required) → NATS `ec2.ReplaceRoute` → daemon retrieves route table → finds matching route → rejects if local route → verifies IGW exists and is attached to same VPC → updates route GatewayId, clears NatGatewayId, sets state=active → updates KV → returns success | 1. Replace route target (IGW swap)<br>2. Replace local route (InvalidParameterValue)<br>3. Route not found (InvalidRoute.NotFound)<br>4. IGW not found (InvalidInternetGatewayID.NotFound) | **DONE** |
-| `associate-route-table` | `--route-table-id`, `--subnet-id` | `--gateway-id`, `--dry-run` | Route table and subnet must exist in same VPC | Gateway validates RouteTableId + SubnetId (required) → NATS `ec2.AssociateRouteTable` → daemon retrieves route table → verifies subnet exists and is in same VPC → scans ALL route tables in VPC to check subnet isn't already explicitly associated (Resource.AlreadyAssociated) → generates rtbassoc-ID → appends AssociationRecord (Main=false) → updates KV → returns AssociationId with state=associated | 1. Associate subnet (happy path)<br>2. Duplicate subnet association (Resource.AlreadyAssociated)<br>3. Subnet not found (InvalidSubnetID.NotFound)<br>4. Subnet in different VPC (InvalidParameterValue)<br>5. Missing parameters (MissingParameter) | **DONE** |
-| `disassociate-route-table` | `--association-id` | `--dry-run` | Association must exist, not main table association | Gateway validates AssociationId (required) → NATS `ec2.DisassociateRouteTable` → daemon scans ALL route tables in account to find matching AssociationId → rejects if Main=true (InvalidParameterValue — main associations are immutable) → removes association from Associations array → updates KV → returns success | 1. Disassociate subnet (happy path)<br>2. Disassociate main table (InvalidParameterValue)<br>3. Association not found (InvalidAssociationID.NotFound) | **DONE** |
-| `replace-route-table-association` | `--association-id`, `--route-table-id` | `--dry-run` | Association and new route table must exist | Gateway validates AssociationId + RouteTableId (required) → NATS `ec2.ReplaceRouteTableAssociation` → daemon verifies new route table exists → scans all route tables to find matching AssociationId → if Main=true: atomically swaps IsMain flag between old and new table → two-phase commit: removes association from old table, creates new AssociationId on new table → compensating write on failure (logs CRITICAL if compensation fails) → returns new AssociationId with state=associated | 1. Move subnet between tables (happy path)<br>2. Replace main table association (swaps IsMain flags)<br>3. Association not found (InvalidAssociationID.NotFound)<br>4. Route table not found (InvalidRouteTableID.NotFound) | **DONE** |
-
-### EC2 - VPC Peering
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-vpc-peering-connection` | — | `--vpc-id`, `--peer-vpc-id`, `--peer-owner-id`, `--peer-region`, `--tag-specifications` | Both VPCs must exist | NATS `ec2.CreateVpcPeeringConnection` → daemon creates peering in KV with pcx-ID → state=pending-acceptance → return peering connection | 1. Create peering between two VPCs<br>2. Missing VPC ID (error)<br>3. Overlapping CIDRs (error) | **NOT STARTED** |
-| `accept-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | Peering must exist in pending-acceptance state | NATS `ec2.AcceptVpcPeeringConnection` → daemon updates state to active → configure OVS cross-VPC flows → return peering | 1. Accept pending peering<br>2. Accept already active (error) | **NOT STARTED** |
-| `reject-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | Peering must exist in pending-acceptance state | NATS `ec2.RejectVpcPeeringConnection` → daemon updates state to rejected → return peering | 1. Reject pending peering<br>2. Reject already active (error) | **NOT STARTED** |
-| `delete-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | Peering must exist | NATS `ec2.DeleteVpcPeeringConnection` → daemon removes OVS cross-VPC flows → delete from KV → return success | 1. Delete active peering<br>2. Delete non-existent (error) | **NOT STARTED** |
-| `describe-vpc-peering-connections` | — | `--vpc-peering-connection-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeVpcPeeringConnections` → daemon lists peerings from KV → return list with state | 1. List all peerings<br>2. Filter by ID<br>3. Filter by VPC | **NOT STARTED** |
-| `modify-vpc-peering-connection-options` | — | `--vpc-peering-connection-id`, `--requester-peering-connection-options`, `--accepter-peering-connection-options` | Peering must be active | NATS `ec2.ModifyVpcPeeringConnectionOptions` → daemon updates peering options in KV → return modified options | 1. Enable DNS resolution<br>2. Missing peering ID (error) | **NOT STARTED** |
-
-### EC2 - VPC Endpoints
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-vpc-endpoint` | — | `--vpc-id`, `--service-name`, `--vpc-endpoint-type` (Gateway/Interface), `--route-table-ids`, `--subnet-ids`, `--tag-specifications` | VPC must exist | NATS `ec2.CreateVpcEndpoint` → daemon creates endpoint in KV with vpce-ID → return endpoint | 1. Create Gateway endpoint for S3<br>2. Create Interface endpoint<br>3. Missing VPC ID (error) | **NOT STARTED** |
-| `delete-vpc-endpoints` | — | `--vpc-endpoint-ids`, `--dry-run` | Endpoints must exist | NATS `ec2.DeleteVpcEndpoints` → daemon deletes endpoints from KV → return success/failure per endpoint | 1. Delete existing endpoint<br>2. Delete non-existent (error) | **NOT STARTED** |
-| `describe-vpc-endpoints` | — | `--vpc-endpoint-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeVpcEndpoints` → daemon lists endpoints from KV → return list with state and type | 1. List all endpoints<br>2. Filter by VPC<br>3. Filter by service name | **NOT STARTED** |
-| `describe-vpc-endpoint-services` | — | `--service-names`, `--filters`, `--max-results` | None | NATS `ec2.DescribeVpcEndpointServices` → daemon returns available services (S3, DynamoDB equivalents) → return service list | 1. List available services<br>2. Filter by service name | **NOT STARTED** |
-| `modify-vpc-endpoint` | — | `--vpc-endpoint-id`, `--add-route-table-ids`, `--remove-route-table-ids`, `--add-subnet-ids`, `--remove-subnet-ids` | Endpoint must exist | NATS `ec2.ModifyVpcEndpoint` → daemon updates endpoint route tables/subnets in KV → return success | 1. Add route table<br>2. Remove subnet<br>3. Missing endpoint ID (error) | **NOT STARTED** |
-
-### EC2 - VPN Gateway & Customer Gateway
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-customer-gateway` | — | `--type` (ipsec.1), `--bgp-asn`, `--ip-address`, `--tag-specifications` | None | NATS `ec2.CreateCustomerGateway` → daemon stores in JetStream KV with cgw-ID → return customer gateway | 1. Create with BGP ASN and IP<br>2. Missing required fields (error) | **NOT STARTED** |
-| `delete-customer-gateway` | — | `--customer-gateway-id`, `--dry-run` | Must exist, no VPN connections | NATS `ec2.DeleteCustomerGateway` → daemon verifies no active connections → delete from KV → return success | 1. Delete existing<br>2. Delete with active VPN (error) | **NOT STARTED** |
-| `describe-customer-gateways` | — | `--customer-gateway-ids`, `--filters` | None | NATS `ec2.DescribeCustomerGateways` → daemon lists from KV → return list with BGP/IP info | 1. List all<br>2. Filter by ID | **NOT STARTED** |
-| `create-vpn-gateway` | — | `--type` (ipsec.1), `--amazon-side-asn`, `--tag-specifications` | None | NATS `ec2.CreateVpnGateway` → daemon stores in JetStream KV with vgw-ID → return VPN gateway | 1. Create VPN gateway<br>2. Verify in describe | **NOT STARTED** |
-| `delete-vpn-gateway` | — | `--vpn-gateway-id`, `--dry-run` | Must be detached | NATS `ec2.DeleteVpnGateway` → daemon verifies detached → delete from KV → return success | 1. Delete detached gateway<br>2. Delete attached (error) | **NOT STARTED** |
-| `attach-vpn-gateway` | — | `--vpn-gateway-id`, `--vpc-id` | Both must exist | NATS `ec2.AttachVpnGateway` → daemon links VPN gateway to VPC → return attachment | 1. Attach to VPC<br>2. Already attached (error) | **NOT STARTED** |
-| `detach-vpn-gateway` | — | `--vpn-gateway-id`, `--vpc-id` | Must be attached | NATS `ec2.DetachVpnGateway` → daemon unlinks VPN gateway from VPC → return success | 1. Detach from VPC<br>2. Not attached (error) | **NOT STARTED** |
-| `describe-vpn-gateways` | — | `--vpn-gateway-ids`, `--filters` | None | NATS `ec2.DescribeVpnGateways` → daemon lists from KV → return list with attachment info | 1. List all<br>2. Filter by VPC attachment | **NOT STARTED** |
-
-### EC2 - VPN Connections
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-vpn-connection` | — | `--type` (ipsec.1), `--customer-gateway-id`, `--vpn-gateway-id`, `--options`, `--tag-specifications` | Customer gateway and VPN gateway must exist | NATS `ec2.CreateVpnConnection` → daemon stores connection in JetStream KV with vpn-ID → return connection with tunnel info | 1. Create IPsec connection<br>2. Missing customer gateway (error)<br>3. Missing VPN gateway (error) | **NOT STARTED** |
-| `delete-vpn-connection` | — | `--vpn-connection-id`, `--dry-run` | Connection must exist | NATS `ec2.DeleteVpnConnection` → daemon deletes from KV → return success | 1. Delete existing connection<br>2. Delete non-existent (error) | **NOT STARTED** |
-| `describe-vpn-connections` | — | `--vpn-connection-ids`, `--filters` | None | NATS `ec2.DescribeVpnConnections` → daemon lists from KV → return list with state and tunnel info | 1. List all connections<br>2. Filter by ID<br>3. Filter by VPN gateway | **NOT STARTED** |
-| `modify-vpn-connection` | — | `--vpn-connection-id`, `--vpn-gateway-id`, `--customer-gateway-id` | Connection must exist | NATS `ec2.ModifyVpnConnection` → daemon updates connection target in KV → return modified connection | 1. Change VPN gateway<br>2. Missing connection ID (error) | **NOT STARTED** |
-| `modify-vpn-connection-options` | — | `--vpn-connection-id`, `--local-ipv4-network-cidr`, `--remote-ipv4-network-cidr` | Connection must exist | NATS `ec2.ModifyVpnConnectionOptions` → daemon updates tunnel options in KV → return modified connection | 1. Modify CIDR ranges<br>2. Missing connection ID (error) | **NOT STARTED** |
-
-### EC2 - Network ACLs
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-network-acl` | — | `--vpc-id`, `--tag-specifications` | VPC must exist | NATS `ec2.CreateNetworkAcl` → daemon creates NACL in KV with acl-ID → add default deny-all rules → return NACL | 1. Create NACL in VPC<br>2. Missing VPC ID (error)<br>3. Verify default deny rules | **NOT STARTED** |
-| `delete-network-acl` | — | `--network-acl-id`, `--dry-run` | Must not be default NACL | NATS `ec2.DeleteNetworkAcl` → daemon verifies not default → delete from KV → return success | 1. Delete non-default NACL<br>2. Delete default NACL (error) | **NOT STARTED** |
-| `describe-network-acls` | — | `--network-acl-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeNetworkAcls` → daemon lists NACLs from KV → return list with entries | 1. List all NACLs<br>2. Filter by VPC | **NOT STARTED** |
-| `create-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--protocol`, `--rule-action` (allow/deny), `--cidr-block`, `--ingress`/`--egress`, `--port-range` | NACL must exist | NATS `ec2.CreateNetworkAclEntry` → daemon adds rule entry to NACL in KV → configure OVS flow → return success | 1. Add ingress allow rule<br>2. Add egress deny rule<br>3. ICMP type/code parsing<br>4. Missing NACL ID (error) | **NOT STARTED** |
-| `delete-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--ingress`/`--egress` | Entry must exist | NATS `ec2.DeleteNetworkAclEntry` → daemon removes rule from NACL → remove OVS flow → return success | 1. Delete existing entry<br>2. Delete non-existent entry (error) | **NOT STARTED** |
-| `replace-network-acl-association` | — | `--association-id`, `--network-acl-id` | Both must exist | NATS `ec2.ReplaceNetworkAclAssociation` → daemon swaps NACL for subnet → return new association ID | 1. Replace association<br>2. Missing association ID (error) | **NOT STARTED** |
-| `replace-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--protocol`, `--rule-action`, `--cidr-block`, `--ingress`/`--egress`, `--port-range` | Entry must exist | NATS `ec2.ReplaceNetworkAclEntry` → daemon replaces rule in KV → update OVS flow → return success | 1. Replace existing entry<br>2. Replace non-existent entry (error) | **NOT STARTED** |
-
-### EC2 - Prefix Lists
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-managed-prefix-list` | — | `--prefix-list-name`, `--address-family` (IPv4/IPv6), `--max-entries`, `--entries`, `--tag-specifications` | None | NATS `ec2.CreateManagedPrefixList` → daemon stores prefix list in JetStream KV with pl-ID → return prefix list with version | 1. Create with IPv4 entries<br>2. Name, address family, max entries required<br>3. Verify in describe | **NOT STARTED** |
-| `delete-managed-prefix-list` | — | `--prefix-list-id`, `--dry-run` | Must exist, not referenced by security groups/route tables | NATS `ec2.DeleteManagedPrefixList` → daemon verifies not referenced → delete from KV → return success | 1. Delete unreferenced list<br>2. Delete referenced list (error) | **NOT STARTED** |
-| `describe-managed-prefix-lists` | — | `--prefix-list-ids`, `--filters`, `--max-results` | None | NATS `ec2.DescribeManagedPrefixLists` → daemon lists from KV → return list with state and version | 1. List all prefix lists<br>2. Filter by ID | **NOT STARTED** |
-| `modify-managed-prefix-list` | — | `--prefix-list-id`, `--current-version`, `--add-entries`, `--remove-entries`, `--prefix-list-name` | Must exist, current version must match | NATS `ec2.ModifyManagedPrefixList` → daemon validates version → apply changes → increment version → return updated list | 1. Add entries<br>2. Remove entries<br>3. Version mismatch (error) | **NOT STARTED** |
-| `get-managed-prefix-list-entries` | — | `--prefix-list-id`, `--target-version`, `--max-results` | Prefix list must exist | NATS `ec2.GetManagedPrefixListEntries` → daemon reads entries from KV → return entry list | 1. List entries<br>2. List entries at specific version | **NOT STARTED** |
-| `get-managed-prefix-list-associations` | — | `--prefix-list-id`, `--max-results` | Prefix list must exist | NATS `ec2.GetManagedPrefixListAssociations` → daemon finds references in SGs/route tables → return association list | 1. List associations<br>2. No associations returns empty | **NOT STARTED** |
-
-### EC2 - Network Interfaces
-
-ENIs are managed via `spinifex-vpc-enis` KV bucket with CAS-based IPAM allocation from `spinifex-vpc-ipam`. ENIs are auto-created by `run-instances --subnet-id` and auto-deleted on termination. MAC addresses are deterministically generated from the ENI ID. Attach/detach are internal operations used by instance lifecycle — no standalone attach/detach API yet.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-network-interface` | `--subnet-id`, `--private-ip-address`, `--description`, `--tag-specifications` | `--groups`, `--dry-run` | Subnet must exist | Gateway validates SubnetId (required) → NATS `ec2.CreateNetworkInterface` → daemon verifies subnet exists in `spinifex-vpc-subnets` KV → if no PrivateIpAddress, allocates from IPAM pool (CAS-based, up to 5 retries) → generates eni-ID → generates deterministic MAC from ENI ID → stores ENIRecord in `spinifex-vpc-enis` KV → publishes `vpc.create-port` event to vpcd (creates OVN logical port) → returns NetworkInterface with status=available | 1. Create in subnet (auto-allocate IP)<br>2. Create with specific private IP<br>3. Missing subnet ID (MissingParameter)<br>4. Non-existent subnet (error)<br>5. Tags applied at creation | **DONE** |
-| `delete-network-interface` | `--network-interface-id` | `--dry-run` | Must not be attached (status != in-use) | NATS `ec2.DeleteNetworkInterface` → daemon verifies ENI exists and status is not "in-use" (InvalidNetworkInterfaceInUse) → releases IP back to IPAM pool → deletes from `spinifex-vpc-enis` KV → publishes `vpc.delete-port` event to vpcd | 1. Delete detached ENI<br>2. Delete attached ENI (InvalidNetworkInterfaceInUse)<br>3. Delete non-existent (error) | **DONE** |
-| `describe-network-interfaces` | `--network-interface-ids`, `--filters` (subnet-id, vpc-id, attachment.instance-id) | `--max-results`, `--dry-run` | None | NATS `ec2.DescribeNetworkInterfaces` → daemon lists all keys from `spinifex-vpc-enis` KV → applies filters (subnet-id, vpc-id, attachment.instance-id) → filters by ENI IDs if specified → returns error for non-existent requested IDs | 1. List all ENIs<br>2. Filter by subnet-id<br>3. Filter by vpc-id<br>4. Filter by attachment.instance-id<br>5. Non-existent ENI returns error | **DONE** |
-| `attach-network-interface` | — | `--network-interface-id`, `--instance-id`, `--device-index` | ENI and instance must exist | Internal operation used by `run-instances --subnet-id`. Marks ENI as "in-use", sets instance attachment, generates attachment ID. No standalone API endpoint yet. | 1. Attach ENI to instance<br>2. Already attached (error)<br>3. Missing device index (error) | **NOT STARTED** (internal only) |
-| `detach-network-interface` | — | `--attachment-id`, `--force` | ENI must be attached | Internal operation used by terminate-instances. Marks ENI as "available", clears attachment info. No standalone API endpoint yet. | 1. Detach ENI<br>2. Force detach<br>3. Not attached (error) | **NOT STARTED** (internal only) |
-| `modify-network-interface-attribute` | — | `--network-interface-id`, `--description`, `--groups` | ENI must exist; at least one attribute required | NATS `ec2.ModifyNetworkInterfaceAttribute` → daemon validates ENI exists → updates description and/or security groups in `spinifex-vpc-enis` KV (optimistic locking) → return success | 1. Modify description<br>2. Update security groups<br>3. No attributes (InvalidParameterValue)<br>4. Non-existent ENI (error) | **DONE** |
-| `assign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses` or `--secondary-private-ip-address-count` | ENI must exist | NATS `ec2.AssignPrivateIpAddresses` → daemon allocates IPs from subnet pool → assign to ENI → return assigned IPs | 1. Assign specific IPs<br>2. Assign by count<br>3. Cannot specify both (error) | **NOT STARTED** |
-| `unassign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses` | IPs must be assigned to ENI | NATS `ec2.UnassignPrivateIpAddresses` → daemon releases IPs → return success | 1. Unassign secondary IP<br>2. Unassign primary IP (error) | **NOT STARTED** |
-
-### EC2 - Launch Templates
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-launch-template` | — | `--launch-template-name`, `--launch-template-data` (ImageId, InstanceType, etc.), `--tag-specifications` | None | NATS `ec2.CreateLaunchTemplate` → daemon stores template in JetStream KV with lt-ID → version 1 → return template metadata | 1. Create template with full config<br>2. Duplicate name (error)<br>3. Verify in describe output | **NOT STARTED** |
-| `create-launch-template-version` | — | `--launch-template-id` or `--launch-template-name`, `--launch-template-data`, `--source-version` | Template must exist | NATS `ec2.CreateLaunchTemplateVersion` → daemon creates new version in KV → return version details | 1. Create version from scratch<br>2. Create version from source version<br>3. Template not found (error) | **NOT STARTED** |
-| `delete-launch-template` | — | `--launch-template-id` or `--launch-template-name`, `--dry-run` | Template must exist | NATS `ec2.DeleteLaunchTemplate` → daemon deletes template and all versions from KV → return deleted template info | 1. Delete by ID<br>2. Delete by name<br>3. Non-existent template (error) | **NOT STARTED** |
-| `describe-launch-templates` | — | `--launch-template-ids`, `--launch-template-names`, `--filters` | None | NATS `ec2.DescribeLaunchTemplates` → daemon lists templates from KV → return list | 1. List all templates<br>2. Filter by name<br>3. Filter by ID | **NOT STARTED** |
-| `describe-launch-template-versions` | — | `--launch-template-id` or `--launch-template-name`, `--versions`, `--min-version`, `--max-version` | Template must exist | NATS `ec2.DescribeLaunchTemplateVersions` → daemon lists versions from KV → return version list with data | 1. List all versions<br>2. List specific version<br>3. Template not found (error) | **NOT STARTED** |
-
-### EC2 - Misc Operations
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `delete-network-interface-permission` | — | `--network-interface-permission-id`, `--force` | Permission must exist | NATS `ec2.DeleteNetworkInterfacePermission` → daemon deletes permission from KV → return success | 1. Delete existing permission<br>2. Force delete | **NOT STARTED** |
-| `enable-address-transfer` | — | `--allocation-id`, `--transfer-account-id` | EIP must exist | NATS `ec2.EnableAddressTransfer` → daemon stores transfer in JetStream KV with 7-day expiration → return AllocationId and TransferAccountId | 1. Enable transfer<br>2. Verify transfer stored with expiration | **NOT STARTED** |
-| `disable-address-transfer` | — | `--allocation-id` | Transfer must exist | NATS `ec2.DisableAddressTransfer` → daemon updates transfer status to disabled in KV → return status | 1. Disable active transfer<br>2. Disable non-existent transfer (error) | **NOT STARTED** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `spx admin gpu status` | `--node` | — | **DONE** |
+| `spx admin gpu enable` | — | — | **DONE** |
+| `spx admin gpu disable` | — | — | **DONE** |
+| `spx admin gpu setup` | — | — | **DONE** |
+
+`gpu setup` must run as root. `gpu enable`/`disable` must run on the target
+host (writes `spinifex.toml`, SIGHUPs `spinifex-daemon`).
+
+---
+
+## AWS-Compatible API
+
+### EC2 — Instance Management
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `run-instances` | `--image-id`, `--instance-type`, `--count`, `--key-name`, `--user-data`, `--subnet-id`, `--block-device-mappings` (DeviceName, VolumeSize, VolumeType, Iops, DeleteOnTermination), `--placement` (GroupName), `--iam-instance-profile` (Name/Arn) | `--security-group-ids`, `--tag-specifications`, `--dry-run`, `--client-token`, `--disable-api-termination`, `--ebs-optimized`, `--network-interfaces`, `--private-ip-address`, `--monitoring`, `--credit-specification`, `--cpu-options`, `--metadata-options`, `--launch-template`, `--hibernate-options` | **DONE** |
+| `describe-instances` | `--instance-ids`, `--filters` (instance-state-name, instance-id, instance-type, vpc-id, subnet-id, tag:*, tag-key, tag-value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `start-instances` | `--instance-ids` | `--dry-run`, `--force` | **DONE** |
+| `stop-instances` | `--instance-ids` | `--force`, `--hibernate`, `--dry-run` | **DONE** |
+| `terminate-instances` | `--instance-ids`, `DeleteOnTermination` (per-volume) | `--dry-run` | **DONE** |
+| `reboot-instances` | `--instance-ids` | `--dry-run` | **DONE** |
+| `describe-instance-types` | `--filters` (capacity only) | `--instance-types`, `--max-results`, `--next-token`, `--dry-run`, other filters | **DONE** |
+| `modify-instance-attribute` | `--instance-id`, `--instance-type`, `--user-data`, `--disable-api-termination` | `--ebs-optimized`, `--source-dest-check`, `--instance-initiated-shutdown-behavior`, `--block-device-mappings`, `--groups`, `--ena-support`, `--sriov-net-support` | **DONE** |
+| `get-console-output` | `--instance-id` | `--latest`, `--dry-run` | **DONE** |
+| `describe-instance-attribute` | `--instance-id`, `--attribute` (instanceType, userData, disableApiTermination, instanceInitiatedShutdownBehavior, disableApiStop, ebsOptimized, enaSupport, sourceDestCheck, rootDeviceName, kernel, ramdisk) | `--dry-run` | **DONE** |
+| `describe-instance-credit-specifications` | `--instance-ids` | `--filters`, `--max-results`, `--dry-run` | **DONE** (stub — always returns `standard`) |
+| `describe-instance-status` | `--instance-ids`, `--include-all-instances`, `--filters` (availability-zone, instance-state-code, instance-state-name, tag:*) | `--max-results`, `--next-token`, `--dry-run`, event/instance-status/system-status filters | **DONE** (static health) |
+| `monitor-instances` | — | `--instance-ids` | **NOT STARTED** |
+| `unmonitor-instances` | — | `--instance-ids` | **NOT STARTED** |
+
+`run-instances --iam-instance-profile` enforces `iam:PassRole` on the contained
+role ARN and rejects cross-account profile ARNs. Placement strategies: `spread`
+(1 per node, atomic CAS) and `cluster` (pin all to one node).
+
+### EC2 — IAM Instance Profile Associations
+
+Stored as `vm.VM.IamInstanceProfileArn` + `IamInstanceProfileAssociationId`
+(one ARN per instance). Association IDs (`iip-assoc-`) are regenerated on every
+Associate/Replace and never reused. Auto-disassociated on terminate; preserved
+across stop/start.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `associate-iam-instance-profile` | `--instance-id`, `--iam-instance-profile` (Name/Arn) | `--dry-run` | **DONE** |
+| `disassociate-iam-instance-profile` | `--association-id` | `--dry-run` | **DONE** |
+| `replace-iam-instance-profile-association` | `--association-id`, `--iam-instance-profile` (Name/Arn) | `--dry-run` | **DONE** |
+| `describe-iam-instance-profile-associations` | `--association-ids`, `--filters` (instance-id, state) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+
+### EC2 — Key Pairs
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-key-pair` | `--key-name`, `--key-type` (rsa/ed25519) | `--key-format`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `describe-key-pairs` | `--key-names`, `--key-pair-ids`, `--filters` (key-pair-id, key-name, fingerprint, tag:*) | `--max-results`, `--dry-run` | **DONE** |
+| `delete-key-pair` | `--key-name`, `--key-pair-id` | `--dry-run` | **DONE** |
+| `import-key-pair` | `--key-name`, `--public-key-material` | `--tag-specifications`, `--dry-run` | **DONE** |
+
+### EC2 — AMI Images
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-images` | `--image-ids`, `--owners` (self/account-id/alias), `--filters` (name, state, architecture, image-id, is-public, owner-id, description, image-type, tag:*) | `--executable-users`, `--include-deprecated`, `--include-disabled`, `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `create-image` | `--instance-id`, `--name`, `--description`, `--tag-specifications` | `--no-reboot`, `--block-device-mappings`, `--dry-run` | **DONE** |
+| `register-image` | `--name`, `--description`, `--architecture` (x86_64/arm64/i386), `--root-device-name`, `--virtualization-type` (hvm), `--boot-mode` (bios/uefi/uefi-preferred), `--block-device-mappings` (root w/ `Ebs.SnapshotId`+`VolumeSize`), `--tag-specifications` | `--billing-products`, `--uefi-data` | **DONE** |
+| `deregister-image` | `--image-id` | `--dry-run` | **DONE** |
+| `copy-image` | `--source-image-id`, `--source-region`, `--name`, `--description`, `--client-token`, `--copy-image-tags`, `--tag-specifications` (image only) | `--encrypted`, `--kms-key-id`, `--destination-outpost-arn`, `--dry-run` | **DONE** |
+| `describe-image-attribute` | `--image-id`, `--attribute` (`description`, `blockDeviceMapping`) | `--dry-run`, other attributes (`launchPermission`, `bootMode`, `kernel`, `ramdisk`, `sriovNetSupport`, `productCodes`, `tpmSupport`, `uefiData`, `imdsSupport`, `lastLaunchedTime`, `deregistrationProtection`) | **DONE** |
+| `modify-image-attribute` | `--image-id`, `--description` (top-level or structured) | `--launch-permission`, `--imds-support`, `--operation-type`, `--user-ids`, `--user-groups`, `--organization-arns`, `--product-codes`, `--dry-run`, other `--attribute` values | **DONE** |
+| `reset-image-attribute` | `--image-id`, `--attribute description` | `--attribute launchPermission`, `--dry-run` | **DONE** |
+| `import-image` | — | `--disk-containers`, `--description`, `--architecture`, `--platform` | **NOT STARTED** |
+
+`copy-image` is metadata-only — no block copy. The new snapshot inherits the
+source `VolumeID`. `register-image`/`copy-image` accept `uefi-preferred` as
+input but treat it as `uefi` at launch.
+
+### EC2 — Volumes (EBS)
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-volumes` | `--volume-ids`, `--filters` (volume-id, status, size, volume-type, attachment.instance-id, attachment.status, attachment.device, availability-zone, tag:*), persisted `DeleteOnTermination` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `create-volume` | `--size`, `--availability-zone`, `--volume-type` (gp3), `--snapshot-id` | `--iops` (hardcoded 3000), `--encrypted` (hardcoded false), `--throughput`, `--tag-specifications` | **DONE** |
+| `delete-volume` | `--volume-id` | `--dry-run` | **DONE** |
+| `modify-volume` | `--volume-id`, `--size`, `--volume-type`, `--iops` | `--throughput`, `--dry-run`, `--multi-attach-enabled` | **DONE** |
+| `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |
+| `detach-volume` | `--volume-id`, `--instance-id` (optional), `--device`, `--force` | `--dry-run` | **DONE** |
+| `describe-volume-status` | `--volume-ids`, `--filters` (volume-id, volume-status.status, availability-zone) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `describe-volumes-modifications` | — | `--volume-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+
+### EC2 — Snapshots
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-snapshot` | `--volume-id`, `--description`, `--tag-specifications` | `--dry-run` | **DONE** |
+| `delete-snapshot` | `--snapshot-id` | `--dry-run` | **DONE** |
+| `describe-snapshots` | `--snapshot-ids`, `--filters` (snapshot-id, status, volume-id, volume-size, owner-id, tag:*) | `--owner-ids`, `--max-results`, `--dry-run` | **DONE** |
+| `copy-snapshot` | `--source-snapshot-id`, `--source-region`, `--description` | `--encrypted`, `--dry-run` | **DONE** |
+| `create-snapshots` | — | `--instance-specification`, `--description`, `--tag-specifications` | **NOT STARTED** |
+
+### EC2 — Tags
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-tags` | `--resources`, `--tags` | `--dry-run` | **DONE** |
+| `delete-tags` | `--resources`, `--tags` | `--dry-run` | **DONE** |
+| `describe-tags` | `--filters` (resource-id, resource-type, key, value) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+
+### EC2 — Regions, AZs, Account Attributes
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-regions` | — (returns configured region) | `--region-names`, `--filters`, `--all-regions`, `--dry-run` | **DONE** |
+| `describe-availability-zones` | — (returns configured AZ) | `--zone-names`, `--filters`, `--all-availability-zones` | **DONE** |
+| `describe-account-attributes` | `--attribute-names` | `--dry-run` | **DONE** |
+
+### EC2 — Account Settings
+
+Persistence works (NATS JetStream KV) but stored values are not yet enforced
+by downstream services.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `enable-ebs-encryption-by-default` | — | `--dry-run` | **STARTED** (enforcement pending) |
+| `disable-ebs-encryption-by-default` | — | `--dry-run` | **STARTED** (enforcement pending) |
+| `get-ebs-encryption-by-default` | — | `--dry-run` | **STARTED** (enforcement pending) |
+| `enable-serial-console-access` | — | `--dry-run` | **STARTED** (enforcement pending) |
+| `disable-serial-console-access` | — | `--dry-run` | **STARTED** (enforcement pending) |
+| `get-serial-console-access-status` | — | `--dry-run` | **DONE** |
+| `enable-snapshot-block-public-access` | — | `--state` | **NOT STARTED** |
+| `disable-snapshot-block-public-access` | — | `--dry-run` | **NOT STARTED** |
+| `get-snapshot-block-public-access-state` | — | `--dry-run` | **NOT STARTED** |
+| `enable-image-block-public-access` | — | `--image-block-public-access-state` | **NOT STARTED** |
+| `disable-image-block-public-access` | — | `--dry-run` | **NOT STARTED** |
+| `get-image-block-public-access-state` | — | `--dry-run` | **NOT STARTED** |
+| `modify-instance-metadata-defaults` | — | `--http-tokens`, `--http-put-response-hop-limit`, `--http-endpoint`, `--instance-metadata-tags` | **NOT STARTED** |
+| `get-instance-metadata-defaults` | — | `--dry-run` | **NOT STARTED** |
+
+### EC2 — VPC Core
+
+VPC/Subnet/ENI/SG CRUD stores metadata in NATS KV and publishes events to
+vpcd for OVN translation. Single AZ for Spinifex v1.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-vpc` | `--cidr-block`, `--tag-specifications` | `--instance-tenancy`, `--dry-run` | **DONE** |
+| `delete-vpc` | `--vpc-id` | `--dry-run` | **DONE** |
+| `describe-vpcs` | `--vpc-ids`, `--filters` (vpc-id, state, cidr-block, is-default, owner-id, tag:*) | `--max-results`, `--dry-run` | **DONE** |
+| `modify-vpc-attribute` | `--vpc-id`, `--enable-dns-hostnames`, `--enable-dns-support`, `--enable-network-address-usage-metrics` | `--dry-run` | **DONE** |
+| `describe-vpc-attribute` | `--vpc-id`, `--attribute` (enableDnsHostnames, enableDnsSupport, enableNetworkAddressUsageMetrics) | `--dry-run` | **DONE** |
+| `associate-vpc-cidr-block` | — | `--vpc-id`, `--cidr-block` | **NOT STARTED** |
+| `disassociate-vpc-cidr-block` | — | `--association-id` | **NOT STARTED** |
+| `create-subnet` | `--vpc-id`, `--cidr-block`, `--availability-zone`, `--tag-specifications` | `--dry-run` | **DONE** |
+| `delete-subnet` | `--subnet-id` | `--dry-run` | **DONE** |
+| `describe-subnets` | `--subnet-ids`, `--filters` (vpc-id, subnet-id, availability-zone, cidr-block, state, default-for-az, tag:*) | `--max-results`, `--dry-run` | **DONE** |
+| `modify-subnet-attribute` | `--subnet-id`, `--map-public-ip-on-launch` | `--assign-ipv6-address-on-creation`, `--dry-run` | **DONE** |
+| `associate-subnet-cidr-block` | — | `--subnet-id`, `--ipv6-cidr-block` | **NOT STARTED** |
+| `disassociate-subnet-cidr-block` | — | `--association-id` | **NOT STARTED** |
+
+### EC2 — Security Groups
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-security-group` | `--group-name`, `--description`, `--vpc-id`, `--tag-specifications` | `--dry-run` | **DONE** |
+| `delete-security-group` | `--group-id` | `--dry-run` | **DONE** |
+| `describe-security-groups` | `--group-ids`, `--filters` (vpc-id, group-name, group-id, description, ip-permission.cidr, tag:*) | `--group-names`, `--max-results`, `--dry-run` | **DONE** |
+| `authorize-security-group-ingress` | `--group-id`, `--ip-permissions` | `--dry-run` | **DONE** |
+| `authorize-security-group-egress` | `--group-id`, `--ip-permissions` | `--dry-run` | **DONE** |
+| `revoke-security-group-ingress` | `--group-id`, `--ip-permissions` | `--dry-run` | **DONE** |
+| `revoke-security-group-egress` | `--group-id`, `--ip-permissions` | `--dry-run` | **DONE** |
+| `describe-security-group-rules` | `--filters` (group-id, security-group-rule-id, tag:*, tag-key), `--security-group-rule-ids` | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+
+### EC2 — Internet Gateway
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-internet-gateway` | `--tag-specifications` | `--dry-run` | **DONE** |
+| `attach-internet-gateway` | `--internet-gateway-id`, `--vpc-id` | `--dry-run` | **DONE** |
+| `detach-internet-gateway` | `--internet-gateway-id`, `--vpc-id` | `--dry-run` | **DONE** |
+| `delete-internet-gateway` | `--internet-gateway-id` | `--dry-run` | **DONE** |
+| `describe-internet-gateways` | `--internet-gateway-ids`, `--filters` (internet-gateway-id, attachment.vpc-id, attachment.state, tag:*) | `--max-results`, `--dry-run` | **DONE** |
+
+### EC2 — Egress-Only Internet Gateway
+
+KV CRUD only — no OVN/OVS integration. EIGWs are stored but have no effect on
+network topology.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-egress-only-internet-gateway` | `--vpc-id`, `--tag-specifications` | `--client-token`, `--dry-run` | **STARTED** (KV only, no OVN) |
+| `delete-egress-only-internet-gateway` | `--egress-only-internet-gateway-id` | `--dry-run` | **STARTED** (KV only, no OVN) |
+| `describe-egress-only-internet-gateways` | `--egress-only-internet-gateway-ids`, `--filters` (egress-only-internet-gateway-id, tag:*) | `--max-results`, `--next-token`, `--dry-run` | **STARTED** (KV only, no OVN) |
+
+### EC2 — Route Tables
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-route-table` | `--vpc-id` | `--tag-specifications`, `--dry-run` | **DONE** |
+| `delete-route-table` | `--route-table-id` | `--dry-run` | **DONE** |
+| `describe-route-tables` | `--route-table-ids`, `--filters` (vpc-id, route-table-id, association.main, association.route-table-association-id, association.subnet-id, route.destination-cidr-block, route.gateway-id) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `create-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id`, `--nat-gateway-id` | `--egress-only-internet-gateway-id`, `--vpc-peering-connection-id`, `--dry-run` | **DONE** |
+| `delete-route` | `--route-table-id`, `--destination-cidr-block` | `--dry-run` | **DONE** |
+| `replace-route` | `--route-table-id`, `--destination-cidr-block`, `--gateway-id` | `--nat-gateway-id`, `--dry-run` | **DONE** |
+| `associate-route-table` | `--route-table-id`, `--subnet-id` | `--gateway-id`, `--dry-run` | **DONE** |
+| `disassociate-route-table` | `--association-id` | `--dry-run` | **DONE** |
+| `replace-route-table-association` | `--association-id`, `--route-table-id` | `--dry-run` | **DONE** |
+
+### EC2 — Network Interfaces (ENIs)
+
+ENIs are auto-created by `run-instances --subnet-id` and auto-deleted on
+termination. Standalone attach/detach API is internal-only.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-network-interface` | `--subnet-id`, `--private-ip-address`, `--description`, `--tag-specifications` | `--groups`, `--dry-run` | **DONE** |
+| `delete-network-interface` | `--network-interface-id` | `--dry-run` | **DONE** |
+| `describe-network-interfaces` | `--network-interface-ids`, `--filters` (subnet-id, vpc-id, attachment.instance-id) | `--max-results`, `--dry-run` | **DONE** |
+| `modify-network-interface-attribute` | — | `--network-interface-id`, `--description`, `--groups` | **DONE** |
+| `attach-network-interface` | — | `--network-interface-id`, `--instance-id`, `--device-index` | **NOT STARTED** (internal only) |
+| `detach-network-interface` | — | `--attachment-id`, `--force` | **NOT STARTED** (internal only) |
+| `assign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses`, `--secondary-private-ip-address-count` | **NOT STARTED** |
+| `unassign-private-ip-addresses` | — | `--network-interface-id`, `--private-ip-addresses` | **NOT STARTED** |
+
+### EC2 — Elastic IP
+
+EIP commands are only registered when an external IPAM pool is configured.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `allocate-address` | `--public-ipv4-pool`, `--tag-specifications` | `--domain`, `--dry-run` | **DONE** |
+| `release-address` | `--allocation-id` | `--dry-run` | **DONE** |
+| `associate-address` | `--allocation-id`, `--network-interface-id`, `--instance-id`, `--private-ip-address` | `--dry-run`, `--allow-reassociation` | **DONE** |
+| `disassociate-address` | `--association-id` | `--dry-run` | **DONE** |
+| `describe-addresses` | `--allocation-ids`, `--public-ips`, `--filters` (allocation-id, public-ip, instance-id, association-id, domain, tag:*) | `--dry-run` | **DONE** |
+| `describe-addresses-attribute` | `--allocation-ids` | `--attribute`, `--dry-run`, `--max-results`, `--next-token` | **DONE** |
+
+### EC2 — NAT Gateway
+
+Deleted gateways move to a separate KV bucket with 1-hour TTL for Terraform
+polling.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-nat-gateway` | `--subnet-id`, `--allocation-id` | `--connectivity-type`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `delete-nat-gateway` | `--nat-gateway-id` | `--dry-run` | **DONE** |
+| `describe-nat-gateways` | `--nat-gateway-ids`, `--filters` (vpc-id, state) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
+| `assign-private-nat-gateway-address` | — | `--nat-gateway-id`, `--private-ip-addresses` | **NOT STARTED** |
+| `associate-nat-gateway-address` | — | `--nat-gateway-id`, `--allocation-ids` | **NOT STARTED** |
+
+### EC2 — Placement Groups
+
+Strategies: `spread` (1 instance per node, strict) and `cluster` (all pinned
+to single node). `partition` rejected.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-placement-group` | `--group-name`, `--strategy` (spread/cluster) | `--partition-count`, `--spread-level`, `--tag-specifications`, `--dry-run` | **DONE** |
+| `delete-placement-group` | `--group-name` | `--dry-run` | **DONE** |
+| `describe-placement-groups` | `--group-names`, `--group-ids`, `--filters` (strategy, state, spread-level, group-name) | `--dry-run` | **DONE** |
+
+### EC2 — VPC Peering
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-vpc-peering-connection` | — | `--vpc-id`, `--peer-vpc-id`, `--peer-owner-id`, `--peer-region`, `--tag-specifications` | **NOT STARTED** |
+| `accept-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | **NOT STARTED** |
+| `reject-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | **NOT STARTED** |
+| `delete-vpc-peering-connection` | — | `--vpc-peering-connection-id`, `--dry-run` | **NOT STARTED** |
+| `describe-vpc-peering-connections` | — | `--vpc-peering-connection-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `modify-vpc-peering-connection-options` | — | `--vpc-peering-connection-id`, `--requester-peering-connection-options`, `--accepter-peering-connection-options` | **NOT STARTED** |
+
+### EC2 — VPC Endpoints
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-vpc-endpoint` | — | `--vpc-id`, `--service-name`, `--vpc-endpoint-type`, `--route-table-ids`, `--subnet-ids`, `--tag-specifications` | **NOT STARTED** |
+| `delete-vpc-endpoints` | — | `--vpc-endpoint-ids`, `--dry-run` | **NOT STARTED** |
+| `describe-vpc-endpoints` | — | `--vpc-endpoint-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `describe-vpc-endpoint-services` | — | `--service-names`, `--filters`, `--max-results` | **NOT STARTED** |
+| `modify-vpc-endpoint` | — | `--vpc-endpoint-id`, `--add-route-table-ids`, `--remove-route-table-ids`, `--add-subnet-ids`, `--remove-subnet-ids` | **NOT STARTED** |
+
+### EC2 — VPN & Customer Gateway
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-customer-gateway` | — | `--type`, `--bgp-asn`, `--ip-address`, `--tag-specifications` | **NOT STARTED** |
+| `delete-customer-gateway` | — | `--customer-gateway-id`, `--dry-run` | **NOT STARTED** |
+| `describe-customer-gateways` | — | `--customer-gateway-ids`, `--filters` | **NOT STARTED** |
+| `create-vpn-gateway` | — | `--type`, `--amazon-side-asn`, `--tag-specifications` | **NOT STARTED** |
+| `delete-vpn-gateway` | — | `--vpn-gateway-id`, `--dry-run` | **NOT STARTED** |
+| `attach-vpn-gateway` | — | `--vpn-gateway-id`, `--vpc-id` | **NOT STARTED** |
+| `detach-vpn-gateway` | — | `--vpn-gateway-id`, `--vpc-id` | **NOT STARTED** |
+| `describe-vpn-gateways` | — | `--vpn-gateway-ids`, `--filters` | **NOT STARTED** |
+| `create-vpn-connection` | — | `--type`, `--customer-gateway-id`, `--vpn-gateway-id`, `--options`, `--tag-specifications` | **NOT STARTED** |
+| `delete-vpn-connection` | — | `--vpn-connection-id`, `--dry-run` | **NOT STARTED** |
+| `describe-vpn-connections` | — | `--vpn-connection-ids`, `--filters` | **NOT STARTED** |
+| `modify-vpn-connection` | — | `--vpn-connection-id`, `--vpn-gateway-id`, `--customer-gateway-id` | **NOT STARTED** |
+| `modify-vpn-connection-options` | — | `--vpn-connection-id`, `--local-ipv4-network-cidr`, `--remote-ipv4-network-cidr` | **NOT STARTED** |
+
+### EC2 — Network ACLs
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-network-acl` | — | `--vpc-id`, `--tag-specifications` | **NOT STARTED** |
+| `delete-network-acl` | — | `--network-acl-id`, `--dry-run` | **NOT STARTED** |
+| `describe-network-acls` | — | `--network-acl-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `create-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--protocol`, `--rule-action`, `--cidr-block`, `--ingress`/`--egress`, `--port-range` | **NOT STARTED** |
+| `delete-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--ingress`/`--egress` | **NOT STARTED** |
+| `replace-network-acl-association` | — | `--association-id`, `--network-acl-id` | **NOT STARTED** |
+| `replace-network-acl-entry` | — | `--network-acl-id`, `--rule-number`, `--protocol`, `--rule-action`, `--cidr-block`, `--ingress`/`--egress`, `--port-range` | **NOT STARTED** |
+
+### EC2 — Prefix Lists
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-managed-prefix-list` | — | `--prefix-list-name`, `--address-family`, `--max-entries`, `--entries`, `--tag-specifications` | **NOT STARTED** |
+| `delete-managed-prefix-list` | — | `--prefix-list-id`, `--dry-run` | **NOT STARTED** |
+| `describe-managed-prefix-lists` | — | `--prefix-list-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `modify-managed-prefix-list` | — | `--prefix-list-id`, `--current-version`, `--add-entries`, `--remove-entries`, `--prefix-list-name` | **NOT STARTED** |
+| `get-managed-prefix-list-entries` | — | `--prefix-list-id`, `--target-version`, `--max-results` | **NOT STARTED** |
+| `get-managed-prefix-list-associations` | — | `--prefix-list-id`, `--max-results` | **NOT STARTED** |
+
+### EC2 — Launch Templates
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-launch-template` | — | `--launch-template-name`, `--launch-template-data`, `--tag-specifications` | **NOT STARTED** |
+| `create-launch-template-version` | — | `--launch-template-id`/`--launch-template-name`, `--launch-template-data`, `--source-version` | **NOT STARTED** |
+| `delete-launch-template` | — | `--launch-template-id`/`--launch-template-name`, `--dry-run` | **NOT STARTED** |
+| `describe-launch-templates` | — | `--launch-template-ids`, `--launch-template-names`, `--filters` | **NOT STARTED** |
+| `describe-launch-template-versions` | — | `--launch-template-id`/`--launch-template-name`, `--versions`, `--min-version`, `--max-version` | **NOT STARTED** |
+
+### EC2 — Dedicated Hosts, IPv4 Pools, DHCP, Capacity Reservations
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `allocate-hosts` | — | `--availability-zone`, `--instance-type`, `--quantity`, `--auto-placement`, `--tag-specifications` | **NOT STARTED** |
+| `describe-hosts` | — | `--host-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `release-hosts` | — | `--host-ids` | **NOT STARTED** |
+| `create-public-ipv4-pool` | — | `--tag-specifications`, `--dry-run` | **NOT STARTED** |
+| `delete-public-ipv4-pool` | — | `--pool-id`, `--dry-run` | **NOT STARTED** |
+| `describe-public-ipv4-pools` | — | `--pool-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `create-dhcp-options` | — | `--dhcp-configurations`, `--tag-specifications` | **NOT STARTED** |
+| `delete-dhcp-options` | — | `--dhcp-options-id`, `--dry-run` | **NOT STARTED** |
+| `describe-dhcp-options` | — | `--dhcp-options-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `associate-dhcp-options` | — | `--dhcp-options-id`, `--vpc-id`, `--dry-run` | **NOT STARTED** |
+| `create-capacity-reservation` | — | `--instance-type`, `--instance-platform`, `--availability-zone`, `--instance-count`, `--end-date`, `--end-date-type`, `--instance-match-criteria`, `--tag-specifications` | **NOT STARTED** |
+| `cancel-capacity-reservation` | — | `--capacity-reservation-id`, `--dry-run` | **NOT STARTED** |
+| `describe-capacity-reservations` | — | `--capacity-reservation-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `modify-capacity-reservation` | — | `--capacity-reservation-id`, `--instance-count`, `--end-date`, `--end-date-type` | **NOT STARTED** |
+
+### EC2 — Misc
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `delete-network-interface-permission` | — | `--network-interface-permission-id`, `--force` | **NOT STARTED** |
+| `enable-address-transfer` | — | `--allocation-id`, `--transfer-account-id` | **NOT STARTED** |
+| `disable-address-transfer` | — | `--allocation-id` | **NOT STARTED** |
 
 ### EBS Direct API
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `start-snapshot` | — | `--volume-size`, `--parent-snapshot-id`, `--description`, `--encrypted` | None | Initialize snapshot in viperblock → return snap-ID for block-level writes | 1. Start new snapshot<br>2. Start incremental from parent | **NOT STARTED** |
-| `put-snapshot-block` | — | `--snapshot-id`, `--block-index`, `--block-data`, `--checksum` | start-snapshot | Write block data to snapshot at specified index in viperblock → verify checksum | 1. Write single block<br>2. Write with bad checksum (error) | **NOT STARTED** |
-| `get-snapshot-block` | — | `--snapshot-id`, `--block-index` | Snapshot must exist | Read block data from snapshot at specified index → return data with checksum | 1. Read existing block<br>2. Read sparse block (zeros) | **NOT STARTED** |
-| `complete-snapshot` | — | `--snapshot-id`, `--changed-blocks-count` | start-snapshot, put-snapshot-block | Finalize snapshot → mark as completed → sync to Predastore | 1. Complete valid snapshot<br>2. Complete with wrong block count (error) | **NOT STARTED** |
-| `list-snapshot-blocks` | — | `--snapshot-id`, `--max-results`, `--next-token` | Snapshot must exist | List all non-empty blocks in snapshot with tokens and sizes | 1. List blocks of populated snapshot<br>2. List blocks of empty snapshot | **NOT STARTED** |
-| `list-changed-blocks` | — | `--second-snapshot-id`, `--first-snapshot-id`, `--max-results` | Snapshots must exist | Compare two snapshots → return list of differing block indexes | 1. Compare parent and child snapshots<br>2. Compare unrelated snapshots | **NOT STARTED** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `start-snapshot` | — | `--volume-size`, `--parent-snapshot-id`, `--description`, `--encrypted` | **NOT STARTED** |
+| `put-snapshot-block` | — | `--snapshot-id`, `--block-index`, `--block-data`, `--checksum` | **NOT STARTED** |
+| `get-snapshot-block` | — | `--snapshot-id`, `--block-index` | **NOT STARTED** |
+| `complete-snapshot` | — | `--snapshot-id`, `--changed-blocks-count` | **NOT STARTED** |
+| `list-snapshot-blocks` | — | `--snapshot-id`, `--max-results`, `--next-token` | **NOT STARTED** |
+| `list-changed-blocks` | — | `--second-snapshot-id`, `--first-snapshot-id`, `--max-results` | **NOT STARTED** |
 
-### IAM - User Management
+---
 
-All IAM operations are account-scoped. Users, policies, and access keys are namespaced per account. The gateway extracts the account ID from the authenticated access key via `c.Locals("sigv4.accountId")` and passes it to all IAM service methods. Root user (account `000000000000`) bypasses policy evaluation entirely.
+## IAM
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-user` | `--user-name`, `--path` | `--tags`, `--permissions-boundary` | None | Gateway validates UserName non-empty → IAMService.CreateUser(accountID, input) → generates AIDA-prefixed UserId → stores in KV at key `{accountID}.{userName}` → ARN includes real account ID → conditional create for race safety | 1. Create user<br>2. Duplicate name in same account (EntityAlreadyExists)<br>3. Same name in different account (succeeds)<br>4. Missing username (InvalidInput)<br>5. Default path is `/` | **DONE** |
-| `get-user` | `--user-name` | — | User must exist in caller's account | Gateway validates UserName → IAMService.GetUser(accountID, input) → reads from KV at `{accountID}.{userName}` → returns User with ARN, Path, CreateDate | 1. Get existing user<br>2. Get non-existent user (NoSuchEntity)<br>3. Cannot see user in different account (NoSuchEntity) | **DONE** |
-| `list-users` | `--path-prefix` | `--max-items`, `--marker` | None | IAMService.ListUsers(accountID, input) → prefix-scans KV for `{accountID}.*` → filters by path prefix if specified → returns user list scoped to caller's account | 1. List all users in account<br>2. List with path prefix filter<br>3. Empty list<br>4. Does not show other accounts' users | **DONE** |
-| `delete-user` | `--user-name` | — | User must exist, no access keys attached | Gateway validates UserName → IAMService.DeleteUser(accountID, input) → checks user has no access keys → deletes from KV | 1. Delete user with no keys<br>2. Delete user with keys attached (DeleteConflict)<br>3. Delete non-existent user (NoSuchEntity) | **DONE** |
+All IAM operations are account-scoped. Root user (account `000000000000`)
+bypasses policy evaluation entirely.
 
-### IAM - Access Key Management
+### IAM — Users
 
-Access keys are globally unique (keyed by AccessKeyID) but associated with an account. Max 2 keys per user. Secrets encrypted with AES-256-GCM using master key.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-user` | `--user-name`, `--path` | `--tags`, `--permissions-boundary` | **DONE** |
+| `get-user` | `--user-name` | — | **DONE** |
+| `list-users` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `delete-user` | `--user-name` | — | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-access-key` | `--user-name` | — | User must exist | IAMService.CreateAccessKey(accountID, input) → generates AKIA-prefixed key ID + random secret → encrypts secret with master key → stores in KV (globally unique key ID) → updates user's AccessKeys list → returns plaintext secret (one-time only) | 1. Create key for user (AKIA prefix)<br>2. Max 2 keys per user (LimitExceeded on 3rd)<br>3. Non-existent user (NoSuchEntity)<br>4. Secret only returned on creation | **DONE** |
-| `list-access-keys` | `--user-name` | `--max-items`, `--marker` | None | IAMService.ListAccessKeys(accountID, input) → reads user's AccessKeys list → fetches each key's metadata → returns key IDs and status (no secrets) | 1. List keys for user<br>2. No keys returns empty list<br>3. Shows Status (Active/Inactive) but not secrets | **DONE** |
-| `delete-access-key` | `--access-key-id`, `--user-name` | — | Key must exist | IAMService.DeleteAccessKey(accountID, input) → removes key from global KV → removes key ID from user's AccessKeys list | 1. Delete existing key<br>2. Delete non-existent key (NoSuchEntity) | **DONE** |
-| `update-access-key` | `--access-key-id`, `--user-name`, `--status` (Active/Inactive) | — | Key must exist | IAMService.UpdateAccessKey(input) → reads key from global KV (key ID is globally unique, no accountID needed) → updates Status field → inactive keys rejected at SigV4 auth | 1. Deactivate key (Inactive)<br>2. Reactivate key (Active)<br>3. Non-existent key (NoSuchEntity)<br>4. Inactive key → auth returns InvalidClientTokenId | **DONE** |
+### IAM — Access Keys
 
-### IAM - Policy Management
+Max 2 keys per user. Secrets encrypted with AES-256-GCM using master key,
+returned plaintext only at creation.
 
-Policies are account-scoped. KV key is `{accountID}.{policyName}`. Policy documents require `Version: "2012-10-17"` and valid Statement array. Supports wildcard action matching (`ec2:*`, `ec2:Describe*`, `*`). Evaluation order: explicit Deny > explicit Allow > implicit Deny.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-access-key` | `--user-name` | — | **DONE** |
+| `list-access-keys` | `--user-name` | `--max-items`, `--marker` | **DONE** |
+| `delete-access-key` | `--access-key-id`, `--user-name` | — | **DONE** |
+| `update-access-key` | `--access-key-id`, `--user-name`, `--status` (Active/Inactive) | — | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-policy` | `--policy-name`, `--policy-document`, `--path`, `--description` | `--tags` | None | Gateway validates PolicyName and PolicyDocument non-empty → IAMService.CreatePolicy(accountID, input) → validates JSON (Version, Statement with Effect/Action/Resource) → generates ANPA-prefixed PolicyId → stores at `{accountID}.{policyName}` → ARN includes real account ID | 1. Create with valid document<br>2. Malformed JSON (MalformedPolicyDocument)<br>3. Missing Effect/Action/Resource (MalformedPolicyDocument)<br>4. Duplicate name in same account (EntityAlreadyExists)<br>5. Same name in different account (succeeds)<br>6. With path and description | **DONE** |
-| `get-policy` | `--policy-arn` | — | Policy must exist | Gateway validates PolicyArn → extracts account ID and policy name from ARN → IAMService.GetPolicy(accountID, input) → returns policy metadata (no document) with AttachmentCount | 1. Get existing policy<br>2. Non-existent policy (NoSuchEntity)<br>3. Returns metadata only, not document | **DONE** |
-| `get-policy-version` | `--policy-arn`, `--version-id` | — | Policy must exist | Gateway validates PolicyArn and VersionId → IAMService.GetPolicyVersion(accountID, input) → returns PolicyVersion with URL-encoded Document, VersionId, IsDefaultVersion | 1. Get version v1 (returns document)<br>2. Non-existent version (NoSuchEntity)<br>3. Non-existent policy (NoSuchEntity) | **DONE** |
-| `list-policies` | — | `--scope`, `--only-attached`, `--path-prefix`, `--max-items`, `--marker` | None | IAMService.ListPolicies(accountID, input) → prefix-scans KV for `{accountID}.*` → returns all policies in caller's account | 1. List all policies in account<br>2. Empty list<br>3. Does not show other accounts' policies | **DONE** |
-| `delete-policy` | `--policy-arn` | — | Policy must exist, not attached to any user | Gateway validates PolicyArn → IAMService.DeletePolicy(accountID, input) → checks no users have this policy attached (scans account's users) → deletes from KV | 1. Delete unattached policy<br>2. Delete attached policy (DeleteConflict)<br>3. Delete non-existent (NoSuchEntity) | **DONE** |
+### IAM — Policies
 
-### IAM - Policy Attachment
+Policy documents require `Version: "2012-10-17"` and a valid Statement array.
+Wildcard action matching supported (`ec2:*`, `ec2:Describe*`, `*`). Evaluation
+order: explicit Deny > explicit Allow > implicit Deny.
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `attach-user-policy` | `--user-name`, `--policy-arn` | — | User and policy must exist in caller's account | Gateway validates both params → IAMService.AttachUserPolicy(accountID, input) → verifies policy exists → adds policy ARN to user's AttachedPolicies list → idempotent (re-attach succeeds without duplicate) | 1. Attach policy to user<br>2. Already attached (idempotent, no error)<br>3. Non-existent user (NoSuchEntity)<br>4. Non-existent policy (NoSuchEntity) | **DONE** |
-| `detach-user-policy` | `--user-name`, `--policy-arn` | — | Policy must be attached to user | Gateway validates both params → IAMService.DetachUserPolicy(accountID, input) → removes policy ARN from user's AttachedPolicies list | 1. Detach attached policy<br>2. Policy not attached (NoSuchEntity)<br>3. Non-existent user (NoSuchEntity) | **DONE** |
-| `list-attached-user-policies` | `--user-name` | `--path-prefix`, `--max-items`, `--marker` | User must exist | IAMService.ListAttachedUserPolicies(accountID, input) → reads user's AttachedPolicies list → returns policy ARNs and names | 1. List attached policies<br>2. No policies returns empty list | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-policy` | `--policy-name`, `--policy-document`, `--path`, `--description` | `--tags` | **DONE** |
+| `get-policy` | `--policy-arn` | — | **DONE** |
+| `get-policy-version` | `--policy-arn`, `--version-id` | — | **DONE** |
+| `list-policies` | — | `--scope`, `--only-attached`, `--path-prefix`, `--max-items`, `--marker` | **DONE** |
+| `delete-policy` | `--policy-arn` | — | **DONE** |
+| `attach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
+| `detach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |
+| `list-attached-user-policies` | `--user-name` | `--path-prefix`, `--max-items`, `--marker` | **DONE** |
 
+### IAM — Policy Evaluation (internal — not an AWS API)
 
-### IAM - Policy Evaluation
+| Feature | Status |
+|---------|--------|
+| Root user bypass | **DONE** |
+| Default deny | **DONE** |
+| Explicit allow | **DONE** |
+| Explicit deny | **DONE** |
+| Wildcard matching (`*`, `ec2:*`, `ec2:Describe*`) | **DONE** |
+| Account-scoped evaluation | **DONE** |
+| EC2 action mapping | **DONE** |
+| IAM action mapping (16 actions) | **DONE** |
 
-The gateway evaluates IAM policies on every request (except root user bypass). Policy evaluation is internal — not an AWS API.
+### IAM — Roles
 
-| Feature | Description | Status |
-|---------|-------------|--------|
-| Root user bypass | Root user (`000000000000:root`) skips all policy checks | **DONE** |
-| Default deny | Users with no attached policies are denied all actions | **DONE** |
-| Explicit allow | Matching Allow statement grants access | **DONE** |
-| Explicit deny | Deny statements override Allow (deny wins) | **DONE** |
-| Wildcard matching | `*` matches all, `ec2:*` matches all EC2, `ec2:Describe*` matches prefix | **DONE** |
-| Account-scoped evaluation | Policies resolved from caller's account context | **DONE** |
-| EC2 action mapping | All registered EC2 actions mapped to IAM policy strings | **DONE** |
-| IAM action mapping | 16 IAM actions mapped to IAM policy strings | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-role` | `--role-name`, `--assume-role-policy-document`, `--path`, `--description`, `--max-session-duration`, `--tags` | `--permissions-boundary` | **DONE** |
+| `get-role` | `--role-name` | — | **DONE** |
+| `list-roles` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `delete-role` | `--role-name` | — | **DONE** |
+| `update-role` | `--role-name`, `--description`, `--max-session-duration` | — | **DONE** |
+| `update-assume-role-policy` | `--role-name`, `--policy-document` | — | **DONE** |
+| `attach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
+| `detach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
+| `list-attached-role-policies` | `--role-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
 
-### IAM - Roles
+### IAM — Instance Profiles
 
-IAM roles are required for instance profiles, cross-account access, and service-linked permissions. Without roles, workloads must use static access keys. Roles should be stored in a `spinifex-iam-roles` KV bucket keyed by `{accountID}.{roleName}`. Trust policies (AssumeRolePolicyDocument) define who can assume the role.
+Containers for IAM roles that allow EC2 instances to assume a role. Required
+for `run-instances --iam-instance-profile`. Max 1 role per profile.
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-role` | `--role-name`, `--assume-role-policy-document`, `--path`, `--description`, `--max-session-duration`, `--tags` | `--permissions-boundary` (out of scope v1) | None | IAMService.CreateRole(accountID, input) → validate RoleName + AssumeRolePolicyDocument (required, ≤ 2048 bytes; `ValidateTrustPolicyDocument` checks valid JSON, Version `2012-10-17`, ≥1 Statement, each Statement has Effect Allow/Deny + Principal — Principal contents and Action are NOT validated, deferred to STS) → validate Path → validate MaxSessionDuration (default 3600, must be 900-43200 → `ValidationError`) → persist Tags byte-for-byte onto Role.Tags → generate AROA-prefixed RoleId → store RoleRecord in `spinifex-iam-roles` KV at `{accountID}.{roleName}` → ARN: `arn:aws:iam::{accountID}:role{path}{roleName}` → return Role | 1. Create with valid trust policy<br>2. Malformed trust policy (MalformedPolicyDocument)<br>3. Duplicate name (EntityAlreadyExists)<br>4. Missing RoleName (InvalidInput)<br>5. With path and description<br>6. MaxSessionDuration out of range (ValidationError)<br>7. Trust policy > 2048 bytes (MalformedPolicyDocument) | **DONE** |
-| `get-role` | `--role-name` | — | Role must exist | IAMService.GetRole(accountID, input) → reads from KV at `{accountID}.{roleName}` → returns Role with ARN, Path, AssumeRolePolicyDocument, CreateDate | 1. Get existing role<br>2. Non-existent role (NoSuchEntity) | **DONE** |
-| `list-roles` | `--path-prefix` | *(pagination — `--max-items`, `--marker` — intentionally deferred)* | None | IAMService.ListRoles(accountID, input) → prefix-scans KV for `{accountID}.*` → filters by `strings.HasPrefix(Path, PathPrefix)` → returns role list scoped to caller's account | 1. List all roles<br>2. List with path prefix<br>3. Empty list<br>4. Account isolation | **DONE** |
-| `delete-role` | `--role-name` | — | Role must exist, no attached policies, no instance profiles | IAMService.DeleteRole(accountID, input) → verify `AttachedPolicies` empty (DeleteConflict — "role has attached policies") → scan `instanceProfilesBucket` for any profile in this account with `RoleName == this role` (DeleteConflict — "role is associated with instance profiles", mirrors `countPolicyAttachments`) → delete from KV | 1. Delete role with no attachments<br>2. Delete role with policies (DeleteConflict)<br>3. Delete role in instance profile (DeleteConflict)<br>4. Non-existent role (NoSuchEntity) | **DONE** |
-| `update-role` | `--role-name`, `--description`, `--max-session-duration` | — | Role must exist | IAMService.UpdateRole(accountID, input) → read-modify-write Role record; updates Description and/or MaxSessionDuration (same 900-43200 range validation as `create-role` → `ValidationError`) | 1. Update description<br>2. Update max session duration<br>3. MaxSessionDuration out of range (ValidationError)<br>4. Non-existent role (NoSuchEntity) | **DONE** |
-| `update-assume-role-policy` | `--role-name`, `--policy-document` | — | Role must exist | IAMService.UpdateAssumeRolePolicy(accountID, input) → validate via `ValidateTrustPolicyDocument` (same rules as `create-role`) → replace `Role.AssumeRolePolicyDocument` in KV | 1. Update trust policy<br>2. Malformed policy (MalformedPolicyDocument)<br>3. Non-existent role (NoSuchEntity) | **DONE** |
-| `attach-role-policy` | `--role-name`, `--policy-arn` | — | Role and policy must exist | IAMService.AttachRolePolicy(accountID, input) → verify policy exists → append ARN to `Role.AttachedPolicies` if not already present → idempotent re-attach | 1. Attach policy<br>2. Already attached (idempotent)<br>3. Non-existent role (NoSuchEntity)<br>4. Non-existent policy (NoSuchEntity) | **DONE** |
-| `detach-role-policy` | `--role-name`, `--policy-arn` | — | Policy must be attached | IAMService.DetachRolePolicy(accountID, input) → remove ARN from `Role.AttachedPolicies`; NoSuchEntity if not present | 1. Detach attached policy<br>2. Not attached (NoSuchEntity)<br>3. Non-existent role (NoSuchEntity) | **DONE** |
-| `list-attached-role-policies` | `--role-name`, `--path-prefix` | *(pagination — `--max-items`, `--marker` — intentionally deferred)* | Role must exist | IAMService.ListAttachedRolePolicies(accountID, input) → reads role's `AttachedPolicies` list → returns ARNs and names | 1. List attached policies<br>2. No policies (empty list)<br>3. Non-existent role (NoSuchEntity) | **DONE** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-instance-profile` | `--instance-profile-name`, `--path`, `--tags` | — | **DONE** |
+| `get-instance-profile` | `--instance-profile-name` | — | **DONE** |
+| `list-instance-profiles` | `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `list-instance-profiles-for-role` | `--role-name` | `--max-items`, `--marker` | **DONE** |
+| `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
+| `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
+| `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 
-### IAM - Instance Profiles
+### IAM — Groups
 
-Instance profiles are containers for IAM roles that allow EC2 instances to assume a role and obtain temporary credentials. Required for `run-instances --iam-instance-profile`. Stored in `spinifex-iam-instance-profiles` KV bucket keyed by `{accountID}.{profileName}`.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-group` | — | `--group-name`, `--path` | **NOT STARTED** |
+| `get-group` | — | `--group-name` | **NOT STARTED** |
+| `list-groups` | — | `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
+| `delete-group` | — | `--group-name` | **NOT STARTED** |
+| `add-user-to-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
+| `remove-user-from-group` | — | `--group-name`, `--user-name` | **NOT STARTED** |
+| `list-groups-for-user` | — | `--user-name`, `--max-items`, `--marker` | **NOT STARTED** |
+| `attach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
+| `detach-group-policy` | — | `--group-name`, `--policy-arn` | **NOT STARTED** |
+| `list-attached-group-policies` | — | `--group-name`, `--path-prefix`, `--max-items`, `--marker` | **NOT STARTED** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-instance-profile` | `--instance-profile-name`, `--path`, `--tags` | — | None | IAMService.CreateInstanceProfile(accountID, input) → validate name (required, via `validatePolicyName`: 1-128 chars) → validate Path → persist Tags byte-for-byte onto `InstanceProfile.Tags` → generate AIPA-prefixed InstanceProfileId → store in `spinifex-iam-instance-profiles` KV at `{accountID}.{profileName}` with empty `RoleName` (internal storage is a single `RoleName string`; the SDK output shape is `Roles []*Role` with 0 or 1 elements) → ARN: `arn:aws:iam::{accountID}:instance-profile{path}{name}` → return InstanceProfile | 1. Create profile<br>2. Duplicate name (EntityAlreadyExists)<br>3. Missing name (InvalidInput) | **DONE** |
-| `get-instance-profile` | `--instance-profile-name` | — | Profile must exist | IAMService.GetInstanceProfile(accountID, input) → reads from KV → returns InstanceProfile; `Roles` is a 0- or 1-element list derived from `RoleName` | 1. Get existing profile<br>2. Non-existent (NoSuchEntity) | **DONE** |
-| `list-instance-profiles` | `--path-prefix` | *(pagination — `--max-items`, `--marker` — intentionally deferred)* | None | IAMService.ListInstanceProfiles(accountID, input) → prefix-scans KV for `{accountID}.*` → filters by `strings.HasPrefix(Path, PathPrefix)` → returns list | 1. List all profiles<br>2. List with path prefix<br>3. Empty list | **DONE** |
-| `list-instance-profiles-for-role` | `--role-name` | *(pagination — `--max-items`, `--marker` — intentionally deferred)* | Role must exist | IAMService.ListInstanceProfilesForRole(accountID, input) → scan profiles in caller's account → filter where `RoleName == this role` → return list | 1. List profiles for role<br>2. Role not in any profile (empty) | **DONE** |
-| `delete-instance-profile` | `--instance-profile-name` | — | Profile must exist, `RoleName` must be empty | IAMService.DeleteInstanceProfile(accountID, input) → refuse if `RoleName != ""` (DeleteConflict — "instance profile has a role attached") → delete from KV. Note: live-instance check is added by the EC2 association plan (`iam-roles-v1-ec2.md`) — no EC2 association mechanism exists at this stage. | 1. Delete empty profile<br>2. Delete profile with role (DeleteConflict)<br>3. Non-existent (NoSuchEntity) | **DONE** |
-| `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | Both must exist, max 1 role per profile | IAMService.AddRoleToInstanceProfile(accountID, input) → verify profile exists → verify role exists → check `RoleName == ""` (LimitExceeded — "instance profile can contain only one role" — if already set) → set `InstanceProfile.RoleName` and write back (single-record update) | 1. Add role to empty profile<br>2. Profile already has role (LimitExceeded)<br>3. Non-existent profile (NoSuchEntity)<br>4. Non-existent role (NoSuchEntity) | **DONE** |
-| `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | Role must be in profile | IAMService.RemoveRoleFromInstanceProfile(accountID, input) → NoSuchEntity if profile has no role attached → clear `InstanceProfile.RoleName` and write back | 1. Remove role<br>2. Role not in profile (NoSuchEntity) | **DONE** |
+---
 
-### IAM - Groups
+## STS
 
-Groups provide a way to attach policies to multiple users. Stored in `spinifex-iam-groups` KV bucket keyed by `{accountID}.{groupName}`.
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `get-caller-identity` | — | — | **NOT STARTED** (Spinifex-custom version exists; proper STS endpoint pending) |
+| `assume-role` | — | `--role-arn`, `--role-session-name`, `--duration-seconds`, `--policy`, `--external-id`, `--serial-number`, `--token-code`, `--tags`, `--transitive-tag-keys` | **NOT STARTED** |
+| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-group` | — | `--group-name`, `--path` | None | IAMService.CreateGroup(accountID, input) → validate GroupName (required) → generate AGPA-prefixed GroupId → store in KV → return Group | 1. Create group<br>2. Duplicate name (EntityAlreadyExists)<br>3. Missing name (InvalidInput) | **NOT STARTED** |
-| `get-group` | — | `--group-name` | Group must exist | IAMService.GetGroup(accountID, input) → reads group from KV → returns Group with member Users list | 1. Get existing group<br>2. Non-existent (NoSuchEntity) | **NOT STARTED** |
-| `list-groups` | — | `--path-prefix`, `--max-items`, `--marker` | None | IAMService.ListGroups(accountID, input) → prefix-scans KV → returns list | 1. List all groups<br>2. Empty list | **NOT STARTED** |
-| `delete-group` | — | `--group-name` | Group must exist, no members, no attached policies | IAMService.DeleteGroup(accountID, input) → verify no members → verify no attached policies → delete from KV | 1. Delete empty group<br>2. Delete group with members (DeleteConflict)<br>3. Delete group with policies (DeleteConflict)<br>4. Non-existent (NoSuchEntity) | **NOT STARTED** |
-| `add-user-to-group` | — | `--group-name`, `--user-name` | Both must exist | IAMService.AddUserToGroup(accountID, input) → verify group + user exist → add user to group's Members list → idempotent | 1. Add user<br>2. Already a member (idempotent)<br>3. Non-existent group (NoSuchEntity)<br>4. Non-existent user (NoSuchEntity) | **NOT STARTED** |
-| `remove-user-from-group` | — | `--group-name`, `--user-name` | User must be in group | IAMService.RemoveUserFromGroup(accountID, input) → remove user from Members list → update KV | 1. Remove member<br>2. Not a member (NoSuchEntity) | **NOT STARTED** |
-| `list-groups-for-user` | — | `--user-name`, `--max-items`, `--marker` | User must exist | IAMService.ListGroupsForUser(accountID, input) → scan all groups → filter where Members contains user → return list | 1. List groups for user<br>2. User in no groups (empty) | **NOT STARTED** |
-| `attach-group-policy` | — | `--group-name`, `--policy-arn` | Group and policy must exist | IAMService.AttachGroupPolicy(accountID, input) → verify policy exists → add ARN to group's AttachedPolicies → idempotent | 1. Attach policy<br>2. Already attached (idempotent)<br>3. Non-existent group (NoSuchEntity) | **NOT STARTED** |
-| `detach-group-policy` | — | `--group-name`, `--policy-arn` | Policy must be attached | IAMService.DetachGroupPolicy(accountID, input) → remove ARN from AttachedPolicies | 1. Detach policy<br>2. Not attached (NoSuchEntity) | **NOT STARTED** |
-| `list-attached-group-policies` | — | `--group-name`, `--path-prefix`, `--max-items`, `--marker` | Group must exist | IAMService.ListAttachedGroupPolicies(accountID, input) → reads group's AttachedPolicies → returns ARNs and names | 1. List attached policies<br>2. No policies (empty) | **NOT STARTED** |
+---
 
-### STS (Security Token Service)
+## ELBv2 (Application & Network Load Balancer)
 
-STS provides temporary credentials and identity verification. `GetCallerIdentity` is called by every AWS SDK/CLI invocation. `AssumeRole` is required once IAM roles are implemented. STS needs its own gateway service endpoint (`sts` service in the `supportedServices` map) with a dedicated action map.
+The data plane uses a system-managed LB VM running HAProxy, launched
+automatically during `create-load-balancer`. HAProxy config is pushed via NATS
+on listener/target changes.
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `get-caller-identity` | — | *(no flags)* | Valid SigV4 credentials | Gateway extracts accountID and username from authenticated request → returns Account, Arn (`arn:aws:iam::{accountID}:user/{userName}` or `arn:aws:sts::{accountID}:assumed-role/{roleName}/{sessionName}`), UserId. Note: a Spinifex-custom version exists at `spinifex.GetCallerIdentity` but needs a proper STS endpoint. | 1. Get identity for IAM user<br>2. Get identity for assumed role<br>3. Get identity for root user<br>4. Invalid credentials (AuthFailure) | **NOT STARTED** |
-| `assume-role` | — | `--role-arn`, `--role-session-name`, `--duration-seconds`, `--policy`, `--external-id`, `--serial-number`, `--token-code`, `--tags`, `--transitive-tag-keys` | Role must exist, caller must be allowed by trust policy | Gateway validates RoleArn + RoleSessionName (required) → looks up role → evaluates trust policy (AssumeRolePolicyDocument) against caller → generates temporary credentials (AccessKeyId with ASIA prefix, SecretAccessKey, SessionToken) → credentials expire after DurationSeconds (default 3600, max 43200) → return Credentials + AssumedRoleUser (ARN, AssumedRoleId) | 1. Assume role with valid trust policy<br>2. Trust policy denies caller (AccessDenied)<br>3. Non-existent role (NoSuchEntity)<br>4. Expired session token rejected at SigV4<br>5. Custom duration<br>6. Session tags | **NOT STARTED** |
-| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | Valid IAM user credentials (not role) | Gateway validates caller is IAM user (not assumed role) → generates temporary credentials (ASIA prefix) → session inherits user's permissions → return Credentials | 1. Get token for IAM user<br>2. Duration within range<br>3. Reject if caller is assumed role | **NOT STARTED** |
+### ELBv2 — Load Balancers
 
-### ELBv2 (Elastic Load Balancing v2 — Application & Network Load Balancer)
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-load-balancer` | `--name`, `--subnets`, `--security-groups`, `--scheme` (internet-facing/internal), `--tags`, `--ip-address-type` (ipv4) | `--type` (hardcoded application), `--customer-owned-ipv4-pool`, `--dry-run` | **DONE** |
+| `delete-load-balancer` | `--load-balancer-arn` | `--dry-run` | **DONE** |
+| `describe-load-balancers` | `--load-balancer-arns`, `--names` | `--page-size`, `--marker`, `--dry-run` | **DONE** |
 
-All ELBv2 resources are stored in the `spinifex-elbv2` JetStream KV bucket. Key format: `lb.{lbId}`, `tg.{tgId}`, `listener.{listenerId}`. The data plane uses a system-managed LB VM running HAProxy, launched automatically during CreateLoadBalancer. HAProxy configuration is pushed via NATS (`elbv2.lb.{lbId}.config` topic) whenever listeners or targets change. Agent readiness is polled via `elbv2.lb.{lbId}.ping`.
+### ELBv2 — Target Groups
 
-#### ELBv2 - Load Balancers
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-target-group` | `--name`, `--protocol` (HTTP), `--port`, `--vpc-id`, `--target-type` (instance), `--health-check-protocol`, `--health-check-port`, `--health-check-path`, `--health-check-interval-seconds`, `--health-check-timeout-seconds`, `--healthy-threshold-count`, `--unhealthy-threshold-count`, `--matcher`, `--tags` | `--health-check-enabled`, `--protocol-version`, `--ip-address-type`, `--dry-run` | **DONE** |
+| `delete-target-group` | `--target-group-arn` | `--dry-run` | **DONE** |
+| `describe-target-groups` | `--target-group-arns`, `--names`, `--load-balancer-arn` | `--page-size`, `--marker`, `--dry-run` | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-load-balancer` | `--name`, `--subnets`, `--security-groups`, `--scheme` (internet-facing/internal), `--tags`, `--ip-address-type` (ipv4 only) | `--type` (hardcoded application), `--customer-owned-ipv4-pool`, `--dry-run` | None (subnets optional) | Gateway validates Name (required) → NATS `elbv2.CreateLoadBalancer` with `spinifex-workers` queue group → daemon validates scheme (internet-facing or internal, InvalidScheme if other) → checks duplicate name in account (DuplicateLoadBalancerName) → generates LB ID → builds DNS name `{name}-{lbId}.{region}.elb.spinifex.local` → if subnets provided, creates one ENI per subnet with `spinifex:managed-by=elbv2` tag (rolls back on failure) → if system AMI available, launches sys.micro LB VM with cloud-init running `/usr/local/bin/lb-agent` → state=provisioning → background goroutine polls agent ping for ~5min → on agent ready: state=active, on timeout: state=failed → if no VM launcher: state=active immediately → persists to KV → returns LoadBalancer with ARN, DNSName, State | 1. Create with name (happy path)<br>2. Internal scheme<br>3. Invalid scheme (InvalidScheme)<br>4. Duplicate name (DuplicateLoadBalancerName)<br>5. Missing name (MissingParameter)<br>6. With tags<br>7. With subnets (ENI creation) | **DONE** |
-| `delete-load-balancer` | `--load-balancer-arn` | `--dry-run` | LB must exist | Gateway validates LoadBalancerArn (required) → NATS `elbv2.DeleteLoadBalancer` → daemon verifies LB exists and belongs to account → terminates LB VM (async background) → deletes all listeners for this LB → deletes system-managed ENIs → deletes LB record from KV → returns success | 1. Delete existing LB<br>2. Not found (LoadBalancerNotFound)<br>3. Cascades listener cleanup<br>4. ENI cleanup | **DONE** |
-| `describe-load-balancers` | `--load-balancer-arns`, `--names` | `--page-size`, `--marker`, `--dry-run` | None | NATS `elbv2.DescribeLoadBalancers` → daemon lists all LB records from KV → filters by account ID → applies ARN filter and/or Name filter → returns LoadBalancer list with State, DNSName, Scheme, VpcId, AvailabilityZones | 1. List all LBs<br>2. Filter by name<br>3. Account isolation | **DONE** |
+### ELBv2 — Targets
 
-#### ELBv2 - Target Groups
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `register-targets` | `--target-group-arn`, `--targets` (Id, Port) | `--dry-run` | **DONE** |
+| `deregister-targets` | `--target-group-arn`, `--targets` (Id, Port) | `--dry-run` | **DONE** |
+| `describe-target-health` | `--target-group-arn`, `--targets` | `--include` | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-target-group` | `--name`, `--protocol` (HTTP), `--port` (default 80), `--vpc-id`, `--target-type` (instance only), `--health-check-protocol`, `--health-check-port`, `--health-check-path` (default /), `--health-check-interval-seconds` (default 30), `--health-check-timeout-seconds` (default 5), `--healthy-threshold-count` (default 5), `--unhealthy-threshold-count` (default 2), `--matcher` (HttpCode, default 200), `--tags` | `--health-check-enabled`, `--protocol-version`, `--ip-address-type`, `--dry-run` | None | Gateway validates Name (required) → NATS `elbv2.CreateTargetGroup` → daemon checks duplicate name in same VPC (DuplicateTargetGroupName) → generates TG ID → creates HealthCheckConfig with provided values or defaults → stores record with empty Targets array → returns TargetGroup with ARN | 1. Create with defaults<br>2. Custom health check<br>3. Duplicate name (DuplicateTargetGroupName)<br>4. Missing name (MissingParameter) | **DONE** |
-| `delete-target-group` | `--target-group-arn` | `--dry-run` | TG must exist, not referenced by listener | Gateway validates TargetGroupArn (required) → NATS `elbv2.DeleteTargetGroup` → daemon verifies TG exists → scans all listeners to check if any DefaultActions reference this TG (TargetGroupInUse if referenced) → deletes from KV | 1. Delete TG<br>2. TG in use by listener (TargetGroupInUse)<br>3. Not found (TargetGroupNotFound) | **DONE** |
-| `describe-target-groups` | `--target-group-arns`, `--names`, `--load-balancer-arn` | `--page-size`, `--marker`, `--dry-run` | None | NATS `elbv2.DescribeTargetGroups` → daemon lists all TG records → filters by account → applies ARN/Name filters → if LoadBalancerArn specified, lists listeners for that LB and includes only TGs referenced by those listeners → returns TargetGroup list | 1. List all TGs<br>2. Filter by LB ARN (via listener lookup)<br>3. Account isolation | **DONE** |
+### ELBv2 — Listeners
 
-#### ELBv2 - Targets
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-listener` | `--load-balancer-arn`, `--default-actions` (Type=forward, TargetGroupArn), `--protocol` (HTTP), `--port` | `--ssl-policy`, `--certificates`, `--alpn-policy`, `--mutual-authentication`, `--dry-run` | **DONE** |
+| `delete-listener` | `--listener-arn` | `--dry-run` | **DONE** |
+| `describe-listeners` | `--load-balancer-arn`, `--listener-arns` | `--page-size`, `--marker`, `--dry-run` | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `register-targets` | `--target-group-arn`, `--targets` (Id=instance-id, Port=optional override) | `--dry-run` | TG must exist, instances should exist | Gateway validates TargetGroupArn + Targets (required) → NATS `elbv2.RegisterTargets` → daemon fetches TG → deduplicates against existing targets (key: `{id}:{port}`, idempotent) → resolves instance ID → private IP via VPC ENI lookup → adds target with state=initial → persists to KV → calls `pushConfigForTargetGroup()` to regenerate HAProxy config on all LBs using this TG → returns success | 1. Register targets<br>2. Idempotent re-registration<br>3. TG not found (TargetGroupNotFound)<br>4. Missing ARN or targets (MissingParameter) | **DONE** |
-| `deregister-targets` | `--target-group-arn`, `--targets` (Id, Port) | `--dry-run` | TG must exist | Gateway validates TargetGroupArn + Targets (required) → NATS `elbv2.DeregisterTargets` → daemon fetches TG → builds removal set (key: `{id}:{port}`) → filters Targets array to keep only non-matching → persists to KV → calls `pushConfigForTargetGroup()` to update HAProxy config → returns success | 1. Deregister targets<br>2. TG not found (TargetGroupNotFound)<br>3. Missing parameters (MissingParameter) | **DONE** |
-| `describe-target-health` | `--target-group-arn`, `--targets` (optional filter to specific targets) | `--include` | TG must exist | Gateway validates TargetGroupArn (required) → NATS `elbv2.DescribeTargetHealth` → daemon fetches TG → builds filter set from Targets param (if specified) → for each target, returns TargetHealthDescription with Target (Id, Port) and TargetHealth (State, Description). Note: health state is stored in records, not actively polled — HAProxy runs its own independent health checks. | 1. Describe all targets<br>2. Filter to specific targets<br>3. TG not found (TargetGroupNotFound) | **DONE** |
+### ELBv2 — Tags
 
-#### ELBv2 - Listeners
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-tags` | `--resource-arns` (loadbalancer, targetgroup, listener) | — | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-listener` | `--load-balancer-arn`, `--default-actions` (Type=forward, TargetGroupArn), `--protocol` (HTTP, default), `--port` (default 80) | `--ssl-policy`, `--certificates`, `--alpn-policy`, `--mutual-authentication`, `--dry-run` | LB must exist | Gateway validates LoadBalancerArn + DefaultActions (required) → NATS `elbv2.CreateListener` → daemon verifies LB exists → checks for duplicate port on same LB (DuplicateListener) → generates listener ID → builds ARN → stores ListenerRecord in KV → calls `pushConfig(lb)` to regenerate HAProxy config (creates frontend for listener port, backend for target group with health checks) → returns Listener with ARN, Protocol, Port, DefaultActions | 1. Create listener<br>2. Duplicate port (DuplicateListener)<br>3. LB not found (LoadBalancerNotFound)<br>4. Graceful handling when NATS unavailable | **DONE** |
-| `delete-listener` | `--listener-arn` | `--dry-run` | Listener must exist | Gateway validates ListenerArn (required) → NATS `elbv2.DeleteListener` → daemon verifies listener exists and belongs to account → deletes from KV → fetches parent LB → calls `pushConfig(lb)` to regenerate HAProxy config without this listener → returns success | 1. Delete listener<br>2. Not found (ListenerNotFound) | **DONE** |
-| `describe-listeners` | `--load-balancer-arn`, `--listener-arns` | `--page-size`, `--marker`, `--dry-run` | None | NATS `elbv2.DescribeListeners` → daemon lists listeners → if LoadBalancerArn specified, filters to that LB → applies ARN filter → account isolation → returns Listener list | 1. Filter by LB ARN<br>2. Account isolation | **DONE** |
+### ELBv2 — Not Yet Implemented
 
-#### ELBv2 - Tags
+| Feature | Priority | Status |
+|---------|----------|--------|
+| Listener rules (CreateRule, DeleteRule, DescribeRules, ModifyRule) | High | **NOT STARTED** |
+| HTTPS/TLS termination (SSL certificates, policies, ALPN) | High | **NOT STARTED** |
+| Modify operations (`ModifyLoadBalancerAttributes`, `ModifyTargetGroup`, `ModifyTargetGroupAttributes`, `ModifyListener`) | Medium | **NOT STARTED** |
+| Connection draining (deregistration delay) | Medium | **NOT STARTED** |
+| Stickiness / session affinity | Medium | **NOT STARTED** |
+| Active health checking (API-driven, vs. HAProxy-only today) | Medium | **NOT STARTED** |
+| IP and Lambda target types | Low | **NOT STARTED** |
+| S3 access log delivery | Low | **NOT STARTED** |
+| WAF integration | Low | **NOT STARTED** |
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `describe-tags` | `--resource-arns` (loadbalancer, targetgroup, listener) | — | Resource(s) must exist | Gateway validates non-empty ResourceArns → NATS `elbv2.DescribeTags` → daemon parses each ARN's resource segment to dispatch by type → looks up record (LB/TG/listener) → enforces account isolation (cross-account → not-found) → returns TagDescriptions in input order with sorted-by-key Tag list. Listener records don't store tags yet, so they always return an empty Tags slice (matches AWS behaviour for untagged resources). Required by Terraform AWS provider post-create refresh on `aws_lb`, `aws_lb_target_group`, and `aws_lb_listener`. | 1. LB tags round-trip<br>2. TG tags round-trip<br>3. Listener returns empty Tags (no error)<br>4. Multiple ARNs in one call<br>5. Unknown LB/TG/listener (per-type not-found)<br>6. Cross-account ARN (not-found, no leak)<br>7. Invalid/non-ELBv2 ARN (InvalidParameterValue)<br>8. Empty/nil ResourceArns (MissingParameter)<br>9. Untagged LB returns empty Tags | **DONE** |
+---
 
-#### ELBv2 - Not Implemented
+## CloudWatch (Basic Monitoring)
 
-| Feature | Description | Priority | Status |
-|---------|-------------|----------|--------|
-| Listener rules | Path-based and hostname-based routing (CreateRule, DeleteRule, DescribeRules, ModifyRule) | High | **NOT STARTED** |
-| HTTPS/TLS termination | SSL certificates, SSL policies, ALPN | High | **NOT STARTED** |
-| Modify operations | ModifyLoadBalancerAttributes, ModifyTargetGroup, ModifyTargetGroupAttributes, ModifyListener | Medium | **NOT STARTED** |
-| Connection draining | Deregistration delay for graceful target removal | Medium | **NOT STARTED** |
-| Stickiness | Session affinity / sticky sessions on target groups | Medium | **NOT STARTED** |
-| Active health checking | API-driven health state updates (currently HAProxy-only) | Medium | **NOT STARTED** |
-| Target types | IP and Lambda target types (only instance supported) | Low | **NOT STARTED** |
-| Access logs | S3 access log delivery | Low | **NOT STARTED** |
-| WAF integration | AWS WAF association for web application firewall | Low | **NOT STARTED** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `put-metric-data` | — | `--namespace`, `--metric-data` | **NOT STARTED** |
+| `get-metric-statistics` | — | `--namespace`, `--metric-name`, `--start-time`, `--end-time`, `--period`, `--statistics`, `--dimensions` | **NOT STARTED** |
+| `list-metrics` | — | `--namespace`, `--metric-name`, `--dimensions`, `--recently-active` | **NOT STARTED** |
+| `describe-alarms` | — | `--alarm-names`, `--alarm-name-prefix`, `--state-value`, `--action-prefix` | **NOT STARTED** |
+| `put-metric-alarm` | — | `--alarm-name`, `--namespace`, `--metric-name`, `--statistic`, `--period`, `--evaluation-periods`, `--threshold`, `--comparison-operator`, `--alarm-actions`, `--dimensions` | **NOT STARTED** |
+| `delete-alarms` | — | `--alarm-names` | **NOT STARTED** |
 
-### CloudWatch (Basic Monitoring)
+---
 
-Basic CloudWatch metrics support is required for `monitor-instances`/`unmonitor-instances` to be meaningful. Daemon nodes should publish CPU, disk, and network metrics for running instances. Metrics stored in a time-series-friendly structure in JetStream KV or dedicated NATS subjects.
+## Auto Scaling
 
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `put-metric-data` | — | `--namespace`, `--metric-data` (MetricName, Value, Unit, Timestamp, Dimensions) | None | Gateway validates Namespace + MetricData (required) → NATS `cloudwatch.PutMetricData` → daemon stores metric data points in time-series KV (key: `{namespace}.{metricName}.{dimensionHash}`) → return success | 1. Put single metric<br>2. Put with dimensions (InstanceId)<br>3. Missing namespace (MissingParameter) | **NOT STARTED** |
-| `get-metric-statistics` | — | `--namespace`, `--metric-name`, `--start-time`, `--end-time`, `--period`, `--statistics` (Average, Sum, Min, Max, SampleCount), `--dimensions` | None | Gateway validates required fields → NATS `cloudwatch.GetMetricStatistics` → daemon queries time-series data → aggregates by period → returns Datapoints with requested statistics | 1. Get CPU utilization over 1 hour<br>2. Get with dimensions (InstanceId)<br>3. No data returns empty | **NOT STARTED** |
-| `list-metrics` | — | `--namespace`, `--metric-name`, `--dimensions`, `--recently-active` | None | NATS `cloudwatch.ListMetrics` → daemon scans metric namespaces → returns Metrics list with Namespace, MetricName, Dimensions | 1. List all metrics<br>2. Filter by namespace<br>3. Filter by metric name | **NOT STARTED** |
-| `describe-alarms` | — | `--alarm-names`, `--alarm-name-prefix`, `--state-value`, `--action-prefix` | None | NATS `cloudwatch.DescribeAlarms` → daemon lists alarms from KV → return MetricAlarms with State, Threshold, ComparisonOperator | 1. List all alarms<br>2. Filter by state (OK, ALARM, INSUFFICIENT_DATA) | **NOT STARTED** |
-| `put-metric-alarm` | — | `--alarm-name`, `--namespace`, `--metric-name`, `--statistic`, `--period`, `--evaluation-periods`, `--threshold`, `--comparison-operator`, `--alarm-actions`, `--dimensions` | None | NATS `cloudwatch.PutMetricAlarm` → daemon stores alarm config in KV → alarm evaluation runs on metric publish → state transitions trigger alarm actions | 1. Create alarm<br>2. Update existing alarm<br>3. Missing required fields | **NOT STARTED** |
-| `delete-alarms` | — | `--alarm-names` | Alarms must exist | NATS `cloudwatch.DeleteAlarms` → daemon deletes alarm records from KV → return success | 1. Delete existing alarm<br>2. Non-existent alarm (ResourceNotFound) | **NOT STARTED** |
-
-### Auto Scaling
-
-Auto Scaling manages instance fleets based on scaling policies. Depends on Launch Templates (EC2) and optionally ELBv2 target groups for health-based scaling. Stored in `spinifex-autoscaling` KV bucket.
-
-| Command | Implemented Flags | Missing Flags | Prerequisites | Basic Logic | Test Cases | Status |
-|---------|-------------------|---------------|---------------|-------------|------------|--------|
-| `create-auto-scaling-group` | — | `--auto-scaling-group-name`, `--launch-template` (Id/Name, Version), `--min-size`, `--max-size`, `--desired-capacity`, `--vpc-zone-identifier` (subnet IDs), `--target-group-arns`, `--health-check-type` (EC2/ELB), `--health-check-grace-period`, `--tags` | Launch template must exist | NATS `autoscaling.CreateAutoScalingGroup` → daemon validates launch template → stores ASG record in KV → launches DesiredCapacity instances using template → registers with target groups if specified → starts health check loop → return success | 1. Create ASG with launch template<br>2. Scale to desired capacity<br>3. Missing launch template (ValidationError)<br>4. Min > Max (ValidationError) | **NOT STARTED** |
-| `update-auto-scaling-group` | — | `--auto-scaling-group-name`, `--min-size`, `--max-size`, `--desired-capacity`, `--launch-template`, `--health-check-type`, `--health-check-grace-period` | ASG must exist | NATS `autoscaling.UpdateAutoScalingGroup` → daemon updates ASG config in KV → if DesiredCapacity changed, scale up/down accordingly → return success | 1. Update desired capacity<br>2. Update launch template<br>3. Non-existent ASG (ValidationError) | **NOT STARTED** |
-| `delete-auto-scaling-group` | — | `--auto-scaling-group-name`, `--force-delete` | ASG must exist | NATS `autoscaling.DeleteAutoScalingGroup` → if force: terminate all instances → deregister from target groups → delete from KV → return success. Without force: reject if instances > 0 | 1. Delete empty ASG<br>2. Force delete with instances<br>3. Delete with instances (ResourceInUse) | **NOT STARTED** |
-| `describe-auto-scaling-groups` | — | `--auto-scaling-group-names`, `--filters`, `--max-records` | None | NATS `autoscaling.DescribeAutoScalingGroups` → daemon lists ASG records → return list with Instances, DesiredCapacity, MinSize, MaxSize | 1. List all ASGs<br>2. Filter by name | **NOT STARTED** |
-| `set-desired-capacity` | — | `--auto-scaling-group-name`, `--desired-capacity`, `--honor-cooldown` | ASG must exist | NATS `autoscaling.SetDesiredCapacity` → daemon updates desired count → scale up (launch) or scale down (terminate oldest) → return success | 1. Scale up<br>2. Scale down<br>3. Exceeds max (ValidationError) | **NOT STARTED** |
-| `describe-auto-scaling-instances` | — | `--instance-ids`, `--max-records` | None | NATS `autoscaling.DescribeAutoScalingInstances` → daemon lists all ASG-managed instances → return list with ASG name, lifecycle state, health status | 1. List all ASG instances<br>2. Filter by instance ID | **NOT STARTED** |
-| `put-scaling-policy` | — | `--auto-scaling-group-name`, `--policy-name`, `--policy-type` (TargetTrackingScaling, StepScaling, SimpleScaling), `--target-tracking-configuration`, `--scaling-adjustment`, `--cooldown` | ASG must exist | NATS `autoscaling.PutScalingPolicy` → daemon stores policy in KV → links to CloudWatch alarms for metric-based triggers → return PolicyARN | 1. Create target tracking policy<br>2. Create step scaling policy<br>3. Non-existent ASG (ValidationError) | **NOT STARTED** |
-| `delete-scaling-policy` | — | `--auto-scaling-group-name`, `--policy-name` | Policy must exist | NATS `autoscaling.DeleteScalingPolicy` → daemon deletes policy → remove CloudWatch alarm links → return success | 1. Delete existing policy<br>2. Non-existent policy | **NOT STARTED** |
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-auto-scaling-group` | — | `--auto-scaling-group-name`, `--launch-template`, `--min-size`, `--max-size`, `--desired-capacity`, `--vpc-zone-identifier`, `--target-group-arns`, `--health-check-type`, `--health-check-grace-period`, `--tags` | **NOT STARTED** |
+| `update-auto-scaling-group` | — | `--auto-scaling-group-name`, `--min-size`, `--max-size`, `--desired-capacity`, `--launch-template`, `--health-check-type`, `--health-check-grace-period` | **NOT STARTED** |
+| `delete-auto-scaling-group` | — | `--auto-scaling-group-name`, `--force-delete` | **NOT STARTED** |
+| `describe-auto-scaling-groups` | — | `--auto-scaling-group-names`, `--filters`, `--max-records` | **NOT STARTED** |
+| `set-desired-capacity` | — | `--auto-scaling-group-name`, `--desired-capacity`, `--honor-cooldown` | **NOT STARTED** |
+| `describe-auto-scaling-instances` | — | `--instance-ids`, `--max-records` | **NOT STARTED** |
+| `put-scaling-policy` | — | `--auto-scaling-group-name`, `--policy-name`, `--policy-type`, `--target-tracking-configuration`, `--scaling-adjustment`, `--cooldown` | **NOT STARTED** |
+| `delete-scaling-policy` | — | `--auto-scaling-group-name`, `--policy-name` | **NOT STARTED** |

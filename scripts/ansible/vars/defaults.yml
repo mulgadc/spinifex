@@ -23,12 +23,20 @@ spinifex_node_name: node1
 spinifex_node_count: 1
 
 # External network.
+# spx admin init contract (as of network-layer-redesign):
+#   external_mode  : "pool" or "" (NAT path removed)
+#   external_pool  : MANDATORY when mode=pool — set start/end below or pass -e.
+#   external_gw    : auto-detected from default route when blank.
+#   external_prefix: auto-detected from WAN when blank.
+#   external_gw_ip : OVN router external-IP override (was nat_gateway_ip).
+#   no_external    : true → emit --no-external (skip external networking).
 spinifex_external_mode: pool
+spinifex_external_no_external: false
 spinifex_external_pool_start: ""
 spinifex_external_pool_end: ""
 spinifex_external_gateway: ""
 spinifex_external_prefix_len: ""
-spinifex_nat_gateway_ip: ""
+spinifex_external_gateway_ip: ""
 
 # Preflight checks.
 spinifex_ports:
@@ -80,7 +88,7 @@ mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }
 # `spinifex` supplementary group active. Needed because ansible's
 # `become_user` is a no-op when target user equals current user, so
 # supplementary groups are never re-initialised and /etc/spinifex/ca.pem
-# (drwxr-x--- root:spinifex) is unreadable. See mulga-siv-92.
+# (drwxr-x--- root:spinifex) is unreadable.
 spinifex_aws_cli: "{{ playbook_dir }}/../scripts/aws-as-spinifex.sh"
 spinifex_spx_cli: "{{ playbook_dir }}/../scripts/spx-as-spinifex.sh"
 

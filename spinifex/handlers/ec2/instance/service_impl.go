@@ -22,7 +22,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -492,6 +494,22 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	ec2Instance.State.SetCode(0)
 	ec2Instance.State.SetName("pending")
 
+	// IAM instance profile attached at launch: gateway has already resolved
+	// the reference to a canonical ARN and enforced iam:PassRole; here we
+	// just persist it on the VM and generate the association ID. Id is left
+	// for the gateway to enrich on DescribeInstances since daemons have no
+	// IAM service access.
+	if input.IamInstanceProfile != nil {
+		arn := aws.StringValue(input.IamInstanceProfile.Arn)
+		if arn != "" {
+			instance.IamInstanceProfileArn = arn
+			instance.IamInstanceProfileAssociationId = utils.GenerateResourceID("iip-assoc")
+			ec2Instance.IamInstanceProfile = &ec2.IamInstanceProfile{
+				Arn: aws.String(arn),
+			}
+		}
+	}
+
 	// Store EC2 API metadata in VM for DescribeInstances compatibility
 	instance.RunInstancesInput = input
 	instance.Instance = ec2Instance
@@ -682,17 +700,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 
 			if s.ipAllocator != nil {
 				subnet, subErr := s.eniCreator.GetSubnet(accountID, *input.SubnetId)
-				if subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch {
+				wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
+				if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
+					wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
+				}
+				if wantPublic {
 					region := s.config.Region
 					az := s.config.AZ
-					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, "auto_assign", "", *eni.NetworkInterfaceId, instance.ID)
+					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
 					if allocErr != nil {
 						slog.Warn("PrepareRunInstances: failed to allocate public IP", "instanceId", instance.ID, "err", allocErr)
 					} else {
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
-						portName := "port-" + *eni.NetworkInterfaceId
+						portName := topology.Port(*eni.NetworkInterfaceId)
 						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
 							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
@@ -951,6 +973,19 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 			return
 		}
 		v.Attributes = command.Attributes
+		// Auto-disassociate IAM instance profile on terminate (matches AWS).
+		// Stop/Start preserves the binding; only terminate clears it. Done
+		// under the same lock as the state transition so DescribeInstances
+		// never observes a terminated instance still advertising a profile.
+		if isTerminate && v.IamInstanceProfileArn != "" {
+			slog.Info("IAM instance profile auto-disassociated",
+				"instance_id", v.ID,
+				"association_id", v.IamInstanceProfileAssociationId,
+				"profile_arn", v.IamInstanceProfileArn,
+				"reason", "instance terminated")
+			v.IamInstanceProfileArn = ""
+			v.IamInstanceProfileAssociationId = ""
+		}
 	})
 	if !ok {
 		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
@@ -993,6 +1028,254 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 	}(instance.ID)
 
 	return nil
+}
+
+// AssociateIamInstanceProfile attaches an instance profile to a running
+// instance. The gateway has already resolved the profile reference to a
+// canonical ARN and enforced iam:PassRole; this method validates that the
+// instance has no existing profile (returns IamInstanceProfileAlreadyAssociated
+// otherwise) and atomically writes the ARN + a freshly generated
+// iip-assoc-… ID to vm.VM. AssociationId is never reused — every Associate
+// produces a new one. InstanceProfile.Id is left nil; the gateway enriches it
+// from its IAMService cache before returning to the caller.
+func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, command spxtypes.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
+	if command.IamProfileAssociationData == nil || command.IamProfileAssociationData.InstanceProfileArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	profileArn := command.IamProfileAssociationData.InstanceProfileArn
+	newID := utils.GenerateResourceID("iip-assoc")
+	timestamp := time.Now().UTC()
+
+	var alreadyAssociated bool
+	found, err := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.IamInstanceProfileArn != "" {
+			alreadyAssociated = true
+			return false
+		}
+		v.IamInstanceProfileArn = profileArn
+		v.IamInstanceProfileAssociationId = newID
+		return true
+	})
+	if err != nil {
+		slog.Error("AssociateIamInstanceProfile: persist failed", "instanceId", instance.ID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if alreadyAssociated {
+		return nil, errors.New(awserrors.ErrorIamInstanceProfileAlreadyAssociated)
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	slog.Info("AssociateIamInstanceProfile: associated",
+		"instanceId", instance.ID, "associationId", newID, "profileArn", profileArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(instance.ID),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(profileArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// DisassociateIamProfileAssociation finds the VM carrying the requested
+// AssociationId in this daemon's vmMgr and clears both profile fields
+// atomically. Returns nil when no local VM owns the ID, or when the caller's
+// account doesn't own the matching VM, so the gateway fan-out collector can
+// advance past this daemon's NoOp response without waiting on the deadline.
+// The accountID scope mirrors checkInstanceOwnership semantics applied
+// per-instance on ec2.cmd.<id>.
+func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.DisassociateIamInstanceProfileInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	associationID := *input.AssociationId
+	owner, ok := s.findInstanceByAssociationID(associationID, accountID)
+	if !ok {
+		return nil, nil
+	}
+
+	var clearedArn string
+	timestamp := time.Now().UTC()
+	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
+		// Re-check under the manager lock: another fan-out (or a concurrent
+		// terminate) could have cleared or replaced the association between
+		// our snapshot read and this mutation.
+		if v.IamInstanceProfileAssociationId != associationID {
+			return false
+		}
+		clearedArn = v.IamInstanceProfileArn
+		v.IamInstanceProfileArn = ""
+		v.IamInstanceProfileAssociationId = ""
+		return true
+	})
+	if err != nil {
+		slog.Error("DisassociateIamProfileAssociation: persist failed", "instanceId", owner, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if clearedArn == "" {
+		// Lost a race with terminate / another disassociate. NoOp so the
+		// gateway collector treats it as "not this daemon's instance".
+		return nil, nil
+	}
+
+	slog.Info("DisassociateIamProfileAssociation: disassociated",
+		"instanceId", owner, "associationId", associationID, "profileArn", clearedArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(associationID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(clearedArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateDisassociating),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// ReplaceIamProfileAssociation finds the VM carrying the requested
+// AssociationId and swaps it for a new (ARN, AssociationId) pair atomically.
+// The new AssociationId is always freshly generated — AWS never reuses IDs
+// across replace. Returns nil when no local VM owns the old ID or when the
+// caller's account doesn't own the matching VM. The gateway has already
+// resolved IamInstanceProfile.Arn to a canonical ARN before publishing.
+func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(input *ec2.ReplaceIamInstanceProfileAssociationInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" ||
+		input.IamInstanceProfile == nil || aws.StringValue(input.IamInstanceProfile.Arn) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	oldID := *input.AssociationId
+	newArn := *input.IamInstanceProfile.Arn
+
+	owner, ok := s.findInstanceByAssociationID(oldID, accountID)
+	if !ok {
+		return nil, nil
+	}
+
+	newID := utils.GenerateResourceID("iip-assoc")
+	timestamp := time.Now().UTC()
+	var swapped bool
+	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
+		if v.IamInstanceProfileAssociationId != oldID {
+			return false
+		}
+		v.IamInstanceProfileArn = newArn
+		v.IamInstanceProfileAssociationId = newID
+		swapped = true
+		return true
+	})
+	if err != nil {
+		slog.Error("ReplaceIamProfileAssociation: persist failed", "instanceId", owner, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !swapped {
+		return nil, nil
+	}
+
+	slog.Info("ReplaceIamProfileAssociation: replaced",
+		"instanceId", owner, "oldAssociationId", oldID, "newAssociationId", newID, "profileArn", newArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(newArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// DescribeIamProfileAssociations walks this daemon's vmMgr and returns every
+// live association visible to the caller's account matching the supplied
+// filters (empty filters match all). Empty result is a valid response: the
+// gateway aggregates per-daemon slices, so missing daemons just yield fewer
+// rows. Filter names other than "instance-id" / "state" surface as
+// InvalidParameterValue, short-circuiting the fan-out at the gateway.
+func (s *InstanceServiceImpl) DescribeIamProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+	assocFilter := stringPtrSliceToSet(input.AssociationIds)
+	instFilter := make(map[string]bool)
+	stateFilter := make(map[string]bool)
+	for _, f := range input.Filters {
+		if f == nil || f.Name == nil {
+			continue
+		}
+		switch *f.Name {
+		case "instance-id":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					instFilter[*v] = true
+				}
+			}
+		case "state":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					stateFilter[*v] = true
+				}
+			}
+		default:
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+
+	out := &ec2.DescribeIamInstanceProfileAssociationsOutput{}
+	s.vmMgr.ForEach(func(v *vm.VM) {
+		if v.IamInstanceProfileArn == "" || v.IamInstanceProfileAssociationId == "" {
+			return
+		}
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			return
+		}
+		if len(assocFilter) > 0 && !assocFilter[v.IamInstanceProfileAssociationId] {
+			return
+		}
+		if len(instFilter) > 0 && !instFilter[v.ID] {
+			return
+		}
+		// v1 only emits "associated" — there are no async transitions, so any
+		// state filter that excludes "associated" yields an empty result.
+		const liveState = ec2.IamInstanceProfileAssociationStateAssociated
+		if len(stateFilter) > 0 && !stateFilter[liveState] {
+			return
+		}
+		out.IamInstanceProfileAssociations = append(out.IamInstanceProfileAssociations, &ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(v.IamInstanceProfileAssociationId),
+			InstanceId:         aws.String(v.ID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(v.IamInstanceProfileArn)},
+			State:              aws.String(liveState),
+		})
+	})
+	return out, nil
+}
+
+// findInstanceByAssociationID is the lock-protected lookup used by the
+// fan-out mutators. It snapshots the matching instance ID under the manager
+// lock and returns (id, true) only when the caller's account owns the VM,
+// so cross-tenant Disassociate / Replace cannot reach into another account's
+// instance. The actual mutation re-validates inside UpdateAndPersist to close
+// the read/mutate race window.
+func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, accountID string) (string, bool) {
+	var owner string
+	s.vmMgr.ForEach(func(v *vm.VM) {
+		if owner != "" || v.IamInstanceProfileAssociationId != associationID {
+			return
+		}
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			return
+		}
+		owner = v.ID
+	})
+	if owner == "" {
+		return "", false
+	}
+	return owner, true
+}
+
+func stringPtrSliceToSet(in []*string) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for _, s := range in {
+		if s != nil && *s != "" {
+			out[*s] = true
+		}
+	}
+	return out
 }
 
 func (s *InstanceServiceImpl) GenerateVolumes(input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
@@ -1088,8 +1371,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 // restoreSlogDefault re-installs the daemon's Info-level slog handler after
 // viperblock.New mutates the global slog default via its SetDebug method
 // (see viperblock.go SetDebug — it calls slog.SetDefault with LevelError,
-// silencing every Info/Warn in the entire process). Tracked for proper fix
-// in viperblock as mulga-siv-70.
+// silencing every Info/Warn in the entire process).
 func restoreSlogDefault() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -2325,7 +2607,7 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceI
 	if instance.PublicIP == "" || instance.PublicIPPool == "" || s.ipReleaser == nil {
 		return
 	}
-	portName := "port-" + instance.ENIId
+	portName := topology.Port(instance.ENIId)
 	vpcID := ""
 	logicalIP := ""
 	if instance.Instance != nil {

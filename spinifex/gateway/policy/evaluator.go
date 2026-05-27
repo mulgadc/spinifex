@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
@@ -58,36 +59,16 @@ func EvaluateAccess(identity, action, resource string, policies []handlers_iam.P
 	return Deny
 }
 
-// matchesAny returns true if any pattern in patterns matches the given value.
-// Supports the same wildcard matching for both actions and resources:
-//   - "*"                — matches everything
-//   - "ec2:*"            — matches all actions in the ec2 service
-//   - "s3:Get*"          — matches s3:GetObject, s3:GetBucketPolicy, etc.
-//   - "ec2:RunInstances" — exact match
+// matchesAny returns true if any pattern in patterns matches the given value
+// with AWS IAM-style wildcard semantics ("*" matches zero or more characters).
+// Case-insensitive — both action names ("ec2:*", "s3:Get*") and resource ARNs
+// ("arn:aws:iam::*:role/app-*") are compared lower-cased.
 func matchesAny(patterns []string, value string) bool {
+	lv := strings.ToLower(value)
 	for _, p := range patterns {
-		if matchWildcard(p, value) {
+		if filterutil.MatchWildcard(strings.ToLower(p), lv) {
 			return true
 		}
 	}
 	return false
-}
-
-// matchWildcard performs simple wildcard matching where "*" can appear at the
-// end of a pattern as a suffix wildcard, or alone to match everything.
-// Examples:
-//
-//	"*"              matches anything
-//	"ec2:*"          matches "ec2:RunInstances"
-//	"s3:Get*"        matches "s3:GetObject"
-//	"ec2:RunInstances" matches only "ec2:RunInstances"
-func matchWildcard(pattern, value string) bool {
-	if pattern == "*" {
-		return true
-	}
-	if strings.HasSuffix(pattern, "*") {
-		prefix := strings.ToLower(pattern[:len(pattern)-1])
-		return strings.HasPrefix(strings.ToLower(value), prefix)
-	}
-	return strings.EqualFold(pattern, value)
 }

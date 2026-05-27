@@ -8,7 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd"
+	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/stretchr/testify/assert"
 )
 

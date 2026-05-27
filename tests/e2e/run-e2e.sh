@@ -1914,6 +1914,301 @@ fi
 echo "  Policies cleaned up"
 
 echo "IAM Phase 7 passed"
+
+# IAM Phase 8: Roles & Instance Profiles (CRUD + lifecycle guards)
+# Runs against the admin root profile after Phase 7 cleanup, so the only
+# pre-existing policy is bootstrap AdministratorAccess.
+echo ""
+echo "IAM Phase 8: Roles & Instance Profiles"
+
+ROLE_NAME="app-role"
+PROFILE_NAME="app-profile"
+OTHER_PROFILE_NAME="other-profile"
+ADMIN_POLICY_ARN="arn:aws:iam::${ADMIN_ACCOUNT}:policy/AdministratorAccess"
+ROLE_ARN="arn:aws:iam::${ADMIN_ACCOUNT}:role/${ROLE_NAME}"
+
+TRUST_POLICY_DOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+TRUST_POLICY_V2_DOC='{"Version":"2012-10-17","Statement":[{"Sid":"v2","Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+
+# CreateRole — valid trust policy
+echo "  Creating role ${ROLE_NAME}..."
+ROLE_OUT=$(aws iam create-role --role-name "${ROLE_NAME}" \
+    --assume-role-policy-document "${TRUST_POLICY_DOC}" \
+    --description "E2E test role")
+echo "${ROLE_OUT}" | jq -e ".Role.RoleName == \"${ROLE_NAME}\"" > /dev/null
+echo "${ROLE_OUT}" | jq -e ".Role.Arn == \"${ROLE_ARN}\"" > /dev/null
+echo "  Created role: ${ROLE_ARN}"
+
+# CreateRole — duplicate
+echo "  Creating duplicate role (expect EntityAlreadyExists)..."
+expect_error "EntityAlreadyExists" aws iam create-role \
+    --role-name "${ROLE_NAME}" --assume-role-policy-document "${TRUST_POLICY_DOC}"
+
+# CreateRole — malformed trust policy
+echo "  Creating role with malformed trust policy (expect MalformedPolicyDocument)..."
+expect_error "MalformedPolicyDocument" aws iam create-role \
+    --role-name "bad-role" --assume-role-policy-document '{not valid json'
+
+# GetRole
+echo "  Getting role ${ROLE_NAME}..."
+aws iam get-role --role-name "${ROLE_NAME}" \
+    | jq -e ".Role.RoleName == \"${ROLE_NAME}\"" > /dev/null
+
+# GetRole — missing
+expect_error "NoSuchEntity" aws iam get-role --role-name "ghost-role"
+
+# ListRoles (>= 1)
+ROLE_COUNT=$(aws iam list-roles | jq '.Roles | length')
+if [ "${ROLE_COUNT}" -lt 1 ]; then
+    echo "  ERROR: Expected >= 1 role, got ${ROLE_COUNT}"
+    exit 1
+fi
+
+# ListRoles with path-prefix
+aws iam list-roles --path-prefix / | jq -e '.Roles | length >= 1' > /dev/null
+
+# UpdateRole — description + max-session-duration
+echo "  Updating role description and max-session-duration..."
+aws iam update-role --role-name "${ROLE_NAME}" \
+    --description "updated" --max-session-duration 7200
+UPDATED_DESC=$(aws iam get-role --role-name "${ROLE_NAME}" | jq -r '.Role.Description')
+if [ "${UPDATED_DESC}" != "updated" ]; then
+    echo "  ERROR: Expected description 'updated', got '${UPDATED_DESC}'"
+    exit 1
+fi
+
+# UpdateRole — out-of-range max-session-duration
+expect_error "ValidationError" aws iam update-role \
+    --role-name "${ROLE_NAME}" --max-session-duration 60
+
+# UpdateAssumeRolePolicy
+echo "  Updating trust policy..."
+aws iam update-assume-role-policy --role-name "${ROLE_NAME}" \
+    --policy-document "${TRUST_POLICY_V2_DOC}"
+
+# AttachRolePolicy + ListAttachedRolePolicies
+echo "  Attaching AdministratorAccess to ${ROLE_NAME}..."
+aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
+ATTACHED=$(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+    | jq '.AttachedPolicies | length')
+if [ "${ATTACHED}" -ne 1 ]; then
+    echo "  ERROR: Expected 1 attached policy, got ${ATTACHED}"
+    exit 1
+fi
+
+# Idempotent re-attach
+aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
+RE_ATTACHED=$(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+    | jq '.AttachedPolicies | length')
+if [ "${RE_ATTACHED}" -ne 1 ]; then
+    echo "  ERROR: Idempotent re-attach grew count to ${RE_ATTACHED}"
+    exit 1
+fi
+
+# CreateInstanceProfile — two profiles so Replace has a target in Phase 9
+echo "  Creating instance profile ${PROFILE_NAME}..."
+aws iam create-instance-profile --instance-profile-name "${PROFILE_NAME}" \
+    | jq -e ".InstanceProfile.InstanceProfileName == \"${PROFILE_NAME}\"" > /dev/null
+
+echo "  Creating instance profile ${OTHER_PROFILE_NAME}..."
+aws iam create-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}" > /dev/null
+
+# CreateInstanceProfile — duplicate
+expect_error "EntityAlreadyExists" aws iam create-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# GetInstanceProfile / ListInstanceProfiles
+aws iam get-instance-profile --instance-profile-name "${PROFILE_NAME}" \
+    | jq -e ".InstanceProfile.InstanceProfileName == \"${PROFILE_NAME}\"" > /dev/null
+aws iam list-instance-profiles | jq -e '.InstanceProfiles | length >= 2' > /dev/null
+
+# AddRoleToInstanceProfile
+echo "  Adding ${ROLE_NAME} to ${PROFILE_NAME}..."
+aws iam add-role-to-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+# AddRoleToInstanceProfile — second role rejected (one-role limit)
+expect_error "LimitExceeded" aws iam add-role-to-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+# ListInstanceProfilesForRole — reverse lookup
+PROFILES_FOR_ROLE=$(aws iam list-instance-profiles-for-role --role-name "${ROLE_NAME}" \
+    | jq '.InstanceProfiles | length')
+if [ "${PROFILES_FOR_ROLE}" -ne 1 ]; then
+    echo "  ERROR: Expected 1 profile for role, got ${PROFILES_FOR_ROLE}"
+    exit 1
+fi
+
+# DeleteRole — refused while attached policies + still in profile
+expect_error "DeleteConflict" aws iam delete-role --role-name "${ROLE_NAME}"
+
+# DeleteInstanceProfile — refused while role attached
+expect_error "DeleteConflict" aws iam delete-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# Add role to OTHER_PROFILE_NAME so Phase 9 has a Replace target
+aws iam add-role-to-instance-profile \
+    --instance-profile-name "${OTHER_PROFILE_NAME}" --role-name "${ROLE_NAME}"
+
+echo "IAM Phase 8 passed"
+
+# IAM Phase 9: EC2 IAM Instance Profile Association
+# Uses the long-lived
+# singleton $INSTANCE_ID for the Associate/Disassociate/Replace lifecycle,
+# then a dedicated short-lived VM to exercise auto-disassociate on terminate.
+echo ""
+echo "IAM Phase 9: EC2 IAM Instance Profile Association"
+
+# Sanity: singleton must still be running.
+SINGLETON_STATE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text)
+if [ "${SINGLETON_STATE}" != "running" ]; then
+    echo "  ERROR: Expected singleton ${INSTANCE_ID} running, got ${SINGLETON_STATE}"
+    exit 1
+fi
+
+# Associate-iam-instance-profile (post-launch)
+echo "  Associating ${PROFILE_NAME} -> ${INSTANCE_ID}..."
+ASSOC_OUT=$(aws ec2 associate-iam-instance-profile \
+    --instance-id "${INSTANCE_ID}" \
+    --iam-instance-profile "Name=${PROFILE_NAME}")
+ASSOC_ID=$(echo "${ASSOC_OUT}" | jq -r '.IamInstanceProfileAssociation.AssociationId')
+if [[ ! "${ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: AssociationId malformed: ${ASSOC_ID}"
+    exit 1
+fi
+echo "  Got ${ASSOC_ID}"
+
+# Associate again — already associated
+expect_error "IamInstanceProfileAlreadyAssociated" aws ec2 associate-iam-instance-profile \
+    --instance-id "${INSTANCE_ID}" --iam-instance-profile "Name=${PROFILE_NAME}"
+
+# DescribeInstances surfaces IamInstanceProfile
+PROFILE_ARN_FROM_DESC=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
+if [[ "${PROFILE_ARN_FROM_DESC}" != *":instance-profile/${PROFILE_NAME}" ]]; then
+    echo "  ERROR: describe-instances IamInstanceProfile.Arn = '${PROFILE_ARN_FROM_DESC}'"
+    exit 1
+fi
+
+# DescribeIamInstanceProfileAssociations
+DESC_OUT=$(aws ec2 describe-iam-instance-profile-associations \
+    --association-ids "${ASSOC_ID}")
+echo "${DESC_OUT}" | jq -e ".IamInstanceProfileAssociations[0].InstanceId == \"${INSTANCE_ID}\"" > /dev/null
+
+# DeleteInstanceProfile while in-use by a live instance — refused
+expect_error "DeleteConflict" aws iam delete-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}"
+
+# Replace association → other-profile (yields a fresh association id)
+echo "  Replacing association -> ${OTHER_PROFILE_NAME}..."
+REPLACE_OUT=$(aws ec2 replace-iam-instance-profile-association \
+    --association-id "${ASSOC_ID}" \
+    --iam-instance-profile "Name=${OTHER_PROFILE_NAME}")
+NEW_ASSOC_ID=$(echo "${REPLACE_OUT}" | jq -r '.IamInstanceProfileAssociation.AssociationId')
+if [ "${NEW_ASSOC_ID}" = "${ASSOC_ID}" ] || [[ ! "${NEW_ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: Replace must mint a new AssociationId (old=${ASSOC_ID}, new=${NEW_ASSOC_ID})"
+    exit 1
+fi
+
+# Replace with stale id
+expect_error "NoSuchAssociation" aws ec2 replace-iam-instance-profile-association \
+    --association-id "${ASSOC_ID}" --iam-instance-profile "Name=${PROFILE_NAME}"
+
+# Disassociate via the current (new) id
+echo "  Disassociating ${NEW_ASSOC_ID}..."
+aws ec2 disassociate-iam-instance-profile --association-id "${NEW_ASSOC_ID}" > /dev/null
+
+# Disassociate again with stale id
+expect_error "NoSuchAssociation" aws ec2 disassociate-iam-instance-profile \
+    --association-id "${NEW_ASSOC_ID}"
+
+# DescribeInstances no longer carries the profile after Disassociate.
+POST_PROFILE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
+if [ "${POST_PROFILE}" != "None" ] && [ -n "${POST_PROFILE}" ]; then
+    echo "  ERROR: IamInstanceProfile.Arn still set after disassociate: '${POST_PROFILE}'"
+    exit 1
+fi
+
+# RunInstances --iam-instance-profile at launch + auto-disassociate on terminate.
+# Reuse the AMI/type/key/subnet/SG the singleton was launched against
+# (already echoed above; re-derive instead of capturing into globals).
+EPH_AMI=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].ImageId' --output text)
+EPH_TYPE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].InstanceType' --output text)
+EPH_KEY=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].KeyName' --output text)
+EPH_SUBNET=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].SubnetId' --output text)
+EPH_SG=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text)
+
+echo "  Launching ephemeral VM with --iam-instance-profile ${PROFILE_NAME}..."
+EPH_RUN=$(aws ec2 run-instances \
+    --image-id "${EPH_AMI}" --instance-type "${EPH_TYPE}" \
+    --key-name "${EPH_KEY}" --subnet-id "${EPH_SUBNET}" \
+    --security-group-ids "${EPH_SG}" \
+    --iam-instance-profile "Name=${PROFILE_NAME}" \
+    --min-count 1 --max-count 1)
+EPH_ID=$(echo "${EPH_RUN}" | jq -r '.Instances[0].InstanceId')
+if [[ ! "${EPH_ID}" =~ ^i- ]]; then
+    echo "  ERROR: Failed to launch ephemeral VM (got '${EPH_ID}')"
+    exit 1
+fi
+echo "  Ephemeral VM: ${EPH_ID}"
+
+# Poll until running so DescribeInstances surfaces a stable profile field.
+for i in $(seq 1 60); do
+    EPH_STATE=$(aws ec2 describe-instances --instance-ids "${EPH_ID}" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text)
+    if [ "${EPH_STATE}" = "running" ]; then break; fi
+    sleep 2
+done
+if [ "${EPH_STATE}" != "running" ]; then
+    echo "  ERROR: Ephemeral VM never reached running (last=${EPH_STATE})"
+    aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null || true
+    exit 1
+fi
+
+EPH_ASSOC_ID=$(aws ec2 describe-iam-instance-profile-associations \
+    --filters "Name=instance-id,Values=${EPH_ID}" \
+    --query 'IamInstanceProfileAssociations[0].AssociationId' --output text)
+if [[ ! "${EPH_ASSOC_ID}" =~ ^iip-assoc- ]]; then
+    echo "  ERROR: ephemeral VM has no association (got '${EPH_ASSOC_ID}')"
+    aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null || true
+    exit 1
+fi
+
+# Terminate → auto-disassociate
+echo "  Terminating ${EPH_ID} (expect auto-disassociate)..."
+aws ec2 terminate-instances --instance-ids "${EPH_ID}" > /dev/null
+for i in $(seq 1 60); do
+    EPH_STATE=$(aws ec2 describe-instances --instance-ids "${EPH_ID}" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "gone")
+    if [ "${EPH_STATE}" = "terminated" ] || [ "${EPH_STATE}" = "gone" ]; then break; fi
+    sleep 2
+done
+
+# The association should be gone post-terminate. Disassociate must surface NoSuchAssociation.
+expect_error "NoSuchAssociation" aws ec2 disassociate-iam-instance-profile \
+    --association-id "${EPH_ASSOC_ID}"
+
+# Cleanup: profiles + role + policy.
+aws iam remove-role-from-instance-profile \
+    --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
+aws iam remove-role-from-instance-profile \
+    --instance-profile-name "${OTHER_PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
+aws iam delete-instance-profile --instance-profile-name "${PROFILE_NAME}"
+aws iam delete-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}"
+aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
+aws iam delete-role --role-name "${ROLE_NAME}"
+
+# Verify role gone
+expect_error "NoSuchEntity" aws iam get-role --role-name "${ROLE_NAME}"
+
+echo "IAM Phase 9 passed"
 echo ""
 echo "IAM E2E Tests Completed Successfully"
 

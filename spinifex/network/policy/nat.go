@@ -204,6 +204,16 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add NAT GW snat %s -> %s on %s: %w", gw.SubnetCIDR, gw.PublicIP, router, err)
 	}
+	// Match AddEIP: block until ovn-northd compiles SB + every chassis
+	// installs flows. Without this, vpc.add-nat-gateway returns after the
+	// NB row is committed but the gateway chassis may not have programmed
+	// the SNAT flow yet, so the first packets from the private subnet are
+	// dropped. Phase 8d single-node has a 50s timeout that this race wins
+	// on slow CI hosts (last observed: run 26455602615).
+	if err := m.barrier(); err != nil {
+		slog.Warn("policy: AddNATGateway flows barrier failed",
+			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)
+	}
 	return nil
 }
 

@@ -188,6 +188,26 @@ func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {
 	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "10.0.0.5"))
 }
 
+func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var calls int
+	nm, err := NewNATManager(m, NATModeCentralized, WithFlowsBarrier(func() error {
+		calls++
+		return nil
+	}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddNATGateway(ctx, NATGWSpec{
+		VPCID:        "vpc-1",
+		NATGatewayID: "nat-xyz",
+		PublicIP:     "9.9.9.9",
+		SubnetCIDR:   "10.0.1.0/24",
+	}))
+	assert.Equal(t, 1, calls, "FlowsBarrier must fire once per AddNATGateway")
+}
+
 func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

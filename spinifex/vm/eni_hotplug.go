@@ -259,6 +259,28 @@ func waitForPCIDevice(dc DeviceController, deviceID string, wantPresent bool) er
 // override it to drive poll cadence without burning wall-clock time.
 var eniPipelineSleep = time.Sleep
 
+// SetHotPlugTestSeams swaps the device-controller factory and the
+// query-pci poll sleep for the duration of a test, returning a restore
+// func that callers pass to t.Cleanup. Mirrors utils.SetSudoCommandForTest:
+// the indirection lets tests in other packages drive the hot-plug
+// pipeline against a StubDeviceController without reassigning
+// unexported vars (which the reassign linter forbids). Pass nil for
+// either argument to leave the corresponding seam untouched.
+func SetHotPlugTestSeams(factory func(*VM) DeviceController, sleep func(time.Duration)) (restore func()) {
+	origFactory := newDeviceController
+	origSleep := eniPipelineSleep
+	if factory != nil {
+		newDeviceController = factory
+	}
+	if sleep != nil {
+		eniPipelineSleep = sleep
+	}
+	return func() {
+		newDeviceController = origFactory
+		eniPipelineSleep = origSleep
+	}
+}
+
 // stubTapAdd / stubTapDel / stubOVSAddPort / stubOVSDelPort emit a debug
 // log and return nil. Sprint 3c replaces these with real
 // NetworkPlumber.SetupTap / TeardownTap + ovs-vsctl invocations. The

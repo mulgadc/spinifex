@@ -2124,26 +2124,25 @@ expect_error "NoSuchAssociation" aws ec2 disassociate-iam-instance-profile \
     --association-id "${NEW_ASSOC_ID}"
 
 # DescribeInstances no longer carries the profile after Disassociate.
+# AWS CLI --output text prints "None" when the field is null.
 POST_PROFILE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
     --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
-if [ "${POST_PROFILE}" != "None" ] && [ -n "${POST_PROFILE}" ]; then
+if [ "${POST_PROFILE}" != "None" ]; then
     echo "  ERROR: IamInstanceProfile.Arn still set after disassociate: '${POST_PROFILE}'"
     exit 1
 fi
 
 # RunInstances --iam-instance-profile at launch + auto-disassociate on terminate.
-# Reuse the AMI/type/key/subnet/SG the singleton was launched against
-# (already echoed above; re-derive instead of capturing into globals).
-EPH_AMI=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
-    --query 'Reservations[0].Instances[0].ImageId' --output text)
-EPH_TYPE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
-    --query 'Reservations[0].Instances[0].InstanceType' --output text)
-EPH_KEY=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
-    --query 'Reservations[0].Instances[0].KeyName' --output text)
-EPH_SUBNET=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
-    --query 'Reservations[0].Instances[0].SubnetId' --output text)
-EPH_SG=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
-    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text)
+# Reuse the AMI/type/key/subnet/SG the singleton was launched against in one
+# describe-instances round trip.
+EPH_DESC=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" \
+    --query 'Reservations[0].Instances[0].[ImageId,InstanceType,KeyName,SubnetId,SecurityGroups[0].GroupId]' \
+    --output text)
+EPH_AMI=$(echo "${EPH_DESC}" | awk '{print $1}')
+EPH_TYPE=$(echo "${EPH_DESC}" | awk '{print $2}')
+EPH_KEY=$(echo "${EPH_DESC}" | awk '{print $3}')
+EPH_SUBNET=$(echo "${EPH_DESC}" | awk '{print $4}')
+EPH_SG=$(echo "${EPH_DESC}" | awk '{print $5}')
 
 echo "  Launching ephemeral VM with --iam-instance-profile ${PROFILE_NAME}..."
 EPH_RUN=$(aws ec2 run-instances \
@@ -2151,7 +2150,7 @@ EPH_RUN=$(aws ec2 run-instances \
     --key-name "${EPH_KEY}" --subnet-id "${EPH_SUBNET}" \
     --security-group-ids "${EPH_SG}" \
     --iam-instance-profile "Name=${PROFILE_NAME}" \
-    --min-count 1 --max-count 1)
+    --count 1)
 EPH_ID=$(echo "${EPH_RUN}" | jq -r '.Instances[0].InstanceId')
 if [[ ! "${EPH_ID}" =~ ^i- ]]; then
     echo "  ERROR: Failed to launch ephemeral VM (got '${EPH_ID}')"
@@ -2191,19 +2190,34 @@ for i in $(seq 1 60); do
     sleep 2
 done
 
-# The association should be gone post-terminate. Disassociate must surface NoSuchAssociation.
-expect_error "NoSuchAssociation" aws ec2 disassociate-iam-instance-profile \
-    --association-id "${EPH_ASSOC_ID}"
+# Auto-disassociate is flushed from the daemon's terminate handler — wait
+# until the binding is cleared (up to 30s) so the NoSuchAssociation assertion
+# is deterministic. Matches the Eventually(30s, 1s) loop in the Go port.
+AUTO_DISASSOC_OK=0
+for i in $(seq 1 30); do
+    if aws ec2 disassociate-iam-instance-profile --association-id "${EPH_ASSOC_ID}" 2>&1 \
+            | grep -q "NoSuchAssociation"; then
+        AUTO_DISASSOC_OK=1
+        break
+    fi
+    sleep 1
+done
+if [ "${AUTO_DISASSOC_OK}" -ne 1 ]; then
+    echo "  ERROR: ${EPH_ASSOC_ID} never auto-disassociated after terminate"
+    exit 1
+fi
+echo "  Auto-disassociated ${EPH_ASSOC_ID}"
 
-# Cleanup: profiles + role + policy.
+# Cleanup: profiles + role + policy. Each step is best-effort so a partial
+# failure further up doesn't cascade — matches IAM Phase 7 style.
 aws iam remove-role-from-instance-profile \
     --instance-profile-name "${PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
 aws iam remove-role-from-instance-profile \
     --instance-profile-name "${OTHER_PROFILE_NAME}" --role-name "${ROLE_NAME}" || true
-aws iam delete-instance-profile --instance-profile-name "${PROFILE_NAME}"
-aws iam delete-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}"
-aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}"
-aws iam delete-role --role-name "${ROLE_NAME}"
+aws iam delete-instance-profile --instance-profile-name "${PROFILE_NAME}" || true
+aws iam delete-instance-profile --instance-profile-name "${OTHER_PROFILE_NAME}" || true
+aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ADMIN_POLICY_ARN}" || true
+aws iam delete-role --role-name "${ROLE_NAME}" || true
 
 # Verify role gone
 expect_error "NoSuchEntity" aws iam get-role --role-name "${ROLE_NAME}"

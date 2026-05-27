@@ -821,24 +821,35 @@ func (c *LiveClient) AddNAT(ctx context.Context, routerName string, nat *nbdb.NA
 	return nil
 }
 
+// DeleteNAT removes a NAT rule matching (natType, logicalIP) from routerName.
+// Lookup is scoped to routerName.NAT — rules owned by other routers with the
+// same logical IP are left alone. Required because AWS subnet CIDRs repeat
+// across VPCs, so (natType, logicalIP) is not globally unique.
 func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for NAT delete: %w", err)
+	}
+	routerNATs := make(map[string]struct{}, len(lr.NAT))
+	for _, uuid := range lr.NAT {
+		routerNATs[uuid] = struct{}{}
+	}
+
 	var nats []nbdb.NAT
-	err := c.client.WhereCache(func(n *nbdb.NAT) bool {
+	err = c.client.WhereCache(func(n *nbdb.NAT) bool {
+		if _, ok := routerNATs[n.UUID]; !ok {
+			return false
+		}
 		return n.Type == natType && n.LogicalIP == logicalIP
 	}).List(ctx, &nats)
 	if err != nil {
 		return fmt.Errorf("find NAT: %w", err)
 	}
 	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s %s: %w", natType, logicalIP, ErrNATNotFound)
+		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
 	}
 
 	nat := &nats[0]
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for NAT delete: %w", err)
-	}
-
 	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
 		Field:   &lr.NAT,
 		Mutator: "delete",
@@ -861,23 +872,33 @@ func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, 
 	return nil
 }
 
-// DeleteNATByExternalIP removes a NAT rule matching the given external IP.
-// Returns an error if no matching rule is found (callers can ignore this).
+// DeleteNATByExternalIP removes a NAT rule matching the given external IP from
+// routerName only. Lookup is scoped to routerName.NAT — rules on other routers
+// with the same external IP are left alone (use DeleteAllNATsByExternalIP for
+// cross-router cleanup). Returns ErrNATNotFound if no matching rule is found
+// on this router (callers can ignore this).
 func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName string, natType, externalIP string) error {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for NAT delete: %w", err)
+	}
+	routerNATs := make(map[string]struct{}, len(lr.NAT))
+	for _, uuid := range lr.NAT {
+		routerNATs[uuid] = struct{}{}
+	}
+
 	var nats []nbdb.NAT
-	err := c.client.WhereCache(func(n *nbdb.NAT) bool {
+	err = c.client.WhereCache(func(n *nbdb.NAT) bool {
+		if _, ok := routerNATs[n.UUID]; !ok {
+			return false
+		}
 		return n.Type == natType && n.ExternalIP == externalIP
 	}).List(ctx, &nats)
 	if err != nil {
 		return fmt.Errorf("find NAT by external IP: %w", err)
 	}
 	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s external_ip=%s: %w", natType, externalIP, ErrNATNotFound)
-	}
-
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for NAT delete: %w", err)
+		return fmt.Errorf("NAT %s external_ip=%s on %s: %w", natType, externalIP, routerName, ErrNATNotFound)
 	}
 
 	var allOps []ovsdb.Operation

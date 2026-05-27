@@ -476,21 +476,22 @@ func (m *Client) DeleteNAT(_ context.Context, routerName string, natType, logica
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
 	var foundUUID string
-	for uuid, n := range m.NATs {
+	var foundIdx int
+	for i, uuid := range lr.NAT {
+		n, ok := m.NATs[uuid]
+		if !ok {
+			continue
+		}
 		if n.Type == natType && n.LogicalIP == logicalIP {
 			foundUUID = uuid
+			foundIdx = i
 			break
 		}
 	}
 	if foundUUID == "" {
-		return fmt.Errorf("NAT %s %s: %w", natType, logicalIP, ovn.ErrNATNotFound)
+		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ovn.ErrNATNotFound)
 	}
-	for i, uuid := range lr.NAT {
-		if uuid == foundUUID {
-			lr.NAT = append(lr.NAT[:i], lr.NAT[i+1:]...)
-			break
-		}
-	}
+	lr.NAT = append(lr.NAT[:foundIdx], lr.NAT[foundIdx+1:]...)
 	delete(m.NATs, foundUUID)
 	return nil
 }
@@ -503,22 +504,32 @@ func (m *Client) DeleteNATByExternalIP(_ context.Context, routerName string, nat
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
 	var foundUUIDs []string
-	for uuid, n := range m.NATs {
+	for _, uuid := range lr.NAT {
+		n, ok := m.NATs[uuid]
+		if !ok {
+			continue
+		}
 		if n.Type == natType && n.ExternalIP == externalIP {
 			foundUUIDs = append(foundUUIDs, uuid)
 		}
 	}
 	if len(foundUUIDs) == 0 {
-		return fmt.Errorf("NAT %s external_ip=%s: %w", natType, externalIP, ovn.ErrNATNotFound)
+		return fmt.Errorf("NAT %s external_ip=%s on %s: %w", natType, externalIP, routerName, ovn.ErrNATNotFound)
 	}
-	for _, foundUUID := range foundUUIDs {
-		for i, uuid := range lr.NAT {
-			if uuid == foundUUID {
-				lr.NAT = append(lr.NAT[:i], lr.NAT[i+1:]...)
-				break
-			}
+	stale := make(map[string]struct{}, len(foundUUIDs))
+	for _, u := range foundUUIDs {
+		stale[u] = struct{}{}
+	}
+	filtered := lr.NAT[:0]
+	for _, uuid := range lr.NAT {
+		if _, drop := stale[uuid]; drop {
+			continue
 		}
-		delete(m.NATs, foundUUID)
+		filtered = append(filtered, uuid)
+	}
+	lr.NAT = filtered
+	for _, u := range foundUUIDs {
+		delete(m.NATs, u)
 	}
 	return nil
 }

@@ -232,6 +232,76 @@ func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {
 	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-1", "10.0.1.0/24"))
 }
 
+// TestNATManager_DeleteNATGateway_CrossRouterIsolation guards against a NAT
+// row owned by router B being mutated/deleted when DeleteNATGateway is called
+// on router A and both routers carry the same subnet CIDR. AWS allows subnet
+// CIDRs to repeat per-VPC, so (snat, logicalIP) is not globally unique. Bug
+// observed in CI Phase 8d: shared 172.31.x CIDRs across VPCs caused
+// DeleteEIP/DeleteNAT to hit the wrong NAT row, leaving orphaned rules that
+// corrupted ARP/conntrack for the surviving NATGW EIP.
+func TestNATManager_DeleteNATGateway_CrossRouterIsolation(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-a")
+	seedRouter(t, m, "vpc-b")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	// Same subnet CIDR routed via NATGW in two different VPCs.
+	require.NoError(t, nm.AddNATGateway(ctx, NATGWSpec{
+		VPCID: "vpc-a", NATGatewayID: "nat-a", PublicIP: "9.9.9.9", SubnetCIDR: "172.31.0.0/20",
+	}))
+	require.NoError(t, nm.AddNATGateway(ctx, NATGWSpec{
+		VPCID: "vpc-b", NATGatewayID: "nat-b", PublicIP: "8.8.8.8", SubnetCIDR: "172.31.0.0/20",
+	}))
+
+	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-a", "172.31.0.0/20"))
+
+	// vpc-b's snat must remain — only vpc-a's was deleted.
+	var survived *nbdb.NAT
+	for _, n := range m.NATs {
+		if n.Type == "snat" && n.LogicalIP == "172.31.0.0/20" {
+			survived = n
+		}
+	}
+	require.NotNil(t, survived, "vpc-b snat row must remain after vpc-a delete")
+	assert.Equal(t, "8.8.8.8", survived.ExternalIP, "surviving row must belong to vpc-b")
+	assert.Equal(t, "nat-b", survived.ExternalIDs["spinifex:nat_gateway_id"])
+}
+
+// TestNATManager_DeleteEIP_CrossRouterIsolation is the dnat_and_snat analogue
+// of the cross-router NATGW isolation test. Two VPCs each with a private VM
+// at 10.0.0.5 (legal — VPC CIDRs may overlap). DeleteEIP on vpc-a must not
+// touch vpc-b's NAT row.
+func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-a")
+	seedRouter(t, m, "vpc-b")
+	nm, err := NewNATManager(m, NATModeDistributed)
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-a", ExternalIP: "1.1.1.1", LogicalIP: "10.0.0.5",
+		PortName: "port-a", MAC: "aa:aa:aa:aa:aa:aa",
+	}))
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-b", ExternalIP: "2.2.2.2", LogicalIP: "10.0.0.5",
+		PortName: "port-b", MAC: "bb:bb:bb:bb:bb:bb",
+	}))
+
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "10.0.0.5"))
+
+	var survived *nbdb.NAT
+	for _, n := range m.NATs {
+		if n.Type == "dnat_and_snat" && n.LogicalIP == "10.0.0.5" {
+			survived = n
+		}
+	}
+	require.NotNil(t, survived, "vpc-b dnat_and_snat row must remain after vpc-a delete")
+	assert.Equal(t, "2.2.2.2", survived.ExternalIP, "surviving row must belong to vpc-b")
+}
+
 func TestNATManager_AddSNAT_AndDelete(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

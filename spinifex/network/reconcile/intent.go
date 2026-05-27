@@ -13,6 +13,7 @@ import (
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
@@ -66,7 +67,11 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 	if err := loadEIPs(js, localVPCs, intent.EIPs); err != nil {
 		return IntentState{}, err
 	}
-	if err := loadNATGWs(js, localVPCs, intent.Subnets, intent.NATGWs); err != nil {
+	routeTables, err := loadRouteTables(js, localVPCs)
+	if err != nil {
+		return IntentState{}, err
+	}
+	if err := loadNATGWs(js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
 		return IntentState{}, err
 	}
 
@@ -351,7 +356,63 @@ func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 	return nil
 }
 
-func loadNATGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, subnets map[string]topology.SubnetSpec, out map[string]policy.NATGWSpec) error {
+// loadRouteTables snapshots every route table whose VPC is local. Used by
+// loadNATGWs to fan out NATGW SNAT specs over associated subnets — mirrors the
+// event-driven publisher in handlers/ec2/routetable.
+func loadRouteTables(js nats.JetStreamContext, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
+	kv, err := js.KeyValue(handlers_ec2_routetable.KVBucketRouteTables)
+	if err != nil {
+		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
+		return nil, nil
+	}
+	keys, err := kv.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list route table keys: %w", err)
+	}
+	var out []handlers_ec2_routetable.RouteTableRecord
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(key)
+		if err != nil {
+			slog.Warn("reconcile/intent: route table read failed", "key", key, "err", err)
+			continue
+		}
+		var rec handlers_ec2_routetable.RouteTableRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// natgwSpecKey is the intent-map key for NATGWSpec. The reconciler needs one
+// spec per (natgwID, subnetCIDR) because a NATGW may serve multiple subnets
+// (route-table associations) and OVN stores one snat row per subnet CIDR.
+func natgwSpecKey(natgwID, subnetCIDR string) string {
+	return natgwID + "|" + subnetCIDR
+}
+
+// loadNATGWs emits one NATGWSpec per (NATGW, associated subnet) pair. Mirrors
+// publishNatGatewayEventsForAssociation in handlers/ec2/routetable: a NATGW's
+// SNAT rule rewrites traffic from the *private* subnets routed through it,
+// not from the NATGW's own public subnet.
+func loadNATGWs(
+	js nats.JetStreamContext,
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	out map[string]policy.NATGWSpec,
+) error {
 	kv, err := js.KeyValue(handlers_ec2_natgw.KVBucketNatGateways)
 	if err != nil {
 		slog.Debug("reconcile/intent: NAT GW bucket not available, skipping", "err", err)
@@ -378,22 +439,51 @@ func loadNATGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, subnets
 			slog.Warn("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
 			continue
 		}
-		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" || rec.SubnetId == "" {
+		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" {
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {
 			continue
 		}
-		subnet, ok := subnets[rec.SubnetId]
-		if !ok {
-			slog.Warn("reconcile/intent: NAT GW subnet not in intent, skipping", "natgw_id", rec.NatGatewayId, "subnet_id", rec.SubnetId)
-			continue
+
+		emitted := false
+		for _, rt := range routeTables {
+			if rt.VpcId != rec.VpcId {
+				continue
+			}
+			hasNatRoute := false
+			for _, r := range rt.Routes {
+				if r.NatGatewayId == rec.NatGatewayId {
+					hasNatRoute = true
+					break
+				}
+			}
+			if !hasNatRoute {
+				continue
+			}
+			for _, assoc := range rt.Associations {
+				if assoc.SubnetId == "" || assoc.Main {
+					continue
+				}
+				subnet, ok := subnets[assoc.SubnetId]
+				if !ok {
+					slog.Warn("reconcile/intent: NAT GW associated subnet not in intent, skipping",
+						"natgw_id", rec.NatGatewayId, "subnet_id", assoc.SubnetId)
+					continue
+				}
+				cidr := subnet.CIDR.String()
+				out[natgwSpecKey(rec.NatGatewayId, cidr)] = policy.NATGWSpec{
+					VPCID:        rec.VpcId,
+					NATGatewayID: rec.NatGatewayId,
+					PublicIP:     rec.PublicIp,
+					SubnetCIDR:   cidr,
+				}
+				emitted = true
+			}
 		}
-		out[rec.NatGatewayId] = policy.NATGWSpec{
-			VPCID:        rec.VpcId,
-			NATGatewayID: rec.NatGatewayId,
-			PublicIP:     rec.PublicIp,
-			SubnetCIDR:   subnet.CIDR.String(),
+		if !emitted {
+			slog.Debug("reconcile/intent: NAT GW has no associated private subnets, skipping",
+				"natgw_id", rec.NatGatewayId, "vpc_id", rec.VpcId)
 		}
 	}
 	return nil

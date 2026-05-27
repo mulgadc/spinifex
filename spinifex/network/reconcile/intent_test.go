@@ -8,6 +8,8 @@ import (
 
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 )
@@ -156,6 +158,92 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 	}
 	if len(intent.IGWs) != 1 {
 		t.Errorf("got %d IGWs, want 1 (detached should be excluded)", len(intent.IGWs))
+	}
+}
+
+// TestLoadIntentFromKV_NATGWUsesAssociatedSubnet enforces that loadNATGWs
+// emits one NATGWSpec per *associated* private subnet (via route-table
+// associations) — NOT the NATGW's own public home subnet. Bug observed in CI
+// Phase 8d: reconciler installed snat for the NATGW's public-subnet CIDR
+// (172.31.0.0/20) instead of the routed private-subnet CIDR (172.31.16.0/20),
+// corrupting conntrack reverse-NAT and producing 100% packet loss.
+func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub":  mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+		"acct/subnet-priv": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-priv", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20"}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-1": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+			NatGatewayId: "nat-1", VpcId: "vpc-local", SubnetId: "subnet-pub",
+			PublicIp: "203.0.113.50", State: "available",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-priv": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-priv", VpcId: "vpc-local",
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: "nat-1", State: "active"},
+			},
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-x", SubnetId: "subnet-priv"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if len(intent.NATGWs) != 1 {
+		t.Fatalf("got %d NATGW specs, want 1; intent=%#v", len(intent.NATGWs), intent.NATGWs)
+	}
+	for _, spec := range intent.NATGWs {
+		if spec.SubnetCIDR != "172.31.16.0/20" {
+			t.Errorf("SubnetCIDR=%q, want %q (private subnet routed via NATGW, not NATGW's home subnet)",
+				spec.SubnetCIDR, "172.31.16.0/20")
+		}
+		if spec.NATGatewayID != "nat-1" || spec.PublicIP != "203.0.113.50" {
+			t.Errorf("spec mismatch: %#v", spec)
+		}
+	}
+}
+
+// TestLoadIntentFromKV_NATGWNoAssociationSkips guards against installing a
+// SNAT for a NATGW that no route table points to. Without an associated
+// private subnet there is no traffic to translate, and emitting the home
+// subnet's CIDR would corrupt the SNAT table.
+func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-orphan": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+			NatGatewayId: "nat-orphan", VpcId: "vpc-local", SubnetId: "subnet-pub",
+			PublicIp: "203.0.113.51", State: "available",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if len(intent.NATGWs) != 0 {
+		t.Errorf("NATGW with no associated subnets must not produce specs, got %#v", intent.NATGWs)
 	}
 }
 

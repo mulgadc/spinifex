@@ -90,11 +90,41 @@ func TestStubDeviceController_CallsSnapshotIsCopy(t *testing.T) {
 	assert.Equal(t, "device_add", again[0].Execute, "Calls() must return independent copies")
 }
 
-func TestQMPDeviceController_QueryPCIUnwiredUntil3b(t *testing.T) {
-	c := NewQMPDeviceController(&qmp.QMPClient{}, "i-test")
-	_, err := c.QueryPCI()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Sprint 3b")
+func TestQMPDeviceController_QueryPCIFlattensBridges(t *testing.T) {
+	// query-pci returns one bus whose root devices include pcie-root-ports
+	// (each itself a PCI-PCI bridge). The hot-plugged virtio-net device
+	// sits under the bridge. The parser must recurse and flatten.
+	client, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		require.Equal(t, "query-pci", cmd.Execute)
+		return map[string]any{
+			"return": []any{
+				map[string]any{
+					"bus": 0,
+					"devices": []any{
+						map[string]any{"bus": 0, "slot": 1, "qdev_id": "primary"},
+						map[string]any{
+							"bus": 0, "slot": 2, "qdev_id": "hotplug-eni1",
+							"pci_bridge": map[string]any{
+								"devices": []any{
+									map[string]any{"bus": 5, "slot": 0, "qdev_id": "net-eni-1"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+	defer cancel()
+
+	c := NewQMPDeviceController(client, "i-test")
+	pci, err := c.QueryPCI()
+	require.NoError(t, err)
+	ids := make([]string, 0, len(pci))
+	for _, d := range pci {
+		ids = append(ids, d.QDevID)
+	}
+	assert.ElementsMatch(t, []string{"primary", "hotplug-eni1", "net-eni-1"}, ids)
 }
 
 func TestQMPDeviceController_DispatchesExpectedCommands(t *testing.T) {

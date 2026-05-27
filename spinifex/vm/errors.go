@@ -32,3 +32,17 @@ var ErrVolumeDeviceMismatch = errors.New("volume device name mismatch")
 // or may not have started serving NBD; AttachVolume must invoke UnmountOne
 // defensively so a half-started backend mount is not orphaned.
 var ErrMountAmbiguous = errors.New("ebs.mount succeeded with empty URI")
+
+// ErrENINotAttached is returned by HotUnplugENI when the supplied ENI id
+// is not present in the instance's ENIRequests.AttachedByENIID map.
+var ErrENINotAttached = errors.New("ENI not attached to instance")
+
+// ErrENIPipelineTimeout is returned by HotPlugENI / HotUnplugENI when the
+// query-pci poll did not observe the expected materialization (attach) or
+// removal (detach) within the configured budget.
+var ErrENIPipelineTimeout = errors.New("ENI hot-plug pipeline timed out")
+
+// ErrQMPUnavailable is returned by hot-plug entry points when the
+// instance has no live QMPClient (daemon restart mid-launch, terminated
+// VM, etc).
+var ErrQMPUnavailable = errors.New("QMP unavailable for instance")

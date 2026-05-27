@@ -99,3 +99,26 @@ func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
 	}
 	return nil
 }
+
+// LookupSessionCredential resolves an access-key ID to its stored
+// SessionCredential. Returns (nil, nil) when the AKID does not start with
+// "ASIA" or when no record exists for it — the SigV4 verifier translates
+// that miss into InvalidClientTokenId on the ASIA path. Any other failure
+// (unmarshal, transport) is returned as an error.
+func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCredential, error) {
+	if !strings.HasPrefix(accessKeyID, SessionAccessKeyIDPrefix) {
+		return nil, nil
+	}
+	entry, err := s.sessionsBucket.Get(accessKeyID)
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get session credential: %w", err)
+	}
+	var cred SessionCredential
+	if err := json.Unmarshal(entry.Value(), &cred); err != nil {
+		return nil, fmt.Errorf("unmarshal session credential: %w", err)
+	}
+	return &cred, nil
+}

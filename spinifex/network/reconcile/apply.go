@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -46,7 +45,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 		routerPortName := topology.SubnetRouterPort(subnetID)
 		switchRouterPortName := topology.SubnetSwitchRouterPort(subnetID)
 
-		gwIP, prefixBits, err := subnetGatewayCIDR(spec.CIDR)
+		gwIP, prefixBits, err := topology.SubnetGatewayCIDR(spec.CIDR)
 		if err != nil {
 			slog.Error("reconcile/apply: subnet gateway calc failed", "subnet_id", subnetID, "err", err)
 			continue
@@ -303,21 +302,6 @@ func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ Actu
 				"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err)
 		}
 	}
-}
-
-// subnetGatewayCIDR returns the .1 host of the subnet's CIDR and the
-// prefix bit count. Kept local to the reconcile package.
-func subnetGatewayCIDR(prefix netip.Prefix) (string, int, error) {
-	if !prefix.IsValid() {
-		return "", 0, fmt.Errorf("invalid prefix")
-	}
-	addr := prefix.Masked().Addr()
-	if !addr.Is4() {
-		return "", 0, fmt.Errorf("only IPv4 supported: %s", prefix)
-	}
-	bytes := addr.As4()
-	bytes[3]++
-	return netip.AddrFrom4(bytes).String(), prefix.Bits(), nil
 }
 
 // diffSets returns the (desired - current) and (current - desired) sets.

@@ -361,17 +361,6 @@ func TestDiffSets(t *testing.T) {
 	}
 }
 
-func TestSubnetGatewayCIDR(t *testing.T) {
-	prefix := netip.MustParsePrefix("10.0.1.0/24")
-	gw, bits, err := subnetGatewayCIDR(prefix)
-	if err != nil {
-		t.Fatalf("subnetGatewayCIDR: %v", err)
-	}
-	if gw != "10.0.1.1" || bits != 24 {
-		t.Errorf("got (%q, %d), want (10.0.1.1, 24)", gw, bits)
-	}
-}
-
 func freshIntent(t *testing.T) IntentState {
 	t.Helper()
 	mac, _ := net.ParseMAC("02:00:00:00:00:01")

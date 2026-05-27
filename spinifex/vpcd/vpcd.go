@@ -523,6 +523,14 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IGW manager: %w", err)
 	}
+	eipMgr, err := external.NewEIPManager(natMgr, waitForFlowsHV)
+	if err != nil {
+		return fmt.Errorf("construct EIP manager: %w", err)
+	}
+	natgwMgr, err := external.NewNATGWManager(natMgr)
+	if err != nil {
+		return fmt.Errorf("construct NATGW manager: %w", err)
+	}
 
 	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in
 	// a multi-node cluster all hit Get-then-Create on Logical_Router with no
@@ -536,7 +544,8 @@ func launchService(cfg *Config) error {
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,
 		SG:       sgMgr,
-		NAT:      natMgr,
+		EIP:      eipMgr,
+		NATGW:    natgwMgr,
 		IGW:      igwMgr,
 	})
 	if err != nil {

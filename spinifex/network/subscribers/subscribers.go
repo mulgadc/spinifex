@@ -20,7 +20,8 @@ const QueueGroup = "vpcd-workers"
 type Subscriber struct {
 	topology topology.Manager
 	sg       policy.SecurityGroupManager
-	nat      policy.NATManager
+	eip      external.EIPManager
+	natgw    external.NATGWManager
 	igw      external.IGWManager
 }
 
@@ -28,7 +29,8 @@ type Subscriber struct {
 type Config struct {
 	Topology topology.Manager
 	SG       policy.SecurityGroupManager
-	NAT      policy.NATManager
+	EIP      external.EIPManager
+	NATGW    external.NATGWManager
 	IGW      external.IGWManager
 }
 
@@ -39,15 +41,18 @@ func New(cfg Config) (*Subscriber, error) {
 		return nil, errors.New("subscribers: Topology manager required")
 	case cfg.SG == nil:
 		return nil, errors.New("subscribers: SecurityGroupManager required")
-	case cfg.NAT == nil:
-		return nil, errors.New("subscribers: NATManager required")
+	case cfg.EIP == nil:
+		return nil, errors.New("subscribers: EIPManager required")
+	case cfg.NATGW == nil:
+		return nil, errors.New("subscribers: NATGWManager required")
 	case cfg.IGW == nil:
 		return nil, errors.New("subscribers: IGWManager required")
 	}
 	return &Subscriber{
 		topology: cfg.Topology,
 		sg:       cfg.SG,
-		nat:      cfg.NAT,
+		eip:      cfg.EIP,
+		natgw:    cfg.NATGW,
 		igw:      cfg.IGW,
 	}, nil
 }

@@ -39,7 +39,15 @@ func newTestSubscriber(t *testing.T) (*Subscriber, *mock.Client) {
 	if err != nil {
 		t.Fatalf("NewIGWManager: %v", err)
 	}
-	s, err := New(Config{Topology: topo, SG: sg, NAT: nat, IGW: igw})
+	eip, err := external.NewEIPManager(nat, nil)
+	if err != nil {
+		t.Fatalf("NewEIPManager: %v", err)
+	}
+	natgw, err := external.NewNATGWManager(nat)
+	if err != nil {
+		t.Fatalf("NewNATGWManager: %v", err)
+	}
+	s, err := New(Config{Topology: topo, SG: sg, EIP: eip, NATGW: natgw, IGW: igw})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

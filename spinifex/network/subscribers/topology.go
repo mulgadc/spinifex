@@ -223,7 +223,7 @@ func (s *Subscriber) handleAddNAT(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.nat.AddEIP(context.Background(), policy.EIPSpec{
+	if err := s.eip.AttachEIP(context.Background(), policy.EIPSpec{
 		VPCID:      evt.VpcId,
 		ExternalIP: evt.ExternalIP,
 		LogicalIP:  evt.LogicalIP,
@@ -249,7 +249,7 @@ func (s *Subscriber) handleDeleteNAT(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.nat.DeleteEIP(context.Background(), evt.VpcId, evt.LogicalIP); err != nil {
+	if err := s.eip.DetachEIP(context.Background(), evt.VpcId, evt.LogicalIP); err != nil {
 		slog.Error("subscribers: DeleteEIP failed",
 			"vpc_id", evt.VpcId, "logical_ip", evt.LogicalIP, "err", err)
 		respond(msg, err)
@@ -266,7 +266,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 		slog.Error("subscribers: failed to unmarshal vpc.add-nat-gateway event", "err", err)
 		return
 	}
-	if err := s.nat.AddNATGateway(context.Background(), policy.NATGWSpec{
+	if err := s.natgw.AttachNATGateway(context.Background(), policy.NATGWSpec{
 		VPCID:        evt.VpcId,
 		NATGatewayID: evt.NatGatewayId,
 		PublicIP:     evt.PublicIp,
@@ -288,7 +288,7 @@ func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-nat-gateway event", "err", err)
 		return
 	}
-	if err := s.nat.DeleteNATGateway(context.Background(), evt.VpcId, evt.SubnetCidr); err != nil {
+	if err := s.natgw.DetachNATGateway(context.Background(), evt.VpcId, evt.SubnetCidr); err != nil {
 		slog.Warn("subscribers: DeleteNATGateway failed",
 			"vpc_id", evt.VpcId, "subnet_cidr", evt.SubnetCidr, "err", err)
 		return

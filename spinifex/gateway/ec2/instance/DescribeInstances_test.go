@@ -2,11 +2,14 @@ package gateway_ec2_instance
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -253,4 +256,77 @@ func TestDescribeInstances_ClosedConnection(t *testing.T) {
 	_, err = DescribeInstances(input, closedNC, 1, "123456789012")
 
 	require.Error(t, err)
+}
+
+// describeOutputWithProfiles builds a DescribeInstancesOutput with one
+// reservation whose instances each carry the supplied ARN (empty string =
+// no profile attached).
+func describeOutputWithProfiles(arns ...string) *ec2.DescribeInstancesOutput {
+	out := &ec2.DescribeInstancesOutput{
+		Reservations: []*ec2.Reservation{{ReservationId: aws.String("r-1")}},
+	}
+	for i, arn := range arns {
+		inst := &ec2.Instance{InstanceId: aws.String("i-" + string(rune('a'+i)))}
+		if arn != "" {
+			inst.IamInstanceProfile = &ec2.IamInstanceProfile{Arn: aws.String(arn)}
+		}
+		out.Reservations[0].Instances = append(out.Reservations[0].Instances, inst)
+	}
+	return out
+}
+
+func TestEnrichInstanceProfileIDs_CachesPerARN(t *testing.T) {
+	arn := "arn:aws:iam::123456789012:instance-profile/shared"
+	var calls int
+	svc := &fakeIAMService{
+		resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+			calls++
+			return &handlers_iam.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAEXAMPLE"}, nil
+		},
+	}
+
+	out := describeOutputWithProfiles(arn, arn, arn)
+	EnrichInstanceProfileIDs(out, svc, "123456789012")
+
+	assert.Equal(t, 1, calls, "three instances sharing one ARN should resolve once")
+	for _, inst := range out.Reservations[0].Instances {
+		assert.Equal(t, "AIPAEXAMPLE", aws.StringValue(inst.IamInstanceProfile.Id))
+	}
+}
+
+func TestEnrichInstanceProfileIDs_ResolveErrorLeavesIdEmpty(t *testing.T) {
+	failingARN := "arn:aws:iam::123456789012:instance-profile/missing"
+	okARN := "arn:aws:iam::123456789012:instance-profile/present"
+	svc := &fakeIAMService{
+		resolveFn: func(_, nameOrARN string) (*handlers_iam.InstanceProfile, error) {
+			if nameOrARN == failingARN {
+				return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return &handlers_iam.InstanceProfile{ARN: nameOrARN, InstanceProfileID: "AIPAOK"}, nil
+		},
+	}
+
+	out := describeOutputWithProfiles(failingARN, okARN)
+	EnrichInstanceProfileIDs(out, svc, "123456789012")
+
+	assert.Nil(t, out.Reservations[0].Instances[0].IamInstanceProfile.Id,
+		"failing lookup leaves Id nil")
+	assert.Equal(t, "AIPAOK", aws.StringValue(out.Reservations[0].Instances[1].IamInstanceProfile.Id),
+		"adjacent instances still enriched")
+}
+
+func TestEnrichInstanceProfileIDs_NoOpInputs(t *testing.T) {
+	// Should not panic on nil out or nil iamSvc, and instances without a
+	// profile attached are untouched.
+	EnrichInstanceProfileIDs(nil, &fakeIAMService{}, "123456789012")
+
+	out := describeOutputWithProfiles("arn:aws:iam::123456789012:instance-profile/foo")
+	EnrichInstanceProfileIDs(out, nil, "123456789012")
+	assert.Nil(t, out.Reservations[0].Instances[0].IamInstanceProfile.Id,
+		"nil iamSvc is a no-op")
+
+	noProfile := describeOutputWithProfiles("")
+	EnrichInstanceProfileIDs(noProfile, &fakeIAMService{}, "123456789012")
+	assert.Nil(t, noProfile.Reservations[0].Instances[0].IamInstanceProfile,
+		"instance with no profile is untouched")
 }

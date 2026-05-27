@@ -154,7 +154,6 @@ func (f *fakeIAMService) CreateAccount(string) (*handlers_iam.Account, error)   
 func (f *fakeIAMService) GetAccount(string) (*handlers_iam.Account, error)        { return nil, nil }
 func (f *fakeIAMService) ListAccounts() ([]*handlers_iam.Account, error)          { return nil, nil }
 
-// var _ handlers_iam.IAMService = (*fakeIAMService)(nil) // compile-time check
 var _ handlers_iam.IAMService = (*fakeIAMService)(nil)
 
 // profileWithRole builds a resolved profile fixture pointing at the test role.

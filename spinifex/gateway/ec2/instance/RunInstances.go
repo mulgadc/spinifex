@@ -2,8 +2,6 @@ package gateway_ec2_instance
 
 import (
 	"errors"
-	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -144,48 +142,19 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	return *reservationPtr, nil
 }
 
-// resolveAndAuthorizeInstanceProfile looks up the instance profile reference
-// in RunInstancesInput.IamInstanceProfile (if any), checks iam:PassRole on
-// the underlying role's ARN, and normalises the input so the daemon sees a
-// single canonical ARN reference. Returns the resolved profile (or nil if
-// the input did not specify one). Errors are mapped to AWS-compatible codes.
+// resolveAndAuthorizeInstanceProfile resolves and authorizes the optional
+// instance profile in RunInstancesInput, normalising the input so the daemon
+// sees only the canonical ARN (clearing Name avoids double-resolution if the
+// profile is renamed between gateway resolution and daemon launch).
 func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
 	if input.IamInstanceProfile == nil {
 		return nil, nil
 	}
-	nameOrARN := profileNameOrARN(input.IamInstanceProfile)
-	if nameOrARN == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if iamSvc == nil {
-		slog.Error("RunInstances: IAM service not available, cannot resolve instance profile",
-			"nameOrARN", nameOrARN)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	profile, err := iamSvc.ResolveInstanceProfile(accountID, nameOrARN)
+	profile, err := resolveAndAuthorizeProfile(input.IamInstanceProfile, iamSvc, accountID, passRoleCheck)
 	if err != nil {
-		// Map IAM internal errors to the EC2-side error shape AWS returns.
-		// ResolveInstanceProfile returns NoSuchEntity when the profile is
-		// missing; AWS EC2 surfaces this as InvalidIamInstanceProfile.NotFound.
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
-			return nil, errors.New(awserrors.ErrorInvalidIamInstanceProfileNotFound)
-		}
 		return nil, err
 	}
-
-	if profile.RoleName != "" && passRoleCheck != nil {
-		roleARN := fmt.Sprintf("arn:aws:iam::%s:role/%s", profile.AccountID, profile.RoleName)
-		if err := passRoleCheck(roleARN); err != nil {
-			return nil, err
-		}
-	}
-
-	// Normalise: daemons see only the canonical ARN. Clearing Name avoids
-	// double-resolution and silently divergent semantics if the profile is
-	// renamed between gateway resolution and daemon launch.
-	input.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{
-		Arn: aws.String(profile.ARN),
-	}
+	input.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(profile.ARN)}
 	return profile, nil
 }
 

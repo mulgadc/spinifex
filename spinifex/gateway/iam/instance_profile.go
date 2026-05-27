@@ -41,9 +41,9 @@ func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput
 // runs inside svc.DeleteInstanceProfile after both checks pass.
 //
 // Race window between the live-instance scan and the bucket delete is
-// accepted (Resolved Design Decision #2 in iam-roles-v1-ec2.md): the same
-// pattern as DeletePolicy. countLive may be nil — primarily in unit tests that
-// don't exercise the fan-out path; in production the gateway always supplies it.
+// accepted: same pattern as DeletePolicy (no CAS, eventual consistency).
+// countLive may be nil — primarily in unit tests that don't exercise the
+// fan-out path; in production the gateway always supplies it.
 func DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput, svc handlers_iam.IAMService, countLive LiveAssociationCounter) (*iam.DeleteInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

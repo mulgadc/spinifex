@@ -217,9 +217,9 @@ func TestEvaluateAccess_CaseInsensitiveAction(t *testing.T) {
 	}
 }
 
-// --- matchWildcard tests ---
+// --- wildcard matching tests (via matchesAny) ---
 
-func TestMatchWildcard(t *testing.T) {
+func TestMatchesAny_Wildcard(t *testing.T) {
 	tests := []struct {
 		pattern string
 		value   string
@@ -266,17 +266,17 @@ func TestMatchWildcard(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := matchWildcard(tt.pattern, tt.value)
+		got := matchesAny([]string{tt.pattern}, tt.value)
 		if got != tt.want {
-			t.Errorf("matchWildcard(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
+			t.Errorf("matchesAny([%q], %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 		}
 	}
 }
 
 // TestEvaluateAccess_PassRoleResourceARN exercises the resource-ARN matching
-// path used by iam:PassRole enforcement (iam-roles-v1-ec2 step 7). The caller's
-// policy will typically scope PassRole to a wildcard ARN; the evaluator must
-// match a concrete role ARN against it.
+// path used by iam:PassRole enforcement. The caller's policy will typically
+// scope PassRole to a wildcard ARN; the evaluator must match a concrete role
+// ARN against it.
 func TestEvaluateAccess_PassRoleResourceARN(t *testing.T) {
 	policies := []handlers_iam.PolicyDocument{
 		{
@@ -308,13 +308,11 @@ func TestEvaluateAccess_PassRoleResourceARN(t *testing.T) {
 	}
 }
 
-// TestEvaluateAccess_IAMRolesV1EC2ActionStrings is a smoke test confirming that
-// the five action strings introduced by iam-roles-v1-ec2 (step 7) flow through
-// the evaluator with the expected names. The strings are produced dynamically
-// from gateway dispatch via policy.IAMAction(service, action); this test pins
-// the expected end-to-end identifiers so a rename of any ec2Actions key or
-// checkPolicyResource call site is caught by policy-layer tests.
-func TestEvaluateAccess_IAMRolesV1EC2ActionStrings(t *testing.T) {
+// TestEvaluateAccess_IAMInstanceProfileActionStrings pins the action strings
+// for iam:PassRole + the four EC2 instance-profile association actions so a
+// rename of any ec2Actions key or checkPolicyResource call site is caught at
+// the policy layer. Strings are produced dynamically via policy.IAMAction.
+func TestEvaluateAccess_IAMInstanceProfileActionStrings(t *testing.T) {
 	actions := []string{
 		"iam:PassRole",
 		"ec2:AssociateIamInstanceProfile",

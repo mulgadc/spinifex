@@ -18,11 +18,11 @@ import (
 //	 vpc.{azID}. A subscription never processes a message whose subject
 //	 AZ prefix does not match the local node's AZ identifier."
 //
-// Status: aspirational. As of mulga-siv-125.* the subject scheme is still
-// the legacy `vpc.<verb>` form (`vpc.create`, `vpc.delete`, …) with no
-// `{azID}` segment. ADR-0006 §"AZ identity and NATS subject routing"
-// describes the planned rename; until the cluster-wide cutover lands,
-// renaming subjects would break rolling upgrades.
+// Status: aspirational. The subject scheme is still the legacy `vpc.<verb>`
+// form (`vpc.create`, `vpc.delete`, …) with no `{azID}` segment. ADR-0006
+// §"AZ identity and NATS subject routing" describes the planned rename;
+// until the cluster-wide cutover lands, renaming subjects would break
+// rolling upgrades.
 //
 // To keep the gap visible without breaking CI, the test runs the audit and
 // — when violations are found — calls t.Skip with the gap report. The

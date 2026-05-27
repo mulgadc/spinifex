@@ -24,7 +24,7 @@ func SetIPSecCertPaths(certPath, keyPath, caCertPath string) error {
 
 // EnableIPSecEncapsulation flips ipsec_encapsulation=true on the local
 // Open_vSwitch row. Caller must first verify ovs-monitor-ipsec is active —
-// flipping without a live daemon creates the silent-drop trap (mulga-siv-136).
+// flipping without a live daemon creates a silent-drop trap.
 func EnableIPSecEncapsulation() error {
 	out, err := utils.SudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
 		"other_config:ipsec_encapsulation=true",

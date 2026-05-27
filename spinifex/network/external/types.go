@@ -4,7 +4,7 @@ package external
 // the [external_pools] entry in spinifex.toml. IPs come from
 // RangeStart..RangeEnd, the gateway from Gateway, and the gateway LRP IP
 // from GwLrpRangeStart..GwLrpRangeEnd (auto-derived from the WAN subnet
-// when unset). The upstream-DHCP source model is gone (mulga-siv-125.3.3).
+// when unset). The upstream-DHCP source model is gone.
 //
 // Duplicates spinifex/vpcd.ExternalPoolConfig pending dedup when vpcd's
 // Config grows to use this shared type directly.

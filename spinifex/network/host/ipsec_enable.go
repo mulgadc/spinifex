@@ -42,8 +42,7 @@ var ovnNBSocketPath = "/run/ovn/ovnnb_db.sock"
 //
 // Single-node clusters short-circuit: with no peers, there are no Geneve
 // tunnels to encrypt, and flipping ipsec_encapsulation=true on a host where
-// ovs-monitor-ipsec is absent or dead would create the silent-drop trap that
-// triggers mulga-siv-136.
+// ovs-monitor-ipsec is absent or dead would silently drop tunnel traffic.
 //
 // Lives in L0 (network/host) per ADR-0006 S8: "IPSec is OVN-native only…
 // IPSec SA lifecycle is delegated entirely to OVN native IPSec and is

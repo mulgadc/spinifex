@@ -40,7 +40,7 @@ type Client struct {
 	// SetGatewayChassisCalls / DeleteGatewayChassisCalls /
 	// UpdateGatewayChassisPriorityCalls let tests distinguish between
 	// "no-op", "create", "delete", and "priority update" paths through
-	// reconcileGatewayChassis (mulga-999).
+	// reconcileGatewayChassis.
 	SetGatewayChassisCalls            int
 	DeleteGatewayChassisCalls         int
 	UpdateGatewayChassisPriorityCalls int
@@ -856,7 +856,7 @@ func (m *Client) ListLogicalRouterPorts(_ context.Context) ([]nbdb.LogicalRouter
 // SetGatewayChassis is the idempotent read-then-decide path mirrored from
 // LiveClient. Tests rely on the mock applying the same "no-op when already
 // correct" semantics so the call counters distinguish create vs. update vs.
-// no-op (mulga-999).
+// no-op.
 func (m *Client) SetGatewayChassis(_ context.Context, lrpName string, chassisName string, priority int) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -935,7 +935,7 @@ func (m *Client) DeleteGatewayChassis(_ context.Context, lrpName string, gcUUID 
 
 // SeedGatewayChassis lets tests pre-populate a Gateway_Chassis row directly,
 // bypassing the idempotent SetGatewayChassis path. Useful for setting up a
-// "stale row" scenario for reconcileGatewayChassis tests (mulga-999).
+// "stale row" scenario for reconcileGatewayChassis tests.
 func (m *Client) SeedGatewayChassis(lrpName string, gc *nbdb.GatewayChassis) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

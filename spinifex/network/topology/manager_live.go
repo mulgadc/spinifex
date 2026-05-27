@@ -53,7 +53,7 @@ func defaultDNSServer() string { return "{8.8.8.8, 1.1.1.1}" }
 // the wait-op-protected EnsureLogicalRouter primitive so concurrent invocations
 // across nodes (vpc.create on one node + vpc.create-subnet's defensive call on
 // another, see subscribers/topology.go) cannot produce duplicate routers per
-// VPC (bead mulga-siv-146).
+// VPC.
 //
 // If the surviving row was created with an empty `spinifex:cidr` ExternalID
 // (the defensive vpc.create-subnet path passes VPCSpec{VPCID: ...} with no

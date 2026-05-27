@@ -9,10 +9,6 @@
 // logical switches must already exist before the L3 managers can attach
 // policy to them; layering breaks are loud (L1 returns "not found" and the
 // L3 method propagates the error).
-//
-// See docs/development/feature/spinifex-network-redesign.md §8 and
-// docs/development/feature/spinifex-network-redesign-phase2.md §2.1 for the
-// full contract.
 package policy
 
 import (

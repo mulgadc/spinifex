@@ -12,8 +12,7 @@ import (
 )
 
 // applyVPCs ensures every intent VPC has a LogicalRouter. OVN-only routers
-// are left alone (manual ops territory; tightening this is a Phase 4
-// cleanup item).
+// are left alone (manual ops territory).
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.VPCs {
 		routerName := topology.VPCRouter(vpcID)
@@ -245,7 +244,7 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 // rebinds chassis on existing IGWs. AttachIGW is idempotent (short-circuits
 // when the external switch already exists), so calling it when actual state
 // is missing converges bootstrap-time default-VPC IGWs whose vpc.igw-attach
-// NATS event arrived before vpcd's subscriber was ready (mulga-siv-132).
+// NATS event arrived before vpcd's subscriber was ready.
 func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.IGWs {
 		if _, ok := actual.ExternalSwch[vpcID]; !ok {
@@ -264,9 +263,7 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 // configured chassis; the OVN client's idempotency layer treats unchanged
 // (chassis_name, priority) tuples as no-ops. Missing chassis are skipped
 // at the caller level — we don't enumerate stale Gateway_Chassis rows
-// here because IGWManager.AttachIGW owns that for fresh creates and the
-// legacy reconcileGatewayChassis pass is going away in 2.4 when
-// topology.go is split.
+// here because IGWManager.AttachIGW owns that for fresh creates.
 func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 	if len(r.chassis) == 0 {
 		return

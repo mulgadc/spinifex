@@ -135,7 +135,7 @@ func TestSetGatewayChassis_UpdatesPriority(t *testing.T) {
 // Mirrors the production race between vpc.create on one node and the
 // defensive vpc.create-subnet EnsureVPC call on another — both observe
 // absence and both attempt to create. Without the Ensure primitive, both
-// succeed (bead mulga-siv-146). With it, one creates and the rest reuse.
+// succeed. With the Ensure primitive, one creates and the rest reuse.
 func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
 	const callers = 50
 	m := New()

@@ -41,7 +41,7 @@ type ExternalIPAMRecord struct {
 	AZ         string `json:"az,omitempty"`
 	// GwLrpRangeStart/End mirrors ExternalPoolConfig — IPAM skips this
 	// sub-range so it doesn't collide with vpcd's gateway LRP IPs in
-	// centralized NAT (mulga-siv-36).
+	// centralized NAT.
 	GwLrpRangeStart string                          `json:"gw_lrp_range_start,omitempty"`
 	GwLrpRangeEnd   string                          `json:"gw_lrp_range_end,omitempty"`
 	Allocated       map[string]ExternalIPAllocation `json:"allocated"`
@@ -58,8 +58,8 @@ type ExternalPoolConfig struct {
 	Region     string
 	AZ         string
 	// GwLrpRangeStart/End reserves a sub-range of the LAN for OVN gateway
-	// LRP IPs in centralized NAT mode (mulga-siv-36). IPAM must skip these
-	// addresses or the per-VM EIP allocator and vpcd will fight over them.
+	// LRP IPs in centralized NAT mode. IPAM must skip these addresses or
+	// the per-VM EIP allocator and vpcd will fight over them.
 	GwLrpRangeStart string
 	GwLrpRangeEnd   string
 }
@@ -319,7 +319,7 @@ func (m *ExternalIPAM) getRecord(poolName string) (*ExternalIPAMRecord, uint64, 
 
 // nextAvailableExternalIP finds the next unallocated IP in the pool's
 // range. Addresses inside [GwLrpRangeStart, GwLrpRangeEnd] are skipped —
-// vpcd reserves them for OVN gateway LRPs (mulga-siv-36).
+// vpcd reserves them for OVN gateway LRPs.
 func nextAvailableExternalIP(record *ExternalIPAMRecord) (string, error) {
 	startIP := net.ParseIP(record.RangeStart).To4()
 	endIP := net.ParseIP(record.RangeEnd).To4()
@@ -380,7 +380,7 @@ func ValidatePoolConfig(pool ExternalPoolConfig) error {
 	}
 	// gw_lrp_range must be valid IPs and must NOT overlap range_start/end
 	// — otherwise vpcd's gateway LRP allocator and per-VM EIP allocator
-	// would fight over the same address (mulga-siv-36).
+	// would fight over the same address.
 	if pool.GwLrpRangeStart != "" || pool.GwLrpRangeEnd != "" {
 		gwS := net.ParseIP(pool.GwLrpRangeStart)
 		gwE := net.ParseIP(pool.GwLrpRangeEnd)

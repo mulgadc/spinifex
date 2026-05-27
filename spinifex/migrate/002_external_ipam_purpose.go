@@ -11,7 +11,7 @@ import (
 
 // extIPAMBucket mirrors handlers/ec2/vpc.KVBucketExternalIPAM. Duplicated to
 // keep the migrate package free of any handler dependency; if the bucket name
-// changes, both constants must move together (mulga-siv-125.3.3 Slice B).
+// changes, both constants must move together.
 const extIPAMBucket = "spinifex-external-ipam"
 
 const extIPAMMaxRetries = 3

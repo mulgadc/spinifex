@@ -637,7 +637,7 @@ func (c *LiveClient) UpdateLogicalRouterPort(ctx context.Context, lrp *nbdb.Logi
 // then-decide so it tolerates re-runs of reconcile/IGW-attach: absent → create
 // + LRP-mutate; present + same priority → no-op; present + different priority
 // → mutate priority on the existing row. Required for the reconcile-time
-// rebind step that recovers from chassis_name drift (mulga-999).
+// rebind step that recovers from chassis_name drift.
 func (c *LiveClient) SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error {
 	gcName := lrpName + "-" + chassisName
 	existing, err := c.GetGatewayChassisByName(ctx, gcName)
@@ -718,8 +718,7 @@ func (c *LiveClient) GetGatewayChassisByName(ctx context.Context, name string) (
 
 // ListGatewayChassis returns every Gateway_Chassis row. The reconcile loop
 // uses this to find rows referencing chassis names that no longer exist in
-// the SBDB (e.g. because the OVS system-id changed across a reboot —
-// mulga-999).
+// the SBDB (e.g. because the OVS system-id changed across a reboot).
 func (c *LiveClient) ListGatewayChassis(ctx context.Context) ([]nbdb.GatewayChassis, error) {
 	var rows []nbdb.GatewayChassis
 	if err := c.client.List(ctx, &rows); err != nil {
@@ -761,7 +760,7 @@ func (c *LiveClient) DeleteGatewayChassis(ctx context.Context, lrpName string, g
 
 // ListLogicalRouterPorts returns every LRP across all routers. Used by the
 // reconcile-time gateway-chassis rebind to find every LRP tagged
-// external_ids:spinifex:role=gateway (mulga-999).
+// external_ids:spinifex:role=gateway.
 func (c *LiveClient) ListLogicalRouterPorts(ctx context.Context) ([]nbdb.LogicalRouterPort, error) {
 	var rows []nbdb.LogicalRouterPort
 	if err := c.client.List(ctx, &rows); err != nil {

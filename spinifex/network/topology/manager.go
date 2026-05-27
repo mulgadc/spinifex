@@ -2,10 +2,6 @@
 // model. It translates VPC/subnet/ENI/SG API objects into OVN logical network
 // objects via L1 (network/ovn). Higher layers (policy, external, federation)
 // build on this; lower layers must not call here.
-//
-// See docs/development/feature/spinifex-network-redesign.md §7 and
-// docs/development/proposals/az-local-architecture/0006-spinifex-network-layer-contract.md
-// for the full contract.
 package topology
 
 import (
@@ -47,8 +43,7 @@ type Manager interface {
 	DeleteSGPortGroupByName(ctx context.Context, pgName string) error
 }
 
-// VPCSpec describes a VPC at L2. AZSlice is reserved for Phase 3 per-AZ CIDR
-// slicing; Phase 1–2 leave it zero and treat CIDR as the full VPC range.
+// VPCSpec describes a VPC at L2.
 type VPCSpec struct {
 	VPCID string
 	CIDR  netip.Prefix
@@ -56,7 +51,7 @@ type VPCSpec struct {
 }
 
 // SubnetSpec describes a subnet at L2. CIDR must be contained in the parent
-// VPC's CIDR (or AZSlice in Phase 3); API-layer validation enforces that.
+// VPC's CIDR; API-layer validation enforces that.
 type SubnetSpec struct {
 	SubnetID string
 	VPCID    string

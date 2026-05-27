@@ -83,8 +83,8 @@ type Client interface {
 	//
 	// Required because OVN NB has no unique constraint on Name. Without the
 	// wait-op, the cross-handler / cross-node race between vpc.create and
-	// vpc.create-subnet's defensive EnsureVPC call produced duplicate routers
-	// per VPC (bead mulga-siv-146).
+	// vpc.create-subnet's defensive EnsureVPC call produces duplicate routers
+	// per VPC.
 	EnsureLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error)
 	DeleteLogicalRouter(ctx context.Context, name string) error
 	GetLogicalRouter(ctx context.Context, name string) (*nbdb.LogicalRouter, error)

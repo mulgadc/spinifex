@@ -147,7 +147,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	// (same VPC, same LogicalIP, and — under distributed NAT — same
 	// ExternalMAC + LogicalPort), return without touching NB. Avoids the
 	// delete-then-add flow-install gap on duplicate publishes for the
-	// same EIP (mulga-siv-124).
+	// same EIP.
 	if existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP idempotency lookup failed", "external_ip", eip.ExternalIP, "err", err)
 	} else if existing != nil && existing.LogicalIP == eip.LogicalIP &&

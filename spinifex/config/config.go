@@ -36,8 +36,8 @@ type ExternalPool struct {
 	// in centralized NAT mode (veth). Each VPC consumes one IP from this
 	// range so its gateway router port can ARP with a sender IP on the LAN
 	// subnet — link-local 169.254.0.1/30 makes upstream routers reject ARP per
-	// RFC 826 (mulga-siv-36). Must NOT overlap [RangeStart, RangeEnd] or IPAM
-	// and vpcd will fight over the same IP.
+	// RFC 826. Must NOT overlap [RangeStart, RangeEnd] or IPAM and vpcd will
+	// fight over the same IP.
 	GwLrpRangeStart string `mapstructure:"gw_lrp_range_start"`
 	GwLrpRangeEnd   string `mapstructure:"gw_lrp_range_end"`
 }

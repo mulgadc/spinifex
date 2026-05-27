@@ -1094,8 +1094,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 // restoreSlogDefault re-installs the daemon's Info-level slog handler after
 // viperblock.New mutates the global slog default via its SetDebug method
 // (see viperblock.go SetDebug — it calls slog.SetDefault with LevelError,
-// silencing every Info/Warn in the entire process). Tracked for proper fix
-// in viperblock as mulga-siv-70.
+// silencing every Info/Warn in the entire process).
 func restoreSlogDefault() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

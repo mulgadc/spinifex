@@ -9,7 +9,4 @@
 // The package contains no production code; it exists solely so `go test
 // ./spinifex/network/invariants/...` runs the suite without polluting any
 // layer's own package.
-//
-// See docs/development/improvements/network-invariants.md for the
-// per-clause mechanic and phasing.
 package invariants

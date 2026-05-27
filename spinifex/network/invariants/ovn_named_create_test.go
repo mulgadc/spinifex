@@ -19,9 +19,7 @@ import (
 //
 // OVN NB allows duplicate Name rows; without the wait-op-protected Ensure
 // variants these creates race across nodes and across in-process subscriber
-// goroutines, producing duplicate logical entities per intent (see bead
-// mulga-siv-146 / failing CI run
-// https://github.com/mulgadc/spinifex/actions/runs/26447541192).
+// goroutines, producing duplicate logical entities per intent.
 //
 // ADR-0006 S4.7 — "OVN logical entities owned by spinifex MUST be unique on
 // (table, Name). The libovsdb client enforces this via wait-then-insert

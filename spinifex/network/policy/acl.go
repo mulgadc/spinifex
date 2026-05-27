@@ -10,9 +10,6 @@ import (
 
 // ACL priority table. Higher priority wins. Tenants only ever populate
 // priority 1000; the 1100/1050/900/800 bands are platform-reserved.
-//
-// See docs/development/feature/spinifex-network-redesign.md §8.1 for the
-// authoritative table.
 const (
 	// ACLPriorityAllowIntraSG allows unconditional traffic between members
 	// of the same port group. Reserved for future use; not yet emitted by

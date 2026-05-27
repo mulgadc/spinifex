@@ -4,9 +4,7 @@
 // bridge. Bridge mode (physical vs veth) is resolved here and is invisible
 // above L0; layers L1+ receive UplinkMode as an init-time enum.
 //
-// See docs/development/feature/spinifex-network-redesign.md §5 and
-// docs/development/proposals/az-local-architecture/0006-spinifex-network-layer-contract.md
-// (S2, S3) for the full contract.
+// See ADR-0006 (S2, S3) for the full contract.
 package host
 
 import (
@@ -18,7 +16,7 @@ import (
 
 // UplinkMode names the physical wiring strategy that attaches br-ext to the
 // WAN. The two supported values map to former vpcd bridge modes "direct" and
-// "veth"; macvlan was removed in Phase 0.
+// "veth"; macvlan was removed.
 type UplinkMode int
 
 const (
@@ -51,8 +49,8 @@ func (m UplinkMode) String() string {
 }
 
 // Wiring owns the host's L0 network state. Implementations are constructed
-// once at vpcd startup (Phase 2) and consulted by L2/L5 for uplink CIDR and
-// by L3 for NAT distribution mode (via UplinkMode at init time).
+// once at vpcd startup and consulted by L2/L5 for uplink CIDR and by L3 for
+// NAT distribution mode (via UplinkMode at init time).
 //
 // Every method is idempotent: a second call with the same host state is a
 // no-op. EnsureBridges and EnsureUplinkPort may be called before any other
@@ -109,7 +107,6 @@ type InterfaceReader interface {
 }
 
 // ErrNoUplinkAddr is returned by ExternalCIDR when the WAN bridge has no
-// IPv4 address yet. Callers (Phase 2's startup path) retry with a bounded
-// timeout to absorb the boot race between vpcd start and OS DHCP/netplan
-// completion.
+// IPv4 address yet. Callers retry with a bounded timeout to absorb the boot
+// race between vpcd start and OS DHCP/netplan completion.
 var ErrNoUplinkAddr = fmt.Errorf("uplink bridge has no IPv4 address")

@@ -13,13 +13,9 @@
 //
 // Multi-AZ scoping: `IntentState` is built by `LoadIntentFromKV(ctx, js,
 // localAZ)`. The filter rule is `vpc.AZ == "" || vpc.AZ == localAZ` —
-// records without an `AZ` field are legacy (pre-Phase 2.2) and are treated
+// records without an `AZ` field are legacy and are treated
 // as local. New VPCs are stamped with the local AZ at create time by the
 // `handlers/ec2/vpc.CreateVpc` path.
-//
-// See docs/development/feature/spinifex-network-redesign.md §11 and
-// docs/development/feature/spinifex-network-redesign-phase2.md §2.2 for the
-// authoritative contract.
 package reconcile
 
 import (

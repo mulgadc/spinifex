@@ -10,8 +10,7 @@ import (
 )
 
 // ipamBucket / eniBucket mirror handlers/ec2/vpc.KVBucketIPAM and
-// .KVBucketENIs. Duplicated here so the migrate package stays handler-free
-// (mulga-siv-125.3.3 Slice B).
+// .KVBucketENIs. Duplicated here so the migrate package stays handler-free.
 const (
 	ipamBucket = "spinifex-vpc-ipam"
 	eniBucket  = "spinifex-vpc-enis"

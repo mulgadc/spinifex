@@ -76,7 +76,7 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 	// inter-event ordering guarantee. Tenant bootstrap publishes both
 	// within <1ms, so EnsureSubnet can race the parent VPC's
 	// CreateLogicalRouter and fail with "logical router not found".
-	// EnsureVPC is idempotent on the router name (mulga-siv-133).
+	// EnsureVPC is idempotent on the router name.
 	if err := s.topology.EnsureVPC(ctx, topology.VPCSpec{VPCID: evt.VpcId}); err != nil {
 		slog.Error("subscribers: EnsureVPC (subnet pre-create) failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)

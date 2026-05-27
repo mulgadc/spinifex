@@ -48,8 +48,8 @@ func (p *Physical) reader() InterfaceReader {
 }
 
 // EnsureBridges creates br-int and br-ext idempotently with the OVS settings
-// ovn-controller expects. setup-ovn.sh historically does this; Phase 2 will
-// route the daemon through here so the responsibility is in one place.
+// ovn-controller expects. setup-ovn.sh historically does this; the daemon
+// routes through here so the responsibility is in one place.
 func (p *Physical) EnsureBridges(ctx context.Context) error {
 	return ensureBridges(ctx, p.runner(), p.UplinkBridge)
 }

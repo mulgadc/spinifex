@@ -15,7 +15,7 @@ import (
 //
 // Orphan deletion is restricted to security group port groups (sg_*) to
 // match the legacy ReconcileSGsOnce contract; other resource types are
-// create-or-skip only. Tightening this is a Phase 4 cleanup item.
+// create-or-skip only.
 type ActualState struct {
 	Routers      map[string]struct{} // logical router name → present
 	Switches     map[string]struct{} // logical switch name → present

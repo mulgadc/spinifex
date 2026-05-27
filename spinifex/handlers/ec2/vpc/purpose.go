@@ -2,7 +2,7 @@ package handlers_ec2_vpc
 
 // Purpose tags every IP allocation with its semantic role so multi-VPC
 // clusters can reclaim / audit by (owner, purpose). The constants match the
-// JSON values written to KV records (mulga-siv-125.3.3 Slice B).
+// JSON values written to KV records.
 const (
 	PurposeENIPrimary    = "eni-primary"
 	PurposeENISecondary  = "eni-secondary"
@@ -12,11 +12,11 @@ const (
 	PurposeIGWLRP        = "igw-lrp"
 	// Future-reserved values; defined now so call sites and migrations can
 	// reference them without a follow-up rename.
-	PurposeEdgeLRExternal = "edge-lr-external" // 125.3.6
-	PurposeNodeMgmt       = "node-mgmt"        // currently .env
-	PurposeSubnetRouter   = "subnet-router"    // .1
-	PurposeSubnetDNS      = "subnet-dns"       // .2
-	PurposeSubnetReserved = "subnet-reserved"  // .0, .3, .last
+	PurposeEdgeLRExternal = "edge-lr-external"
+	PurposeNodeMgmt       = "node-mgmt"       // currently .env
+	PurposeSubnetRouter   = "subnet-router"   // .1
+	PurposeSubnetDNS      = "subnet-dns"      // .2
+	PurposeSubnetReserved = "subnet-reserved" // .0, .3, .last
 	// PurposeUnknown tags records the migration could not classify (e.g.
 	// orphan IPs with no owning ENIRecord). Surfaces in logs for triage.
 	PurposeUnknown = "unknown"

@@ -102,9 +102,8 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 //     contain the nexthop).
 //  6. SetGatewayChassis for every configured chassis, descending priority.
 //  7. waitForFlowsHV barrier so the caller's reply is only sent once the
-//     datapath is hot (mulga-siv-105 — without this, a follow-up vpc.add-nat
-//     can complete on a dark datapath and the VM is unreachable until flows
-//     install).
+//     datapath is hot — without this, a follow-up vpc.add-nat can complete
+//     on a dark datapath and the VM is unreachable until flows install.
 //
 // First-line idempotency check: if the external switch already exists,
 // returns nil without re-running any of the steps.

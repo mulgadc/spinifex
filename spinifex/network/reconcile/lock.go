@@ -19,7 +19,7 @@ const (
 // start NATS clustering takes a few seconds and js.CreateKeyValue returns
 // "context deadline exceeded" until quorum forms. Retrying makes the election
 // deterministic; without it every vpcd falls through and races the same OVN
-// NB transactions (mulga-js-72). Vars (not consts) so tests can shrink them.
+// NB transactions. Vars (not consts) so tests can shrink them.
 var (
 	leaderRetryFor  = 60 * time.Second
 	leaderRetryStep = 1 * time.Second

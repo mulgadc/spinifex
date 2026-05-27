@@ -11,7 +11,7 @@ import (
 // EIPManager attaches and detaches Elastic IP NAT rules. It is a thin L5
 // wrapper over policy.NATManager that adds the flows-barrier — without it,
 // a freshly attached EIP is unreachable on its public IP until northd
-// compiles + every chassis installs the new flows (mulga-siv-105).
+// compiles + every chassis installs the new flows.
 //
 // Pool allocation lives upstream in handlers/ec2/eip; this manager only
 // turns an already-allocated public IP into an OVN dnat_and_snat rule.

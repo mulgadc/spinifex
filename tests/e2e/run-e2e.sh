@@ -3143,10 +3143,60 @@ echo "  PASS: Bastion → private instance SSH works (hostname: $PRIV_HOSTNAME)"
     done
     if [ "$NAT_GW_OK" = false ]; then
         echo "  FAIL: Private instance cannot reach internet WITH NAT GW after 10 attempts"
-        echo "  Dumping OVN NAT rules for debugging:"
-        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
-        echo "  OVN routes:"
-        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
+        echo ""
+        echo "==================== Phase 8d failure diagnostics ===================="
+        echo "VPC: vpc-${DEFAULT_VPC}"
+        echo "Private subnet: ${PRIV_SUBNET_ID} (private VM IP: ${PRIV_PRIVATE_IP})"
+        echo "NATGW: ${NAT_GW_ID} → ${NAT_PUB_IP}"
+        echo ""
+        echo "--- ovn-nbctl lr-nat-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl lr-route-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl show ---"
+        sudo ovn-nbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl show ---"
+        sudo ovn-sbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl list chassis ---"
+        sudo ovn-sbctl --no-leader-only list chassis 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Port_Group (membership + ACLs) ---"
+        sudo ovn-nbctl --no-leader-only --columns=name,ports,acls find Port_Group 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl list ACL (all VPC ACLs) ---"
+        sudo ovn-nbctl --no-leader-only list ACL 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Logical_Switch_Port name=*${PRIV_PRIVATE_IP//./_}* (private VM LSP) ---"
+        sudo ovn-nbctl --no-leader-only find Logical_Switch_Port addresses=\"*${PRIV_PRIVATE_IP}*\" 2>&1 || true
+        echo ""
+        echo "--- ovs-vsctl show ---"
+        sudo ovs-vsctl show 2>&1 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int (filtered: NATGW IP/subnet/private IP) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 \
+            | grep -E "${NAT_PUB_IP//./\\.}|172\\.31\\.16\\.|${PRIV_PRIVATE_IP//./\\.}" \
+            | head -200 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int | wc -l (total flows) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 | wc -l || true
+        echo ""
+        echo "--- ip route show ---"
+        ip route show 2>&1 || true
+        echo ""
+        echo "--- ip -br addr show ---"
+        ip -br addr show 2>&1 || true
+        echo ""
+        echo "--- private VM: ip addr / ip route / ip neigh ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ip -br addr; echo ---; ip route; echo ---; ip neigh'" 2>&1 || true
+        echo ""
+        echo "--- private VM: ping -c 1 subnet gateway (172.31.16.1) ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ping -c 1 -W 3 172.31.16.1; echo rc=\$?'" 2>&1 || true
+        echo ""
+        echo "==================== end Phase 8d diagnostics ===================="
         exit 1
     fi
 

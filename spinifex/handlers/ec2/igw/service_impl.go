@@ -32,7 +32,7 @@ const (
 type IGWRecord struct {
 	InternetGatewayId string            `json:"internet_gateway_id"`
 	VpcId             string            `json:"vpc_id,omitempty"` // empty when detached
-	State             string            `json:"state"`            // "available", "attached", "detached"
+	State             string            `json:"state"`            // "available" — AWS attachment.state is "available" when attached
 	Tags              map[string]string `json:"tags"`
 	CreatedAt         time.Time         `json:"created_at"`
 }
@@ -291,7 +291,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 	}
 
 	record.VpcId = vpcID
-	record.State = "attached"
+	record.State = "available"
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -349,7 +349,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(input *ec2.DetachInternetGatewayI
 	}
 
 	record.VpcId = ""
-	record.State = "detached"
+	record.State = "available"
 
 	data, err := json.Marshal(record)
 	if err != nil {

@@ -291,7 +291,7 @@ func loadIGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 			slog.Warn("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
 			continue
 		}
-		if rec.VpcId == "" || !strings.EqualFold(rec.State, "attached") {
+		if rec.VpcId == "" || !strings.EqualFold(rec.State, "available") {
 			continue
 		}
 		if _, ok := localVPCs[rec.VpcId]; !ok {

@@ -139,7 +139,7 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 	})
 	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
 		"acct/igw-attached": mustJSON(t, handlers_ec2_igw.IGWRecord{
-			InternetGatewayId: "igw-attached", VpcId: "vpc-local", State: "attached",
+			InternetGatewayId: "igw-attached", VpcId: "vpc-local", State: "available",
 		}),
 		"acct/igw-detached": mustJSON(t, handlers_ec2_igw.IGWRecord{
 			InternetGatewayId: "igw-detached", VpcId: "", State: "available",

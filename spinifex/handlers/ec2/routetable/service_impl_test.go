@@ -31,7 +31,7 @@ func setupTestService(t *testing.T) *RouteTableServiceImpl {
 
 	// Seed IGW KV (attached to vpc-test1)
 	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
-		utils.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"attached"}`),
+		utils.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
 	})
 
 	// Seed subnet KV

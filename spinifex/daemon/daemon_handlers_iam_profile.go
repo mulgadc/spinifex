@@ -3,6 +3,7 @@ package daemon
 import (
 	"log/slog"
 
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -24,22 +25,23 @@ func (d *Daemon) handleAssociateIamInstanceProfile(msg *nats.Msg, command types.
 }
 
 // handleIamProfileDisassociate services the ec2.IamProfileAssociation.disassociate
-// fan-out subject. Every daemon responds: the owner with Found=true after
-// mutating vm.VM, non-owners (or daemons whose VM has a different account)
-// with Found=false so the gateway's expectedNodes collector can exit before
-// the timeout. Errors short-circuit the fan-out — only the owner can produce
-// a meaningful error (e.g. persistence failure) since non-owners NoOp.
+// fan-out subject. Every daemon responds: the owner with the populated
+// association after mutating vm.VM, non-owners (or daemons whose VM has a
+// different account) with JSON null so the gateway's expectedNodes collector
+// can exit before the timeout. Errors short-circuit the fan-out — only the
+// owner can produce a meaningful error (e.g. persistence failure) since
+// non-owners NoOp.
 func (d *Daemon) handleIamProfileDisassociate(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
-	req := &types.IamProfileDisassociateRequest{}
-	if errResp := utils.UnmarshalJsonPayload(req, msg.Data); errResp != nil {
+	input := &ec2.DisassociateIamInstanceProfileInput{}
+	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("handleIamProfileDisassociate: respond failed", "err", err)
 		}
 		return
 	}
 
-	result, err := d.instanceService.DisassociateIamProfileAssociation(*req, accountID)
+	result, err := d.instanceService.DisassociateIamProfileAssociation(input, accountID)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -49,19 +51,19 @@ func (d *Daemon) handleIamProfileDisassociate(msg *nats.Msg) {
 
 // handleIamProfileReplace services the ec2.IamProfileAssociation.replace
 // fan-out subject. Same response contract as handleIamProfileDisassociate:
-// every daemon always responds (Found=false NoOp on non-owners) so the
-// gateway collector exits early when the cluster is healthy.
+// every daemon always responds (JSON null on non-owners) so the gateway
+// collector exits early when the cluster is healthy.
 func (d *Daemon) handleIamProfileReplace(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
-	req := &types.IamProfileReplaceRequest{}
-	if errResp := utils.UnmarshalJsonPayload(req, msg.Data); errResp != nil {
+	input := &ec2.ReplaceIamInstanceProfileAssociationInput{}
+	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("handleIamProfileReplace: respond failed", "err", err)
 		}
 		return
 	}
 
-	result, err := d.instanceService.ReplaceIamProfileAssociation(*req, accountID)
+	result, err := d.instanceService.ReplaceIamProfileAssociation(input, accountID)
 	if err != nil {
 		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
 		return
@@ -70,18 +72,24 @@ func (d *Daemon) handleIamProfileReplace(msg *nats.Msg) {
 }
 
 // handleIamProfileDescribe services the ec2.IamProfileAssociation.describe
-// fan-out subject. Empty Associations slice is a valid response (no matches
-// on this daemon) and counts toward the gateway's expectedNodes early-exit
-// collector. The gateway concatenates per-daemon slices.
+// fan-out subject. Empty IamInstanceProfileAssociations slice is a valid
+// response (no matches on this daemon) and counts toward the gateway's
+// expectedNodes early-exit collector. The gateway concatenates per-daemon
+// slices.
 func (d *Daemon) handleIamProfileDescribe(msg *nats.Msg) {
 	accountID := utils.AccountIDFromMsg(msg)
-	req := &types.IamProfileDescribeRequest{}
-	if errResp := utils.UnmarshalJsonPayload(req, msg.Data); errResp != nil {
+	input := &ec2.DescribeIamInstanceProfileAssociationsInput{}
+	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("handleIamProfileDescribe: respond failed", "err", err)
 		}
 		return
 	}
 
-	respondWithJSON(msg, d.instanceService.DescribeIamProfileAssociations(*req, accountID))
+	out, err := d.instanceService.DescribeIamProfileAssociations(input, accountID)
+	if err != nil {
+		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		return
+	}
+	respondWithJSON(msg, out)
 }

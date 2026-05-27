@@ -1030,8 +1030,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 // instance has no existing profile (returns IamInstanceProfileAlreadyAssociated
 // otherwise) and atomically writes the ARN + a freshly generated
 // iip-assoc-… ID to vm.VM. AssociationId is never reused — every Associate
-// produces a new one.
-func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, command spxtypes.EC2InstanceCommand) (*spxtypes.IamProfileAssociationResult, error) {
+// produces a new one. InstanceProfile.Id is left nil; the gateway enriches it
+// from its IAMService cache before returning to the caller.
+func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, command spxtypes.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
 	if command.IamProfileAssociationData == nil || command.IamProfileAssociationData.InstanceProfileArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -1059,29 +1060,30 @@ func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, comma
 
 	slog.Info("AssociateIamInstanceProfile: associated",
 		"instanceId", instance.ID, "associationId", newID, "profileArn", profileArn)
-	return &spxtypes.IamProfileAssociationResult{
-		Found:              true,
-		AssociationId:      newID,
-		InstanceId:         instance.ID,
-		InstanceProfileArn: profileArn,
-		Timestamp:          timestamp,
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(instance.ID),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(profileArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
 	}, nil
 }
 
 // DisassociateIamProfileAssociation finds the VM carrying the requested
 // AssociationId in this daemon's vmMgr and clears both profile fields
-// atomically. Returns Found=false when no local VM owns the ID, or when the
-// caller's account doesn't own the matching VM, so the gateway fan-out
-// collector can advance past this daemon's NoOp response without waiting on
-// the deadline. The accountID scope mirrors checkInstanceOwnership semantics
-// applied per-instance on ec2.cmd.<id>.
-func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(req spxtypes.IamProfileDisassociateRequest, accountID string) (*spxtypes.IamProfileAssociationResult, error) {
-	if req.AssociationId == "" {
+// atomically. Returns nil when no local VM owns the ID, or when the caller's
+// account doesn't own the matching VM, so the gateway fan-out collector can
+// advance past this daemon's NoOp response without waiting on the deadline.
+// The accountID scope mirrors checkInstanceOwnership semantics applied
+// per-instance on ec2.cmd.<id>.
+func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.DisassociateIamInstanceProfileInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	owner, ok := s.findInstanceByAssociationID(req.AssociationId, accountID)
+	associationID := *input.AssociationId
+	owner, ok := s.findInstanceByAssociationID(associationID, accountID)
 	if !ok {
-		return &spxtypes.IamProfileAssociationResult{Found: false}, nil
+		return nil, nil
 	}
 
 	var clearedArn string
@@ -1090,7 +1092,7 @@ func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(req spxtypes.Iam
 		// Re-check under the manager lock: another fan-out (or a concurrent
 		// terminate) could have cleared or replaced the association between
 		// our snapshot read and this mutation.
-		if v.IamInstanceProfileAssociationId != req.AssociationId {
+		if v.IamInstanceProfileAssociationId != associationID {
 			return false
 		}
 		clearedArn = v.IamInstanceProfileArn
@@ -1105,42 +1107,47 @@ func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(req spxtypes.Iam
 	if clearedArn == "" {
 		// Lost a race with terminate / another disassociate. NoOp so the
 		// gateway collector treats it as "not this daemon's instance".
-		return &spxtypes.IamProfileAssociationResult{Found: false}, nil
+		return nil, nil
 	}
 
 	slog.Info("DisassociateIamProfileAssociation: disassociated",
-		"instanceId", owner, "associationId", req.AssociationId, "profileArn", clearedArn)
-	return &spxtypes.IamProfileAssociationResult{
-		Found:              true,
-		AssociationId:      req.AssociationId,
-		InstanceId:         owner,
-		InstanceProfileArn: clearedArn,
-		Timestamp:          timestamp,
+		"instanceId", owner, "associationId", associationID, "profileArn", clearedArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(associationID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(clearedArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateDisassociating),
+		Timestamp:          aws.Time(timestamp),
 	}, nil
 }
 
 // ReplaceIamProfileAssociation finds the VM carrying the requested
 // AssociationId and swaps it for a new (ARN, AssociationId) pair atomically.
 // The new AssociationId is always freshly generated — AWS never reuses IDs
-// across replace. Returns Found=false when no local VM owns the old ID or
-// when the caller's account doesn't own the matching VM.
-func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(req spxtypes.IamProfileReplaceRequest, accountID string) (*spxtypes.IamProfileAssociationResult, error) {
-	if req.AssociationId == "" || req.InstanceProfileArn == "" {
+// across replace. Returns nil when no local VM owns the old ID or when the
+// caller's account doesn't own the matching VM. The gateway has already
+// resolved IamInstanceProfile.Arn to a canonical ARN before publishing.
+func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(input *ec2.ReplaceIamInstanceProfileAssociationInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" ||
+		input.IamInstanceProfile == nil || aws.StringValue(input.IamInstanceProfile.Arn) == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	owner, ok := s.findInstanceByAssociationID(req.AssociationId, accountID)
+	oldID := *input.AssociationId
+	newArn := *input.IamInstanceProfile.Arn
+
+	owner, ok := s.findInstanceByAssociationID(oldID, accountID)
 	if !ok {
-		return &spxtypes.IamProfileAssociationResult{Found: false}, nil
+		return nil, nil
 	}
 
 	newID := utils.GenerateResourceID("iip-assoc")
 	timestamp := time.Now().UTC()
 	var swapped bool
 	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
-		if v.IamInstanceProfileAssociationId != req.AssociationId {
+		if v.IamInstanceProfileAssociationId != oldID {
 			return false
 		}
-		v.IamInstanceProfileArn = req.InstanceProfileArn
+		v.IamInstanceProfileArn = newArn
 		v.IamInstanceProfileAssociationId = newID
 		swapped = true
 		return true
@@ -1150,17 +1157,17 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(req spxtypes.IamProfi
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if !swapped {
-		return &spxtypes.IamProfileAssociationResult{Found: false}, nil
+		return nil, nil
 	}
 
 	slog.Info("ReplaceIamProfileAssociation: replaced",
-		"instanceId", owner, "oldAssociationId", req.AssociationId, "newAssociationId", newID, "profileArn", req.InstanceProfileArn)
-	return &spxtypes.IamProfileAssociationResult{
-		Found:              true,
-		AssociationId:      newID,
-		InstanceId:         owner,
-		InstanceProfileArn: req.InstanceProfileArn,
-		Timestamp:          timestamp,
+		"instanceId", owner, "oldAssociationId", oldID, "newAssociationId", newID, "profileArn", newArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(newArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
 	}, nil
 }
 
@@ -1168,13 +1175,35 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(req spxtypes.IamProfi
 // live association visible to the caller's account matching the supplied
 // filters (empty filters match all). Empty result is a valid response: the
 // gateway aggregates per-daemon slices, so missing daemons just yield fewer
-// rows.
-func (s *InstanceServiceImpl) DescribeIamProfileAssociations(req spxtypes.IamProfileDescribeRequest, accountID string) *spxtypes.IamProfileDescribeResponse {
-	assocFilter := stringSliceToSet(req.AssociationIds)
-	instFilter := stringSliceToSet(req.InstanceIds)
-	stateFilter := stringSliceToSet(req.States)
+// rows. Filter names other than "instance-id" / "state" surface as
+// InvalidParameterValue, short-circuiting the fan-out at the gateway.
+func (s *InstanceServiceImpl) DescribeIamProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+	assocFilter := stringPtrSliceToSet(input.AssociationIds)
+	instFilter := make(map[string]bool)
+	stateFilter := make(map[string]bool)
+	for _, f := range input.Filters {
+		if f == nil || f.Name == nil {
+			continue
+		}
+		switch *f.Name {
+		case "instance-id":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					instFilter[*v] = true
+				}
+			}
+		case "state":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					stateFilter[*v] = true
+				}
+			}
+		default:
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
 
-	out := &spxtypes.IamProfileDescribeResponse{}
+	out := &ec2.DescribeIamInstanceProfileAssociationsOutput{}
 	s.vmMgr.ForEach(func(v *vm.VM) {
 		if v.IamInstanceProfileArn == "" || v.IamInstanceProfileAssociationId == "" {
 			return
@@ -1194,14 +1223,14 @@ func (s *InstanceServiceImpl) DescribeIamProfileAssociations(req spxtypes.IamPro
 		if len(stateFilter) > 0 && !stateFilter[liveState] {
 			return
 		}
-		out.Associations = append(out.Associations, spxtypes.IamProfileAssociationRecord{
-			AssociationId:      v.IamInstanceProfileAssociationId,
-			InstanceId:         v.ID,
-			InstanceProfileArn: v.IamInstanceProfileArn,
-			State:              liveState,
+		out.IamInstanceProfileAssociations = append(out.IamInstanceProfileAssociations, &ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(v.IamInstanceProfileAssociationId),
+			InstanceId:         aws.String(v.ID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(v.IamInstanceProfileArn)},
+			State:              aws.String(liveState),
 		})
 	})
-	return out
+	return out, nil
 }
 
 // findInstanceByAssociationID is the lock-protected lookup used by the
@@ -1227,14 +1256,14 @@ func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, account
 	return owner, true
 }
 
-func stringSliceToSet(in []string) map[string]bool {
+func stringPtrSliceToSet(in []*string) map[string]bool {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
 	for _, s := range in {
-		if s != "" {
-			out[s] = true
+		if s != nil && *s != "" {
+			out[*s] = true
 		}
 	}
 	return out

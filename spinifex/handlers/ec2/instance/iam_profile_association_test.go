@@ -36,13 +36,15 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 	result, err := svc.AssociateIamInstanceProfile(v, cmd)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.True(t, result.Found)
-	assert.Equal(t, testProfileArn1, result.InstanceProfileArn)
-	assert.True(t, strings.HasPrefix(result.AssociationId, "iip-assoc-"))
+	assert.Equal(t, ec2.IamInstanceProfileAssociationStateAssociated, aws.StringValue(result.State))
+	require.NotNil(t, result.IamInstanceProfile)
+	assert.Equal(t, testProfileArn1, aws.StringValue(result.IamInstanceProfile.Arn))
+	assert.True(t, strings.HasPrefix(aws.StringValue(result.AssociationId), "iip-assoc-"))
+	require.NotNil(t, result.Timestamp)
 	assert.False(t, result.Timestamp.IsZero())
 
 	assert.Equal(t, testProfileArn1, v.IamInstanceProfileArn)
-	assert.Equal(t, result.AssociationId, v.IamInstanceProfileAssociationId)
+	assert.Equal(t, aws.StringValue(result.AssociationId), v.IamInstanceProfileAssociationId)
 }
 
 func TestAssociateIamInstanceProfile_AlreadyAssociated(t *testing.T) {
@@ -83,12 +85,13 @@ func TestDisassociateIamProfileAssociation_Success(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
 	result, err := svc.DisassociateIamProfileAssociation(
-		spxtypes.IamProfileDisassociateRequest{AssociationId: assocID}, testIAMAccount)
+		&ec2.DisassociateIamInstanceProfileInput{AssociationId: aws.String(assocID)}, testIAMAccount)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.True(t, result.Found)
-	assert.Equal(t, v.ID, result.InstanceId)
-	assert.Equal(t, testProfileArn1, result.InstanceProfileArn)
+	assert.Equal(t, v.ID, aws.StringValue(result.InstanceId))
+	require.NotNil(t, result.IamInstanceProfile)
+	assert.Equal(t, testProfileArn1, aws.StringValue(result.IamInstanceProfile.Arn))
+	assert.Equal(t, ec2.IamInstanceProfileAssociationStateDisassociating, aws.StringValue(result.State))
 	assert.Empty(t, v.IamInstanceProfileArn)
 	assert.Empty(t, v.IamInstanceProfileAssociationId)
 }
@@ -96,15 +99,15 @@ func TestDisassociateIamProfileAssociation_Success(t *testing.T) {
 func TestDisassociateIamProfileAssociation_NotFound(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
 	result, err := svc.DisassociateIamProfileAssociation(
-		spxtypes.IamProfileDisassociateRequest{AssociationId: "iip-assoc-missing"}, testIAMAccount)
+		&ec2.DisassociateIamInstanceProfileInput{AssociationId: aws.String("iip-assoc-missing")}, testIAMAccount)
 	require.NoError(t, err)
-	assert.False(t, result.Found)
+	assert.Nil(t, result, "no local owner ⇒ nil result so the fan-out collector treats this daemon as NoOp")
 }
 
 func TestDisassociateIamProfileAssociation_MissingID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
 	_, err := svc.DisassociateIamProfileAssociation(
-		spxtypes.IamProfileDisassociateRequest{}, testIAMAccount)
+		&ec2.DisassociateIamInstanceProfileInput{}, testIAMAccount)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -119,9 +122,9 @@ func TestDisassociateIamProfileAssociation_CrossAccountIsNoOp(t *testing.T) {
 	// Caller from a different account must not match — even though the
 	// association ID is correct, the VM belongs to testIAMOther.
 	result, err := svc.DisassociateIamProfileAssociation(
-		spxtypes.IamProfileDisassociateRequest{AssociationId: assocID}, testIAMAccount)
+		&ec2.DisassociateIamInstanceProfileInput{AssociationId: aws.String(assocID)}, testIAMAccount)
 	require.NoError(t, err)
-	assert.False(t, result.Found, "cross-account disassociate must NoOp")
+	assert.Nil(t, result, "cross-account disassociate must NoOp")
 	assert.Equal(t, testProfileArn1, v.IamInstanceProfileArn, "other-account VM must be untouched")
 }
 
@@ -132,19 +135,19 @@ func TestReplaceIamProfileAssociation_Success(t *testing.T) {
 	v.IamInstanceProfileAssociationId = oldID
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	result, err := svc.ReplaceIamProfileAssociation(spxtypes.IamProfileReplaceRequest{
-		AssociationId:      oldID,
-		InstanceProfileArn: testProfileArn2,
+	result, err := svc.ReplaceIamProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+		AssociationId:      aws.String(oldID),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(testProfileArn2)},
 	}, testIAMAccount)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.True(t, result.Found)
-	assert.NotEqual(t, oldID, result.AssociationId, "Replace must generate a fresh association ID")
-	assert.True(t, strings.HasPrefix(result.AssociationId, "iip-assoc-"))
-	assert.Equal(t, testProfileArn2, result.InstanceProfileArn)
+	assert.NotEqual(t, oldID, aws.StringValue(result.AssociationId), "Replace must generate a fresh association ID")
+	assert.True(t, strings.HasPrefix(aws.StringValue(result.AssociationId), "iip-assoc-"))
+	require.NotNil(t, result.IamInstanceProfile)
+	assert.Equal(t, testProfileArn2, aws.StringValue(result.IamInstanceProfile.Arn))
 
 	assert.Equal(t, testProfileArn2, v.IamInstanceProfileArn)
-	assert.Equal(t, result.AssociationId, v.IamInstanceProfileAssociationId)
+	assert.Equal(t, aws.StringValue(result.AssociationId), v.IamInstanceProfileAssociationId)
 }
 
 func TestReplaceIamProfileAssociation_StaleID(t *testing.T) {
@@ -154,23 +157,27 @@ func TestReplaceIamProfileAssociation_StaleID(t *testing.T) {
 	v.IamInstanceProfileAssociationId = currentID
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
 
-	result, err := svc.ReplaceIamProfileAssociation(spxtypes.IamProfileReplaceRequest{
-		AssociationId:      "iip-assoc-stale-doesnotexist",
-		InstanceProfileArn: testProfileArn2,
+	result, err := svc.ReplaceIamProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+		AssociationId:      aws.String("iip-assoc-stale-doesnotexist"),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(testProfileArn2)},
 	}, testIAMAccount)
 	require.NoError(t, err)
-	assert.False(t, result.Found)
+	assert.Nil(t, result, "stale ID ⇒ nil result so the fan-out collector treats this daemon as NoOp")
 	assert.Equal(t, testProfileArn1, v.IamInstanceProfileArn, "binding must be unchanged on stale ID")
 	assert.Equal(t, currentID, v.IamInstanceProfileAssociationId)
 }
 
 func TestReplaceIamProfileAssociation_MissingParams(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	_, err := svc.ReplaceIamProfileAssociation(spxtypes.IamProfileReplaceRequest{InstanceProfileArn: testProfileArn1}, testIAMAccount)
+	_, err := svc.ReplaceIamProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(testProfileArn1)},
+	}, testIAMAccount)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 
-	_, err = svc.ReplaceIamProfileAssociation(spxtypes.IamProfileReplaceRequest{AssociationId: "iip-assoc-x"}, testIAMAccount)
+	_, err = svc.ReplaceIamProfileAssociation(&ec2.ReplaceIamInstanceProfileAssociationInput{
+		AssociationId: aws.String("iip-assoc-x"),
+	}, testIAMAccount)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
@@ -192,27 +199,47 @@ func TestDescribeIamProfileAssociations_FilterAndOrdering(t *testing.T) {
 		otherTenant.ID: otherTenant,
 	})}
 
-	out := svc.DescribeIamProfileAssociations(spxtypes.IamProfileDescribeRequest{}, testIAMAccount)
-	require.Len(t, out.Associations, 1)
-	assert.Equal(t, withProfile.ID, out.Associations[0].InstanceId)
-	assert.Equal(t, ec2.IamInstanceProfileAssociationStateAssociated, out.Associations[0].State)
+	out, err := svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{}, testIAMAccount)
+	require.NoError(t, err)
+	require.Len(t, out.IamInstanceProfileAssociations, 1)
+	assert.Equal(t, withProfile.ID, aws.StringValue(out.IamInstanceProfileAssociations[0].InstanceId))
+	assert.Equal(t, ec2.IamInstanceProfileAssociationStateAssociated, aws.StringValue(out.IamInstanceProfileAssociations[0].State))
 
 	// Filter by instance ID excludes everything.
-	out = svc.DescribeIamProfileAssociations(spxtypes.IamProfileDescribeRequest{InstanceIds: []string{"i-not-here"}}, testIAMAccount)
-	assert.Empty(t, out.Associations)
+	out, err = svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("instance-id"), Values: []*string{aws.String("i-not-here")}}},
+	}, testIAMAccount)
+	require.NoError(t, err)
+	assert.Empty(t, out.IamInstanceProfileAssociations)
 
 	// Filter by association ID picks the one we want.
-	out = svc.DescribeIamProfileAssociations(spxtypes.IamProfileDescribeRequest{AssociationIds: []string{"iip-assoc-with-profile-001"}}, testIAMAccount)
-	require.Len(t, out.Associations, 1)
+	out, err = svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+		AssociationIds: []*string{aws.String("iip-assoc-with-profile-001")},
+	}, testIAMAccount)
+	require.NoError(t, err)
+	require.Len(t, out.IamInstanceProfileAssociations, 1)
 
 	// Filter by state excludes when "associated" isn't requested.
-	out = svc.DescribeIamProfileAssociations(spxtypes.IamProfileDescribeRequest{States: []string{"disassociating"}}, testIAMAccount)
-	assert.Empty(t, out.Associations)
+	out, err = svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("state"), Values: []*string{aws.String("disassociating")}}},
+	}, testIAMAccount)
+	require.NoError(t, err)
+	assert.Empty(t, out.IamInstanceProfileAssociations)
 
 	// Cross-tenant caller sees the other tenant's row when their own.
-	out = svc.DescribeIamProfileAssociations(spxtypes.IamProfileDescribeRequest{}, testIAMOther)
-	require.Len(t, out.Associations, 1)
-	assert.Equal(t, otherTenant.ID, out.Associations[0].InstanceId)
+	out, err = svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{}, testIAMOther)
+	require.NoError(t, err)
+	require.Len(t, out.IamInstanceProfileAssociations, 1)
+	assert.Equal(t, otherTenant.ID, aws.StringValue(out.IamInstanceProfileAssociations[0].InstanceId))
+}
+
+func TestDescribeIamProfileAssociations_UnknownFilterIsInvalidParameterValue(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeIamProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("not-a-real-filter")}},
+	}, testIAMAccount)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 }
 
 func TestStopOrTerminateInstance_AutoDisassociatesProfileOnTerminate(t *testing.T) {

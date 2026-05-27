@@ -17,7 +17,7 @@ import (
 )
 
 // fanOutTimeout bounds the wait for each broadcast on the
-// ec2.IamProfileAssociation.* subjects. Daemons always reply (Found=false on
+// ec2.IamProfileAssociation.* subjects. Daemons always reply (JSON null on
 // no-match), so under healthy conditions the expectedNodes collector exits
 // well before the timeout — the deadline only matters when a daemon is down.
 const fanOutTimeout = 3 * time.Second
@@ -82,7 +82,7 @@ func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, na
 	}
 
 	subject := fmt.Sprintf("ec2.cmd.%s", *input.InstanceId)
-	result, err := utils.NATSRequest[spxtypes.IamProfileAssociationResult](
+	assoc, err := utils.NATSRequest[ec2.IamInstanceProfileAssociation](
 		natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
@@ -91,35 +91,22 @@ func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, na
 		return nil, err
 	}
 
-	return &ec2.AssociateIamInstanceProfileOutput{
-		IamInstanceProfileAssociation: buildAssociation(result.AssociationId, *input.InstanceId, profile, result.Timestamp),
-	}, nil
+	enrichProfileID(assoc, profile)
+	return &ec2.AssociateIamInstanceProfileOutput{IamInstanceProfileAssociation: assoc}, nil
 }
 
 // DisassociateIamInstanceProfile detaches the profile referenced by
 // AssociationId. The gateway broadcasts to all daemons; the owner mutates and
-// returns Found=true. All-NoOp means no live instance carries that ID.
+// returns the populated association. All-null means no live instance carries
+// that ID.
 func DisassociateIamInstanceProfile(input *ec2.DisassociateIamInstanceProfileInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DisassociateIamInstanceProfileOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	req := spxtypes.IamProfileDisassociateRequest{AssociationId: *input.AssociationId}
-	result, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.disassociate", req, expectedNodes, accountID)
+	assoc, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.disassociate", input, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
-	}
-
-	// The disassociated state matches AWS behaviour: the association no longer
-	// exists, but the response describes what it was for the caller's audit log.
-	assoc := &ec2.IamInstanceProfileAssociation{
-		AssociationId:      aws.String(result.AssociationId),
-		InstanceId:         aws.String(result.InstanceId),
-		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(result.InstanceProfileArn)},
-		State:              aws.String(ec2.IamInstanceProfileAssociationStateDisassociating),
-	}
-	if !result.Timestamp.IsZero() {
-		assoc.Timestamp = aws.Time(result.Timestamp)
 	}
 	return &ec2.DisassociateIamInstanceProfileOutput{IamInstanceProfileAssociation: assoc}, nil
 }
@@ -141,18 +128,19 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 		return nil, err
 	}
 
-	req := spxtypes.IamProfileReplaceRequest{
-		AssociationId:      *input.AssociationId,
-		InstanceProfileArn: profile.ARN,
+	// Normalise the on-wire payload to the resolved canonical ARN — daemons
+	// don't have IAM access and can't dereference a Name reference.
+	wireInput := &ec2.ReplaceIamInstanceProfileAssociationInput{
+		AssociationId:      input.AssociationId,
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profile.ARN)},
 	}
-	result, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.replace", req, expectedNodes, accountID)
+
+	assoc, err := broadcastForAssociation(natsConn, "ec2.IamProfileAssociation.replace", wireInput, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
-
-	return &ec2.ReplaceIamInstanceProfileAssociationOutput{
-		IamInstanceProfileAssociation: buildAssociation(result.AssociationId, result.InstanceId, profile, result.Timestamp),
-	}, nil
+	enrichProfileID(assoc, profile)
+	return &ec2.ReplaceIamInstanceProfileAssociationOutput{IamInstanceProfileAssociation: assoc}, nil
 }
 
 // CountInstanceProfileAssociations returns the number of live associations
@@ -161,13 +149,13 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 // while the profile is still attached to any instance. Cross-account records
 // are not visible to the daemon walker, so the count is naturally scoped.
 func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, accountID, profileARN string) (int, error) {
-	records, err := broadcastDescribeAssociations(natsConn, spxtypes.IamProfileDescribeRequest{}, expectedNodes, accountID)
+	associations, err := broadcastDescribeAssociations(natsConn, &ec2.DescribeIamInstanceProfileAssociationsInput{}, expectedNodes, accountID)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, r := range records {
-		if r.InstanceProfileArn == profileARN {
+	for _, a := range associations {
+		if a != nil && a.IamInstanceProfile != nil && aws.StringValue(a.IamInstanceProfile.Arn) == profileARN {
 			count++
 		}
 	}
@@ -175,76 +163,45 @@ func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, ac
 }
 
 // DescribeIamInstanceProfileAssociations aggregates associations across all
-// daemons. Filters are forwarded to the daemons so each daemon only walks
-// its own vmMgr once; the gateway then concatenates the results.
+// daemons. Filter names are validated at the gateway so bad inputs fail fast
+// without a NATS round-trip; the daemons re-parse the input to do the actual
+// filtering against their local VM records.
 func DescribeIamInstanceProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
-	req := spxtypes.IamProfileDescribeRequest{
-		AssociationIds: stringPtrSliceToStrings(input.AssociationIds),
-	}
 	for _, f := range input.Filters {
 		if f == nil || f.Name == nil {
 			continue
 		}
-		values := make([]string, 0, len(f.Values))
-		for _, v := range f.Values {
-			if v != nil {
-				values = append(values, *v)
-			}
-		}
 		switch *f.Name {
-		case "instance-id":
-			req.InstanceIds = append(req.InstanceIds, values...)
-		case "state":
-			req.States = append(req.States, values...)
+		case "instance-id", "state":
 		default:
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 	}
 
-	records, err := broadcastDescribeAssociations(natsConn, req, expectedNodes, accountID)
+	associations, err := broadcastDescribeAssociations(natsConn, input, expectedNodes, accountID)
 	if err != nil {
 		return nil, err
 	}
-
-	out := &ec2.DescribeIamInstanceProfileAssociationsOutput{}
-	for _, r := range records {
-		assoc := &ec2.IamInstanceProfileAssociation{
-			AssociationId:      aws.String(r.AssociationId),
-			InstanceId:         aws.String(r.InstanceId),
-			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(r.InstanceProfileArn)},
-			State:              aws.String(r.State),
-		}
-		if !r.Timestamp.IsZero() {
-			assoc.Timestamp = aws.Time(r.Timestamp)
-		}
-		out.IamInstanceProfileAssociations = append(out.IamInstanceProfileAssociations, assoc)
-	}
-	return out, nil
+	return &ec2.DescribeIamInstanceProfileAssociationsOutput{IamInstanceProfileAssociations: associations}, nil
 }
 
-// buildAssociation constructs the AWS-facing association response from the
-// daemon's mutator result plus the gateway-resolved profile (which carries the
-// InstanceProfileID — daemons cannot resolve Id since they have no IAM access).
-func buildAssociation(associationID, instanceID string, profile *handlers_iam.InstanceProfile, timestamp time.Time) *ec2.IamInstanceProfileAssociation {
-	assoc := &ec2.IamInstanceProfileAssociation{
-		AssociationId: aws.String(associationID),
-		InstanceId:    aws.String(instanceID),
-		IamInstanceProfile: &ec2.IamInstanceProfile{
-			Arn: aws.String(profile.ARN),
-			Id:  aws.String(profile.InstanceProfileID),
-		},
-		State: aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+// enrichProfileID fills in IamInstanceProfile.Id from the gateway-resolved
+// profile — daemons cannot resolve Id since they have no IAM access. Safe to
+// call with a nil association (no-op).
+func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *handlers_iam.InstanceProfile) {
+	if assoc == nil || profile == nil {
+		return
 	}
-	if !timestamp.IsZero() {
-		assoc.Timestamp = aws.Time(timestamp)
+	if assoc.IamInstanceProfile == nil {
+		assoc.IamInstanceProfile = &ec2.IamInstanceProfile{}
 	}
-	return assoc
+	assoc.IamInstanceProfile.Id = aws.String(profile.InstanceProfileID)
 }
 
 // broadcastForAssociation fans out a mutation request to all daemons and
-// returns the first Found=true response. Returns NoSuchAssociation when every
-// reachable daemon replied Found=false.
-func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, expectedNodes int, accountID string) (*spxtypes.IamProfileAssociationResult, error) {
+// returns the first populated response. Returns NoSuchAssociation when every
+// reachable daemon replied with JSON null.
+func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, expectedNodes int, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -299,13 +256,13 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 			return nil, errors.New(code)
 		}
 
-		var result spxtypes.IamProfileAssociationResult
-		if err := json.Unmarshal(msg.Data, &result); err != nil {
+		var assoc *ec2.IamInstanceProfileAssociation
+		if err := json.Unmarshal(msg.Data, &assoc); err != nil {
 			slog.Warn("fan-out: skipping malformed response", "subject", subject, "err", err)
 			continue
 		}
-		if result.Found {
-			return &result, nil
+		if assoc != nil {
+			return assoc, nil
 		}
 	}
 
@@ -316,8 +273,8 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 // every daemon's matching records. Daemons always reply (empty slice when
 // no matches), so the expectedNodes collector exits early under healthy
 // conditions; a partial collection is acceptable for Describe semantics.
-func broadcastDescribeAssociations(natsConn *nats.Conn, req spxtypes.IamProfileDescribeRequest, expectedNodes int, accountID string) ([]spxtypes.IamProfileAssociationRecord, error) {
-	jsonData, err := json.Marshal(req)
+func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamInstanceProfileAssociationsInput, expectedNodes int, accountID string) ([]*ec2.IamInstanceProfileAssociation, error) {
+	jsonData, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -339,7 +296,7 @@ func broadcastDescribeAssociations(natsConn *nats.Conn, req spxtypes.IamProfileD
 
 	deadline := time.Now().Add(fanOutTimeout)
 	responsesReceived := 0
-	var records []spxtypes.IamProfileAssociationRecord
+	var associations []*ec2.IamInstanceProfileAssociation
 	var clientError string
 
 	if expectedNodes <= 0 {
@@ -378,29 +335,16 @@ func broadcastDescribeAssociations(natsConn *nats.Conn, req spxtypes.IamProfileD
 			continue
 		}
 
-		var resp spxtypes.IamProfileDescribeResponse
+		var resp ec2.DescribeIamInstanceProfileAssociationsOutput
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			slog.Warn("Describe fan-out: skipping malformed response", "err", err)
 			continue
 		}
-		records = append(records, resp.Associations...)
+		associations = append(associations, resp.IamInstanceProfileAssociations...)
 	}
 
-	if clientError != "" && len(records) == 0 {
+	if clientError != "" && len(associations) == 0 {
 		return nil, errors.New(clientError)
 	}
-	return records, nil
-}
-
-func stringPtrSliceToStrings(in []*string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(in))
-	for _, p := range in {
-		if p != nil && *p != "" {
-			out = append(out, *p)
-		}
-	}
-	return out
+	return associations, nil
 }

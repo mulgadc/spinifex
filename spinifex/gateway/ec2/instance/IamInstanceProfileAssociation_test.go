@@ -21,7 +21,6 @@ import (
 
 const (
 	testGwAccountID      = "111122223333"
-	testGwOtherAccountID = "999988887777"
 	testProfileARNApp    = "arn:aws:iam::111122223333:instance-profile/app-profile"
 	testProfileARNOther  = "arn:aws:iam::111122223333:instance-profile/other-profile"
 	testCrossAccountARN  = "arn:aws:iam::999988887777:instance-profile/cross-profile"
@@ -288,30 +287,25 @@ func TestResolveAndAuthorizeProfile_NoRoleSkipsPassRole(t *testing.T) {
 	assert.False(t, checkCalled, "profile-with-no-role must skip PassRole — there is no role to pass")
 }
 
-func TestBuildAssociation_StateAndProfileID(t *testing.T) {
-	ts := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-	assoc := buildAssociation("iip-assoc-aaaabbbbcccc00001", "i-001", profileWithRole(), ts)
-	require.NotNil(t, assoc)
-	assert.Equal(t, "iip-assoc-aaaabbbbcccc00001", aws.StringValue(assoc.AssociationId))
-	assert.Equal(t, "i-001", aws.StringValue(assoc.InstanceId))
+func TestEnrichProfileID_FillsIdFromResolvedProfile(t *testing.T) {
+	assoc := &ec2.IamInstanceProfileAssociation{
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
+	}
+	enrichProfileID(assoc, profileWithRole())
 	require.NotNil(t, assoc.IamInstanceProfile)
-	assert.Equal(t, testProfileARNApp, aws.StringValue(assoc.IamInstanceProfile.Arn))
 	assert.Equal(t, testProfileIDApp, aws.StringValue(assoc.IamInstanceProfile.Id))
-	assert.Equal(t, ec2.IamInstanceProfileAssociationStateAssociated, aws.StringValue(assoc.State))
-	require.NotNil(t, assoc.Timestamp)
-	assert.True(t, ts.Equal(*assoc.Timestamp))
+	assert.Equal(t, testProfileARNApp, aws.StringValue(assoc.IamInstanceProfile.Arn))
 }
 
-func TestBuildAssociation_ZeroTimestampOmitted(t *testing.T) {
-	assoc := buildAssociation("iip-assoc-xxx", "i-002", profileWithRole(), time.Time{})
-	assert.Nil(t, assoc.Timestamp, "zero timestamp must be omitted so JSON marshaling stays sparse")
+func TestEnrichProfileID_NilAssociationIsNoOp(t *testing.T) {
+	enrichProfileID(nil, profileWithRole()) // must not panic
 }
 
-func TestStringPtrSliceToStrings(t *testing.T) {
-	assert.Nil(t, stringPtrSliceToStrings(nil))
-	assert.Nil(t, stringPtrSliceToStrings([]*string{}))
-	got := stringPtrSliceToStrings([]*string{aws.String("a"), nil, aws.String(""), aws.String("b")})
-	assert.Equal(t, []string{"a", "b"}, got, "nil and empty entries must be dropped")
+func TestEnrichProfileID_NilInnerProfileIsAllocated(t *testing.T) {
+	assoc := &ec2.IamInstanceProfileAssociation{}
+	enrichProfileID(assoc, profileWithRole())
+	require.NotNil(t, assoc.IamInstanceProfile)
+	assert.Equal(t, testProfileIDApp, aws.StringValue(assoc.IamInstanceProfile.Id))
 }
 
 // --- AssociateIamInstanceProfile ---------------------------------------------
@@ -397,9 +391,12 @@ func TestAssociateIamInstanceProfile_Success(t *testing.T) {
 		assert.Equal(t, testProfileARNApp, cmd.IamProfileAssociationData.InstanceProfileArn,
 			"daemon must receive the resolved canonical ARN, not the original name")
 
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{
-			Found: true, AssociationId: newAssocID, InstanceId: instanceID,
-			InstanceProfileArn: testProfileARNApp, Timestamp: ts,
+		resp, _ := json.Marshal(&ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(newAssocID),
+			InstanceId:         aws.String(instanceID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
+			State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+			Timestamp:          aws.Time(ts),
 		})
 		msg.Respond(resp)
 	})
@@ -461,16 +458,19 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 	const instanceID = "i-dis-success"
 	ts := time.Date(2026, 5, 27, 11, 0, 0, 0, time.UTC)
 
-	// Two daemons subscribe; only the owner returns Found=true. The NoOp from
-	// the other daemon advances the expectedNodes collector so we don't wait
-	// for the 3s deadline.
+	// Two daemons subscribe; only the owner returns a populated record. The
+	// null reply from the other daemon advances the expectedNodes collector so
+	// we don't wait for the 3s deadline.
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.disassociate", func(msg *nats.Msg) {
-		var req spxtypes.IamProfileDisassociateRequest
+		var req ec2.DisassociateIamInstanceProfileInput
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		assert.Equal(t, assocID, req.AssociationId)
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{
-			Found: true, AssociationId: assocID, InstanceId: instanceID,
-			InstanceProfileArn: testProfileARNApp, Timestamp: ts,
+		assert.Equal(t, assocID, aws.StringValue(req.AssociationId))
+		resp, _ := json.Marshal(&ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(assocID),
+			InstanceId:         aws.String(instanceID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
+			State:              aws.String(ec2.IamInstanceProfileAssociationStateDisassociating),
+			Timestamp:          aws.Time(ts),
 		})
 		nc.Publish(msg.Reply, resp)
 	})
@@ -480,8 +480,7 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer nc2.Close()
 	_, err = nc2.Subscribe("ec2.IamProfileAssociation.disassociate", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{Found: false})
-		nc2.Publish(msg.Reply, resp)
+		nc2.Publish(msg.Reply, []byte("null"))
 	})
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
@@ -503,10 +502,10 @@ func TestDisassociateIamInstanceProfile_Success(t *testing.T) {
 
 func TestDisassociateIamInstanceProfile_NoSuchAssociation(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	// Every daemon NoOps — gateway must surface NoSuchAssociation, not timeout.
+	// Every daemon NoOps with JSON null — gateway must surface
+	// NoSuchAssociation, not timeout.
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.disassociate", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{Found: false})
-		nc.Publish(msg.Reply, resp)
+		nc.Publish(msg.Reply, []byte("null"))
 	})
 	require.NoError(t, err)
 
@@ -565,14 +564,18 @@ func TestReplaceIamInstanceProfileAssociation_Success(t *testing.T) {
 	const instanceID = "i-replace-target"
 
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.replace", func(msg *nats.Msg) {
-		var req spxtypes.IamProfileReplaceRequest
+		var req ec2.ReplaceIamInstanceProfileAssociationInput
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		assert.Equal(t, oldID, req.AssociationId)
-		assert.Equal(t, testProfileARNApp, req.InstanceProfileArn,
+		assert.Equal(t, oldID, aws.StringValue(req.AssociationId))
+		require.NotNil(t, req.IamInstanceProfile)
+		assert.Equal(t, testProfileARNApp, aws.StringValue(req.IamInstanceProfile.Arn),
 			"daemon must receive resolved ARN, not the original name")
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{
-			Found: true, AssociationId: newID, InstanceId: instanceID,
-			InstanceProfileArn: testProfileARNApp,
+		assert.Nil(t, req.IamInstanceProfile.Name, "Name must not be carried over the wire — gateway normalises to ARN")
+		resp, _ := json.Marshal(&ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(newID),
+			InstanceId:         aws.String(instanceID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
+			State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
 		})
 		nc.Publish(msg.Reply, resp)
 	})
@@ -597,8 +600,7 @@ func TestReplaceIamInstanceProfileAssociation_NoSuchAssociation(t *testing.T) {
 		return profileNoRole(), nil
 	}}
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.replace", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileAssociationResult{Found: false})
-		nc.Publish(msg.Reply, resp)
+		nc.Publish(msg.Reply, []byte("null"))
 	})
 	require.NoError(t, err)
 
@@ -616,11 +618,12 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	// Two daemons each return one record; the gateway must concatenate them.
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{
-			Associations: []spxtypes.IamProfileAssociationRecord{{
-				AssociationId: "iip-assoc-node1-rec-001", InstanceId: "i-n1",
-				InstanceProfileArn: testProfileARNApp,
-				State:              ec2.IamInstanceProfileAssociationStateAssociated,
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
+			IamInstanceProfileAssociations: []*ec2.IamInstanceProfileAssociation{{
+				AssociationId:      aws.String("iip-assoc-node1-rec-001"),
+				InstanceId:         aws.String("i-n1"),
+				IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)},
+				State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
 			}},
 		})
 		nc.Publish(msg.Reply, resp)
@@ -631,11 +634,12 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 	require.NoError(t, err)
 	defer nc2.Close()
 	_, err = nc2.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{
-			Associations: []spxtypes.IamProfileAssociationRecord{{
-				AssociationId: "iip-assoc-node2-rec-002", InstanceId: "i-n2",
-				InstanceProfileArn: testProfileARNOther,
-				State:              ec2.IamInstanceProfileAssociationStateAssociated,
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
+			IamInstanceProfileAssociations: []*ec2.IamInstanceProfileAssociation{{
+				AssociationId:      aws.String("iip-assoc-node2-rec-002"),
+				InstanceId:         aws.String("i-n2"),
+				IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNOther)},
+				State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
 			}},
 		})
 		nc2.Publish(msg.Reply, resp)
@@ -653,26 +657,27 @@ func TestDescribeIamInstanceProfileAssociations_FanOutAggregates(t *testing.T) {
 
 func TestDescribeIamInstanceProfileAssociations_ForwardsFilters(t *testing.T) {
 	_, nc := startTestNATSServer(t)
-	var gotReq spxtypes.IamProfileDescribeRequest
+	var gotInput ec2.DescribeIamInstanceProfileAssociationsInput
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		_ = json.Unmarshal(msg.Data, &gotReq)
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{})
+		_ = json.Unmarshal(msg.Data, &gotInput)
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{})
 		nc.Publish(msg.Reply, resp)
 	})
 	require.NoError(t, err)
 
 	_, err = DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
-		AssociationIds: []*string{aws.String("iip-assoc-1"), nil, aws.String("iip-assoc-2")},
+		AssociationIds: []*string{aws.String("iip-assoc-1"), aws.String("iip-assoc-2")},
 		Filters: []*ec2.Filter{
 			{Name: aws.String("instance-id"), Values: []*string{aws.String("i-001"), aws.String("i-002")}},
 			{Name: aws.String("state"), Values: []*string{aws.String("associated")}},
 		},
 	}, nc, 1, testGwAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"iip-assoc-1", "iip-assoc-2"}, gotReq.AssociationIds,
-		"nil entries in AssociationIds must be dropped before sending to daemons")
-	assert.Equal(t, []string{"i-001", "i-002"}, gotReq.InstanceIds)
-	assert.Equal(t, []string{"associated"}, gotReq.States)
+	assert.Equal(t, []string{"iip-assoc-1", "iip-assoc-2"}, aws.StringValueSlice(gotInput.AssociationIds))
+	require.Len(t, gotInput.Filters, 2)
+	assert.Equal(t, "instance-id", aws.StringValue(gotInput.Filters[0].Name))
+	assert.Equal(t, []string{"i-001", "i-002"}, aws.StringValueSlice(gotInput.Filters[0].Values))
+	assert.Equal(t, "state", aws.StringValue(gotInput.Filters[1].Name))
 }
 
 func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) {
@@ -687,7 +692,7 @@ func TestDescribeIamInstanceProfileAssociations_InvalidFilterName(t *testing.T) 
 func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{})
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{})
 		nc.Publish(msg.Reply, resp)
 	})
 	require.NoError(t, err)
@@ -703,11 +708,11 @@ func TestDescribeIamInstanceProfileAssociations_EmptyResultIsValid(t *testing.T)
 func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{
-			Associations: []spxtypes.IamProfileAssociationRecord{
-				{AssociationId: "iip-assoc-001", InstanceId: "i-1", InstanceProfileArn: testProfileARNApp, State: "associated"},
-				{AssociationId: "iip-assoc-002", InstanceId: "i-2", InstanceProfileArn: testProfileARNOther, State: "associated"},
-				{AssociationId: "iip-assoc-003", InstanceId: "i-3", InstanceProfileArn: testProfileARNApp, State: "associated"},
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
+			IamInstanceProfileAssociations: []*ec2.IamInstanceProfileAssociation{
+				{AssociationId: aws.String("iip-assoc-001"), InstanceId: aws.String("i-1"), IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)}, State: aws.String("associated")},
+				{AssociationId: aws.String("iip-assoc-002"), InstanceId: aws.String("i-2"), IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNOther)}, State: aws.String("associated")},
+				{AssociationId: aws.String("iip-assoc-003"), InstanceId: aws.String("i-3"), IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNApp)}, State: aws.String("associated")},
 			},
 		})
 		nc.Publish(msg.Reply, resp)
@@ -722,9 +727,9 @@ func TestCountInstanceProfileAssociations_MatchesByARN(t *testing.T) {
 func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	_, err := nc.Subscribe("ec2.IamProfileAssociation.describe", func(msg *nats.Msg) {
-		resp, _ := json.Marshal(spxtypes.IamProfileDescribeResponse{
-			Associations: []spxtypes.IamProfileAssociationRecord{
-				{AssociationId: "iip-assoc-001", InstanceId: "i-1", InstanceProfileArn: testProfileARNOther, State: "associated"},
+		resp, _ := json.Marshal(&ec2.DescribeIamInstanceProfileAssociationsOutput{
+			IamInstanceProfileAssociations: []*ec2.IamInstanceProfileAssociation{
+				{AssociationId: aws.String("iip-assoc-001"), InstanceId: aws.String("i-1"), IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(testProfileARNOther)}, State: aws.String("associated")},
 			},
 		})
 		nc.Publish(msg.Reply, resp)

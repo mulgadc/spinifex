@@ -182,6 +182,9 @@ func (m *flexMockIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleTo
 func (m *flexMockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
 }
+func (m *flexMockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+	return nil, nil
+}
 
 // setupIAMRequestHandler creates an http.Handler wired for IAM_Request testing.
 // It injects sigv4 context values so individual tests don't need SigV4 auth.

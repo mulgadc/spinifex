@@ -47,7 +47,7 @@ func MatchesAny(filterValues []string, value string) bool {
 		return true
 	}
 	for _, pattern := range filterValues {
-		if matchWildcard(pattern, value) {
+		if MatchWildcard(pattern, value) {
 			return true
 		}
 	}
@@ -89,9 +89,10 @@ func EC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	return m
 }
 
-// matchWildcard matches value against a pattern where * matches zero or more
-// characters. This implements the AWS filter wildcard convention.
-func matchWildcard(pattern, value string) bool {
+// MatchWildcard matches value against a pattern where * matches zero or more
+// characters. Case-sensitive — callers needing case-insensitive matching
+// (e.g. IAM policy evaluation) should lower-case both inputs before calling.
+func MatchWildcard(pattern, value string) bool {
 	if pattern == "*" {
 		return true
 	}

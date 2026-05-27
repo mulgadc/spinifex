@@ -1,6 +1,7 @@
 package gateway_iam
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -67,17 +68,24 @@ func TestListInstanceProfiles(t *testing.T) {
 func TestDeleteInstanceProfile(t *testing.T) {
 	svc := &stubIAMService{}
 	tests := []struct {
-		name    string
-		input   *iam.DeleteInstanceProfileInput
-		wantErr string
+		name      string
+		input     *iam.DeleteInstanceProfileInput
+		countLive LiveAssociationCounter
+		wantErr   string
 	}{
-		{"nil InstanceProfileName", &iam.DeleteInstanceProfileInput{}, awserrors.ErrorMissingParameter},
-		{"empty InstanceProfileName", &iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String("")}, awserrors.ErrorMissingParameter},
-		{"valid", &iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String("p")}, ""},
+		{"nil InstanceProfileName", &iam.DeleteInstanceProfileInput{}, nil, awserrors.ErrorMissingParameter},
+		{"empty InstanceProfileName", &iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String("")}, nil, awserrors.ErrorMissingParameter},
+		{"valid no counter", &iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String("p")}, nil, ""},
+		{
+			"valid with zero live associations",
+			&iam.DeleteInstanceProfileInput{InstanceProfileName: aws.String("p")},
+			func(string) (int, error) { return 0, nil },
+			"",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := DeleteInstanceProfile(testAccountID, tc.input, svc)
+			_, err := DeleteInstanceProfile(testAccountID, tc.input, svc, tc.countLive)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantErr, err.Error())
@@ -86,6 +94,48 @@ func TestDeleteInstanceProfile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeleteInstanceProfile_LiveAssociationsRefused(t *testing.T) {
+	svc := &stubIAMService{
+		getInstanceProfile: func(_ string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+			return &iam.GetInstanceProfileOutput{
+				InstanceProfile: &iam.InstanceProfile{
+					InstanceProfileName: in.InstanceProfileName,
+					Arn:                 aws.String("arn:aws:iam::000000000000:instance-profile/p"),
+				},
+			}, nil
+		},
+	}
+	gotARN := ""
+	countLive := func(arn string) (int, error) {
+		gotARN = arn
+		return 2, nil
+	}
+	_, err := DeleteInstanceProfile(testAccountID, &iam.DeleteInstanceProfileInput{
+		InstanceProfileName: aws.String("p"),
+	}, svc, countLive)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIAMDeleteConflict, err.Error())
+	assert.Equal(t, "arn:aws:iam::000000000000:instance-profile/p", gotARN)
+}
+
+func TestDeleteInstanceProfile_CounterError(t *testing.T) {
+	svc := &stubIAMService{
+		getInstanceProfile: func(_ string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+			return &iam.GetInstanceProfileOutput{
+				InstanceProfile: &iam.InstanceProfile{
+					InstanceProfileName: in.InstanceProfileName,
+					Arn:                 aws.String("arn:aws:iam::000000000000:instance-profile/p"),
+				},
+			}, nil
+		},
+	}
+	wantErr := errors.New("nats unavailable")
+	_, err := DeleteInstanceProfile(testAccountID, &iam.DeleteInstanceProfileInput{
+		InstanceProfileName: aws.String("p"),
+	}, svc, func(string) (int, error) { return 0, wantErr })
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestListInstanceProfilesForRole(t *testing.T) {

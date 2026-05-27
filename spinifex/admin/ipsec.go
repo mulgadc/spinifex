@@ -60,18 +60,6 @@ func IPSecCertPaths(configDir string) (certPath, keyPath string) {
 // for exactly this reason — see the comment in setup-ovn.sh near
 // `system-id.conf`. Changing the cert identity here without updating
 // setup-ovn.sh (or vice versa) breaks IKE with AUTHENTICATION_FAILED.
-// GenerateIPSecPeerCertIfEnabled is a no-op when enabled is false. Used by
-// admin init and admin join so the call site reads as a single guarded line
-// keyed off the cluster's network.ipsec_enabled flag.
-func GenerateIPSecPeerCertIfEnabled(enabled bool, configDir, hostname, nodeIP string) error {
-	if !enabled {
-		return nil
-	}
-	caCertPath := filepath.Join(configDir, "ca.pem")
-	caKeyPath := filepath.Join(configDir, "ca.key")
-	return GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP)
-}
-
 func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP string) error {
 	if hostname == "" {
 		return fmt.Errorf("ipsec peer cert: hostname required")

@@ -1089,11 +1089,13 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 	// Generate per-node IPsec peer cert when cluster-wide IPsec is enabled
 	// (default true). Reuses the cluster CA — no intermediate strongSwan PKI.
-	if err := admin.GenerateIPSecPeerCertIfEnabled(ipsecEnabled, configDir, node, bindIP); err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
-		os.Exit(1)
-	}
 	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
 	}
 
@@ -1860,11 +1862,13 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if statusResp.NetworkConfig != nil {
 		ipsecEnabled = statusResp.NetworkConfig.IPSecEnabled
 	}
-	if err := admin.GenerateIPSecPeerCertIfEnabled(ipsecEnabled, configDir, node, bindIP); err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
-		os.Exit(1)
-	}
 	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
 	}
 

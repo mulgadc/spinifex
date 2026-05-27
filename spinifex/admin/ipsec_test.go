@@ -120,45 +120,6 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	})
 }
 
-func TestGenerateIPSecPeerCertIfEnabled(t *testing.T) {
-	origTrustDir := charonCATrustDir
-	charonCATrustDir = t.TempDir()
-	t.Cleanup(func() { charonCATrustDir = origTrustDir })
-
-	origReread := charonRereadCAs
-	charonRereadCAs = func() error { return nil }
-	t.Cleanup(func() { charonRereadCAs = origReread })
-
-	caDir := t.TempDir()
-	caCertPath := filepath.Join(caDir, "ca.pem")
-	caKeyPath := filepath.Join(caDir, "ca.key")
-	require.NoError(t, GenerateCACert(caCertPath, caKeyPath))
-
-	t.Run("disabled is a no-op", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		require.NoError(t, GenerateIPSecPeerCertIfEnabled(false, dir, "node-x", "10.0.0.9"))
-		certPath, _ := IPSecCertPaths(dir)
-		_, err := os.Stat(certPath)
-		assert.True(t, os.IsNotExist(err), "no cert must be written when ipsec disabled")
-	})
-
-	t.Run("enabled generates cert using configDir CA", func(t *testing.T) {
-		t.Parallel()
-		// Use a configDir that already has ca.pem + ca.key beside it (the
-		// canonical layout under /etc/spinifex/).
-		dir := t.TempDir()
-		require.NoError(t, GenerateCACert(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")))
-
-		require.NoError(t, GenerateIPSecPeerCertIfEnabled(true, dir, "node-y", "10.0.0.10"))
-		certPath, keyPath := IPSecCertPaths(dir)
-		_, err := os.Stat(certPath)
-		require.NoError(t, err)
-		_, err = os.Stat(keyPath)
-		require.NoError(t, err)
-	})
-}
-
 func TestIPSecCertPaths(t *testing.T) {
 	t.Parallel()
 	certPath, keyPath := IPSecCertPaths("/etc/spinifex")

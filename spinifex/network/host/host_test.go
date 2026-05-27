@@ -12,9 +12,7 @@ import (
 	"testing"
 )
 
-// stubRunner records every command invocation and returns scripted output.
-// Each invocation pops the first matching script entry by prefix; unmatched
-// invocations fail the test so missing setup is loud rather than silent.
+// stubRunner records commands and returns scripted output by prefix.
 type stubRunner struct {
 	mu    sync.Mutex
 	calls []string
@@ -28,8 +26,6 @@ type stubResp struct {
 
 func newStubRunner() *stubRunner { return &stubRunner{resp: map[string]stubResp{}} }
 
-// expect maps a "<binary> <first-arg>" prefix to a response. Used because
-// ovs-vsctl flags vary across calls but the binary + verb identify intent.
 func (s *stubRunner) expect(prefix string, out []byte, err error) {
 	s.resp[prefix] = stubResp{out: out, err: err}
 }
@@ -58,7 +54,6 @@ func (s *stubRunner) called(prefix string) bool {
 	return false
 }
 
-// stubReader returns canned interface state without touching the kernel.
 type stubReader struct {
 	cidrs  map[string]netip.Prefix
 	macs   map[string]net.HardwareAddr
@@ -279,8 +274,6 @@ func TestEnsureBridges_FailureSurfacesContext(t *testing.T) {
 	}
 }
 
-// Compile-time witnesses that the interface assertions hold; explicit so
-// `go vet` flags any future drift without depending on test execution.
 var (
 	_ Wiring          = (*Physical)(nil)
 	_ Wiring          = (*Veth)(nil)
@@ -288,9 +281,6 @@ var (
 	_ InterfaceReader = kernelReader{}
 )
 
-// Compile-time check that the supported UplinkModes form a stable set.
-// Slices are stack-only and never read; the test exists to fail compilation
-// if a constant is removed.
 func TestUplinkModes_ConstantSet(t *testing.T) {
 	modes := []UplinkMode{UplinkModeUnknown, UplinkModePhysical, UplinkModeVeth}
 	if !slices.Contains(modes, UplinkModePhysical) || !slices.Contains(modes, UplinkModeVeth) {

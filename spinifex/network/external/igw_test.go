@@ -183,15 +183,10 @@ func TestDetachIGW_IdempotentOnAbsent(t *testing.T) {
 	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
 	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
 
-	// Detach without prior attach — must return error from external switch
-	// delete (it never existed). Verify behaviour by checking the route
-	// delete still ran first via the idempotent route manager.
 	err := mgr.DetachIGW(ctx, "vpc-1")
-	require.Error(t, err) // external switch absent — DeleteLogicalSwitch returns NotFound
+	require.Error(t, err) // external switch absent
 }
 
-// failingAllocator surfaces an Allocate error and lets the test assert
-// AttachIGW unwinds the external switch + localnet on failure.
 type failingAllocator struct{}
 
 var _ GatewayIPAllocator = failingAllocator{}

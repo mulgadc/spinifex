@@ -16,15 +16,6 @@ import (
 //	"L3 never creates or deletes logical objects. L3 only attaches policy
 //	 (ACLs, NAT rules, static routes) to objects that L2 already owns. L3
 //	 never calls create or delete on logical switches, routers, or ports."
-//
-// Mechanic: AST walk prod .go files under spinifex/network/policy/. Flag
-// any call whose method tail matches the forbidden set:
-//
-//	Create{LogicalSwitch,LogicalRouter,LogicalSwitchPort,LogicalRouterPort}
-//	Delete{LogicalSwitch,LogicalRouter,LogicalSwitchPort,LogicalRouterPort}
-//
-// Test files are exempt — fixtures legitimately build temporary objects
-// to exercise the policy under test.
 func TestS5_PolicyNeverCreatesOrDeletes(t *testing.T) {
 	const clause = `ADR-0006 S5: "L3 never creates or deletes logical ` +
 		`objects. L3 only attaches policy (ACLs, NAT rules, static routes) ` +

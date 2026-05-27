@@ -29,27 +29,16 @@ type Client struct {
 	ACLs           map[string]*nbdb.ACL                      // keyed by UUID
 	GatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
 
-	// UpdateLogicalSwitchPortCalls counts UpdateLogicalSwitchPort invocations
-	// so tests can assert idempotent read-before-write paths.
+	// Call counters so tests can assert idempotent / drift-only write paths.
 	UpdateLogicalSwitchPortCalls int
-
-	// UpdateLogicalRouterPortCalls counts UpdateLogicalRouterPort invocations
-	// so tests can assert writers only emit on drift.
 	UpdateLogicalRouterPortCalls int
 
-	// SetGatewayChassisCalls / DeleteGatewayChassisCalls /
-	// UpdateGatewayChassisPriorityCalls let tests distinguish between
-	// "no-op", "create", "delete", and "priority update" paths through
-	// reconcileGatewayChassis.
 	SetGatewayChassisCalls            int
 	DeleteGatewayChassisCalls         int
 	UpdateGatewayChassisPriorityCalls int
 
-	// AddACLErrAfter, when > 0, makes AddACL return an error on the Nth
-	// call (1-indexed). Lets fail-fast tests inject a transient OVN error
-	// at a specific point in the create/update flow without rewiring the
-	// whole client. Counter persists across calls until the mock is
-	// recreated.
+	// AddACLErrAfter, when > 0, makes AddACLs return an error on the Nth
+	// (1-indexed) call. Lets tests inject a transient failure mid-flow.
 	AddACLErrAfter int
 	AddACLCalls    int
 }
@@ -108,8 +97,7 @@ func (m *Client) CreateLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 }
 
 // EnsureLogicalSwitch mirrors the live client's wait-op semantics under the
-// mock's single mutex: any concurrent caller observing absence will be
-// serialised here, so the second arrival sees the row and returns existing.
+// mock's single mutex: concurrent callers see the row on the second arrival.
 func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) (*nbdb.LogicalSwitch, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -179,11 +167,9 @@ func (m *Client) CreateLogicalSwitchPort(_ context.Context, switchName string, l
 }
 
 // CreateLogicalSwitchPortInGroups mirrors the live client's atomic create +
-// port-group join path. The mock is not transactional, but every step still
-// has to succeed up front; on a port-group lookup failure we leave no LSP
-// behind so tests observe the same all-or-nothing semantics as production.
-// SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
-// ovn-northd in production and intentionally not modelled in the mock.
+// port-group join: validates all port groups up front so a missing PG leaves
+// no LSP behind. SB Address_Set rows are derived by ovn-northd and not
+// modelled here.
 func (m *Client) CreateLogicalSwitchPortInGroups(_ context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -226,16 +212,12 @@ func (m *Client) DeleteLogicalSwitchPort(_ context.Context, switchName string, p
 		return fmt.Errorf("logical switch %q not found", switchName)
 	}
 	// Mirror libovsdb's reference-integrity rejection: an LSP still in any
-	// port group's Ports set cannot be deleted. Forces every delete-port
-	// path to clear membership first — handleDeletePort already does this
-	// via reconcilePortSGs, but locking the invariant in the mock catches
-	// any reordering that would only break against real OVN.
+	// port group's Ports set cannot be deleted.
 	for pgName, pg := range m.PortGroups {
 		if slices.Contains(pg.Ports, port.UUID) {
 			return fmt.Errorf("logical switch port %q still in port group %q", portName, pgName)
 		}
 	}
-	// Remove port UUID from switch's ports list
 	for i, uuid := range ls.Ports {
 		if uuid == port.UUID {
 			ls.Ports = append(ls.Ports[:i], ls.Ports[i+1:]...)
@@ -286,8 +268,7 @@ func (m *Client) CreateLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 }
 
 // EnsureLogicalRouter mirrors the live client's wait-op semantics under the
-// mock's single mutex: concurrent callers observing absence are serialised by
-// the mutex, so the second arrival sees the row and returns the existing one.
+// mock's single mutex.
 func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) (*nbdb.LogicalRouter, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -494,7 +475,6 @@ func (m *Client) DeleteNAT(_ context.Context, routerName string, natType, logica
 	if !exists {
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
-	// Find the NAT entry
 	var foundUUID string
 	for uuid, n := range m.NATs {
 		if n.Type == natType && n.LogicalIP == logicalIP {
@@ -505,7 +485,6 @@ func (m *Client) DeleteNAT(_ context.Context, routerName string, natType, logica
 	if foundUUID == "" {
 		return fmt.Errorf("NAT %s %s: %w", natType, logicalIP, ovn.ErrNATNotFound)
 	}
-	// Remove from router's NAT list
 	for i, uuid := range lr.NAT {
 		if uuid == foundUUID {
 			lr.NAT = append(lr.NAT[:i], lr.NAT[i+1:]...)
@@ -548,7 +527,6 @@ func (m *Client) DeleteAllNATsByExternalIP(_ context.Context, natType, externalI
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 
-	// Find all matching NAT rules.
 	var foundUUIDs []string
 	for uuid, n := range m.NATs {
 		if n.Type == natType && n.ExternalIP == externalIP {
@@ -559,7 +537,6 @@ func (m *Client) DeleteAllNATsByExternalIP(_ context.Context, natType, externalI
 		return 0, nil
 	}
 
-	// Remove from all routers that reference them.
 	uuidSet := make(map[string]struct{}, len(foundUUIDs))
 	for _, u := range foundUUIDs {
 		uuidSet[u] = struct{}{}
@@ -574,7 +551,6 @@ func (m *Client) DeleteAllNATsByExternalIP(_ context.Context, natType, externalI
 		lr.NAT = filtered
 	}
 
-	// Delete the NAT rows.
 	for _, u := range foundUUIDs {
 		delete(m.NATs, u)
 	}
@@ -637,7 +613,6 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 	if !exists {
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
-	// Find the route
 	var foundUUID string
 	for uuid, r := range m.StaticRoutes {
 		if r.IPPrefix == ipPrefix {
@@ -648,7 +623,6 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 	if foundUUID == "" {
 		return fmt.Errorf("static route %s not found", ipPrefix)
 	}
-	// Remove from router's StaticRoutes list
 	for i, uuid := range lr.StaticRoutes {
 		if uuid == foundUUID {
 			lr.StaticRoutes = append(lr.StaticRoutes[:i], lr.StaticRoutes[i+1:]...)
@@ -676,8 +650,7 @@ func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string)
 	return nil
 }
 
-// EnsurePortGroup mirrors the live client's wait-op semantics under the
-// mock's single mutex.
+// EnsurePortGroup mirrors the live client's wait-op semantics.
 func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string) (*nbdb.PortGroup, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -702,10 +675,8 @@ func (m *Client) DeletePortGroup(_ context.Context, name string) error {
 	if !exists {
 		return fmt.Errorf("port group %q not found", name)
 	}
-	// Mirror libovsdb's reference-integrity rejection: a port group with
-	// referenced ACL rows cannot be deleted directly. Live OVN's
-	// `Where(pg).Delete()` only removes the PG row and would leak the ACLs;
-	// forcing every caller through ClearACLs first matches that contract.
+	// Mirror libovsdb: PG with referenced ACL rows cannot be deleted; live
+	// `Where(pg).Delete()` would leak the ACLs. Force ClearACLs first.
 	if len(pg.ACLs) > 0 {
 		return fmt.Errorf("port group %q has %d ACLs still attached; clear ACLs before delete", name, len(pg.ACLs))
 	}
@@ -713,9 +684,7 @@ func (m *Client) DeletePortGroup(_ context.Context, name string) error {
 	return nil
 }
 
-// UpdatePortGroupMemberships applies all add/remove port-group joins for one
-// LSP. SB Address_Set rows for `<pg>_ip4` / `<pg>_ip6` are auto-derived by
-// ovn-northd in production and intentionally not modelled in the mock.
+// UpdatePortGroupMemberships applies all add/remove PG joins for one LSP.
 func (m *Client) UpdatePortGroupMemberships(_ context.Context, lspName string, addPGs, removePGs []string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -747,10 +716,8 @@ func (m *Client) UpdatePortGroupMemberships(_ context.Context, lspName string, a
 	return nil
 }
 
-// ListPortGroupsForPort returns names of port groups whose Ports contains the
-// given LSP's UUID. Mirrors the live client; the mock returns an empty slice
-// (not an error) when the LSP exists but has no memberships, and an error
-// only when the LSP itself is unknown.
+// ListPortGroupsForPort returns names of PGs containing the LSP's UUID.
+// Empty slice (not error) when no memberships.
 func (m *Client) ListPortGroupsForPort(_ context.Context, lspName string) ([]string, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -767,9 +734,7 @@ func (m *Client) ListPortGroupsForPort(_ context.Context, lspName string) ([]str
 	return names, nil
 }
 
-// GetPortGroup returns the port group with the given name, or an error if it
-// doesn't exist. Mirrors the live client; missing rows surface as
-// ovn.ErrPortGroupNotFound so callers can use errors.Is for idempotent flows.
+// GetPortGroup returns the port group, or ovn.ErrPortGroupNotFound.
 func (m *Client) GetPortGroup(_ context.Context, name string) (*nbdb.PortGroup, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -780,8 +745,7 @@ func (m *Client) GetPortGroup(_ context.Context, name string) (*nbdb.PortGroup, 
 	return pg, nil
 }
 
-// ListPortGroups returns a snapshot of every port group currently in the mock
-// store. The slice is freshly allocated; mutating it does not affect the mock.
+// ListPortGroups returns a snapshot of every port group.
 func (m *Client) ListPortGroups(_ context.Context) ([]nbdb.PortGroup, error) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -853,10 +817,8 @@ func (m *Client) ListLogicalRouterPorts(_ context.Context) ([]nbdb.LogicalRouter
 	return result, nil
 }
 
-// SetGatewayChassis is the idempotent read-then-decide path mirrored from
-// LiveClient. Tests rely on the mock applying the same "no-op when already
-// correct" semantics so the call counters distinguish create vs. update vs.
-// no-op.
+// SetGatewayChassis is the idempotent read-then-decide path mirroring
+// LiveClient; counters distinguish create vs. update vs. no-op.
 func (m *Client) SetGatewayChassis(_ context.Context, lrpName string, chassisName string, priority int) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -933,9 +895,8 @@ func (m *Client) DeleteGatewayChassis(_ context.Context, lrpName string, gcUUID 
 	return nil
 }
 
-// SeedGatewayChassis lets tests pre-populate a Gateway_Chassis row directly,
-// bypassing the idempotent SetGatewayChassis path. Useful for setting up a
-// "stale row" scenario for reconcileGatewayChassis tests.
+// SeedGatewayChassis pre-populates a Gateway_Chassis row, bypassing
+// SetGatewayChassis. Used to construct "stale row" scenarios in tests.
 func (m *Client) SeedGatewayChassis(lrpName string, gc *nbdb.GatewayChassis) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

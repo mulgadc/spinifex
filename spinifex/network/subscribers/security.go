@@ -32,9 +32,7 @@ func toPolicyRules(in []SGRule) []policy.Rule {
 	return out
 }
 
-// handleCreateSG ensures the OVN port group exists then applies the ACL set
-// for a new security group. Two-step (topology + policy) because port-group
-// lifecycle is L2 and ACL programming is L3 — see plan §8.1.
+// handleCreateSG ensures the PG (L2) then applies the ACL set (L3).
 func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
 	var evt SGEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -62,8 +60,7 @@ func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// handleDeleteSG removes the SG's port group (and its ACLs in one OVN
-// transaction). Idempotent on already-absent.
+// handleDeleteSG removes the SG's PG and its ACLs; idempotent.
 func (s *Subscriber) handleDeleteSG(msg *nats.Msg) {
 	var evt SGEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -80,8 +77,7 @@ func (s *Subscriber) handleDeleteSG(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// handleUpdateSG replaces the SG's ACL set with the rules from the event.
-// Port-group lifecycle is unaffected — UpdateSG only touches ACLs.
+// handleUpdateSG replaces the ACL set; the PG is unaffected.
 func (s *Subscriber) handleUpdateSG(msg *nats.Msg) {
 	var evt SGEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {

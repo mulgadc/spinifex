@@ -13,9 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// newTestReconciler builds a reconciler around the in-memory OVN mock. NAT
-// mode defaults to distributed (physical uplink) so EIP rules carry
-// LogicalPort/MAC.
+// newTestReconciler builds a reconciler around the in-memory OVN mock.
 func newTestReconciler(t *testing.T) (*reconciler, *mock.Client) {
 	t.Helper()
 	m := mock.New()
@@ -128,8 +126,7 @@ func TestReconcile_Idempotent(t *testing.T) {
 	if len(m.PortGroups) != pgCountBefore {
 		t.Errorf("second reconcile created duplicate port groups: %d → %d", pgCountBefore, len(m.PortGroups))
 	}
-	// EnsureSG re-applies ACLs every call (replace-all semantics); both
-	// passes add the same 4 infra + 0 tenant ACLs, so total adds doubles.
+	// EnsureSG has replace-all semantics: AddACL count must grow each pass.
 	if m.AddACLCalls < addACLsBefore {
 		t.Errorf("second reconcile fewer AddACL calls than first — replace-all semantics regressed")
 	}
@@ -162,12 +159,8 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	}
 }
 
-// TestReconcile_ApplyOnlyKeepsOrphanPortGroup guards the vpcd startup path:
-// ReconcileApplyOnly must not prune managed sg_* port groups even when intent
-// is empty. The race it protects against is daemon EnsureDefaultVPC on a peer
-// node having written the SG KV row + driven a peer subscriber to create the
-// port group while this node's leader-gated intent load still returned no
-// SGs. Drift (full Reconcile) cleans up legitimate orphans on the next tick.
+// ReconcileApplyOnly must not prune managed sg_* PGs when intent is empty
+// (startup race vs. peer subscribers); full Reconcile must still prune.
 func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -194,7 +187,6 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 		t.Errorf("ReconcileApplyOnly pruned port group; startup race fix regressed")
 	}
 
-	// Full Reconcile must still prune — drift loop's contract.
 	if err := rec.Reconcile(ctx, intent); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -224,8 +216,7 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// AttachIGW creates a gateway LRP on the VPC router, so seed the VPC
-	// router via a VPC-only reconcile first.
+	// Seed VPC router first so AttachIGW can create the gateway LRP on it.
 	seedIntent := IntentState{
 		VPCs: map[string]topology.VPCSpec{
 			"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100},
@@ -240,8 +231,7 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	if err := rec.Reconcile(ctx, seedIntent); err != nil {
 		t.Fatalf("seed VPC reconcile: %v", err)
 	}
-	// Seed an external switch + gateway LRP so the apply path takes the
-	// rebind branch rather than AttachIGW.
+	// Seed external switch + gateway LRP so apply takes the rebind branch.
 	if err := igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}); err != nil {
 		t.Fatalf("seed AttachIGW: %v", err)
 	}
@@ -311,8 +301,6 @@ func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 		t.Errorf("gateway LRP %s not created", gwPort)
 	}
 
-	// Second pass must be idempotent — AttachIGW's first-line short-circuit
-	// fires once the external switch exists, so total switch count stays put.
 	switchCount := len(m.Switches)
 	if err := rec.Reconcile(ctx, intent); err != nil {
 		t.Fatalf("Reconcile #2: %v", err)
@@ -331,7 +319,6 @@ func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 		t.Fatalf("Reconcile #1: %v", err)
 	}
 
-	// Drift: add a second SG to the intent, expect membership update.
 	intent.SGs["sg-b"] = policy.SGSpec{GroupID: "sg-b", VPCID: "vpc-a"}
 	port := intent.Ports["eni-a"]
 	port.SGIDs = append(port.SGIDs, "sg-b")

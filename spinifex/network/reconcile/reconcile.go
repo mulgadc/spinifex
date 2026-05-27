@@ -1,21 +1,8 @@
-// Package reconcile is the spinifex network stack's intent-actual
-// reconciliation layer. It reads the canonical desired state from the NATS
-// JetStream KV snapshot, scopes it to the local availability zone, and
-// applies the diff against OVN NB DB in a single topologically-sorted pass
-// (VPC → Subnet → Port → SG ACLs → IGW → EIP/NATGW). Deletes run in reverse
-// order.
-//
-// The reconciler replaces the legacy five-pass startup sequence
-// (`Reconcile` + `ReconcileFromKV` + `ReconcileSGsOnce` +
-// `RetrofitAllExternalLocalnetOptions` + `RetrofitAllGatewayPortNetworks`)
-// the vpcd daemon ran on boot. A 5-minute drift goroutine drives the same
-// call periodically, replacing the 30-second `ReconcileSGsLoop`.
-//
-// Multi-AZ scoping: `IntentState` is built by `LoadIntentFromKV(ctx, js,
-// localAZ)`. The filter rule is `vpc.AZ == "" || vpc.AZ == localAZ` —
-// records without an `AZ` field are legacy and are treated
-// as local. New VPCs are stamped with the local AZ at create time by the
-// `handlers/ec2/vpc.CreateVpc` path.
+// Package reconcile is the network stack's intent-actual reconciliation
+// layer. It loads desired state from the JetStream KV snapshot (scoped to
+// the local AZ) and applies the diff against OVN NB in a single
+// topologically-sorted pass (VPC → Subnet → SG → Port → IGW → EIP →
+// NATGW). Deletes run reverse order. Drift fires every 5 minutes.
 package reconcile
 
 import (
@@ -34,19 +21,14 @@ import (
 // are idempotent: a second call with the same IntentState is a no-op.
 type Reconciler interface {
 	Reconcile(ctx context.Context, intent IntentState) error
-	// ReconcileApplyOnly performs the same apply pass as Reconcile but
-	// skips orphan-resource pruning. vpcd startup uses this to avoid a
-	// race with daemon EnsureDefaultVPC: a leader can load intent before
-	// peer subscribers have processed in-flight vpc.create-sg events,
-	// and a startup orphan sweep would then delete port groups the
-	// matching subscribers just created. Drift calls Reconcile (full
-	// prune); legitimate orphans get cleaned up on the next 5-minute
-	// drift tick.
+	// ReconcileApplyOnly skips orphan-pruning. Startup uses this to avoid
+	// racing peer subscribers that haven't processed in-flight create events
+	// yet; legitimate orphans are pruned on the next drift tick.
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
-// Config is the construction-time bag for the reconciler. Every field
-// except Chassis is required.
+// Config is the construction-time bag for the reconciler. All fields except
+// Chassis are required.
 type Config struct {
 	OVN      ovn.Client
 	SG       policy.SecurityGroupManager
@@ -55,12 +37,9 @@ type Config struct {
 	IGW      external.IGWManager
 	Topology topology.Manager
 	LocalAZ  string
-	// NodeHostname is the holder identity stamped on the leader-election
-	// CAS row. Set to os.Hostname() in production.
+	// NodeHostname is the holder identity for leader-election CAS.
 	NodeHostname string
-	// Chassis is the SBDB-discovered chassis list, used for gateway LRP
-	// chassis rebinding during drift. Same value passed to TopologyHandler
-	// in the legacy boot path.
+	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
 	Chassis []string
 }
 
@@ -110,20 +89,11 @@ func New(cfg Config) (Reconciler, error) {
 	}, nil
 }
 
-// Reconcile snapshots OVN actual state, computes the (intent - actual) and
-// (actual - intent) deltas per resource type, and applies them in
-// topologically-sorted order: VPC → Subnet → SG (port-group + ACLs) →
-// Port → IGW → EIP → NATGW. Deletes run reverse: NATGW → EIP → IGW → Port
-// → SG → Subnet → VPC.
-//
-// SG comes before Port so that ENI LSPs can be created with their port-group
-// memberships atomically (CreateLogicalSwitchPortInGroups) — the racy
-// create-then-join used by the legacy 5-pass startup is the exact gap this
-// reconciler kills.
-//
-// A per-stage error is logged and the stage continues with the next item;
-// the function only returns an error when the actual-state scan fails. This
-// matches the legacy 5-pass behaviour: partial progress beats no progress.
+// Reconcile diffs intent vs. actual OVN state and applies create/delete
+// per-resource: VPC → Subnet → SG → Port → IGW → EIP → NATGW (reverse for
+// deletes). SG precedes Port so ENI LSPs join their PGs atomically via
+// CreateLogicalSwitchPortInGroups. Per-stage errors are logged and the next
+// stage runs; only an actual-state scan failure is returned.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, true)
 }

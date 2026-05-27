@@ -8,20 +8,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 )
 
-// ActualState is the live OVN NB DB snapshot the reconciler diffs IntentState
-// against. Membership in each set is presence-by-name — the apply stage
-// drives a Get-then-mutate against the live client when it needs the
-// per-row payload.
-//
-// Orphan deletion is restricted to security group port groups (sg_*) to
-// match the legacy ReconcileSGsOnce contract; other resource types are
+// ActualState is the live OVN NB snapshot used to diff against IntentState.
+// Orphan deletion is restricted to SG port groups (sg_*); other types are
 // create-or-skip only.
 type ActualState struct {
-	Routers      map[string]struct{} // logical router name → present
-	Switches     map[string]struct{} // logical switch name → present
-	Ports        map[string]struct{} // logical switch port name → present
-	RouterPorts  map[string]struct{} // logical router port name → present
-	PortGroups   map[string]struct{} // port group name → present
+	Routers      map[string]struct{}
+	Switches     map[string]struct{}
+	Ports        map[string]struct{}
+	RouterPorts  map[string]struct{}
+	PortGroups   map[string]struct{}
 	ExternalSwch map[string]struct{} // vpcID → external switch present (spinifex:role=external)
 }
 
@@ -36,10 +31,8 @@ func newActualState() ActualState {
 	}
 }
 
-// scanActual walks the OVN NB DB once and returns a presence map per
-// resource type. Any List failure is fatal because a partial scan produces
-// unsafe diff decisions (a missing entry would look like a create
-// candidate). Callers must surface the error and skip the reconcile cycle.
+// scanActual walks OVN NB once. Any List failure is fatal: a partial scan
+// would make missing entries look like create candidates.
 func scanActual(ctx context.Context, client ovn.Client) (ActualState, error) {
 	actual := newActualState()
 
@@ -86,9 +79,8 @@ func scanActual(ctx context.Context, client ovn.Client) (ActualState, error) {
 	return actual, nil
 }
 
-// portGroupIsManaged reports whether a port group name is one we own
-// (sg_*) and is therefore in scope for orphan deletion. Non-managed
-// port groups (third-party usage) are left alone.
+// portGroupIsManaged reports whether the PG is in scope for orphan deletion
+// (sg_* only).
 func portGroupIsManaged(name string) bool {
 	return strings.HasPrefix(name, "sg_")
 }

@@ -17,17 +17,6 @@ import (
 //	"All OVN NB DB object names are constructed exclusively by L2 using
 //	 the naming contract table. No layer above or below L2 constructs OVN
 //	 object names independently."
-//
-// Mechanic: AST walk of every .go file under spinifex/network/ and
-// spinifex/vpcd/. Flag any string literal that starts with an OVN-name
-// prefix from the ADR contract table and is composed with an identifier
-// (concatenation, fmt.Sprintf format string, or strings.Join element).
-// The only legal residence for these literals is topology/names.go (the
-// contract) and its test.
-//
-// Scope is intentionally limited to network/ + vpcd/. The AWS handler tree
-// uses overlapping prefixes (e.g. `vpc-cidr-assoc-`) that are AWS resource
-// IDs, not OVN object names, and are out of S4's scope.
 func TestS4_OVNNamesL2Owned(t *testing.T) {
 	const clause = `ADR-0006 S4: "All OVN NB DB object names are constructed ` +
 		`exclusively by L2 using the naming contract table. No layer above ` +
@@ -58,8 +47,6 @@ func TestS4_OVNNamesL2Owned(t *testing.T) {
 				return nil
 			}
 			if strings.HasSuffix(path, "_test.go") {
-				// Tests legitimately construct synthetic OVN-name-shaped
-				// strings as fixtures. The fence is for production code.
 				return nil
 			}
 			if isS4Exempt(path) {
@@ -175,9 +162,7 @@ func TestS4_OVNNamesL2Owned(t *testing.T) {
 	t.Fatalf("%s", b.String())
 }
 
-// ovnNamePrefixes is the ADR-0006 contract table, plus the in-tree
-// transitional names (rtr-, rtr-port-, ext-port-) the §7.3 migration has
-// not yet renamed. Keep in lockstep with topology/names.go.
+// ovnNamePrefixes is the ADR-0006 contract table; keep in lockstep with topology/names.go.
 var ovnNamePrefixes = []string{
 	"vpc-",
 	"subnet-",
@@ -192,12 +177,7 @@ var ovnNamePrefixes = []string{
 	"trp-",
 }
 
-// awsIDPrefixes are AWS resource-ID prefixes that share leading bytes with
-// the OVN contract table (notably `vpc-`). The handler tree legitimately
-// constructs these as AWS-facing identifiers; they are not OVN NB DB object
-// names and are out of S4's scope. A literal matching any prefix here is
-// excluded from hasOVNPrefix. Keep this list tight — only multi-token AWS
-// IDs that demonstrably collide with the contract.
+// awsIDPrefixes are AWS resource-IDs that share leading bytes with ovnNamePrefixes; excluded from hasOVNPrefix.
 var awsIDPrefixes = []string{
 	"vpc-cidr-assoc-",
 }
@@ -240,9 +220,6 @@ func calleeName(fun ast.Expr) string {
 	return ""
 }
 
-// isS4Exempt returns true for files that legitimately contain OVN-name
-// prefix literals: the L2 names contract itself and the invariants suite
-// (which references prefixes for testing).
 func isS4Exempt(path string) bool {
 	clean := filepath.ToSlash(path)
 	switch {
@@ -264,13 +241,6 @@ func isVendoredOrGenerated(dir string) bool {
 	return false
 }
 
-// s4ScanRoots returns the directories S4 enforces over. The fence covers
-// the network layer tree, vpcd, and the upstack consumers (daemon, handlers,
-// vm) that historically grew their own OVN-name string literals. Those
-// upstack packages do legitimately deal in AWS resource ID prefixes like
-// `vpc-cidr-assoc-` — hasOVNPrefix requires an exact ADR-table match, so
-// AWS IDs do not collide. Any OVN-name construction in upstack code is a
-// real S4 violation and must move into network/topology/names.go.
 func s4ScanRoots(t *testing.T) []string {
 	t.Helper()
 	root := repoRoot(t)

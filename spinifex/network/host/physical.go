@@ -9,25 +9,16 @@ import (
 	"strings"
 )
 
-// Physical implements Wiring for the "WAN NIC enslaved to br-ext" model
-// (former vpcd BridgeModeDirect). The gateway LRP uses the NIC's MAC and
-// the OS-assigned IP on the bridge; NAT can be distributed because each
-// chassis owns its own uplink.
+// Physical implements Wiring for the "WAN NIC enslaved to br-ext" model.
+// Each chassis owns its uplink; NAT can be distributed.
 type Physical struct {
-	// ExternalInterface is the WAN NIC name (e.g. "enp0s3") that must be an
-	// OVS port on UplinkBridge. Required; an empty value is a misconfig.
+	// ExternalInterface is the WAN NIC (e.g. "enp0s3") on UplinkBridge.
 	ExternalInterface string
 
-	// UplinkBridge is the OVS bridge that holds the WAN NIC and carries the
-	// IPv4 uplink address. Conventionally "br-ext"; configurable for legacy
-	// deployments where the bridge holding the IP differs from the OVN
-	// external bridge.
+	// UplinkBridge holds the WAN NIC and IPv4 uplink (conventionally "br-ext").
 	UplinkBridge string
 
-	// Runner executes ovs-vsctl / ip; nil falls back to NewExecRunner.
 	Runner Runner
-
-	// Reader observes kernel link state; nil falls back to NewKernelReader.
 	Reader InterfaceReader
 }
 
@@ -47,16 +38,13 @@ func (p *Physical) reader() InterfaceReader {
 	return NewKernelReader()
 }
 
-// EnsureBridges creates br-int and br-ext idempotently with the OVS settings
-// ovn-controller expects. setup-ovn.sh historically does this; the daemon
-// routes through here so the responsibility is in one place.
+// EnsureBridges creates br-int and br-ext idempotently with OVN settings.
 func (p *Physical) EnsureBridges(ctx context.Context) error {
 	return ensureBridges(ctx, p.runner(), p.UplinkBridge)
 }
 
-// EnsureUplinkPort verifies the WAN NIC is an OVS port on UplinkBridge and
-// returns its MAC. The MAC is the L2 identity the gateway LRP must share so
-// upstream switch CAM stays consistent across LRP MAC writes.
+// EnsureUplinkPort verifies the WAN NIC is on UplinkBridge and returns its MAC.
+// The gateway LRP shares this MAC so upstream switch CAM stays consistent.
 func (p *Physical) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error) {
 	if p.ExternalInterface == "" {
 		return nil, fmt.Errorf("host.Physical: ExternalInterface required")
@@ -85,10 +73,8 @@ func (p *Physical) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, erro
 // UplinkMode returns UplinkModePhysical (distributed NAT eligible).
 func (p *Physical) UplinkMode() UplinkMode { return UplinkModePhysical }
 
-// ExternalCIDR returns the IPv4 prefix on UplinkBridge. The OS network stack
-// assigns it (netplan static or systemd-networkd DHCP) before vpcd starts in
-// steady state; ErrNoUplinkAddr means the boot race is still active and the
-// caller should retry.
+// ExternalCIDR returns the IPv4 prefix on UplinkBridge.
+// ErrNoUplinkAddr means the OS hasn't assigned an IP yet — caller should retry.
 func (p *Physical) ExternalCIDR(_ context.Context) (netip.Prefix, error) {
 	if p.UplinkBridge == "" {
 		return netip.Prefix{}, fmt.Errorf("host.Physical: UplinkBridge required")

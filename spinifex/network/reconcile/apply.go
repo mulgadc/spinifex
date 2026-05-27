@@ -10,8 +10,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// applyVPCs ensures every intent VPC has a LogicalRouter. OVN-only routers
-// are left alone (manual ops territory).
+// applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
+// routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.VPCs {
 		routerName := topology.VPCRouter(vpcID)
@@ -34,10 +34,8 @@ func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual A
 	}
 }
 
-// applySubnets ensures every intent Subnet has a LogicalSwitch, the matching
-// LRP on the parent router, the router-side LSP on the switch, and a
-// DHCPOptions row. Each of the four steps is independently idempotent so a
-// partial existing topology heals without needing rollback.
+// applySubnets ensures every intent Subnet has a LogicalSwitch, parent-LRP,
+// router-side LSP, and DHCPOptions row. Each step is independently idempotent.
 func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actual ActualState) {
 	for subnetID, spec := range intent.Subnets {
 		switchName := topology.SubnetSwitch(subnetID)
@@ -128,22 +126,11 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 	}
 }
 
-// applySGs runs the SG stage in two halves: first ensure every intent SG's
-// port group exists in OVN, then (when pruneOrphans is true) tear down any
-// sg_* port group with no matching intent SG via topology.Manager so
-// port-group lifecycle is centralised in one place.
-//
-// pruneOrphans=false is the startup mode. The daemon's EnsureDefaultVPC
-// writes SG records to JetStream KV and publishes vpc.create-sg on each
-// node in parallel with vpcd starting up. The reconcile leader can win
-// the lock and load intent before any SG row is visible on its node,
-// while subscribers on peer nodes are concurrently creating port groups
-// from the same vpc.create-sg events. A startup orphan sweep then deletes
-// port groups that intent hasn't caught up to — production-fatal because
-// every subsequent RunInstances → vpc.create-port lookup fails until the
-// 5-minute drift loop re-creates them. Drift always prunes (pruneOrphans
-// is true at that point); legitimate orphans get garbage-collected on
-// the next tick.
+// applySGs ensures every intent SG has a port group, then (when
+// pruneOrphans) deletes sg_* PGs without a matching intent SG.
+// pruneOrphans=false is startup mode: a leader can load intent before peer
+// subscribers have finished creating the PGs, so pruning at boot would
+// delete in-flight resources. Drift always prunes.
 func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual ActualState, pruneOrphans bool) {
 	for groupID, spec := range intent.SGs {
 		if err := r.topology.EnsureSGPortGroup(ctx, groupID); err != nil {
@@ -180,13 +167,9 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 	}
 }
 
-// applyPorts ensures every intent ENI port has a LogicalSwitchPort with
-// atomic port-group memberships matching its SGIDs. Existing ports get a
-// diff-based UpdatePortGroupMemberships call so a 5-SG → different-5-SG
-// modify never exposes an intermediate state (OVN default = unrestricted
-// would apply for the gap). The atomic create-with-groups primitive is the
-// reason this stage sits below applySGs in the topo order: the port groups
-// must exist first.
+// applyPorts ensures each intent ENI has an LSP with PG memberships matching
+// its SGIDs. Existing ports get a diff-based UpdatePortGroupMemberships so an
+// SG swap never exposes an "unrestricted" gap (OVN default).
 func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual ActualState) {
 	for portID, spec := range intent.Ports {
 		portName := topology.Port(portID)
@@ -238,12 +221,9 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 	}
 }
 
-// applyIGWs ensures every intent IGW has its OVN topology (external switch,
+// applyIGWs ensures every intent IGW's OVN topology (external switch,
 // localnet LSP, gateway LRP, default route, Gateway_Chassis bindings) and
-// rebinds chassis on existing IGWs. AttachIGW is idempotent (short-circuits
-// when the external switch already exists), so calling it when actual state
-// is missing converges bootstrap-time default-VPC IGWs whose vpc.igw-attach
-// NATS event arrived before vpcd's subscriber was ready.
+// rebinds chassis on existing IGWs. AttachIGW is idempotent.
 func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.IGWs {
 		if _, ok := actual.ExternalSwch[vpcID]; !ok {
@@ -257,12 +237,8 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 	}
 }
 
-// rebindGatewayChassis is the chassis-drift correction step for an
-// already-existing IGW gateway LRP. It calls SetGatewayChassis for every
-// configured chassis; the OVN client's idempotency layer treats unchanged
-// (chassis_name, priority) tuples as no-ops. Missing chassis are skipped
-// at the caller level — we don't enumerate stale Gateway_Chassis rows
-// here because IGWManager.AttachIGW owns that for fresh creates.
+// rebindGatewayChassis re-asserts (chassis,priority) tuples on an existing
+// gateway LRP. SetGatewayChassis is idempotent.
 func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 	if len(r.chassis) == 0 {
 		return
@@ -279,10 +255,8 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 	}
 }
 
-// applyEIPs runs every intent EIP through NATManager.AddEIP. AddEIP is
-// idempotent (stale dnat_and_snat rules on any router referencing the
-// external IP are cleaned before the new rule is added), so re-running on
-// a hot reconciler boot just re-asserts the existing OVN state.
+// applyEIPs runs every intent EIP through NATManager.AddEIP (idempotent;
+// stale dnat_and_snat rules are cleaned first).
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState) {
 	for _, spec := range intent.EIPs {
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
@@ -292,9 +266,7 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 }
 
 // applyNATGWs runs every intent NAT gateway through NATManager.AddNATGateway.
-// AddNATGateway rejects duplicate (snat, SubnetCIDR) tuples; on a re-run we
-// rely on the underlying OVN client's existence check rather than a Get-first
-// query here.
+// Duplicate (snat,SubnetCIDR) tuples are rejected by the underlying client.
 func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ ActualState) {
 	for _, spec := range intent.NATGWs {
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
@@ -304,8 +276,7 @@ func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ Actu
 	}
 }
 
-// diffSets returns the (desired - current) and (current - desired) sets.
-// Used by applyPorts to compute the minimal port-group membership delta.
+// diffSets returns (desired - current, current - desired).
 func diffSets(desired, current []string) (add, remove []string) {
 	desiredSet := make(map[string]struct{}, len(desired))
 	for _, s := range desired {

@@ -5,17 +5,9 @@ import (
 	"fmt"
 )
 
-// ensureBridges idempotently creates br-int and uplinkBridge with the OVS
-// settings ovn-controller requires:
-//   - br-int: fail-mode=secure (preserve flows across ovn-controller restart)
-//     and other-config:disable-in-band=true (no OVS-installed flows). These
-//     are the canonical settings for an OVN integration bridge.
-//   - uplinkBridge: created if missing. ovn-bridge-mappings (managed by
-//     setup-ovn.sh) targets it; the localnet port LSPs will reference it
-//     once L5 lands.
-//
-// Shared between Physical and Veth implementations because both modes
-// require identical OVS bridge state — only the uplink port wiring differs.
+// ensureBridges idempotently creates br-int and uplinkBridge with OVN settings.
+// br-int needs fail-mode=secure + disable-in-band (canonical OVN integration bridge).
+// Shared by Physical and Veth — only uplink port wiring differs.
 func ensureBridges(ctx context.Context, r Runner, uplinkBridge string) error {
 	if uplinkBridge == "" {
 		return fmt.Errorf("host: ensureBridges UplinkBridge required")

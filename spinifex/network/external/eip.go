@@ -8,13 +8,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 )
 
-// EIPManager attaches and detaches Elastic IP NAT rules. It is a thin L5
-// wrapper over policy.NATManager that adds the flows-barrier — without it,
-// a freshly attached EIP is unreachable on its public IP until northd
-// compiles + every chassis installs the new flows.
-//
-// Pool allocation lives upstream in handlers/ec2/eip; this manager only
-// turns an already-allocated public IP into an OVN dnat_and_snat rule.
+// EIPManager attaches/detaches EIP NAT rules. Thin L5 wrapper over policy.NATManager
+// that adds the flows-barrier so callers see the EIP reachable on return.
 type EIPManager interface {
 	AttachEIP(ctx context.Context, eip policy.EIPSpec) error
 	DetachEIP(ctx context.Context, vpcID, logicalIP string) error
@@ -27,8 +22,7 @@ type eipManager struct {
 
 var _ EIPManager = (*eipManager)(nil)
 
-// NewEIPManager constructs an EIPManager. barrier may be nil (tests skip
-// the wait); production wiring injects `ovn-nbctl --wait=hv sync`.
+// NewEIPManager constructs an EIPManager. barrier may be nil (no wait).
 func NewEIPManager(nat policy.NATManager, barrier FlowsBarrier) (EIPManager, error) {
 	if nat == nil {
 		return nil, errors.New("EIPManager: NATManager required")

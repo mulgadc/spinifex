@@ -19,15 +19,8 @@ import (
 //	 eventually drives the delta to zero. Idempotent EnsureX methods make
 //	 repeated runs safe."
 //
-// Mechanic: synthesise IntentStates of varying size (1..N VPCs, each with
-// subnets, ports, SGs). For each: Reconcile, snapshot mock OVN state,
-// Reconcile again, assert mock state unchanged across the second pass
-// (delta = 0). Convergence in one extra pass demonstrates idempotency at
-// every scale within the parameter range.
-//
-// TestReconcile_Idempotent already covers the N=1 case; this test exists
-// to bind the ADR clause to a multi-size property check so future changes
-// that break convergence at scale fail under the L1 clause name.
+// Two reconcile passes over IntentStates of N={1,3,8} VPCs: state on pass 2
+// must equal state on pass 1.
 func TestL1_ReconcilerConverges(t *testing.T) {
 	for _, n := range []int{1, 3, 8} {
 		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
@@ -62,21 +55,14 @@ func TestL1_ReconcilerConverges(t *testing.T) {
 	}
 }
 
-// TestL2_DriftIntervalBounded enforces a structural piece of ADR-0006
-// liveness clause L2.
+// TestL2_DriftIntervalBounded enforces ADR-0006 liveness clause L2.
 //
 //	"While the leader is active, the periodic drift-detection loop
 //	 eventually re-runs and re-applies any divergence introduced since
 //	 the last reconciler run."
 //
-// Mechanic: assert that DriftInterval is a strictly positive duration and
-// upper-bounded to a sensible support-window value. A misconfigured zero
-// or negative interval would silently disable drift detection at runtime.
-//
-// A full behavioural test requires injecting a fake clock + fake NATS
-// JetStream context into DriftLoop, which is beyond this suite's scope
-// (the loop reads time.NewTicker and a real *nats.Conn). Marked TODO so
-// the gap stays visible.
+// Structural-only: bounds DriftInterval to (0, 30m]. Full behavioural
+// coverage blocked on a clock-injectable DriftLoop signature.
 func TestL2_DriftIntervalBounded(t *testing.T) {
 	if DriftInterval <= 0 {
 		t.Fatalf("ADR-0006 L2: DriftInterval must be > 0; got %v", DriftInterval)
@@ -89,15 +75,11 @@ func TestL2_DriftIntervalBounded(t *testing.T) {
 	// Blocked on a clock-injectable DriftLoop signature.
 }
 
-// TestL3_FederationReEnablesOnLinkRecovery is a placeholder for ADR-0006
-// liveness clause L3.
+// TestL3_FederationReEnablesOnLinkRecovery is a placeholder for ADR-0006 L3.
 //
 //	"Once an inter-AZ link reaches ≥ Degraded class (ADR-0003), L4
 //	 eventually calls BringUpLink and establishes the OVN-IC tunnel to
 //	 the peer AZ."
-//
-// network/federation/ does not yet exist. The test skips with the ADR
-// clause text so the gap appears in every test report.
 func TestL3_FederationReEnablesOnLinkRecovery(t *testing.T) {
 	t.Skip(`ADR-0006 L3 deferred: network/federation/ has not yet been built. ` +
 		`Once it lands, replace this stub with a test that drives a fake ` +
@@ -105,8 +87,7 @@ func TestL3_FederationReEnablesOnLinkRecovery(t *testing.T) {
 }
 
 // scaledIntent produces an IntentState with n VPCs, each holding one
-// subnet, one ENI port, and one SG. Determinism over a fixed seed keeps
-// the test reproducible while still varying topology size.
+// subnet, one ENI port, and one SG.
 func scaledIntent(t *testing.T, n int) IntentState {
 	t.Helper()
 	intent := IntentState{

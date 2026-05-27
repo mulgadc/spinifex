@@ -1,13 +1,7 @@
 package external
 
-// ExternalPoolConfig describes one external IP pool wired to a VPC. Mirrors
-// the [external_pools] entry in spinifex.toml. IPs come from
-// RangeStart..RangeEnd, the gateway from Gateway, and the gateway LRP IP
-// from GwLrpRangeStart..GwLrpRangeEnd (auto-derived from the WAN subnet
-// when unset). The upstream-DHCP source model is gone.
-//
-// Duplicates spinifex/vpcd.ExternalPoolConfig pending dedup when vpcd's
-// Config grows to use this shared type directly.
+// ExternalPoolConfig describes one external IP pool wired to a VPC.
+// Mirrors [external_pools] in spinifex.toml.
 type ExternalPoolConfig struct {
 	Name            string
 	RangeStart      string
@@ -22,9 +16,8 @@ type ExternalPoolConfig struct {
 	GwLrpRangeEnd   string
 }
 
-// IGWSpec is the L5 input for IGWManager.AttachIGW / DetachIGW. VPCID is
-// the only required field; InternetGatewayID is propagated into OVN
-// external_ids so reconcile paths can correlate state.
+// IGWSpec is the L5 input for IGWManager.AttachIGW / DetachIGW.
+// InternetGatewayID is propagated into OVN external_ids for reconcile correlation.
 type IGWSpec struct {
 	VPCID             string
 	InternetGatewayID string

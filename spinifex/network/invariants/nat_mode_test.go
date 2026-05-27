@@ -17,15 +17,6 @@ import (
 //	 distributed NAT is determined once at startup from L0's UplinkMode()
 //	 and never re-evaluated at runtime. No layer above L0 branches on NAT
 //	 mode dynamically."
-//
-// Mechanic: forbid calls to `.UplinkMode()` and `NATModeFromUplinkMode(...)`
-// outside the legitimate resolver locations:
-//   - network/host/ (defines UplinkMode())
-//   - network/policy/policy.go (defines NATModeFromUplinkMode)
-//   - vpcd/vpcd.go (single entrypoint resolves once at startup)
-//   - any *_test.go (tests legitimately exercise the resolver)
-//
-// Any additional callsite would be a re-resolution and a S3 violation.
 func TestS3_NATModeInitTimeConstant(t *testing.T) {
 	const clause = `ADR-0006 S3: "NAT distribution mode is an init-time ` +
 		`constant. Centralised-vs-distributed NAT is determined once at ` +
@@ -150,9 +141,7 @@ func isS3Exempt(path string) bool {
 	return false
 }
 
-// selectorTail returns the trailing selector name (`.Foo`) of a call
-// expression, or "" if the call is not a selector. Used to detect method
-// calls regardless of the receiver type.
+// selectorTail returns the trailing selector name (`.Foo`) of a call, or "".
 func selectorTail(fun ast.Expr) string {
 	if sel, ok := fun.(*ast.SelectorExpr); ok {
 		return sel.Sel.Name

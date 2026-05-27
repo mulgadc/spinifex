@@ -11,15 +11,12 @@ import (
 	"strings"
 )
 
-// execRunner runs the privileged host command directly when uid 0, otherwise
-// via sudo. Mirrors daemon.sudoCommand to preserve dev-environment behaviour
-// (OVS/ip require CAP_NET_ADMIN; production runs as root, but dev VMs do not).
+// execRunner runs the command directly when uid 0, otherwise via sudo.
 type execRunner struct{}
 
 var _ Runner = execRunner{}
 
-// NewExecRunner returns the default Runner used by the production Wiring
-// implementations. Tests inject their own Runner instead.
+// NewExecRunner returns the default Runner.
 func NewExecRunner() Runner { return execRunner{} }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -36,8 +33,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	return out, nil
 }
 
-// kernelReader satisfies InterfaceReader by reading from the live kernel
-// (net.InterfaceByName, /sys/class/net). Tests use a stub instead.
+// kernelReader satisfies InterfaceReader via the live kernel.
 type kernelReader struct{}
 
 var _ InterfaceReader = kernelReader{}

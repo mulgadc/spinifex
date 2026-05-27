@@ -11,8 +11,6 @@ import (
 func GetBridgeIPv4(bridgeName string) (string, error) {
 	iface, err := net.InterfaceByName(bridgeName)
 	if err != nil {
-		// "no such network interface" means the bridge doesn't exist yet — expected.
-		// Other errors (permission denied on /sys/class/net/, etc.) are real failures.
 		if strings.Contains(err.Error(), "no such network interface") {
 			return "", nil
 		}

@@ -11,23 +11,18 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// EIPSpec is a 1:1 Elastic IP NAT (dnat_and_snat) attaching ExternalIP to
-// LogicalIP on the VPC's router. In NATModeDistributed, PortName and MAC
-// MUST be set so OVN can install per-chassis flows; in NATModeCentralized
-// they are ignored. Callers that target distributed mode without supplying
-// both fields fall back to the centralised shape — the NAT still works but
-// hairpins through the gateway chassis.
+// EIPSpec is a 1:1 EIP NAT (dnat_and_snat). In NATModeDistributed PortName
+// and MAC MUST be set for per-chassis flows; missing values fall back to
+// centralised shape (hairpins via gateway chassis).
 type EIPSpec struct {
 	VPCID      string
 	ExternalIP string
 	LogicalIP  string
-	PortName   string // OVN LSP name backing the VM
-	MAC        string // external MAC for distributed NAT
+	PortName   string
+	MAC        string
 }
 
-// NATGWSpec is a NAT Gateway SNAT rule: every packet leaving the private
-// subnet whose source is SubnetCIDR is rewritten to PublicIP. The OVN rule
-// keys on (snat, SubnetCIDR) on the VPC's router.
+// NATGWSpec is a NAT Gateway SNAT rule keyed by (snat, SubnetCIDR).
 type NATGWSpec struct {
 	VPCID        string
 	NATGatewayID string
@@ -35,60 +30,38 @@ type NATGWSpec struct {
 	SubnetCIDR   string
 }
 
-// NATManager owns the OVN NAT rule lifecycle for one cluster. It does not
-// create the LogicalRouter — L2 (topology.Manager) owns that — and does
-// not allocate public IPs (handlers/ec2/eip owns pool allocation).
-//
-// NAT mode is fixed at construction time from the host's UplinkMode and
-// never changes at runtime.
+// NATManager owns NAT-rule lifecycle. Mode is fixed at construction.
 type NATManager interface {
-	// AddEIP installs a dnat_and_snat rule. In NATModeDistributed, PortName
-	// and MAC are written to logical_port / external_mac so the rule fires
-	// on the VM's own chassis. Stale dnat_and_snat rules referencing the
-	// same ExternalIP on any router are removed first — an EIP can change
-	// VPC association in our pool model and a leftover rule on the old
-	// router would silently steal the public IP.
+	// AddEIP installs a dnat_and_snat rule, cleaning stale rules for the
+	// same ExternalIP on any router first (pool reuse across VPCs).
 	AddEIP(ctx context.Context, eip EIPSpec) error
 
-	// DeleteEIP removes the dnat_and_snat rule with the given LogicalIP on
-	// the VPC's router. Returns nil when the rule is already absent
-	// (matching the idempotent semantics required by the multiple cleanup
-	// paths that publish vpc.delete-nat).
+	// DeleteEIP removes the rule by LogicalIP; idempotent.
 	DeleteEIP(ctx context.Context, vpcID, logicalIP string) error
 
-	// AddNATGateway installs the snat rule for a NAT Gateway's private
-	// subnet. The OVN key is (snat, SubnetCIDR); AddNATGateway therefore
-	// rejects two NAT GWs on overlapping subnet CIDRs.
+	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
 
-	// DeleteNATGateway removes the snat rule keyed by SubnetCIDR on the
-	// VPC's router. Idempotent.
+	// DeleteNATGateway removes the (snat, SubnetCIDR) rule; idempotent.
 	DeleteNATGateway(ctx context.Context, vpcID, subnetCIDR string) error
 
-	// AddSNAT installs the IGW default-outbound snat rule rewriting the
-	// VPC CIDR to ExternalIP. AWS-parity behaviour (only EIP-backed VMs
-	// can egress) means callers in the IGW attach path typically skip
-	// this — it exists for future deployments that opt into blanket SNAT.
+	// AddSNAT installs the IGW default-outbound snat rewriting VPC CIDR
+	// to ExternalIP. AWS-parity callers typically skip this.
 	AddSNAT(ctx context.Context, vpcID, vpcCIDR, externalIP string) error
 
-	// DeleteSNAT removes the IGW default-outbound snat rule for vpcCIDR.
-	// Idempotent.
+	// DeleteSNAT removes the IGW default-outbound snat for vpcCIDR.
 	DeleteSNAT(ctx context.Context, vpcID, vpcCIDR string) error
 }
 
 // FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
-// chassis has installed the resulting flows. Production wiring passes a
-// closure over `ovn-nbctl --wait=hv sync`; tests leave it nil.
+// chassis installed flows. Production wires a closure over
+// `ovn-nbctl --wait=hv sync`; tests leave it nil.
 type FlowsBarrier func() error
 
-// Option configures a natManager at construction.
 type Option func(*natManager)
 
-// WithFlowsBarrier injects the post-AddEIP flow-install barrier. The
-// barrier fires after the dnat_and_snat row is committed so the NATS
-// reply only returns once every chassis has the rewrite flow. Required
-// for the vpc.add-nat subscriber to match the legacy waitForFlowsHV
-// behaviour.
+// WithFlowsBarrier injects the post-write flow-install barrier so callers
+// only see success once every chassis has the rewrite flow.
 func WithFlowsBarrier(b FlowsBarrier) Option {
 	return func(m *natManager) {
 		if b != nil {
@@ -105,9 +78,8 @@ type natManager struct {
 
 var _ NATManager = (*natManager)(nil)
 
-// NewNATManager constructs a NATManager bound to one NAT mode. mode is
-// resolved at startup from host.Wiring.UplinkMode() via NATModeFromUplinkMode
-// and must not be NATModeUnknown.
+// NewNATManager constructs a NATManager bound to one NAT mode (must not be
+// NATModeUnknown).
 func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager, error) {
 	if mode == NATModeUnknown {
 		return nil, fmt.Errorf("NAT mode is unknown; resolve from host.Wiring.UplinkMode()")
@@ -143,11 +115,8 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		natRule.LogicalPort = &port
 	}
 
-	// Idempotency: if a dnat_and_snat row already matches the target
-	// (same VPC, same LogicalIP, and — under distributed NAT — same
-	// ExternalMAC + LogicalPort), return without touching NB. Avoids the
-	// delete-then-add flow-install gap on duplicate publishes for the
-	// same EIP.
+	// Skip when the existing row already matches; avoids the
+	// delete-then-add flow-install gap on duplicate publishes.
 	if existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP idempotency lookup failed", "external_ip", eip.ExternalIP, "err", err)
 	} else if existing != nil && existing.LogicalIP == eip.LogicalIP &&
@@ -160,9 +129,8 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		return nil
 	}
 
-	// Search every router, not just the target — stale rules may exist on
-	// a different VPC's router when vpc.delete-nat (fire-and-forget) hasn't
-	// been processed before the IP was reused by a new VPC.
+	// Search every router for stale rules — vpc.delete-nat is
+	// fire-and-forget and may not have run before IP reuse.
 	if removed, err := m.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
 		slog.Warn("policy: stale NAT cleanup failed before AddEIP", "external_ip", eip.ExternalIP, "err", err)
 	} else if removed > 0 {
@@ -204,12 +172,8 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add NAT GW snat %s -> %s on %s: %w", gw.SubnetCIDR, gw.PublicIP, router, err)
 	}
-	// Match AddEIP: block until ovn-northd compiles SB + every chassis
-	// installs flows. Without this, vpc.add-nat-gateway returns after the
-	// NB row is committed but the gateway chassis may not have programmed
-	// the SNAT flow yet, so the first packets from the private subnet are
-	// dropped. Phase 8d single-node has a 50s timeout that this race wins
-	// on slow CI hosts (last observed: run 26455602615).
+	// Block until SB + chassis have the SNAT flow; otherwise first packets
+	// from the private subnet drop.
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddNATGateway flows barrier failed",
 			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)

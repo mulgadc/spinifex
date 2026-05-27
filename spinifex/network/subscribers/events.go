@@ -34,12 +34,9 @@ type SubnetEvent struct {
 	CidrBlock string `json:"cidr_block"`
 }
 
-// PortEvent is published on vpc.create-port / vpc.delete-port.
-//
-// SecurityGroupIds carries the SG membership the port should join at create
-// time so vpcd can wire OVN port-group membership atomically with the LSP
-// create. Empty on delete-port (handleDeletePort discovers current
-// memberships from the libovsdb cache).
+// PortEvent: vpc.create-port / vpc.delete-port. SecurityGroupIds set on
+// create so OVN PG membership is wired atomically with the LSP; empty on
+// delete (handleDeletePort reads current memberships from the cache).
 type PortEvent struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`
@@ -49,10 +46,8 @@ type PortEvent struct {
 	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
 }
 
-// UpdatePortSGsEvent is published on vpc.update-port-sgs after
-// ModifyNetworkInterfaceAttribute changes an ENI's SG membership. The payload
-// is declarative — vpcd reads its libovsdb cache to discover current
-// memberships and computes the diff against SecurityGroupIds.
+// UpdatePortSGsEvent: vpc.update-port-sgs. Declarative — vpcd diffs
+// SecurityGroupIds against the current cache memberships.
 type UpdatePortSGsEvent struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	PrivateIpAddress   string   `json:"private_ip_address"`
@@ -76,8 +71,8 @@ type NATGatewayEvent struct {
 	SubnetCidr   string `json:"subnet_cidr"` // private subnet CIDR for SNAT rule
 }
 
-// SGRule mirrors the on-wire payload from handlers/ec2/vpc.SGRule. Kept
-// local so subscribers do not import the handlers package.
+// SGRule mirrors handlers/ec2/vpc.SGRule on the wire (kept local to avoid
+// the handler import).
 type SGRule struct {
 	IpProtocol string `json:"ip_protocol"`
 	FromPort   int64  `json:"from_port"`

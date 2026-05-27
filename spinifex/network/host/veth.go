@@ -9,25 +9,19 @@ import (
 	"strings"
 )
 
-// Default veth pair endpoint names. veth-wan-ovs is the OVS-side endpoint
-// (attached to UplinkBridge / br-ext); veth-wan-br is the Linux-side
-// endpoint enslaved to the Linux bridge that holds the WAN IP.
+// veth-wan-ovs is the OVS-side endpoint; veth-wan-br is the Linux-bridge-side endpoint.
 const (
 	VethOVSEnd   = "veth-wan-ovs"
 	VethLinuxEnd = "veth-wan-br"
 )
 
-// Veth implements Wiring for the "Linux bridge bridged into OVS via veth"
-// model (former vpcd BridgeModeVeth). The OS-managed Linux bridge holds the
-// IPv4 uplink; OVS sees a veth peer. NAT is centralised because only one
-// chassis owns the bridge IP.
+// Veth implements Wiring for the "Linux bridge bridged into OVS via veth" model.
+// OS-managed Linux bridge holds the IPv4 uplink; NAT is centralised (one chassis owns the IP).
 type Veth struct {
-	// LinuxBridge is the Linux bridge holding the OS-assigned WAN IPv4
-	// (e.g. "br-wan"). veth-wan-br must be enslaved to it.
+	// LinuxBridge holds the OS-assigned WAN IPv4 (e.g. "br-wan").
 	LinuxBridge string
 
-	// UplinkBridge is the OVS bridge that ovn-bridge-mappings targets and
-	// that veth-wan-ovs attaches to. Conventionally "br-ext".
+	// UplinkBridge is the OVS bridge ovn-bridge-mappings targets (conventionally "br-ext").
 	UplinkBridge string
 
 	Runner Runner
@@ -50,17 +44,15 @@ func (v *Veth) reader() InterfaceReader {
 	return NewKernelReader()
 }
 
-// EnsureBridges ensures br-int and UplinkBridge exist. The veth pair itself
-// is provisioned by spinifex-veth-wan.service (a oneshot systemd unit); this
-// method only verifies the OVS bridges that the veth peers will attach to.
+// EnsureBridges ensures br-int and UplinkBridge exist. The veth pair is
+// provisioned by spinifex-veth-wan.service.
 func (v *Veth) EnsureBridges(ctx context.Context) error {
 	return ensureBridges(ctx, v.runner(), v.UplinkBridge)
 }
 
-// EnsureUplinkPort verifies that the veth pair is wired as expected
-// (veth-wan-ovs → UplinkBridge, veth-wan-br → LinuxBridge) and returns the
-// MAC of the OVS-side endpoint. The gateway LRP uses this MAC so that frames
-// egressing OVS carry the same source-L2 the upstream router learned.
+// EnsureUplinkPort verifies the veth pair wiring and returns the OVS-side MAC.
+// The gateway LRP uses this MAC so OVS-egress frames carry the L2 src the
+// upstream router learned.
 func (v *Veth) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error) {
 	if v.LinuxBridge == "" {
 		return nil, fmt.Errorf("host.Veth: LinuxBridge required")
@@ -99,8 +91,7 @@ func (v *Veth) EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error) {
 // UplinkMode returns UplinkModeVeth (centralised NAT).
 func (v *Veth) UplinkMode() UplinkMode { return UplinkModeVeth }
 
-// ExternalCIDR returns the IPv4 prefix on LinuxBridge — the OS network
-// stack (netplan or networkd) owns this address; Spinifex never assigns it.
+// ExternalCIDR returns the IPv4 prefix on LinuxBridge (OS-assigned).
 func (v *Veth) ExternalCIDR(_ context.Context) (netip.Prefix, error) {
 	if v.LinuxBridge == "" {
 		return netip.Prefix{}, fmt.Errorf("host.Veth: LinuxBridge required")

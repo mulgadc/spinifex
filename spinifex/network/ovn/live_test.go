@@ -17,9 +17,8 @@ func TestNamedUUID(t *testing.T) {
 		{"both empty", "", "", ""},
 		{"multiple consecutive hyphens", "x_", "a--b", "x_a__b"},
 		{"mixed special chars", "p_", "a.b-c/d", "p_a_b_c_d"},
-		// ACL match expressions embed these characters; OVSDB rejects unsanitised
-		// named-uuids with "Type mismatch for member 'uuid-name'", which would
-		// silently break every default-SG ACL transaction.
+		// ACL match expressions embed @, =, &, space; OVSDB rejects unsanitised
+		// named-uuids with "Type mismatch for member 'uuid-name'".
 		{"acl match at sign", "acl_", "outport == @pg-sg-XYZ && ip4", "acl_outport_____pg_sg_XYZ____ip4"},
 		{"space replacement", "acl_", "a b c", "acl_a_b_c"},
 		{"equals replacement", "acl_", "a==b", "acl_a__b"},

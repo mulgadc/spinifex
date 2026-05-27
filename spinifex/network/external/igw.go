@@ -13,27 +13,18 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
-// chassis has installed the resulting flows. Injected so tests can stub.
-// Production wiring passes a closure over `ovn-nbctl --wait=hv sync`.
+// FlowsBarrier blocks until ovn-northd compiles NB→SB and chassis install flows.
+// Production wraps `ovn-nbctl --wait=hv sync`; tests stub.
 type FlowsBarrier func() error
 
-// IGWManager attaches and detaches Internet Gateways to VPCs. AttachIGW
-// builds the external switch + localnet + gateway LRP + default route,
-// schedules gateway chassis for HA, and waits for flows to land on every
-// hypervisor. DetachIGW reverses the sequence and releases any allocator-
-// held gateway IP.
-//
-// All operations are idempotent: re-attach is a no-op if the external
-// switch already exists; re-detach succeeds even when objects are absent.
+// IGWManager attaches/detaches Internet Gateways to VPCs. Idempotent.
 type IGWManager interface {
 	AttachIGW(ctx context.Context, spec IGWSpec) error
 	DetachIGW(ctx context.Context, vpcID string) error
 }
 
-// IGWManagerConfig is the construction-time bag for igwManager. All fields
-// except FlowsBarrier are required; FlowsBarrier defaults to a no-op when
-// nil (tests skip the wait, production wiring injects the real barrier).
+// IGWManagerConfig is the construction-time bag for igwManager.
+// FlowsBarrier defaults to a no-op when nil.
 type IGWManagerConfig struct {
 	OVN          ovn.Client
 	Routes       policy.RouteManager
@@ -58,8 +49,7 @@ type igwManager struct {
 
 var _ IGWManager = (*igwManager)(nil)
 
-// NewIGWManager constructs an IGWManager from cfg. Returns an error when
-// required fields are missing or when NATMode is unknown.
+// NewIGWManager constructs an IGWManager from cfg.
 func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 	switch {
 	case cfg.OVN == nil:
@@ -89,24 +79,9 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 	}, nil
 }
 
-// AttachIGW wires external connectivity for spec.VPCID. Layout:
-//
-//  1. External LogicalSwitch (ext-{vpcID})
-//  2. Localnet LSP on it (ext-port-{vpcID}) — nat-addresses=router only in
-//     centralised NAT mode.
-//  3. Gateway LRP on the VPC router (gw-{vpcID}) — IP from allocator or
-//     link-local fallback.
-//  4. Switch-side router peer LSP (gw-port-{vpcID}).
-//  5. Default route 0.0.0.0/0 via WAN nexthop, OutputPort pinned to the
-//     gateway LRP so northd doesn't drop it (link-local network doesn't
-//     contain the nexthop).
-//  6. SetGatewayChassis for every configured chassis, descending priority.
-//  7. waitForFlowsHV barrier so the caller's reply is only sent once the
-//     datapath is hot — without this, a follow-up vpc.add-nat can complete
-//     on a dark datapath and the VM is unreachable until flows install.
-//
-// First-line idempotency check: if the external switch already exists,
-// returns nil without re-running any of the steps.
+// AttachIGW wires external connectivity for spec.VPCID: external switch +
+// localnet + gateway LRP + default route + chassis + flows barrier.
+// Idempotent: returns nil if the external switch already exists.
 func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	if spec.VPCID == "" {
 		return errors.New("AttachIGW: VPCID required")
@@ -226,8 +201,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	return nil
 }
 
-// DetachIGW removes everything AttachIGW built for vpcID, in reverse
-// order, treating each "already absent" as success.
+// DetachIGW reverses AttachIGW. Idempotent.
 func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	if vpcID == "" {
 		return errors.New("DetachIGW: vpcID required")
@@ -275,10 +249,8 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	return nil
 }
 
-// resolveGatewayNetwork chooses the Networks CIDR + WAN nexthop + gw IP
-// for the gateway LRP. Distributed mode always uses link-local (per-VM
-// dnat_and_snat handles ARP per chassis). Centralised mode requires a
-// WAN-subnet IP because the LRP is the on-wire egress point.
+// resolveGatewayNetwork picks LRP Networks/nexthop/IP. Distributed: link-local.
+// Centralised: WAN-subnet IP (LRP is on-wire).
 func (m *igwManager) resolveGatewayNetwork(ctx context.Context, vpcID string) (network, nexthop, gwIP string, err error) {
 	network = linkLocalGatewayNetwork
 	nexthop = linkLocalGatewayNexthop

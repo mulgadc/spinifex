@@ -17,18 +17,12 @@ import (
 // Option configures a liveManager at construction.
 type Option func(*liveManager)
 
-// WithDNSServer overrides the DHCP dns_server option emitted with each
-// subnet's DHCPOptions row. The function is called per-subnet so callers can
-// resolve from external-pool config at request time. Default returns
-// "{8.8.8.8, 1.1.1.1}".
+// WithDNSServer overrides the DHCP dns_server option emitted with each subnet's DHCPOptions row.
 func WithDNSServer(fn func() string) Option {
 	return func(m *liveManager) { m.dnsServer = fn }
 }
 
-// NewLiveManager returns a topology.Manager that drives OVN via the given
-// client. The returned manager owns logical-resource lifecycle (VPC router,
-// subnet switch + LRP + LSP-router, ENI LSP) and SG port-group memberships.
-// External connectivity (IGW, EIP, NAT GW) lives in network/external.
+// NewLiveManager returns a topology.Manager driving OVN via the given client.
 func NewLiveManager(client ovn.Client, opts ...Option) Manager {
 	m := &liveManager{
 		ovn:       client,
@@ -49,16 +43,9 @@ var _ Manager = (*liveManager)(nil)
 
 func defaultDNSServer() string { return "{8.8.8.8, 1.1.1.1}" }
 
-// EnsureVPC creates the OVN logical router for the VPC, idempotently. Uses
-// the wait-op-protected EnsureLogicalRouter primitive so concurrent invocations
-// across nodes (vpc.create on one node + vpc.create-subnet's defensive call on
-// another, see subscribers/topology.go) cannot produce duplicate routers per
-// VPC.
-//
-// If the surviving row was created with an empty `spinifex:cidr` ExternalID
-// (the defensive vpc.create-subnet path passes VPCSpec{VPCID: ...} with no
-// CIDR) and the current spec carries a valid CIDR, the ExternalIDs are
-// patched so the canonical row always reflects the most-complete metadata.
+// EnsureVPC idempotently creates the OVN logical router for the VPC via the
+// wait-op-protected EnsureLogicalRouter primitive (cross-node race-safe).
+// Backfills ExternalIDs if the surviving row was created with empty metadata.
 func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -94,11 +81,8 @@ func (m *liveManager) EnsureVPC(ctx context.Context, spec VPCSpec) error {
 	return nil
 }
 
-// backfillRouterMetadata copies non-empty ExternalIDs from spec into the
-// existing row when the row's value for that key is empty. Required because
-// the wait-op fix makes EnsureLogicalRouter a single-shot create — if the
-// race loser supplied richer metadata than the winner, those fields would
-// otherwise be lost.
+// backfillRouterMetadata fills empty ExternalIDs on the existing row from spec
+// so the race-loser's richer metadata isn't lost (EnsureLogicalRouter is single-shot).
 func (m *liveManager) backfillRouterMetadata(ctx context.Context, existing *nbdb.LogicalRouter, spec map[string]string) error {
 	if existing.ExternalIDs == nil {
 		existing.ExternalIDs = map[string]string{}
@@ -292,13 +276,9 @@ func (m *liveManager) DeleteSubnet(ctx context.Context, spec SubnetSpec) error {
 	return nil
 }
 
-// EnsurePort creates the ENI's LogicalSwitchPort and joins it to its initial
-// SG port groups in one OVSDB transaction.
-//
-// If the LSP already exists from a crashed prior attempt that didn't reach the
-// port-group join, SG memberships converge here rather than waiting for the
-// next reconciler pass — that gap would leave a port with zero ACLs (OVN
-// default = unrestricted).
+// EnsurePort creates the ENI's LSP and joins initial SG port groups atomically.
+// If the LSP exists from a prior crashed attempt, converges SG memberships in
+// place — the gap would leave a port with zero ACLs (OVN default = unrestricted).
 func (m *liveManager) EnsurePort(ctx context.Context, spec PortSpec) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -373,11 +353,8 @@ func (m *liveManager) DeletePort(ctx context.Context, spec PortSpec) error {
 	return nil
 }
 
-// EnsureSGPortGroup creates the empty OVN port-group row for a security
-// group. Idempotent: a second call with the same groupID is a no-op. ACL
-// programming lives in network/policy.SecurityGroupManager — callers must
-// invoke it after EnsureSGPortGroup to attach the infrastructure and tenant
-// rule sets.
+// EnsureSGPortGroup idempotently creates the empty OVN port-group row for an SG.
+// ACL programming is owned by network/policy.SecurityGroupManager.
 func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -393,10 +370,8 @@ func (m *liveManager) EnsureSGPortGroup(ctx context.Context, groupID string) err
 	return nil
 }
 
-// DeleteSGPortGroup clears every ACL on the SG's port group and removes the
-// port group row. Idempotent: missing port group is treated as success.
-// Reference-integrity dictates ClearACLs before DeletePortGroup — libovsdb
-// rejects deleting a port group with dangling ACL references.
+// DeleteSGPortGroup clears ACLs then removes the port-group row. Idempotent.
+// ClearACLs must precede DeletePortGroup — libovsdb rejects dangling refs.
 func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) error {
 	if groupID == "" {
 		return fmt.Errorf("DeleteSGPortGroup: empty groupID")
@@ -404,8 +379,7 @@ func (m *liveManager) DeleteSGPortGroup(ctx context.Context, groupID string) err
 	return m.DeleteSGPortGroupByName(ctx, SecurityGroupPortGroup(groupID))
 }
 
-// DeleteSGPortGroupByName is the raw-name variant of DeleteSGPortGroup. It
-// shares the same idempotency and ordering contract.
+// DeleteSGPortGroupByName is the raw-name variant of DeleteSGPortGroup.
 func (m *liveManager) DeleteSGPortGroupByName(ctx context.Context, pgName string) error {
 	if m.ovn == nil {
 		return fmt.Errorf("OVN client not connected")
@@ -442,10 +416,8 @@ func (m *liveManager) SetPortSecurityGroups(ctx context.Context, portID string, 
 	return nil
 }
 
-// reconcilePortSGs computes the add/remove diff and applies it in a single
-// OVSDB transaction so a 5-SG → different-5-SG modify never exposes an
-// intermediate state with fewer port groups (which would let the OVN default
-// = unrestricted apply for the gap). Returns true if any change applied.
+// reconcilePortSGs applies the SG diff atomically — an N→M modify must never
+// expose an intermediate gap (OVN default = unrestricted). Returns true if changed.
 func (m *liveManager) reconcilePortSGs(ctx context.Context, lspName string, desiredSGs []string) (bool, error) {
 	desired := make(map[string]struct{}, len(desiredSGs))
 	for _, sgID := range desiredSGs {
@@ -490,8 +462,7 @@ func (m *liveManager) reconcilePortSGs(ctx context.Context, lspName string, desi
 	return true, nil
 }
 
-// SubnetGatewayCIDR returns the .1 host IP and prefix length for a subnet
-// CIDR. IPv4-only.
+// SubnetGatewayCIDR returns the .1 host IP and prefix length for an IPv4 subnet.
 func SubnetGatewayCIDR(prefix netip.Prefix) (string, int, error) {
 	if !prefix.IsValid() {
 		return "", 0, fmt.Errorf("invalid prefix")
@@ -505,8 +476,7 @@ func SubnetGatewayCIDR(prefix netip.Prefix) (string, int, error) {
 	return netip.AddrFrom4(bytes).String(), prefix.Bits(), nil
 }
 
-// FormatDNSServerList renders an OVN dns_server value from a list of IPs.
-// OVN expects "{ip1, ip2}" form for multiple entries.
+// FormatDNSServerList renders an OVN dns_server value: "{ip1, ip2}".
 func FormatDNSServerList(ips []string) string {
 	if len(ips) == 0 {
 		return defaultDNSServer()

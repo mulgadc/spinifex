@@ -16,18 +16,6 @@ import (
 //	"L4 is the only layer aware of other AZs. No layer below L4 references
 //	 remote AZ identifiers, OVN-IC transit switches, or inter-AZ link state.
 //	 Cross-AZ federation is always mediated by L4."
-//
-// Mechanic: scan prod .go files under spinifex/network/ for symbols that
-// only the federation layer is allowed to use:
-//   - identifiers: TransitSwitch, TransitRouterPort (the L2 name helpers
-//     are exempt — L2 owns names; L4 will call into them when it lands)
-//   - string literals containing "ovn-ic", "ovn-icnbctl", "ovn-icsbctl"
-//
-// Exempt locations:
-//   - network/topology/names.go (defines the names per ADR table)
-//   - network/federation/ (when it exists — currently empty; the fence
-//     pre-protects the package)
-//   - tests
 func TestS6_FederationIsolated(t *testing.T) {
 	const clause = `ADR-0006 S6: "L4 is the only layer aware of other AZs. ` +
 		`No layer below L4 references remote AZ identifiers, OVN-IC transit ` +

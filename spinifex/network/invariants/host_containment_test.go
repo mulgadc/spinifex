@@ -16,18 +16,6 @@ import (
 //	"Bridge mode is contained in L0. No layer above L0 reads uplink type,
 //	 bridge mode, or physical NIC state directly. L0's UplinkMode() is the
 //	 only resolver; all layers above receive a typed enum at init time."
-//
-// Mechanic: scan every prod .go file under spinifex/network/ and
-// spinifex/daemon/ for calls to host-level external tools (ovs-vsctl,
-// ovn-nbctl, ovs-ofctl) outside network/host/. These represent direct
-// reads of host bridge / NIC state that S2 forbids above L0. Comments
-// are ignored — only argument literals in exec.Command / SudoCommand /
-// Run-style calls are checked.
-//
-// Scope: network/, daemon/, vm/. daemon/ and vm/ are L0 consumers (they
-// launch VMs and tap plumbing) but are not themselves layers; S2 still
-// applies because shell-outs from those packages bypass network/host/'s
-// contract. vpcd/ is the entrypoint and lives outside the layer model.
 func TestS2_BridgeModeContainedInL0(t *testing.T) {
 	const clause = `ADR-0006 S2: "Bridge mode is contained in L0. No layer ` +
 		`above L0 reads uplink type, bridge mode, or physical NIC state ` +
@@ -62,8 +50,7 @@ func TestS2_BridgeModeContainedInL0(t *testing.T) {
 				if isVendoredOrGenerated(d.Name()) {
 					return filepath.SkipDir
 				}
-				// network/host/ is the only layer that may shell out to
-				// host tools. Skip it entirely.
+				// network/host/ is L0; only layer that may shell out.
 				if strings.HasSuffix(filepath.ToSlash(path), "/network/host") {
 					return filepath.SkipDir
 				}

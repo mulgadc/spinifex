@@ -13,11 +13,6 @@ import (
 //	"IPSec is OVN-native only. No layer implements custom IKEv2, XFRM
 //	 rules, or direct strongSwan management. IPSec SA lifecycle is
 //	 delegated entirely to OVN native IPSec and is invisible above L0."
-//
-// Mechanic: read every package under spinifex/network/ via `go list -json`
-// and reject imports that match a denylist of strongSwan, XFRM, IKEv2,
-// or custom-IPSec libraries. The denylist is conservative; new entries
-// are added as new IPSec libraries become available in Go.
 func TestS8_IPSecOVNNativeOnly(t *testing.T) {
 	const clause = `ADR-0006 S8: "IPSec is OVN-native only. No layer ` +
 		`implements custom IKEv2, XFRM rules, or direct strongSwan ` +

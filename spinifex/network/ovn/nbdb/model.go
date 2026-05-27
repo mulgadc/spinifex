@@ -1,13 +1,5 @@
-// Package nbdb contains Go structs representing the OVN Northbound Database schema.
-// These models are used with libovsdb to interact with the OVN NB DB.
-//
-// The structs cover the core tables needed for Spinifex VPC networking:
-// LogicalSwitch, LogicalSwitchPort, LogicalRouter, LogicalRouterPort, and DHCPOptions.
-//
-// To regenerate from the full OVN NB schema (requires OVN installed):
-//
-//	go install github.com/ovn-kubernetes/libovsdb/cmd/modelgen@latest
-//	modelgen -p nbdb -o spinifex/network/ovn/nbdb /usr/share/ovn/ovn-nb.ovsschema
+// Package nbdb contains libovsdb model structs for the OVN Northbound tables
+// used by Spinifex VPC networking.
 package nbdb
 
 import "github.com/ovn-kubernetes/libovsdb/model"
@@ -91,8 +83,7 @@ type LogicalRouterStaticRoute struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
-// PortGroup represents an OVN Port_Group for grouping logical switch ports
-// (used for security group enforcement).
+// PortGroup represents an OVN Port_Group (used for SG enforcement).
 type PortGroup struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
@@ -115,9 +106,8 @@ type ACL struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
-// AddressSet represents an OVN Address_Set — a named set of IP addresses
-// referenced by ACL match expressions (e.g. ip4.src == $sg_xxx_ip4) for
-// SG-to-SG rule enforcement.
+// AddressSet represents an OVN Address_Set referenced by ACL match exprs
+// (e.g. ip4.src == $sg_xxx_ip4) for SG-to-SG rules.
 type AddressSet struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
@@ -135,8 +125,7 @@ type GatewayChassis struct {
 	Options     map[string]string `ovsdb:"options"`
 }
 
-// FullDatabaseModel returns a ClientDBModel for the OVN Northbound database
-// containing all tables needed for Spinifex VPC networking.
+// FullDatabaseModel returns a ClientDBModel for the OVN NB tables used.
 func FullDatabaseModel() (model.ClientDBModel, error) {
 	return model.NewClientDBModel("OVN_Northbound", map[string]model.Model{
 		"Logical_Switch":              &LogicalSwitch{},

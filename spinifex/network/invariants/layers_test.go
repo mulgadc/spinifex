@@ -13,13 +13,6 @@ import (
 //	"No code above layer Lk calls through to a layer below Lk's immediate
 //	 interface. Every cross-layer call passes through the typed interface
 //	 of the immediate lower neighbor."
-//
-// Mechanic: derive each network/* package's layer from layerOf(). Reject
-// any import where the importer's layer is strictly lower than the
-// importee's layer (i.e. an upward edge in the layer graph). Cross-cutters
-// (reconcile, subscribers) may import any layer, but no layer may import
-// them — that direction would re-introduce the tangling the redesign
-// removed.
 func TestS1_LayerSkipProhibited(t *testing.T) {
 	const clause = `ADR-0006 S1: "No code above layer Lk calls through to a ` +
 		`layer below Lk's immediate interface. Every cross-layer call ` +
@@ -109,8 +102,8 @@ const (
 	kindL3Policy
 	kindL4Federation
 	kindL5External
-	kindCrossCutter // reconcile, subscribers — orchestrators, not layers
-	kindInvariants  // this package
+	kindCrossCutter
+	kindInvariants
 )
 
 func (k packageKind) String() string {
@@ -136,8 +129,7 @@ func (k packageKind) String() string {
 	}
 }
 
-// rank returns the ADR layer number for ordered layers. Non-layered
-// packages return -1 and are handled separately in classify().
+// rank returns the ADR layer number; non-layered packages return -1.
 func (k packageKind) rank() int {
 	switch k {
 	case kindL0Host:
@@ -185,7 +177,6 @@ func layerOf(importPath string) packageKind {
 }
 
 // classify returns a non-empty reason iff the edge from→to violates S1.
-// Empty string means the edge is permitted.
 func classify(from, to packageKind) string {
 	if from == to {
 		return ""
@@ -193,11 +184,10 @@ func classify(from, to packageKind) string {
 	if from == kindInvariants || to == kindInvariants {
 		return ""
 	}
-	// No layer may import a cross-cutter — that would re-tangle the tree.
+	// Layer importing a cross-cutter would re-tangle the tree.
 	if to == kindCrossCutter && from != kindCrossCutter {
 		return "layer importing a cross-cutter (reconcile/subscribers)"
 	}
-	// Cross-cutters may import any layer.
 	if from == kindCrossCutter {
 		return ""
 	}
@@ -211,7 +201,6 @@ func classify(from, to packageKind) string {
 	return ""
 }
 
-// goListPackage mirrors the subset of `go list -json` fields the test needs.
 type goListPackage struct {
 	ImportPath string   `json:"ImportPath"`
 	Imports    []string `json:"Imports"`
@@ -235,7 +224,6 @@ func listNetworkPackages(t *testing.T) []goListPackage {
 		if !strings.HasPrefix(p.ImportPath, networkRoot) {
 			continue
 		}
-		// Skip the invariants package itself.
 		if layerOf(p.ImportPath) == kindInvariants {
 			continue
 		}
@@ -247,9 +235,7 @@ func listNetworkPackages(t *testing.T) []goListPackage {
 	return pkgs
 }
 
-// repoRoot walks up from the test binary's working directory to find the
-// spinifex go.mod, so `go list` runs in the right module regardless of
-// where the test runner is invoked from.
+// repoRoot returns the spinifex module root via `go env GOMOD`.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	cmd := exec.Command("go", "env", "GOMOD")
@@ -268,8 +254,6 @@ func shortPkg(p string) string {
 	return strings.TrimPrefix(p, networkRoot+"/")
 }
 
-// itoa avoids pulling strconv into the failure-format hot path; pure
-// stdlib readability win, no allocation concern.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

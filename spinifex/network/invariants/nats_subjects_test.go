@@ -18,35 +18,18 @@ import (
 //	 vpc.{azID}. A subscription never processes a message whose subject
 //	 AZ prefix does not match the local node's AZ identifier."
 //
-// Status: aspirational. The subject scheme is still the legacy `vpc.<verb>`
-// form (`vpc.create`, `vpc.delete`, …) with no `{azID}` segment. ADR-0006
-// §"AZ identity and NATS subject routing" describes the planned rename;
-// until the cluster-wide cutover lands, renaming subjects would break
-// rolling upgrades.
-//
-// To keep the gap visible without breaking CI, the test runs the audit and
-// — when violations are found — calls t.Skip with the gap report. The
-// `go test` summary prints the SKIP reason on every run so the work
-// remains discoverable.
-//
-// Once the rename ships, change t.Skip to t.Fatalf and the invariant
-// becomes a true fence.
+// Aspirational: legacy `vpc.<verb>` subjects still in use pending cluster-wide
+// rename. Test runs audit and t.Skip's with gap report; flip to t.Fatalf once
+// the rename ships.
 func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 	const clause = `ADR-0006 S7: "Every vpcd-originated NATS publication ` +
 		`uses a subject prefixed vpc.{azID}. A subscription never processes ` +
 		`a message whose subject AZ prefix does not match the local node's ` +
 		`AZ identifier."`
 
-	// Subject literals beginning with `vpc.` followed immediately by a
-	// non-`{` token violate S7. The compliant form is `vpc.{azID}.<verb>`
-	// (or a template fragment containing `{azID}`).
 	compliant := regexp.MustCompile(`^vpc\.\{`)
 	subjectLike := regexp.MustCompile(`^vpc\.[a-zA-Z]`)
 
-	// Scan covers vpcd's own publishers plus every upstack consumer that
-	// publishes or subscribes to vpc.* subjects. The gap report is
-	// intentionally wide so the eventual cluster-wide rename has a complete
-	// inventory.
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "network"),
 		filepath.Join(repoRoot(t), "spinifex", "vpcd"),

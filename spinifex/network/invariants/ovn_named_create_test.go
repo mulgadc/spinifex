@@ -11,28 +11,13 @@ import (
 	"testing"
 )
 
-// TestS4_OVNNamedCreatesUseEnsure enforces that production callers outside
-// the OVN L1 wrapper never use the bare Create primitives for entities whose
-// `Name` is not unique-constrained in OVN NB:
+// TestS4_OVNNamedCreatesUseEnsure enforces ADR-0006 S4.7.
 //
-//	CreateLogicalRouter, CreateLogicalSwitch, CreatePortGroup
-//
-// OVN NB allows duplicate Name rows; without the wait-op-protected Ensure
-// variants these creates race across nodes and across in-process subscriber
-// goroutines, producing duplicate logical entities per intent.
-//
-// ADR-0006 S4.7 — "OVN logical entities owned by spinifex MUST be unique on
-// (table, Name). The libovsdb client enforces this via wait-then-insert
-// transactions (EnsureLogicalRouter / EnsureLogicalSwitch / EnsurePortGroup).
-// Callers outside network/ovn MUST use the Ensure* primitive."
-//
-// Exempt directories:
-//
-//	spinifex/network/ovn/         — defines the primitives themselves
-//	spinifex/network/invariants/  — this test package
-//
-// `_test.go` files are exempt — fixtures legitimately build entities to
-// exercise other behaviour without protecting against cross-node races.
+//	"OVN logical entities owned by spinifex MUST be unique on
+//	 (table, Name). The libovsdb client enforces this via wait-then-insert
+//	 transactions (EnsureLogicalRouter / EnsureLogicalSwitch /
+//	 EnsurePortGroup). Callers outside network/ovn MUST use the Ensure*
+//	 primitive."
 func TestS4_OVNNamedCreatesUseEnsure(t *testing.T) {
 	const clause = `ADR-0006 S4.7: "OVN logical entities owned by spinifex ` +
 		`MUST be unique on (table, Name). The libovsdb client enforces this ` +

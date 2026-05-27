@@ -8,10 +8,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 )
 
-// NATGWManager attaches and detaches NAT Gateway SNAT rules. Thin L5
-// wrapper over policy.NATManager — distinct from EIPManager because
-// AWS-parity NAT Gateways are owned by a different ec2 resource (NAT GW
-// not EIP) and the underlying OVN type differs (snat vs dnat_and_snat).
+// NATGWManager attaches/detaches NAT Gateway SNAT rules. Thin L5 wrapper
+// over policy.NATManager. OVN type is snat (vs dnat_and_snat for EIP).
 type NATGWManager interface {
 	AttachNATGateway(ctx context.Context, gw policy.NATGWSpec) error
 	DetachNATGateway(ctx context.Context, vpcID, subnetCIDR string) error

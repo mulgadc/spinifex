@@ -11,35 +11,27 @@ import (
 )
 
 // Manager owns the lifecycle of OVN logical objects for AWS-style API
-// resources. Implementations must be idempotent: a second EnsureX call with
-// the same spec is a no-op.
+// resources. Implementations must be idempotent.
 type Manager interface {
-	// VPC lifecycle
 	EnsureVPC(ctx context.Context, vpc VPCSpec) error
 	DeleteVPC(ctx context.Context, vpcID string) error
 
-	// Subnet lifecycle
 	EnsureSubnet(ctx context.Context, subnet SubnetSpec) error
 	DeleteSubnet(ctx context.Context, subnet SubnetSpec) error
 
-	// Port lifecycle (ENI)
 	EnsurePort(ctx context.Context, port PortSpec) error
 	DeletePort(ctx context.Context, port PortSpec) error
 
 	// SetPortSecurityGroups applies the declarative set of port-group
-	// memberships for a port. Manager computes the add/remove diff against
-	// current OVN state.
+	// memberships, computing the add/remove diff against current OVN state.
 	SetPortSecurityGroups(ctx context.Context, portID string, sgIDs []string) error
 
-	// SG port-group lifecycle. ACL programming on a port group lives in
-	// network/policy.SecurityGroupManager — topology only owns the empty
-	// OVN port-group row keyed by SecurityGroupPortGroup(groupID).
+	// SG port-group lifecycle. ACL programming lives in network/policy.
 	EnsureSGPortGroup(ctx context.Context, groupID string) error
 	DeleteSGPortGroup(ctx context.Context, groupID string) error
 
-	// DeleteSGPortGroupByName tears down a port group given its raw OVN
-	// name (e.g. "sg_abc"). Used by the reconciler's orphan-removal path,
-	// which iterates OVN port-group names without a groupID round-trip.
+	// DeleteSGPortGroupByName tears down a port group by raw OVN name (e.g.
+	// "sg_abc"). Used by the reconciler's orphan-removal path.
 	DeleteSGPortGroupByName(ctx context.Context, pgName string) error
 }
 
@@ -51,17 +43,16 @@ type VPCSpec struct {
 }
 
 // SubnetSpec describes a subnet at L2. CIDR must be contained in the parent
-// VPC's CIDR; API-layer validation enforces that.
+// VPC's CIDR (API-layer validation).
 type SubnetSpec struct {
 	SubnetID string
 	VPCID    string
 	CIDR     netip.Prefix
 }
 
-// PortSpec describes an ENI / VM port at L2. PrivateIP and MAC are bound to
-// the LSP's Addresses + PortSecurity columns at create time. SGIDs is the
-// initial port-group membership; subsequent changes go through
-// SetPortSecurityGroups.
+// PortSpec describes an ENI / VM port at L2. PrivateIP+MAC bind to LSP
+// Addresses/PortSecurity at create. SGIDs is initial membership;
+// changes go through SetPortSecurityGroups.
 type PortSpec struct {
 	PortID    string
 	SubnetID  string

@@ -14,8 +14,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// --- VPC (LogicalRouter) ---
-
 func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 	var evt VPCEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -56,8 +54,6 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// --- Subnet (LogicalSwitch + RouterPort + DHCP) ---
-
 func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 	var evt SubnetEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -72,11 +68,9 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 		return
 	}
 	ctx := context.Background()
-	// vpc.create and vpc.create-subnet are independent NATS events with no
-	// inter-event ordering guarantee. Tenant bootstrap publishes both
-	// within <1ms, so EnsureSubnet can race the parent VPC's
-	// CreateLogicalRouter and fail with "logical router not found".
-	// EnsureVPC is idempotent on the router name.
+	// vpc.create and vpc.create-subnet have no ordering guarantee; pre-ensure
+	// the VPC router so a tight bootstrap doesn't fail with "router not
+	// found". EnsureVPC is idempotent.
 	if err := s.topology.EnsureVPC(ctx, topology.VPCSpec{VPCID: evt.VpcId}); err != nil {
 		slog.Error("subscribers: EnsureVPC (subnet pre-create) failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
@@ -114,8 +108,6 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 	}
 	respond(msg, nil)
 }
-
-// --- Port (LogicalSwitchPort for VM/ENI) ---
 
 func (s *Subscriber) handleCreatePort(msg *nats.Msg) {
 	var evt PortEvent
@@ -170,9 +162,8 @@ func (s *Subscriber) handleDeletePort(msg *nats.Msg) {
 	respond(msg, nil)
 }
 
-// handleUpdatePortSGs reconciles the port group membership for an ENI's LSP
-// against the desired SG list in the event. The payload is declarative — the
-// manager computes the add/remove diff from current OVN state.
+// handleUpdatePortSGs reconciles the LSP's PG memberships against the
+// declarative SG list; the manager computes the diff.
 func (s *Subscriber) handleUpdatePortSGs(msg *nats.Msg) {
 	var evt UpdatePortSGsEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -188,8 +179,6 @@ func (s *Subscriber) handleUpdatePortSGs(msg *nats.Msg) {
 	}
 	respond(msg, nil)
 }
-
-// --- Internet Gateway (external connectivity + NAT) ---
 
 func (s *Subscriber) handleIGWAttach(msg *nats.Msg) {
 	var evt types.IGWEvent
@@ -226,8 +215,6 @@ func (s *Subscriber) handleIGWDetach(msg *nats.Msg) {
 		"igw_id", evt.InternetGatewayId, "vpc_id", evt.VpcId)
 	respond(msg, nil)
 }
-
-// --- NAT (dnat_and_snat for public IPs) ---
 
 func (s *Subscriber) handleAddNAT(msg *nats.Msg) {
 	var evt NATEvent

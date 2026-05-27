@@ -10,19 +10,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 )
 
-// ErrNATNotFound is returned by DeleteNAT / DeleteNATByExternalIP when the
-// rule is already absent. Callers that want idempotent semantics (e.g. the
-// vpc.delete-nat NATS handler, which races with vm-cleanup paths that emit
-// the same delete) match it with errors.Is and treat as success.
+// ErrNATNotFound is returned when a NAT rule is absent (use errors.Is for idempotency).
 var ErrNATNotFound = errors.New("NAT not found")
 
-// ErrPortGroupNotFound is returned by GetPortGroup when the named port group
-// is absent. EnsureSGPortGroup / DeleteSGPortGroup use errors.Is to make
-// existence checks and delete-then-recheck flows idempotent.
+// ErrPortGroupNotFound is returned when a port group is absent (use errors.Is for idempotency).
 var ErrPortGroupNotFound = errors.New("port group not found")
 
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
-// Name, Severity, and Meter are optional — set Severity when Log is true.
 type ACLSpec struct {
 	Direction string // "to-lport" or "from-lport"
 	Priority  int

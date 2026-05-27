@@ -17,16 +17,6 @@ import (
 //	"On each leader-gated startup, exactly one intent-actual reconciliation
 //	 pass runs against the NATS KV snapshot and OVN NB DB actual state. No
 //	 additional serial retrofit passes exist."
-//
-// Mechanic: scan exported funcs and methods under spinifex/network/ whose
-// names match the retrofit-pass shape — `Reconcile…Loop` or
-// `Reconcile…Pass<digit>`. The canonical single entrypoint is the
-// reconciler in network/reconcile/. Anything matching the pattern outside
-// that package (or any *Pass\d+ name regardless of location) is a regression
-// toward the pre-redesign serial-pass startup the ADR explicitly retired.
-//
-// The periodic drift detector is a different name (`Drift…`) and is
-// allowed; it runs the same reconciler entrypoint on a timer.
 func TestS9_SingleReconcilerNoRetrofitPasses(t *testing.T) {
 	const clause = `ADR-0006 S9: "On each leader-gated startup, exactly one ` +
 		`intent-actual reconciliation pass runs against the NATS KV snapshot ` +

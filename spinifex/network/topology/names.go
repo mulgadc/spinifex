@@ -2,8 +2,7 @@ package topology
 
 import "strings"
 
-// OVN object names are deterministic and form a stable contract. Changing any
-// of them requires a reconciliation migration.
+// OVN object names form a stable contract; changes require a reconciliation migration.
 
 // VPCRouter is the OVN logical router name for a VPC.
 func VPCRouter(vpcID string) string { return "vpc-" + vpcID }
@@ -37,11 +36,8 @@ func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
 // external switch onto the host uplink.
 func ExternalLocalnetPort(vpcID string) string { return "ext-port-" + vpcID }
 
-// SecurityGroupPortGroup is the OVN port group name for a security group.
-// OVN port group names match [a-zA-Z_][a-zA-Z0-9_]*, so hyphens in sg-xxx
-// IDs are replaced with underscores. The per-port-group `_ip4`/`_ip6`
-// Address_Set rows in SB are auto-derived by ovn-northd from each port
-// group's port addresses.
+// SecurityGroupPortGroup is the OVN port group name for an SG.
+// OVN names match [a-zA-Z_][a-zA-Z0-9_]*, so hyphens become underscores.
 func SecurityGroupPortGroup(sgID string) string {
 	return strings.ReplaceAll(sgID, "-", "_")
 }

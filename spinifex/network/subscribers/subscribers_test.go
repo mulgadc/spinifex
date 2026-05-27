@@ -15,9 +15,7 @@ import (
 
 const requestTimeout = 2 * time.Second
 
-// newTestSubscriber wires every manager against one MockOVNClient so the
-// subscriber acts as a real NATS → OVN bridge in tests. The mock OVN client
-// satisfies every manager constructor's nil-check at zero cost.
+// newTestSubscriber wires every manager against one mock OVN client.
 func newTestSubscriber(t *testing.T) (*Subscriber, *mock.Client) {
 	t.Helper()
 	m := mock.New()
@@ -102,9 +100,8 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 	}
 }
 
-// TestBadJSON_AllRequestReplies verifies every request/reply topic returns a
-// structured error envelope (not a NATS timeout) when given malformed JSON.
-// Fire-and-forget topics (NAT gateway) just have to not panic.
+// Every request/reply topic must return a structured error envelope on bad
+// JSON. Fire-and-forget topics (NAT gateway) just must not panic.
 func TestBadJSON_AllRequestReplies(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	sub, _ := newTestSubscriber(t)

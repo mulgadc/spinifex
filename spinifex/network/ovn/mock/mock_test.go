@@ -60,8 +60,6 @@ func TestClient_DeleteAllNATsByExternalIP(t *testing.T) {
 	}
 }
 
-// --- SetGatewayChassis idempotency (mulga-999) ---
-
 func TestSetGatewayChassis_Idempotent(t *testing.T) {
 	m := New()
 	_ = m.Connect(context.Background())
@@ -130,12 +128,8 @@ func TestSetGatewayChassis_UpdatesPriority(t *testing.T) {
 	}
 }
 
-// TestEnsureLogicalRouter_ConcurrentSingleSurvivor proves that N goroutines
-// calling EnsureLogicalRouter for the same Name converge to a single OVN row.
-// Mirrors the production race between vpc.create on one node and the
-// defensive vpc.create-subnet EnsureVPC call on another — both observe
-// absence and both attempt to create. Without the Ensure primitive, both
-// succeed. With the Ensure primitive, one creates and the rest reuse.
+// N concurrent EnsureLogicalRouter calls for the same Name must converge to
+// a single row.
 func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
 	const callers = 50
 	m := New()
@@ -183,9 +177,8 @@ func TestEnsureLogicalRouter_ConcurrentSingleSurvivor(t *testing.T) {
 	}
 }
 
-// TestEnsureLogicalRouter_ReturnsExistingOnSecondCall covers the
-// sequential-but-already-present path used by handleVPCCreate when the
-// defensive vpc.create-subnet handler beat it to the create.
+// Sequential second EnsureLogicalRouter for an existing Name returns the
+// pre-existing row.
 func TestEnsureLogicalRouter_ReturnsExistingOnSecondCall(t *testing.T) {
 	m := New()
 	_ = m.Connect(context.Background())

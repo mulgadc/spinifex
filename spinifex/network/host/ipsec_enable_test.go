@@ -14,8 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// multiNodeClusterConfig returns a ClusterConfig with two nodes so
-// EnableOVNIPSec runs its full path (single-node would short-circuit).
 func multiNodeClusterConfig() *config.ClusterConfig {
 	return &config.ClusterConfig{
 		Node: "node1",
@@ -26,9 +24,6 @@ func multiNodeClusterConfig() *config.ClusterConfig {
 	}
 }
 
-// recordingSudo is a utils.SudoCommand stub that records every invocation and
-// returns canned stdout for `systemctl is-active`. Tests that need a dead
-// daemon override the activeOutput.
 type recordingSudo struct {
 	runs         [][]string
 	activeOutput string
@@ -60,19 +55,13 @@ func TestEnableOVNIPSec(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
-	// Point the NB-socket gate at a non-existent path so this test runs the
-	// worker path (no ovn-nbctl). TestEnableOVNIPSec_Management covers the
-	// management-node branch.
+	// Worker path: no local NB socket → no ovn-nbctl call.
 	origNBSock := ovnNBSocketPath
 	ovnNBSocketPath = filepath.Join(configDir, "no-such-socket")
 	t.Cleanup(func() { ovnNBSocketPath = origNBSock })
 
 	require.NoError(t, EnableOVNIPSec(configPath, multiNodeClusterConfig()))
 
-	// Expected sudo invocations in order:
-	//   systemctl is-active openvswitch-ipsec.service     (unit enabled at provision time)
-	//   ovs-vsctl set Open_vSwitch . other_config:certificate=... private_key=... ca_cert=...
-	//   ovs-vsctl set Open_vSwitch . other_config:ipsec_encapsulation=true
 	require.Len(t, recorder.runs, 3)
 	assert.Equal(t, []string{"systemctl", "is-active", "openvswitch-ipsec.service"}, recorder.runs[0])
 	for _, run := range recorder.runs[1:] {
@@ -100,8 +89,6 @@ func TestEnableOVNIPSec_Management(t *testing.T) {
 		require.NoError(t, os.WriteFile(full, []byte("x"), 0600))
 	}
 
-	// Simulate a local NB socket so EnableOVNIPSec runs the management
-	// branch and writes NB_Global.ipsec=true.
 	sockPath := filepath.Join(configDir, "ovnnb_db.sock")
 	require.NoError(t, os.WriteFile(sockPath, []byte{}, 0600))
 	origNBSock := ovnNBSocketPath
@@ -153,8 +140,7 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 	assert.Contains(t, err.Error(), "ovs-monitor-ipsec")
 	assert.Contains(t, err.Error(), "not active")
 
-	// ovs-vsctl must NOT have been called — flipping ipsec_encapsulation=true
-	// with no daemon is the silent-drop trap this guard exists to prevent.
+	// ovs-vsctl must NOT run — flip without live daemon is the silent-drop trap.
 	for _, run := range recorder.runs {
 		assert.NotEqual(t, "ovs-vsctl", run[0], "ovs-vsctl invoked despite dead daemon: %v", run)
 	}

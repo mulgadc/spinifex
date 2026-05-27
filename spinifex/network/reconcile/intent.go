@@ -21,29 +21,21 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// IntentState is the desired OVN state derived from the NATS KV snapshot,
-// scoped to the local AZ. Empty maps are valid and represent "no objects of
-// this kind should exist locally".
+// IntentState is the desired OVN state derived from the JetStream KV
+// snapshot, scoped to the local AZ. Empty maps are valid.
 type IntentState struct {
-	VPCs    map[string]topology.VPCSpec    // vpcID → spec
-	Subnets map[string]topology.SubnetSpec // subnetID → spec
-	Ports   map[string]topology.PortSpec   // portID (ENI ID) → spec
-	SGs     map[string]policy.SGSpec       // groupID → spec
-	IGWs    map[string]external.IGWSpec    // vpcID → spec (attached only)
-	EIPs    map[string]policy.EIPSpec      // logicalIP → spec (associated only)
-	NATGWs  map[string]policy.NATGWSpec    // natGwID → spec
+	VPCs    map[string]topology.VPCSpec
+	Subnets map[string]topology.SubnetSpec
+	Ports   map[string]topology.PortSpec
+	SGs     map[string]policy.SGSpec
+	IGWs    map[string]external.IGWSpec // attached only
+	EIPs    map[string]policy.EIPSpec   // keyed by logicalIP; associated only
+	NATGWs  map[string]policy.NATGWSpec
 }
 
-// LoadIntentFromKV walks every relevant KV bucket and assembles an
-// IntentState scoped to localAZ. Buckets that don't yet exist (first boot,
-// fresh cluster) are treated as empty rather than fatal — the legacy boot
-// path tolerated this and the reconciler must as well to keep cold-start
-// semantics intact.
-//
-// AZ filter: a VPC record matches when `vpc.AZ == "" || vpc.AZ == localAZ`.
-// Subnets, ports, SGs, IGWs, EIPs, and NAT gateways inherit the filter
-// transitively via their parent VPC — a child whose parent is not in scope
-// is silently dropped.
+// LoadIntentFromKV assembles IntentState scoped to localAZ. Missing buckets
+// (first boot) are treated as empty. AZ filter: `vpc.AZ == "" || vpc.AZ ==
+// localAZ`. Children inherit the filter transitively via their parent VPC.
 func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ string) (IntentState, error) {
 	intent := IntentState{
 		VPCs:    make(map[string]topology.VPCSpec),
@@ -78,19 +70,15 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 		return IntentState{}, err
 	}
 
-	_ = ctx // reserved for future cancellation in long KV walks
+	_ = ctx
 	return intent, nil
 }
 
-// matchesLocalAZ implements the §11.1 backwards-compat rule: empty AZ on a
-// VPC record is treated as local (legacy pre-Phase-2.2 records). Hoisted
-// out so tests can assert the rule directly.
+// matchesLocalAZ enforces §11.1: empty AZ counts as local (legacy records).
 func matchesLocalAZ(vpcAZ, localAZ string) bool {
 	return vpcAZ == "" || vpcAZ == localAZ
 }
 
-// keyIsVersion skips the per-bucket version-marker key. Mirrors what every
-// other KV consumer in the tree does.
 func keyIsVersion(key string) bool { return key == utils.VersionKey }
 
 func loadVPCs(js nats.JetStreamContext, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
@@ -411,8 +399,7 @@ func loadNATGWs(js nats.JetStreamContext, localVPCs map[string]struct{}, subnets
 	return nil
 }
 
-// sgRulesToPolicyRules adapts the handler-side SGRule slice (IpProtocol,
-// CidrIp) to the policy-layer Rule shape (IPProtocol, CIDR).
+// sgRulesToPolicyRules adapts handler-side SGRule to policy.Rule.
 func sgRulesToPolicyRules(in []handlers_ec2_vpc.SGRule) []policy.Rule {
 	if len(in) == 0 {
 		return nil

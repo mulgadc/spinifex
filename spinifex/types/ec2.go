@@ -11,7 +11,7 @@ type EC2InstanceCommand struct {
 	DetachVolumeData *DetachVolumeData    `json:"detach_volume_data,omitempty"`
 	AttachENIData    *AttachENIData       `json:"attach_eni_data,omitempty"`
 	DetachENIData    *DetachENIData       `json:"detach_eni_data,omitempty"`
-  IamProfileAssociationData *IamProfileAssociationData `json:"iam_profile_association_data,omitempty"`
+	IamProfileAssociationData *IamProfileAssociationData `json:"iam_profile_association_data,omitempty"`
 }
 
 // EC2CommandAttributes indicates which action the daemon should perform.

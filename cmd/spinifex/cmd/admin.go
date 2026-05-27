@@ -300,6 +300,7 @@ func init() {
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("no-external", false, "Disable external networking (overlay-only, no internet for VMs)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
+	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 
 	// Flags for admin join
 	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
@@ -844,6 +845,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
 	noExternal, _ := cmd.Flags().GetBool("no-external")
 	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
+	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
 
 	// Fire telemetry in background (completes during init work, waited at end)
 	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
@@ -893,9 +895,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 				fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
 			}
 			if detected.LANCount == 0 {
-				fmt.Println("\n  Mode: single-NIC (macvlan for external bridge)")
+				fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
 			} else {
-				fmt.Printf("\n  Mode: %d LAN + 1 WAN (macvlan for external bridge)\n", detected.LANCount)
+				fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
 			}
 
 			// Apply auto-detected values when flags not explicitly set
@@ -910,13 +912,11 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 					externalPrefixLen = detected.WAN.PrefixLen
 				}
 
-				// Default mode: always "pool" — with static range if --external-pool
-				// is given, otherwise with source=dhcp (gateway IP from router DHCP)
+				// Default mode: always "pool". Source defaults to "static"; if
+				// --external-pool is omitted the validator below will error with
+				// a SuggestPoolRange hint.
 				if externalMode == "" && !cmd.Flags().Changed("external-mode") {
 					externalMode = "pool"
-					if externalPool == "" && externalSource == "" {
-						externalSource = "dhcp"
-					}
 				}
 			}
 		}
@@ -928,42 +928,29 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	if externalMode == "pool" {
-		// Resolve source: if not explicitly set, infer from whether a pool range was given
-		if externalSource == "" {
-			if externalPool != "" {
-				externalSource = "static"
-			} else {
-				externalSource = "dhcp"
-			}
+		if externalSource != "" && externalSource != "static" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' (only supported value), got: %s\n", externalSource)
+			os.Exit(1)
 		}
-		if externalSource == "dhcp" {
-			// DHCP source: no static range needed, just gateway
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
-				os.Exit(1)
+		externalSource = "static"
+		if externalPool == "" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required when --external-mode=pool (e.g., 192.168.1.150-192.168.1.250)\n")
+			if detectedNet != nil && detectedNet.WAN != nil {
+				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
 			}
-		} else {
-			// Static source: need pool range
-			if externalPool == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required when --external-mode=pool (e.g., 192.168.1.150-192.168.1.250)\n")
-				fmt.Fprintf(os.Stderr, "   Or use --external-source=dhcp to get IPs from router DHCP\n")
-				if detectedNet != nil && detectedNet.WAN != nil {
-					sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
-					fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
-				}
-				os.Exit(1)
-			}
-			if externalGateway == "" {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
-				os.Exit(1)
-			}
-			parts := strings.SplitN(externalPool, "-", 2)
-			if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
-				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
-				os.Exit(1)
-			}
-			poolStart, poolEnd = parts[0], parts[1]
+			os.Exit(1)
 		}
+		if externalGateway == "" {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
+			os.Exit(1)
+		}
+		parts := strings.SplitN(externalPool, "-", 2)
+		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
+			os.Exit(1)
+		}
+		poolStart, poolEnd = parts[0], parts[1]
 	}
 	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
@@ -982,10 +969,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
 		}
 	}
-
-	// For pool/dhcp source, the gateway IP is obtained via DHCP on the
-	// macvlan/bridge interface (no static pool range or explicit gateway-ip).
-	useExternalDHCP := externalMode == "pool" && externalSource == "dhcp" && gatewayIP == ""
 
 	// Validate IP address format
 	if net.ParseIP(bindIP) == nil {
@@ -1104,6 +1087,18 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Generate SSL certificates (with bind IP in SANs for multi-node support)
 	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP)
 
+	// Generate per-node IPsec peer cert when cluster-wide IPsec is enabled
+	// (default true). Reuses the cluster CA — no intermediate strongSwan PKI.
+	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
 	// Install CA certificate into system trust store
 	installCACertificate(filepath.Join(configDir, "ca.pem"))
 
@@ -1125,30 +1120,31 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	isMultiNode := nodes >= 2
 
 	if isMultiNode {
-		// Build cluster-wide network config for propagation to joining nodes
-		var networkConfig *formation.NetworkConfig
+		// Build cluster-wide network config for propagation to joining nodes.
+		// Always emit so the IPSecEnabled flag reaches joiners even when
+		// external networking is disabled.
+		networkConfig := &formation.NetworkConfig{
+			IPSecEnabled: ipsecEnabled,
+		}
 		if externalMode != "" {
 			bootstrapVpcId := utils.GenerateResourceID("vpc")
 			bootstrapSubnetId := utils.GenerateResourceID("subnet")
 			bootstrapIgwId := utils.GenerateResourceID("igw")
-			networkConfig = &formation.NetworkConfig{
-				ExternalMode:        externalMode,
-				ExternalDHCP:        useExternalDHCP,
-				PoolName:            "wan",
-				PoolSource:          externalSource,
-				PoolStart:           poolStart,
-				PoolEnd:             poolEnd,
-				PoolGateway:         externalGateway,
-				PoolGatewayIP:       gatewayIP,
-				PoolPrefixLen:       externalPrefixLen,
-				PoolDNSServers:      dnsServers,
-				BootstrapAccountId:  admin.DefaultAccountID(),
-				BootstrapVpcId:      bootstrapVpcId,
-				BootstrapSubnetId:   bootstrapSubnetId,
-				BootstrapIgwId:      bootstrapIgwId,
-				BootstrapCidr:       handlers_ec2_vpc.DefaultVPCCidr,
-				BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
-			}
+			networkConfig.ExternalMode = externalMode
+			networkConfig.PoolName = "wan"
+			networkConfig.PoolSource = externalSource
+			networkConfig.PoolStart = poolStart
+			networkConfig.PoolEnd = poolEnd
+			networkConfig.PoolGateway = externalGateway
+			networkConfig.PoolGatewayIP = gatewayIP
+			networkConfig.PoolPrefixLen = externalPrefixLen
+			networkConfig.PoolDNSServers = dnsServers
+			networkConfig.BootstrapAccountId = admin.DefaultAccountID()
+			networkConfig.BootstrapVpcId = bootstrapVpcId
+			networkConfig.BootstrapSubnetId = bootstrapSubnetId
+			networkConfig.BootstrapIgwId = bootstrapIgwId
+			networkConfig.BootstrapCidr = handlers_ec2_vpc.DefaultVPCCidr
+			networkConfig.BootstrapSubnetCidr = handlers_ec2_vpc.DefaultSubnetCidr
 		}
 
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, natsToken, clusterName,
@@ -1248,8 +1244,6 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		ExternalMode:   externalMode,
 		ExternalIface:  externalIface,
-		DhcpBindBridge: detectedDhcpBindBridge(detectedNet),
-		ExternalDHCP:   useExternalDHCP,
 		PoolName:       "wan",
 		PoolSource:     externalSource,
 		PoolStart:      poolStart,
@@ -1268,6 +1262,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
 
 		GPUPassthrough: gpuPassthrough,
+		IPSecEnabled:   ipsecEnabled,
 	}
 
 	// Print external networking summary
@@ -1278,10 +1273,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			fmt.Printf("  Source:        static (IP range)\n")
 			fmt.Printf("  IP pool:       %s - %s\n", poolStart, poolEnd)
 			fmt.Printf("  ⚠️  Ensure %s-%s is excluded from your router's DHCP range.\n", poolStart, poolEnd)
-		} else if useExternalDHCP {
-			fmt.Printf("  Source:        dhcp (from router DHCP)\n")
-			fmt.Println("  Gateway IP:    DHCP (obtained during OVN setup)")
-		} else if gatewayIP != "" {
+		}
+		if gatewayIP != "" {
 			fmt.Printf("  Gateway IP:    %s (static)\n", gatewayIP)
 		}
 	}
@@ -1861,6 +1854,24 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("✅ Server certificate generated with bind IP: %s\n\n", bindIP)
 
+	// Match the leader's intra-AZ IPsec posture: NetworkConfig.IPSecEnabled is
+	// authoritative. When the formation response omits NetworkConfig entirely
+	// (no current code path; defensive guard against future regressions) fall
+	// back to the AWS-parity default of ON.
+	ipsecEnabled := true
+	if statusResp.NetworkConfig != nil {
+		ipsecEnabled = statusResp.NetworkConfig.IPSecEnabled
+	}
+	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
 	// Build cluster topology from formation data
 	clusterRoutes := formation.BuildClusterRoutes(statusResp.Nodes)
 	predastoreNodes := formation.BuildPredastoreNodes(statusResp.Nodes)
@@ -2270,8 +2281,8 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // applyNetworkConfig copies cluster-wide network settings from a formation
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
+	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
-	settings.ExternalDHCP = nc.ExternalDHCP
 	settings.PoolName = nc.PoolName
 	settings.PoolSource = nc.PoolSource
 	settings.PoolStart = nc.PoolStart
@@ -2292,7 +2303,6 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 		detected, err := admin.DetectNetwork()
 		if err == nil && detected.WAN != nil {
 			settings.ExternalIface = detected.WAN.Name
-			settings.DhcpBindBridge = detectedDhcpBindBridge(detected)
 		}
 	}
 }
@@ -2399,29 +2409,6 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 	}
 
 	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
-}
-
-// detectedDhcpBindBridge returns the bridge name where the vpcd DHCP client
-// should bind its AF_PACKET socket — i.e. the interface that physically sees
-// LAN DHCP traffic.
-//
-//   - Default route on a bridge (Linux or OVS, `br-*` prefix): return the
-//     bridge name verbatim. In veth mode this is the Linux bridge holding the
-//     WAN NIC; in direct mode this is the OVS bridge holding the WAN NIC.
-//   - Default route on a bare physical NIC: return "br-wan" as the name the
-//     installer will create.
-//
-// Never returns "br-ext". br-ext is the OVN-side bridge owned by
-// setup-ovn.sh's ovn-bridge-mappings and never sees LAN DHCP frames.
-func detectedDhcpBindBridge(detected *admin.DetectedNetwork) string {
-	if detected == nil || detected.WAN == nil {
-		return ""
-	}
-	name := detected.WAN.Name
-	if strings.HasPrefix(name, "br-") {
-		return name
-	}
-	return "br-wan"
 }
 
 // detectDNSServers auto-detects DNS servers from the host for the specified

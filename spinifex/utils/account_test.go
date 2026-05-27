@@ -114,3 +114,21 @@ func TestVersionStateMachine(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "5", string(entry.Value()))
 }
+
+func TestDeleteKVBucketIfExists(t *testing.T) {
+	_, js := startJSNATSServer(t)
+
+	// Missing bucket is a no-op.
+	require.NoError(t, DeleteKVBucketIfExists(js, "ghost-bucket"))
+
+	// Existing bucket gets deleted.
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "doomed-bucket"})
+	require.NoError(t, err)
+	require.NoError(t, DeleteKVBucketIfExists(js, "doomed-bucket"))
+
+	_, err = js.KeyValue("doomed-bucket")
+	require.Error(t, err, "bucket should be gone")
+
+	// Calling again on the now-missing bucket is still a no-op (idempotent).
+	require.NoError(t, DeleteKVBucketIfExists(js, "doomed-bucket"))
+}

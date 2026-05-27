@@ -16,9 +16,7 @@
 # Options:
 #   --management         Also start OVN central services (NB DB, SB DB, ovn-northd)
 #   --wan-bridge=NAME    OVS bridge for WAN traffic (default: auto-detect from default route)
-#   --wan-iface=NAME     Physical NIC to add to the WAN bridge (use with --wan-bridge or --macvlan)
-#   --macvlan            Create macvlan off --wan-iface instead of moving NIC directly.
-#                        SSH-safe for single-NIC hosts where WAN NIC carries SSH.
+#   --wan-iface=NAME     Physical NIC to add to the WAN bridge (use with --wan-bridge)
 #   --dhcp               Obtain gateway IP via DHCP on the WAN bridge interface
 #   --mgmt-bridge=NAME   OVS bridge for system-instance control plane (default: br-mgmt)
 #   --mgmt-cidr=CIDR     IPv4 CIDR to assign on the mgmt bridge (default: 10.15.8.1/24)
@@ -41,9 +39,6 @@
 #   # Dedicated WAN NIC (not your SSH NIC — you take responsibility):
 #   ./scripts/setup-ovn.sh --management --wan-bridge=br-wan --wan-iface=eth1
 #
-#   # Single-NIC host (SSH-safe macvlan):
-#   ./scripts/setup-ovn.sh --management --macvlan --wan-iface=eth0
-#
 #   # Compute node joining an existing cluster:
 #   ./scripts/setup-ovn.sh --ovn-remote=tcp:10.0.0.1:6642 --encap-ip=10.0.0.2
 #
@@ -56,7 +51,6 @@ set -e
 MANAGEMENT=false
 WAN_BRIDGE=""
 WAN_IFACE=""
-MACVLAN_MODE=false
 EXTERNAL_DHCP=false
 MGMT_BRIDGE_ENABLED=true
 MGMT_BRIDGE="br-mgmt"
@@ -64,12 +58,19 @@ MGMT_CIDR="10.15.8.1/24"
 MGMT_IFACE=""
 OVN_REMOTE="tcp:127.0.0.1:6642"
 ENCAP_IP=""
+# NODE_NAME is left empty by default. The chassis-id pin block at Step 4
+# only runs when --node-name=NAME is explicitly given. Passing nothing
+# preserves whatever system-id already lives in OVS (gold-image UUID,
+# bootstrap-install.sh's pre-written nodeN, manual ansible value, etc.).
+# Bootstrap callers that want IPsec-cert-identity matching pin the
+# system-id themselves before / after invoking setup-ovn.sh — they
+# don't need this script to do it for them.
+NODE_NAME=""
 
 # Parse arguments
 for arg in "$@"; do
     case "$arg" in
         --management)       MANAGEMENT=true ;;
-        --macvlan)          MACVLAN_MODE=true ;;
         --dhcp)             EXTERNAL_DHCP=true ;;
         --wan-bridge=*)     WAN_BRIDGE="${arg#*=}" ;;
         --wan-iface=*)      WAN_IFACE="${arg#*=}" ;;
@@ -79,6 +80,7 @@ for arg in "$@"; do
         --no-mgmt-bridge)   MGMT_BRIDGE_ENABLED=false ;;
         --ovn-remote=*)     OVN_REMOTE="${arg#*=}" ;;
         --encap-ip=*)       ENCAP_IP="${arg#*=}" ;;
+        --node-name=*)      NODE_NAME="${arg#*=}" ;;
         --help|-h)
             head -50 "$0" | tail -48
             exit 0
@@ -92,15 +94,13 @@ done
 
 # --- WAN bridge auto-detection ---
 # Determine the WAN bridge name and how to set it up.
-WAN_BRIDGE_MODE=""  # "existing", "veth", "direct", "macvlan", or ""
+WAN_BRIDGE_MODE=""  # "existing", "veth", "direct", or ""
 LINUX_BRIDGE=""     # Set when WAN_BRIDGE_MODE="veth" — the Linux bridge behind the veth pair
 
 detect_wan_bridge() {
     # If --wan-bridge was explicitly given, use it
     if [ -n "$WAN_BRIDGE" ]; then
-        if [ "$MACVLAN_MODE" = true ] && [ -n "$WAN_IFACE" ]; then
-            WAN_BRIDGE_MODE="macvlan"
-        elif [ -n "$WAN_IFACE" ]; then
+        if [ -n "$WAN_IFACE" ]; then
             WAN_BRIDGE_MODE="direct"
         elif sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
             WAN_BRIDGE_MODE="existing"
@@ -108,17 +108,6 @@ detect_wan_bridge() {
             # Bridge doesn't exist yet and no --wan-iface — create empty OVS bridge
             WAN_BRIDGE_MODE="existing"
         fi
-        return
-    fi
-
-    # If --macvlan was given without --wan-bridge, we need --wan-iface
-    if [ "$MACVLAN_MODE" = true ]; then
-        if [ -z "$WAN_IFACE" ]; then
-            echo "ERROR: --macvlan requires --wan-iface=<NIC>"
-            exit 1
-        fi
-        WAN_BRIDGE="br-wan"
-        WAN_BRIDGE_MODE="macvlan"
         return
     fi
 
@@ -176,10 +165,7 @@ detect_wan_bridge() {
     echo "  2. Dedicated WAN NIC (NOT your SSH connection):"
     echo "     ./scripts/setup-ovn.sh --management --wan-bridge=br-wan --wan-iface=$default_dev"
     echo ""
-    echo "  3. Single-NIC host (SSH-safe macvlan):"
-    echo "     ./scripts/setup-ovn.sh --management --macvlan --wan-iface=$default_dev"
-    echo ""
-    echo "  4. No external networking (overlay-only):"
+    echo "  3. No external networking (overlay-only):"
     echo "     ./scripts/setup-ovn.sh --management --encap-ip=$wan_ip"
     echo "============================================================"
     echo ""
@@ -224,32 +210,31 @@ echo "  OVN Remote (SB):  $OVN_REMOTE"
 echo "  Encap IP:         $ENCAP_IP"
 echo ""
 
-# --- Step 1: Install packages ---
-echo "Step 1: Checking OVN/OVS packages..."
+# Packages (openvswitch-switch, ovn-host, openvswitch-ipsec, strongswan-charon,
+# and ovn-central on management nodes) are baked into the gold image via
+# scripts/tofu-cluster/image-builder/scripts/provision.sh. Runtime apt-get
+# was removed to keep CI off the (flaky) apt-cacher-ng path. If a package is
+# missing, the downstream ovs/ovn commands will fail loudly — the fix is to
+# rebuild the gold image, not to re-add apt-get here.
 
-install_packages() {
-    local missing=()
-    for pkg in openvswitch-switch ovn-host; do
-        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-            missing+=("$pkg")
-        fi
-    done
-    if [ "$MANAGEMENT" = true ]; then
-        if ! dpkg -s ovn-central >/dev/null 2>&1; then
-            missing+=("ovn-central")
-        fi
-    fi
-
-    if [ ${#missing[@]} -gt 0 ]; then
-        echo "  Installing: ${missing[*]}"
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq "${missing[@]}"
-    else
-        echo "  All packages installed"
-    fi
-}
-
-install_packages
+# strongswan-charon ships an AppArmor profile for /usr/lib/ipsec/charon that
+# only allows reading from /etc/ipsec.*, /etc/strongswan.*, and a few other
+# fixed paths. ovs-monitor-ipsec writes the per-tunnel strongSwan config with
+# absolute paths to our peer cert + key under /etc/spinifex/ipsec/ AND to the
+# cluster CA at /etc/spinifex/ca.pem, so charon hits "Permission denied" on
+# both load paths and surfaces as `no trusted RSA public key found for
+# '<peer>'` (CA can't be loaded → can't validate peer cert chain → no SAs).
+# The profile includes a 'local' override file expressly for site additions
+# — grant reads on /etc/spinifex/** (covers ca.pem AND ipsec/peer.{pem,key})
+# and reload.
+if [ -d /etc/apparmor.d/local ]; then
+    LOCAL_OVERRIDE=/etc/apparmor.d/local/usr.lib.ipsec.charon
+    # Always rewrite — re-runs may have an older, narrower rule (e.g. the
+    # initial /etc/spinifex/ipsec/** only) that misses /etc/spinifex/ca.pem.
+    echo "  Adding AppArmor read grant for /etc/spinifex (cert + CA) to charon profile"
+    echo "/etc/spinifex/** r," | sudo tee "$LOCAL_OVERRIDE" >/dev/null
+    sudo apparmor_parser -r /etc/apparmor.d/usr.lib.ipsec.charon 2>/dev/null || true
+fi
 
 # --- Step 2: Enable services ---
 echo ""
@@ -296,7 +281,6 @@ echo "  br-int: created, fail-mode=secure, up"
 # rule => default management => no carrier => link down). OVS dataplane
 # still forwards, but ovn-controller flow programming and any tooling that
 # probes link state misbehave. Unmanaged=yes keeps OVS in sole control.
-# (mulga-siv-37)
 OVS_INTERNAL_NET=/etc/systemd/network/05-spinifex-ovs-internal.network
 if [ ! -f "$OVS_INTERNAL_NET" ]; then
     sudo tee "$OVS_INTERNAL_NET" >/dev/null <<'NETWORK'
@@ -477,36 +461,6 @@ NETWORK
             echo "  $WAN_BRIDGE: direct bridge on $WAN_IFACE"
             echo "  NOTE: $WAN_IFACE is now an OVS port — no host IP on this NIC"
             ;;
-
-        macvlan)
-            # Create a macvlan sub-interface in bridge mode off the WAN NIC.
-            # The host keeps its IP on the parent NIC — SSH-safe. OVN localnet
-            # traffic flows through the macvlan to the physical wire.
-            if ! ip link show "$WAN_IFACE" >/dev/null 2>&1; then
-                echo "  ERROR: interface $WAN_IFACE does not exist"
-                echo "  Available interfaces:"
-                ip -o link show | awk -F': ' '{print "    " $2}'
-                exit 1
-            fi
-
-            MACVLAN_NAME="spx-ext-${WAN_IFACE}"
-
-            sudo ovs-vsctl --may-exist add-br "$WAN_BRIDGE"
-            sudo ip link set "$WAN_BRIDGE" up
-
-            if ip link show "$MACVLAN_NAME" >/dev/null 2>&1; then
-                echo "  macvlan $MACVLAN_NAME already exists"
-            else
-                sudo ip link add "$MACVLAN_NAME" link "$WAN_IFACE" type macvlan mode bridge
-                echo "  created macvlan: $MACVLAN_NAME (bridge mode) on $WAN_IFACE"
-            fi
-
-            sudo ip link set "$MACVLAN_NAME" up
-            sudo ovs-vsctl --may-exist add-port "$WAN_BRIDGE" "$MACVLAN_NAME"
-            echo "  $WAN_BRIDGE: macvlan port $MACVLAN_NAME on $WAN_IFACE"
-            echo "  NOTE: host keeps its IP on $WAN_IFACE (SSH-safe)"
-            echo "  QUIRK: host cannot reach VMs at their public IPs (macvlan isolation)"
-            ;;
     esac
 
     # --- DHCP: obtain gateway IP for OVN SNAT ---
@@ -514,13 +468,8 @@ NETWORK
         echo ""
         echo "Step 3c: Obtaining external gateway IP via DHCP..."
 
-        # For macvlan mode, DHCP on the macvlan interface (it has L2 access to WAN).
-        # For direct/existing bridge, DHCP on the bridge itself.
-        if [ "$WAN_BRIDGE_MODE" = "macvlan" ]; then
-            DHCP_IFACE="spx-ext-${WAN_IFACE}"
-        else
-            DHCP_IFACE="$WAN_BRIDGE"
-        fi
+        # DHCP on the WAN bridge itself (direct/existing/veth).
+        DHCP_IFACE="$WAN_BRIDGE"
 
         # Run DHCP client to get a lease
         if command -v dhcpcd >/dev/null 2>&1; then
@@ -629,11 +578,33 @@ else
         external_ids:ovn-encap-type="geneve"
 fi
 
-# system-id is owned by the openvswitch-switch package (persisted in
-# /etc/openvswitch/system-id.conf and re-applied on every boot). Read it back
-# rather than overriding — overriding here would drift from the on-disk value
-# and the next reboot would silently flip the chassis identity (mulga-999).
-echo "  system-id:      $(sudo ovs-vsctl get open . external_ids:system-id)"
+# Pin OVS system-id (= OVN chassis-id) to NODE_NAME when --node-name was
+# explicitly given. Reasons to pin:
+#   1. IPsec identity: ovs-monitor-ipsec uses chassis-id as the IKEv2
+#      `@<name>` peer identity. Our per-node IPsec peer cert
+#      (admin.GenerateIPSecPeerCert) carries the cluster node name as CN
+#      + dnsName SAN — see spx admin init/join, which take --node NAME and
+#      bake NAME into the cert. Leaving chassis-id as the package-generated
+#      UUID would cause `received AUTHENTICATION_FAILED` because charon
+#      validates `@<UUID>` against a cert dnsName=<NODE_NAME>.
+#   2. Ops legibility: `ovn-sbctl show` lists chassis by name, not UUID.
+#
+# When --node-name is NOT given (CI bootstrap-install.sh today, dev
+# single-node bring-up, ansible roles that don't yet pass it), leave the
+# system-id alone. A hostname fallback used to live here, but on CI
+# single-node it rewrote system-id from the gold-image UUID to a
+# different hostname while the existing SBDB chassis row kept name=UUID;
+# vpcd's discoverChassis then logged "skipping stale local chassis" and
+# refused to start. Preserving the on-disk value is always safe — any
+# caller that needs IPsec cert identity matching pins it themselves.
+if [ -n "$NODE_NAME" ]; then
+    echo "$NODE_NAME" | sudo tee /etc/openvswitch/system-id.conf >/dev/null
+    sudo ovs-vsctl set Open_vSwitch . external_ids:system-id="$NODE_NAME"
+    echo "  system-id:      $NODE_NAME (pinned via --node-name)"
+else
+    CURRENT_ID=$(sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>/dev/null | tr -d '"')
+    echo "  system-id:      ${CURRENT_ID:-<unset>} (preserved; no --node-name given)"
+fi
 echo "  ovn-remote:     $OVN_REMOTE"
 echo "  ovn-encap-ip:   $ENCAP_IP"
 echo "  ovn-encap-type: geneve"
@@ -779,8 +750,20 @@ echo ""
 echo "Step 10: Enabling OVN auto-start on boot..."
 sudo systemctl enable openvswitch-switch 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
-echo "  openvswitch-switch: enabled on boot"
-echo "  ovn-controller: enabled on boot"
+# ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
+# enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
+# tunnel traffic if this unit isn't already up — enable at provision time so
+# daemon never needs systemd-write capability (only is-active read).
+sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
+# When openvswitch-ipsec is installed before strongswan-starter, the deb
+# post-install starts the service against a missing /usr/sbin/ipsec and
+# leaves it in 'failed' state. Clear the failure and restart unconditionally
+# now that strongswan-starter is present.
+sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
+sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
+echo "  openvswitch-switch:   enabled on boot"
+echo "  ovn-controller:       enabled on boot"
+echo "  openvswitch-ipsec:    enabled on boot"
 
 # --- Step 11: Health check ---
 echo ""
@@ -813,14 +796,6 @@ if [ -n "$WAN_BRIDGE" ]; then
                 echo "  direct bridge:   OK ($WAN_IFACE on $WAN_BRIDGE)"
             else
                 echo "  direct bridge:   FAILED ($WAN_IFACE not on $WAN_BRIDGE)"
-                OK=false
-            fi
-        elif [ "$WAN_BRIDGE_MODE" = "macvlan" ]; then
-            MACVLAN_NAME="spx-ext-${WAN_IFACE}"
-            if ip link show "$MACVLAN_NAME" >/dev/null 2>&1; then
-                echo "  macvlan:         OK ($MACVLAN_NAME)"
-            else
-                echo "  macvlan:         FAILED ($MACVLAN_NAME not found)"
                 OK=false
             fi
         fi

@@ -23,6 +23,7 @@
       when: reset_config_stat.stat.exists
 
     # List-concat-and-take-first pattern: missing regex match falls back to current default.
+    # `gateway\s*=` deliberately does not match `gateway_ip` / `gateway_lrp_*`.
     - name: capture — extract scalars
       ansible.builtin.set_fact:
         spinifex_region: "{{ (reset_config_txt | regex_findall('region\\s*=\\s*\"([^\"]+)\"') + [spinifex_region])[0] }}"
@@ -30,10 +31,24 @@
         spinifex_external_mode: "{{ (reset_config_txt | regex_findall('external_mode\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_mode])[0] }}"
         spinifex_external_pool_start: "{{ (reset_config_txt | regex_findall('range_start\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_pool_start])[0] }}"
         spinifex_external_pool_end: "{{ (reset_config_txt | regex_findall('range_end\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_pool_end])[0] }}"
-        spinifex_external_gateway: "{{ (reset_config_txt | regex_findall('gateway\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_gateway])[0] }}"
+        spinifex_external_gateway: "{{ (reset_config_txt | regex_findall('\\bgateway\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_gateway])[0] }}"
         spinifex_external_prefix_len: "{{ (reset_config_txt | regex_findall('prefix_len\\s*=\\s*([0-9]+)') + [spinifex_external_prefix_len | string])[0] }}"
-        spinifex_nat_gateway_ip: "{{ (reset_config_txt | regex_findall('gateway_ip\\s*=\\s*\"([^\"]+)\"') + [spinifex_nat_gateway_ip])[0] }}"
+        spinifex_external_gateway_ip: "{{ (reset_config_txt | regex_findall('gateway_ip\\s*=\\s*\"([^\"]+)\"') + [spinifex_external_gateway_ip])[0] }}"
       when: reset_config_stat.stat.exists
+
+    # Legacy: external_mode = "nat" was removed from spx. Coerce to "pool"
+    # so old configs still reset cleanly; warn so the operator notices.
+    - name: capture — coerce legacy external_mode=nat to pool
+      ansible.builtin.set_fact:
+        spinifex_external_mode: "pool"
+      when: spinifex_external_mode == 'nat'
+
+    - name: capture — warn on legacy nat coercion
+      ansible.builtin.debug:
+        msg: "⚠️  Captured external_mode=nat from legacy config; coerced to 'pool' (NAT mode removed from spx admin init)."
+      when:
+        - reset_config_stat.stat.exists
+        - (reset_config_txt | regex_findall('external_mode\\s*=\\s*\"nat\"')) | length > 0
 
     - name: capture — summary
       ansible.builtin.debug:
@@ -44,7 +59,7 @@
             external_mode={{ spinifex_external_mode }}
             pool={{ spinifex_external_pool_start }}-{{ spinifex_external_pool_end }}
             gateway={{ spinifex_external_gateway }}, prefix={{ spinifex_external_prefix_len }}
-            nat_gateway={{ spinifex_nat_gateway_ip }}
+            gateway_ip={{ spinifex_external_gateway_ip }}
           {% else %}
           No existing config; using defaults from vars/defaults.yml (or -e overrides).
           {% endif %}

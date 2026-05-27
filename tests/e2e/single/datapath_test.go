@@ -45,6 +45,7 @@ systemd-run --unit=sge-http --description="Phase 8e HTTP server" \
 func runSGToSGDatapath(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Security Group SG-to-SG Datapath (OVN)")
 	harness.SkipIfNoOVN(t)
+	requireSSHHealthy(t)
 
 	// Bootstrap every prereq up front. runSGEInstance / primaryENI use
 	// `fix.AMIID / InstanceType / KeyName / KeyPath` indirectly; resolve

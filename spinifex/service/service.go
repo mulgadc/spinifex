@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/services/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/services/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
-	"github.com/mulgadc/spinifex/spinifex/services/vpcd"
+	"github.com/mulgadc/spinifex/spinifex/vpcd"
 )
 
 type Service interface {

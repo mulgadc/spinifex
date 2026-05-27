@@ -2536,40 +2536,68 @@ func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
 }
 
 func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
-	eni := &fakeENICreator{
-		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
-		createOut: &ec2.CreateNetworkInterfaceOutput{
-			NetworkInterface: &ec2.NetworkInterface{
-				NetworkInterfaceId: aws.String("eni-2"),
-				MacAddress:         aws.String("aa:bb:cc:dd:ee:00"),
-				PrivateIpAddress:   aws.String("10.0.0.20"),
-				VpcId:              aws.String("vpc-1"),
-			},
-		},
+	cases := []struct {
+		name        string
+		mapOnLaunch bool
+		nicOverride *bool
+		wantPublic  bool
+	}{
+		{name: "subnet_true_no_override", mapOnLaunch: true, nicOverride: nil, wantPublic: true},
+		{name: "subnet_false_override_true", mapOnLaunch: false, nicOverride: aws.Bool(true), wantPublic: true},
+		{name: "subnet_true_override_false", mapOnLaunch: true, nicOverride: aws.Bool(false), wantPublic: false},
 	}
-	ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
-	svc, _ := prepareSvcWithENI(t, eni, ipam)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: tc.mapOnLaunch},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-2"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:00"),
+						PrivateIpAddress:   aws.String("10.0.0.20"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
+			svc, _ := prepareSvcWithENI(t, eni, ipam)
 
-	// vpc.add-nat is now request-reply: the helper waits for vpcd to ack
-	// before the launch proceeds. The happy path needs a success responder.
-	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
-		_ = msg.Respond([]byte(`{"success":true}`))
-	})
-	require.NoError(t, err)
-	defer func() { _ = sub.Unsubscribe() }()
+			// vpc.add-nat is now request-reply: the helper waits for vpcd to
+			// ack before the launch proceeds. The happy path needs a success
+			// responder.
+			sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+				_ = msg.Respond([]byte(`{"success":true}`))
+			})
+			require.NoError(t, err)
+			defer func() { _ = sub.Unsubscribe() }()
 
-	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
-		InstanceType: aws.String("t3.micro"),
-		ImageId:      aws.String("ami-1"),
-		SubnetId:     aws.String("subnet-1"),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-	}, "acc")
-	require.NoError(t, err)
-	require.Len(t, instances, 1)
-	assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
-	assert.Equal(t, "pool-a", instances[0].PublicIPPool)
-	assert.Equal(t, 1, eni.updateCalls)
+			input := &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}
+			if tc.nicOverride != nil {
+				input.NetworkInterfaces = []*ec2.InstanceNetworkInterfaceSpecification{
+					{AssociatePublicIpAddress: tc.nicOverride},
+				}
+			}
+
+			_, instances, _, err := svc.PrepareRunInstances(input, "acc")
+			require.NoError(t, err)
+			require.Len(t, instances, 1)
+			if tc.wantPublic {
+				assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
+				assert.Equal(t, "pool-a", instances[0].PublicIPPool)
+				assert.Equal(t, 1, eni.updateCalls)
+			} else {
+				assert.Empty(t, instances[0].PublicIP)
+				assert.Empty(t, instances[0].PublicIPPool)
+				assert.Equal(t, 0, eni.updateCalls)
+			}
+		})
+	}
 }
 
 // TestPrepareRunInstances_NATFailureRollsBackPublicIP regresses the silent

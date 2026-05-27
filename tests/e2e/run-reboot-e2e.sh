@@ -286,7 +286,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now reboot-e2e-httpd.service
 
-# Workaround for viperblock WAL <4MB skip-upload bug (mulga-siv-122):
+# Workaround for viperblock WAL <4MB skip-upload bug:
 # WriteWALToChunk(false) is a no-op when the WAL is under 4MB so small
 # user-data writes (the unit file, index.html) sit in the on-host WAL
 # and are lost when the host reboots before the WAL hits the threshold.
@@ -544,7 +544,7 @@ if [ "$IPS_PRESERVED" = true ]; then
 fi
 
 # 8.3: guest VMs relaunched post-reboot (LaunchTime > reboot time via describe-instances)
-# Two-hop SSH to VPC private IPs is not possible in single-node macvlan mode —
+# Two-hop SSH to VPC private IPs is not possible in single-node mode —
 # the host has no route to VPC subnets. LaunchTime from the daemon's recovery
 # path (reset to time.Now() on relaunch) is a reliable reboot signal.
 log "Verifying guest VMs relaunched post-reboot (LaunchTime check)..."

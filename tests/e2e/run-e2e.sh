@@ -285,6 +285,21 @@ if [ $AUTH_EXIT -ne 0 ] && ! echo "$AUTH_OUTPUT" | grep -q 'InvalidPermission.Du
 fi
 echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
+# Phase 5f exercises ICMP egress through OVN; the reply path needs explicit
+# ICMP ingress on the default SG even though SGs are stateful in AWS — keeps
+# parity with the Go single-suite fixture.
+set +e
+ICMP_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+    --group-id "$DEFAULT_SG_PHASE5" \
+    --protocol icmp --port -1 --cidr 0.0.0.0/0 2>&1)
+ICMP_EXIT=$?
+set -e
+if [ $ICMP_EXIT -ne 0 ] && ! echo "$ICMP_OUTPUT" | grep -q 'InvalidPermission.Duplicate'; then
+    echo "Failed to authorize ICMP ingress on default SG: $ICMP_OUTPUT"
+    exit 1
+fi
+echo "  Default SG ingress: icmp from 0.0.0.0/0"
+
 # Launch a VM (run-instances)
 echo "Running: aws ec2 run-instances --image-id $AMI_ID --instance-type $INSTANCE_TYPE --key-name test-key-1"
 # Capture full output for debugging
@@ -3240,7 +3255,7 @@ if [ "$PUB_SSH_READY" = true ]; then
         exit 1
     fi
 else
-    echo "WARN: SSH via public IP $PUB_IP not reachable (macvlan isolation or bridge not ready)"
+    echo "WARN: SSH via public IP $PUB_IP not reachable (bridge not ready)"
     echo "Falling back to API-only verification (OVN state already validated above)"
 fi
 
@@ -3437,10 +3452,60 @@ echo "  PASS: Bastion → private instance SSH works (hostname: $PRIV_HOSTNAME)"
     done
     if [ "$NAT_GW_OK" = false ]; then
         echo "  FAIL: Private instance cannot reach internet WITH NAT GW after 10 attempts"
-        echo "  Dumping OVN NAT rules for debugging:"
-        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
-        echo "  OVN routes:"
-        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>/dev/null || true
+        echo ""
+        echo "==================== Phase 8d failure diagnostics ===================="
+        echo "VPC: vpc-${DEFAULT_VPC}"
+        echo "Private subnet: ${PRIV_SUBNET_ID} (private VM IP: ${PRIV_PRIVATE_IP})"
+        echo "NATGW: ${NAT_GW_ID} → ${NAT_PUB_IP}"
+        echo ""
+        echo "--- ovn-nbctl lr-nat-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-nat-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl lr-route-list vpc-${DEFAULT_VPC} ---"
+        sudo ovn-nbctl --no-leader-only lr-route-list "vpc-${DEFAULT_VPC}" 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl show ---"
+        sudo ovn-nbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl show ---"
+        sudo ovn-sbctl --no-leader-only show 2>&1 || true
+        echo ""
+        echo "--- ovn-sbctl list chassis ---"
+        sudo ovn-sbctl --no-leader-only list chassis 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Port_Group (membership + ACLs) ---"
+        sudo ovn-nbctl --no-leader-only --columns=name,ports,acls find Port_Group 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl list ACL (all VPC ACLs) ---"
+        sudo ovn-nbctl --no-leader-only list ACL 2>&1 || true
+        echo ""
+        echo "--- ovn-nbctl find Logical_Switch_Port name=*${PRIV_PRIVATE_IP//./_}* (private VM LSP) ---"
+        sudo ovn-nbctl --no-leader-only find Logical_Switch_Port addresses=\"*${PRIV_PRIVATE_IP}*\" 2>&1 || true
+        echo ""
+        echo "--- ovs-vsctl show ---"
+        sudo ovs-vsctl show 2>&1 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int (filtered: NATGW IP/subnet/private IP) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 \
+            | grep -E "${NAT_PUB_IP//./\\.}|172\\.31\\.16\\.|${PRIV_PRIVATE_IP//./\\.}" \
+            | head -200 || true
+        echo ""
+        echo "--- ovs-ofctl dump-flows br-int | wc -l (total flows) ---"
+        sudo ovs-ofctl dump-flows br-int 2>&1 | wc -l || true
+        echo ""
+        echo "--- ip route show ---"
+        ip route show 2>&1 || true
+        echo ""
+        echo "--- ip -br addr show ---"
+        ip -br addr show 2>&1 || true
+        echo ""
+        echo "--- private VM: ip addr / ip route / ip neigh ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ip -br addr; echo ---; ip route; echo ---; ip neigh'" 2>&1 || true
+        echo ""
+        echo "--- private VM: ping -c 1 subnet gateway (172.31.16.1) ---"
+        $BASTION_SSH "$PRIV_SSH_CMD 'ping -c 1 -W 3 172.31.16.1; echo rc=\$?'" 2>&1 || true
+        echo ""
+        echo "==================== end Phase 8d diagnostics ===================="
         exit 1
     fi
 

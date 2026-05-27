@@ -30,7 +30,7 @@ func setupTestEIP(t *testing.T) (*EIPServiceImpl, *handlers_ec2_vpc.ExternalIPAM
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	pool := testPool()
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(nc, js, []handlers_ec2_vpc.ExternalPoolConfig{pool})
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 
 	svc, err := NewEIPServiceImpl(nc, ipam, nil)
@@ -562,7 +562,7 @@ func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 // writes PortName into NAT.LogicalPort in distributed NAT mode (direct bridge),
 // so a mismatch with the OVN logical switch port name ("port-<eni>") produces
 // a dnat_and_snat row pointing at a nonexistent port — OVN never programs the
-// flow and the EIP black-holes. See mulga-js-17.
+// flow and the EIP black-holes.
 func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 

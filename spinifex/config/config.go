@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -22,7 +23,7 @@ type ClusterConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default) or "dhcp" (from router DHCP)
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default; only valid value)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
 	RangeEnd   string   `mapstructure:"range_end"`   // Last IP in range (static source only)
 	Gateway    string   `mapstructure:"gateway"`     // WAN default gateway (next hop for 0.0.0.0/0)
@@ -32,11 +33,11 @@ type ExternalPool struct {
 	Region     string   `mapstructure:"region"`      // Scope to region (optional — empty means any region)
 	AZ         string   `mapstructure:"az"`          // Scope to AZ (optional — empty means any AZ in region)
 	// GwLrpRangeStart/End reserve a sub-range of the LAN for OVN gateway LRP IPs
-	// in centralized NAT mode (veth/macvlan). Each VPC consumes one IP from this
+	// in centralized NAT mode (veth). Each VPC consumes one IP from this
 	// range so its gateway router port can ARP with a sender IP on the LAN
 	// subnet — link-local 169.254.0.1/30 makes upstream routers reject ARP per
-	// RFC 826 (mulga-siv-36). Must NOT overlap [RangeStart, RangeEnd] or IPAM
-	// and vpcd will fight over the same IP.
+	// RFC 826. Must NOT overlap [RangeStart, RangeEnd] or IPAM and vpcd will
+	// fight over the same IP.
 	GwLrpRangeStart string `mapstructure:"gw_lrp_range_start"`
 	GwLrpRangeEnd   string `mapstructure:"gw_lrp_range_end"`
 }
@@ -44,8 +45,11 @@ type ExternalPool struct {
 // NetworkConfig holds cluster-wide external network settings.
 type NetworkConfig struct {
 	ExternalMode  string         `mapstructure:"external_mode"`  // "pool" or "" (disabled)
-	ExternalDHCP  bool           `mapstructure:"external_dhcp"`  // Gateway IP obtained via DHCP (pool/dhcp source)
 	ExternalPools []ExternalPool `mapstructure:"external_pools"` // One or more IP pools
+	// IPSecEnabled toggles OVN native IPsec on every node for intra-AZ Geneve
+	// (AES-256-GCM via strongSwan). Default true. Operators can flip off for
+	// trusted single-rack lab topologies; production edge stays on.
+	IPSecEnabled bool `mapstructure:"ipsec_enabled"`
 }
 
 // BootstrapConfig holds the default VPC infrastructure IDs written by admin init.
@@ -103,14 +107,7 @@ type VPCDConfig struct {
 	OVNNBAddr         string `json:"OVNNBAddr" mapstructure:"ovn_nb_addr"`                // OVN Northbound DB address (e.g., "tcp:127.0.0.1:6641")
 	OVNSBAddr         string `json:"OVNSBAddr" mapstructure:"ovn_sb_addr"`                // OVN Southbound DB address (e.g., "tcp:127.0.0.1:6642")
 	ExternalInterface string `json:"ExternalInterface" mapstructure:"external_interface"` // WAN NIC name (e.g., "eth1", "enp0s3") — the physical NIC on the WAN bridge
-	// DhcpBindBridge is the bridge where the DHCP client binds its AF_PACKET
-	// socket — the interface that physically sees LAN DHCP traffic. On hosts
-	// where the WAN NIC is enslaved to a Linux bridge (netplan default), this
-	// is the Linux bridge name (e.g. "br-wan"). On direct-OVS hosts, it is
-	// the OVS bridge holding the WAN NIC. Never set to the OVN-side bridge
-	// ("br-ext") — that never sees LAN DHCP traffic.
-	DhcpBindBridge string `json:"DhcpBindBridge" mapstructure:"dhcp_bind_bridge"`
-	BridgeMode     string `json:"BridgeMode" mapstructure:"bridge_mode"` // "direct" or "veth" (auto-detected if empty)
+	BridgeMode        string `json:"BridgeMode" mapstructure:"bridge_mode"`               // "direct" or "veth" (auto-detected if empty)
 }
 
 type PredastoreConfig struct {
@@ -212,6 +209,10 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	viper.SetEnvPrefix("SPINIFEX")
 	viper.AutomaticEnv()
 
+	// network.ipsec_enabled defaults to true (intra-AZ Geneve encrypted via OVN
+	// native IPsec). Operators must explicitly set false to disable.
+	viper.SetDefault("network.ipsec_enabled", true)
+
 	// Try to load config file if it exists
 	if configPath != "" {
 		// Check if file exists
@@ -244,5 +245,66 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 		}
 	}
 
+	if err := validateClusterConfig(&config); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// validateClusterConfig rejects legacy upstream-DHCP config and validates
+// external pool ranges. The upstream-DHCP-client model was replaced by static
+// WAN-pool allocation; legacy keys must be removed from the operator's TOML.
+func validateClusterConfig(cc *ClusterConfig) error {
+	if viper.IsSet("network.external_dhcp") {
+		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
+	}
+	for nodeName := range cc.Nodes {
+		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
+			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
+		}
+	}
+
+	type poolRange struct {
+		name  string
+		start netip.Addr
+		end   netip.Addr
+	}
+	var ranges []poolRange
+	for _, p := range cc.Network.ExternalPools {
+		if p.Source != "" && p.Source != "static" {
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q is no longer supported; use source=\"static\" with explicit range_start/range_end", p.Name, p.Source)
+		}
+		if p.RangeStart == "" || p.RangeEnd == "" {
+			continue
+		}
+		start, err := netip.ParseAddr(p.RangeStart)
+		if err != nil {
+			return fmt.Errorf("config: pool %q range_start %q: %w", p.Name, p.RangeStart, err)
+		}
+		end, err := netip.ParseAddr(p.RangeEnd)
+		if err != nil {
+			return fmt.Errorf("config: pool %q range_end %q: %w", p.Name, p.RangeEnd, err)
+		}
+		if start.Compare(end) > 0 {
+			return fmt.Errorf("config: pool %q range_start %s > range_end %s", p.Name, start, end)
+		}
+		if p.Gateway != "" && p.PrefixLen > 0 {
+			gw, err := netip.ParseAddr(p.Gateway)
+			if err != nil {
+				return fmt.Errorf("config: pool %q gateway %q: %w", p.Name, p.Gateway, err)
+			}
+			cidr := netip.PrefixFrom(gw, p.PrefixLen).Masked()
+			if !cidr.Contains(start) || !cidr.Contains(end) {
+				return fmt.Errorf("config: pool %q range [%s, %s] not inside %s", p.Name, start, end, cidr)
+			}
+		}
+		for _, prior := range ranges {
+			if start.Compare(prior.end) <= 0 && prior.start.Compare(end) <= 0 {
+				return fmt.Errorf("config: pool %q range [%s, %s] overlaps pool %q [%s, %s]", p.Name, start, end, prior.name, prior.start, prior.end)
+			}
+		}
+		ranges = append(ranges, poolRange{name: p.Name, start: start, end: end})
+	}
+	return nil
 }

@@ -22,7 +22,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -698,17 +700,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 
 			if s.ipAllocator != nil {
 				subnet, subErr := s.eniCreator.GetSubnet(accountID, *input.SubnetId)
-				if subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch {
+				wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
+				if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
+					wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
+				}
+				if wantPublic {
 					region := s.config.Region
 					az := s.config.AZ
-					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, "auto_assign", "", *eni.NetworkInterfaceId, instance.ID)
+					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
 					if allocErr != nil {
 						slog.Warn("PrepareRunInstances: failed to allocate public IP", "instanceId", instance.ID, "err", allocErr)
 					} else {
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
 						}
-						portName := "port-" + *eni.NetworkInterfaceId
+						portName := topology.Port(*eni.NetworkInterfaceId)
 						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
 							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
@@ -1365,8 +1371,7 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 // restoreSlogDefault re-installs the daemon's Info-level slog handler after
 // viperblock.New mutates the global slog default via its SetDebug method
 // (see viperblock.go SetDebug — it calls slog.SetDefault with LevelError,
-// silencing every Info/Warn in the entire process). Tracked for proper fix
-// in viperblock as mulga-siv-70.
+// silencing every Info/Warn in the entire process).
 func restoreSlogDefault() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -2602,7 +2607,7 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceI
 	if instance.PublicIP == "" || instance.PublicIPPool == "" || s.ipReleaser == nil {
 		return
 	}
-	portName := "port-" + instance.ENIId
+	portName := topology.Port(instance.ENIId)
 	vpcID := ""
 	logicalIP := ""
 	if instance.Instance != nil {

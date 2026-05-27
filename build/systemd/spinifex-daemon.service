@@ -1,7 +1,14 @@
 [Unit]
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
-After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service
+After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service openvswitch-ipsec.service
+# Wants=openvswitch-ipsec.service so systemd brings the IPsec userspace
+# daemon up before spinifex flips other_config:ipsec_encapsulation=true.
+# Without that daemon, OVS holds the cert pointers unused and strongSwan
+# never gets IKE config — tunnel traffic is encrypted with no SAs and
+# silently dropped. Wants= (not Requires=) keeps daemon bootable on
+# single-node / lab hosts where the package is intentionally absent.
+Wants=openvswitch-ipsec.service
 # No Wants=spinifex-nats.service: Wants= reactivates a stopped unit during
 # `systemctl restart spinifex-daemon`, which would mask the standalone-startup
 # path the Tier 1 DDIL Scenario B exercises. spinifex.target Wants= covers
@@ -23,7 +30,7 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5
-# DDIL Tier 1 (mulga-siv-58): KillMode=process so systemd only signals the
+# DDIL Tier 1: KillMode=process so systemd only signals the
 # daemon's main PID, not the cgroup. QEMU children stay alive across
 # `systemctl restart spinifex-daemon` and the new daemon reattaches to them
 # via the persisted local state file + pidfile + QMP socket. With the
@@ -38,7 +45,7 @@ OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
-# DDIL Tier 1 (mulga-siv-58): QEMU pidfiles, QMP sockets, and the
+# DDIL Tier 1: QEMU pidfiles, QMP sockets, and the
 # shared qemu.log all resolve via utils.pidPath() — which falls back
 # to os.TempDir() (=/tmp) when $HOME/spinifex doesn't exist. With
 # PrivateTmp=yes, each daemon start gets a fresh /tmp namespace, so

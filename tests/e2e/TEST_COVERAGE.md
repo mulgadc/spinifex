@@ -301,7 +301,7 @@ Gated on `external_mode = "pool"` (skipped when only `dev_networking` is configu
   - `run-instances` into default subnet → auto-assigned `PublicIpAddress`
   - `ovn-nbctl lr-nat-list` shows per-instance `dnat_and_snat` rule for `PUB_PRIVATE_IP`
   - Asserts NO blanket VPC CIDR SNAT (mulga-754 AWS-parity regression)
-  - SSH via public IP succeeds (when bridge/macvlan reachable)
+  - SSH via public IP succeeds (when bridge reachable)
   - Outbound internet from inside the VM (via OVN SNAT)
   - Step 2b: In-guest TLS trust — cloud-init injects Spinifex CA into the guest, so `curl https://awsgw` and `https://predastore-s3` work without `--insecure`
 - Step 3: Private subnet isolation

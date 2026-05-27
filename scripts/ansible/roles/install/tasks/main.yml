@@ -57,7 +57,7 @@
 - name: install — run setup-ovn.sh --management
   become: true
   ansible.builtin.command:
-    cmd: /usr/local/share/spinifex/setup-ovn.sh --management
+    cmd: "/usr/local/share/spinifex/setup-ovn.sh --management --node-name={{ spinifex_node_name }}"
   changed_when: true
 
 - name: install — summary

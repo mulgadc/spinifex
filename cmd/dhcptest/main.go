@@ -89,7 +89,7 @@ func main() {
 		}
 	}
 
-	// Build nclient4 options — identical to spinifex/services/vpcd/dhcp/nclient4.go.
+	// Build nclient4 options — standalone DHCP probe for upstream-router debugging.
 	opts := []nclient4.ClientOpt{
 		nclient4.WithHWAddr(hwAddr),
 		nclient4.WithTimeout(*timeout),
@@ -105,7 +105,7 @@ func main() {
 	}
 	defer client.Close()
 
-	// Identity modifiers — identical to identityModifiers() in vpcd dhcp package.
+	// Identity modifiers — client-id / hostname / vendor-class for upstream lease tagging.
 	var mods []dhcpv4.Modifier
 	if cid != "" {
 		mods = append(mods, dhcpv4.WithOption(dhcpv4.OptClientIdentifier([]byte(cid))))

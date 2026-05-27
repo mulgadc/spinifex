@@ -32,7 +32,7 @@ const (
 type IGWRecord struct {
 	InternetGatewayId string            `json:"internet_gateway_id"`
 	VpcId             string            `json:"vpc_id,omitempty"` // empty when detached
-	State             string            `json:"state"`            // "available", "attached", "detached"
+	State             string            `json:"state"`            // "available" — AWS attachment.state is "available" when attached
 	Tags              map[string]string `json:"tags"`
 	CreatedAt         time.Time         `json:"created_at"`
 }

@@ -110,6 +110,66 @@ func TestRunInstance_Success(t *testing.T) {
 	assert.NotNil(t, ec2Instance.LaunchTime)
 }
 
+func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
+	const profileARN = "arn:aws:iam::111122223333:instance-profile/app-profile"
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:            aws.String("ami-012345"),
+		InstanceType:       aws.String("t3.micro"),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+
+	assert.Equal(t, profileARN, instance.IamInstanceProfileArn,
+		"vm.VM must record the canonical ARN supplied by the gateway")
+	assert.True(t, strings.HasPrefix(instance.IamInstanceProfileAssociationId, "iip-assoc-"),
+		"daemon must generate an AWS-style association ID at launch")
+	require.NotNil(t, ec2Instance.IamInstanceProfile)
+	assert.Equal(t, profileARN, aws.StringValue(ec2Instance.IamInstanceProfile.Arn))
+	// Id is deliberately left empty here — daemons have no IAM access, the
+	// gateway enriches Id from the resolved profile.
+	assert.Nil(t, ec2Instance.IamInstanceProfile.Id,
+		"daemon must not emit InstanceProfileID — that is the gateway's responsibility")
+}
+
+func TestRunInstance_IamInstanceProfileEmptyARNIgnored(t *testing.T) {
+	// AWS SDKs sometimes round-trip an IamInstanceProfile with both fields
+	// empty. Treat that as "no profile attached" rather than persisting a
+	// half-baked binding.
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:            aws.String("ami-012345"),
+		InstanceType:       aws.String("t3.micro"),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String("")},
+	}
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, instance.IamInstanceProfileArn)
+	assert.Empty(t, instance.IamInstanceProfileAssociationId)
+	assert.Nil(t, ec2Instance.IamInstanceProfile)
+}
+
+func TestRunInstance_NoIamInstanceProfile(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, instance.IamInstanceProfileArn)
+	assert.Empty(t, instance.IamInstanceProfileAssociationId)
+	assert.Nil(t, ec2Instance.IamInstanceProfile)
+}
+
 func TestRunInstance_NoKeyName(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},

@@ -13,7 +13,7 @@ import "testing"
 // sub-tests sharing one VPC + bastion + private trio + NAT GW setup chain.
 // Sub-test layout keeps JUnit granularity without paying 6× setup cost.
 //
-// Parallelism (mulga-siv-127 Stage J):
+// Parallelism:
 //
 // Bucket #1 (parallel): the read-only / independent Tests below call
 // t.Parallel(). They share the package-singleton trio (sync.Once gated) and

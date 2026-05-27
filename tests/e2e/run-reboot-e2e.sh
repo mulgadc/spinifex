@@ -286,7 +286,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now reboot-e2e-httpd.service
 
-# Workaround for viperblock WAL <4MB skip-upload bug (mulga-siv-122):
+# Workaround for viperblock WAL <4MB skip-upload bug:
 # WriteWALToChunk(false) is a no-op when the WAL is under 4MB so small
 # user-data writes (the unit file, index.html) sit in the on-host WAL
 # and are lost when the host reboots before the WAL hits the threshold.

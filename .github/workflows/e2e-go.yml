@@ -4,8 +4,8 @@ name: E2E (Go)
 # Mirrors e2e.yml's single-node provisioning chain but runs `go test` via
 # gotestsum so we get JUnit XML + per-test artifact directories surfaced to
 # GitHub Actions. Manual-dispatch only while the conversion lands — push
-# trigger lifts once the single-node Go port (mulga-siv-89) is green and
-# replaces run-e2e.sh; matches e2e-ddil.yml's Phase 1 trigger model.
+# trigger lifts once the single-node Go port is green and replaces
+# run-e2e.sh; matches e2e-ddil.yml's Phase 1 trigger model.
 
 on:
   workflow_dispatch:
@@ -696,7 +696,7 @@ jobs:
           SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
           # Capture per-node into the node1 ARTIFACT_DIR (where Collect pulls
           # from). One subdir per node so xfrm SA state is comparable across
-          # peers — critical for diagnosing the IPsec wiring (mulga-siv-136).
+          # peers — critical for diagnosing the IPsec wiring.
           IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
           NODE1_IP="${NODE_LIST[0]}"
           scp "${SSH_OPTS[@]}" \
@@ -745,7 +745,7 @@ jobs:
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
             ok "journal node${idx}: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null || echo 0) lines"
           done
-          # openvswitch-ipsec journal per node (separate file — bead 136).
+          # openvswitch-ipsec journal per node (separate file).
           # Debian unit name; the binary inside is /usr/share/openvswitch/scripts/ovs-ctl
           # which spawns ovs-monitor-ipsec as a child.
           for i in "${!NODE_LIST[@]}"; do
@@ -1113,7 +1113,7 @@ jobs:
     # dispatched ref, always present. The previous `&& inputs.sha` gate
     # plus `statuses/${{ inputs.sha }}` produced an 'invalid hash' error
     # whenever the workflow was dispatched without the optional input
-    # (tests passed, status step silently failed). Refs mulga-siv-112.
+    # (tests passed, status step silently failed).
     if: always()
     needs: [ e2e_go_single, e2e_go_multinode, e2e_go_reboot ]
     runs-on: [ self-hosted, ci-single ]

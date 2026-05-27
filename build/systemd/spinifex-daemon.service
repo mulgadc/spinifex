@@ -30,7 +30,7 @@ Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5
-# DDIL Tier 1 (mulga-siv-58): KillMode=process so systemd only signals the
+# DDIL Tier 1: KillMode=process so systemd only signals the
 # daemon's main PID, not the cgroup. QEMU children stay alive across
 # `systemctl restart spinifex-daemon` and the new daemon reattaches to them
 # via the persisted local state file + pidfile + QMP socket. With the
@@ -45,7 +45,7 @@ OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
-# DDIL Tier 1 (mulga-siv-58): QEMU pidfiles, QMP sockets, and the
+# DDIL Tier 1: QEMU pidfiles, QMP sockets, and the
 # shared qemu.log all resolve via utils.pidPath() — which falls back
 # to os.TempDir() (=/tmp) when $HOME/spinifex doesn't exist. With
 # PrivateTmp=yes, each daemon start gets a fresh /tmp namespace, so

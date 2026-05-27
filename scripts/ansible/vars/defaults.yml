@@ -88,7 +88,7 @@ mulga_root: "{{ lookup('pipe', 'readlink -f ' ~ playbook_dir ~ '/../../../..') }
 # `spinifex` supplementary group active. Needed because ansible's
 # `become_user` is a no-op when target user equals current user, so
 # supplementary groups are never re-initialised and /etc/spinifex/ca.pem
-# (drwxr-x--- root:spinifex) is unreadable. See mulga-siv-92.
+# (drwxr-x--- root:spinifex) is unreadable.
 spinifex_aws_cli: "{{ playbook_dir }}/../scripts/aws-as-spinifex.sh"
 spinifex_spx_cli: "{{ playbook_dir }}/../scripts/spx-as-spinifex.sh"
 

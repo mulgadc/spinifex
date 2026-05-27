@@ -1015,9 +1015,8 @@ func (d *Daemon) startCluster() error {
 	}
 
 	// Tombstone the spinifex-dhcp-leases bucket left over from the upstream-DHCP
-	// client removed in Phase 2.3 (bead mulga-siv-125.3.3). Idempotent — first
-	// daemon start on an upgraded cluster sweeps the bucket; later restarts are
-	// no-ops.
+	// client removed in Phase 2.3. Idempotent — first daemon start on an upgraded
+	// cluster sweeps the bucket; later restarts are no-ops.
 	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
 		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
 			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
@@ -1794,7 +1793,7 @@ func (d *Daemon) setupShutdown() {
 		// Cancel context to stop heartbeat and other goroutines
 		d.cancel()
 
-		// DDIL Tier 1 (mulga-siv-58): SIGTERM alone never stops local VMs.
+		// DDIL Tier 1: SIGTERM alone never stops local VMs.
 		// `systemctl restart spinifex-daemon` must preserve every QEMU child so
 		// the new daemon can reattach via the persisted local state file
 		// (Scenario B). VMs are only stopped when coordinated cluster shutdown

@@ -148,11 +148,11 @@ type WitnessVM struct {
 func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, error) {
 	const maxPlacementAttempts = 3
 
-	// Workaround for mulga-siv-79: daemon silently drops the shortcut SG
-	// ingress form, so the default SG starts with no :22 ingress and the
-	// awaitBaseline SSH tunnel to the witness EIP times out. Authorise
-	// :22 from anywhere via the structured form — once siv-79 lands this
-	// can drop along with the matching workaround in lb_test.
+	// Workaround: daemon silently drops the shortcut SG ingress form, so
+	// the default SG starts with no :22 ingress and the awaitBaseline SSH
+	// tunnel to the witness EIP times out. Authorise :22 from anywhere
+	// via the structured form — once the underlying bug lands this can
+	// drop along with the matching workaround in lb_test.
 	if err := w.ensureDefaultSGSSHIngress(ctx); err != nil {
 		return nil, fmt.Errorf("e2e harness: open witness SSH ingress: %w", err)
 	}
@@ -257,9 +257,9 @@ func AssertProgressed(ctx context.Context, t *testing.T, v *WitnessVM) {
 
 // ensureDefaultSGSSHIngress authorises tcp/22 + ICMP from 0.0.0.0/0 on the
 // default security group via the structured IpPermissions form. The daemon
-// currently drops the top-level shortcut form silently (mulga-siv-79), so
-// without this the witness EIP has no inbound :22 and awaitBaseline times
-// out. ICMP is required for downstream gateway-ping probes (mulga-siv-134).
+// currently drops the top-level shortcut form silently, so without this the
+// witness EIP has no inbound :22 and awaitBaseline times out. ICMP is
+// required for downstream gateway-ping probes.
 // Idempotent: duplicate-rule errors from a prior run are tolerated.
 func (w *Witness) ensureDefaultSGSSHIngress(ctx context.Context) error {
 	sgs, err := w.ec2.DescribeSecurityGroupsWithContext(ctx, &ec2.DescribeSecurityGroupsInput{

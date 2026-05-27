@@ -287,7 +287,7 @@ echo "  Default SG ingress: tcp/22 from 0.0.0.0/0"
 
 # Phase 5f exercises ICMP egress through OVN; the reply path needs explicit
 # ICMP ingress on the default SG even though SGs are stateful in AWS — keeps
-# parity with the Go single-suite fixture (mulga-siv-134).
+# parity with the Go single-suite fixture.
 set +e
 ICMP_OUTPUT=$(aws ec2 authorize-security-group-ingress \
     --group-id "$DEFAULT_SG_PHASE5" \

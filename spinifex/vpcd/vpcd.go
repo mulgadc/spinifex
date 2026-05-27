@@ -47,8 +47,8 @@ const (
 // the new sequence — i.e. ovn-northd has compiled NB→SB and ovn-controller
 // has installed the resulting flows. Used as the NAT manager's flows barrier
 // so newly-launched VMs aren't unreachable while their gateway chassis is
-// still catching up (mulga-siv-105). Bounded by ovn-nbctl --timeout=30; on
-// overrun we log a Warn and return nil so the caller continues.
+// still catching up. Bounded by ovn-nbctl --timeout=30; on overrun we log
+// a Warn and return nil so the caller continues.
 //
 // Declared as a var so tests can stub it.
 var waitForFlowsHV = func() error {
@@ -141,7 +141,7 @@ type ExternalPoolConfig struct {
 	DNSServers      []string
 	Region          string
 	AZ              string
-	GwLrpRangeStart string // Sub-range for OVN gateway LRP IPs in centralized NAT mode (mulga-siv-36).
+	GwLrpRangeStart string // Sub-range for OVN gateway LRP IPs in centralized NAT mode.
 	GwLrpRangeEnd   string
 }
 
@@ -491,7 +491,7 @@ func launchService(cfg *Config) error {
 	// Construct the network manager stack. The reconciler is the single
 	// intent-driven pass that runs once at startup (leader-gated) and then
 	// on a 5-minute drift ticker; together they replace the five separate
-	// passes the old vpcd ran on boot (mulga-siv-125, Phase 2).
+	// passes the old vpcd ran on boot.
 	var topoOpts []topology.Option
 	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
 		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
@@ -527,7 +527,7 @@ func launchService(cfg *Config) error {
 	// Elect a single vpcd to run startup reconcile. Without this, N vpcds in
 	// a multi-node cluster all hit Get-then-Create on Logical_Router with no
 	// atomicity, producing duplicate rows that ovn-nbctl rejects with
-	// "Multiple logical routers named '...'. Use a UUID." (mulga-siv-29).
+	// "Multiple logical routers named '...'. Use a UUID."
 	// Runtime VPC events still fan out via the vpcd-workers queue group, so
 	// non-leaders remain functional after Subscribe below.
 	holder, _ := os.Hostname()
@@ -638,8 +638,8 @@ func pickDNSServer(pools []ExternalPoolConfig) string {
 
 // externalPoolConfigToShared translates the vpcd-local ExternalPoolConfig
 // into the network/external package's shared shape. The two will merge
-// once topology.go is split (bead mulga-siv-125.3.4 — see external.go's
-// type doc); until then this is the seam.
+// once topology.go is split (see external.go's type doc); until then
+// this is the seam.
 func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
 	return external.ExternalPoolConfig{
 		Name:            p.Name,

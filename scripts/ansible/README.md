@@ -5,7 +5,6 @@ Lives alongside the existing `scripts/dev-*.sh` and `scripts/reset-dev-env.sh`;
 neither set is removed. Decide which to keep after parity testing.
 
 Plan: `docs/development/improvements/ansible-dev-lifecycle.md` (mulga top-level).
-Bead: `mulga-siv-9`.
 
 ## Prerequisites
 
@@ -156,7 +155,7 @@ calling user (no `sudo -u` invoked → no `initgroups(3)` → supplementary
 groups inherited from the operator's shell). On a fresh login the
 operator's shell would have `spinifex` (added by `setup.sh`); on shells
 that predate the group add it does not. The helpers sidestep this
-entirely. See bead `mulga-siv-92`.
+entirely.
 
 ## Leak catalog
 

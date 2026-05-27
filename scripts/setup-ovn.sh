@@ -281,7 +281,6 @@ echo "  br-int: created, fail-mode=secure, up"
 # rule => default management => no carrier => link down). OVS dataplane
 # still forwards, but ovn-controller flow programming and any tooling that
 # probes link state misbehave. Unmanaged=yes keeps OVS in sole control.
-# (mulga-siv-37)
 OVS_INTERNAL_NET=/etc/systemd/network/05-spinifex-ovs-internal.network
 if [ ! -f "$OVS_INTERNAL_NET" ]; then
     sudo tee "$OVS_INTERNAL_NET" >/dev/null <<'NETWORK'
@@ -593,8 +592,8 @@ fi
 # When --node-name is NOT given (CI bootstrap-install.sh today, dev
 # single-node bring-up, ansible roles that don't yet pass it), leave the
 # system-id alone. A hostname fallback used to live here, but on CI
-# single-node it rewrote system-id from the gold-image UUID to the bead-
-# themed hostname while the existing SBDB chassis row kept name=UUID;
+# single-node it rewrote system-id from the gold-image UUID to a
+# different hostname while the existing SBDB chassis row kept name=UUID;
 # vpcd's discoverChassis then logged "skipping stale local chassis" and
 # refused to start. Preserving the on-disk value is always safe — any
 # caller that needs IPsec cert identity matching pins it themselves.

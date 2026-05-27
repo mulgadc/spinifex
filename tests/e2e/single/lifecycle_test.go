@@ -21,7 +21,7 @@ import (
 // sshDatapathBroken is set the first time a single-node SSH probe times
 // out. Downstream SSH-dependent tests call requireSSHHealthy(t) and skip
 // rather than re-running the same 3-minute timeout against the same
-// broken datapath (mulga-siv-134, mulga-siv-137).
+// broken datapath.
 var sshDatapathBroken atomic.Bool
 
 // requireSSHHealthy skips the calling test if a prior SSH probe on this
@@ -30,8 +30,8 @@ var sshDatapathBroken atomic.Bool
 func requireSSHHealthy(t *testing.T) {
 	t.Helper()
 	if sshDatapathBroken.Load() {
-		t.Skipf("skipping: earlier single-node SSH probe failed " +
-			"(mulga-siv-134); not retrying to keep suite time bounded")
+		t.Skipf("skipping: earlier single-node SSH probe failed; " +
+			"not retrying to keep suite time bounded")
 	}
 }
 
@@ -408,7 +408,6 @@ func runRunInstancesMultiCount(t *testing.T, fix *Fixture) {
 // TCP-port reachability alone is insufficient — sshd accepts the connect
 // while pam/cloud-init are still finishing, and the first real runSSH then
 // hits "Connection timed out during banner exchange" (CI run 26034322018).
-// Proper hoist to harness.WaitForSSH is tracked under mulga-siv-101.
 func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 	t.Helper()
 	requireSSHHealthy(t)
@@ -418,7 +417,7 @@ func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 		sshDatapathBroken.Store(true)
 		t.Fatalf("Eventually: condition not met within 3m0s: "+
 			"[SSH handshake %s never completed] "+
-			"(sticky-skip enabled for downstream — see mulga-siv-134)", addr)
+			"(sticky-skip enabled for downstream)", addr)
 	}
 }
 

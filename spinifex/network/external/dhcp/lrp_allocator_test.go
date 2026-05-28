@@ -28,11 +28,12 @@ func TestDHCPGatewayLRPAllocatorAllocate(t *testing.T) {
 		Source:     external.SourceDHCP,
 		BindBridge: "br-wan",
 	}
-	ip, prefix, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	ip, prefix, nexthop, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "192.0.2.100", ip)
 	assert.Equal(t, 24, prefix)
+	assert.Equal(t, "192.0.2.1", nexthop, "nexthop must come from lease.Routers[0]")
 
 	entry, err := store.Get(dhcp.GatewayLRPClientID("vpc-1"))
 	require.NoError(t, err)
@@ -49,9 +50,9 @@ func TestDHCPGatewayLRPAllocatorIdempotent(t *testing.T) {
 		Source:     external.SourceDHCP,
 		BindBridge: "br-wan",
 	}
-	first, _, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	first, _, _, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
-	second, _, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	second, _, _, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 	assert.Equal(t, 1, fake.AcquireCount(), "second allocate must hit the persisted lease, not DORA again")
@@ -66,7 +67,7 @@ func TestDHCPGatewayLRPAllocatorRelease(t *testing.T) {
 		Source:     external.SourceDHCP,
 		BindBridge: "br-wan",
 	}
-	_, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	_, _, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
 	require.True(t, ok)
 
@@ -81,7 +82,7 @@ func TestDHCPGatewayLRPAllocatorSkipsNonDHCPPool(t *testing.T) {
 	allocator, _, _ := newLRPAllocator(t, fake)
 
 	pool := &external.ExternalPoolConfig{Name: "wan", Source: external.SourceStatic}
-	ip, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	ip, _, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Empty(t, ip)
@@ -93,7 +94,7 @@ func TestDHCPGatewayLRPAllocatorRequiresBindBridge(t *testing.T) {
 	allocator, _, _ := newLRPAllocator(t, fake)
 
 	pool := &external.ExternalPoolConfig{Name: "wan", Source: external.SourceDHCP}
-	_, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	_, _, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.Error(t, err)
 	assert.False(t, ok)
 	assert.Contains(t, err.Error(), "bind_bridge")
@@ -104,13 +105,35 @@ func TestDHCPGatewayLRPAllocatorPrefixFromMask(t *testing.T) {
 	fake.SetDefaultLease(dhcp.LeaseTemplate{
 		IP:            net.IPv4(10, 0, 0, 50),
 		SubnetMask:    net.CIDRMask(16, 32),
+		Routers:       []net.IP{net.IPv4(10, 0, 0, 1)},
 		ServerID:      net.IPv4(10, 0, 0, 1),
 		LeaseDuration: time.Hour,
 	})
 	allocator, _, _ := newLRPAllocator(t, fake)
 
 	pool := &external.ExternalPoolConfig{Name: "wan", Source: external.SourceDHCP, BindBridge: "br-wan", PrefixLen: 24}
-	_, prefix, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	_, prefix, _, _, err := allocator.Allocate(context.Background(), "vpc-1", pool)
 	require.NoError(t, err)
 	assert.Equal(t, 16, prefix, "prefix should come from lease subnet mask, not pool config")
+}
+
+// Regression: a DHCP ACK without a Router option (DHCP code 3) used to
+// fall through to link-local 169.254.0.2 — unreachable on the WAN subnet.
+// Now the allocator must surface a hard error.
+func TestDHCPGatewayLRPAllocatorEmptyRoutersErrors(t *testing.T) {
+	fake := dhcp.NewFake()
+	fake.SetDefaultLease(dhcp.LeaseTemplate{
+		IP:            net.IPv4(10, 0, 0, 50),
+		SubnetMask:    net.CIDRMask(24, 32),
+		Routers:       nil,
+		ServerID:      net.IPv4(10, 0, 0, 1),
+		LeaseDuration: time.Hour,
+	})
+	allocator, _, _ := newLRPAllocator(t, fake)
+
+	pool := &external.ExternalPoolConfig{Name: "wan", Source: external.SourceDHCP, BindBridge: "br-wan"}
+	_, _, _, ok, err := allocator.Allocate(context.Background(), "vpc-1", pool)
+	require.Error(t, err)
+	assert.False(t, ok)
+	assert.Contains(t, err.Error(), "no Router option")
 }

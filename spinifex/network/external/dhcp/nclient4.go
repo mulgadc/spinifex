@@ -17,15 +17,15 @@ import (
 // opens an AF_PACKET socket on the target bridge for the duration of the
 // handshake and closes it when done — no long-lived per-lease process.
 //
-// Retransmission follows RFC 2131 §4.1: 3 DISCOVER attempts with
-// exponential per-attempt deadline (timeout, 2×timeout, 4×timeout).
-// nclient4 issues a fresh DISCOVER on each retry — covers transient drops
-// during STP convergence on a freshly-up bridge and lossy upstream paths.
+// Single-shot per call: Manager.acquireWithBackoff drives the outer DORA
+// schedule and per-attempt deadlines, so the leaf does not retry. This
+// keeps the budget arithmetic in one place instead of being multiplied
+// by nclient4's internal retry count.
 type NClient4Client struct {
 	timeout time.Duration
 }
 
-const nclient4Retries = 3
+const nclient4Retries = 1
 
 var _ Client = (*NClient4Client)(nil)
 

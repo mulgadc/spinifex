@@ -45,18 +45,22 @@ func NewDHCPGatewayLRPAllocator(mgr *Manager) *DHCPGatewayLRPAllocator {
 
 // Allocate DORAs once per vpcID. Returns ok=false when pool is nil or
 // not DHCP-sourced so IGWManager can fall back to link-local.
-func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, pool *external.ExternalPoolConfig) (string, int, bool, error) {
+// Nexthop is the first router from the DHCP ACK; empty Routers is a hard
+// error — silent link-local fallback would yield 169.254.0.2 on the WAN
+// subnet, which is unreachable and was the root cause of the
+// extdhcp-restore-dhcp-source CI failures.
+func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, pool *external.ExternalPoolConfig) (string, int, string, bool, error) {
 	if a == nil || a.mgr == nil {
-		return "", 0, false, errors.New("dhcp gw-lrp allocator: nil manager")
+		return "", 0, "", false, errors.New("dhcp gw-lrp allocator: nil manager")
 	}
 	if vpcID == "" {
-		return "", 0, false, errors.New("dhcp gw-lrp allocator: vpcID required")
+		return "", 0, "", false, errors.New("dhcp gw-lrp allocator: vpcID required")
 	}
 	if !pool.IsDHCP() {
-		return "", 0, false, nil
+		return "", 0, "", false, nil
 	}
 	if pool.BindBridge == "" {
-		return "", 0, false, fmt.Errorf("dhcp gw-lrp allocator: pool %q missing bind_bridge", pool.Name)
+		return "", 0, "", false, fmt.Errorf("dhcp gw-lrp allocator: pool %q missing bind_bridge", pool.Name)
 	}
 
 	entry, err := a.mgr.handleAcquire(ctx, acquireWireRequest{
@@ -67,10 +71,14 @@ func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, po
 		VPCID:    vpcID,
 	})
 	if err != nil {
-		return "", 0, false, fmt.Errorf("dhcp gw-lrp acquire: %w", err)
+		return "", 0, "", false, fmt.Errorf("dhcp gw-lrp acquire: %w", err)
 	}
 	if entry == nil || entry.Lease == nil || entry.Lease.IP == nil {
-		return "", 0, false, errors.New("dhcp gw-lrp allocator: empty lease")
+		return "", 0, "", false, errors.New("dhcp gw-lrp allocator: empty lease")
+	}
+	nexthop, err := firstRouter(entry.Lease.Routers)
+	if err != nil {
+		return "", 0, "", false, fmt.Errorf("dhcp gw-lrp allocator: pool %q: %w", pool.Name, err)
 	}
 
 	prefix := maskToPrefix(entry.Lease.SubnetMask)
@@ -80,7 +88,20 @@ func (a *DHCPGatewayLRPAllocator) Allocate(ctx context.Context, vpcID string, po
 	if prefix <= 0 {
 		prefix = 24
 	}
-	return entry.Lease.IP.String(), prefix, true, nil
+	return entry.Lease.IP.String(), prefix, nexthop, true, nil
+}
+
+// firstRouter returns the first non-nil router in routers, or an error
+// when none is present. The OVN default route needs an on-link nexthop;
+// without one the VPC would have to fall back to link-local, which is
+// unreachable on the WAN subnet.
+func firstRouter(routers []net.IP) (string, error) {
+	for _, r := range routers {
+		if r != nil {
+			return r.String(), nil
+		}
+	}
+	return "", errors.New("DHCP ACK carried no Router option (DHCP code 3); cannot install default route")
 }
 
 // Release issues DHCPRELEASE for the per-VPC lease. Idempotent on

@@ -2,6 +2,8 @@ package dhcp_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -243,6 +245,110 @@ func TestManagerReleaseUnknownClientIsNoop(t *testing.T) {
 	client := dhcp.NewNATSClient(nc, time.Second)
 	assert.NoError(t, client.RequestRelease(context.Background(), "never-existed"))
 	assert.Equal(t, 0, fake.ReleaseCount())
+}
+
+// TestManagerAcquireRetriesUnderBackoff exercises the outer DORA loop:
+// two attempts return i/o timeout, the third succeeds. Asserts the
+// caller sees one lease and the wire saw three DORAs (Bug 2 regression).
+func TestManagerAcquireRetriesUnderBackoff(t *testing.T) {
+	fake := dhcp.NewFake()
+	var attempts atomic.Int32
+	fake.AcquireHook = func(req dhcp.AcquireRequest) (*dhcp.Lease, error) {
+		n := attempts.Add(1)
+		if n < 3 {
+			return nil, errors.New("i/o timeout")
+		}
+		mac, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+		return &dhcp.Lease{
+			Bridge:        req.Bridge,
+			ClientID:      req.ClientID,
+			HWAddr:        mac,
+			IP:            net.IPv4(192, 0, 2, 100),
+			SubnetMask:    net.CIDRMask(24, 32),
+			Routers:       []net.IP{net.IPv4(192, 0, 2, 1)},
+			ServerID:      net.IPv4(192, 0, 2, 1),
+			AcquiredAt:    time.Now(),
+			LeaseDuration: time.Hour,
+			T1:            30 * time.Minute,
+			T2:            52*time.Minute + 30*time.Second,
+			RawOffer:      []byte("fake-offer"),
+			RawACK:        []byte("fake-ack"),
+		}, nil
+	}
+
+	// Compress the schedule to keep the test sub-second.
+	_, nc, js := testutil.StartTestJetStream(t)
+	store, err := dhcp.NewStore(js, "az1")
+	require.NoError(t, err)
+	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{
+		Client:          fake,
+		Store:           store,
+		Now:             time.Now,
+		AcquireSchedule: []time.Duration{20 * time.Millisecond, 40 * time.Millisecond, 80 * time.Millisecond, 160 * time.Millisecond},
+		AcquireBudget:   2 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(mgr.Stop)
+	require.NoError(t, mgr.Start(context.Background()))
+	subs, err := mgr.Subscribe(nc)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	})
+
+	client := dhcp.NewNATSClient(nc, 3*time.Second)
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	lease, err := client.RequestAcquire(context.Background(), dhcp.AcquireParams{
+		Bridge: "br-wan", ClientID: "eipalloc-retry", HWAddr: hw, Purpose: "eip",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, lease)
+	assert.Equal(t, int32(3), attempts.Load(), "expected three wire DORAs (two failures + success)")
+}
+
+// TestManagerSubscribeIsQueueGroup_ExactlyOneHandlerFires brings up two
+// Managers against a shared NATS conn. Each acquire must fire exactly one
+// handler (queue-group semantics) — Bug 3 regression.
+func TestManagerSubscribeIsQueueGroup_ExactlyOneHandlerFires(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	store, err := dhcp.NewStore(js, "az1")
+	require.NoError(t, err)
+
+	fakeA := dhcp.NewFake()
+	fakeB := dhcp.NewFake()
+	mgrA, err := dhcp.NewManager(dhcp.ManagerConfig{Client: fakeA, Store: store, Now: time.Now})
+	require.NoError(t, err)
+	mgrB, err := dhcp.NewManager(dhcp.ManagerConfig{Client: fakeB, Store: store, Now: time.Now})
+	require.NoError(t, err)
+	t.Cleanup(mgrA.Stop)
+	t.Cleanup(mgrB.Stop)
+	require.NoError(t, mgrA.Start(context.Background()))
+	require.NoError(t, mgrB.Start(context.Background()))
+
+	subsA, err := mgrA.Subscribe(nc)
+	require.NoError(t, err)
+	subsB, err := mgrB.Subscribe(nc)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, s := range append(subsA, subsB...) {
+			_ = s.Unsubscribe()
+		}
+	})
+
+	client := dhcp.NewNATSClient(nc, 3*time.Second)
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	const requests = 5
+	for i := range requests {
+		clientID := fmt.Sprintf("eipalloc-qg-%d", i)
+		_, err := client.RequestAcquire(context.Background(), dhcp.AcquireParams{
+			Bridge: "br-wan", ClientID: clientID, HWAddr: hw, Purpose: "eip",
+		})
+		require.NoError(t, err)
+	}
+	total := fakeA.AcquireCount() + fakeB.AcquireCount()
+	assert.Equal(t, requests, total, "queue group must deliver each request to exactly one handler (A=%d, B=%d)", fakeA.AcquireCount(), fakeB.AcquireCount())
 }
 
 func TestManagerStopCancelsLoops(t *testing.T) {

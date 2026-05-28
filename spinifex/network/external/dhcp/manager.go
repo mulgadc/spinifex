@@ -25,20 +25,38 @@ const renewJitter = time.Second
 // background until the server comes back (per plan §Failure modes).
 const postExpiryBackoff = 30 * time.Second
 
+// defaultAcquireSchedule is the per-attempt timeout schedule for the
+// outer DORA backoff. Mirrors the deleted dhcp_manager.go retransmit
+// schedule — recovers under STP convergence on a freshly-up bridge.
+var defaultAcquireSchedule = []time.Duration{4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second}
+
+// defaultAcquireBudget caps the wallclock for the full DORA loop.
+const defaultAcquireBudget = 90 * time.Second
+
+// acquireAttemptJitter is the ± window applied to each per-attempt
+// timeout so concurrent acquires across vpcds don't synchronise.
+const acquireAttemptJitter = time.Second
+
 // ManagerConfig: Client + Store required. Now is for tests.
+// AcquireSchedule/AcquireBudget control the outer DORA backoff;
+// zero values fall back to defaults.
 type ManagerConfig struct {
-	Client Client
-	Store  *Store
-	Now    func() time.Time
+	Client          Client
+	Store           *Store
+	Now             func() time.Time
+	AcquireSchedule []time.Duration
+	AcquireBudget   time.Duration
 }
 
 // Manager owns active DHCP leases in vpcd: one renewal goroutine per
 // BOUND lease, KV persistence, and request/reply NATS subscribers for
 // daemon-side acquire/release calls.
 type Manager struct {
-	client Client
-	store  *Store
-	now    func() time.Time
+	client          Client
+	store           *Store
+	now             func() time.Time
+	acquireSchedule []time.Duration
+	acquireBudget   time.Duration
 
 	sf singleflight.Group
 
@@ -73,11 +91,21 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if now == nil {
 		now = time.Now
 	}
+	schedule := cfg.AcquireSchedule
+	if len(schedule) == 0 {
+		schedule = defaultAcquireSchedule
+	}
+	budget := cfg.AcquireBudget
+	if budget <= 0 {
+		budget = defaultAcquireBudget
+	}
 	return &Manager{
-		client: cfg.Client,
-		store:  cfg.Store,
-		now:    now,
-		loops:  map[string]*leaseLoop{},
+		client:          cfg.Client,
+		store:           cfg.Store,
+		now:             now,
+		acquireSchedule: schedule,
+		acquireBudget:   budget,
+		loops:           map[string]*leaseLoop{},
 	}, nil
 }
 
@@ -138,12 +166,18 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-// Subscribe registers the two daemon-facing handlers. Request/reply,
-// no queue group: exactly one vpcd answers because exactly one vpcd
-// owns the WAN bridge per AZ.
+// Subscribe registers the two daemon-facing handlers via a per-AZ
+// queue group so that exactly one vpcd answers each request even when
+// multiple vpcds in the AZ subscribe. Without the queue group every
+// vpcd would DORA in parallel with the same derived chaddr, causing
+// upstream-server NAKs / lease leaks (real-multi CI cells 8, 10).
 func (m *Manager) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 	if nc == nil {
 		return nil, errors.New("dhcp manager: nats conn required")
+	}
+	queue := "vpcd-dhcp-workers"
+	if az := m.store.AZ(); az != "" {
+		queue = queue + "-" + az
 	}
 	type sub struct {
 		topic   string
@@ -155,7 +189,7 @@ func (m *Manager) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 	}
 	var out []*nats.Subscription
 	for _, s := range subs {
-		ns, err := nc.Subscribe(s.topic, s.handler)
+		ns, err := nc.QueueSubscribe(s.topic, queue, s.handler)
 		if err != nil {
 			for _, r := range out {
 				_ = r.Unsubscribe()
@@ -163,7 +197,7 @@ func (m *Manager) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 			return nil, fmt.Errorf("subscribe %s: %w", s.topic, err)
 		}
 		out = append(out, ns)
-		slog.Info("dhcp manager: subscribed", "topic", s.topic)
+		slog.Info("dhcp manager: subscribed", "topic", s.topic, "queue", queue)
 	}
 	return out, nil
 }
@@ -265,7 +299,7 @@ func (m *Manager) run(ctx context.Context, self *leaseLoop, e Entry, reaffirm bo
 }
 
 func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
-	lease, err := m.client.Acquire(ctx, AcquireRequest{
+	lease, err := m.acquireWithBackoff(ctx, AcquireRequest{
 		Bridge:      e.Lease.Bridge,
 		ClientID:    e.Lease.ClientID,
 		Hostname:    e.Lease.Hostname,
@@ -280,6 +314,54 @@ func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
 		return fmt.Errorf("persist re-acquired lease: %w", err)
 	}
 	return nil
+}
+
+// acquireWithBackoff drives client.Acquire under a per-attempt deadline
+// schedule, capped by AcquireBudget wallclock. Each attempt gets a fresh
+// child ctx with timeout schedule[i] ± acquireAttemptJitter so concurrent
+// acquires don't synchronise. Returns the last error if every attempt
+// fails or the budget is exhausted; ctx.Err() short-circuits immediately.
+func (m *Manager) acquireWithBackoff(ctx context.Context, req AcquireRequest) (*Lease, error) {
+	if len(m.acquireSchedule) == 0 {
+		return m.client.Acquire(ctx, req)
+	}
+	deadline := m.now().Add(m.acquireBudget)
+	var lastErr error
+	for i, base := range m.acquireSchedule {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		now := m.now()
+		remaining := deadline.Sub(now)
+		if remaining <= 0 {
+			break
+		}
+		attempt := base + jitter(acquireAttemptJitter)
+		if attempt <= 0 {
+			attempt = base
+		}
+		if attempt > remaining {
+			attempt = remaining
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, attempt)
+		lease, err := m.client.Acquire(attemptCtx, req)
+		cancel()
+		if err == nil {
+			return lease, nil
+		}
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+		slog.Warn("dhcp manager: acquire attempt failed",
+			"client_id", req.ClientID, "attempt", i+1, "of", len(m.acquireSchedule),
+			"timeout", attempt, "err", err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("acquire budget exhausted before first attempt")
+	}
+	return nil, fmt.Errorf("acquire after %d attempts: %w", len(m.acquireSchedule), lastErr)
 }
 
 func (m *Manager) doRenew(ctx context.Context, e *Entry) error {
@@ -386,7 +468,7 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	if err != nil {
 		return nil, err
 	}
-	lease, err := m.client.Acquire(ctx, AcquireRequest{
+	lease, err := m.acquireWithBackoff(ctx, AcquireRequest{
 		Bridge:      req.Bridge,
 		ClientID:    req.ClientID,
 		Hostname:    req.Hostname,

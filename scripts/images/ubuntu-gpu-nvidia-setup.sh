@@ -19,7 +19,7 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update -qq
+apt-get update
 
 # The Ubuntu minimal cloud image ships without a kernel. Install linux-image-generic
 # first so DKMS has a kernel to build against and the guest boots the same kernel

@@ -593,11 +593,29 @@ for `run-instances --iam-instance-profile`. Max 1 role per profile.
 
 ## STS
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `get-caller-identity` | — | — | **NOT STARTED** (Spinifex-custom version exists; proper STS endpoint pending) |
-| `assume-role` | — | `--role-arn`, `--role-session-name`, `--duration-seconds`, `--policy`, `--external-id`, `--serial-number`, `--token-code`, `--tags`, `--transitive-tag-keys` | **NOT STARTED** |
-| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** |
+Temporary credentials are storage-backed: `AssumeRole` mints an `ASIA`-prefixed
+access key, secret, and opaque session token persisted in the
+`spinifex-iam-session-credentials` JetStream KV bucket. The SigV4 verifier
+recognises `X-Amz-Security-Token` and rejects expired sessions. Returned ARNs
+cover IAM users (`arn:aws:iam::<acct>:user/<name>`), assumed roles
+(`arn:aws:sts::<acct>:assumed-role/<role>/<session>`), and root
+(`arn:aws:iam::<acct>:root`).
+
+| Command | Implemented Flags | Missing Flags (rejected if supplied) | Status |
+|---------|-------------------|--------------------------------------|--------|
+| `get-caller-identity` | — | — | **DONE** |
+| `assume-role` | `--role-arn`, `--role-session-name`, `--duration-seconds` (900–min(role MaxSessionDuration, 43200)) | `--policy`, `--policy-arns` (→ `PackedPolicyTooLarge`); `--tags`, `--transitive-tag-keys` (→ `InvalidParameterValue`); `--serial-number`, `--token-code` (→ `InvalidParameterValue`); `--external-id`, `--source-identity` (accepted and logged, **not enforced** — no Condition evaluator in v1) | **DONE** |
+| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** (501 stub registered) |
+| `assume-role-with-web-identity` | — | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--provider-id`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** (501 stub) |
+| `assume-role-with-saml` | — | `--role-arn`, `--principal-arn`, `--saml-assertion`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** (501 stub) |
+| `get-access-key-info` | — | `--access-key-id` | **NOT STARTED** (501 stub) |
+| `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** (501 stub) |
+| `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** (501 stub) |
+
+Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`,
+`NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty
+`Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no
+Condition evaluator so accepting them would silently allow.
 
 ---
 

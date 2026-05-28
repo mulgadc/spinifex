@@ -294,6 +294,7 @@ func init() {
 	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected) or '' (disabled)")
 	adminInitCmd.Flags().String("external-iface", "", "WAN NIC for br-external (auto-detected from default route)")
 	adminInitCmd.Flags().String("external-source", "", "Pool IP source: 'dhcp' (default when no --external-pool) or 'static' (uses --external-pool range)")
+	adminInitCmd.Flags().String("external-bind-bridge", "", "Linux bridge for upstream DHCP DORA (default 'br-wan' when --external-source=dhcp)")
 	adminInitCmd.Flags().String("external-pool", "", "External IP pool range as start-end (e.g., 192.168.1.150-192.168.1.250)")
 	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
@@ -839,6 +840,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	externalMode, _ := cmd.Flags().GetString("external-mode")
 	externalIface, _ := cmd.Flags().GetString("external-iface")
 	externalSource, _ := cmd.Flags().GetString("external-source")
+	externalBindBridge, _ := cmd.Flags().GetString("external-bind-bridge")
 	externalPool, _ := cmd.Flags().GetString("external-pool")
 	externalGateway, _ := cmd.Flags().GetString("external-gateway")
 	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
@@ -928,29 +930,50 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	if externalMode == "pool" {
-		if externalSource != "" && externalSource != "static" {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' (only supported value), got: %s\n", externalSource)
-			os.Exit(1)
-		}
-		externalSource = "static"
-		if externalPool == "" {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required when --external-mode=pool (e.g., 192.168.1.150-192.168.1.250)\n")
-			if detectedNet != nil && detectedNet.WAN != nil {
-				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
-				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
+		// Default source: dhcp when no --external-pool, else static.
+		if externalSource == "" {
+			if externalPool == "" {
+				externalSource = "dhcp"
+			} else {
+				externalSource = "static"
 			}
+		}
+		switch externalSource {
+		case "dhcp":
+			if externalPool != "" {
+				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)\n")
+				os.Exit(1)
+			}
+			if externalBindBridge == "" {
+				externalBindBridge = "br-wan"
+			}
+		case "static":
+			if externalBindBridge != "" {
+				fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge only valid with --external-source=dhcp\n")
+				os.Exit(1)
+			}
+			if externalPool == "" {
+				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)\n")
+				if detectedNet != nil && detectedNet.WAN != nil {
+					sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+					fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
+				}
+				os.Exit(1)
+			}
+			if externalGateway == "" {
+				fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required with --external-source=static\n")
+				os.Exit(1)
+			}
+			parts := strings.SplitN(externalPool, "-", 2)
+			if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
+				fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
+				os.Exit(1)
+			}
+			poolStart, poolEnd = parts[0], parts[1]
+		default:
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-source must be 'static' or 'dhcp', got: %s\n", externalSource)
 			os.Exit(1)
 		}
-		if externalGateway == "" {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is required when --external-mode=pool\n")
-			os.Exit(1)
-		}
-		parts := strings.SplitN(externalPool, "-", 2)
-		if len(parts) != 2 || net.ParseIP(parts[0]) == nil || net.ParseIP(parts[1]) == nil {
-			fmt.Fprintf(os.Stderr, "❌ Error: --external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s\n", externalPool)
-			os.Exit(1)
-		}
-		poolStart, poolEnd = parts[0], parts[1]
 	}
 	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
@@ -1133,6 +1156,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.ExternalMode = externalMode
 			networkConfig.PoolName = "wan"
 			networkConfig.PoolSource = externalSource
+			networkConfig.PoolBindBridge = externalBindBridge
 			networkConfig.PoolStart = poolStart
 			networkConfig.PoolEnd = poolEnd
 			networkConfig.PoolGateway = externalGateway
@@ -1246,6 +1270,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		ExternalIface:  externalIface,
 		PoolName:       "wan",
 		PoolSource:     externalSource,
+		PoolBindBridge: externalBindBridge,
 		PoolStart:      poolStart,
 		PoolEnd:        poolEnd,
 		PoolGateway:    externalGateway,
@@ -1269,10 +1294,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if externalMode != "" {
 		fmt.Printf("\n📡 External networking: %s\n", externalMode)
 		fmt.Printf("  WAN interface: %s\n", externalIface)
-		if poolStart != "" {
+		switch externalSource {
+		case "static":
 			fmt.Printf("  Source:        static (IP range)\n")
 			fmt.Printf("  IP pool:       %s - %s\n", poolStart, poolEnd)
 			fmt.Printf("  ⚠️  Ensure %s-%s is excluded from your router's DHCP range.\n", poolStart, poolEnd)
+		case "dhcp":
+			fmt.Printf("  Source:        dhcp (upstream DHCP server)\n")
+			fmt.Printf("  Bind bridge:   %s\n", externalBindBridge)
 		}
 		if gatewayIP != "" {
 			fmt.Printf("  Gateway IP:    %s (static)\n", gatewayIP)
@@ -2285,6 +2314,7 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 	settings.ExternalMode = nc.ExternalMode
 	settings.PoolName = nc.PoolName
 	settings.PoolSource = nc.PoolSource
+	settings.PoolBindBridge = nc.PoolBindBridge
 	settings.PoolStart = nc.PoolStart
 	settings.PoolEnd = nc.PoolEnd
 	settings.PoolGateway = nc.PoolGateway

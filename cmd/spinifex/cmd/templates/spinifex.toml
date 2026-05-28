@@ -18,11 +18,16 @@ name        = "{{.PoolName}}"
 {{- if .PoolSource}}
 source      = "{{.PoolSource}}"
 {{- end}}
+{{- if .PoolBindBridge}}
+bind_bridge = "{{.PoolBindBridge}}"
+{{- end}}
 {{- if .PoolStart}}
 range_start = "{{.PoolStart}}"
 range_end   = "{{.PoolEnd}}"
 {{- end}}
+{{- if .PoolGateway}}
 gateway     = "{{.PoolGateway}}"
+{{- end}}
 {{- if .PoolGatewayIP}}
 gateway_ip  = "{{.PoolGatewayIP}}"
 {{- end}}

@@ -451,3 +451,64 @@ func TestGenerateGPUTypes_CPUFamiliesNotIncluded(t *testing.T) {
 	cpuTypes := generateForGeneration(genIntelSapphireRapids, "x86_64")
 	assert.False(t, hasFamily(cpuTypes, "g5."), "CPU generation must not emit g5 types")
 }
+
+func TestIsMIGType(t *testing.T) {
+	assert.True(t, IsMIGType("mig.1g.10gb"))
+	assert.True(t, IsMIGType("mig.7g.80gb"))
+	assert.False(t, IsMIGType("t3.micro"))
+	assert.False(t, IsMIGType("g5.xlarge"))
+	assert.False(t, IsMIGType("mig"))
+	assert.False(t, IsMIGType(""))
+}
+
+func TestMIGProfileFromType(t *testing.T) {
+	assert.Equal(t, "1g.10gb", MIGProfileFromType("mig.1g.10gb"))
+	assert.Equal(t, "7g.80gb", MIGProfileFromType("mig.7g.80gb"))
+	assert.Equal(t, "", MIGProfileFromType("t3.micro"))
+	assert.Equal(t, "", MIGProfileFromType(""))
+}
+
+func TestGenerateMIGTypes(t *testing.T) {
+	profiles := []MIGProfileSpec{
+		{Name: "1g.10gb", MemoryMiB: 10240},
+		{Name: "3g.40gb", MemoryMiB: 40960},
+		{Name: "1g.10gb", MemoryMiB: 10240}, // duplicate — should be de-duplicated
+	}
+	types := GenerateMIGTypes(profiles, "x86_64")
+	require.Len(t, types, 2, "duplicate profile name must be deduplicated")
+
+	mig1g, ok := types["mig.1g.10gb"]
+	require.True(t, ok)
+	assert.Equal(t, "mig.1g.10gb", *mig1g.InstanceType)
+	assert.Equal(t, int64(0), *mig1g.VCpuInfo.DefaultVCpus)
+	assert.Equal(t, int64(0), *mig1g.MemoryInfo.SizeInMiB)
+	require.NotNil(t, mig1g.GpuInfo)
+	require.Len(t, mig1g.GpuInfo.Gpus, 1)
+	assert.Equal(t, "NVIDIA", *mig1g.GpuInfo.Gpus[0].Manufacturer)
+	assert.Equal(t, "MIG 1g.10gb", *mig1g.GpuInfo.Gpus[0].Name)
+	assert.Equal(t, int64(10240), *mig1g.GpuInfo.Gpus[0].MemoryInfo.SizeInMiB)
+	assert.Equal(t, int64(10240), *mig1g.GpuInfo.TotalGpuMemoryInMiB)
+	assert.Equal(t, int64(1), *mig1g.GpuInfo.Gpus[0].Count)
+	assert.False(t, *mig1g.BurstablePerformanceSupported)
+	assert.True(t, *mig1g.CurrentGeneration)
+	assert.Equal(t, "kvm", *mig1g.Hypervisor)
+	require.NotNil(t, mig1g.PlacementGroupInfo)
+	assert.Len(t, mig1g.PlacementGroupInfo.SupportedStrategies, 2)
+
+	mig3g, ok := types["mig.3g.40gb"]
+	require.True(t, ok)
+	assert.Equal(t, int64(40960), *mig3g.GpuInfo.TotalGpuMemoryInMiB)
+}
+
+func TestGenerateMIGTypes_Empty(t *testing.T) {
+	types := GenerateMIGTypes(nil, "x86_64")
+	assert.Empty(t, types)
+}
+
+func TestIsMIGType_WithGeneratedTypes(t *testing.T) {
+	profiles := []MIGProfileSpec{{Name: "1g.10gb", MemoryMiB: 10240}}
+	types := GenerateMIGTypes(profiles, "x86_64")
+	for name := range types {
+		assert.True(t, IsMIGType(name), "%s should be a MIG type", name)
+	}
+}

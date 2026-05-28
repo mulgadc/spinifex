@@ -166,6 +166,72 @@ func IsGPUType(info *ec2.InstanceTypeInfo) bool {
 	return info.GpuInfo != nil && len(info.GpuInfo.Gpus) > 0
 }
 
+// MIGProfileSpec carries the profile name and per-slice VRAM needed to generate
+// MIG instance types without importing the gpu package.
+type MIGProfileSpec struct {
+	Name      string // nvidia-smi profile name, e.g. "1g.10gb"
+	MemoryMiB int64
+}
+
+// IsMIGType reports whether the instance type name is a MIG profile type
+// (i.e. was produced by GenerateMIGTypes).
+func IsMIGType(instanceType string) bool {
+	return strings.HasPrefix(instanceType, "mig.")
+}
+
+// MIGProfileFromType extracts the nvidia-smi profile name from a MIG instance
+// type name (e.g. "mig.1g.10gb" → "1g.10gb"). Returns "" for non-MIG types.
+func MIGProfileFromType(instanceType string) string {
+	if !IsMIGType(instanceType) {
+		return ""
+	}
+	return strings.TrimPrefix(instanceType, "mig.")
+}
+
+// GenerateMIGTypes returns one InstanceTypeInfo per unique MIG profile. Instance
+// type names use the nvidia-smi profile name verbatim (e.g. "mig.1g.10gb").
+// Duplicate profile names are silently de-duplicated.
+func GenerateMIGTypes(profiles []MIGProfileSpec, arch string) map[string]*ec2.InstanceTypeInfo {
+	types := make(map[string]*ec2.InstanceTypeInfo)
+	for _, p := range profiles {
+		name := "mig." + p.Name
+		if _, exists := types[name]; exists {
+			continue
+		}
+		types[name] = &ec2.InstanceTypeInfo{
+			InstanceType: aws.String(name),
+			VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(0)},
+			MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(0)},
+			ProcessorInfo: &ec2.ProcessorInfo{
+				SupportedArchitectures: []*string{aws.String(arch)},
+			},
+			GpuInfo: &ec2.GpuInfo{
+				Gpus: []*ec2.GpuDeviceInfo{{
+					Count:        aws.Int64(1),
+					Manufacturer: aws.String("NVIDIA"),
+					Name:         aws.String("MIG " + p.Name),
+					MemoryInfo: &ec2.GpuDeviceMemoryInfo{
+						SizeInMiB: aws.Int64(p.MemoryMiB),
+					},
+				}},
+				TotalGpuMemoryInMiB: aws.Int64(p.MemoryMiB),
+			},
+			CurrentGeneration:             aws.Bool(true),
+			BurstablePerformanceSupported: aws.Bool(false),
+			Hypervisor:                    aws.String("kvm"),
+			SupportedVirtualizationTypes:  []*string{aws.String("hvm")},
+			SupportedRootDeviceTypes:      []*string{aws.String("ebs")},
+			PlacementGroupInfo: &ec2.PlacementGroupInfo{
+				SupportedStrategies: []*string{
+					aws.String("cluster"),
+					aws.String("spread"),
+				},
+			},
+		}
+	}
+	return types
+}
+
 // DetectAndGenerate detects the host CPU generation and generates matching instance types.
 // gpuModels is the list of GPU models discovered on the host; pass nil if no GPUs are present.
 func DetectAndGenerate(cpu CPUInfo, arch string, gpuModels []GPUModel) map[string]*ec2.InstanceTypeInfo {

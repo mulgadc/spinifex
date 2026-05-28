@@ -133,6 +133,9 @@ type GPUModelOverride struct {
 	// XVGAOff forces x-vga=off for this GPU in QEMU passthrough, overriding the
 	// default (on for consumer GPUs, off for known datacenter cards).
 	XVGAOff bool `json:"XVGAOff" mapstructure:"xvga_off"`
+	// MIGProfile overrides the daemon-level MIGProfile for this specific GPU.
+	// Takes the same format as DaemonConfig.MIGProfile (e.g. "1g.10gb").
+	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
 // DaemonConfig holds the daemon configuration
@@ -144,6 +147,10 @@ type DaemonConfig struct {
 	MgmtBridge        string             `json:"MgmtBridge" mapstructure:"mgmt_bridge"`                // Linux bridge for system instance control plane (default "br-mgmt")
 	GPUPassthrough    bool               `json:"GPUPassthrough" mapstructure:"gpu_passthrough"`        // Enable VFIO GPU passthrough for g5.* instance types
 	GPUModelOverrides []GPUModelOverride `json:"GPUModelOverrides" mapstructure:"gpu_model_overrides"` // Dev/test GPU mappings not in the production model list
+	// MIGProfile enables NVIDIA MIG partitioning on all eligible GPUs on this node.
+	// Set to a profile name such as "1g.10gb" to activate; empty disables MIG.
+	// Individual GPUs can override this via GPUModelOverrides[].MIGProfile.
+	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
 }
 
 // NATSConfig holds the NATS configuration

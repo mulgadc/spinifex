@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 )
@@ -137,13 +138,10 @@ type VM struct {
 	// instead. False for all PC-machine VMs.
 	DirectBoot bool `json:"direct_boot,omitempty"`
 
-	// GPUPCIAddresses holds the PCI addresses of all GPUs bound to this instance via
-	// VFIO (e.g. ["0000:03:00.0"]). Empty for non-GPU instances. Single-GPU instances
-	// have one entry; multi-GPU instances have one per assigned GPU.
-	GPUPCIAddresses []string `json:"gpu_pci_addresses,omitempty"`
-	// GPUXVGAEnabled controls whether x-vga=on is passed to QEMU for this instance's
-	// GPU device. True for consumer GPUs; false for headless datacenter cards.
-	GPUXVGAEnabled bool `json:"gpu_xvga_enabled,omitempty"`
+	// GPUAttachments describes how GPUs are attached to this instance. Empty for
+	// non-GPU instances. Each entry carries either a PCI address (whole-GPU VFIO
+	// passthrough) or an mdev path (MIG slice), never both.
+	GPUAttachments []gpu.GPUAttachment `json:"gpu_attachments,omitempty"`
 
 	// BootMode captures the AMI's boot mode ("bios" | "uefi" | "uefi-preferred")
 	// at launch time so the firmware choice survives daemon restart and host

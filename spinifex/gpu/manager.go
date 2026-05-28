@@ -4,23 +4,27 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 )
 
 type gpuEntry struct {
 	Device        GPUDevice
-	InstanceID    string // empty = available
-	Available     bool   // false = error state requiring operator action
-	groupMembers  []IOMMUGroupMember
-	memberDrivers map[string]string // PCI addr -> driver held before VFIO takeover
+	MIGInstance   *MIGInstance       // nil = whole-GPU passthrough; non-nil = MIG slice
+	InstanceID    string             // empty = available
+	Available     bool               // false = error state requiring operator action
+	groupMembers  []IOMMUGroupMember // only populated for whole-GPU entries
+	memberDrivers map[string]string  // PCI addr -> driver held before VFIO takeover; whole-GPU only
 }
 
 // Manager is a thread-safe pool of passthrough-eligible GPUs.
 // It owns the VFIO bind/unbind lifecycle for each claimed device.
 type Manager struct {
-	mu        sync.Mutex
-	pool      []gpuEntry
-	sysfsRoot string
+	mu                sync.Mutex
+	pool              []gpuEntry
+	sysfsRoot         string
+	freeMIGGPUs       []GPUDevice            // MIG-capable GPUs not yet committed to a profile
+	committedProfiles map[string]*MIGProfile // pciAddr → active profile (dynamic claims only)
 }
 
 // NewManager creates a Manager from the given discovered GPUs.
@@ -30,34 +34,147 @@ func NewManager(devices []GPUDevice) *Manager {
 	for i, d := range devices {
 		pool[i] = gpuEntry{Device: d, Available: true}
 	}
-	return &Manager{pool: pool, sysfsRoot: "/sys"}
+	return &Manager{
+		pool:              pool,
+		sysfsRoot:         "/sys",
+		committedProfiles: make(map[string]*MIGProfile),
+	}
 }
 
-// Claim binds the first available GPU (and all its IOMMU group members) to
-// vfio-pci and associates it with instanceID. Returns the claimed device.
-func (m *Manager) Claim(instanceID string) (*GPUDevice, error) {
+// AddMIGGPU registers a MIG-capable GPU as available for dynamic profile
+// allocation. No pool entries are created until the first Claim for this GPU.
+// Used for fresh daemon starts where no MIG instances exist yet.
+func (m *Manager) AddMIGGPU(dev GPUDevice) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.freeMIGGPUs = append(m.freeMIGGPUs, dev)
+}
 
+// Claim associates the first available GPU entry with instanceID and returns
+// the claimed device. For MIG entries the NVIDIA driver manages isolation via
+// mdev; no VFIO bind is performed. For whole-GPU entries the device and all
+// IOMMU group members are bound to vfio-pci as before.
+//
+// profileName is the nvidia-smi MIG profile name (e.g. "1g.10gb") for MIG
+// requests, or "" for whole-GPU passthrough. When a matching pre-carved slice
+// exists it is claimed immediately. When none exists and a free MIG GPU is
+// available, MIG instances are created on-demand (the lock is released during
+// the nvidia-smi calls).
+//
+// The returned *MIGInstance is non-nil only for MIG entries; callers use its
+// presence to distinguish attachment modes.
+func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstance, error) {
+	m.mu.Lock()
+
+	if profileName != "" {
+		// --- MIG FAST PATH: claim a pre-carved slice ---
+		for i := range m.pool {
+			e := &m.pool[i]
+			if e.MIGInstance == nil || !e.Available || e.InstanceID != "" {
+				continue
+			}
+			if e.MIGInstance.Profile.Name != profileName {
+				continue
+			}
+			if _, err := os.Stat(e.MIGInstance.MdevPath); err != nil {
+				m.mu.Unlock()
+				return nil, nil, fmt.Errorf("MIG mdev %s not accessible: %w", e.MIGInstance.MdevPath, err)
+			}
+			e.InstanceID = instanceID
+			dev, mig := e.Device, e.MIGInstance
+			m.mu.Unlock()
+			slog.Info("MIG instance claimed", "instance", instanceID,
+				"gpu", dev.PCIAddress, "profile", mig.Profile.Name, "mdev", mig.MdevPath)
+			return &dev, mig, nil
+		}
+
+		// --- MIG SLOW PATH: carve a free GPU ---
+		if len(m.freeMIGGPUs) == 0 {
+			m.mu.Unlock()
+			return nil, nil, fmt.Errorf("no MIG GPU available for profile %q", profileName)
+		}
+		dev := m.freeMIGGPUs[0]
+		m.freeMIGGPUs = m.freeMIGGPUs[1:]
+		m.mu.Unlock()
+
+		profiles, err := ListProfiles(dev.PCIAddress)
+		if err != nil {
+			m.mu.Lock()
+			m.freeMIGGPUs = append([]GPUDevice{dev}, m.freeMIGGPUs...)
+			m.mu.Unlock()
+			return nil, nil, fmt.Errorf("list MIG profiles on %s: %w", dev.PCIAddress, err)
+		}
+		var chosen *MIGProfile
+		for _, p := range profiles {
+			if p.Name == profileName {
+				pp := p
+				chosen = &pp
+				break
+			}
+		}
+		if chosen == nil {
+			m.mu.Lock()
+			m.freeMIGGPUs = append([]GPUDevice{dev}, m.freeMIGGPUs...)
+			m.mu.Unlock()
+			return nil, nil, fmt.Errorf("MIG profile %q not supported on %s", profileName, dev.PCIAddress)
+		}
+
+		instances, err := CreateInstances(dev.PCIAddress, *chosen)
+		if err != nil {
+			m.mu.Lock()
+			m.freeMIGGPUs = append([]GPUDevice{dev}, m.freeMIGGPUs...)
+			m.mu.Unlock()
+			return nil, nil, fmt.Errorf("create MIG instances on %s: %w", dev.PCIAddress, err)
+		}
+
+		m.mu.Lock()
+		for i := range instances {
+			m.pool = append(m.pool, gpuEntry{
+				Device:      dev,
+				MIGInstance: &instances[i],
+				Available:   true,
+			})
+		}
+		m.committedProfiles[dev.PCIAddress] = chosen
+		for i := range m.pool {
+			e := &m.pool[i]
+			if e.Device.PCIAddress == dev.PCIAddress && e.MIGInstance != nil && e.InstanceID == "" {
+				e.InstanceID = instanceID
+				retDev, retMIG := e.Device, e.MIGInstance
+				m.mu.Unlock()
+				slog.Info("MIG instance claimed from freshly carved GPU", "instance", instanceID,
+					"gpu", dev.PCIAddress, "profile", profileName, "mdev", retMIG.MdevPath)
+				return &retDev, retMIG, nil
+			}
+		}
+		m.mu.Unlock()
+		return nil, nil, errors.New("internal: no MIG slice available after carving")
+	}
+
+	// --- WHOLE-GPU PATH (unchanged) ---
 	idx := -1
 	for i := range m.pool {
-		if m.pool[i].Available && m.pool[i].InstanceID == "" {
+		if m.pool[i].Available && m.pool[i].InstanceID == "" && m.pool[i].MIGInstance == nil {
 			idx = i
 			break
 		}
 	}
 	if idx == -1 {
-		return nil, errors.New("no GPU available")
+		m.mu.Unlock()
+		return nil, nil, errors.New("no GPU available")
 	}
 
 	entry := &m.pool[idx]
+
 	if entry.Device.IOMMUGroup < 0 {
-		return nil, fmt.Errorf("GPU %s has no IOMMU group (is IOMMU enabled?)", entry.Device.PCIAddress)
+		m.mu.Unlock()
+		return nil, nil, fmt.Errorf("GPU %s has no IOMMU group (is IOMMU enabled?)", entry.Device.PCIAddress)
 	}
 
 	members, err := groupMembers(m.sysfsRoot, entry.Device.IOMMUGroup)
 	if err != nil {
-		return nil, fmt.Errorf("enumerate IOMMU group %d: %w", entry.Device.IOMMUGroup, err)
+		m.mu.Unlock()
+		return nil, nil, fmt.Errorf("enumerate IOMMU group %d: %w", entry.Device.IOMMUGroup, err)
 	}
 
 	drivers := make(map[string]string, len(members))
@@ -72,7 +189,8 @@ func (m *Manager) Claim(instanceID string) (*GPUDevice, error) {
 					slog.Error("GPU claim rollback failed", "addr", addr, "err", rbErr)
 				}
 			}
-			return nil, fmt.Errorf("bind IOMMU group member %s: %w", member.PCIAddress, err)
+			m.mu.Unlock()
+			return nil, nil, fmt.Errorf("bind IOMMU group member %s: %w", member.PCIAddress, err)
 		}
 		// bindVFIO returns "vfio-pci" when the device was already bound (idempotent
 		// path — e.g. pre-bound by spx-test-gpu, or after a daemon restart with a
@@ -95,7 +213,8 @@ func (m *Manager) Claim(instanceID string) (*GPUDevice, error) {
 
 	slog.Info("GPU claimed", "instance", instanceID,
 		"gpu", entry.Device.PCIAddress, "model", entry.Device.Model)
-	return &entry.Device, nil
+	m.mu.Unlock()
+	return &entry.Device, nil, nil
 }
 
 // Release returns the GPU held by instanceID to the available pool.
@@ -104,12 +223,15 @@ func (m *Manager) Claim(instanceID string) (*GPUDevice, error) {
 // already released the group fd on exit, so the next Claim works immediately.
 // For devices that were bound by Claim itself, Release unbinds vfio-pci and
 // rebinds to the original driver; if that fails the entry is marked unavailable.
+// For MIG slices created dynamically by Claim (tracked in committedProfiles),
+// the last release on a GPU destroys all slices and returns the GPU to freeMIGGPUs.
 func (m *Manager) Release(instanceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var firstErr error
 	released := false
+	var releasedMIGPCI string
 
 	for i := range m.pool {
 		if m.pool[i].InstanceID != instanceID {
@@ -117,6 +239,14 @@ func (m *Manager) Release(instanceID string) error {
 		}
 		released = true
 		entry := &m.pool[i]
+
+		if entry.MIGInstance != nil {
+			releasedMIGPCI = entry.Device.PCIAddress
+			entry.InstanceID = ""
+			slog.Info("MIG instance released", "instance", instanceID,
+				"gpu", entry.Device.PCIAddress, "mdev", entry.MIGInstance.MdevPath)
+			continue
+		}
 
 		for _, member := range entry.groupMembers {
 			orig := entry.memberDrivers[member.PCIAddress]
@@ -153,23 +283,116 @@ func (m *Manager) Release(instanceID string) error {
 	if !released {
 		return fmt.Errorf("no GPU claimed by instance %s", instanceID)
 	}
+
+	// For dynamically carved MIG GPUs: destroy all slices when the last instance
+	// on this GPU is released, returning the GPU to the free pool.
+	if releasedMIGPCI != "" {
+		if _, dynamic := m.committedProfiles[releasedMIGPCI]; dynamic {
+			m.tryDestroyIdleMIGGPULocked(releasedMIGPCI)
+		}
+	}
+
 	return firstErr
 }
 
-// MarkFailed marks a GPU as permanently unavailable after a VFIO/QEMU launch
-// error. The entry is skipped by Claim until the daemon restarts. Call this
-// after releasing a GPU whose QEMU crashed during startup so the same broken
-// device is not immediately re-assigned to the next instance.
+// tryDestroyIdleMIGGPULocked destroys all MIG instances on pciAddr if none are
+// currently claimed, then returns the GPU to freeMIGGPUs. Must be called with
+// m.mu held; releases and reacquires it around the nvidia-smi call.
+func (m *Manager) tryDestroyIdleMIGGPULocked(pciAddr string) {
+	for _, e := range m.pool {
+		if e.Device.PCIAddress == pciAddr && e.MIGInstance != nil && e.InstanceID != "" {
+			return // still active instances on this GPU
+		}
+	}
+
+	var dev GPUDevice
+	found := false
+	for _, e := range m.pool {
+		if e.Device.PCIAddress == pciAddr && e.MIGInstance != nil {
+			dev = e.Device
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+
+	m.mu.Unlock()
+	err := DestroyAllInstances(pciAddr)
+	m.mu.Lock()
+
+	if err != nil {
+		slog.Error("MIG destroy failed on last release; GPU marked unavailable — restart daemon to recover",
+			"gpu", pciAddr, "err", err)
+		for i := range m.pool {
+			if m.pool[i].Device.PCIAddress == pciAddr && m.pool[i].MIGInstance != nil {
+				m.pool[i].Available = false
+			}
+		}
+		delete(m.committedProfiles, pciAddr)
+		return
+	}
+
+	newPool := make([]gpuEntry, 0, len(m.pool))
+	for _, e := range m.pool {
+		if e.Device.PCIAddress != pciAddr || e.MIGInstance == nil {
+			newPool = append(newPool, e)
+		}
+	}
+	m.pool = newPool
+	delete(m.committedProfiles, pciAddr)
+	m.freeMIGGPUs = append(m.freeMIGGPUs, dev)
+	slog.Info("MIG GPU freed and returned to pool", "gpu", pciAddr)
+}
+
+// MarkFailed marks a whole-GPU entry as permanently unavailable after a
+// VFIO/QEMU launch error. The entry is skipped by Claim until the daemon
+// restarts. Call this after releasing a GPU whose QEMU crashed during startup
+// so the same broken device is not immediately re-assigned to the next instance.
 func (m *Manager) MarkFailed(pciAddress string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range m.pool {
-		if m.pool[i].Device.PCIAddress == pciAddress && m.pool[i].InstanceID == "" {
-			m.pool[i].Available = false
+		e := &m.pool[i]
+		if e.Device.PCIAddress == pciAddress && e.MIGInstance == nil && e.InstanceID == "" {
+			e.Available = false
 			slog.Warn("GPU marked unavailable after launch failure — restart daemon to retry",
 				"pci", pciAddress)
 			return
 		}
+	}
+}
+
+// MarkMIGFailed marks a specific MIG slice as permanently unavailable after a
+// QEMU launch error. Only the slice identified by mdevPath is affected; other
+// slices on the same physical GPU remain available.
+func (m *Manager) MarkMIGFailed(mdevPath string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.pool {
+		e := &m.pool[i]
+		if e.MIGInstance != nil && e.MIGInstance.MdevPath == mdevPath && e.InstanceID == "" {
+			e.Available = false
+			slog.Warn("MIG instance marked unavailable after launch failure — restart daemon to retry",
+				"mdev", mdevPath)
+			return
+		}
+	}
+}
+
+// AddMIGInstances appends pool entries for each MIG slice on device. Called by
+// the daemon after CreateInstances or ListInstances populates the slice set for
+// a MIG-enabled GPU.
+func (m *Manager) AddMIGInstances(device GPUDevice, instances []MIGInstance) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range instances {
+		m.pool = append(m.pool, gpuEntry{
+			Device:      device,
+			MIGInstance: &instances[i],
+			Available:   true,
+		})
 	}
 }
 
@@ -252,4 +475,33 @@ func (m *Manager) ReclaimByAddress(addr, instanceID string) error {
 		return nil
 	}
 	return fmt.Errorf("GPU %s not found in pool", addr)
+}
+
+// ReclaimByMdev marks the MIG slice at mdevPath as claimed by instanceID
+// without performing sysfs writes. Used on daemon restart to re-register slices
+// whose VMs are still running.
+func (m *Manager) ReclaimByMdev(mdevPath, instanceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range m.pool {
+		e := &m.pool[i]
+		if e.MIGInstance == nil || e.MIGInstance.MdevPath != mdevPath {
+			continue
+		}
+		if e.InstanceID == instanceID {
+			// Same instance re-registering — idempotent.
+			return nil
+		}
+		if e.InstanceID != "" {
+			return fmt.Errorf("MIG instance %s already claimed by %s", mdevPath, e.InstanceID)
+		}
+		if _, err := os.Stat(mdevPath); err != nil {
+			return fmt.Errorf("MIG mdev %s not accessible (MIG mode may have been disabled): %w", mdevPath, err)
+		}
+		e.InstanceID = instanceID
+		slog.Info("MIG instance re-claimed after daemon restart", "mdev", mdevPath, "instance", instanceID)
+		return nil
+	}
+	return fmt.Errorf("MIG instance %s not found in pool", mdevPath)
 }

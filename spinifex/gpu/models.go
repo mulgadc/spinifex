@@ -55,11 +55,31 @@ var computeModels = map[string]bool{
 	"1002:740c": true, // MI250X
 }
 
+// migCapableModels is the set of "vendorID:deviceID" keys for NVIDIA GPUs that
+// support MIG partitioning. All are also in computeModels (headless datacenter cards).
+// A10, L4, L40S are compute GPUs but do NOT support MIG.
+var migCapableModels = map[string]bool{
+	"10de:20b2": true, // A100 SXM 40GB
+	"10de:20b5": true, // A100 SXM 80GB
+	"10de:20f1": true, // A100 PCIe 40GB
+	"10de:20f3": true, // A100 PCIe 80GB
+	"10de:2331": true, // H100 SXM
+	"10de:2330": true, // H100 PCIe
+	"10de:233a": true, // H100 NVL
+	"10de:2233": true, // A30
+}
+
 // IsComputeGPU reports whether vendorID:deviceID identifies a headless compute GPU
 // that should use x-vga=off in QEMU. Consumer/display GPUs return false.
 // Both IDs must be lowercase hex without a "0x" prefix.
 func IsComputeGPU(vendorID, deviceID string) bool {
 	return computeModels[vendorID+":"+deviceID]
+}
+
+// IsMIGCapable reports whether vendorID:deviceID identifies a GPU that supports
+// NVIDIA MIG partitioning. Both IDs must be lowercase hex without a "0x" prefix.
+func IsMIGCapable(vendorID, deviceID string) bool {
+	return migCapableModels[vendorID+":"+deviceID]
 }
 
 // lookupModel returns the model name and VRAM for a known vendorID:deviceID pair.

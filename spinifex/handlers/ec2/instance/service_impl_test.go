@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1948,19 +1949,19 @@ func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
 // --- StartStoppedInstance tests ---
 
 type fakeGPUClaimer struct {
-	claimed     []string
-	released    []string
-	claimErr    error
-	pciAddress  string
-	xvgaEnabled bool
+	claimed    []string
+	released   []string
+	claimErr   error
+	attachment gpu.GPUAttachment
 }
 
-func (f *fakeGPUClaimer) Claim(instanceID string) (string, bool, error) {
+func (f *fakeGPUClaimer) Claim(instanceID, _ string) (*gpu.GPUAttachment, error) {
 	f.claimed = append(f.claimed, instanceID)
 	if f.claimErr != nil {
-		return "", false, f.claimErr
+		return nil, f.claimErr
 	}
-	return f.pciAddress, f.xvgaEnabled, nil
+	att := f.attachment
+	return &att, nil
 }
 
 func (f *fakeGPUClaimer) Release(instanceID string) error {

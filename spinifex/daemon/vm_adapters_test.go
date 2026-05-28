@@ -105,7 +105,7 @@ func TestOnInstanceDownHook_NoOpWhenAbsent(t *testing.T) {
 // subscriptions and ignore the GPUPCIAddresses on the VM.
 func TestOnInstanceUpHook_NoGPUManager_SkipsReclaim(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
-	instance := &vm.VM{ID: "i-up-nogpu", GPUPCIAddresses: []string{"0000:01:00.0"}}
+	instance := &vm.VM{ID: "i-up-nogpu", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	require.Contains(t, d.natsSubscriptions, instance.ID)
@@ -131,7 +131,7 @@ func TestOnInstanceUpHook_NoGPUAddress_SkipsReclaim(t *testing.T) {
 func TestOnInstanceUpHook_GPUReclaimError_DoesNotPropagate(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
 	d.gpuManager = gpu.NewManager(nil)
-	instance := &vm.VM{ID: "i-up-gpu-missing", GPUPCIAddresses: []string{"0000:99:00.0"}}
+	instance := &vm.VM{ID: "i-up-gpu-missing", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:99:00.0"}}}
 
 	require.NoError(t, d.onInstanceUpHook()(instance))
 	require.Contains(t, d.natsSubscriptions, instance.ID)
@@ -273,7 +273,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 func TestReleaseGPU_NoManager_NoOp(t *testing.T) {
 	d := &Daemon{}
 	a := newInstanceCleanerAdapter(d)
-	instance := &vm.VM{ID: "i-nogpu", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	instance := &vm.VM{ID: "i-nogpu", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:03:00.0"}}}
 	// Must not panic.
 	a.ReleaseGPU(instance)
 }
@@ -294,7 +294,7 @@ func TestReleaseGPU_ManagerError_LogsWarning(t *testing.T) {
 	d := &Daemon{gpuManager: mgr}
 	a := newInstanceCleanerAdapter(d)
 	// GPU address set but no claim registered — Release returns an error.
-	instance := &vm.VM{ID: "i-unclaimed", GPUPCIAddresses: []string{"0000:03:00.0"}}
+	instance := &vm.VM{ID: "i-unclaimed", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:03:00.0"}}}
 	// Must not panic; the error is logged as a warning.
 	a.ReleaseGPU(instance)
 }

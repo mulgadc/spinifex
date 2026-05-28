@@ -2,6 +2,7 @@ package handlers_ec2_instance
 
 import (
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/mulgadc/viperblock/viperblock"
 )
@@ -59,11 +60,11 @@ type InstanceTypeAllocator interface {
 	InstanceTypes() map[string]*ec2.InstanceTypeInfo
 }
 
-// GPUClaimer binds a GPU (and its IOMMU group) to vfio-pci for a starting
-// instance. Returns the PCI address and whether QEMU should set x-vga=on.
-// nil claimer means the daemon has no GPU passthrough configured.
+// GPUClaimer binds a GPU for a starting instance and returns an attachment
+// descriptor. For whole-GPU passthrough the descriptor carries the PCI address;
+// for MIG slices it carries the mdev path. nil claimer means no GPU passthrough.
 type GPUClaimer interface {
-	Claim(instanceID string) (pciAddress string, xvgaEnabled bool, err error)
+	Claim(instanceID, profileName string) (*gpu.GPUAttachment, error)
 	Release(instanceID string) error
 }
 

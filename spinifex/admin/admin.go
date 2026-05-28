@@ -940,6 +940,52 @@ func ParsePredastoreNodeIDFromConfig(tomlContent string, ip string) int {
 	return FindNodeIDByIP(cfg.DB, ip)
 }
 
+// SetMIGProfile idempotently writes mig_profile = "<profile>" for the given
+// node into spinifex.toml, preserving all other content and comments.
+// An empty profile clears the setting (writes mig_profile = "").
+func SetMIGProfile(tomlPath, node, profile string) error {
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", tomlPath, err)
+	}
+	text := string(raw)
+	quoted := `"` + profile + `"`
+
+	sectionHeader := "[nodes." + node + ".daemon]"
+	sectionStart := strings.Index(text, sectionHeader)
+	if sectionStart < 0 {
+		text = strings.TrimRight(text, "\n") +
+			"\n\n[nodes." + node + ".daemon]\nmig_profile = " + quoted + "\n"
+		return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640
+	}
+
+	bodyStart := sectionStart + len(sectionHeader)
+	rest := text[bodyStart:]
+	nextSection := strings.Index(rest, "\n[")
+	var body, suffix string
+	if nextSection < 0 {
+		body = rest
+	} else {
+		body = rest[:nextSection]
+		suffix = rest[nextSection:]
+	}
+
+	if regexp.MustCompile(`mig_profile\s*=\s*` + regexp.QuoteMeta(quoted)).MatchString(body) {
+		return nil
+	}
+
+	flipRe := regexp.MustCompile(`mig_profile\s*=\s*"[^"]*"`)
+	var newBody string
+	if flipRe.MatchString(body) {
+		newBody = flipRe.ReplaceAllString(body, "mig_profile = "+quoted)
+	} else {
+		newBody = "\nmig_profile = " + quoted + body
+	}
+
+	text = text[:bodyStart] + newBody + suffix
+	return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640
+}
+
 // SetGPUPassthrough idempotently writes gpu_passthrough = <enabled> for the
 // given node into spinifex.toml, preserving all other content and comments.
 // Returns nil without touching the file if the setting is already correct.

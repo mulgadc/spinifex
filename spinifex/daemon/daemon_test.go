@@ -150,7 +150,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 // getTestInstanceType returns a valid instance type for testing based on the system's CPU
 func getTestInstanceType(t *testing.T) string {
 	t.Helper()
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 	// Find any .micro instance type
 	for key := range rm.instanceTypes {
@@ -181,7 +181,7 @@ func seedTestAMI(t *testing.T, store *objectstore.MemoryObjectStore, bucket, ima
 
 // TestResourceManager tests resource manager functionality
 func TestResourceManager(t *testing.T) {
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	require.NotNil(t, rm)
@@ -231,7 +231,7 @@ func TestResourceManager(t *testing.T) {
 	// Test canAllocate with count parameter
 	t.Run("canAllocate_with_count", func(t *testing.T) {
 		// Fresh resource manager for predictable testing
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		// Find a .micro instance type
@@ -268,7 +268,7 @@ func TestResourceManager(t *testing.T) {
 
 // TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method
 func TestGetInstanceTypeInfos(t *testing.T) {
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	infos := rm.GetInstanceTypeInfos()
@@ -296,7 +296,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 
 // TestGetAvailableInstanceTypeInfos_ResourceFiltering tests that instance types are filtered by available resources
 func TestGetAvailableInstanceTypeInfos_ResourceFiltering(t *testing.T) {
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	// Get initial count of all available types
@@ -791,7 +791,7 @@ func TestStopInstance_Deallocation(t *testing.T) {
 // TestCanAllocate_CountEdgeCases tests edge cases for canAllocate with count parameter
 func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	t.Run("MinCount_equals_MaxCount", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -810,7 +810,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Request_exceeds_capacity", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		// Find the largest instance type to exhaust resources faster
@@ -833,7 +833,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Capacity_decreases_after_allocation", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -883,7 +883,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Mixed_instance_types", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		var microType, mediumType *ec2.InstanceTypeInfo
@@ -916,7 +916,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Zero_and_negative_counts", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 
 		var microType *ec2.InstanceTypeInfo
@@ -946,7 +946,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 // a check-then-commit gap. Pre-fix this test would intermittently overcommit;
 // post-fix the per-call write-lock acquisition makes it deterministic.
 func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	var microType *ec2.InstanceTypeInfo
@@ -1293,7 +1293,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 	t.Run("InitialSubscriptions", func(t *testing.T) {
 		// A fresh ResourceManager should subscribe to all instance types that fit
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1327,7 +1327,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("UnsubscribesWhenFull", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1352,7 +1352,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("ResubscribesWhenFreed", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1383,7 +1383,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("PartialCapacity", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1412,7 +1412,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("AllocateTriggersSubs", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1456,7 +1456,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 	})
 
 	t.Run("NoRespondersWhenFull", func(t *testing.T) {
-		rm, err := NewResourceManager(nil, nil)
+		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
 		nc, err := nats.Connect(natsURL)
 		require.NoError(t, err)
@@ -1485,7 +1485,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 // TestResourceManager_ConcurrentAccess tests thread safety of resource manager
 func TestResourceManager_ConcurrentAccess(t *testing.T) {
-	rm, err := NewResourceManager(nil, nil)
+	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
 	var microType *ec2.InstanceTypeInfo
@@ -4015,7 +4015,7 @@ func TestReloadGPUTypes_EmptyModelsPreservesCPUTypes(t *testing.T) {
 		},
 	}
 
-	rm.reloadGPUTypes(nil, nil)
+	rm.reloadGPUTypes(nil, nil, nil)
 
 	assert.Contains(t, rm.instanceTypes, "t3.micro")
 	assert.Contains(t, rm.instanceTypes, "t3.large")
@@ -4037,7 +4037,7 @@ func TestReloadGPUTypes_NonEmptyReplacesGPUTypes(t *testing.T) {
 		},
 	}
 
-	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil)
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, nil)
 
 	assert.Contains(t, rm.instanceTypes, "t3.micro", "CPU type preserved")
 	assert.NotContains(t, rm.instanceTypes, "g5.xlarge", "old GPU type removed")
@@ -4080,13 +4080,13 @@ func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
 		handler:       func(*nats.Msg) {},
 	}
 
-	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, gpuMgr)
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, gpuMgr)
 	subsAfter := len(rm.instanceSubs)
 	require.Greater(t, subsAfter, 0, "subscriptions added after reload — updateInstanceSubscriptions ran")
 
 	// Each g4dn size produces both queue and node-specific topics; record the
 	// count so we can prove a second call does not double-subscribe.
-	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, gpuMgr)
+	rm.reloadGPUTypes([]instancetypes.GPUModel{instancetypes.NVIDIAt4}, nil, gpuMgr)
 	assert.Equal(t, subsAfter, len(rm.instanceSubs),
 		"second reload with identical models must not double-subscribe — proves idempotent invocation")
 }

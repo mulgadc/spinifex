@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -541,7 +542,7 @@ func TestStopCleanup_InvokesReleaseGPU(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	cleaner := &recordingInstanceCleaner{}
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
-	instance := &VM{ID: "i-stop", GPUPCIAddresses: []string{"0000:01:00.0"}}
+	instance := &VM{ID: "i-stop", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
 	m.stopCleanup(instance)
 
@@ -558,7 +559,7 @@ func TestTerminateCleanup_InvokesReleaseGPU(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	cleaner := &recordingInstanceCleaner{}
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
-	instance := &VM{ID: "i-term", GPUPCIAddresses: []string{"0000:01:00.0"}}
+	instance := &VM{ID: "i-term", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
 	m.terminateCleanup(instance)
 

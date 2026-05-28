@@ -1,132 +1,170 @@
-# Spinifex Command Reference
+# Command Implementation Matrix
 
-Implementation status of every CLI subcommand (`spx`) and AWS-compatible API
-action served by the Spinifex gateway. Tables list flag coverage only — for
-prerequisites, behaviour, and error semantics, read the linked source or
-`spinifex/docs/DESIGN.md`.
+## Spinifex Admin CLI
 
-**Status legend:** **DONE** — fully implemented · **STARTED** — partially
-implemented (caveat in note) · **NOT STARTED** — not implemented.
-
----
-
-## Spinifex Admin CLI (`spx`)
-
-Platform-management commands not exposed via the AWS gateway. CLI-only.
+Platform management commands not exposed via the AWS gateway API. These are CLI-only commands.
 
 ### Service Management
 
-`spx service <name> {start|stop|status}` — lifecycle for each cluster service.
-`stop`/`status` take no flags.
+Service lifecycle commands for starting, stopping, and checking status of all Spinifex cluster services. Each service subcommand supports `start`, `stop`, and `status` operations.
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx service predastore start` | `--port` (8443), `--host` (0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem), `--node-id`, `--pprof`, `--pprof-output` | — | **DONE** |
-| `spx service predastore stop` / `status` | — | — | **DONE** |
-| `spx service viperblock start` | `--s3-host`, `--s3-bucket`, `--s3-region`, `--plugin-path` | — | **DONE** |
-| `spx service viperblock stop` / `status` | — | — | **DONE** |
-| `spx service nats start` | `--port` (4222), `--host`, `--debug`, `--data-dir`, `--jetstream` | — | **DONE** |
-| `spx service nats stop` / `status` | — | — | **DONE** |
-| `spx service spinifex start` | `--wal-dir` | — | **DONE** |
-| `spx service spinifex stop` / `status` | — | — | **DONE** |
-| `spx service awsgw start` | `--host` (0.0.0.0:9999), `--tls-cert`, `--tls-key`, `--debug` | — | **DONE** |
-| `spx service awsgw stop` / `status` | — | — | **DONE** |
-| `spx service spinifex-ui start` | `--port` (3000), `--host`, `--tls-cert`, `--tls-key` | — | **DONE** |
-| `spx service spinifex-ui stop` / `status` | — | — | **DONE** |
-| `spx service vpcd start` / `stop` / `status` | — | — | **DONE** |
-
-Viperblock `--plugin-path` is auto-detected via `nbdkit --dump-config plugindir`
-and overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in
-`/etc/spinifex/systemd.env`.
+| Command | Flags | Prerequisites | Basic Logic | Status |
+|---------|-------|---------------|-------------|--------|
+| `spx service predastore start` | `--port` (default: 8443), `--host` (default: 0.0.0.0), `--base-path`, `--config-path`, `--debug`, `--tls-cert`, `--tls-key`, `--backend` (distributed/filesystem, default: distributed), `--node-id` (default: 0), `--pprof`, `--pprof-output` | TLS cert/key, base-path, config-path required | Creates predastore service instance with S3-compatible storage backend → starts service | **DONE** |
+| `spx service predastore stop` | — | Predastore must be running | Stops the predastore service | **DONE** |
+| `spx service predastore status` | — | None | Reports predastore service status | **DONE** |
+| `spx service viperblock start` | `--s3-host` (default: 0.0.0.0:8443), `--s3-bucket` (default: predastore), `--s3-region` (default: ap-southeast-2), `--plugin-path` (auto-detected via `nbdkit --dump-config plugindir`; typically `/usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-viperblock-plugin.so` on amd64, overridable via `SPINIFEX_VIPERBLOCK_PLUGIN_PATH` in `/etc/spinifex/systemd.env`) | `--config` required, plugin-path must exist on disk | Loads cluster config → connects to NATS and Predastore → starts viperblock block storage service with NBD plugin | **DONE** |
+| `spx service viperblock stop` | — | Viperblock must be running | Stops the viperblock service | **DONE** |
+| `spx service viperblock status` | — | None | Reports viperblock service status | **DONE** |
+| `spx service nats start` | `--port` (default: 4222), `--host` (default: 0.0.0.0), `--debug`, `--data-dir`, `--jetstream` | None | Starts embedded NATS server with optional JetStream | **DONE** |
+| `spx service nats stop` | — | NATS must be running | Stops the NATS service | **DONE** |
+| `spx service nats status` | — | None | Reports NATS service status | **DONE** |
+| `spx service spinifex start` | `--wal-dir` | `--config` required | Loads cluster config → starts spinifex daemon (VM orchestration, NATS subscriptions, health endpoint) | **DONE** |
+| `spx service spinifex stop` | — | Spinifex daemon must be running | Stops the spinifex daemon service | **DONE** |
+| `spx service spinifex status` | — | None | Reports spinifex daemon service status | **DONE** |
+| `spx service awsgw start` | `--host` (default: 0.0.0.0:9999), `--tls-cert`, `--tls-key`, `--debug` | `--config` required | Loads cluster config → starts AWS-compatible gateway with SigV4 auth, IAM policy enforcement, TLS | **DONE** |
+| `spx service awsgw stop` | — | AWS gateway must be running | Stops the AWS gateway service | **DONE** |
+| `spx service awsgw status` | — | None | Reports AWS gateway service status | **DONE** |
+| `spx service spinifex-ui start` | `--port` (default: 3000), `--host` (default: 0.0.0.0), `--tls-cert`, `--tls-key` | None | Starts embedded web UI server serving the React frontend. Aliases: `ui`, `spinifexui` | **DONE** |
+| `spx service spinifex-ui stop` | — | spinifex-ui must be running | Stops the spinifex-ui service | **DONE** |
+| `spx service spinifex-ui status` | — | None | Reports spinifex-ui service status | **DONE** |
+| `spx service vpcd start` | — | `--config` required, OVN/OVS installed | Loads cluster config → starts VPC daemon (subscribes to `vpc.*` NATS events, translates to OVN logical switches/ports/routers) | **DONE** |
+| `spx service vpcd stop` | — | vpcd must be running | Stops the vpcd service | **DONE** |
+| `spx service vpcd status` | — | None | Reports vpcd service status | **DONE** |
 
 ### Cluster Inspection
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx get nodes` | `--timeout` (3s) | — | **DONE** |
-| `spx get vms` (alias: `instances`) | `--timeout` (3s) | — | **DONE** |
-| `spx top nodes` | `--timeout` (3s) | — | **DONE** |
+Operational commands for inspecting cluster state. These fan out NATS requests to all nodes and aggregate responses.
 
-### Cluster Lifecycle
+| Command | Flags | Prerequisites | Basic Logic | Output Columns | Status |
+|---------|-------|---------------|-------------|----------------|--------|
+| `spx get nodes` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Loads config → publishes to `spinifex.node.status` fan-out topic → collects responses within timeout → merges config-known nodes with NATS responders → nodes that don't respond shown as `NotReady` | NAME, STATUS, IP, REGION, AZ, UPTIME, VMs, SERVICES | **DONE** |
+| `spx get vms` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Publishes to `spinifex.node.vms` fan-out topic → collects VM info from all nodes → sorts by node then instance ID → prints table. Alias: `spx get instances` | INSTANCE, STATUS, TYPE, VCPU, MEM, NODE, IP, AGE | **DONE** |
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | — | **DONE** |
-| `spx admin join` | `--host`, `--node`, `--token`, `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | — | **DONE** |
-| `spx admin cluster shutdown` | `--force`, `--timeout` (120s), `--dry-run` | — | **DONE** |
-| `spx admin cert renew` | `--extra-ip`, `--extra-dns` | — | **DONE** |
-| `spx admin upgrade` | `--yes`, `--config-dir`, `--spinifex-dir` | — | **DONE** |
-| `spx version` | — | — | **DONE** |
+### Resource Monitoring
+
+| Command | Flags | Prerequisites | Basic Logic | Output | Status |
+|---------|-------|---------------|-------------|--------|--------|
+| `spx top nodes` | `--timeout` (default: 3s) | Cluster must be running (NATS) | Publishes to `spinifex.node.status` fan-out topic → collects CPU/memory usage per node → aggregates instance type capacity across all nodes → prints two tables: per-node resource usage and cluster-wide instance type availability | Table 1: NAME, CPU (used/total), MEM (used/total), GPU (used/total), VMs — GPU column shows `allocated/total` when passthrough is enabled, `0/count*` when the node is GPU-capable but passthrough is disabled, or `-` when no GPU is present. Table 2: INSTANCE TYPE, AVAILABLE, VCPU, MEMORY | **DONE** |
+
+### Cluster Initialization
+
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin init` | `--nodes`, `--node`, `--bind`, `--port`, `--region`, `--az`, `--cluster-name`, `--cluster-bind`, `--cluster-routes`, `--predastore-nodes`, `--services`, `--formation-timeout`, `--token-ttl`, `--force` | None (first-time setup) | Generates root IAM credentials (AKIA-prefixed access key + secret) → creates master.key (AES-256, 32 bytes, 0600) → writes bootstrap.json (consumed on first start) → generates CA + server TLS certificates → generates join token (written to `join-token` file, displayed in join command) → creates NATS config with auth token → writes spinifex.toml, awsgw.toml, predastore.toml → configures AWS CLI `spx` profile → creates directory structure under `~/spinifex/` | 1. Init creates all config files<br>2. Root credentials printed once<br>3. master.key is 32 bytes, mode 0600<br>4. bootstrap.json consumed on first start<br>5. `--force` re-initializes existing config<br>6. AWS CLI profile `spx` auto-configured<br>7. Multi-node init generates join token and writes to `<config-dir>/join-token` | **DONE** |
+| `spx admin join` | `--host` (required), `--node` (required), `--token` (required), `--bind`, `--port`, `--region`, `--az`, `--cluster-bind`, `--cluster-routes`, `--data-dir`, `--services` | Leader node must be running | Connects to leader node with join token (Authorization: Bearer header) → retrieves cluster configuration → configures local node to join cluster and participate in distributed operations | 1. Join existing cluster<br>2. Missing host (error)<br>3. Missing node name (error)<br>4. Missing token (error)<br>5. Invalid token (401)<br>6. Expired token (401) | **DONE** |
+
+### Version
+
+| Command | Flags | Prerequisites | Basic Logic | Status |
+|---------|-------|---------------|-------------|--------|
+| `spx version` | — | None | Prints Spinifex version, commit hash, OS, and architecture (populated via build-time ldflags) | **DONE** |
+
+### Cluster Operations
+
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin cluster shutdown` | `--force` (shutdown even if nodes don't respond), `--timeout` (max wait per phase, default 120s), `--dry-run` (print phase plan without executing) | Cluster must be running | Performs coordinated, phased shutdown of entire cluster. Phases execute in order: GATE (stop API/UI) → DRAIN (stop VMs) → STORAGE (stop viperblock) → PERSIST (stop predastore) → INFRA (stop NATS/daemon). Each phase waits for all nodes to ACK before proceeding. Uses JetStream state tracking. | 1. Shutdown running cluster<br>2. All nodes stop cleanly<br>3. Force shutdown with unresponsive nodes<br>4. Dry-run prints plan | **DONE** |
+
+### Certificate Management
+
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin cert renew` | `--extra-ip` (additional IPs for SANs), `--extra-dns` (additional DNS names for SANs) | Existing CA from `spx admin init` | Reads existing CA → regenerates server certificate with all current network interface IPs and machine hostname in SANs → writes new cert. Use after adding a new network interface or changing IP addresses. | 1. Renew with auto-detected IPs<br>2. Renew with extra IPs<br>3. Renew with extra DNS names | **DONE** |
+
+### Upgrade Management
+
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin upgrade` | `--yes` (apply without prompting), `--config-dir` (persistent, default: `~/spinifex/config`), `--spinifex-dir` (persistent, default: `~/spinifex`) | Existing installation (`spinifex.toml` must exist in config dir) | Reads current config versions from registry → computes pending config migrations (from→to per target) → prints version summary and pending list → prompts for confirmation unless `--yes` → runs `migrate.DefaultRegistry.RunAllConfig()` to apply migrations to config files. Intended for upgrades between Spinifex versions. Operators can skip migrations during install by setting `INSTALL_SPINIFEX_SKIP_MIGRATE=1`, then run `spx admin upgrade` manually to review and apply. After completion, services must be restarted with `sudo systemctl restart spinifex.target`. Invoked non-interactively by `scripts/setup.sh` with `--yes`. | 1. No installation present (error, suggests `spx admin init`)<br>2. No pending migrations (prints "No pending config migrations")<br>3. Pending migrations with interactive confirmation (y/yes applies, anything else aborts)<br>4. Pending migrations with `--yes` (applies without prompt)<br>5. Migration failure surfaces error and exits non-zero | **DONE** |
 
 ### Account Management
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx admin account create` | `--name` | — | **DONE** |
-| `spx admin account list` | — | — | **DONE** |
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin account create` | `--name` | Cluster must be running (NATS), master key must exist | Connects to NATS → CAS loop on `spinifex-account-counter:next_id` for sequential 12-digit ID → creates Account record in `spinifex-accounts` KV → creates `admin` user in new account → creates access key for admin → creates AdministratorAccess policy (Action:*, Resource:*) → attaches policy → prints credentials | 1. Create first account (ID 000000000001)<br>2. Sequential IDs (000000000002, etc.)<br>3. Admin user has full access<br>4. Credentials printed once | **DONE** |
+| `spx admin account list` | — | Cluster must be running (NATS), master key must exist | Connects to NATS → IAMService.ListAccounts() → prints table with Account ID, Name, Status, Created | 1. List all accounts<br>2. Empty list (only global account) | **DONE** |
 
 ### Image Management
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | — | **DONE** |
-| `spx admin images list` | — | — | **DONE** |
-| `spx admin images remove` | `--image-id`, `--force`, `--yes` | — | **DONE** |
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin images import` | `--name`, `--file`, `--distro`, `--version`, `--arch`, `--platform`, `--boot-mode` (bios/uefi/uefi-preferred), `--tag`, `--force`, `--skip-verify` | Cluster must be running; either `--name` (catalog download) or `--file` (operator-supplied media). `--file` mode additionally requires `--distro`, `--version`, `--arch`, `--boot-mode`. | Catalog imports (`--name`) download the image, fetch the catalog `Checksum` URL, verify the SHA-256/SHA-512 digest, and inherit `BootMode` from the catalog entry. `--boot-mode` overrides the catalog value when set. Mismatch fails closed; the cached file is left on disk and `--force` re-downloads. `--file` imports skip checksum verification (operator-supplied media is outside Spinifex's trust boundary, the skip is logged at INFO for audit) and require an explicit `--boot-mode` because there is no catalog metadata to inherit from. `--skip-verify` bypasses verification for catalog imports and emits a WARN slog + stderr notice; use only for debugging or when upstream mirrors are confirmed-broken. | 1. Import valid catalog image (verifies checksum)<br>2. Tampered cache hit fails with `ErrChecksumMismatch`<br>3. `--force` recovers after a mismatch<br>4. `--file` import skips verification<br>5. `--skip-verify` bypasses checksum with WARN<br>6. `--file` without `--boot-mode` rejected<br>7. `--boot-mode=invalid` rejected | **DONE** |
+| `spx admin images list` | — | None | Lists available OS images that can be imported or downloaded | 1. List available images | **DONE** |
+| `spx admin images remove` | `--image-id` (required), `--force`, `--yes` | Cluster must be running; predastore reachable. Targets AMIs imported via `spx admin images import` (non-account `ImageOwnerAlias`, e.g. `"system"`). | Loads `ami-<id>/config.json`, walks transitive dependents — copied snapshots whose `VolumeID == imageID`, volumes whose `SnapshotID` references the internal `snap-ami-<id>` or any derived snap, and account AMIs created via `CopyImage` whose `SnapshotID` is a derived snap — then prompts (skipped with `--yes`) before deleting `ami-<id>/config.json` (the DescribeImages barrier) followed by the rest of `ami-<id>/` and `snap-ami-<id>/`. Account-owned AMIs are refused with a hint pointing at `aws ec2 deregister-image` + `aws ec2 delete-snapshot`. `--force` bypasses the dependency, ownership and config-corrupt checks for salvage of orphaned blocks. | 1. Happy path: system AMI, no deps → deleted<br>2. Account-owned → refused with AWS-flow hint<br>3. Missing/corrupt config → `InvalidAMIID.NotFound` (salvageable with `--force`)<br>4. Dependent volume (direct or via copied snap) → refused<br>5. Dependent account AMI → refused<br>6. `--force` overrides dependents<br>7. Idempotent re-run after partial delete | **DONE** |
 
 #### Image integrity verification (CMMC SI.L1-3.14.2)
 
-Catalog imports (`--name`) verify the image against the catalog-declared
-SHA-256/SHA-512 digest before extraction. The sums file is fetched over HTTPS
-only (cross-scheme redirects refused). Verification runs on fresh downloads
-*and* cache hits, so a poisoned cache is caught on the next import. On
-mismatch the import exits non-zero, the cached file is left for inspection,
-and the guidance is to re-run with `--force`.
+Catalog imports (`spx admin images import --name <name>`) verify the image
+against the catalog-declared SHA-256/SHA-512 digest before extraction. The sums
+file is fetched from the catalog `Checksum` URL over HTTPS only (cross-scheme
+redirects refused), and verification runs on both fresh downloads and cache
+hits so a poisoned cache is caught on the next import.
+
+On mismatch the import exits non-zero, the cached file is left on disk for
+inspection, and the printed guidance is `spx admin images import --name <name>
+--force` to re-download.
 
 `--file` imports skip verification by design: operator-supplied media is
-outside Spinifex's trust boundary. The skip is recorded as an INFO `slog`
-event (`reason=local-file-import`).
+outside Spinifex's trust boundary and the operator is responsible for
+integrity (e.g. `sha256sum` against a trusted upstream digest before import).
+The skip is recorded as an INFO `slog` event with `reason=local-file-import`
+so a CMMC assessor can audit the decision from journald.
 
-`--skip-verify` bypasses checksum verification for catalog imports — only for
-debugging upstream mirror issues. Logged at WARN
-(`reason=skip-verify-flag`) and to stderr.
+`--skip-verify` bypasses the checksum step for catalog imports. The command
+still downloads via the catalog URL but does not compare the image digest
+against the sums file. Intended for narrow cases such as debugging upstream
+mirror issues or running against a transiently-broken `latest/` path; the
+skip is logged at WARN with `reason=skip-verify-flag` and printed to stderr
+so operators and assessors see it. Prefer `--file` with an out-of-band
+verified image over `--skip-verify` whenever possible.
 
 **Limitation:** verification confirms the image matches the digest the mirror
 served. A mirror compromise that swaps both image and sums file is not
-detected; GPG signature verification is a later phase.
+detected; closing that gap requires GPG signature verification of the sums
+file, deferred to a later phase.
 
 #### `spx admin images remove` caveats
 
-System AMIs (`ImageOwnerAlias = "system"`) cannot be removed via the AWS
-`DeregisterImage`/`DeleteSnapshot` flow — those reject system owners with
-`UnauthorizedOperation`. `spx admin images remove` is the admin-trust-boundary
-counterpart: it walks the transitive dependent set (copied snapshots, derived
-volumes, account AMIs created via `CopyImage`) and refuses if anything
-references the target.
+Admin-imported AMIs (`ImageOwnerAlias = "system"`) live
+under the `ami-<id>/` S3 prefix and use a viperblock-internal snap checkpoint
+at `snap-ami-<id>/` — there is no `snap-<id>/metadata.json`. The AWS handlers
+(`DeregisterImage`, `DeleteSnapshot`) reject system owners with
+`UnauthorizedOperation`, which is the right behaviour for tenant API callers
+but leaves no AWS-flow path to reclaim space. `spx admin images remove` is
+the admin-trust-boundary counterpart that performs the dependency walk and
+hard-deletes the blocks directly against predastore.
+
+`CopyImage` of a system AMI is metadata-only: it writes a fresh
+`snap-<acct>/metadata.json` whose `VolumeID` points at `ami-<sys>` and a new
+`ami-<acct>/config.json` referencing that snap. Volumes launched from the
+copied AMI read transitively from `ami-<sys>/chunks/...`. The remove command
+walks this transitive set and refuses if anything references the target.
 
 **TOCTOU window:** between the safety scan and the `config.json` delete a
-concurrent `RunInstances` could create a new dependent volume. The window is
-sub-second on a healthy cluster. The admin is expected to know fleet state;
-if the race fires the result is a `vol-<id>` with deleted backing blocks,
-recovered by terminating the orphaned instance.
+concurrent `RunInstances` against the AMI could create a new dependent
+volume. The window is sub-second on a healthy cluster. The admin running
+this command is expected to know the fleet's operational state; if the race
+fires the result is a `vol-<id>` with deleted backing blocks, recovered by
+terminating the orphaned instance.
 
 **`--force` bypasses every safety check** (dependents, ownership, missing /
-corrupt `config.json`). Use only for salvage of orphaned blocks. Running
-`--force` against a live system AMI corrupts every dependent volume on the
-next disk read.
+corrupt `config.json`). Use only for salvage of orphaned blocks. Running it
+against a live system AMI corrupts every dependent volume on the next disk
+read.
 
 ### GPU Management
 
-| Command | Implemented Flags | Missing Flags | Status |
-|---------|-------------------|---------------|--------|
-| `spx admin gpu status` | `--node` | — | **DONE** |
-| `spx admin gpu enable` | — | — | **DONE** |
-| `spx admin gpu disable` | — | — | **DONE** |
-| `spx admin gpu setup` | — | — | **DONE** |
+| Command | Flags | Prerequisites | Basic Logic | Test Cases | Status |
+|---------|-------|---------------|-------------|------------|--------|
+| `spx admin gpu status` | `--node` (default: local node) | Cluster must be running (NATS) | Queries `spinifex.node.status` fan-out → finds the target node response → prints Node, GPU hardware (model list or "none detected"), IOMMU state, vfio-pci state, passthrough enabled/disabled, and GPU pool allocation (`allocated/total`). Also lists GPU-capable instance types when passthrough is active. | 1. Local node with passthrough enabled (shows pool and instance types)<br>2. Local node capable but passthrough disabled (shows "run enable")<br>3. Node without GPU hardware (shows "none detected")<br>4. `--node` targets a remote node<br>5. Node not found or not responding (error) | **DONE** |
+| `spx admin gpu enable` | — | Cluster must be running (NATS); node must be GPU-capable (IOMMU + vfio-pci configured) | Checks current passthrough state via NATS → errors if already enabled or prerequisites not met (directs to `setup`) → writes `gpu_passthrough = true` to `spinifex.toml` via `admin.SetGPUPassthrough` → sends SIGHUP to `spinifex-daemon` via `systemctl kill -s HUP` → polls node status for up to 30 s until daemon confirms new state → prints final `gpu status` output. Must be run directly on the target host. | 1. Enable on capable node<br>2. Already enabled (no-op)<br>3. Prerequisites not met (error, suggests `setup`)<br>4. Daemon does not confirm within 30 s (timeout error) | **DONE** |
+| `spx admin gpu disable` | — | Cluster must be running (NATS); no GPU instances may be running | Checks current passthrough state via NATS → errors if already disabled or if `AllocGPUs > 0` (must terminate GPU instances first) → writes `gpu_passthrough = false` → sends SIGHUP to `spinifex-daemon` → polls for up to 30 s → prints final `gpu status` output. Must be run directly on the target host. | 1. Disable with no GPU instances running<br>2. Already disabled (no-op)<br>3. GPU instances running (error with count)<br>4. Daemon does not confirm within 30 s (timeout error) | **DONE** |
+| `spx admin gpu setup` | — | Must be run as root; NVIDIA or AMD GPU must be present | Idempotent host configuration for GPU passthrough. Steps (skipped if already applied): detect GPUs via `gpu.Discover` → collect PCI IDs for all IOMMU-group siblings → check/enable IOMMU in GRUB (`intel_iommu=on iommu=pt` or `amd_iommu=on iommu=pt`) → write vfio udev rule (`/etc/udev/rules.d/99-spinifex-vfio.rules`) → blacklist nouveau (`/etc/modprobe.d/blacklist-nouveau.conf`) → blacklist amdgpu if AMD GPU present (`/etc/modprobe.d/blacklist-amdgpu.conf`) → write vfio-pci early binding config (`/etc/modprobe.d/vfio-pci.conf`) → add vfio modules to initramfs. If any change requires a reboot: runs `update-initramfs -u` and exits with reboot instructions. After reboot: verifies `vfio_pci` module is loaded → verifies each GPU is bound to `vfio-pci` (binds explicitly via `driver_override` if unbound) → calls `gpu enable` to activate passthrough. | 1. First run on unconfigured host (GRUB updated, reboot required)<br>2. Re-run after reboot (verifies bindings, enables passthrough)<br>3. Already fully configured (all steps skipped, enables passthrough)<br>4. AMD GPU present (blacklists amdgpu in addition to nouveau)<br>5. Not run as root (error)<br>6. No GPU hardware detected (error) | **DONE** |
+| `spx admin gpu mig status` | — (must be run on target host) | NVIDIA GPU with MIG support present | Runs `gpu.Discover()` locally → for each GPU prints: PCI address, model, MIG capability, MIG mode (enabled/disabled/N/A); for GPUs with MIG enabled lists active MIG slices with GI ID, profile name, and mdev path. | 1. Node with MIG enabled (shows slices)<br>2. MIG capable but not enabled (shows disabled)<br>3. No MIG-capable GPU (shows N/A for MIG fields) | **DONE** |
+| `spx admin gpu mig enable` | `--profile <name>` (required, e.g. `1g.10gb`), `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Must be run as root; MIG-capable GPU present; no GPU instances running | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → enables MIG mode on each target (`gpu.EnableMIGMode`) → lists available profiles (`gpu.ListProfiles`) and validates requested profile name → destroys any existing instances (`gpu.DestroyAllInstances`) → creates new instances filling GPU capacity (`gpu.CreateInstances`) → writes `mig_profile` to `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. | 1. Enable MIG with valid profile<br>2. Invalid profile name (error with available profile list)<br>3. No MIG-capable GPU (error)<br>4. GPU instances running (error)<br>5. `--gpu` targets specific GPU<br>6. Not run as root (error) | **DONE** |
+| `spx admin gpu mig disable` | `--gpu <pci-addr>` (optional, default: all MIG-capable GPUs) | Must be run as root; no GPU instances running | Checks no GPU instances running (NATS) → discovers MIG-capable GPUs via `gpu.Discover()` (filtered by `--gpu` if set) → destroys all GPU instances (`gpu.DestroyAllInstances`) → disables MIG mode (`gpu.DisableMIGMode`) → clears `mig_profile` in `spinifex.toml` via `admin.SetMIGProfile` → sends SIGHUP to `spinifex-daemon`. Must be run directly on the target host. | 1. Disable with no running GPU instances<br>2. GPU instances running (error)<br>3. MIG not enabled on GPU (skips that GPU)<br>4. `--gpu` targets specific GPU<br>5. Not run as root (error) | **DONE** |
 
-`gpu setup` must run as root. `gpu enable`/`disable` must run on the target
-host (writes `spinifex.toml`, SIGHUPs `spinifex-daemon`).
-
----
 
 ## AWS-Compatible API
 

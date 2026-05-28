@@ -400,7 +400,7 @@ func getSystemMemory() (float64, error) {
 // runtime bug.
 // gpuModels is the list of recognised GPU models present on the host; pass nil if
 // GPU passthrough is disabled or no GPUs were found.
-func NewResourceManager(gpuModels []instancetypes.GPUModel, gpuMgr *gpu.Manager) (*ResourceManager, error) {
+func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
 	// Get system CPU cores
 	numCPU := runtime.NumCPU()
 
@@ -428,6 +428,9 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, gpuMgr *gpu.Manager)
 	// Detect CPU generation and generate matching instance types (including GPU
 	// families when gpuModels is non-nil).
 	instanceTypes := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, arch, gpuModels)
+	if len(migProfiles) > 0 {
+		maps.Copy(instanceTypes, instancetypes.GenerateMIGTypes(migProfiles, arch))
+	}
 
 	slog.Info("System resources detected",
 		"hostVCPU", numCPU, "hostMemGB", totalMemGB,
@@ -602,6 +605,7 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 
 	// Phase 2: activate GPU passthrough only when the operator has opted in.
 	var gpuModels []instancetypes.GPUModel
+	var gpuMigProfiles []instancetypes.MIGProfileSpec
 	var gpuMgr *gpu.Manager
 	if nodeCfg.Daemon.GPUPassthrough {
 		if !gpuProbe.Capable {
@@ -609,18 +613,14 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 				"iommu", gpuProbe.IOMMUActive, "vfio", gpuProbe.VFIOPresent,
 				"gpus", len(gpuProbe.Devices))
 		} else {
-			for _, dev := range gpuProbe.Devices {
-				gpuModels = append(gpuModels, resolveGPUModel(dev, nodeCfg.Daemon.GPUModelOverrides))
-			}
-			gpuMgr = gpu.NewManager(gpuProbe.Devices)
-			slog.Info("GPU passthrough enabled", "gpus", len(gpuProbe.Devices), "knownModels", len(gpuModels))
+			gpuMgr, gpuModels, gpuMigProfiles = buildGPUPool(gpuProbe.Devices, nodeCfg.Daemon)
 		}
 	} else if gpuProbe.Capable {
 		slog.Info("GPU hardware detected, passthrough not enabled",
 			"gpus", len(gpuProbe.Devices), "hint", "run 'spx admin gpu enable' to activate")
 	}
 
-	rm, err := NewResourceManager(gpuModels, gpuMgr)
+	rm, err := NewResourceManager(gpuModels, gpuMigProfiles, gpuMgr)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("initialize resource manager: %w", err)
@@ -1764,13 +1764,9 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 				"iommu", probe.IOMMUActive, "vfio", probe.VFIOPresent, "gpus", len(probe.Devices))
 			return
 		}
-		var models []instancetypes.GPUModel
-		for _, dev := range probe.Devices {
-			models = append(models, resolveGPUModel(dev, d.config.Daemon.GPUModelOverrides))
-		}
-		mgr := gpu.NewManager(probe.Devices)
+		mgr, models, migProfiles := buildGPUPool(probe.Devices, d.config.Daemon)
 		d.gpuManager = mgr
-		d.resourceMgr.reloadGPUTypes(models, mgr)
+		d.resourceMgr.reloadGPUTypes(models, migProfiles, mgr)
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 		slog.Info("GPU passthrough enabled via config reload", "gpus", len(probe.Devices))
 		return
@@ -1784,7 +1780,7 @@ func (d *Daemon) applyGPUConfig(enabled bool) {
 	}
 	d.gpuManager = nil
 	d.instanceService.SetGPUClaimer(nil)
-	d.resourceMgr.reloadGPUTypes(nil, nil)
+	d.resourceMgr.reloadGPUTypes(nil, nil, nil)
 	slog.Info("GPU passthrough disabled via config reload")
 }
 
@@ -1968,7 +1964,7 @@ func (rm *ResourceManager) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
 // reloadGPUTypes replaces GPU instance types in-place and updates NATS subscriptions.
 // Called on SIGHUP when gpu_passthrough is toggled. Mutates the existing map so that
 // all holders of the map reference (e.g. instanceService) see the updated types.
-func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, mgr *gpu.Manager) {
+func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, mgr *gpu.Manager) {
 	arch := "x86_64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
@@ -1982,6 +1978,9 @@ func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, mgr *
 	}
 	if len(models) > 0 {
 		maps.Copy(rm.instanceTypes, instancetypes.GenerateGPUTypes(models, arch))
+	}
+	if len(migProfiles) > 0 {
+		maps.Copy(rm.instanceTypes, instancetypes.GenerateMIGTypes(migProfiles, arch))
 	}
 	rm.gpuManager = mgr
 	rm.mu.Unlock()
@@ -2177,6 +2176,87 @@ func (d *Daemon) wireLBAgentConfig() {
 	}
 }
 
+// buildGPUPool partitions devices into whole-GPU and MIG entries, constructs a
+// Manager, and returns GPU models for instance-type generation and MIG profile
+// specs for MIG instance-type generation.
+//
+// MIG-enabled GPUs with existing instances (daemon restart) are recovered via
+// AddMIGInstances. Fresh MIG GPUs (no existing instances) are registered via
+// AddMIGGPU for dynamic profile-per-request allocation; their slices are created
+// on the first Claim and destroyed on the last Release.
+func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manager, []instancetypes.GPUModel, []instancetypes.MIGProfileSpec) {
+	type migEntry struct {
+		dev      gpu.GPUDevice
+		existing []gpu.MIGInstance // non-nil = restart recovery; nil = fresh free GPU
+	}
+
+	var wholeGPU []gpu.GPUDevice
+	var migEntries []migEntry
+	var migProfiles []instancetypes.MIGProfileSpec
+	seenProfiles := make(map[string]bool)
+	recoveredSlices, freeMIGGPUs := 0, 0
+
+	for _, dev := range devices {
+		if !dev.MIGCapable || !dev.MIGEnabled {
+			if dev.MIGCapable && !dev.MIGEnabled {
+				slog.Warn("MIG-capable GPU but MIG mode not active; using whole-GPU passthrough",
+					"gpu", dev.PCIAddress, "hint", "run 'spx admin gpu mig enable'")
+			}
+			wholeGPU = append(wholeGPU, dev)
+			continue
+		}
+
+		// Collect available profiles for MIG instance-type generation.
+		profiles, err := gpu.ListProfiles(dev.PCIAddress)
+		if err != nil {
+			slog.Warn("Could not list MIG profiles; GPU will not advertise MIG types",
+				"gpu", dev.PCIAddress, "err", err)
+		}
+		for _, p := range profiles {
+			if !seenProfiles[p.Name] {
+				seenProfiles[p.Name] = true
+				migProfiles = append(migProfiles, instancetypes.MIGProfileSpec{
+					Name: p.Name, MemoryMiB: p.MemoryMiB,
+				})
+			}
+		}
+
+		// Re-discover existing instances from a previous daemon run.
+		existing, listErr := gpu.ListInstances(dev.PCIAddress)
+		if listErr != nil {
+			slog.Error("MIG list instances failed, falling back to whole-GPU passthrough",
+				"gpu", dev.PCIAddress, "err", listErr)
+			wholeGPU = append(wholeGPU, dev)
+			continue
+		}
+		migEntries = append(migEntries, migEntry{dev: dev, existing: existing})
+		if len(existing) > 0 {
+			recoveredSlices += len(existing)
+		} else {
+			freeMIGGPUs++
+		}
+	}
+
+	var models []instancetypes.GPUModel
+	for _, dev := range wholeGPU {
+		models = append(models, resolveGPUModel(dev, cfg.GPUModelOverrides))
+	}
+
+	mgr := gpu.NewManager(wholeGPU)
+	for _, me := range migEntries {
+		if len(me.existing) > 0 {
+			mgr.AddMIGInstances(me.dev, me.existing)
+		} else {
+			mgr.AddMIGGPU(me.dev)
+		}
+	}
+
+	slog.Info("GPU pool built",
+		"whole_gpu", len(wholeGPU), "mig_free", freeMIGGPUs,
+		"mig_slices_recovered", recoveredSlices, "mig_profiles", len(migProfiles))
+	return mgr, models, migProfiles
+}
+
 // resolveGPUModel maps a discovered GPU to an instance type model.
 // Overrides take priority, then the production model list, then a g5 default.
 // Any GPU device that reaches the default path is treated as a g5 instance,
@@ -2266,6 +2346,15 @@ func probeGPU() gpuProbeResult {
 	_, err = os.Stat("/sys/module/vfio_pci")
 	r.VFIOPresent = err == nil
 
-	r.Capable = len(r.Devices) > 0 && r.IOMMUActive && r.VFIOPresent
+	// MIG-enabled GPUs are capable without vfio-pci: the NVIDIA driver owns
+	// isolation via the mdev subsystem, so vfio-pci is not required.
+	hasMIG := false
+	for _, d := range r.Devices {
+		if d.MIGEnabled {
+			hasMIG = true
+			break
+		}
+	}
+	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
 	return r
 }

@@ -85,6 +85,8 @@ func discover(sysfsRoot string) ([]GPUDevice, error) {
 			gpu.Model = fmt.Sprintf("Unknown GPU %s:%s", vendorID, deviceID)
 		}
 
+		gpu.MIGCapable = IsMIGCapable(vendorID, deviceID)
+
 		if gpu.Vendor == VendorNVIDIA {
 			enrichNVIDIA(&gpu)
 		}
@@ -113,12 +115,13 @@ func enrichFromLspci(g *GPUDevice) {
 	}
 }
 
-// enrichNVIDIA attempts to populate Model and MemoryMiB from nvidia-smi.
-// Leaves existing values untouched if nvidia-smi is unavailable or fails.
+// enrichNVIDIA attempts to populate Model, MemoryMiB, and MIGEnabled from
+// nvidia-smi. Leaves existing values untouched if nvidia-smi is unavailable or
+// fails.
 func enrichNVIDIA(gpu *GPUDevice) {
 	out, err := exec.Command(
 		"nvidia-smi",
-		"--query-gpu=gpu_name,memory.total",
+		"--query-gpu=gpu_name,memory.total,mig.mode.current",
 		"--format=csv,noheader",
 		fmt.Sprintf("--id=%s", gpu.PCIAddress),
 	).Output()
@@ -127,14 +130,13 @@ func enrichNVIDIA(gpu *GPUDevice) {
 	}
 
 	line := strings.TrimSpace(string(out))
-	parts := strings.SplitN(line, ", ", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(line, ", ", 3)
+	if len(parts) < 2 {
 		return
 	}
 
 	name := strings.TrimSpace(parts[0])
-	memStr := strings.TrimSpace(parts[1])
-	memStr = strings.TrimSuffix(memStr, " MiB")
+	memStr := strings.TrimSuffix(strings.TrimSpace(parts[1]), " MiB")
 	memMiB, err := strconv.ParseInt(memStr, 10, 64)
 	if err != nil {
 		return
@@ -142,6 +144,10 @@ func enrichNVIDIA(gpu *GPUDevice) {
 
 	gpu.Model = name
 	gpu.MemoryMiB = memMiB
+
+	if len(parts) == 3 {
+		gpu.MIGEnabled = strings.TrimSpace(parts[2]) == "Enabled"
+	}
 }
 
 // isPassthroughClass reports whether a PCI class string identifies a GPU

@@ -930,3 +930,41 @@ func TestSetGPUPassthrough_SectionBoundary(t *testing.T) {
 	// node1 section should now have the key
 	assert.Contains(t, got, "[nodes.node1.daemon]\ngpu_passthrough = true")
 }
+
+// --- SetMIGProfile ---
+
+func TestSetMIGProfile_SectionDoesNotExist_CreatesWithProfile(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.network]\ncidr = \"10.0.0.0/24\"\n")
+	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
+	got := readToml(t, path)
+	assert.Contains(t, got, "[nodes.node1.daemon]")
+	assert.Contains(t, got, `mig_profile = "1g.10gb"`)
+}
+
+func TestSetMIGProfile_SectionExistsMIGProfileMissing_AddsIt(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.daemon]\nsome_other = true\n")
+	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
+	got := readToml(t, path)
+	assert.Contains(t, got, `mig_profile = "1g.10gb"`)
+	assert.Contains(t, got, "some_other = true")
+}
+
+func TestSetMIGProfile_AlreadyCorrectValue_Idempotent(t *testing.T) {
+	toml := "[nodes.node1.daemon]\nmig_profile = \"1g.10gb\"\n"
+	path := writeToml(t, toml)
+	require.NoError(t, SetMIGProfile(path, "node1", "1g.10gb"))
+	assert.Equal(t, toml, readToml(t, path))
+}
+
+func TestSetMIGProfile_DifferentValue_UpdatesIt(t *testing.T) {
+	path := writeToml(t, "[nodes.node1.daemon]\nmig_profile = \"1g.10gb\"\n")
+	require.NoError(t, SetMIGProfile(path, "node1", "7g.80gb"))
+	got := readToml(t, path)
+	assert.Contains(t, got, `mig_profile = "7g.80gb"`)
+	assert.NotContains(t, got, `mig_profile = "1g.10gb"`)
+}
+
+func TestSetMIGProfile_FileDoesNotExist_ReturnsError(t *testing.T) {
+	err := SetMIGProfile(filepath.Join(t.TempDir(), "nonexistent.toml"), "node1", "1g.10gb")
+	require.Error(t, err)
+}

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const mdevBasePath = "/sys/bus/mdev/devices"
+var mdevBasePath = "/sys/bus/mdev/devices"
 
 // ListProfiles returns the MIG profiles supported by the GPU at pciAddr.
 // Requires nvidia-smi and MIG mode to be enabled on the device.

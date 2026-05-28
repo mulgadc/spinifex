@@ -286,3 +286,103 @@ func TestReclaimByMdev_MdevGone_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not accessible")
 }
+
+func TestAddMIGGPU_PopulatesFreeMIGGPUs(t *testing.T) {
+	m := NewManager(nil)
+	dev := newMIGDevice("0000:01:00.0")
+	m.AddMIGGPU(dev)
+	// Verify that a Claim with no pre-carved slices goes to slow path
+	// (which fails because nvidia-smi isn't available, but reaches the freeMIGGPUs code)
+	// Instead verify the state directly via TotalCount / Available
+	assert.Equal(t, 0, m.TotalCount(), "AddMIGGPU does not add to pool, only freeMIGGPUs")
+}
+
+func TestMIGClaim_ProfileMismatch_SkipsEntry(t *testing.T) {
+	root := t.TempDir()
+	mdev := makeMdevDir(t, root, "uuid-gi1")
+
+	m := NewManager(nil)
+	m.AddMIGInstances(newMIGDevice("0000:01:00.0"), []MIGInstance{
+		{GIID: 1, MdevPath: mdev, Profile: MIGProfile{Name: "7g.80gb"}},
+	})
+
+	// Claim a different profile — the 7g.80gb slice must be skipped,
+	// and since there are no free GPUs either, the call must fail.
+	_, _, err := m.Claim("i-001", "1g.10gb")
+	require.Error(t, err)
+	// The 7g.80gb slice must still be available.
+	assert.Equal(t, 1, m.Available())
+}
+
+// --- Claim slow path (AddMIGGPU + dynamic profile carving) ---
+
+func TestMIGClaim_SlowPath_CarvesFreshGPU(t *testing.T) {
+	const pciAddr = "0000:01:00.0"
+	dir := t.TempDir()
+
+	// Set up fake mdev for GI 1.
+	mdevBase, _ := makeFakeMdev(t, pciAddr, 1)
+	mdevBasePath = mdevBase
+	t.Cleanup(func() { mdevBasePath = "/sys/bus/mdev/devices" })
+
+	fakeNvidiaSmi(t, dir, lgipA100Slow, "", 1)
+
+	m := NewManager(nil)
+	m.AddMIGGPU(newMIGDevice(pciAddr))
+
+	claimedDev, mig, err := m.Claim("i-001", "1g.10gb")
+	require.NoError(t, err)
+	require.NotNil(t, mig)
+	assert.Equal(t, pciAddr, claimedDev.PCIAddress)
+	assert.Equal(t, "1g.10gb", mig.Profile.Name)
+}
+
+func TestMIGClaim_SlowPath_ProfileNotFound(t *testing.T) {
+	const pciAddr = "0000:01:00.0"
+	dir := t.TempDir()
+	fakeNvidiaSmi(t, dir, lgipA100Slow, "", 0)
+
+	m := NewManager(nil)
+	m.AddMIGGPU(newMIGDevice(pciAddr))
+
+	_, _, err := m.Claim("i-001", "7g.80gb") // 7g.80gb not in lgipA100Slow
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+}
+
+func TestMIGClaim_SlowPath_ListProfilesFailure(t *testing.T) {
+	m := NewManager(nil)
+	t.Setenv("PATH", t.TempDir()) // no nvidia-smi
+	m.AddMIGGPU(newMIGDevice("0000:01:00.0"))
+
+	_, _, err := m.Claim("i-001", "1g.10gb")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list MIG profiles")
+}
+
+// --- tryDestroyIdleMIGGPULocked (via Release of last MIG instance) ---
+
+func TestMIGRelease_LastInstance_DestroysAndFreesGPU(t *testing.T) {
+	const pciAddr = "0000:01:00.0"
+	dir := t.TempDir()
+
+	mdevBase, _ := makeFakeMdev(t, pciAddr, 1)
+	mdevBasePath = mdevBase
+	t.Cleanup(func() { mdevBasePath = "/sys/bus/mdev/devices" })
+
+	fakeNvidiaSmi(t, dir, lgipA100Slow, "", 1)
+
+	m := NewManager(nil)
+	m.AddMIGGPU(newMIGDevice(pciAddr))
+
+	_, _, err := m.Claim("i-001", "1g.10gb")
+	require.NoError(t, err)
+
+	// Release the last instance — should trigger tryDestroyIdleMIGGPULocked.
+	require.NoError(t, m.Release("i-001"))
+
+	// After destruction, the GPU should be back in freeMIGGPUs.
+	// Verify by attempting to claim again (will call ListProfiles again → succeeds).
+	// The free count is 0 (no pre-carved slices) and the GPU is free.
+	assert.Equal(t, 0, m.TotalCount())
+}

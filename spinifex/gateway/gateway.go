@@ -70,6 +70,7 @@ type GatewayConfig struct {
 var supportedServices = map[string]bool{
 	"ec2":                  true,
 	"iam":                  true,
+	"sts":                  true,
 	"account":              true,
 	"elasticloadbalancing": true,
 	"spinifex":             true,
@@ -184,7 +185,7 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
 	requestID := uuid.NewString()
 	var xmlBody string
-	if svc == "iam" {
+	if svc == "iam" || svc == "sts" {
 		iam := IAMErrorResponse{
 			Error: IAMErrorDetail{
 				Type:    "Sender",
@@ -219,13 +220,13 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" {
+	if svc == "iam" || svc == "sts" {
 		errorCode = awserrors.ErrorThrottling
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
 	var xmlErr []byte
-	if svc == "iam" {
+	if svc == "iam" || svc == "sts" {
 		xmlErr = GenerateIAMErrorResponse(errorCode, errorMsg.Message, requestID)
 	} else { // ec2, elasticloadbalancing, account, spinifex
 		xmlErr = GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
@@ -270,6 +271,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.Account_Request(w, r)
 	case "iam":
 		err = gw.IAM_Request(w, r)
+	case "sts":
+		err = gw.STS_Request(w, r)
 	case "elasticloadbalancing":
 		err = gw.ELBv2_Request(w, r)
 	case "spinifex":
@@ -414,9 +417,12 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	errorMsg = awserrors.ErrorLookup[err.Error()]
 
-	// IAM uses a different error XML format than EC2
+	// IAM and STS use the ErrorResponse XML envelope; EC2-style services use
+	// <Response><Errors>...</Errors></Response>. AWS SDK v1 strictly parses
+	// the per-service shape and would reject a mismatch with
+	// SerializationError, dropping the awserr.Code() for callers.
 	var xmlError []byte
-	if svc == "iam" {
+	if svc == "iam" || svc == "sts" {
 		xmlError = GenerateIAMErrorResponse(err.Error(), errorMsg.Message, requestId)
 	} else {
 		xmlError = GenerateEC2ErrorResponse(err.Error(), errorMsg.Message, requestId)

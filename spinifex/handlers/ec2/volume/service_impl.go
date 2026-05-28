@@ -177,12 +177,20 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 		Host:       s.config.Predastore.Host,
 	}
 
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.Error("CreateVolume failed to load encryption key", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	vbconfig := viperblock.VB{
-		VolumeName:   volumeID,
-		VolumeSize:   volumeSizeBytes,
-		BaseDir:      s.config.WalDir,
-		Cache:        viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig: volumeConfig,
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSizeBytes,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		VolumeConfig:      volumeConfig,
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
 	}
 
 	// If created from a snapshot, set the snapshot fields so viperblock's
@@ -1022,6 +1030,13 @@ func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.Vol
 // mergeVolumeConfig reads existing config.json from S3 and merges the new
 // VolumeConfig into it, preserving full VBState when present. If no existing
 // VBState is found, it returns a plain volumeConfigWrapper.
+//
+// Refuses to merge an encrypted-at-rest VBState: the persisted blob carries a
+// trailing 16-byte AES-GCM tag bound to the JSON bytes, and re-marshaling
+// here without the master key would strip the tag and brick the volume.
+// Spinifex does not currently hold the viperblock master key, so the safe
+// behavior is to fail loud rather than silently corrupt the on-disk state.
+// Track full encryption-aware merge under a separate bead.
 func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.VolumeConfig) ([]byte, error) {
 	getResult, err := s.store.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -1041,10 +1056,18 @@ func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.
 		return nil, fmt.Errorf("failed to read existing config: %w", err)
 	}
 
+	// Decoder (not Unmarshal) so a trailing 16-byte AES-GCM tag does not
+	// produce a parse error and route the body to the wrapper-only path —
+	// that would silently overwrite an encrypted config.json with a tag-less
+	// blob and brick the volume.
 	var state viperblock.VBState
-	if json.Unmarshal(body, &state) != nil || state.BlockSize == 0 {
+	if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&state); decodeErr != nil || state.BlockSize == 0 {
 		// Not a full VBState (new volume or wrapper-only) -- write wrapper
 		return json.Marshal(volumeConfigWrapper{VolumeConfig: *cfg})
+	}
+
+	if state.EncryptionEnabled {
+		return nil, fmt.Errorf("mergeVolumeConfig: refusing to merge encrypted VBState for %s without master key (would strip AES-GCM tag and brick volume)", configKey)
 	}
 
 	// Full VBState exists -- update VolumeConfig and reconcile VolumeSize

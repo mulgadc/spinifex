@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/nbd"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -107,6 +108,14 @@ type Config struct {
 
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool
+
+	// EncryptionKeyFile is the path to the shared 32-byte AES-256 master key
+	// used to seal viperblock WAL records, chunk blocks, and metadata. When
+	// empty the daemon mounts volumes in cleartext mode (legacy). Loaded once
+	// at launchService start; the parsed key is cached in masterKey.
+	EncryptionKeyFile string
+
+	masterKey *masterkey.Key
 
 	mu sync.Mutex
 }
@@ -222,6 +231,17 @@ func launchService(cfg *Config) (err error) {
 	if err != nil {
 		slog.Error("Failed to connect to NATS", "err", err)
 		return err
+	}
+
+	if cfg.EncryptionKeyFile != "" {
+		mkey, err := masterkey.LoadShared(cfg.EncryptionKeyFile)
+		if err != nil {
+			return fmt.Errorf("load viperblock encryption key %s: %w", cfg.EncryptionKeyFile, err)
+		}
+		cfg.masterKey = mkey
+		slog.Info("Viperblock at-rest encryption enabled", "key_fingerprint", mkey.Fingerprint)
+	} else {
+		slog.Warn("Viperblock at-rest encryption disabled (no EncryptionKeyFile configured)")
 	}
 
 	slog.Info("Viperblock config", "shardwal", cfg.ShardWAL)
@@ -468,7 +488,9 @@ func launchService(cfg *Config) (err error) {
 					Size: defaultCache,
 				},
 			},
-			VolumeConfig: viperblock.VolumeConfig{},
+			VolumeConfig:      viperblock.VolumeConfig{},
+			MasterKey:         cfg.masterKey,
+			EncryptionEnabled: cfg.masterKey != nil,
 		}
 
 		vb, err := viperblock.New(&vbconfig, "s3", s3cfg)

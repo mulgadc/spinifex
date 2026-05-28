@@ -1357,12 +1357,19 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 		Host:       s.config.Predastore.Host,
 	}
 
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		return nil, err
+	}
+
 	vbconfig := viperblock.VB{
-		VolumeName:   volumeName,
-		VolumeSize:   utils.SafeIntToUint64(size),
-		BaseDir:      s.config.WalDir,
-		Cache:        viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
-		VolumeConfig: volumeConfig,
+		VolumeName:        volumeName,
+		VolumeSize:        utils.SafeIntToUint64(size),
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		VolumeConfig:      volumeConfig,
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
 	}
 
 	vb, err := viperblock.New(&vbconfig, "s3", cfg)

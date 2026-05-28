@@ -49,6 +49,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -343,7 +344,7 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 }
 
 // execCommand wraps exec.Command so tests can substitute a fake builder.
-// Mirrors the sudoCommand seam in network.go — getSystemMemory shells out to
+// Mirrors the utils.SudoCommand seam — getSystemMemory shells out to
 // sysctl (darwin) or grep /proc/meminfo (linux), neither of which can be
 // faked without an indirection that the test can swap.
 var execCommand = exec.Command
@@ -753,6 +754,12 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
 		{"ec2.DescribeInstanceStatus", d.handleEC2DescribeInstanceStatus, ""},
 		{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
+		// IAM instance profile associations: Disassociate/Replace mutate the
+		// owning daemon's vm.VM (non-owners NoOp with Found=false); Describe
+		// returns per-daemon matches that the gateway concatenates.
+		{"ec2.IamProfileAssociation.disassociate", d.handleIamProfileDisassociate, ""},
+		{"ec2.IamProfileAssociation.replace", d.handleIamProfileReplace, ""},
+		{"ec2.IamProfileAssociation.describe", d.handleIamProfileDescribe, ""},
 		{"ec2.EnableEbsEncryptionByDefault", d.handleEC2EnableEbsEncryptionByDefault, "spinifex-workers"},
 		{"ec2.DisableEbsEncryptionByDefault", d.handleEC2DisableEbsEncryptionByDefault, "spinifex-workers"},
 		{"ec2.GetEbsEncryptionByDefault", d.handleEC2GetEbsEncryptionByDefault, "spinifex-workers"},
@@ -884,7 +891,7 @@ func (d *Daemon) startLocal() error {
 	if d.config.Daemon.MgmtBridge != "" {
 		mgmtBridge = d.config.Daemon.MgmtBridge
 	}
-	bridgeIP, bridgeErr := GetBridgeIPv4(mgmtBridge)
+	bridgeIP, bridgeErr := host.GetBridgeIPv4(mgmtBridge)
 	if bridgeErr != nil {
 		slog.Warn("Management bridge not detected, system instances will not get mgmt NIC", "bridge", mgmtBridge, "err", bridgeErr)
 	} else if bridgeIP == "" {
@@ -902,7 +909,7 @@ func (d *Daemon) startLocal() error {
 
 	// Initialise OVS network plumber (no NATS dep).
 	if d.networkPlumber == nil {
-		d.networkPlumber = &OVSNetworkPlumber{}
+		d.networkPlumber = host.NewOVSPlumber()
 	}
 
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
@@ -1013,6 +1020,24 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Tombstone the spinifex-dhcp-leases bucket left over from the upstream-DHCP
+	// client removed in Phase 2.3. Idempotent — first daemon start on an upgraded
+	// cluster sweeps the bucket; later restarts are no-ops.
+	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
+		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
+			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
+		}
+	}
+
+	// Enable OVN native IPsec on intra-AZ Geneve when the cluster flag is set.
+	// Idempotent — ovs-monitor-ipsec materialises strongSwan configs from the
+	// cert pointers each time ovn-controller programs a tunnel.
+	if d.clusterConfig != nil && d.clusterConfig.Network.IPSecEnabled {
+		if err := host.EnableOVNIPSec(d.configPath, d.clusterConfig); err != nil {
+			slog.Warn("Failed to enable OVN native IPsec; intra-AZ Geneve will be plaintext", "err", err)
+		}
+	}
+
 	// Write service manifest so other nodes know what this node runs
 	if d.jsManager != nil {
 		if err := d.jsManager.WriteServiceManifest(
@@ -1097,19 +1122,9 @@ func (d *Daemon) startCluster() error {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []handlers_ec2_vpc.ExternalPoolConfig
-			// Resolve DHCP bind bridge name for DHCP pools (where AF_PACKET binds).
-			dhcpBindBridge := ""
-			if node, ok := d.clusterConfig.Nodes[d.clusterConfig.Node]; ok {
-				dhcpBindBridge = node.VPCD.DhcpBindBridge
-			}
-			gwMAC := ""
-			if d.clusterConfig.Bootstrap.VpcId != "" {
-				gwMAC = utils.HashMAC("gw-" + d.clusterConfig.Bootstrap.VpcId)
-			}
 			for _, p := range d.clusterConfig.Network.ExternalPools {
 				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
 					Name:            p.Name,
-					Source:          p.Source,
 					RangeStart:      p.RangeStart,
 					RangeEnd:        p.RangeEnd,
 					Gateway:         p.Gateway,
@@ -1117,13 +1132,11 @@ func (d *Daemon) startCluster() error {
 					PrefixLen:       p.PrefixLen,
 					Region:          p.Region,
 					AZ:              p.AZ,
-					DhcpBindBridge:  dhcpBindBridge,
-					GatewayMAC:      gwMAC,
 					GwLrpRangeStart: p.GwLrpRangeStart,
 					GwLrpRangeEnd:   p.GwLrpRangeEnd,
 				})
 			}
-			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(d.natsConn, js, pools)
+			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(js, pools)
 			if err != nil {
 				slog.Warn("Failed to initialize external IPAM", "err", err)
 			} else {
@@ -1557,7 +1570,7 @@ func (d *Daemon) ClusterManager() error {
 		}
 
 		// Check OVN networking readiness
-		ovnHealth := CheckOVNHealth()
+		ovnHealth := host.HealthStatus()
 		if ovnHealth.BrIntExists {
 			serviceHealth["br-int"] = "ok"
 		} else {
@@ -1782,7 +1795,7 @@ func (d *Daemon) setupShutdown() {
 		// Cancel context to stop heartbeat and other goroutines
 		d.cancel()
 
-		// DDIL Tier 1 (mulga-siv-58): SIGTERM alone never stops local VMs.
+		// DDIL Tier 1: SIGTERM alone never stops local VMs.
 		// `systemctl restart spinifex-daemon` must preserve every QEMU child so
 		// the new daemon can reattach via the persisted local state file
 		// (Scenario B). VMs are only stopped when coordinated cluster shutdown

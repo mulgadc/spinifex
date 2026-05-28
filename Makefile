@@ -132,7 +132,7 @@ test:
 COVERPROFILE ?= coverage.out
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test -timeout 120s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test -timeout 120s -coverpkg=./spinifex/... -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
 # Run unit tests with race detector
@@ -281,24 +281,53 @@ distro-clean:
 
 # Ansible dev lifecycle (experimental, parallel to dev-*.sh / reset-dev-env.sh).
 # See scripts/ansible/README.md and docs/development/improvements/ansible-dev-lifecycle.md.
+#
+# Variable overrides: pass EXTRA_VARS="key=val key2=val2" to forward as
+# `--extra-vars` to ansible-playbook. Plain `-e` on the make command line is
+# make's own flag and does NOT reach ansible.
+#   make ansible-dev-install EXTRA_VARS="spinifex_external_pool_start=192.168.1.90 spinifex_external_pool_end=192.168.1.99"
+EXTRA_VARS ?=
+_ANSIBLE_EXTRA = $(if $(strip $(EXTRA_VARS)),--extra-vars "$(EXTRA_VARS)",)
+
 ansible-dev-preflight:
-	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-teardown:
-	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-install:
-	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-reset:
-	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml $(_ANSIBLE_EXTRA)
 
 ansible-dev-deploy:
-	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml
+	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml $(_ANSIBLE_EXTRA)
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race test-actions test-harness manifest-check diff-coverage bench run \
+ansible-dev-status:
+	cd scripts/ansible && ansible-playbook playbooks/dev-status.yml
+
+ansible-dev-logs:
+	cd scripts/ansible && ansible-playbook playbooks/dev-logs.yml
+
+# Snapshot / restore require an explicit -e snapshot_name=<name>. The
+# wrapper passes ANSIBLE_EXTRA through so devs can run
+# `make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'`.
+ansible-dev-snapshot:
+	cd scripts/ansible && ansible-playbook playbooks/dev-snapshot.yml $(ANSIBLE_EXTRA)
+
+ansible-dev-restore:
+	cd scripts/ansible && ansible-playbook playbooks/dev-restore.yml $(ANSIBLE_EXTRA)
+
+ansible-dev-version:
+	cd scripts/ansible && ansible-playbook playbooks/dev-version.yml
+
+ansible-dev-vpc:
+	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
+
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \
 	distro distro-amd64 distro-arm64 distro-clean \
-	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy
+	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore ansible-dev-version ansible-dev-vpc

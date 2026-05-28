@@ -1,0 +1,3 @@
+---
+- name: vpc — dispatch by state
+  ansible.builtin.include_tasks: "{{ dev_vpc_state }}.yml"

@@ -148,11 +148,11 @@ type WitnessVM struct {
 func LaunchWitnessVM(ctx context.Context, w *Witness, host Node) (*WitnessVM, error) {
 	const maxPlacementAttempts = 3
 
-	// Workaround for mulga-siv-79: daemon silently drops the shortcut SG
-	// ingress form, so the default SG starts with no :22 ingress and the
-	// awaitBaseline SSH tunnel to the witness EIP times out. Authorise
-	// :22 from anywhere via the structured form — once siv-79 lands this
-	// can drop along with the matching workaround in lb_test.
+	// Workaround: daemon silently drops the shortcut SG ingress form, so
+	// the default SG starts with no :22 ingress and the awaitBaseline SSH
+	// tunnel to the witness EIP times out. Authorise :22 from anywhere
+	// via the structured form — once the underlying bug lands this can
+	// drop along with the matching workaround in lb_test.
 	if err := w.ensureDefaultSGSSHIngress(ctx); err != nil {
 		return nil, fmt.Errorf("e2e harness: open witness SSH ingress: %w", err)
 	}
@@ -255,11 +255,12 @@ func AssertProgressed(ctx context.Context, t *testing.T, v *WitnessVM) {
 
 // --- internals ------------------------------------------------------------
 
-// ensureDefaultSGSSHIngress authorises tcp/22 from 0.0.0.0/0 on the default
-// security group via the structured IpPermissions form. The daemon currently
-// drops the top-level shortcut form silently (mulga-siv-79), so without this
-// the witness EIP has no inbound :22 and awaitBaseline times out. Idempotent:
-// duplicate-rule errors from a prior run are tolerated.
+// ensureDefaultSGSSHIngress authorises tcp/22 + ICMP from 0.0.0.0/0 on the
+// default security group via the structured IpPermissions form. The daemon
+// currently drops the top-level shortcut form silently, so without this the
+// witness EIP has no inbound :22 and awaitBaseline times out. ICMP is
+// required for downstream gateway-ping probes.
+// Idempotent: duplicate-rule errors from a prior run are tolerated.
 func (w *Witness) ensureDefaultSGSSHIngress(ctx context.Context) error {
 	sgs, err := w.ec2.DescribeSecurityGroupsWithContext(ctx, &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{{
@@ -275,17 +276,29 @@ func (w *Witness) ensureDefaultSGSSHIngress(ctx context.Context) error {
 	}
 	groupID := aws.StringValue(sgs.SecurityGroups[0].GroupId)
 
-	_, err = w.ec2.AuthorizeSecurityGroupIngressWithContext(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId: aws.String(groupID),
-		IpPermissions: []*ec2.IpPermission{{
+	rules := []*ec2.IpPermission{
+		{
 			IpProtocol: aws.String("tcp"),
 			FromPort:   aws.Int64(22),
 			ToPort:     aws.Int64(22),
 			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
-		}},
-	})
-	if err != nil && !strings.Contains(err.Error(), "InvalidPermission.Duplicate") {
-		return fmt.Errorf("AuthorizeSecurityGroupIngress :22 on %s: %w", groupID, err)
+		},
+		{
+			IpProtocol: aws.String("icmp"),
+			FromPort:   aws.Int64(-1),
+			ToPort:     aws.Int64(-1),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		},
+	}
+	for _, rule := range rules {
+		_, err = w.ec2.AuthorizeSecurityGroupIngressWithContext(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(groupID),
+			IpPermissions: []*ec2.IpPermission{rule},
+		})
+		if err != nil && !strings.Contains(err.Error(), "InvalidPermission.Duplicate") {
+			return fmt.Errorf("AuthorizeSecurityGroupIngress %s on %s: %w",
+				aws.StringValue(rule.IpProtocol), groupID, err)
+		}
 	}
 	return nil
 }

@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: logs
+  description: Dump spinifex + ovn + system logs into a tarball for bug reports.
+  license: BSD-3-Clause
+  min_ansible_version: "2.14"
+dependencies: []

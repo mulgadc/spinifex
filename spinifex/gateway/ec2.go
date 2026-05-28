@@ -32,12 +32,15 @@ import (
 // EC2Handler processes parsed query args and returns XML response bytes.
 // The action parameter is the EC2 API action name, passed from the map key.
 // accountID is the caller's AWS account ID extracted from SigV4 auth context.
-type EC2Handler func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error)
+// r is the original HTTP request; handlers that need to perform additional
+// resource-scoped policy checks (e.g. iam:PassRole) use it via
+// gw.checkPolicyResource. Most handlers ignore it.
+type EC2Handler func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error)
 
 // ec2Handler creates a type-safe EC2Handler that allocates the typed input struct,
 // parses query params into it, calls the handler, and marshals the output to XML.
 func ec2Handler[In any](handler func(*In, *GatewayConfig, string) (any, error)) EC2Handler {
-	return func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
+	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, _ *http.Request) ([]byte, error) {
 		input := new(In)
 		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
 			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
@@ -58,12 +61,63 @@ func ec2Handler[In any](handler func(*In, *GatewayConfig, string) (any, error)) 
 	}
 }
 
+// ec2HandlerWithReq is the variant of ec2Handler for handlers that need the
+// original *http.Request — e.g. RunInstances calls gw.checkPolicyResource
+// to enforce iam:PassRole on the role ARN inside the supplied instance profile.
+func ec2HandlerWithReq[In any](handler func(*In, *GatewayConfig, string, *http.Request) (any, error)) EC2Handler {
+	return func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
+		input := new(In)
+		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+			return nil, err
+		}
+		output, err := handler(input, gw, accountID, r)
+		if err != nil {
+			return nil, err
+		}
+		payload := utils.GenerateXMLPayload(action+"Response", output)
+		xmlOutput, err := utils.MarshalToXML(payload)
+		if err != nil {
+			return nil, errors.New("failed to marshal response to XML")
+		}
+		return xmlOutput, nil
+	}
+}
+
 var ec2Actions = map[string]EC2Handler{
 	"DescribeInstances": ec2Handler(func(input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+		out, err := gateway_ec2_instance.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+		if err != nil {
+			return out, err
+		}
+		gateway_ec2_instance.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
+		return out, nil
 	}),
-	"RunInstances": ec2Handler(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.RunInstances(input, gw.NATSConn, accountID)
+	"RunInstances": ec2HandlerWithReq(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_instance.RunInstances(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
+	}),
+	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_instance.AssociateIamInstanceProfile(input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
+	}),
+	"DisassociateIamInstanceProfile": ec2Handler(func(input *ec2.DisassociateIamInstanceProfileInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.DisassociateIamInstanceProfile(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+	}),
+	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
+		passRoleCheck := func(roleARN string) error {
+			return gw.checkPolicyResource(r, "iam", "PassRole", roleARN)
+		}
+		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(), accountID, passRoleCheck)
+	}),
+	"DescribeIamInstanceProfileAssociations": ec2Handler(func(input *ec2.DescribeIamInstanceProfileAssociationsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
 	}),
 	"StartInstances": ec2Handler(func(input *ec2.StartInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.StartInstances(input, gw.NATSConn, accountID)
@@ -104,14 +158,14 @@ var ec2Actions = map[string]EC2Handler{
 	"DescribeKeyPairs": ec2Handler(func(input *ec2.DescribeKeyPairsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_key.DescribeKeyPairs(input, gw.NATSConn, accountID)
 	}),
-	"ImportKeyPair": func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
+	"ImportKeyPair": func(action string, q map[string]string, gw *GatewayConfig, accountID string, r *http.Request) ([]byte, error) {
 		// Workaround: parser leaves Base64 padding URL-encoded
 		if strings.HasSuffix(q["PublicKeyMaterial"], "%3D%3D") {
 			q["PublicKeyMaterial"] = strings.Replace(q["PublicKeyMaterial"], "%3D%3D", "==", 1)
 		}
 		return ec2Handler(func(input *ec2.ImportKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
 			return gateway_ec2_key.ImportKeyPair(input, gw.NATSConn, accountID)
-		})(action, q, gw, accountID)
+		})(action, q, gw, accountID, r)
 	},
 	"DescribeImages": ec2Handler(func(input *ec2.DescribeImagesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_image.DescribeImages(input, gw.NATSConn, accountID)
@@ -308,6 +362,12 @@ var ec2Actions = map[string]EC2Handler{
 	"ModifyNetworkInterfaceAttribute": ec2Handler(func(input *ec2.ModifyNetworkInterfaceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.ModifyNetworkInterfaceAttribute(input, gw.NATSConn, accountID)
 	}),
+	"AttachNetworkInterface": ec2Handler(func(input *ec2.AttachNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_vpc.AttachNetworkInterface(input, gw.NATSConn, accountID)
+	}),
+	"DetachNetworkInterface": ec2Handler(func(input *ec2.DetachNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_ec2_vpc.DetachNetworkInterface(input, gw.NATSConn, accountID)
+	}),
 	"CreateSecurityGroup": ec2Handler(func(input *ec2.CreateSecurityGroupInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_vpc.CreateSecurityGroup(input, gw.NATSConn, accountID)
 	}),
@@ -399,7 +459,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	xmlOutput, err := handler(action, queryArgs, gw, accountID)
+	xmlOutput, err := handler(action, queryArgs, gw, accountID, r)
 	if err != nil {
 		return err
 	}

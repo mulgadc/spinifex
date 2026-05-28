@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -207,7 +208,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.PIDFile = pidFile
 		instance.Config.ConsoleLogPath = consoleLogPath
 	} else {
-		instance.Config = buildBaseVMConfig(instance.ID, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
+		instance.Config = buildBaseVMConfig(instance.ID, instance.InstanceType, pidFile, consoleLogPath, serialSocket, spec.Architecture, instance.BootMode, spec.VCPUs, spec.MemoryMiB)
+		m.initENIRequests(instance)
 
 		instance.EBSRequests.Mu.Lock()
 		drives, iothreads, devices, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
@@ -638,11 +640,26 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 	}
 }
 
+// EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated
+// for EBS hot-plug. Matches the /dev/sd[f-p] AWS device-letter range that
+// AttachVolume targets. Cannot grow without QEMU restart (Linux PCIe
+// hot-plug requires pre-allocated ports), so the count is deliberately
+// equal to the AWS device-letter ceiling.
+const EBSHotPlugSlotCount = 11
+
 // buildBaseVMConfig creates a vm.Config with base QEMU settings and PCIe
 // hotplug root ports. bootMode is the AMI's boot mode string ("bios" | "uefi"
 // | "uefi-preferred"); "uefi" and "uefi-preferred" flip cfg.UseUEFI. Any other
 // value (including "") defaults to BIOS.
-func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
+//
+// PCIe root ports are pre-allocated in two pools:
+//
+//   - hotplug-ebs{1..EBSHotPlugSlotCount} on chassis 1..EBSHotPlugSlotCount
+//     for AttachVolume targets (/dev/sd[f-p]).
+//   - hotplug-eni{1..N} on chassis EBSHotPlugSlotCount+1.. where N is
+//     instancetypes.HotPlugENISlotsForType(instanceType) — the AWS-published
+//     ENI cap for the type minus the primary ENI, which is wired at boot.
+func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
 	cfg := Config{
 		Name:           instanceID,
 		PIDFile:        pidFile,
@@ -655,15 +672,43 @@ func buildBaseVMConfig(instanceID, pidFile, consoleLogPath, serialSocket, archit
 		Memory:         memoryMiB,
 		CPUCount:       vCPUs,
 		Architecture:   architecture,
+		InstanceType:   instanceType,
 		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
 	}
-	// 11 PCIe root ports for /dev/sd[f-p] hotplug slots, starting at chassis 1.
-	for i := 1; i <= 11; i++ {
+
+	for i := 1; i <= EBSHotPlugSlotCount; i++ {
 		cfg.Devices = append(cfg.Devices, Device{
-			Value: fmt.Sprintf("pcie-root-port,id=hotplug%d,chassis=%d,slot=0", i, i),
+			Value: fmt.Sprintf("pcie-root-port,id=hotplug-ebs%d,chassis=%d,slot=0", i, i),
 		})
 	}
+
+	eniSlots := instancetypes.HotPlugENISlotsForType(instanceType)
+	for i := 1; i <= eniSlots; i++ {
+		chassis := EBSHotPlugSlotCount + i
+		cfg.Devices = append(cfg.Devices, Device{
+			Value: fmt.Sprintf("pcie-root-port,id=hotplug-eni%d,chassis=%d,slot=0", i, chassis),
+		})
+	}
+
 	return cfg
+}
+
+// initENIRequests resets the per-VM ENI hot-plug slot allocator before the
+// VM boots. The free-list mirrors the hotplug-eni{1..N} root ports emitted
+// by buildBaseVMConfig for the instance type. AttachedByENIID is preserved
+// across restart so the reconciler (Sprint 3d) can match KV truth against
+// the in-memory map; on a cold boot it starts empty.
+func (m *Manager) initENIRequests(instance *VM) {
+	eniSlots := instancetypes.HotPlugENISlotsForType(instance.InstanceType)
+	instance.ENIRequests.Mu.Lock()
+	defer instance.ENIRequests.Mu.Unlock()
+	instance.ENIRequests.AvailableSlots = make([]int, 0, eniSlots)
+	for i := 1; i <= eniSlots; i++ {
+		instance.ENIRequests.AvailableSlots = append(instance.ENIRequests.AvailableSlots, i)
+	}
+	if instance.ENIRequests.AttachedByENIID == nil {
+		instance.ENIRequests.AttachedByENIID = make(map[string]int)
+	}
 }
 
 // buildDrives converts EBS volume requests into QEMU drive, iothread, and

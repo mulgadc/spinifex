@@ -28,7 +28,7 @@ func TestExtractPCIIndex(t *testing.T) {
 		},
 		{
 			name: "hotplug device with higher index",
-			qdev: "/machine/peripheral/hotplug1/device[12]/virtio-backend",
+			qdev: "/machine/peripheral/hotplug-ebs1/device[12]/virtio-backend",
 			want: 12,
 		},
 		{
@@ -299,8 +299,8 @@ func TestExtractHotplugPort(t *testing.T) {
 		want int
 	}{
 		{
-			name: "hotplug port 3",
-			qdev: "/machine/peripheral/vdisk-vol-xxx/hotplug3/virtio-backend",
+			name: "hotplug-ebs port 3",
+			qdev: "/machine/peripheral/vdisk-vol-xxx/hotplug-ebs3/virtio-backend",
 			want: 3,
 		},
 		{
@@ -311,6 +311,11 @@ func TestExtractHotplugPort(t *testing.T) {
 		{
 			name: "boot device",
 			qdev: "/machine/peripheral-anon/device[0]/virtio-backend",
+			want: -1,
+		},
+		{
+			name: "hotplug-eni port ignored (not a block device port)",
+			qdev: "/machine/peripheral/net-eni-1/hotplug-eni1/virtio-backend",
 			want: -1,
 		},
 	}

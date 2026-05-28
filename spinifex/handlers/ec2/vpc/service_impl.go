@@ -35,13 +35,18 @@ const (
 	KVBucketVNICounterVersion = 1
 )
 
-// VPCRecord represents a stored VPC
+// VPCRecord represents a stored VPC. AZ stamps the local availability zone
+// at create time; the network/reconcile package filters its intent set by
+// matching `vpc.AZ == localAZ` (with the legacy rule that empty matches
+// every AZ for pre-Phase-2.2 records). New records always populate AZ from
+// the daemon's config.AZ.
 type VPCRecord struct {
 	VpcId                            string            `json:"vpc_id"`
 	CidrBlock                        string            `json:"cidr_block"`
 	State                            string            `json:"state"`
 	IsDefault                        bool              `json:"is_default"`
 	VNI                              int64             `json:"vni"`
+	AZ                               string            `json:"az,omitempty"`
 	EnableDnsHostnames               bool              `json:"enable_dns_hostnames"`
 	EnableDnsSupport                 bool              `json:"enable_dns_support"`
 	EnableNetworkAddressUsageMetrics bool              `json:"enable_network_address_usage_metrics"`
@@ -84,6 +89,16 @@ type VPCServiceImpl struct {
 func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV nats.KeyValue) {
 	s.externalIPAM = ipam
 	s.eipKV = eipKV
+}
+
+// localAZ returns the node's local availability zone, sourced from
+// s.config.AZ. Returns "" when no config is wired (mostly test paths),
+// which the reconciler treats as a legacy record matching every AZ.
+func (s *VPCServiceImpl) localAZ() string {
+	if s.config == nil {
+		return ""
+	}
+	return s.config.AZ
 }
 
 // NewVPCServiceImplWithNATS creates a VPC service with NATS JetStream for persistence
@@ -231,6 +246,7 @@ func (s *VPCServiceImpl) CreateVpc(input *ec2.CreateVpcInput, accountID string) 
 		State:              "available",
 		IsDefault:          false,
 		VNI:                vni,
+		AZ:                 s.localAZ(),
 		EnableDnsSupport:   true,  // AWS default
 		EnableDnsHostnames: false, // AWS default
 		Tags:               utils.ExtractTags(input.TagSpecifications, "vpc"),
@@ -1026,6 +1042,7 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 		State:              "available",
 		IsDefault:          true,
 		VNI:                vni,
+		AZ:                 s.localAZ(),
 		EnableDnsSupport:   true, // AWS default
 		EnableDnsHostnames: true, // AWS default for default VPC
 		Tags:               map[string]string{"Name": "default"},

@@ -12,8 +12,11 @@ import (
 
 const testAccountID = "000000000000"
 
-// stubIAMService returns empty non-nil outputs for all methods.
-type stubIAMService struct{}
+// stubIAMService returns empty non-nil outputs for all methods. Individual
+// tests can override a method by setting the matching function field.
+type stubIAMService struct {
+	getInstanceProfile func(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
+}
 
 func (s *stubIAMService) CreateUser(_ string, _ *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	return &iam.CreateUserOutput{}, nil
@@ -96,6 +99,61 @@ func (s *stubIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) 
 }
 func (s *stubIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
 func (s *stubIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
+
+func (s *stubIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	return &iam.CreateRoleOutput{}, nil
+}
+func (s *stubIAMService) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	return &iam.GetRoleOutput{}, nil
+}
+func (s *stubIAMService) ListRoles(_ string, _ *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
+	return &iam.ListRolesOutput{}, nil
+}
+func (s *stubIAMService) DeleteRole(_ string, _ *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
+	return &iam.DeleteRoleOutput{}, nil
+}
+func (s *stubIAMService) UpdateRole(_ string, _ *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
+	return &iam.UpdateRoleOutput{}, nil
+}
+func (s *stubIAMService) UpdateAssumeRolePolicy(_ string, _ *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
+	return &iam.UpdateAssumeRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
+	return &iam.AttachRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
+	return &iam.DetachRolePolicyOutput{}, nil
+}
+func (s *stubIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
+	return &iam.ListAttachedRolePoliciesOutput{}, nil
+}
+func (s *stubIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
+	return &iam.CreateInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) GetInstanceProfile(accountID string, in *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+	if s.getInstanceProfile != nil {
+		return s.getInstanceProfile(accountID, in)
+	}
+	return &iam.GetInstanceProfileOutput{InstanceProfile: &iam.InstanceProfile{}}, nil
+}
+func (s *stubIAMService) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
+	return &iam.ListInstanceProfilesOutput{}, nil
+}
+func (s *stubIAMService) DeleteInstanceProfile(_ string, _ *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
+	return &iam.DeleteInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) ListInstanceProfilesForRole(_ string, _ *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
+	return &iam.ListInstanceProfilesForRoleOutput{}, nil
+}
+func (s *stubIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
+	return &iam.AddRoleToInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
+}
+func (s *stubIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+	return nil, nil
+}
 
 func TestCreateUser(t *testing.T) {
 	svc := &stubIAMService{}

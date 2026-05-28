@@ -1,0 +1,154 @@
+---
+# Snapshot a quiesced spinifex node: stop spinifex.target → ovn → ovs in order,
+# tar /etc/spinifex + /var/lib/spinifex + /var/lib/ovn + /etc/openvswitch/conf.db,
+# restart in reverse. Lets devs checkpoint a working state before risky ops
+# (branch switch, viperblock surgery, ovn-controller restart cycle) and roll
+# back via dev-restore without a full ~10-min dev-reset.
+#
+# Caveat: /var/lib/spinifex contains viperblock volumes — snapshot size scales
+# with VM disks. Default gzip; switch to a faster compressor by hand if needed.
+
+- name: snapshot — require snapshot_name
+  ansible.builtin.assert:
+    that:
+      - snapshot_name is defined
+      - snapshot_name | length > 0
+      - snapshot_name is match('^[A-Za-z0-9._-]+$')
+    fail_msg: "snapshot_name required (alphanumeric/._-): -e snapshot_name=<name>"
+
+- name: snapshot — resolve bundle path
+  ansible.builtin.set_fact:
+    snapshot_bundle_path: "{{ snapshot_dir }}/{{ snapshot_name }}.tar.gz"
+
+- name: snapshot — refuse to overwrite existing bundle
+  ansible.builtin.stat:
+    path: "{{ snapshot_bundle_path }}"
+  register: snapshot_existing
+
+- name: snapshot — assert not already present
+  ansible.builtin.assert:
+    that: not snapshot_existing.stat.exists
+    fail_msg: |
+      Snapshot {{ snapshot_bundle_path }} already exists. Pick another
+      name, or `sudo rm` the existing bundle first.
+
+- name: snapshot — ensure snapshot dir exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ snapshot_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: snapshot — stop services in dependency order
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop: "{{ snapshot_services_stop_order }}"
+  failed_when: false
+
+- name: snapshot — kill lingering QEMU VMs
+  become: true
+  ansible.builtin.command: "pkill -x {{ item }}"
+  loop: "{{ spinifex_qemu_processes }}"
+  changed_when: false
+  failed_when: false
+
+- name: snapshot — wait for QEMU exit (up to {{ teardown_process_wait_seconds }}s)
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    for i in $(seq 1 {{ teardown_process_wait_seconds }}); do
+      alive=0
+      for proc in {{ spinifex_qemu_processes | join(' ') }}; do
+        if pgrep -x "$proc" >/dev/null 2>&1; then alive=1; break; fi
+      done
+      if [ "$alive" = "0" ]; then exit 0; fi
+      sleep 1
+    done
+    echo "QEMU still running after {{ teardown_process_wait_seconds }}s" >&2
+    exit 1
+  changed_when: false
+
+- name: snapshot — verify which paths actually exist (skip missing silently)
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: snapshot_path_stats
+  loop: "{{ snapshot_paths }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: snapshot — assemble list of present paths
+  ansible.builtin.set_fact:
+    snapshot_present_paths: >-
+      {{ snapshot_path_stats.results
+         | selectattr('stat.exists') | map(attribute='item') | list }}
+
+- name: snapshot — assert at least one path present
+  ansible.builtin.assert:
+    that: snapshot_present_paths | length > 0
+    fail_msg: |
+      None of the snapshot paths exist:
+      {{ snapshot_paths | join(', ') }}
+      Has spinifex ever been installed on this node?
+
+- name: snapshot — create bundle (tar czf with absolute paths)
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      tar --acls --xattrs -czpf {{ snapshot_bundle_path | quote }}
+      {{ snapshot_present_paths | map('quote') | join(' ') }}
+  changed_when: true
+
+- name: snapshot — record manifest inside the bundle dir for traceability
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ snapshot_dir }}/{{ snapshot_name }}.manifest"
+    mode: "0640"
+    content: |
+      snapshot_name: {{ snapshot_name }}
+      created_at:    {{ ansible_facts['date_time']['iso8601'] }}
+      hostname:      {{ ansible_facts['hostname'] }}
+      paths:
+      {% for p in snapshot_present_paths %}  - {{ p }}
+      {% endfor %}
+      services_quiesced:
+      {% for s in snapshot_services_stop_order %}  - {{ s }}
+      {% endfor %}
+
+- name: snapshot — restart services in reverse order
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+  loop: "{{ snapshot_services_stop_order | reverse | list }}"
+  failed_when: false
+
+- name: snapshot — wait for AWS gateway readiness
+  ansible.builtin.command: "{{ spinifex_aws_cli }} ec2 describe-regions"
+  register: snapshot_gw_ready
+  retries: 30
+  delay: 2
+  until: snapshot_gw_ready.rc == 0
+  changed_when: false
+  failed_when: false
+
+- name: snapshot — bundle size
+  become: true
+  ansible.builtin.stat:
+    path: "{{ snapshot_bundle_path }}"
+  register: snapshot_bundle_stat
+
+- name: snapshot — summary
+  ansible.builtin.debug:
+    msg: |
+      Snapshot complete:
+        name    : {{ snapshot_name }}
+        path    : {{ snapshot_bundle_path }}
+        size    : {{ (snapshot_bundle_stat.stat.size | int / 1024 / 1024) | round(1) }} MiB
+        paths   : {{ snapshot_present_paths | join(', ') }}
+        gateway : {{ 'ready' if snapshot_gw_ready.rc == 0 else 'NOT ready after restart — investigate' }}
+
+      Restore with: ansible-playbook playbooks/dev-restore.yml -e snapshot_name={{ snapshot_name }}

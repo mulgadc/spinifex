@@ -292,11 +292,22 @@ func isNATSTransient(err error) bool {
 		errors.Is(err, nats.ErrNoStreamResponse))
 }
 
-// checkPolicy evaluates IAM policies for the current request. Returns nil
-// if access is allowed, or an ErrorAccessDenied error if denied.
-// Root users bypass evaluation entirely. If the IAM service is unavailable,
-// access is allowed (pre-IAM compatibility).
+// checkPolicy evaluates IAM policies for the current request against the
+// wildcard resource "*". Equivalent to checkPolicyResource(r, service,
+// action, "*"). Returns nil if access is allowed, or an ErrorAccessDenied
+// error if denied.
 func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) error {
+	return gw.checkPolicyResource(r, service, action, "*")
+}
+
+// checkPolicyResource evaluates IAM policies for the current request against
+// a specific resource ARN. Returns nil if access is allowed, or an
+// ErrorAccessDenied error if denied. Root users bypass evaluation entirely.
+// If the IAM service is unavailable, access is allowed (pre-IAM compatibility).
+//
+// Used by EC2 paths that enforce iam:PassRole on a role ARN before attaching
+// an instance profile.
+func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, resource string) error {
 	if gw.IAMService == nil {
 		slog.Warn("checkPolicy: IAM service not available, skipping policy check",
 			"service", service, "action", action)
@@ -346,8 +357,8 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if policy.EvaluateAccess(identity, iamAction, "*", policies) == policy.Deny {
-		slog.Info("checkPolicy: access denied", "user", identity, "action", iamAction)
+	if policy.EvaluateAccess(identity, iamAction, resource, policies) == policy.Deny {
+		slog.Info("checkPolicy: access denied", "user", identity, "action", iamAction, "resource", resource)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 

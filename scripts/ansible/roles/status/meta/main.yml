@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: status
+  description: Read-only health snapshot for a Spinifex dev node (doctor).
+  license: BSD-3-Clause
+  min_ansible_version: "2.14"
+dependencies: []

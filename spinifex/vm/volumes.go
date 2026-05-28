@@ -119,12 +119,15 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		return AttachVolumeResult{}, fmt.Errorf("QMP blockdev-add: %w", err)
 	}
 
-	// /dev/sdf -> hotplug1, /dev/sdg -> hotplug2, etc.
+	// /dev/sdf -> hotplug-ebs1, /dev/sdg -> hotplug-ebs2, etc. The id prefix
+	// matches the pcie-root-port pre-allocation in buildBaseVMConfig; the
+	// "-ebs" suffix disambiguates these ports from hotplug-eni{N} (Sprint 3a
+	// ENI hot-plug pool).
 	hotplugBus := ""
 	if len(device) > 0 {
 		letter := device[len(device)-1]
 		if letter >= 'f' && letter <= 'p' {
-			hotplugBus = fmt.Sprintf("hotplug%d", letter-'f'+1)
+			hotplugBus = fmt.Sprintf("hotplug-ebs%d", letter-'f'+1)
 		}
 	}
 

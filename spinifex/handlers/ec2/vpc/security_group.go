@@ -1150,8 +1150,7 @@ func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(accountID, vpcId str
 
 // deleteSecurityGroupInternal removes an SG record without the public-API
 // CannotDelete guard for default SGs. Used by DeleteVpc to cascade-delete the
-// per-VPC default SG. Honors the Phase 7 sync contract so vpcd tear-down
-// failures propagate.
+// per-VPC default SG. Surfaces vpcd tear-down failures to the caller.
 func (s *VPCServiceImpl) deleteSecurityGroupInternal(accountID, groupId string) error {
 	key := utils.AccountKey(accountID, groupId)
 	entry, err := s.sgKV.Get(key)

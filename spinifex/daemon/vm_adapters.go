@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -438,7 +439,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 				privateIP = *instance.Instance.PrivateIpAddress
 			}
 			if vpcID != "" && privateIP != "" {
-				portName := "port-" + instance.ENIId
+				portName := topology.Port(instance.ENIId)
 				utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, instance.PublicIP, privateIP, portName, instance.ENIMac)
 			}
 		}
@@ -593,7 +594,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) {
 		return
 	}
 
-	portName := "port-" + instance.ENIId
+	portName := topology.Port(instance.ENIId)
 	vpcId := ""
 	logicalIP := ""
 	if instance.Instance != nil {

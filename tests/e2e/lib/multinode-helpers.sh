@@ -798,6 +798,9 @@ init_leader_node() {
 
     # Start init in background — formation server will wait for joins
     # shellcheck disable=SC2086
+    # IPsec disabled: pseudo test runs as unprivileged tf-user and the charon
+    # trust-store install in `spx admin init` requires writing /etc/ipsec.d/cacerts.
+    # Loopback-only "nodes" don't exercise real Geneve encryption anyway.
     ./bin/spx admin init \
         --node node1 \
         --nodes 3 \
@@ -808,6 +811,7 @@ init_leader_node() {
         --az ap-southeast-2a \
         --spinifex-dir "$HOME/node1/" \
         --config-dir "$HOME/node1/config/" \
+        --ipsec=false \
         $external_flags &
     LEADER_INIT_PID=$!
 

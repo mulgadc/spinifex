@@ -9,9 +9,16 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// PassRoleChecker enforces iam:PassRole on the role inside an instance profile
+// the caller is trying to attach. Implemented by the gateway via
+// checkPolicyResource, defined as a callback to avoid an import cycle with
+// the gateway package.
+type PassRoleChecker func(roleARN string) error
 
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
@@ -62,10 +69,27 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	return err
 }
 
-func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID string) (reservation ec2.Reservation, err error) {
+// RunInstances dispatches an EC2 RunInstances request after validating the
+// input, resolving any supplied IAM instance profile, and enforcing
+// iam:PassRole on the role inside that profile. The resolved profile ARN
+// is normalised onto input.IamInstanceProfile.Arn before NATS dispatch so
+// the daemon sees a single canonical reference. The returned reservation
+// is enriched with the InstanceProfileID so callers see {Arn, Id} per the
+// AWS contract.
+//
+// iamSvc may be nil only in pre-IAM compatibility paths; if input carries an
+// IamInstanceProfile reference, iamSvc must be set or the call fails.
+// passRoleCheck may be nil to skip the iam:PassRole enforcement (used by
+// unit tests that don't exercise the policy path).
+func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
 	// Validate input
 	err = ValidateRunInstancesInput(input)
 
+	if err != nil {
+		return reservation, err
+	}
+
+	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
 	}
@@ -85,12 +109,14 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID s
 			if err != nil {
 				return reservation, err
 			}
+			enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 			return *reservationPtr, nil
 		case ec2.PlacementStrategyCluster:
 			reservationPtr, err := distributeInstancesCluster(input, natsConn, accountID, groupName)
 			if err != nil {
 				return reservation, err
 			}
+			enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 			return *reservationPtr, nil
 		default:
 			return reservation, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -112,7 +138,58 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID s
 		}
 		return reservation, err
 	}
+	enrichReservationWithProfileID(reservationPtr, resolvedProfile)
 	return *reservationPtr, nil
+}
+
+// resolveAndAuthorizeInstanceProfile resolves and authorizes the optional
+// instance profile in RunInstancesInput, normalising the input so the daemon
+// sees only the canonical ARN (clearing Name avoids double-resolution if the
+// profile is renamed between gateway resolution and daemon launch).
+func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
+	if input.IamInstanceProfile == nil {
+		return nil, nil
+	}
+	profile, err := resolveAndAuthorizeProfile(input.IamInstanceProfile, iamSvc, accountID, passRoleCheck)
+	if err != nil {
+		return nil, err
+	}
+	input.IamInstanceProfile = &ec2.IamInstanceProfileSpecification{Arn: aws.String(profile.ARN)}
+	return profile, nil
+}
+
+// profileNameOrARN extracts whichever field of IamInstanceProfileSpecification
+// was set by the caller. AWS accepts either Name or Arn (not both).
+func profileNameOrARN(spec *ec2.IamInstanceProfileSpecification) string {
+	if spec == nil {
+		return ""
+	}
+	if arn := aws.StringValue(spec.Arn); arn != "" {
+		return arn
+	}
+	return aws.StringValue(spec.Name)
+}
+
+// enrichReservationWithProfileID fills in Instance.IamInstanceProfile.Id on
+// every instance in the reservation when a profile was resolved at the
+// gateway. Daemons emit only Arn (they have no IAM access); the gateway
+// adds Id from the already-resolved profile to match the AWS response shape.
+func enrichReservationWithProfileID(reservation *ec2.Reservation, profile *handlers_iam.InstanceProfile) {
+	if reservation == nil || profile == nil {
+		return
+	}
+	for _, inst := range reservation.Instances {
+		if inst == nil {
+			continue
+		}
+		if inst.IamInstanceProfile == nil {
+			inst.IamInstanceProfile = &ec2.IamInstanceProfile{}
+		}
+		if inst.IamInstanceProfile.Arn == nil {
+			inst.IamInstanceProfile.Arn = aws.String(profile.ARN)
+		}
+		inst.IamInstanceProfile.Id = aws.String(profile.InstanceProfileID)
+	}
 }
 
 // placementGroupName extracts the placement group name from RunInstancesInput.

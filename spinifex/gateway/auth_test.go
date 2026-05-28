@@ -107,6 +107,58 @@ func (m *mockIAMService) CreateAccount(_ string) (*handlers_iam.Account, error) 
 func (m *mockIAMService) GetAccount(_ string) (*handlers_iam.Account, error) { return nil, nil }
 func (m *mockIAMService) ListAccounts() ([]*handlers_iam.Account, error)     { return nil, nil }
 
+func (m *mockIAMService) CreateRole(_ string, _ *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) ListRoles(_ string, _ *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) DeleteRole(_ string, _ *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) UpdateRole(_ string, _ *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) UpdateAssumeRolePolicy(_ string, _ *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) AttachRolePolicy(_ string, _ *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) DetachRolePolicy(_ string, _ *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) ListAttachedRolePolicies(_ string, _ *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) CreateInstanceProfile(_ string, _ *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) GetInstanceProfile(_ string, _ *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) ListInstanceProfiles(_ string, _ *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) DeleteInstanceProfile(_ string, _ *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) ListInstanceProfilesForRole(_ string, _ *iam.ListInstanceProfilesForRoleInput) (*iam.ListInstanceProfilesForRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) AddRoleToInstanceProfile(_ string, _ *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) RemoveRoleFromInstanceProfile(_ string, _ *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	return nil, nil
+}
+func (m *mockIAMService) ResolveInstanceProfile(_, _ string) (*handlers_iam.InstanceProfile, error) {
+	return nil, nil
+}
+
 // testMasterKey is a fixed 32-byte key for deterministic tests.
 var testMasterKey []byte
 

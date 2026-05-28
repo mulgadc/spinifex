@@ -186,6 +186,8 @@ install_sudoers() {
 spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
 spinifex-daemon ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
+spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/systemctl is-active openvswitch-ipsec.service
+spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl set NB_Global . ipsec=true
 
 # Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
@@ -218,7 +220,7 @@ install_apt_deps() {
             libvirt-daemon-system libvirt-clients \
             pciutils \
             jq curl iproute2 netcat-openbsd wget unzip xz-utils file \
-            ovn-central ovn-host openvswitch-switch dhcpcd-base \
+            ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base \
             > /dev/null
 
         info "System dependencies installed"

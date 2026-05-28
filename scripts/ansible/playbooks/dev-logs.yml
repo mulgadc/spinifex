@@ -1,0 +1,17 @@
+---
+# Capture spinifex + ovn/ovs + qemu/nbdkit logs from journald and
+# /var/log/spinifex/ into a single tarball for bug reports.
+# Tail mode is intentionally not provided — use `journalctl -u 'spinifex-*' -f`
+# directly; ansible is the wrong tool for follow.
+- name: Dev logs — dump journald + varlog + status into a bundle
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../vars/defaults.yml
+  vars:
+    logs_since: "1h"
+    logs_output_dir: "/tmp"
+    logs_include_dmesg: true
+
+  roles:
+    - logs

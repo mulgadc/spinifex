@@ -3,10 +3,12 @@ package dhcp
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // NClient4Client is the production DHCP client backed by
@@ -38,7 +40,14 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 		return nil, fmt.Errorf("dhcp acquire: bridge is required")
 	}
 	if len(req.HWAddr) == 0 {
-		return nil, fmt.Errorf("dhcp acquire: hw_addr is required")
+		if req.ClientID == "" {
+			return nil, fmt.Errorf("dhcp acquire: client_id or hw_addr is required")
+		}
+		hw, err := DeriveMAC(req.ClientID)
+		if err != nil {
+			return nil, fmt.Errorf("dhcp acquire: derive hw_addr: %w", err)
+		}
+		req.HWAddr = hw
 	}
 
 	client, err := nclient4.New(req.Bridge,
@@ -120,6 +129,19 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 		return fmt.Errorf("dhcp release on %s (client=%s): %w", lease.Bridge, lease.ClientID, err)
 	}
 	return nil
+}
+
+// DeriveMAC returns the deterministic locally-administered unicast MAC
+// (02:xx:xx:xx:xx:xx) used as chaddr when an allocator has no NIC of
+// its own — DHCPGatewayLRPAllocator and DHCPPoolAllocator on first
+// acquire. Wraps utils.HashMAC so the same 0x02-prefixed scheme used
+// for OVN router/port MACs is also visible in upstream dnsmasq leases.
+func DeriveMAC(clientID string) (net.HardwareAddr, error) {
+	hw, err := net.ParseMAC(utils.HashMAC(clientID))
+	if err != nil {
+		return nil, fmt.Errorf("derive mac for client-id %q: %w", clientID, err)
+	}
+	return hw, nil
 }
 
 // identityModifiers builds the three identifying DHCP options set on every

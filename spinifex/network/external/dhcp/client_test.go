@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,8 +141,42 @@ func TestNClient4ValidatesInputs(t *testing.T) {
 	if _, err := c.Acquire(context.Background(), dhcp.AcquireRequest{}); err == nil {
 		t.Fatal("expected bridge-required error")
 	}
-	if _, err := c.Acquire(context.Background(), dhcp.AcquireRequest{Bridge: "br-wan"}); err == nil {
-		t.Fatal("expected hw_addr-required error")
+	// Neither HWAddr nor ClientID — allocator can't derive a MAC, must fail.
+	_, err := c.Acquire(context.Background(), dhcp.AcquireRequest{Bridge: "br-wan"})
+	if err == nil {
+		t.Fatal("expected client_id-or-hw_addr-required error")
+	}
+	if !strings.Contains(err.Error(), "client_id or hw_addr is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Regression: nightly cell 1 failed with "dhcp acquire: hw_addr is required"
+// because DHCPGatewayLRPAllocator passes only ClientID, never HWAddr. The
+// real client must derive chaddr from the client-id rather than rejecting
+// the request.
+func TestDeriveMAC_StableAndLocallyAdministered(t *testing.T) {
+	got1, err := dhcp.DeriveMAC("dhcp-gw-lrp-vpc-1")
+	if err != nil {
+		t.Fatalf("DeriveMAC: %v", err)
+	}
+	got2, err := dhcp.DeriveMAC("dhcp-gw-lrp-vpc-1")
+	if err != nil {
+		t.Fatalf("DeriveMAC second call: %v", err)
+	}
+	if got1.String() != got2.String() {
+		t.Fatalf("DeriveMAC not deterministic: %s vs %s", got1, got2)
+	}
+	if got1[0] != 0x02 {
+		t.Fatalf("first octet must be 0x02 (LAA, unicast), got %02x", got1[0])
+	}
+
+	other, err := dhcp.DeriveMAC("dhcp-gw-lrp-vpc-2")
+	if err != nil {
+		t.Fatalf("DeriveMAC vpc-2: %v", err)
+	}
+	if got1.String() == other.String() {
+		t.Fatal("distinct client-ids must produce distinct MACs")
 	}
 }
 

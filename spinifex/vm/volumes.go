@@ -20,10 +20,14 @@ import (
 const blockdevDelMaxAttempts = 20
 
 // AttachVolumeResult carries the device names produced by AttachVolume:
-// the AWS-API name (/dev/sdf, possibly auto-allocated) and the discovered
-// guest device path (/dev/vdb…). Daemon handlers use GuestDevice in the
-// AWS API response; the discovered name eventually appears in
-// DescribeInstances.
+// the AWS-API name (/dev/sd[f-p], possibly auto-allocated when the
+// caller passed an empty device) and the in-guest path discovered from
+// QMP query-block (/dev/vd*). Daemon handlers echo DeviceName in the
+// AttachVolume response and into volume metadata so AWS-spec round-trips
+// (Volume.Attachments[].Device, the attachment.device filter on
+// DescribeVolumes) match. GuestDevice is retained for diagnostics and
+// for any internal callers that need to map back to the guest's virtio
+// enumeration.
 type AttachVolumeResult struct {
 	DeviceName  string
 	GuestDevice string
@@ -191,6 +195,12 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 	}
 	instance.EBSRequests.Mu.Unlock()
 
+	// BlockDeviceMappings[].DeviceName carries the in-guest path so
+	// callers who SSH into the VM and `lsblk` see names that match
+	// DescribeInstances (mulga-599 / PR #55). UpdateGuestDeviceNames
+	// re-applies this convention on every Launch/Start, so any "fix"
+	// to use the API name here would be silently overwritten on the
+	// next start.
 	m.UpdateState(id, func(v *VM) {
 		if v.Instance == nil {
 			return
@@ -206,8 +216,16 @@ func (m *Manager) AttachVolume(id, volumeID, device string) (AttachVolumeResult,
 		v.Instance.BlockDeviceMappings = append(v.Instance.BlockDeviceMappings, mapping)
 	})
 
+	// Volume metadata, by contrast, drives Volume.Attachments[].Device
+	// and the attachment.device filter on DescribeVolumes. The Terraform
+	// AWS provider polls that filter with the API-form name (/dev/sd[f-p])
+	// supplied in the .tf config, so storing the guest path here makes
+	// the filter reject every attached volume and the post-attach wait
+	// loop fails with "couldn't find resource". Always persist the API
+	// name even though it diverges from the BDM convention above —
+	// nothing in mulga-599 rewrites this field after attach.
 	if m.deps.VolumeStateUpdater != nil {
-		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, guestDevice); err != nil {
+		if err := m.deps.VolumeStateUpdater.UpdateVolumeState(volumeID, "in-use", instance.ID, device); err != nil {
 			slog.Error("AttachVolume: failed to update volume metadata",
 				"volumeId", volumeID, "err", err)
 		}

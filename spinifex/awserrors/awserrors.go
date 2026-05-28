@@ -43,6 +43,7 @@ var (
 	ErrorDuplicateSubnetsInSameZone                            = "DuplicateSubnetsInSameZone"
 	ErrorEncryptedVolumesNotSupported                          = "EncryptedVolumesNotSupported"
 	ErrorExistingVpcEndpointConnections                        = "ExistingVpcEndpointConnections"
+	ErrorExpiredToken                                          = "ExpiredToken"
 	ErrorFilterLimitExceeded                                   = "FilterLimitExceeded"
 	ErrorFleetNotInModifiableState                             = "FleetNotInModifiableState"
 	ErrorFlowLogAlreadyExists                                  = "FlowLogAlreadyExists"
@@ -507,6 +508,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDuplicateSubnetsInSameZone:                            {HTTPCode: 400, Message: "For an interface VPC endpoint, you can specify only one subnet per Availability Zone."},
 	ErrorEncryptedVolumesNotSupported:                          {HTTPCode: 400, Message: "Encrypted Amazon EBS volumes may only be attached to instances that support Amazon EBS encryption. For more information, see Amazon EBS encryption."},
 	ErrorExistingVpcEndpointConnections:                        {HTTPCode: 400, Message: "You cannot delete a VPC endpoint service configuration or change the load balancers for the endpoint service if there are endpoints attached to the service."},
+	ErrorExpiredToken:                                          {HTTPCode: 400, Message: "The security token included in the request is expired."},
 	ErrorFilterLimitExceeded:                                   {HTTPCode: 400, Message: "The request uses too many filters or too many filter values."},
 	ErrorFleetNotInModifiableState:                             {HTTPCode: 400, Message: "The Spot Fleet request must be in the active state in order to modify it. For more information, see Spot Fleet request types."},
 	ErrorFlowLogAlreadyExists:                                  {HTTPCode: 409, Message: "A flow log with the specified configuration already exists."},

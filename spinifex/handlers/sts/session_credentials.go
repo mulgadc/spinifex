@@ -1,9 +1,12 @@
 package handlers_sts
 
 import (
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -98,6 +101,28 @@ func putSessionCredential(bucket nats.KeyValue, cred *SessionCredential) error {
 		return fmt.Errorf("store session credential: %w", err)
 	}
 	return nil
+}
+
+// VerifySessionToken recomputes the HMAC of the wire-form session token under
+// the IAM master key and constant-time-compares it against the stored value on
+// cred. Returns true on match. A bucket-read by any process that lacks the
+// master key cannot recover a usable token: the wire token is never persisted.
+func (s *STSServiceImpl) VerifySessionToken(cred *SessionCredential, wireToken string) bool {
+	if cred == nil || wireToken == "" {
+		return false
+	}
+	expected, err := base64.StdEncoding.DecodeString(cred.SessionTokenHMAC)
+	if err != nil {
+		slog.Error("Stored session token HMAC is not valid base64",
+			"accessKeyID", cred.AccessKeyID, "err", err)
+		return false
+	}
+	got, err := base64.StdEncoding.DecodeString(computeTokenHMAC(s.masterKey, wireToken))
+	if err != nil {
+		// computeTokenHMAC always emits valid base64; defence in depth.
+		return false
+	}
+	return subtle.ConstantTimeCompare(got, expected) == 1
 }
 
 // LookupSessionCredential resolves an access-key ID to its stored

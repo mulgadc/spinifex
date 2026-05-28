@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -29,13 +30,25 @@ import (
 type contextKey string
 
 const (
-	ctxIdentity  contextKey = "sigv4.identity"
-	ctxAccountID contextKey = "sigv4.accountId"
-	ctxService   contextKey = "sigv4.service"
-	ctxRegion    contextKey = "sigv4.region"
-	ctxAccessKey contextKey = "sigv4.accessKey"
-	ctxAction    contextKey = "sigv4.action"
-	ctxQueryArgs contextKey = "sigv4.queryArgs"
+	ctxIdentity       contextKey = "sigv4.identity"
+	ctxAccountID      contextKey = "sigv4.accountId"
+	ctxService        contextKey = "sigv4.service"
+	ctxRegion         contextKey = "sigv4.region"
+	ctxAccessKey      contextKey = "sigv4.accessKey"
+	ctxAction         contextKey = "sigv4.action"
+	ctxQueryArgs      contextKey = "sigv4.queryArgs"
+	ctxPrincipalType  contextKey = "sigv4.principalType"
+	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
+)
+
+// Values stored under ctxPrincipalType. The SigV4 middleware sets exactly one
+// of these; downstream handlers that interpret ctxIdentity as an IAM user name
+// MUST gate on principalTypeUser, otherwise a session whose SessionName
+// collides with an IAM user name would silently inherit that user's policies.
+const (
+	principalTypeUser        = "user"
+	principalTypeAssumedRole = "assumed-role"
+	principalTypeRoot        = "root"
 )
 
 type GatewayConfig struct {
@@ -47,6 +60,7 @@ type GatewayConfig struct {
 	Region         string     // Region this gateway is running in
 	AZ             string     // Availability zone this gateway is running in
 	IAMService     handlers_iam.IAMService
+	STSService     handlers_sts.STSService
 	RateLimiter    *AuthRateLimiter     // Per-IP auth failure rate limiter
 	Throttler      *ratelimit.Throttler // Per-account+action API request throttler
 	Version        string               // Build-time version string (set from cmd.Version)
@@ -333,6 +347,24 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 
 	if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
 		return nil
+	}
+
+	// Gate the user-policy lookup on the principal type. An assumed-role
+	// session whose SessionName collides with an IAM user name must not
+	// silently pick up that user's policies. v1 has no role-policy evaluator
+	// yet, so assumed-role principals fail closed with AccessDenied.
+	principalType, _ := r.Context().Value(ctxPrincipalType).(string)
+	switch principalType {
+	case principalTypeUser:
+		// fall through to existing user-policy evaluation
+	case principalTypeAssumedRole:
+		slog.Info("checkPolicy: assumed-role principal denied (role-policy eval not yet implemented)",
+			"sessionARN", r.Context().Value(ctxAssumedRoleARN),
+			"action", policy.IAMAction(service, action))
+		return errors.New(awserrors.ErrorAccessDenied)
+	default:
+		slog.Error("checkPolicy: unknown principal type", "principalType", principalType)
+		return errors.New(awserrors.ErrorInternalError)
 	}
 
 	// Resolve the IAM action string (e.g. "ec2:RunInstances")

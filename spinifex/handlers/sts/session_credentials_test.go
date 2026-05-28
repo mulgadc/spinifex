@@ -134,3 +134,34 @@ func TestPutSessionCredential_CollisionReturnsKeyExists(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, nats.ErrKeyExists)
 }
+
+func TestVerifySessionToken_MatchAndMismatch(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	const wireToken = "the-original-wire-token"
+	cred := &SessionCredential{
+		AccessKeyID:      "ASIAVERIFYAAAAAAAAAA",
+		SessionTokenHMAC: computeTokenHMAC(svc.masterKey, wireToken),
+	}
+
+	assert.True(t, svc.VerifySessionToken(cred, wireToken),
+		"matching wire token must verify under the master key")
+	assert.False(t, svc.VerifySessionToken(cred, "tampered-token"),
+		"mismatched wire token must reject")
+	assert.False(t, svc.VerifySessionToken(cred, ""),
+		"empty wire token must reject without comparing")
+	assert.False(t, svc.VerifySessionToken(nil, wireToken),
+		"nil cred must reject without panicking")
+}
+
+func TestVerifySessionToken_CorruptStoredHMACRejects(t *testing.T) {
+	// A SessionTokenHMAC field that fails base64 decode is data corruption.
+	// VerifySessionToken must reject rather than fall through with a zero
+	// expected slice and accidentally match an empty HMAC.
+	svc, _ := newTestSetup(t)
+	cred := &SessionCredential{
+		AccessKeyID:      "ASIACORRUPTHMACAAAAA",
+		SessionTokenHMAC: "!!!not-base64!!!",
+	}
+	assert.False(t, svc.VerifySessionToken(cred, "any-token"))
+}

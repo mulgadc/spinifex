@@ -574,6 +574,7 @@ func TestRequest_EC2MissingAction(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := context.WithValue(req.Context(), ctxService, "ec2")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -590,6 +591,7 @@ func TestRequest_IAMNilService(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=CreateUser&UserName=test"))
 	ctx := context.WithValue(req.Context(), ctxService, "iam")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
 
@@ -766,6 +768,7 @@ func TestCheckPolicy_NonRootAllowPolicy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -789,6 +792,7 @@ func TestCheckPolicy_NonRootDenyPolicy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -806,6 +810,7 @@ func TestCheckPolicy_NonRootNoPolicies(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -823,6 +828,7 @@ func TestCheckPolicy_GetUserPoliciesError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -835,6 +841,7 @@ func TestCheckPolicy_EmptyIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -865,6 +872,7 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -895,6 +903,7 @@ func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")
@@ -912,6 +921,7 @@ func TestCheckPolicy_NonTransientErrorStillFails(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxIdentity, "alice")
 	ctx = context.WithValue(ctx, ctxAccountID, "123456789012")
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 	req = req.WithContext(ctx)
 
 	err := gw.checkPolicy(req, "ec2", "DescribeInstances")

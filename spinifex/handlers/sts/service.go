@@ -31,4 +31,10 @@ type STSService interface {
 	// translate that miss (the SigV4 verifier maps it to InvalidClientTokenId
 	// on the ASIA path).
 	LookupSessionCredential(accessKeyID string) (*SessionCredential, error)
+
+	// VerifySessionToken constant-time-compares the wire-form session token
+	// (the X-Amz-Security-Token header) against the HMAC stored on cred.
+	// Returns true on match. Encapsulating the HMAC in STSService keeps the
+	// master key inside the service and off the gateway surface.
+	VerifySessionToken(cred *SessionCredential, wireToken string) bool
 }

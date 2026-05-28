@@ -144,7 +144,7 @@ var ec2Actions = map[string]EC2Handler{
 		return gateway_ec2_instance.ModifyInstanceAttribute(input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceAttribute(input, gw.NATSConn, accountID)
+		return gateway_ec2_instance.DescribeInstanceAttribute(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
 	}),
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(input *ec2.DescribeInstanceCreditSpecificationsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceCreditSpecifications(input)

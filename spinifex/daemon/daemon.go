@@ -745,16 +745,18 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RevokeSecurityGroupIngress", d.handleEC2RevokeSecurityGroupIngress, "spinifex-workers"},
 		{"ec2.RevokeSecurityGroupEgress", d.handleEC2RevokeSecurityGroupEgress, "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", d.handleEC2ModifyInstanceAttribute, "spinifex-workers"},
-		{"ec2.DescribeInstanceAttribute", d.handleEC2DescribeInstanceAttribute, "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
 		{fmt.Sprintf("ec2.start.%s", d.node), d.handleEC2StartStoppedInstanceDirect, ""},
 		{"ec2.terminate", d.handleEC2TerminateStoppedInstance, "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", d.handleEC2DescribeStoppedInstances, "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", d.handleEC2DescribeTerminatedInstances, "spinifex-workers"},
-		// these 3 fan out to all nodes and gateway aggregates the results
+		// these fan out to all nodes and gateway aggregates the results. The
+		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
+		// any queue-grouped routing produces 1/N false NotFound responses.
 		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
 		{"ec2.DescribeInstanceStatus", d.handleEC2DescribeInstanceStatus, ""},
 		{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
+		{"ec2.DescribeInstanceAttribute", d.handleEC2DescribeInstanceAttribute, ""},
 		// IAM instance profile associations: Disassociate/Replace mutate the
 		// owning daemon's vm.VM (non-owners NoOp with Found=false); Describe
 		// returns per-daemon matches that the gateway concatenates.

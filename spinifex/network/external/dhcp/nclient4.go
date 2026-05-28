@@ -17,12 +17,15 @@ import (
 // opens an AF_PACKET socket on the target bridge for the duration of the
 // handshake and closes it when done — no long-lived per-lease process.
 //
-// Retransmission lives one layer up in DHCPManager.acquireWithBackoff
-// (RFC 2131 §4.1). This client always does exactly one DISCOVER attempt;
-// the per-attempt window is whatever the caller's context allows.
+// Retransmission follows RFC 2131 §4.1: 3 DISCOVER attempts with
+// exponential per-attempt deadline (timeout, 2×timeout, 4×timeout).
+// nclient4 issues a fresh DISCOVER on each retry — covers transient drops
+// during STP convergence on a freshly-up bridge and lossy upstream paths.
 type NClient4Client struct {
 	timeout time.Duration
 }
+
+const nclient4Retries = 3
 
 var _ Client = (*NClient4Client)(nil)
 
@@ -31,7 +34,7 @@ var _ Client = (*NClient4Client)(nil)
 // context deadline.
 func NewNClient4(timeout time.Duration) *NClient4Client {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 5 * time.Second
 	}
 	return &NClient4Client{timeout: timeout}
 }
@@ -65,7 +68,7 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 	client, err := nclient4.New(req.Bridge,
 		nclient4.WithHWAddr(req.HWAddr),
 		nclient4.WithTimeout(c.timeout),
-		nclient4.WithRetry(1),
+		nclient4.WithRetry(nclient4Retries),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open nclient4 on %s: %w", req.Bridge, err)
@@ -107,7 +110,7 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	client, err := nclient4.New(lease.Bridge,
 		nclient4.WithHWAddr(lease.HWAddr),
 		nclient4.WithTimeout(c.timeout),
-		nclient4.WithRetry(1),
+		nclient4.WithRetry(nclient4Retries),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open nclient4 on %s for renew: %w", lease.Bridge, err)

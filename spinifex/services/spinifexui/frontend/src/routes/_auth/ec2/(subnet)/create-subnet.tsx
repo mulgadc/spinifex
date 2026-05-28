@@ -65,7 +65,7 @@ function CreateSubnet() {
     defaultValues: {
       vpcId: vpcs[0]?.VpcId ?? "",
       cidrBlock: "10.0.1.0/24",
-      availabilityZone: "",
+      availabilityZone: undefined,
     },
   })
 
@@ -158,7 +158,7 @@ function CreateSubnet() {
             render={({ field }) => (
               <Select
                 onValueChange={(value) =>
-                  field.onChange(value === "none" ? "" : value)
+                  field.onChange(value === "none" ? undefined : value)
                 }
                 value={field.value ?? "none"}
               >

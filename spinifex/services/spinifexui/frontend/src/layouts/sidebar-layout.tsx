@@ -20,17 +20,6 @@ import {
   Waypoints,
 } from "lucide-react"
 
-// import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-// import {
-//   ChevronsUpDown,
-// } from "lucide-react"
-// import {
-//   DropdownMenu,
-//   DropdownMenuContent,
-//   DropdownMenuGroup,
-//   DropdownMenuItem,
-//   DropdownMenuTrigger,
-// } from "@/components/ui/dropdown-menu"
 import {
   Sidebar,
   SidebarContent,
@@ -401,48 +390,6 @@ export function SidebarLayout() {
         </SidebarMenu>
       </SidebarFooter>
 
-      {/* Old avatar dropdown menu - commented out
-      <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={(props) => (
-                  <SidebarMenuButton
-                    className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-                    size="lg"
-                    {...props}
-                  >
-                    <Avatar className="h-8 w-8 rounded-lg">
-                      <AvatarImage alt="Mulga Spinifex" src="/favicon.ico" />
-                      <AvatarFallback className="rounded-lg">MH</AvatarFallback>
-                    </Avatar>
-                    <div className="grid flex-1 text-left text-sm leading-tight">
-                      <span className="truncate font-semibold">Mulga Spinifex</span>
-                      <span className="truncate text-xs">spinifex@mulgadc.com</span>
-                    </div>
-                    <ChevronsUpDown className="ml-auto size-4" />
-                  </SidebarMenuButton>
-                )}
-              />
-              <DropdownMenuContent
-                align="end"
-                className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
-                side={isMobile ? "bottom" : "right"}
-                sideOffset={4}
-              >
-                <DropdownMenuGroup>
-                  <DropdownMenuItem>
-                    <LogOut className="size-4" />
-                    Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
-      */}
       <SidebarRail />
     </Sidebar>
   )

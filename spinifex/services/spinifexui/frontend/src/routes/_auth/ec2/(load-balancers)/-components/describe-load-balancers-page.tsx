@@ -5,14 +5,8 @@ import { Link, useNavigate } from "@tanstack/react-router"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { formatDateTime } from "@/lib/utils"
 import { elbv2LoadBalancersQueryOptions } from "@/queries/elbv2"
-
-function formatCreatedAt(createdAt: Date | undefined): string {
-  if (!createdAt) {
-    return ""
-  }
-  return new Date(createdAt).toLocaleString()
-}
 
 export function DescribeLoadBalancersPage() {
   const navigate = useNavigate()
@@ -88,7 +82,7 @@ export function DescribeLoadBalancersPage() {
                       {lb.VpcId ?? ""}
                     </td>
                     <td className="px-4 py-2 text-xs">
-                      {formatCreatedAt(lb.CreatedTime)}
+                      {formatDateTime(lb.CreatedTime)}
                     </td>
                   </tr>
                 )

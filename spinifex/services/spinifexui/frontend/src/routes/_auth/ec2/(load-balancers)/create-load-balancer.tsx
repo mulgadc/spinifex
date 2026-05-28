@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 
 import {
-  ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -19,7 +18,6 @@ export const Route = createFileRoute(
       context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
       context.queryClient.ensureQueryData(elbv2TargetGroupsQueryOptions),
-      context.queryClient.ensureQueryData(ec2ImagesQueryOptions),
     ])
   },
   head: () => ({

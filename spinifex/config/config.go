@@ -101,6 +101,14 @@ type AWSGWConfig struct {
 
 type ViperblockConfig struct {
 	ShardWAL *bool `json:"ShardWAL" mapstructure:"shardwal"` // Enable sharded WAL (default false when nil)
+
+	// EncryptionKeyFile is the path to the shared 32-byte AES-256 master key
+	// for viperblock at-rest encryption (chunks, WAL records, VBState/snapshot
+	// metadata). When empty, volumes are written in cleartext (legacy mode).
+	// When set, every VB constructed on this node — daemons and AWS handlers
+	// alike — must load it via masterkey.LoadShared so existing volumes can
+	// still be opened.
+	EncryptionKeyFile string `json:"EncryptionKeyFile" mapstructure:"encryption_key_file"`
 }
 
 // VPCDConfig holds the VPC daemon (vpcd) configuration.

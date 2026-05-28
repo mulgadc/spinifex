@@ -520,11 +520,19 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 		Host:       s.config.Predastore.Host,
 	}
 
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.Error("snapshotStoppedVolume: failed to load encryption key", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
 	vbconfig := viperblock.VB{
-		VolumeName: volumeID,
-		VolumeSize: volumeSize,
-		BaseDir:    s.config.WalDir,
-		Cache:      viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		VolumeName:        volumeID,
+		VolumeSize:        volumeSize,
+		BaseDir:           s.config.WalDir,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
 	}
 
 	vb, err := viperblock.New(&vbconfig, "s3", cfg)

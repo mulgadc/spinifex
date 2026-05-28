@@ -603,6 +603,12 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		Host:       appConfig.Nodes[appConfig.Node].Predastore.Host,
 	}
 
+	mkey, err := utils.LoadViperblockMasterKey(appConfig.Nodes[appConfig.Node].Viperblock.EncryptionKeyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not load viperblock encryption key: %v\n", err)
+		os.Exit(1)
+	}
+
 	vbConfig := viperblock.VB{
 		VolumeName: volumeId,
 		VolumeSize: utils.SafeInt64ToUint64(imageStat.Size()),
@@ -612,7 +618,9 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 				Size: 0,
 			},
 		},
-		VolumeConfig: manifest,
+		VolumeConfig:      manifest,
+		MasterKey:         mkey,
+		EncryptionEnabled: mkey != nil,
 	}
 
 	err = v_utils.ImportDiskImage(&s3Config, &vbConfig, extractedImagePath)

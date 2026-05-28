@@ -15,11 +15,11 @@ resources:
   - title: "Launching Instances"
     url: "/docs/launching-instances"
   - title: "AMD Instinct MI350X"
-    url: "https://www.amd.com/en/products/accelerators/instinct/mi300/mi350x.html"
+    url: "https://www.amd.com/en/products/accelerators/instinct/mi350/mi350x.html"
   - title: "vLLM Documentation"
     url: "https://docs.vllm.ai"
   - title: "Supermicro JumpStart Program"
-    url: "https://www.supermicro.com/en/solutions/ai-ml"
+    url: "https://www.supermicro.com/en/jumpstart"
 sections:
   - overview
   - prerequisites

@@ -20,6 +20,7 @@ var knownModels = map[string]modelInfo{
 	"10de:2233": {"NVIDIA A30", 24576},
 	"10de:26b5": {"NVIDIA L40", 46068},
 	"10de:26b9": {"NVIDIA L40S", 46068},
+	"10de:2bb5": {"NVIDIA RTX Pro 6000 Blackwell Server Edition", 98304},
 	// NVIDIA consumer
 	"10de:2684": {"NVIDIA GeForce RTX 4090", 24576},
 	"10de:2782": {"NVIDIA GeForce RTX 4070", 12288},
@@ -49,6 +50,7 @@ var computeModels = map[string]bool{
 	"10de:2233": true, // A30
 	"10de:26b5": true, // L40
 	"10de:26b9": true, // L40S
+	"10de:2bb5": true, // RTX Pro 6000 Blackwell Server Edition
 	// AMD datacenter
 	"1002:75a0": true, // MI350X
 	"1002:7448": true, // MI300X
@@ -67,6 +69,7 @@ var migCapableModels = map[string]bool{
 	"10de:2330": true, // H100 PCIe
 	"10de:233a": true, // H100 NVL
 	"10de:2233": true, // A30
+	"10de:2bb5": true, // RTX Pro 6000 Blackwell Server Edition
 }
 
 // IsComputeGPU reports whether vendorID:deviceID identifies a headless compute GPU

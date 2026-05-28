@@ -20,7 +20,7 @@ resources:
   - title: "Trinity on HuggingFace"
     url: "https://huggingface.co/arcee-ai/Trinity-Large-Preview-FP8"
   - title: "AMD Instinct MI350X"
-    url: "https://www.amd.com/en/products/accelerators/instinct/mi300/mi350x.html"
+    url: "https://www.amd.com/en/products/accelerators/instinct/mi350/mi350x.html"
   - title: "vLLM Documentation"
     url: "https://docs.vllm.ai"
 sections:

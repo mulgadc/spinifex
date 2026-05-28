@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -636,8 +635,10 @@ func TestGenerateSessionAKID_FormatAndUniqueness(t *testing.T) {
 
 func TestEvalTrustPolicy_CorruptDocReturnsError(t *testing.T) {
 	// Stored docs are validated upstream; reaching evalTrustPolicy with a
-	// malformed doc indicates corruption — must fail closed, not skip.
+	// malformed doc indicates corruption — must fail closed and NOT collapse
+	// to AccessDenied (which would hide the corruption from operators).
 	err := evalTrustPolicy(`{not json`, testCallerARN())
 	require.Error(t, err)
-	assert.False(t, errors.Is(err, errors.New(awserrors.ErrorAccessDenied)))
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error(),
+		"corrupt doc must not be reported as AccessDenied — operators need to see the corruption signal")
 }

@@ -67,6 +67,7 @@ type stsRequestParams struct {
 	principalType  string
 	accessKey      string
 	assumedRoleARN string
+	assumedRoleID  string
 	stsSvc         handlers_sts.STSService
 	iamSvc         handlers_iam.IAMService
 }
@@ -89,6 +90,9 @@ func setupSTSRequestHandler(p stsRequestParams) http.Handler {
 		ctx = context.WithValue(ctx, ctxAccessKey, p.accessKey)
 		if p.assumedRoleARN != "" {
 			ctx = context.WithValue(ctx, ctxAssumedRoleARN, p.assumedRoleARN)
+		}
+		if p.assumedRoleID != "" {
+			ctx = context.WithValue(ctx, ctxAssumedRoleID, p.assumedRoleID)
 		}
 		r = r.WithContext(ctx)
 		if err := gw.STS_Request(w, r); err != nil {
@@ -138,15 +142,12 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 }
 
 func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
+	// AssumedRoleID is propagated by the SigV4 middleware from the resolved
+	// SessionCredential; the dispatcher must NOT re-lookup the session.
 	svc := &flexMockSTSService{
-		lookupSessionFn: func(akid string) (*handlers_sts.SessionCredential, error) {
-			return &handlers_sts.SessionCredential{
-				AccessKeyID:    akid,
-				AssumedRoleID:  "AROAEXAMPLE:s1",
-				AssumedRoleARN: "arn:aws:sts::000000000000:assumed-role/app/s1",
-				AccountID:      utils.GlobalAccountID,
-				SessionName:    "s1",
-			}, nil
+		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
+			t.Fatal("assumed-role GetCallerIdentity must not re-lookup the session credential")
+			return nil, nil
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
@@ -155,6 +156,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 		principalType:  principalTypeAssumedRole,
 		accessKey:      "ASIAEXAMPLE",
 		assumedRoleARN: "arn:aws:sts::000000000000:assumed-role/app/s1",
+		assumedRoleID:  "AROAEXAMPLE:s1",
 		stsSvc:         svc,
 	})
 

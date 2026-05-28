@@ -9,8 +9,7 @@ import (
 // The implementation lives only in awsgw: STS shares the IAM at-rest envelope
 // key and resolves roles via the in-process IAMService, so a daemon-side
 // instance would need access to the master key — the very thing the awsgw /
-// daemon trust boundary keeps separated. See docs/development/feature/sts-v1.md
-// § Architecture.
+// daemon trust boundary keeps separated.
 type STSService interface {
 	// AssumeRole mints short-lived temporary credentials bound to the target
 	// role after evaluating the role's trust policy against the caller. The

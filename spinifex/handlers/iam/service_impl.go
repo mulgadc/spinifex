@@ -39,7 +39,40 @@ const (
 	KVBucketInstanceProfilesVersion = 1
 
 	maxAccessKeysPerUser = 2
+
+	// LongLivedAccessKeyIDPrefix is the AWS-defined prefix for long-lived
+	// IAM access keys. The access-keys bucket rejects writes whose key does
+	// not start with it — a record under any other prefix in this bucket
+	// would be resolved by the SigV4 AKIA path without the X-Amz-Security-Token
+	// check that the ASIA path enforces, a silent privilege upgrade.
+	LongLivedAccessKeyIDPrefix = "AKIA"
 )
+
+// putAccessKey writes an access-key record after enforcing the AKIA-prefix
+// invariant. All writers to accessKeysBucket MUST go through this helper.
+func (s *IAMServiceImpl) putAccessKey(accessKeyID string, data []byte) error {
+	if !strings.HasPrefix(accessKeyID, LongLivedAccessKeyIDPrefix) {
+		return fmt.Errorf("access key ID must start with %q, got %q",
+			LongLivedAccessKeyIDPrefix, accessKeyID)
+	}
+	if _, err := s.accessKeysBucket.Put(accessKeyID, data); err != nil {
+		return err
+	}
+	return nil
+}
+
+// createAccessKey writes an access-key record with CAS semantics (fails if the
+// key already exists). Enforces the AKIA-prefix invariant.
+func (s *IAMServiceImpl) createAccessKey(accessKeyID string, data []byte) error {
+	if !strings.HasPrefix(accessKeyID, LongLivedAccessKeyIDPrefix) {
+		return fmt.Errorf("access key ID must start with %q, got %q",
+			LongLivedAccessKeyIDPrefix, accessKeyID)
+	}
+	if _, err := s.accessKeysBucket.Create(accessKeyID, data); err != nil {
+		return err
+	}
+	return nil
+}
 
 // IAMServiceImpl implements IAM operations using NATS JetStream KV.
 type IAMServiceImpl struct {
@@ -393,7 +426,7 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 		return nil, fmt.Errorf("marshal access key: %w", err)
 	}
 
-	if _, err := s.accessKeysBucket.Put(accessKeyID, akData); err != nil {
+	if err := s.putAccessKey(accessKeyID, akData); err != nil {
 		return nil, fmt.Errorf("store access key: %w", err)
 	}
 
@@ -543,7 +576,7 @@ func (s *IAMServiceImpl) UpdateAccessKey(accountID string, input *iam.UpdateAcce
 		return nil, fmt.Errorf("marshal access key: %w", err)
 	}
 
-	if _, err := s.accessKeysBucket.Put(accessKeyID, data); err != nil {
+	if err := s.putAccessKey(accessKeyID, data); err != nil {
 		return nil, fmt.Errorf("update access key: %w", err)
 	}
 
@@ -643,7 +676,8 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		return fmt.Errorf("marshal root access key: %w", err)
 	}
 
-	if _, err = s.accessKeysBucket.Create(data.AccessKeyID, akData); errors.Is(err, nats.ErrKeyExists) {
+	err = s.createAccessKey(data.AccessKeyID, akData)
+	if errors.Is(err, nats.ErrKeyExists) {
 		slog.Info("Root access key already seeded by another node, skipping")
 	} else if err != nil {
 		return fmt.Errorf("seed root access key: %w", err)
@@ -752,7 +786,7 @@ func (s *IAMServiceImpl) seedAdminAccount(admin *AdminBootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal admin access key: %w", err)
 	}
-	if _, err := s.accessKeysBucket.Create(admin.AccessKeyID, akData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
+	if err := s.createAccessKey(admin.AccessKeyID, akData); err != nil && !errors.Is(err, nats.ErrKeyExists) {
 		return fmt.Errorf("store admin access key: %w", err)
 	}
 
@@ -1412,7 +1446,7 @@ func generateAccessKeyID() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto/rand failure: %w", err)
 	}
-	return "AKIA" + strings.ToUpper(hex.EncodeToString(b)), nil
+	return LongLivedAccessKeyIDPrefix + strings.ToUpper(hex.EncodeToString(b)), nil
 }
 
 func parseCreatedAt(raw string) time.Time {

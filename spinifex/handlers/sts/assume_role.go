@@ -47,8 +47,7 @@ const (
 var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 
 // AssumeRole mints temporary credentials after evaluating the target role's
-// trust policy against the caller. Implements the body specified in
-// docs/development/feature/sts-v1.md § AssumeRole body.
+// trust policy against the caller.
 func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -171,7 +170,7 @@ func parseRoleARN(arnStr string) (accountID, name string, err error) {
 // scans every Deny statement (returning AccessDenied on any match), a second
 // pass scans every Allow statement (returning nil on the first match). A
 // single-pass "return on first Allow" loop would silently skip a later Deny
-// and is a real authorisation bug — see plan § AssumeRole body step 4.
+// and is a real authorisation bug.
 func evalTrustPolicy(docJSON, callerARN string) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {

@@ -39,6 +39,7 @@ const (
 	ctxQueryArgs      contextKey = "sigv4.queryArgs"
 	ctxPrincipalType  contextKey = "sigv4.principalType"
 	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
+	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
 )
 
 // Values stored under ctxPrincipalType. The SigV4 middleware sets exactly one
@@ -348,26 +349,26 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
-		return nil
-	}
-
-	// Gate the user-policy lookup on the principal type. An assumed-role
-	// session whose SessionName collides with an IAM user name must not
-	// silently pick up that user's policies. v1 has no role-policy evaluator
-	// yet, so assumed-role principals fail closed with AccessDenied.
+	// Classify the principal type BEFORE any identity-string-based bypass.
+	// An assumed-role session whose SessionName is "root" must not slip
+	// through the same-account root short-circuit; the identity string is
+	// attacker-influenced via RoleSessionName.
 	principalType, _ := r.Context().Value(ctxPrincipalType).(string)
 	switch principalType {
 	case principalTypeUser:
-		// fall through to existing user-policy evaluation
+		// fall through to identity-based checks and user-policy evaluation
 	case principalTypeAssumedRole:
-		slog.Info("checkPolicy: assumed-role principal denied (role-policy eval not yet implemented)",
+		slog.Warn("checkPolicy: assumed-role principal denied",
 			"sessionARN", r.Context().Value(ctxAssumedRoleARN),
 			"action", policy.IAMAction(service, action))
 		return errors.New(awserrors.ErrorAccessDenied)
 	default:
 		slog.Error("checkPolicy: unknown principal type", "principalType", principalType)
 		return errors.New(awserrors.ErrorInternalError)
+	}
+
+	if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
+		return nil
 	}
 
 	// Resolve the IAM action string (e.g. "ec2:RunInstances")

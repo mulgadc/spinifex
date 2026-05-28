@@ -23,7 +23,7 @@ const maxBodySize = 10 * 1024 * 1024
 
 // AKID prefixes. Branching on the prefix BEFORE any IAM/STS lookup eliminates
 // a class of bypass where a misfiled record could be resolved by the wrong
-// path (see plan § Token model — bucket-prefix invariant).
+// path.
 const (
 	longLivedAKIDPrefix = "AKIA"
 	sessionAKIDPrefix   = "ASIA"
@@ -141,6 +141,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			if principal.assumedRoleARN != "" {
 				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
 			}
+			if principal.assumedRoleID != "" {
+				ctx = context.WithValue(ctx, ctxAssumedRoleID, principal.assumedRoleID)
+			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error, the
 			// dispatcher re-parses and returns MalformedQueryString.
@@ -168,6 +171,7 @@ type principalContext struct {
 	accountID      string
 	principalType  string
 	assumedRoleARN string
+	assumedRoleID  string
 }
 
 // resolveLongLivedAKID handles the AKIA path: IAMService lookup, status check,
@@ -250,6 +254,7 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 		accountID:      cred.AccountID,
 		principalType:  principalTypeAssumedRole,
 		assumedRoleARN: cred.AssumedRoleARN,
+		assumedRoleID:  cred.AssumedRoleID,
 	}, ""
 }
 

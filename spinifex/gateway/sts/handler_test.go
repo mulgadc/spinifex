@@ -306,7 +306,7 @@ func TestGetCallerIdentity_User(t *testing.T) {
 		"arn:aws:iam::000000000000:user/alice",
 		PrincipalTypeUser,
 		"alice",
-		"AKIAEXAMPLE",
+		"",
 		&sts.GetCallerIdentityInput{},
 		iamSvc, stsSvc,
 	)
@@ -331,7 +331,7 @@ func TestGetCallerIdentity_RootViaUserPath(t *testing.T) {
 		"arn:aws:iam::000000000000:root",
 		PrincipalTypeUser,
 		"root",
-		"AKIAROOT",
+		"",
 		&sts.GetCallerIdentityInput{},
 		iamSvc, &stubSTSService{},
 	)
@@ -340,15 +340,13 @@ func TestGetCallerIdentity_RootViaUserPath(t *testing.T) {
 }
 
 func TestGetCallerIdentity_AssumedRole(t *testing.T) {
+	// AssumedRoleID is propagated from the SigV4 middleware via context; the
+	// handler must NOT issue a second LookupSessionCredential — the verifier
+	// already loaded the record.
 	stsSvc := &stubSTSService{
-		lookupSessionFn: func(akid string) (*handlers_sts.SessionCredential, error) {
-			assert.Equal(t, "ASIAEXAMPLE", akid)
-			return &handlers_sts.SessionCredential{
-				AssumedRoleID:  "AROAEXAMPLE:session-1",
-				AssumedRoleARN: "arn:aws:sts::000000000000:assumed-role/app/session-1",
-				AccountID:      "000000000000",
-				SessionName:    "session-1",
-			}, nil
+		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
+			t.Fatal("assumed-role path must not re-lookup the session credential")
+			return nil, nil
 		},
 	}
 	out, err := GetCallerIdentity(
@@ -356,7 +354,7 @@ func TestGetCallerIdentity_AssumedRole(t *testing.T) {
 		"arn:aws:sts::000000000000:assumed-role/app/session-1",
 		PrincipalTypeAssumedRole,
 		"session-1",
-		"ASIAEXAMPLE",
+		"AROAEXAMPLE:session-1",
 		&sts.GetCallerIdentityInput{},
 		&stubIAMService{}, stsSvc,
 	)
@@ -367,22 +365,17 @@ func TestGetCallerIdentity_AssumedRole(t *testing.T) {
 
 func TestGetCallerIdentity_AssumedRoleSessionVanished(t *testing.T) {
 	// Race: SigV4 verified the session, then the janitor swept it before
-	// dispatch. Must surface InvalidClientTokenId, not InternalError, so the
-	// client sees the same error class as any other expired-or-missing
-	// credential.
-	stsSvc := &stubSTSService{
-		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
-			return nil, nil
-		},
-	}
+	// dispatch. The middleware would normally surface this earlier, but if the
+	// AssumedRoleID arrives empty the handler must fail closed with
+	// InvalidClientTokenId, not leak a 500.
 	_, err := GetCallerIdentity(
 		"000000000000",
 		"arn:aws:sts::000000000000:assumed-role/app/session-1",
 		PrincipalTypeAssumedRole,
 		"session-1",
-		"ASIAEXAMPLE",
+		"",
 		&sts.GetCallerIdentityInput{},
-		&stubIAMService{}, stsSvc,
+		&stubIAMService{}, &stubSTSService{},
 	)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, err.Error())
@@ -399,7 +392,7 @@ func TestGetCallerIdentity_UserLookupError(t *testing.T) {
 		"arn:aws:iam::000000000000:user/alice",
 		PrincipalTypeUser,
 		"alice",
-		"AKIAEXAMPLE",
+		"",
 		&sts.GetCallerIdentityInput{},
 		iamSvc, &stubSTSService{},
 	)

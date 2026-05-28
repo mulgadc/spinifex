@@ -22,6 +22,7 @@ type stsCaller struct {
 	identity       string
 	principalType  string
 	assumedRoleARN string
+	assumedRoleID  string
 	accessKey      string
 }
 
@@ -68,7 +69,7 @@ var stsActions = map[string]STSHandler{
 		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
 	}),
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
-		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.accessKey, input, gw.IAMService, gw.STSService)
+		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
 
 	// 501 stubs — registered so dispatch returns NotImplementedException
@@ -151,6 +152,7 @@ func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 	identity, _ := ctx.Value(ctxIdentity).(string)
 	principalType, _ := ctx.Value(ctxPrincipalType).(string)
 	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
+	assumedRoleID, _ := ctx.Value(ctxAssumedRoleID).(string)
 	accessKey, _ := ctx.Value(ctxAccessKey).(string)
 
 	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
@@ -163,6 +165,7 @@ func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 		identity:       identity,
 		principalType:  principalType,
 		assumedRoleARN: assumedRoleARN,
+		assumedRoleID:  assumedRoleID,
 		accessKey:      accessKey,
 	}, nil
 }

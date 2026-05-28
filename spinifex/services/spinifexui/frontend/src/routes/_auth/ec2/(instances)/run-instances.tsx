@@ -28,10 +28,14 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { formatVRAMMiB } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
 import {
   ec2ImagesQueryOptions,
@@ -86,14 +90,31 @@ function CreateInstance() {
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []
   const instanceTypeCounts: Record<string, number> = {}
+  const gpuInfoByType = new Map<string, { totalMiB: number; gpuName: string }>()
   for (const type of instanceTypesData.InstanceTypes ?? []) {
     const typeName = type.InstanceType
-    if (typeName) {
-      instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
+    if (!typeName) {
+      continue
+    }
+    instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
+    if (!gpuInfoByType.has(typeName)) {
+      const gpus = type.GpuInfo?.Gpus
+      if (gpus && gpus.length > 0) {
+        gpuInfoByType.set(typeName, {
+          totalMiB: type.GpuInfo?.TotalGpuMemoryInMiB ?? 0,
+          gpuName: gpus[0]?.Name ?? "",
+        })
+      }
     }
   }
 
   const uniqueInstanceTypes = Object.keys(instanceTypeCounts).toSorted()
+  const gpuInstanceTypes = uniqueInstanceTypes.filter((t) =>
+    gpuInfoByType.has(t),
+  )
+  const standardInstanceTypes = uniqueInstanceTypes.filter(
+    (t) => !gpuInfoByType.has(t),
+  )
 
   // Compute default values from loaded data
   const defaultImageId = images[0]?.ImageId
@@ -152,6 +173,9 @@ function CreateInstance() {
   const maxCount = selectedInstanceType
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
+  const selectedGPUInfo = selectedInstanceType
+    ? gpuInfoByType.get(selectedInstanceType)
+    : undefined
   const selectedImageId = watch("imageId")
   const selectedRoot = getRootMapping(
     images.find((img) => img.ImageId === selectedImageId),
@@ -255,15 +279,47 @@ function CreateInstance() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {uniqueInstanceTypes.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {type} ({instanceTypeCounts[type]} available)
-                    </SelectItem>
-                  ))}
+                  {standardInstanceTypes.length > 0 && (
+                    <SelectGroup>
+                      {gpuInstanceTypes.length > 0 && (
+                        <SelectLabel>Standard</SelectLabel>
+                      )}
+                      {standardInstanceTypes.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {type} ({instanceTypeCounts[type]} available)
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {gpuInstanceTypes.length > 0 &&
+                    standardInstanceTypes.length > 0 && <SelectSeparator />}
+                  {gpuInstanceTypes.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>GPU-Accelerated</SelectLabel>
+                      {gpuInstanceTypes.map((type) => {
+                        const gpu = gpuInfoByType.get(type)
+                        return (
+                          <SelectItem key={type} value={type}>
+                            {type}
+                            {gpu
+                              ? ` — ${formatVRAMMiB(gpu.totalMiB)}`
+                              : ""} (
+                            {instanceTypeCounts[type]} available)
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
             )}
           />
+          {selectedGPUInfo && (
+            <FieldDescription>
+              GPU: {selectedGPUInfo.gpuName} ·{" "}
+              {formatVRAMMiB(selectedGPUInfo.totalMiB)} VRAM
+            </FieldDescription>
+          )}
           <FieldError errors={[errors.instanceType]} />
         </Field>
 

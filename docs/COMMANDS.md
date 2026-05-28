@@ -613,9 +613,7 @@ Condition evaluator so accepting them would silently allow.
 
 ## ELBv2 (Application & Network Load Balancer)
 
-The data plane uses a system-managed LB VM running HAProxy, launched
-automatically during `create-load-balancer`. HAProxy config is pushed via NATS
-on listener/target changes.
+The data plane uses a system-managed LB VM running HAProxy, launched automatically during `create-load-balancer`. HAProxy config is pushed via NATS on listener/target changes.
 
 ### ELBv2 — Load Balancers
 

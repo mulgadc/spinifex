@@ -24,7 +24,7 @@ apt-get update
 # The Ubuntu minimal cloud image ships without a kernel. Install linux-image-generic
 # first so DKMS has a kernel to build against and the guest boots the same kernel
 # the module was built for.
-apt-get install -y --no-install-recommends \
+apt-get install -y \
     linux-image-generic \
     initramfs-tools
 

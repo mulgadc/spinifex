@@ -355,6 +355,42 @@ func TestEvaluateAccess_IAMInstanceProfileActionStrings(t *testing.T) {
 	}
 }
 
+// TestEvaluateAccess_STSActionStrings pins the action strings emitted by the
+// STS gateway dispatcher (gateway/sts.go stsActions + checkPolicy(r, "sts",
+// action) call site). Locks in that every STS verb the dispatcher accepts is
+// matchable by the evaluator under both wildcard and service-scoped policies,
+// so a future rename of any stsActions key surfaces here.
+func TestEvaluateAccess_STSActionStrings(t *testing.T) {
+	actions := []string{
+		"sts:AssumeRole",
+		"sts:GetCallerIdentity",
+		"sts:AssumeRoleWithWebIdentity",
+		"sts:AssumeRoleWithSAML",
+		"sts:GetSessionToken",
+		"sts:GetAccessKeyInfo",
+		"sts:GetFederationToken",
+		"sts:DecodeAuthorizationMessage",
+	}
+
+	wildcard := []handlers_iam.PolicyDocument{doc("Allow", "*", "*")}
+	scoped := []handlers_iam.PolicyDocument{doc("Allow", "sts:*", "*")}
+
+	for _, a := range actions {
+		if got := EvaluateAccess("alice", a, "*", wildcard); got != Allow {
+			t.Errorf("wildcard policy: expected Allow for %q, got %v", a, got)
+		}
+		if got := EvaluateAccess("alice", a, "*", scoped); got != Allow {
+			t.Errorf("sts:* policy: expected Allow for %q, got %v", a, got)
+		}
+	}
+
+	// Non-STS action must NOT match an sts:*-scoped policy — guards against a
+	// pattern regression that would over-allow.
+	if got := EvaluateAccess("alice", "ec2:RunInstances", "*", scoped); got != Deny {
+		t.Errorf("sts:* policy: expected Deny for ec2:RunInstances, got %v", got)
+	}
+}
+
 // --- Action mapping tests ---
 
 func TestIAMAction(t *testing.T) {

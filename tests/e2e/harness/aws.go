@@ -36,7 +36,7 @@ type AWSClient struct {
 func NewAWSClient(t *testing.T, env *Env) *AWSClient {
 	t.Helper()
 	id, secret := os.Getenv("SPINIFEX_AWS_ACCESS_KEY_ID"), os.Getenv("SPINIFEX_AWS_SECRET_ACCESS_KEY")
-	return newAWSClient(t, env, id, secret)
+	return newAWSClient(t, env, id, secret, "")
 }
 
 // NewAWSClientWithCreds builds an AWSClient with explicit static credentials
@@ -47,10 +47,22 @@ func NewAWSClientWithCreds(t *testing.T, env *Env, accessKey, secretKey string) 
 	if accessKey == "" || secretKey == "" {
 		t.Fatalf("NewAWSClientWithCreds: empty credentials")
 	}
-	return newAWSClient(t, env, accessKey, secretKey)
+	return newAWSClient(t, env, accessKey, secretKey, "")
 }
 
-func newAWSClient(t *testing.T, env *Env, accessKey, secretKey string) *AWSClient {
+// NewAWSClientWithSessionCreds builds an AWSClient with static temporary
+// credentials issued by sts:AssumeRole. The SDK signs every request with the
+// supplied session token in X-Amz-Security-Token, driving the gateway's ASIA
+// auth path.
+func NewAWSClientWithSessionCreds(t *testing.T, env *Env, accessKey, secretKey, sessionToken string) *AWSClient {
+	t.Helper()
+	if accessKey == "" || secretKey == "" || sessionToken == "" {
+		t.Fatalf("NewAWSClientWithSessionCreds: empty credentials")
+	}
+	return newAWSClient(t, env, accessKey, secretKey, sessionToken)
+}
+
+func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken string) *AWSClient {
 	t.Helper()
 
 	endpoint := os.Getenv("SPINIFEX_AWS_ENDPOINT")
@@ -96,8 +108,9 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey string) *AWSClien
 	opts := session.Options{Config: *cfg}
 	if accessKey != "" && secretKey != "" {
 		// Static creds bypass shared-config lookup — required for the
-		// per-tenant carousel where each Profile holds its own access key.
-		cfg.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, "")
+		// per-tenant carousel where each Profile holds its own access key,
+		// and for STS-issued session credentials (sessionToken non-empty).
+		cfg.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, sessionToken)
 		opts.Config = *cfg
 	} else {
 		opts.SharedConfigState = session.SharedConfigEnable

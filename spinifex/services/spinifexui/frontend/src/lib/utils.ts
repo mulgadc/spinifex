@@ -22,6 +22,10 @@ export function formatDateTime(date: Date | string | undefined): string {
   return dateFormatter.format(new Date(date))
 }
 
+export function formatVRAMMiB(mib: number): string {
+  return `${Math.round(mib / 1024)} GiB`
+}
+
 const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"]
 
 export function formatSize(bytes: number): string {

@@ -1402,15 +1402,21 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Load the state from the remote backend
+	// Load the state from the remote backend. Only os.ErrNotExist means
+	// "volume doesn't exist, clone from AMI" — every other error (HMAC
+	// integrity failure, key mismatch, transient backend 5xx, JSON parse
+	// failure) must abort. Cloning from AMI on a tamper/mismatch would
+	// overwrite the legitimate volume's config.json with AMI base-map
+	// state and lose access to the live data.
 	_, err = vb.LoadStateRequest("")
-
-	// If volume doesn't exist, clone from AMI
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("Failed to load root volume state from backend",
+			"imageId", imageId, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
 	if err != nil {
 		slog.Info("Volume does not yet exist, creating from AMI ...")
-
-		err = s.cloneAMIToVolume(input, size, volumeConfig, vb)
-		if err != nil {
+		if err = s.cloneAMIToVolume(input, size, volumeConfig, vb); err != nil {
 			return err
 		}
 	}

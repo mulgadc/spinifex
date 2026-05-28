@@ -68,16 +68,10 @@ func NewSTSServiceImpl(natsConn *nats.Conn, iamSvc handlers_iam.IAMService, mast
 	}, nil
 }
 
-// errSTSSkeleton is the placeholder returned by skeleton method bodies until
-// Steps 4 and 5 of docs/development/feature/sts-v1.md land. Step 4 replaces
-// AssumeRole; Step 5 replaces GetCallerIdentity. Once both are implemented
-// in their dedicated files this sentinel and its consumers are removed.
+// errSTSSkeleton is the placeholder returned by GetCallerIdentity until
+// Step 5 of docs/development/feature/sts-v1.md lands; the AssumeRole body
+// landed in Step 4 (assume_role.go).
 var errSTSSkeleton = errors.New("STS action not yet implemented")
-
-// AssumeRole is a skeleton — the real body lands in assume_role.go (Step 4).
-func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
-	return nil, errSTSSkeleton
-}
 
 // GetCallerIdentity is a skeleton — the real body lands in
 // get_caller_identity.go (Step 5).

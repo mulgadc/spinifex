@@ -341,6 +341,7 @@ var (
 	ErrorOperationNotPermitted                                 = "OperationNotPermitted"
 	ErrorOptInRequired                                         = "OptInRequired"
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded          = "OutstandingVpcPeeringConnectionLimitExceeded"
+	ErrorPackedPolicyTooLarge                                  = "PackedPolicyTooLarge"
 	ErrorPendingSnapshotLimitExceeded                          = "PendingSnapshotLimitExceeded"
 	ErrorPendingVerification                                   = "PendingVerification"
 	ErrorPendingVpcPeeringConnectionLimitExceeded              = "PendingVpcPeeringConnectionLimitExceeded"
@@ -804,6 +805,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorOperationNotPermitted:                                 {HTTPCode: 400, Message: "The specified operation is not allowed. This error can occur for a number of reasons; for example, you might be trying to terminate an instance that has termination protection enabled, or trying to detach the primary network interface (eth0) from an instance."},
 	ErrorOptInRequired:                                         {HTTPCode: 403, Message: "You are not authorized to use the requested service. Ensure that you have subscribed to the service you are trying to use. If you are new to AWS, your account might take some time to be activated while your credit card details are being verified."},
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded:          {HTTPCode: 400, Message: "You've reached the limit on the number of VPC peering connection requests that you can create for the specified VPC."},
+	ErrorPackedPolicyTooLarge:                                  {HTTPCode: 400, Message: "Serialized policy size exceeded the allowed maximum."},
 	ErrorPendingSnapshotLimitExceeded:                          {HTTPCode: 409, Message: "You've reached the limit on the number of Amazon EBS snapshots that you can have in the pending state."},
 	ErrorPendingVerification:                                   {HTTPCode: 409, Message: "Your account is pending verification. Until the verification process is complete, you may not be able to carry out requests with this account. If you have questions, contact Support."},
 	ErrorPendingVpcPeeringConnectionLimitExceeded:              {HTTPCode: 409, Message: "You've reached the limit on the number of pending VPC peering connections that you can have."},

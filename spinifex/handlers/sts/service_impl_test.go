@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -76,15 +75,6 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	svc, err := NewSTSServiceImpl(nc, iamSvc, masterKey, 0)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
-}
-
-func TestSTSServiceImpl_AssumeRoleSkeleton(t *testing.T) {
-	svc, _ := newTestSetup(t)
-	out, err := svc.AssumeRole("000000000000", "arn:aws:iam::000000000000:user/alice", "alice",
-		&sts.AssumeRoleInput{RoleArn: aws.String("arn:aws:iam::000000000000:role/app")})
-	require.Error(t, err)
-	assert.Nil(t, out)
-	assert.ErrorIs(t, err, errSTSSkeleton)
 }
 
 func TestSTSServiceImpl_GetCallerIdentitySkeleton(t *testing.T) {

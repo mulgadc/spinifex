@@ -18,8 +18,6 @@ resources:
     url: "https://www.amd.com/en/products/accelerators/instinct/mi300/mi350x.html"
   - title: "vLLM Documentation"
     url: "https://docs.vllm.ai"
-  - title: "Supermicro JumpStart Program"
-    url: "https://www.supermicro.com/en/solutions/ai-ml"
 sections:
   - overview
   - prerequisites
@@ -28,7 +26,7 @@ sections:
 
 ## Overview
 
-Mulga recently gained access to Supermicro's H14 platform via their JumpStart program — an exciting opportunity to test Spinifex on a single bare-metal node running real, concurrent AI workloads.
+This document serves as a tutorial for setting up multi-tenant AI workloads with Spinifex. The reference architecture for this tutorial is the Supermicro H14 platform - specifications listed below.
 
 The H14 chassis comes equipped with **8× AMD Instinct MI350X** (288 GB HBM3e each, 2.3 TB total). We used Spinifex to provision three isolated VMs, each assigned 2× MI350X via direct PCIe passthrough, and ran three computationally intensive workloads simultaneously: a YOLO11x vision model, a Qwen3-VL 235B FP8 vision language model, and a Llama 3.3 70B large language model.
 
@@ -263,8 +261,6 @@ The six MI350Xs are immediately returned to the pool once the instances terminat
 
 ### 7. Conclusion
 
-Our trial of Supermicro's H14 platform demonstrates that Spinifex can turn a single bare-metal chassis into a credible multi-tenant AI serving platform, without any of the workloads ever knowing about each other. Spinifex utilises the flexibility of PCIe passthrough to allocate GPU resources in whichever configuration is required by the workload/s.
+This tutorial demonstrates how Spinifex can turn a single bare-metal chassis into a multi-tenant AI serving platform. Spinifex utilises the flexibility of PCIe passthrough to allocate GPU resources in whichever configuration is required by the workload/s.
 
 Importantly, it does so with standard `aws ec2` CLI calls — `run-instances`, `describe-instances`, `terminate-instances` — against Spinifex's EC2-compatible endpoint. Teams already operating AWS infrastructure can point their existing tooling at a Spinifex node with a single profile change, against GPUs that sit in their own rack.
-
-*Access provided via the Supermicro JumpStart Program.*

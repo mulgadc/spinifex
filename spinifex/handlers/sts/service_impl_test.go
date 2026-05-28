@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
@@ -75,15 +74,6 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	svc, err := NewSTSServiceImpl(nc, iamSvc, masterKey, 0)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
-}
-
-func TestSTSServiceImpl_GetCallerIdentitySkeleton(t *testing.T) {
-	svc, _ := newTestSetup(t)
-	out, err := svc.GetCallerIdentity("000000000000", "arn:aws:iam::000000000000:user/alice", "AIDA...",
-		&sts.GetCallerIdentityInput{})
-	require.Error(t, err)
-	assert.Nil(t, out)
-	assert.ErrorIs(t, err, errSTSSkeleton)
 }
 
 func TestLookupSessionCredential_NonASIAPrefixReturnsNilNil(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/aws/aws-sdk-go/service/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
@@ -66,15 +65,4 @@ func NewSTSServiceImpl(natsConn *nats.Conn, iamSvc handlers_iam.IAMService, mast
 		iamSvc:         iamSvc,
 		masterKey:      masterKey,
 	}, nil
-}
-
-// errSTSSkeleton is the placeholder returned by GetCallerIdentity until
-// Step 5 of docs/development/feature/sts-v1.md lands; the AssumeRole body
-// landed in Step 4 (assume_role.go).
-var errSTSSkeleton = errors.New("STS action not yet implemented")
-
-// GetCallerIdentity is a skeleton — the real body lands in
-// get_caller_identity.go (Step 5).
-func (s *STSServiceImpl) GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
-	return nil, errSTSSkeleton
 }

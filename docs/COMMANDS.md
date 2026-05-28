@@ -593,14 +593,6 @@ for `run-instances --iam-instance-profile`. Max 1 role per profile.
 
 ## STS
 
-Temporary credentials are storage-backed: `AssumeRole` mints an `ASIA`-prefixed
-access key, secret, and opaque session token persisted in the
-`spinifex-iam-session-credentials` JetStream KV bucket. The SigV4 verifier
-recognises `X-Amz-Security-Token` and rejects expired sessions. Returned ARNs
-cover IAM users (`arn:aws:iam::<acct>:user/<name>`), assumed roles
-(`arn:aws:sts::<acct>:assumed-role/<role>/<session>`), and root
-(`arn:aws:iam::<acct>:root`).
-
 | Command | Implemented Flags | Missing Flags (rejected if supplied) | Status |
 |---------|-------------------|--------------------------------------|--------|
 | `get-caller-identity` | — | — | **DONE** |

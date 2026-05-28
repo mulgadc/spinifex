@@ -413,10 +413,3 @@ func TestGetCallerIdentity_UnknownPrincipalType(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
-
-func TestNotImplemented(t *testing.T) {
-	out, err := NotImplemented()
-	require.Error(t, err)
-	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorSTSNotImplemented, err.Error())
-}

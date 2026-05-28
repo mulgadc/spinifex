@@ -54,16 +54,6 @@ func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) 
 	}
 }
 
-// stubHandler returns an STSHandler that always reports NotImplementedException.
-// Used for the STS verbs that ship as 501 stubs in v1 so follow-on work can
-// fill in handler bodies without touching dispatch.
-func stubHandler() STSHandler {
-	return func(_ string, _ map[string]string, _ *GatewayConfig, _ stsCaller) ([]byte, error) {
-		_, err := gateway_sts.NotImplemented()
-		return nil, err
-	}
-}
-
 var stsActions = map[string]STSHandler{
 	"AssumeRole": stsHandler(func(c stsCaller, input *sts.AssumeRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
@@ -71,16 +61,6 @@ var stsActions = map[string]STSHandler{
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
-
-	// 501 stubs — registered so dispatch returns NotImplementedException
-	// rather than InvalidAction, matching AWS behaviour for an action verb
-	// that the endpoint accepts but hasn't yet implemented.
-	"GetSessionToken":            stubHandler(),
-	"AssumeRoleWithWebIdentity":  stubHandler(),
-	"AssumeRoleWithSAML":         stubHandler(),
-	"GetAccessKeyInfo":           stubHandler(),
-	"GetFederationToken":         stubHandler(),
-	"DecodeAuthorizationMessage": stubHandler(),
 }
 
 // stsSkipPolicyCheck lists the actions whose authorization is NOT gated by an

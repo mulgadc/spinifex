@@ -159,14 +159,6 @@ func runSTS(t *testing.T, fix *Fixture) {
 		return e
 	})
 
-	// Stub action → 501 NotImplementedException. Picking GetSessionToken
-	// because the SDK's input is trivially empty.
-	harness.Step(t, "get-session-token (stub, expect NotImplementedException)")
-	harness.ExpectError(t, "NotImplementedException", func() error {
-		_, e := fix.AWS.STS.GetSessionToken(&sts.GetSessionTokenInput{})
-		return e
-	})
-
 	// Assertive teardown — the cleanup hook above is the safety net; this is
 	// the happy-path delete so the test surfaces a DeleteConflict regression
 	// (e.g. stray attached policy from a future refactor) loudly.

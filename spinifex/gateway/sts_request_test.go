@@ -198,38 +198,6 @@ func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
 	assert.Contains(t, xmlStr, "<UserId>000000000000</UserId>")
 }
 
-func TestSTSRequest_StubAction_Returns501(t *testing.T) {
-	stubs := []string{
-		"GetSessionToken",
-		"AssumeRoleWithWebIdentity",
-		"AssumeRoleWithSAML",
-		"GetAccessKeyInfo",
-		"GetFederationToken",
-		"DecodeAuthorizationMessage",
-	}
-	for _, action := range stubs {
-		t.Run(action, func(t *testing.T) {
-			handler := setupSTSRequestHandler(stsRequestParams{
-				accountID:     utils.GlobalAccountID,
-				identity:      "root",
-				principalType: principalTypeUser,
-				accessKey:     "AKIAROOT",
-				stsSvc:        &flexMockSTSService{},
-			})
-			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action="+action))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-			resp := doRequest(handler, req)
-			assert.Equal(t, 501, resp.StatusCode)
-
-			b, _ := io.ReadAll(resp.Body)
-			xmlStr := string(b)
-			assert.Contains(t, xmlStr, "NotImplementedException")
-			assert.Contains(t, xmlStr, "<ErrorResponse>")
-		})
-	}
-}
-
 func TestSTSRequest_UnknownAction(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     utils.GlobalAccountID,

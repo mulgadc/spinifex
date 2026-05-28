@@ -364,12 +364,6 @@ func TestEvaluateAccess_STSActionStrings(t *testing.T) {
 	actions := []string{
 		"sts:AssumeRole",
 		"sts:GetCallerIdentity",
-		"sts:AssumeRoleWithWebIdentity",
-		"sts:AssumeRoleWithSAML",
-		"sts:GetSessionToken",
-		"sts:GetAccessKeyInfo",
-		"sts:GetFederationToken",
-		"sts:DecodeAuthorizationMessage",
 	}
 
 	wildcard := []handlers_iam.PolicyDocument{doc("Allow", "*", "*")}

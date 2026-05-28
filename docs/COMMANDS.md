@@ -597,12 +597,12 @@ for `run-instances --iam-instance-profile`. Max 1 role per profile.
 |---------|-------------------|--------------------------------------|--------|
 | `get-caller-identity` | — | — | **DONE** |
 | `assume-role` | `--role-arn`, `--role-session-name`, `--duration-seconds` (900–min(role MaxSessionDuration, 43200)) | `--policy`, `--policy-arns` (→ `PackedPolicyTooLarge`); `--tags`, `--transitive-tag-keys` (→ `InvalidParameterValue`); `--serial-number`, `--token-code` (→ `InvalidParameterValue`); `--external-id`, `--source-identity` (accepted and logged, **not enforced** — no Condition evaluator in v1) | **DONE** |
-| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** (501 stub registered) |
-| `assume-role-with-web-identity` | — | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--provider-id`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** (501 stub) |
-| `assume-role-with-saml` | — | `--role-arn`, `--principal-arn`, `--saml-assertion`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** (501 stub) |
-| `get-access-key-info` | — | `--access-key-id` | **NOT STARTED** (501 stub) |
-| `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** (501 stub) |
-| `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** (501 stub) |
+| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** |
+| `assume-role-with-web-identity` | — | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--provider-id`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
+| `assume-role-with-saml` | — | `--role-arn`, `--principal-arn`, `--saml-assertion`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
+| `get-access-key-info` | — | `--access-key-id` | **NOT STARTED** |
+| `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** |
+| `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** |
 
 Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`,
 `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty

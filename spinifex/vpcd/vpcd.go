@@ -16,6 +16,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
@@ -23,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // Bridge mode constants for external connectivity. Bridge mode selects how
@@ -133,6 +135,8 @@ type Config struct {
 // ExternalPoolConfig mirrors config.ExternalPool for vpcd's internal use.
 type ExternalPoolConfig struct {
 	Name            string
+	Source          string // "static" (default) or "dhcp"
+	BindBridge      string // Linux bridge for DHCP DORA (source=dhcp only)
 	RangeStart      string
 	RangeEnd        string
 	Gateway         string
@@ -510,12 +514,32 @@ func launchService(cfg *Config) error {
 		p := externalPoolConfigToShared(cfg.ExternalPools[0])
 		igwPool = &p
 	}
+
+	js, err := nc.JetStream()
+	if err != nil {
+		return fmt.Errorf("get JetStream context: %w", err)
+	}
+
+	dhcpMgr, dhcpSubs, err := startDHCPManagerIfNeeded(ctx, nc, js, cfg)
+	if err != nil {
+		return fmt.Errorf("start dhcp manager: %w", err)
+	}
+	defer func() {
+		for _, s := range dhcpSubs {
+			_ = s.Unsubscribe()
+		}
+		if dhcpMgr != nil {
+			dhcpMgr.Stop()
+		}
+	}()
+
+	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
 	igwMgr, err := external.NewIGWManager(external.IGWManagerConfig{
 		OVN:          liveClient,
 		Routes:       routeMgr,
 		NAT:          natMgr,
 		Pool:         igwPool,
-		Allocator:    external.NewStaticRangeAllocator(liveClient),
+		Allocator:    gwAllocator,
 		Chassis:      chassisNames,
 		NATMode:      natMode,
 		FlowsBarrier: waitForFlowsHV,
@@ -561,12 +585,6 @@ func launchService(cfg *Config) error {
 			_ = s.Unsubscribe()
 		}
 	}()
-
-	js, err := nc.JetStream()
-	if err != nil {
-		slog.Error("Failed to get JetStream context", "err", err)
-		return err
-	}
 
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:          liveClient,
@@ -645,6 +663,59 @@ func pickDNSServer(pools []ExternalPoolConfig) string {
 	return ""
 }
 
+// startDHCPManagerIfNeeded constructs and starts the per-AZ DHCP Manager
+// when any configured pool has Source="dhcp", and subscribes its NATS
+// handlers. Returns (nil, nil, nil) when no pool needs DHCP.
+func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, cfg *Config) (*dhcp.Manager, []*nats.Subscription, error) {
+	if cfg == nil || cfg.ExternalMode == "" {
+		return nil, nil, nil
+	}
+	wantDHCP := false
+	for _, p := range cfg.ExternalPools {
+		if p.Source == external.SourceDHCP {
+			wantDHCP = true
+			break
+		}
+	}
+	if !wantDHCP {
+		return nil, nil, nil
+	}
+
+	store, err := dhcp.NewStore(js, cfg.AZ)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create dhcp lease store: %w", err)
+	}
+	mgr, err := dhcp.NewManager(dhcp.ManagerConfig{
+		Client: dhcp.NewNClient4(0),
+		Store:  store,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("create dhcp manager: %w", err)
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return nil, nil, fmt.Errorf("start dhcp manager: %w", err)
+	}
+	subs, err := mgr.Subscribe(nc)
+	if err != nil {
+		mgr.Stop()
+		return nil, nil, fmt.Errorf("subscribe dhcp manager: %w", err)
+	}
+	slog.Info("vpcd: dhcp manager started", "az", cfg.AZ, "subscriptions", len(subs))
+	return mgr, subs, nil
+}
+
+// pickGatewayAllocator chooses the GatewayIPAllocator wired into
+// IGWManager. DHCP-sourced pools with a started Manager get the
+// DHCPGatewayLRPAllocator; everything else keeps StaticRangeAllocator
+// (centralized + static) or LinkLocalAllocator selection inside the
+// resolveGatewayNetwork code path.
+func pickGatewayAllocator(pool *external.ExternalPoolConfig, ovnClient ovn.Client, mgr *dhcp.Manager) external.GatewayIPAllocator {
+	if pool.IsDHCP() && mgr != nil {
+		return dhcp.NewDHCPGatewayLRPAllocator(mgr)
+	}
+	return external.NewStaticRangeAllocator(ovnClient)
+}
+
 // externalPoolConfigToShared translates the vpcd-local ExternalPoolConfig
 // into the network/external package's shared shape. The two will merge
 // once topology.go is split (see external.go's type doc); until then
@@ -652,6 +723,8 @@ func pickDNSServer(pools []ExternalPoolConfig) string {
 func externalPoolConfigToShared(p ExternalPoolConfig) external.ExternalPoolConfig {
 	return external.ExternalPoolConfig{
 		Name:            p.Name,
+		Source:          p.Source,
+		BindBridge:      p.BindBridge,
 		RangeStart:      p.RangeStart,
 		RangeEnd:        p.RangeEnd,
 		Gateway:         p.Gateway,

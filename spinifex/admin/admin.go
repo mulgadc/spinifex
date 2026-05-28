@@ -73,9 +73,10 @@ type ConfigSettings struct {
 	ExternalMode   string   // "pool" or "" (disabled)
 	ExternalIface  string   // WAN NIC name (e.g., "eth0", "eth1")
 	PoolName       string   // External pool name (e.g., "wan")
-	PoolSource     string   // IP source: "static" (default; only valid value)
-	PoolStart      string   // First IP in external pool range
-	PoolEnd        string   // Last IP in external pool range
+	PoolSource     string   // IP source: "static" or "dhcp"
+	PoolBindBridge string   // Linux bridge for upstream DORA (source=dhcp only)
+	PoolStart      string   // First IP in external pool range (static only)
+	PoolEnd        string   // Last IP in external pool range (static only)
 	PoolGateway    string   // WAN gateway IP
 	PoolGatewayIP  string   // Explicit SNAT IP (overrides default of first IP in range)
 	PoolPrefixLen  int      // Subnet prefix length (default 24)

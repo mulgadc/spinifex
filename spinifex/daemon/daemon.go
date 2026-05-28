@@ -49,6 +49,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -1122,9 +1123,12 @@ func (d *Daemon) startCluster() error {
 			slog.Warn("Failed to get JetStream for external IPAM", "err", jsErr)
 		} else {
 			var pools []handlers_ec2_vpc.ExternalPoolConfig
+			anyDHCP := false
 			for _, p := range d.clusterConfig.Network.ExternalPools {
 				pools = append(pools, handlers_ec2_vpc.ExternalPoolConfig{
 					Name:            p.Name,
+					Source:          p.Source,
+					BindBridge:      p.BindBridge,
 					RangeStart:      p.RangeStart,
 					RangeEnd:        p.RangeEnd,
 					Gateway:         p.Gateway,
@@ -1135,12 +1139,21 @@ func (d *Daemon) startCluster() error {
 					GwLrpRangeStart: p.GwLrpRangeStart,
 					GwLrpRangeEnd:   p.GwLrpRangeEnd,
 				})
+				if p.Source == "dhcp" {
+					anyDHCP = true
+				}
 			}
 			d.externalIPAM, err = handlers_ec2_vpc.NewExternalIPAM(js, pools)
 			if err != nil {
 				slog.Warn("Failed to initialize external IPAM", "err", err)
 			} else {
-				slog.Info("External IPAM initialized", "mode", d.clusterConfig.Network.ExternalMode, "pools", len(pools))
+				if anyDHCP {
+					dhcpClient := dhcp.NewNATSClient(d.natsConn, 0)
+					if dhcpErr := d.externalIPAM.EnableDHCP(dhcpClient); dhcpErr != nil {
+						slog.Warn("Failed to enable DHCP allocator on external IPAM", "err", dhcpErr)
+					}
+				}
+				slog.Info("External IPAM initialized", "mode", d.clusterConfig.Network.ExternalMode, "pools", len(pools), "dhcp", anyDHCP)
 			}
 		}
 	}

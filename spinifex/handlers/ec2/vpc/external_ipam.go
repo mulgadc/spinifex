@@ -1,55 +1,38 @@
 package handlers_ec2_vpc
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"math/big"
 	"net"
+	"net/netip"
 
-	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 )
 
-const (
-	KVBucketExternalIPAM        = "spinifex-external-ipam"
-	KVBucketExternalIPAMVersion = 2
+// Backward-compatible aliases so callers (daemon, EIP, EC2 handlers, tests)
+// keep importing record + allocation shapes from this package while the
+// allocator implementation lives in network/external.
+type (
+	ExternalIPAllocation = external.ExternalIPAllocation
+	ExternalIPAMRecord   = external.PoolRecord
 )
 
-// ExternalIPAllocation describes how an external IP is being used. Purpose
-// values come from the Purpose enum in purpose.go.
-type ExternalIPAllocation struct {
-	Purpose      string `json:"purpose"`                 // Purpose enum: igw-lrp, eni-public, eip, natgw-external
-	AllocationID string `json:"allocation_id,omitempty"` // For elastic IPs
-	Association  string `json:"association,omitempty"`   // ENI ID for elastic IPs
-	ENIId        string `json:"eni_id,omitempty"`        // ENI owning this IP
-	InstanceId   string `json:"instance_id,omitempty"`   // Instance owning this IP
-	Note         string `json:"note,omitempty"`          // Human-readable note
-}
-
-// ExternalIPAMRecord tracks allocated external IPs for a single pool.
-type ExternalIPAMRecord struct {
-	PoolName   string `json:"pool_name"`
-	RangeStart string `json:"range_start"`
-	RangeEnd   string `json:"range_end"`
-	Gateway    string `json:"gateway"`
-	GatewayIP  string `json:"gateway_ip"`
-	PrefixLen  int    `json:"prefix_len"`
-	Region     string `json:"region,omitempty"`
-	AZ         string `json:"az,omitempty"`
-	// GwLrpRangeStart/End mirrors ExternalPoolConfig — IPAM skips this
-	// sub-range so it doesn't collide with vpcd's gateway LRP IPs in
-	// centralized NAT.
-	GwLrpRangeStart string                          `json:"gw_lrp_range_start,omitempty"`
-	GwLrpRangeEnd   string                          `json:"gw_lrp_range_end,omitempty"`
-	Allocated       map[string]ExternalIPAllocation `json:"allocated"`
-}
+const (
+	KVBucketExternalIPAM        = external.KVBucketStaticPool
+	KVBucketExternalIPAMVersion = external.KVBucketStaticPoolVersion
+)
 
 // ExternalPoolConfig is the admin-defined pool from spinifex.toml.
+// Duplicated against network/external.ExternalPoolConfig — the duplicate
+// stays until ExternalIPAM moves into network/external (deferred L5
+// cleanup tracked separately).
 type ExternalPoolConfig struct {
 	Name       string
+	Source     string // "static" (default) or "dhcp"
+	BindBridge string // Linux bridge for DHCP DORA (source=dhcp only)
 	RangeStart string
 	RangeEnd   string
 	Gateway    string
@@ -64,124 +47,61 @@ type ExternalPoolConfig struct {
 	GwLrpRangeEnd   string
 }
 
-// ExternalIPAM manages external IP allocation from admin-defined pools using NATS KV with CAS.
+// ExternalIPAM is the AWS-facing entry point for external IP allocation.
+// State + CAS logic lives in external.StaticPoolAllocator for static
+// pools and dhcp.DHCPPoolAllocator (via vpcd RPC) for dhcp-sourced
+// pools; ExternalIPAM dispatches by pool name.
 type ExternalIPAM struct {
-	kv    nats.KeyValue
-	pools []ExternalPoolConfig
+	kv      nats.KeyValue
+	pools   []ExternalPoolConfig
+	static  *external.StaticPoolAllocator
+	perPool map[string]external.Allocator // dhcp overrides; static pools fall through to `static`
 }
 
-// NewExternalIPAM creates a new ExternalIPAM backed by NATS JetStream KV.
+// NewExternalIPAM creates a new ExternalIPAM. Static pools wire through
+// external.StaticPoolAllocator; DHCP-sourced pools wait for EnableDHCP
+// to install the per-pool dhcp.DHCPPoolAllocator.
 func NewExternalIPAM(js nats.JetStreamContext, pools []ExternalPoolConfig) (*ExternalIPAM, error) {
-	kv, err := utils.GetOrCreateKVBucket(js, KVBucketExternalIPAM, 5)
-	if err != nil {
-		return nil, fmt.Errorf("create external IPAM KV bucket: %w", err)
+	staticPools := filterStatic(pools)
+	var (
+		alloc *external.StaticPoolAllocator
+		kv    nats.KeyValue
+	)
+	if len(staticPools) > 0 {
+		var err error
+		alloc, err = external.NewStaticPoolAllocator(js, toExternalPools(staticPools))
+		if err != nil {
+			return nil, err
+		}
+		kv = alloc.KV()
 	}
-	if err := migrate.DefaultRegistry.RunKV(KVBucketExternalIPAM, kv, KVBucketExternalIPAMVersion); err != nil {
-		return nil, fmt.Errorf("migrate %s: %w", KVBucketExternalIPAM, err)
-	}
-	ipam := &ExternalIPAM{kv: kv, pools: pools}
-	if err := ipam.initPools(); err != nil {
-		return nil, fmt.Errorf("init external IPAM pools: %w", err)
-	}
-	return ipam, nil
+	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}, nil
 }
 
 // NewExternalIPAMWithKV creates an ExternalIPAM with an existing KV bucket (for testing).
 func NewExternalIPAMWithKV(kv nats.KeyValue, pools []ExternalPoolConfig) *ExternalIPAM {
-	return &ExternalIPAM{kv: kv, pools: pools}
+	alloc := external.NewStaticPoolAllocatorWithKV(kv, toExternalPools(filterStatic(pools)))
+	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}
 }
 
-// initPools ensures each configured pool has a KV record. Idempotent — safe to call
-// on every vpcd startup. Reserves the gateway IP in each pool.
-func (m *ExternalIPAM) initPools() error {
-	for _, pool := range m.pools {
-		if err := m.initPool(pool); err != nil {
-			return fmt.Errorf("init pool %q: %w", pool.Name, err)
+// EnableDHCP installs a DHCPPoolAllocator for every pool with
+// Source="dhcp". client is the daemon-side NATS wrapper that fans out
+// to vpcd. Idempotent — repeated calls overwrite existing dhcp entries.
+func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
+	if client == nil {
+		return errors.New("ExternalIPAM EnableDHCP: nil NATSClient")
+	}
+	for _, p := range m.pools {
+		if p.Source != external.SourceDHCP {
+			continue
 		}
+		m.perPool[p.Name] = dhcp.NewDHCPPoolAllocator(client, toExternalPools([]ExternalPoolConfig{p})[0])
 	}
-	return nil
-}
-
-func (m *ExternalIPAM) initPool(pool ExternalPoolConfig) error {
-	chk, revision, err := m.getRecord(pool.Name)
-
-	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-		return err
-	}
-
-	if err == nil {
-		if chk.RangeStart != pool.RangeStart || chk.RangeEnd != pool.RangeEnd ||
-			chk.GwLrpRangeStart != pool.GwLrpRangeStart || chk.GwLrpRangeEnd != pool.GwLrpRangeEnd {
-			slog.Info("external IPAM pool config drift, reconciling KV",
-				"pool", pool.Name,
-				"old_range", chk.RangeStart+"-"+chk.RangeEnd, "new_range", pool.RangeStart+"-"+pool.RangeEnd,
-				"old_gw_lrp_range", chk.GwLrpRangeStart+"-"+chk.GwLrpRangeEnd,
-				"new_gw_lrp_range", pool.GwLrpRangeStart+"-"+pool.GwLrpRangeEnd)
-
-			chk.RangeStart = pool.RangeStart
-			chk.RangeEnd = pool.RangeEnd
-			chk.GwLrpRangeStart = pool.GwLrpRangeStart
-			chk.GwLrpRangeEnd = pool.GwLrpRangeEnd
-
-			data, err := json.Marshal(chk)
-			if err != nil {
-				return fmt.Errorf("marshal external IPAM record: %w", err)
-			}
-
-			if _, err := m.kv.Update(pool.Name, data, revision); err != nil {
-				slog.Warn("external IPAM update failed", "pool", pool.Name, "err", err)
-				return err
-			}
-			return nil
-		}
-		slog.Debug("external IPAM pool already initialized", "pool", pool.Name)
-		return nil
-	}
-
-	slog.Info("external IPAM pool not found, creating", "pool", pool.Name)
-
-	gwIP := pool.GatewayIP
-	if gwIP == "" {
-		gwIP = pool.RangeStart
-	}
-
-	record := &ExternalIPAMRecord{
-		PoolName:        pool.Name,
-		RangeStart:      pool.RangeStart,
-		RangeEnd:        pool.RangeEnd,
-		Gateway:         pool.Gateway,
-		GatewayIP:       gwIP,
-		PrefixLen:       pool.PrefixLen,
-		Region:          pool.Region,
-		AZ:              pool.AZ,
-		GwLrpRangeStart: pool.GwLrpRangeStart,
-		GwLrpRangeEnd:   pool.GwLrpRangeEnd,
-		Allocated: map[string]ExternalIPAllocation{
-			gwIP: {Purpose: PurposeIGWLRP, Note: "OVN router SNAT address"},
-		},
-	}
-
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal pool record: %w", err)
-	}
-
-	if _, err := m.kv.Create(pool.Name, data); err != nil {
-		// Another instance may have initialized concurrently — that's fine.
-		if errors.Is(err, nats.ErrKeyExists) {
-			return nil
-		}
-		return fmt.Errorf("create pool KV entry: %w", err)
-	}
-
-	slog.Info("external IPAM pool initialized", "pool", pool.Name, "gateway_ip", gwIP)
 	return nil
 }
 
 // AllocateIP allocates the next available external IP from the best pool
 // matching the given region/AZ. Returns the allocated IP and pool name.
-// purpose is one of the Purpose* constants in purpose.go; allocID is the
-// EIP allocation ID (for PurposeEIP) and "" otherwise.
 func (m *ExternalIPAM) AllocateIP(region, az, purpose, allocID, eniID, instanceID string) (string, string, error) {
 	pool := m.findPool(region, az)
 	if pool == nil {
@@ -200,100 +120,70 @@ func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, insta
 }
 
 func (m *ExternalIPAM) allocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
-	for attempt := range 5 {
-		record, revision, err := m.getRecord(poolName)
-		if err != nil {
-			return "", fmt.Errorf("get external IPAM record: %w", err)
-		}
-
-		ip, err := nextAvailableExternalIP(record)
-		if err != nil {
-			return "", err
-		}
-
-		record.Allocated[ip] = ExternalIPAllocation{
-			Purpose:      purpose,
-			AllocationID: allocID,
-			ENIId:        eniID,
-			InstanceId:   instanceID,
-		}
-
-		data, err := json.Marshal(record)
-		if err != nil {
-			return "", fmt.Errorf("marshal external IPAM record: %w", err)
-		}
-
-		if _, err := m.kv.Update(poolName, data, revision); err != nil {
-			slog.Debug("external IPAM CAS conflict, retrying", "pool", poolName, "attempt", attempt)
-			continue
-		}
-
-		slog.Info("external IPAM allocated IP", "pool", poolName, "ip", ip, "purpose", purpose)
-		return ip, nil
+	alloc, err := m.allocatorFor(poolName)
+	if err != nil {
+		return "", err
 	}
-
-	return "", fmt.Errorf("external IPAM allocation failed after CAS retries for pool %s", poolName)
+	addr, err := alloc.Allocate(context.Background(), external.AllocateRequest{
+		PoolName:     poolName,
+		Purpose:      purpose,
+		AllocationID: allocID,
+		ENIID:        eniID,
+		InstanceID:   instanceID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return addr.String(), nil
 }
 
 // ReleaseIP releases a previously allocated external IP back to its pool.
 func (m *ExternalIPAM) ReleaseIP(poolName, ip string) error {
-	for attempt := range 5 {
-		record, revision, err := m.getRecord(poolName)
-		if err != nil {
-			return fmt.Errorf("get external IPAM record for release: %w", err)
-		}
-
-		alloc, ok := record.Allocated[ip]
-		if !ok {
-			return fmt.Errorf("IP %s not allocated in pool %s", ip, poolName)
-		}
-		if alloc.Purpose == PurposeIGWLRP {
-			return fmt.Errorf("cannot release gateway IP %s in pool %s", ip, poolName)
-		}
-
-		delete(record.Allocated, ip)
-
-		data, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("marshal external IPAM record: %w", err)
-		}
-
-		if _, err := m.kv.Update(poolName, data, revision); err != nil {
-			slog.Debug("external IPAM release CAS conflict, retrying", "pool", poolName, "attempt", attempt)
-			continue
-		}
-
-		slog.Info("external IPAM released IP", "pool", poolName, "ip", ip)
-		return nil
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return fmt.Errorf("parse release IP %q: %w", ip, err)
 	}
-
-	return fmt.Errorf("external IPAM release failed after CAS retries for pool %s", poolName)
+	alloc, err := m.allocatorFor(poolName)
+	if err != nil {
+		return err
+	}
+	return alloc.Release(context.Background(), poolName, addr)
 }
 
-// GetPoolRecord returns the current IPAM record for a pool.
+// GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced
+// pools have no static record — the per-AZ lease bucket is authoritative.
 func (m *ExternalIPAM) GetPoolRecord(poolName string) (*ExternalIPAMRecord, error) {
-	record, _, err := m.getRecord(poolName)
-	return record, err
+	if m.static == nil {
+		return nil, fmt.Errorf("pool record unavailable: no static allocator")
+	}
+	return m.static.GetPoolRecord(poolName)
+}
+
+func (m *ExternalIPAM) allocatorFor(poolName string) (external.Allocator, error) {
+	if a, ok := m.perPool[poolName]; ok {
+		return a, nil
+	}
+	if m.static == nil {
+		return nil, fmt.Errorf("no allocator for pool %q (static disabled, dhcp not enabled)", poolName)
+	}
+	return m.static, nil
 }
 
 // findPool returns the best pool for the given region/AZ using the same
 // fallback order as topology.go: AZ-scoped → region-scoped → unscoped.
 func (m *ExternalIPAM) findPool(region, az string) *ExternalPoolConfig {
-	// 1. AZ-scoped match
 	for i := range m.pools {
 		p := &m.pools[i]
 		if p.AZ != "" && p.AZ == az && p.Region == region {
 			return p
 		}
 	}
-	// 2. Region-scoped (no AZ)
 	for i := range m.pools {
 		p := &m.pools[i]
 		if p.AZ == "" && p.Region != "" && p.Region == region {
 			return p
 		}
 	}
-	// 3. Unscoped (global pool)
 	for i := range m.pools {
 		p := &m.pools[i]
 		if p.Region == "" && p.AZ == "" {
@@ -303,54 +193,40 @@ func (m *ExternalIPAM) findPool(region, az string) *ExternalPoolConfig {
 	return nil
 }
 
-func (m *ExternalIPAM) getRecord(poolName string) (*ExternalIPAMRecord, uint64, error) {
-	entry, err := m.kv.Get(poolName)
-	if err != nil {
-		return nil, 0, err
+// toExternalPools converts the handlers-side ExternalPoolConfig into the
+// network/external mirror. The duplicate type goes away in the deferred
+// L5 cleanup.
+func toExternalPools(pools []ExternalPoolConfig) []external.ExternalPoolConfig {
+	out := make([]external.ExternalPoolConfig, len(pools))
+	for i, p := range pools {
+		out[i] = external.ExternalPoolConfig{
+			Name:            p.Name,
+			Source:          p.Source,
+			BindBridge:      p.BindBridge,
+			RangeStart:      p.RangeStart,
+			RangeEnd:        p.RangeEnd,
+			Gateway:         p.Gateway,
+			GatewayIP:       p.GatewayIP,
+			PrefixLen:       p.PrefixLen,
+			DNSServers:      nil,
+			Region:          p.Region,
+			AZ:              p.AZ,
+			GwLrpRangeStart: p.GwLrpRangeStart,
+			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+		}
 	}
-
-	var record ExternalIPAMRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, 0, fmt.Errorf("unmarshal external IPAM record: %w", err)
-	}
-
-	return &record, entry.Revision(), nil
+	return out
 }
 
-// nextAvailableExternalIP finds the next unallocated IP in the pool's
-// range. Addresses inside [GwLrpRangeStart, GwLrpRangeEnd] are skipped —
-// vpcd reserves them for OVN gateway LRPs.
-func nextAvailableExternalIP(record *ExternalIPAMRecord) (string, error) {
-	startIP := net.ParseIP(record.RangeStart).To4()
-	endIP := net.ParseIP(record.RangeEnd).To4()
-	if startIP == nil || endIP == nil {
-		return "", fmt.Errorf("invalid IP range: %s - %s", record.RangeStart, record.RangeEnd)
-	}
-
-	var gwLrpStart, gwLrpEnd int64 = -1, -1
-	if record.GwLrpRangeStart != "" && record.GwLrpRangeEnd != "" {
-		s := net.ParseIP(record.GwLrpRangeStart).To4()
-		e := net.ParseIP(record.GwLrpRangeEnd).To4()
-		if s != nil && e != nil {
-			gwLrpStart = ipToInt(s).Int64()
-			gwLrpEnd = ipToInt(e).Int64()
+// filterStatic returns only the static pools (Source unset or "static").
+func filterStatic(pools []ExternalPoolConfig) []ExternalPoolConfig {
+	out := make([]ExternalPoolConfig, 0, len(pools))
+	for _, p := range pools {
+		if p.Source == "" || p.Source == external.SourceStatic {
+			out = append(out, p)
 		}
 	}
-
-	startInt := ipToInt(startIP)
-	endInt := ipToInt(endIP)
-
-	for i := startInt.Int64(); i <= endInt.Int64(); i++ {
-		if gwLrpStart >= 0 && i >= gwLrpStart && i <= gwLrpEnd {
-			continue
-		}
-		candidate := intToIP(intFromInt64(i)).String()
-		if _, taken := record.Allocated[candidate]; !taken {
-			return candidate, nil
-		}
-	}
-
-	return "", fmt.Errorf("InsufficientAddressCapacity: pool %s exhausted", record.PoolName)
+	return out
 }
 
 // ValidatePoolConfig checks that a pool config is valid.
@@ -375,12 +251,9 @@ func ValidatePoolConfig(pool ExternalPoolConfig) error {
 	if endIP == nil {
 		return fmt.Errorf("invalid range_end: %q", pool.RangeEnd)
 	}
-	if ipToInt(startIP.To4()).Cmp(ipToInt(endIP.To4())) > 0 {
+	if compareIPs(startIP, endIP) > 0 {
 		return fmt.Errorf("range_start %s is greater than range_end %s", pool.RangeStart, pool.RangeEnd)
 	}
-	// gw_lrp_range must be valid IPs and must NOT overlap range_start/end
-	// — otherwise vpcd's gateway LRP allocator and per-VM EIP allocator
-	// would fight over the same address.
 	if pool.GwLrpRangeStart != "" || pool.GwLrpRangeEnd != "" {
 		gwS := net.ParseIP(pool.GwLrpRangeStart)
 		gwE := net.ParseIP(pool.GwLrpRangeEnd)
@@ -390,16 +263,12 @@ func ValidatePoolConfig(pool ExternalPoolConfig) error {
 		if gwE == nil {
 			return fmt.Errorf("invalid gw_lrp_range_end: %q", pool.GwLrpRangeEnd)
 		}
-		gwSi := ipToInt(gwS.To4())
-		gwEi := ipToInt(gwE.To4())
-		if gwSi.Cmp(gwEi) > 0 {
+		if compareIPs(gwS, gwE) > 0 {
 			return fmt.Errorf("gw_lrp_range_start %s is greater than gw_lrp_range_end %s",
 				pool.GwLrpRangeStart, pool.GwLrpRangeEnd)
 		}
-		rangeSi := ipToInt(startIP.To4())
-		rangeEi := ipToInt(endIP.To4())
 		// Overlap test: !(gwE < rangeS || gwS > rangeE)
-		if gwEi.Cmp(rangeSi) >= 0 && gwSi.Cmp(rangeEi) <= 0 {
+		if compareIPs(gwE, startIP) >= 0 && compareIPs(gwS, endIP) <= 0 {
 			return fmt.Errorf("gw_lrp_range %s-%s overlaps range %s-%s",
 				pool.GwLrpRangeStart, pool.GwLrpRangeEnd, pool.RangeStart, pool.RangeEnd)
 		}
@@ -407,7 +276,8 @@ func ValidatePoolConfig(pool ExternalPoolConfig) error {
 	return nil
 }
 
-// intFromInt64 wraps a plain int64 into a *big.Int-compatible IP conversion.
-func intFromInt64(v int64) *big.Int {
-	return big.NewInt(v)
+func compareIPs(a, b net.IP) int {
+	ai := ipToInt(a.To4())
+	bi := ipToInt(b.To4())
+	return ai.Cmp(bi)
 }

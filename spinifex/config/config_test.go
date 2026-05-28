@@ -417,7 +417,38 @@ region = "us-east-1"
 	assert.False(t, cfg.Network.IPSecEnabled)
 }
 
-func TestLoadConfig_NetworkPoolDHCPSourceRejected(t *testing.T) {
+func TestLoadConfig_NetworkPoolDHCPSourceAccepted(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "wan"
+source = "dhcp"
+bind_bridge = "br-wan"
+gateway = "192.168.1.1"
+prefix_len = 24
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Network.ExternalPools, 1)
+	assert.Equal(t, "dhcp", cfg.Network.ExternalPools[0].Source)
+	assert.Equal(t, "br-wan", cfg.Network.ExternalPools[0].BindBridge)
+}
+
+func TestLoadConfig_NetworkPoolDHCPSourceRequiresBindBridge(t *testing.T) {
 	resetViper(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spinifex.toml")
@@ -432,7 +463,63 @@ external_mode = "pool"
 name = "wan"
 source = "dhcp"
 gateway = "192.168.1.1"
-gateway_ip = "192.168.1.100"
+prefix_len = 24
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "bind_bridge")
+}
+
+func TestLoadConfig_NetworkPoolDHCPRejectsRange(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "wan"
+source = "dhcp"
+bind_bridge = "br-wan"
+range_start = "192.168.1.150"
+range_end = "192.168.1.200"
+
+[nodes.n1]
+region = "us-east-1"
+`
+	require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+
+	cfg, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.Contains(t, err.Error(), "range_start")
+}
+
+func TestLoadConfig_NetworkPoolUnknownSourceRejected(t *testing.T) {
+	resetViper(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+
+	toml := `
+node = "n1"
+
+[network]
+external_mode = "pool"
+
+[[network.external_pools]]
+name = "wan"
+source = "magic"
+gateway = "192.168.1.1"
 prefix_len = 24
 
 [nodes.n1]
@@ -444,7 +531,7 @@ region = "us-east-1"
 	require.Error(t, err)
 	assert.Nil(t, cfg)
 	assert.Contains(t, err.Error(), "source=")
-	assert.Contains(t, err.Error(), "dhcp")
+	assert.Contains(t, err.Error(), "magic")
 }
 
 func TestLoadConfig_ExternalDHCPRejected(t *testing.T) {

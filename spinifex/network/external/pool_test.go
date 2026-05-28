@@ -32,10 +32,11 @@ func TestFindPool_NoMatchReturnsNil(t *testing.T) {
 
 func TestLinkLocalAllocator_AlwaysReturnsNotOK(t *testing.T) {
 	a := LinkLocalAllocator{}
-	ip, prefix, ok, err := a.Allocate(context.Background(), "vpc-1", &ExternalPoolConfig{Gateway: "192.168.1.1", PrefixLen: 24})
+	ip, prefix, nexthop, ok, err := a.Allocate(context.Background(), "vpc-1", &ExternalPoolConfig{Gateway: "192.168.1.1", PrefixLen: 24})
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Empty(t, ip)
+	assert.Empty(t, nexthop)
 	assert.Zero(t, prefix)
 	require.NoError(t, a.Release(context.Background(), "vpc-1"))
 }
@@ -53,17 +54,17 @@ func TestStaticRangeAllocator_ExplicitRange_AllocatesFirstFree(t *testing.T) {
 		GwLrpRangeEnd:   "192.168.1.243",
 	}
 
-	ip, prefix, ok, err := a.Allocate(ctx, "vpc-1", pool)
+	ip, prefix, nexthop, ok, err := a.Allocate(ctx, "vpc-1", pool)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "192.168.1.240", ip)
 	assert.Equal(t, 24, prefix)
+	assert.Equal(t, "192.168.1.1", nexthop, "static allocator nexthop must come from pool.Gateway")
 }
 
 func TestStaticRangeAllocator_SkipsUsedIPs(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
-	// Seed an existing LRP on a sibling VPC already holding .240.
 	require.NoError(t, m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-other")}))
 	require.NoError(t, m.CreateLogicalRouterPort(ctx, topology.VPCRouter("vpc-other"), &nbdb.LogicalRouterPort{
 		Name:        topology.GatewayRouterPort("vpc-other"),
@@ -76,7 +77,7 @@ func TestStaticRangeAllocator_SkipsUsedIPs(t *testing.T) {
 		GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.243",
 	}
 
-	ip, _, ok, err := a.Allocate(ctx, "vpc-new", pool)
+	ip, _, _, ok, err := a.Allocate(ctx, "vpc-new", pool)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "192.168.1.241", ip)
@@ -97,10 +98,11 @@ func TestStaticRangeAllocator_ReturnsExistingForSameVPC(t *testing.T) {
 		GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.243",
 	}
 
-	ip, _, ok, err := a.Allocate(ctx, "vpc-1", pool)
+	ip, _, nexthop, ok, err := a.Allocate(ctx, "vpc-1", pool)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "192.168.1.242", ip)
+	assert.Equal(t, "192.168.1.1", nexthop)
 }
 
 func TestStaticRangeAllocator_RangeExhaustedReturnsError(t *testing.T) {
@@ -117,14 +119,14 @@ func TestStaticRangeAllocator_RangeExhaustedReturnsError(t *testing.T) {
 		GwLrpRangeStart: "192.168.1.240", GwLrpRangeEnd: "192.168.1.240",
 	}
 
-	_, _, ok, err := a.Allocate(ctx, "vpc-new", pool)
+	_, _, _, ok, err := a.Allocate(ctx, "vpc-new", pool)
 	require.Error(t, err)
 	assert.False(t, ok)
 }
 
 func TestStaticRangeAllocator_NoRangeReturnsNotOK(t *testing.T) {
 	a := NewStaticRangeAllocator(mock.New())
-	_, _, ok, err := a.Allocate(context.Background(), "vpc-1", &ExternalPoolConfig{})
+	_, _, _, ok, err := a.Allocate(context.Background(), "vpc-1", &ExternalPoolConfig{})
 	require.NoError(t, err)
 	assert.False(t, ok)
 }

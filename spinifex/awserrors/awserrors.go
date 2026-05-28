@@ -349,6 +349,7 @@ var (
 	ErrorPendingVpcPeeringConnectionLimitExceeded              = "PendingVpcPeeringConnectionLimitExceeded"
 	ErrorPlacementGroupLimitExceeded                           = "PlacementGroupLimitExceeded"
 	ErrorPrivateIpAddressLimitExceeded                         = "PrivateIpAddressLimitExceeded"
+	ErrorRegionDisabled                                        = "RegionDisabledException"
 	ErrorRequestEntityTooLarge                                 = "RequestEntityTooLarge"
 	ErrorRequestExpired                                        = "RequestExpired"
 	ErrorRequestLimitExceeded                                  = "RequestLimitExceeded"
@@ -815,6 +816,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorPendingVpcPeeringConnectionLimitExceeded:              {HTTPCode: 409, Message: "You've reached the limit on the number of pending VPC peering connections that you can have."},
 	ErrorPlacementGroupLimitExceeded:                           {HTTPCode: 400, Message: "You've reached the limit on the number of placement groups that you can have."},
 	ErrorPrivateIpAddressLimitExceeded:                         {HTTPCode: 400, Message: "You've reached the limit on the number of private IP addresses that you can assign to the specified network interface for that type of instance. For more information, see IP addresses per network interface."},
+	ErrorRegionDisabled:                                        {HTTPCode: 403, Message: "STS is not activated in this region."},
 	ErrorRequestEntityTooLarge:                                 {HTTPCode: 413, Message: "Request body exceeds the maximum allowed size."},
 	ErrorRequestExpired:                                        {HTTPCode: 403, Message: "The request reached the service more than 15 minutes after the date stamp on the request or more than 15 minutes after the request expiration date (such as for presigned URLs), or the date stamp on the request is more than 15 minutes in the future. If you're using temporary security credentials, this error can also occur if the credentials have expired. For more information, see Temporary security credentials in the IAM User Guide."},
 	ErrorRequestLimitExceeded:                                  {HTTPCode: 503, Message: "The maximum request rate permitted by the Amazon EC2 APIs has been exceeded for your account. For best results, use an increasing or variable sleep interval between requests. For more information, see Query API request rate."},

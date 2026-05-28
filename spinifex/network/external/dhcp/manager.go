@@ -327,7 +327,22 @@ func (m *Manager) handleReleaseMsg(msg *nats.Msg) {
 		respondReleaseErr(msg, fmt.Sprintf("decode release: %v", err))
 		return
 	}
-	if err := m.handleRelease(context.Background(), req.ClientID); err != nil {
+	clientID := req.ClientID
+	if clientID == "" && req.IP != "" {
+		entry, err := m.store.LookupByIP(req.PoolName, req.IP)
+		switch {
+		case err == nil:
+			clientID = entry.Lease.ClientID
+		case errors.Is(err, nats.ErrKeyNotFound):
+			slog.Warn("dhcp manager: release for unknown IP", "pool", req.PoolName, "ip", req.IP)
+			_ = msg.Respond(emptyReleaseReply)
+			return
+		default:
+			respondReleaseErr(msg, fmt.Sprintf("lookup release ip: %v", err))
+			return
+		}
+	}
+	if err := m.handleRelease(context.Background(), clientID); err != nil {
 		respondReleaseErr(msg, err.Error())
 		return
 	}

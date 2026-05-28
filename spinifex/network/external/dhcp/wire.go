@@ -37,8 +37,14 @@ type acquireWireReply struct {
 	Lease *wireLease `json:"lease,omitempty"`
 }
 
+// releaseWireRequest carries either a direct ClientID, or a (PoolName, IP)
+// pair the manager uses to reverse-lookup the ClientID from the per-AZ
+// lease store. ExternalIPAM's Allocator.Release signature only has the
+// IP, so the daemon side uses the IP path; in-process callers use ClientID.
 type releaseWireRequest struct {
-	ClientID string `json:"client_id"`
+	ClientID string `json:"client_id,omitempty"`
+	PoolName string `json:"pool_name,omitempty"`
+	IP       string `json:"ip,omitempty"`
 }
 
 type releaseWireReply struct {

@@ -23,7 +23,8 @@ type ClusterConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default; only valid value)
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default) or "dhcp"
+	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
 	RangeEnd   string   `mapstructure:"range_end"`   // Last IP in range (static source only)
 	Gateway    string   `mapstructure:"gateway"`     // WAN default gateway (next hop for 0.0.0.0/0)
@@ -279,8 +280,24 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	}
 	var ranges []poolRange
 	for _, p := range cc.Network.ExternalPools {
-		if p.Source != "" && p.Source != "static" {
-			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q is no longer supported; use source=\"static\" with explicit range_start/range_end", p.Name, p.Source)
+		switch p.Source {
+		case "", "static":
+			if p.BindBridge != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge is only valid with source=\"dhcp\"", p.Name)
+			}
+		case "dhcp":
+			if p.BindBridge == "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"dhcp\" requires bind_bridge (Linux bridge for DHCP DORA)", p.Name)
+			}
+			if p.RangeStart != "" || p.RangeEnd != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: range_start/range_end not allowed with source=\"dhcp\" (addresses come from upstream)", p.Name)
+			}
+			if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"dhcp\" (gateway LRP IP is DORA'd per VPC)", p.Name)
+			}
+			continue
+		default:
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\" or \"dhcp\"", p.Name, p.Source)
 		}
 		if p.RangeStart == "" || p.RangeEnd == "" {
 			continue

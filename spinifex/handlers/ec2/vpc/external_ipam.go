@@ -2,11 +2,13 @@ package handlers_ec2_vpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,6 +31,8 @@ const (
 // cleanup tracked separately).
 type ExternalPoolConfig struct {
 	Name       string
+	Source     string // "static" (default) or "dhcp"
+	BindBridge string // Linux bridge for DHCP DORA (source=dhcp only)
 	RangeStart string
 	RangeEnd   string
 	Gateway    string
@@ -44,29 +48,56 @@ type ExternalPoolConfig struct {
 }
 
 // ExternalIPAM is the AWS-facing entry point for external IP allocation.
-// State + CAS logic now lives in external.StaticPoolAllocator; this type
-// is a thin facade that preserves the existing call surface (AllocateIP /
-// AllocateFromPool / ReleaseIP / GetPoolRecord) for handlers and tests.
+// State + CAS logic lives in external.StaticPoolAllocator for static
+// pools and dhcp.DHCPPoolAllocator (via vpcd RPC) for dhcp-sourced
+// pools; ExternalIPAM dispatches by pool name.
 type ExternalIPAM struct {
-	kv        nats.KeyValue
-	pools     []ExternalPoolConfig
-	allocator external.Allocator
+	kv      nats.KeyValue
+	pools   []ExternalPoolConfig
+	static  *external.StaticPoolAllocator
+	perPool map[string]external.Allocator // dhcp overrides; static pools fall through to `static`
 }
 
-// NewExternalIPAM creates a new ExternalIPAM backed by a static pool
-// allocator on NATS JetStream KV.
+// NewExternalIPAM creates a new ExternalIPAM. Static pools wire through
+// external.StaticPoolAllocator; DHCP-sourced pools wait for EnableDHCP
+// to install the per-pool dhcp.DHCPPoolAllocator.
 func NewExternalIPAM(js nats.JetStreamContext, pools []ExternalPoolConfig) (*ExternalIPAM, error) {
-	alloc, err := external.NewStaticPoolAllocator(js, toExternalPools(pools))
-	if err != nil {
-		return nil, err
+	staticPools := filterStatic(pools)
+	var (
+		alloc *external.StaticPoolAllocator
+		kv    nats.KeyValue
+	)
+	if len(staticPools) > 0 {
+		var err error
+		alloc, err = external.NewStaticPoolAllocator(js, toExternalPools(staticPools))
+		if err != nil {
+			return nil, err
+		}
+		kv = alloc.KV()
 	}
-	return &ExternalIPAM{kv: alloc.KV(), pools: pools, allocator: alloc}, nil
+	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}, nil
 }
 
 // NewExternalIPAMWithKV creates an ExternalIPAM with an existing KV bucket (for testing).
 func NewExternalIPAMWithKV(kv nats.KeyValue, pools []ExternalPoolConfig) *ExternalIPAM {
-	alloc := external.NewStaticPoolAllocatorWithKV(kv, toExternalPools(pools))
-	return &ExternalIPAM{kv: kv, pools: pools, allocator: alloc}
+	alloc := external.NewStaticPoolAllocatorWithKV(kv, toExternalPools(filterStatic(pools)))
+	return &ExternalIPAM{kv: kv, pools: pools, static: alloc, perPool: map[string]external.Allocator{}}
+}
+
+// EnableDHCP installs a DHCPPoolAllocator for every pool with
+// Source="dhcp". client is the daemon-side NATS wrapper that fans out
+// to vpcd. Idempotent — repeated calls overwrite existing dhcp entries.
+func (m *ExternalIPAM) EnableDHCP(client *dhcp.NATSClient) error {
+	if client == nil {
+		return errors.New("ExternalIPAM EnableDHCP: nil NATSClient")
+	}
+	for _, p := range m.pools {
+		if p.Source != external.SourceDHCP {
+			continue
+		}
+		m.perPool[p.Name] = dhcp.NewDHCPPoolAllocator(client, toExternalPools([]ExternalPoolConfig{p})[0])
+	}
+	return nil
 }
 
 // AllocateIP allocates the next available external IP from the best pool
@@ -89,7 +120,11 @@ func (m *ExternalIPAM) AllocateFromPool(poolName, purpose, allocID, eniID, insta
 }
 
 func (m *ExternalIPAM) allocateFromPool(poolName, purpose, allocID, eniID, instanceID string) (string, error) {
-	addr, err := m.allocator.Allocate(context.Background(), external.AllocateRequest{
+	alloc, err := m.allocatorFor(poolName)
+	if err != nil {
+		return "", err
+	}
+	addr, err := alloc.Allocate(context.Background(), external.AllocateRequest{
 		PoolName:     poolName,
 		Purpose:      purpose,
 		AllocationID: allocID,
@@ -108,16 +143,30 @@ func (m *ExternalIPAM) ReleaseIP(poolName, ip string) error {
 	if err != nil {
 		return fmt.Errorf("parse release IP %q: %w", ip, err)
 	}
-	return m.allocator.Release(context.Background(), poolName, addr)
+	alloc, err := m.allocatorFor(poolName)
+	if err != nil {
+		return err
+	}
+	return alloc.Release(context.Background(), poolName, addr)
 }
 
-// GetPoolRecord returns the current IPAM record for a pool.
+// GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced
+// pools have no static record — the per-AZ lease bucket is authoritative.
 func (m *ExternalIPAM) GetPoolRecord(poolName string) (*ExternalIPAMRecord, error) {
-	sp, ok := m.allocator.(*external.StaticPoolAllocator)
-	if !ok {
-		return nil, fmt.Errorf("pool record unavailable: allocator is not static")
+	if m.static == nil {
+		return nil, fmt.Errorf("pool record unavailable: no static allocator")
 	}
-	return sp.GetPoolRecord(poolName)
+	return m.static.GetPoolRecord(poolName)
+}
+
+func (m *ExternalIPAM) allocatorFor(poolName string) (external.Allocator, error) {
+	if a, ok := m.perPool[poolName]; ok {
+		return a, nil
+	}
+	if m.static == nil {
+		return nil, fmt.Errorf("no allocator for pool %q (static disabled, dhcp not enabled)", poolName)
+	}
+	return m.static, nil
 }
 
 // findPool returns the best pool for the given region/AZ using the same
@@ -152,6 +201,8 @@ func toExternalPools(pools []ExternalPoolConfig) []external.ExternalPoolConfig {
 	for i, p := range pools {
 		out[i] = external.ExternalPoolConfig{
 			Name:            p.Name,
+			Source:          p.Source,
+			BindBridge:      p.BindBridge,
 			RangeStart:      p.RangeStart,
 			RangeEnd:        p.RangeEnd,
 			Gateway:         p.Gateway,
@@ -162,6 +213,17 @@ func toExternalPools(pools []ExternalPoolConfig) []external.ExternalPoolConfig {
 			AZ:              p.AZ,
 			GwLrpRangeStart: p.GwLrpRangeStart,
 			GwLrpRangeEnd:   p.GwLrpRangeEnd,
+		}
+	}
+	return out
+}
+
+// filterStatic returns only the static pools (Source unset or "static").
+func filterStatic(pools []ExternalPoolConfig) []ExternalPoolConfig {
+	out := make([]ExternalPoolConfig, 0, len(pools))
+	for _, p := range pools {
+		if p.Source == "" || p.Source == external.SourceStatic {
+			out = append(out, p)
 		}
 	}
 	return out

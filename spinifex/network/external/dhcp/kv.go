@@ -113,6 +113,33 @@ func (s *Store) Delete(clientID string) error {
 	return nil
 }
 
+// LookupByIP scans the bucket for an entry whose lease IP matches ip
+// (and pool name, when non-empty). Returns (nil, nats.ErrKeyNotFound)
+// when no match. O(N) over leases — release is the only caller and
+// runs at allocation-lifecycle frequency, not on the hot path.
+func (s *Store) LookupByIP(poolName, ip string) (*Entry, error) {
+	if ip == "" {
+		return nil, errors.New("dhcp store lookup: ip required")
+	}
+	entries, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	for i := range entries {
+		e := &entries[i]
+		if e.Lease == nil || e.Lease.IP == nil {
+			continue
+		}
+		if poolName != "" && e.PoolName != poolName {
+			continue
+		}
+		if e.Lease.IP.String() == ip {
+			return e, nil
+		}
+	}
+	return nil, nats.ErrKeyNotFound
+}
+
 // List returns every entry currently in the bucket. Skips the internal
 // version key written by utils.GetOrCreateKVBucket.
 func (s *Store) List() ([]Entry, error) {

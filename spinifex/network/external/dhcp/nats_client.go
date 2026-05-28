@@ -89,13 +89,27 @@ func (c *NATSClient) RequestAcquire(ctx context.Context, p AcquireParams) (*Leas
 // RequestRelease issues an idempotent release RPC. Unknown client-ids
 // return nil (vpcd treats them as already-released).
 func (c *NATSClient) RequestRelease(ctx context.Context, clientID string) error {
-	if c == nil || c.nc == nil {
-		return errors.New("dhcp NATSClient: nil conn")
-	}
 	if clientID == "" {
 		return errors.New("dhcp NATSClient: clientID required")
 	}
-	body, err := json.Marshal(releaseWireRequest{ClientID: clientID})
+	return c.requestRelease(ctx, releaseWireRequest{ClientID: clientID})
+}
+
+// RequestReleaseByIP releases the lease that holds (poolName, ip).
+// Used by DHCPPoolAllocator.Release, whose external.Allocator signature
+// only carries the IP — vpcd looks up the client-id from the lease store.
+func (c *NATSClient) RequestReleaseByIP(ctx context.Context, poolName, ip string) error {
+	if ip == "" {
+		return errors.New("dhcp NATSClient: ip required")
+	}
+	return c.requestRelease(ctx, releaseWireRequest{PoolName: poolName, IP: ip})
+}
+
+func (c *NATSClient) requestRelease(ctx context.Context, req releaseWireRequest) error {
+	if c == nil || c.nc == nil {
+		return errors.New("dhcp NATSClient: nil conn")
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode release request: %w", err)
 	}

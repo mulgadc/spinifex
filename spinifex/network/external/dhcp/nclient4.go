@@ -3,6 +3,7 @@ package dhcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"time"
 
@@ -50,6 +51,17 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 		req.HWAddr = hw
 	}
 
+	releasePromisc, err := enableBridgePromisc(req.Bridge)
+	if err != nil {
+		slog.Warn("dhcp acquire: continuing without IFF_PROMISC", "bridge", req.Bridge, "err", err)
+	} else {
+		defer func() {
+			if rerr := releasePromisc(); rerr != nil {
+				slog.Warn("dhcp acquire: release promisc", "bridge", req.Bridge, "err", rerr)
+			}
+		}()
+	}
+
 	client, err := nclient4.New(req.Bridge,
 		nclient4.WithHWAddr(req.HWAddr),
 		nclient4.WithTimeout(c.timeout),
@@ -79,6 +91,17 @@ func (c *NClient4Client) Renew(ctx context.Context, lease *Lease) (*Lease, error
 	nclient4Lease, err := reconstructNClient4Lease(lease)
 	if err != nil {
 		return nil, fmt.Errorf("dhcp renew: %w", err)
+	}
+
+	releasePromisc, err := enableBridgePromisc(lease.Bridge)
+	if err != nil {
+		slog.Warn("dhcp renew: continuing without IFF_PROMISC", "bridge", lease.Bridge, "err", err)
+	} else {
+		defer func() {
+			if rerr := releasePromisc(); rerr != nil {
+				slog.Warn("dhcp renew: release promisc", "bridge", lease.Bridge, "err", rerr)
+			}
+		}()
 	}
 
 	client, err := nclient4.New(lease.Bridge,
@@ -113,6 +136,17 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	nclient4Lease, err := reconstructNClient4Lease(lease)
 	if err != nil {
 		return fmt.Errorf("dhcp release: %w", err)
+	}
+
+	releasePromisc, err := enableBridgePromisc(lease.Bridge)
+	if err != nil {
+		slog.Warn("dhcp release: continuing without IFF_PROMISC", "bridge", lease.Bridge, "err", err)
+	} else {
+		defer func() {
+			if rerr := releasePromisc(); rerr != nil {
+				slog.Warn("dhcp release: release promisc", "bridge", lease.Bridge, "err", rerr)
+			}
+		}()
 	}
 
 	client, err := nclient4.New(lease.Bridge,

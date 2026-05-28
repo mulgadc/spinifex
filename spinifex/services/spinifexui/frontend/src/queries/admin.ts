@@ -48,6 +48,8 @@ interface NodeInfo {
   total_mem_gb: number
   alloc_vcpu: number
   alloc_mem_gb: number
+  total_gpus: number
+  alloc_gpus: number
   instance_types: InstanceTypeCap[]
   gpus?: GPUInfo[]
   nats_role?: string

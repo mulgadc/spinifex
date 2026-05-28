@@ -5,9 +5,11 @@ import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useAdmin } from "@/contexts/admin-context"
+import { formatVRAMMiB } from "@/lib/utils"
 import {
   adminNodesQueryOptions,
   adminVMsQueryOptions,
+  type GPUInfo,
   type InstanceTypeCap,
   type NodeInfo,
   type VMInfo,
@@ -158,6 +160,18 @@ function NodesPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Section 4: GPU Inventory */}
+        {nodes.some((n) => (n.gpus?.length ?? 0) > 0) && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">GPU Inventory</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <GPUInventoryCard nodes={nodes} />
+            </CardContent>
+          </Card>
+        )}
       </div>
     </>
   )
@@ -226,6 +240,16 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
   )
 }
 
+function formatVMGPU(gpu: VMInfo["gpu"]): string {
+  if (!gpu) {
+    return "-"
+  }
+  if (gpu.profile) {
+    return `${formatVRAMMiB(gpu.vram_mib)} (${gpu.profile})`
+  }
+  return `${gpu.model} ${formatVRAMMiB(gpu.vram_mib)}`
+}
+
 function VMsTable({ vms }: { vms: VMInfo[] }) {
   return (
     <div className="overflow-x-auto">
@@ -237,6 +261,7 @@ function VMsTable({ vms }: { vms: VMInfo[] }) {
             <th className="pr-4 pb-1 font-medium">Type</th>
             <th className="pr-4 pb-1 font-medium">vCPU</th>
             <th className="pr-4 pb-1 font-medium">Memory</th>
+            <th className="pr-4 pb-1 font-medium">GPU</th>
             <th className="pr-4 pb-1 font-medium">Node</th>
             <th className="pb-1 font-medium">Age</th>
           </tr>
@@ -256,6 +281,7 @@ function VMsTable({ vms }: { vms: VMInfo[] }) {
               <td className="py-1.5 pr-4 font-mono">{vm.instance_type}</td>
               <td className="py-1.5 pr-4">{vm.vcpu}</td>
               <td className="py-1.5 pr-4">{formatMemory(vm.memory_gb)}</td>
+              <td className="py-1.5 pr-4 font-mono">{formatVMGPU(vm.gpu)}</td>
               <td className="py-1.5 pr-4 font-mono">{vm.node}</td>
               <td className="py-1.5">
                 {vm.launch_time > 0 ? formatAge(vm.launch_time) : "-"}
@@ -277,6 +303,7 @@ function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
             <th className="pr-4 pb-1 font-medium">Name</th>
             <th className="pr-4 pb-1 font-medium">CPU (used/total)</th>
             <th className="pr-4 pb-1 font-medium">MEM (used/total)</th>
+            <th className="pr-4 pb-1 font-medium">GPU (used/total)</th>
             <th className="pb-1 font-medium">EC2</th>
           </tr>
         </thead>
@@ -290,6 +317,11 @@ function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
               <td className="py-1.5 pr-4 font-mono">
                 {formatMemory(node.alloc_mem_gb)}/
                 {formatMemory(node.total_mem_gb)}
+              </td>
+              <td className="py-1.5 pr-4 font-mono">
+                {node.total_gpus > 0
+                  ? `${node.alloc_gpus}/${node.total_gpus}`
+                  : "-"}
               </td>
               <td className="py-1.5">{node.vm_count}</td>
             </tr>
@@ -327,6 +359,81 @@ function InstanceTypesTable({
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function GPUCard({ gpu }: { gpu: GPUInfo }) {
+  return (
+    <div className="rounded border p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-3 font-mono">
+        <span className="font-medium">{gpu.model}</span>
+        <span className="text-muted-foreground">
+          {formatVRAMMiB(gpu.vram_mib)}
+        </span>
+        <span className="text-muted-foreground">{gpu.pci_address}</span>
+        {gpu.mig_enabled ? (
+          <Badge className="text-[0.625rem]" variant="secondary">
+            MIG
+          </Badge>
+        ) : (
+          <span
+            className={gpu.instance_id ? "text-amber-500" : "text-green-600"}
+          >
+            {gpu.instance_id ? `in-use: ${gpu.instance_id}` : "free"}
+          </span>
+        )}
+      </div>
+      {gpu.mig_enabled && gpu.slices && gpu.slices.length > 0 && (
+        <table className="mt-2 w-full">
+          <thead>
+            <tr className="text-left text-muted-foreground">
+              <th className="pr-4 pb-0.5 font-normal">GI</th>
+              <th className="pr-4 pb-0.5 font-normal">Profile</th>
+              <th className="pr-4 pb-0.5 font-normal">VRAM</th>
+              <th className="pb-0.5 font-normal">Instance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {gpu.slices.map((slice) => (
+              <tr key={slice.gi_id}>
+                <td className="py-0.5 pr-4 font-mono">{slice.gi_id}</td>
+                <td className="py-0.5 pr-4 font-mono">{slice.profile}</td>
+                <td className="py-0.5 pr-4">{formatVRAMMiB(slice.vram_mib)}</td>
+                <td
+                  className={
+                    slice.instance_id
+                      ? "py-0.5 font-mono text-amber-500"
+                      : "py-0.5 text-green-600"
+                  }
+                >
+                  {slice.instance_id ?? "free"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
+  const gpuNodes = nodes.filter((n) => (n.gpus?.length ?? 0) > 0)
+  return (
+    <div className="space-y-4">
+      {gpuNodes.map((node) => (
+        <div key={node.node}>
+          <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">
+            {node.node}
+          </h4>
+          <div className="space-y-2">
+            {node.gpus?.map((gpu) => (
+              <GPUCard key={gpu.pci_address} gpu={gpu} />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

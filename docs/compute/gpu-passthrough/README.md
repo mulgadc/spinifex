@@ -7,16 +7,31 @@ tags:
   - passthrough
   - vfio
   - ec2
-sections:
-  - overview
-  - prerequisites
-  - instructions
-  - troubleshooting
 resources:
   - title: "Spinifex Repository"
     url: "https://github.com/mulgadc/spinifex"
   - title: "AWS EC2 Accelerated Computing Instance Types"
     url: "https://docs.aws.amazon.com/ec2/latest/instancetypes/ac.html"
+---
+
+# GPU Passthrough
+
+> Configure VFIO GPU passthrough on a Spinifex node to expose NVIDIA or AMD GPUs to EC2 instances.
+
+> **Note:** GPU passthrough is supported on x86_64 hosts only.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Host Setup](#host-setup)
+- [Enable Passthrough](#enable-passthrough)
+- [Status and Monitoring](#status-and-monitoring)
+- [GPU Instance Types](#gpu-instance-types)
+- [Launching GPU Instances](#launching-gpu-instances)
+- [Disable Passthrough](#disable-passthrough)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
 ## Overview
@@ -27,9 +42,9 @@ At startup, Spinifex always probes for GPU hardware and surfaces the result in t
 
 The passthrough state is reflected in the login banner:
 
-<img src="../../../.github/assets/images/gpu-banner1.png" alt="GPU not yet enabled">
+![GPU not yet enabled](../../../.github/assets/images/gpu-banner1.png)
 
-> **Note:** GPU passthrough is supported on x86_64 hosts only.
+---
 
 ## Prerequisites
 
@@ -37,9 +52,9 @@ The passthrough state is reflected in the login banner:
 - An NVIDIA or AMD GPU must be physically installed.
 - The Spinifex node must be running on bare metal (not inside a VM).
 
-## Instructions
+---
 
-### Host Setup
+## Host Setup
 
 Run the one-time host configuration as root. This command is idempotent — safe to re-run after a reboot.
 
@@ -64,7 +79,9 @@ Setup complete — reboot required.
   Then run: sudo spx admin gpu enable
 ```
 
-### Enable Passthrough
+---
+
+## Enable Passthrough
 
 After setup and reboot, enable GPU passthrough:
 
@@ -74,11 +91,14 @@ sudo spx admin gpu enable
 
 The command writes the configuration, signals the daemon (`SIGHUP`), and waits up to 30 seconds for the daemon to confirm the new state. On success it prints the current GPU status.
 
-<img src="../../../.github/assets/images/gpu-enabled.png" alt="GPU enabled">
 
-### Status and Monitoring
+![GPU enabled](../../../.github/assets/images/gpu-enabled.png)
 
-**Per-node status:**
+---
+
+## Status and Monitoring
+
+### Per-node status
 
 ```bash
 spx admin gpu status
@@ -88,7 +108,7 @@ spx admin gpu status --node <node-name>
 
 Output includes hardware detected, IOMMU state, vfio-pci binding, passthrough enabled/disabled, GPU pool allocation (`allocated/total`), and the GPU-capable EC2 instance types available on that node.
 
-**Cluster view:**
+### Cluster view
 
 `spx top nodes` includes a `GPU (used/total)` column:
 
@@ -102,16 +122,22 @@ Output includes hardware detected, IOMMU state, vfio-pci binding, passthrough en
 spx top nodes
 ```
 
-### GPU Instance Types
+---
 
-GPU instance types are derived from detected hardware. To list available GPU instance types on the current node:
+## GPU Instance Types
+
+GPU instance types are derived from detected hardware.
+
+To list available GPU instance types on the current node:
 
 ```bash
 aws ec2 describe-instance-types \
   --filters Name=instance-type,Values=g*
 ```
 
-### Launching GPU Instances
+---
+
+## Launching GPU Instances
 
 Import the GPU-enabled AMI before launching:
 
@@ -139,7 +165,9 @@ nvidia-smi
 rocm-smi
 ```
 
-### Disable Passthrough
+---
+
+## Disable Passthrough
 
 Passthrough cannot be disabled while GPU instances are running. Terminate all GPU instances first, then:
 
@@ -148,6 +176,8 @@ sudo spx admin gpu disable
 ```
 
 The command signals the daemon and waits for confirmation. The GPU is released back to the host kernel on the next reboot (the vfio-pci binding persists until `setup` is re-run without the blacklists).
+
+---
 
 ## Troubleshooting
 

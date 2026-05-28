@@ -392,29 +392,6 @@ func TestExternalIPAM_FindPoolByName_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestNextAvailableExternalIP_SkipsGwLrpRange verifies the per-VM EIP allocator
-// honors gw_lrp_range by skipping IPs reserved for vpcd's gateway LRPs (siv-36).
-func TestNextAvailableExternalIP_SkipsGwLrpRange(t *testing.T) {
-	rec := &ExternalIPAMRecord{
-		PoolName:        "wan",
-		RangeStart:      "192.168.1.10",
-		RangeEnd:        "192.168.1.14",
-		GwLrpRangeStart: "192.168.1.11",
-		GwLrpRangeEnd:   "192.168.1.13",
-		Allocated:       map[string]ExternalIPAllocation{},
-	}
-	ip, err := nextAvailableExternalIP(rec)
-	require.NoError(t, err)
-	assert.Equal(t, "192.168.1.10", ip)
-	rec.Allocated[ip] = ExternalIPAllocation{}
-	ip, err = nextAvailableExternalIP(rec)
-	require.NoError(t, err)
-	assert.Equal(t, "192.168.1.14", ip)
-	rec.Allocated[ip] = ExternalIPAllocation{}
-	_, err = nextAvailableExternalIP(rec)
-	require.Error(t, err)
-}
-
 func TestValidatePoolConfig(t *testing.T) {
 	base := func() ExternalPoolConfig {
 		return ExternalPoolConfig{

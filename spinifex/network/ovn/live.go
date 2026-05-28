@@ -1095,6 +1095,125 @@ func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, i
 	return nil
 }
 
+// Logical Router Policies (per-subnet egress steering).
+
+func (c *LiveClient) AddLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	if policy.UUID == "" {
+		policy.UUID = namedUUID("lrp_", fmt.Sprintf("%d:%s", policy.Priority, policy.Match))
+	}
+	if policy.ExternalIDs == nil {
+		policy.ExternalIDs = map[string]string{}
+	}
+	if policy.Options == nil {
+		policy.Options = map[string]string{}
+	}
+
+	createOps, err := c.client.Create(policy)
+	if err != nil {
+		return fmt.Errorf("create LR policy ops: %w", err)
+	}
+
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for policy add: %w", err)
+	}
+
+	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
+		Field:   &lr.Policies,
+		Mutator: "insert",
+		Value:   []string{policy.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate router policies ops: %w", err)
+	}
+
+	if err := c.transactOps(ctx, append(createOps, mutateOps...)); err != nil {
+		return fmt.Errorf("add LR policy transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveClient) FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for policy lookup: %w", err)
+	}
+	owned := make(map[string]struct{}, len(lr.Policies))
+	for _, u := range lr.Policies {
+		owned[u] = struct{}{}
+	}
+	var policies []nbdb.LogicalRouterPolicy
+	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
+		if p.Priority != priority || p.Match != match {
+			return false
+		}
+		_, ok := owned[p.UUID]
+		return ok
+	}).List(ctx, &policies); err != nil {
+		return nil, fmt.Errorf("list LR policies: %w", err)
+	}
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	return &policies[0], nil
+}
+
+func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for policy list: %w", err)
+	}
+	if len(lr.Policies) == 0 {
+		return nil, nil
+	}
+	owned := make(map[string]struct{}, len(lr.Policies))
+	for _, u := range lr.Policies {
+		owned[u] = struct{}{}
+	}
+	var policies []nbdb.LogicalRouterPolicy
+	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
+		_, ok := owned[p.UUID]
+		return ok
+	}).List(ctx, &policies); err != nil {
+		return nil, fmt.Errorf("list LR policies: %w", err)
+	}
+	return policies, nil
+}
+
+func (c *LiveClient) DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error {
+	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, priority, match)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return nil
+	}
+
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for policy delete: %w", err)
+	}
+
+	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
+		Field:   &lr.Policies,
+		Mutator: "delete",
+		Value:   []string{existing.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate router policies ops: %w", err)
+	}
+
+	deleteOps, err := c.client.Where(existing).Delete()
+	if err != nil {
+		return fmt.Errorf("delete LR policy ops: %w", err)
+	}
+
+	if err := c.transactOps(ctx, append(mutateOps, deleteOps...)); err != nil {
+		return fmt.Errorf("delete LR policy transact: %w", err)
+	}
+	return nil
+}
+
 // Port Groups
 
 func (c *LiveClient) CreatePortGroup(ctx context.Context, name string, ports []string) error {

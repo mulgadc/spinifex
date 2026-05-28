@@ -102,3 +102,131 @@ func TestRouteManager_DeleteStaticRoute_RemovesRow(t *testing.T) {
 	require.NoError(t, rm.DeleteStaticRoute(ctx, "vpc-1", prefix))
 	assert.Nil(t, findRoute(m, "10.42.0.0/24"))
 }
+
+func TestRouteManager_AddSubnetEgress_InstallsScopedPolicy(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	p := policies[0]
+	assert.Equal(t, "reroute", p.Action)
+	assert.Equal(t, SubnetEgressPriorityIGW, p.Priority)
+	require.NotNil(t, p.Nexthop)
+	assert.Equal(t, "192.168.1.1", *p.Nexthop)
+	assert.Contains(t, p.Match, topology.SubnetRouterPort("subnet-pub"))
+	assert.Contains(t, p.Match, "ip4.dst == 0.0.0.0/0")
+	assert.Equal(t, "subnet-pub", p.ExternalIDs["spinifex:subnet"])
+	assert.Equal(t, "gw-vpc-1", p.ExternalIDs["spinifex:output_port"])
+}
+
+func TestRouteManager_AddSubnetEgress_IsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	spec := SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", spec))
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", spec))
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", spec))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Len(t, policies, 1)
+}
+
+func TestRouteManager_AddSubnetEgress_DriftReplacesNexthop(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	spec := SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", spec))
+	spec.Nexthop = "192.168.1.254"
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", spec))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, "192.168.1.254", *policies[0].Nexthop)
+}
+
+func TestRouteManager_AddSubnetEgress_PerSubnetSeparate(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	base := SubnetEgressSpec{
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}
+	a := base
+	a.SubnetID = "subnet-a"
+	b := base
+	b.SubnetID = "subnet-b"
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", a))
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", b))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Len(t, policies, 2, "per-subnet egress policies must coexist on the same VPC router")
+}
+
+func TestRouteManager_DeleteSubnetEgress_RemovesPolicy(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     prefix,
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}))
+	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", prefix))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+}
+
+func TestRouteManager_DeleteSubnetEgress_IdempotentOnMissing(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+}

@@ -617,3 +617,148 @@ func TestReplaceRouteTableAssociation_PublishesNatGatewayEvents(t *testing.T) {
 	_, err = addSub.NextMsg(100 * time.Millisecond)
 	assert.Error(t, err, "Replace must not publish add when new table has no NAT GW routes")
 }
+
+func receiveIGWRouteEvent(t *testing.T, sub *nats.Subscription, wantCidr string) (subnetID, igwID, destCidr string) {
+	t.Helper()
+	msg, err := sub.NextMsg(time.Second)
+	require.NoError(t, err)
+	var evt struct {
+		VpcId             string `json:"vpc_id"`
+		SubnetId          string `json:"subnet_id"`
+		DestinationCidr   string `json:"destination_cidr"`
+		InternetGatewayId string `json:"internet_gateway_id"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Data, &evt))
+	assert.Equal(t, wantCidr, evt.DestinationCidr)
+	return evt.SubnetId, evt.InternetGatewayId, evt.DestinationCidr
+}
+
+// TestCreateRoute_IGW_PublishesAddIGWRouteForAssociatedSubnets covers the
+// CreateRoute(IGW) flow: emits one vpc.add-igw-route event per associated
+// subnet so the network subscriber installs per-subnet egress policies.
+func TestCreateRoute_IGW_PublishesAddIGWRouteForAssociatedSubnets(t *testing.T) {
+	svc := setupTestService(t)
+	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	rtbID := createTestRtb(t, svc)
+
+	// Associate subnet FIRST, then CreateRoute — exercises the "route after
+	// association" leg.
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	subnetID, igwID, _ := receiveIGWRouteEvent(t, sub, "0.0.0.0/0")
+	assert.Equal(t, "subnet-priv1", subnetID)
+	assert.Equal(t, "igw-test1", igwID)
+}
+
+// TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute covers the
+// terraform ordering: CreateRoute(IGW) → AssociateRouteTable. CreateRoute runs
+// against an empty-association table so no event fires; Associate must emit
+// the event so the subscriber installs the policy for the joining subnet.
+func TestAssociateRouteTable_PublishesAddIGWRouteForExistingRoute(t *testing.T) {
+	svc := setupTestService(t)
+	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	rtbID := createTestRtb(t, svc)
+
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// No subnet yet → no event from CreateRoute.
+	_, err = sub.NextMsg(100 * time.Millisecond)
+	assert.Error(t, err, "CreateRoute(IGW) must not publish when table has no associations")
+
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	subnetID, igwID, _ := receiveIGWRouteEvent(t, sub, "0.0.0.0/0")
+	assert.Equal(t, "subnet-priv1", subnetID)
+	assert.Equal(t, "igw-test1", igwID)
+}
+
+// TestDeleteRoute_IGW_PublishesDeleteIGWRoute verifies policy teardown when
+// the IGW route is removed from a table with associations.
+func TestDeleteRoute_IGW_PublishesDeleteIGWRoute(t *testing.T) {
+	svc := setupTestService(t)
+	delSub, err := svc.natsConn.SubscribeSync("vpc.delete-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	rtbID := createTestRtb(t, svc)
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	subnetID, igwID, _ := receiveIGWRouteEvent(t, delSub, "0.0.0.0/0")
+	assert.Equal(t, "subnet-priv1", subnetID)
+	assert.Equal(t, "igw-test1", igwID)
+}
+
+// TestDisassociateRouteTable_PublishesDeleteIGWRoute verifies the egress policy
+// is torn down when a subnet leaves a table that carries an IGW route.
+func TestDisassociateRouteTable_PublishesDeleteIGWRoute(t *testing.T) {
+	svc := setupTestService(t)
+	delSub, err := svc.natsConn.SubscribeSync("vpc.delete-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	rtbID := createTestRtb(t, svc)
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+		AssociationId: assocOut.AssociationId,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	subnetID, igwID, _ := receiveIGWRouteEvent(t, delSub, "0.0.0.0/0")
+	assert.Equal(t, "subnet-priv1", subnetID)
+	assert.Equal(t, "igw-test1", igwID)
+}

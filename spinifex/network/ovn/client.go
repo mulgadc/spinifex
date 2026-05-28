@@ -116,6 +116,14 @@ type Client interface {
 	DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error
 	FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error)
 
+	// Logical Router Policies (per-subnet egress steering). Identity is the
+	// (router, priority, match) triple — same triple replaces, missing rows
+	// on delete return nil (mirrors AddStaticRoute / DeleteStaticRoute).
+	AddLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error
+	DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error
+	FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error)
+	ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error)
+
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	// EnsurePortGroup is the wait-op-protected create-or-get analogue of

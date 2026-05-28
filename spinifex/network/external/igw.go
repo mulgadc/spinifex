@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
@@ -21,6 +22,14 @@ type FlowsBarrier func() error
 type IGWManager interface {
 	AttachIGW(ctx context.Context, spec IGWSpec) error
 	DetachIGW(ctx context.Context, vpcID string) error
+	// EnsureSubnetEgress installs an OVN Logical_Router_Policy on the VPC
+	// router so traffic sourced from subnetID and destined for prefix
+	// reroutes via the IGW's gateway port. Called from the route-table
+	// subscriber when CreateRoute / AssociateRouteTable wires a subnet to a
+	// route table carrying a 0.0.0.0/0 -> igw-X route. Idempotent.
+	EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
+	// RemoveSubnetEgress is the inverse. Idempotent.
+	RemoveSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -171,10 +180,6 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		return fmt.Errorf("create switch gateway port %s: %w", switchGWPortName, err)
 	}
 
-	if err := m.routes.AddDefaultRoute(ctx, spec.VPCID, wanNexthop, gwPortName); err != nil {
-		return fmt.Errorf("add default route on %s: %w", routerName, err)
-	}
-
 	if len(m.chassis) == 0 {
 		slog.Warn("external: no chassis configured — gateway port has no chassis binding, external traffic will not flow",
 			"vpc_id", spec.VPCID, "gw_port", gwPortName)
@@ -213,10 +218,6 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	switchGWPortName := topology.GatewaySwitchPort(vpcID)
 	routerName := topology.VPCRouter(vpcID)
 
-	if err := m.routes.DeleteDefaultRoute(ctx, vpcID); err != nil {
-		slog.Warn("external: delete default route failed", "router", routerName, "err", err)
-	}
-
 	if router, err := m.ovn.GetLogicalRouter(ctx, routerName); err == nil {
 		vpcCIDR := router.ExternalIDs["spinifex:cidr"]
 		if vpcCIDR != "" {
@@ -247,6 +248,39 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 
 	slog.Info("external: detached internet gateway", "vpc_id", vpcID)
 	return nil
+}
+
+// EnsureSubnetEgress installs a per-subnet egress policy on the VPC router
+// rerouting (inport == "rtr-<subnetID>" && ip4.dst == prefix) via the IGW
+// nexthop out the gateway LRP. Idempotent (drift-replace via the underlying
+// policy.RouteManager).
+func (m *igwManager) EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("EnsureSubnetEgress: vpcID and subnetID required")
+	}
+	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
+	if err != nil {
+		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
+	}
+	if nexthop == "" {
+		return fmt.Errorf("EnsureSubnetEgress: no gateway nexthop available for %s (IGW not attached?)", vpcID)
+	}
+	return m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
+		SubnetID:   subnetID,
+		Prefix:     prefix,
+		Nexthop:    nexthop,
+		OutputPort: topology.GatewayRouterPort(vpcID),
+		Priority:   policy.SubnetEgressPriorityIGW,
+	})
+}
+
+// RemoveSubnetEgress deletes the policy installed by EnsureSubnetEgress.
+// Idempotent.
+func (m *igwManager) RemoveSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("RemoveSubnetEgress: vpcID and subnetID required")
+	}
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix)
 }
 
 // resolveGatewayNetwork picks LRP Networks/nexthop/IP. Distributed: link-local.

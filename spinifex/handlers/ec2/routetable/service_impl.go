@@ -388,6 +388,10 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 			Origin:               "CreateRoute",
 		}
 
+		// Publish vpc.add-igw-route events for each subnet associated with this
+		// route table so the network subscriber installs per-subnet egress policies.
+		s.publishIGWRouteEvents(accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+
 	case input.NatGatewayId != nil && *input.NatGatewayId != "":
 		natgwID := *input.NatGatewayId
 		// Verify NAT GW exists and belongs to the same VPC
@@ -461,8 +465,10 @@ func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, account
 		return nil, errors.New(awserrors.ErrorInvalidRouteNotFound)
 	}
 
+	departing := record.Routes[idx]
+
 	// Cannot delete local route
-	if record.Routes[idx].GatewayId == "local" {
+	if departing.GatewayId == "local" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -470,6 +476,10 @@ func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, account
 
 	if err := s.putRouteTable(accountID, record); err != nil {
 		return nil, err
+	}
+
+	if departing.GatewayId != "" && strings.HasPrefix(departing.GatewayId, "igw-") {
+		s.publishIGWRouteEvents(accountID, "vpc.delete-igw-route", record, record.VpcId, departing.GatewayId, departing.DestinationCidrBlock)
 	}
 
 	slog.Info("DeleteRoute completed", "routeTableId", rtbID, "destination", destCidr, "accountID", accountID)
@@ -600,6 +610,7 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTab
 	// subnets. CreateRoute runs against a table with zero associations so no SNAT
 	// events fire, so we must emit them here once the subnet joins.
 	s.publishNatGatewayEventsForAssociation(accountID, "vpc.add-nat-gateway", record, subnetID)
+	s.publishIGWRouteEventsForAssociation(accountID, "vpc.add-igw-route", record, subnetID)
 
 	slog.Info("AssociateRouteTable completed", "routeTableId", rtbID, "subnetId", subnetID, "associationId", assocID, "accountID", accountID)
 
@@ -663,6 +674,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRo
 
 				// Tear down per-subnet SNAT rules for any NAT GW routes on this table.
 				s.publishNatGatewayEventsForAssociation(accountID, "vpc.delete-nat-gateway", &record, departingSubnetID)
+				s.publishIGWRouteEventsForAssociation(accountID, "vpc.delete-igw-route", &record, departingSubnetID)
 
 				slog.Info("DisassociateRouteTable completed", "associationId", assocID, "routeTableId", record.RouteTableId, "accountID", accountID)
 				return &ec2.DisassociateRouteTableOutput{}, nil
@@ -744,6 +756,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(input *ec2.ReplaceR
 			// subnet is leaving so its per-CIDR rules must be removed before
 			// the new table's rules take effect.
 			s.publishNatGatewayEventsForAssociation(accountID, "vpc.delete-nat-gateway", &oldRecord, assoc.SubnetId)
+			s.publishIGWRouteEventsForAssociation(accountID, "vpc.delete-igw-route", &oldRecord, assoc.SubnetId)
 
 			// Add to new table with new ID
 			newAssocID := utils.GenerateResourceID("rtbassoc")
@@ -765,6 +778,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(input *ec2.ReplaceR
 
 			// Install SNAT for any NAT GW routes on the new table.
 			s.publishNatGatewayEventsForAssociation(accountID, "vpc.add-nat-gateway", newRecord, assoc.SubnetId)
+			s.publishIGWRouteEventsForAssociation(accountID, "vpc.add-igw-route", newRecord, assoc.SubnetId)
 
 			slog.Info("ReplaceRouteTableAssociation completed",
 				"oldAssociationId", assocID, "newAssociationId", newAssocID,
@@ -981,6 +995,69 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic
 		return
 	}
 	slog.Info("NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp)
+}
+
+// publishIGWRouteEvents emits one vpc.{add,delete}-igw-route event per subnet
+// associated with the route table. Called by CreateRoute/DeleteRoute when an
+// IGW route is added or removed against a table that may already carry
+// subnet associations.
+func (s *RouteTableServiceImpl) publishIGWRouteEvents(accountID, topic string, record *RouteTableRecord, vpcID, igwID, destCidr string) {
+	if s.natsConn == nil {
+		return
+	}
+	for _, assoc := range record.Associations {
+		if assoc.SubnetId == "" || assoc.Main {
+			continue
+		}
+		s.publishIGWRouteEventForSubnet(topic, assoc.SubnetId, vpcID, igwID, destCidr)
+	}
+}
+
+// publishIGWRouteEventsForAssociation emits one IGW route event per IGW route
+// on the table, scoped to a single subnet. Called when a subnet joins or leaves
+// a route table that already has IGW routes so OVN policy state tracks
+// association lifecycle (terraform creates the route first, then associates).
+func (s *RouteTableServiceImpl) publishIGWRouteEventsForAssociation(accountID, topic string, record *RouteTableRecord, subnetID string) {
+	if s.natsConn == nil || subnetID == "" {
+		return
+	}
+	for _, r := range record.Routes {
+		if r.GatewayId == "" || !strings.HasPrefix(r.GatewayId, "igw-") {
+			continue
+		}
+		s.publishIGWRouteEventForSubnet(topic, subnetID, record.VpcId, r.GatewayId, r.DestinationCidrBlock)
+	}
+}
+
+// publishIGWRouteEventForSubnet publishes a single vpc.{add,delete}-igw-route
+// event. Side-effect only — logs and swallows errors so a publish failure
+// doesn't fail the caller's API response. The subscriber (network/subscribers)
+// resolves the gateway nexthop and installs the OVN Logical_Router_Policy.
+func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(topic, subnetID, vpcID, igwID, destCidr string) {
+	if s.natsConn == nil {
+		return
+	}
+	evt := struct {
+		VpcId             string `json:"vpc_id"`
+		SubnetId          string `json:"subnet_id"`
+		DestinationCidr   string `json:"destination_cidr"`
+		InternetGatewayId string `json:"internet_gateway_id"`
+	}{
+		VpcId:             vpcID,
+		SubnetId:          subnetID,
+		DestinationCidr:   destCidr,
+		InternetGatewayId: igwID,
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		slog.Warn("IGW route event: marshal failed", "topic", topic, "err", err)
+		return
+	}
+	if err := s.natsConn.Publish(topic, data); err != nil {
+		slog.Warn("IGW route event: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
+		return
+	}
+	slog.Info("IGW route event published", "topic", topic, "subnetId", subnetID, "destinationCidr", destCidr, "igwId", igwID)
 }
 
 // recordToEC2 converts an internal record to an AWS SDK RouteTable struct

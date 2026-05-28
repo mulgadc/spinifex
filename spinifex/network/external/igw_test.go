@@ -3,6 +3,7 @@ package external
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,13 +86,21 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 	_, hasGwIP := lrp.ExternalIDs[gatewayIPExtIDKey]
 	assert.False(t, hasGwIP, "link-local LRP must not record a gateway IP")
 
-	// Default route points at pool.Gateway, OutputPort pinned.
-	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	// AWS parity: AttachIGW installs no default route on the VPC router.
+	// Egress is wired by EnsureSubnetEgress when CreateRoute targets the IGW.
+	noRoute, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
-	require.NotNil(t, route)
-	assert.Equal(t, pool.Gateway, route.Nexthop)
-	require.NotNil(t, route.OutputPort)
-	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), *route.OutputPort)
+	assert.Nil(t, noRoute, "AttachIGW must not install a router-wide default static route")
+
+	// EnsureSubnetEgress installs per-subnet policy with the expected nexthop.
+	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, pool.Gateway, *policies[0].Nexthop)
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), policies[0].ExternalIDs["spinifex:output_port"])
+	assert.Contains(t, policies[0].Match, topology.SubnetRouterPort("subnet-pub"))
 
 	// Gateway chassis set once per chassis.
 	assert.Equal(t, 2, m.SetGatewayChassisCalls)
@@ -151,10 +160,16 @@ func TestAttachIGW_NoPoolNoChassis_UsesLinkLocalFallbacks(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	noRoute, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
-	require.NotNil(t, route)
-	assert.Equal(t, linkLocalGatewayNexthop, route.Nexthop)
+	assert.Nil(t, noRoute, "AttachIGW must not install a router-wide default static route")
+
+	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, linkLocalGatewayNexthop, *policies[0].Nexthop)
 	assert.Equal(t, 0, m.SetGatewayChassisCalls)
 }
 
@@ -227,10 +242,12 @@ func TestAttachIGW_Centralized_AllocatorNexthopOverridesPool(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
-	require.NotNil(t, route)
-	assert.Equal(t, "192.168.1.254", route.Nexthop, "allocator-supplied nexthop must override pool/link-local fallback")
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, "192.168.1.254", *policies[0].Nexthop, "allocator-supplied nexthop must override pool/link-local fallback")
 }
 
 func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {

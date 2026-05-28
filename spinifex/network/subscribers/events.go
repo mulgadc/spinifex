@@ -15,6 +15,8 @@ const (
 	TopicDeleteNAT        = "vpc.delete-nat"
 	TopicAddNATGateway    = "vpc.add-nat-gateway"
 	TopicDeleteNATGateway = "vpc.delete-nat-gateway"
+	TopicAddIGWRoute      = "vpc.add-igw-route"
+	TopicDeleteIGWRoute   = "vpc.delete-igw-route"
 	TopicCreateSG         = "vpc.create-sg"
 	TopicDeleteSG         = "vpc.delete-sg"
 	TopicUpdateSG         = "vpc.update-sg"
@@ -69,6 +71,17 @@ type NATGatewayEvent struct {
 	NatGatewayId string `json:"nat_gateway_id"`
 	PublicIp     string `json:"public_ip"`
 	SubnetCidr   string `json:"subnet_cidr"` // private subnet CIDR for SNAT rule
+}
+
+// IGWRouteEvent is published on vpc.add-igw-route / vpc.delete-igw-route
+// when a route table associated with SubnetId carries (or loses) a route
+// to InternetGatewayId for DestinationCidr. The subscriber installs (or
+// removes) an OVN Logical_Router_Policy scoped to the subnet's inport.
+type IGWRouteEvent struct {
+	VpcId             string `json:"vpc_id"`
+	SubnetId          string `json:"subnet_id"`
+	DestinationCidr   string `json:"destination_cidr"`
+	InternetGatewayId string `json:"internet_gateway_id"`
 }
 
 // SGRule mirrors handlers/ec2/vpc.SGRule on the wire (kept local to avoid

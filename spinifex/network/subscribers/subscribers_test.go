@@ -92,6 +92,7 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 		TopicIGWAttach, TopicIGWDetach,
 		TopicAddNAT, TopicDeleteNAT,
 		TopicAddNATGateway, TopicDeleteNATGateway,
+		TopicAddIGWRoute, TopicDeleteIGWRoute,
 		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
 	}
 	if len(subs) != len(wantTopics) {

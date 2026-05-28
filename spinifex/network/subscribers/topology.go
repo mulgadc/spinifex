@@ -296,3 +296,55 @@ func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 	slog.Info("subscribers: NAT Gateway SNAT rule removed",
 		"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId, "subnet_cidr", evt.SubnetCidr)
 }
+
+func (s *Subscriber) handleAddIGWRoute(msg *nats.Msg) {
+	var evt IGWRouteEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.add-igw-route event", "err", err)
+		respond(msg, err)
+		return
+	}
+	prefix, err := netip.ParsePrefix(evt.DestinationCidr)
+	if err != nil {
+		slog.Error("subscribers: invalid destination CIDR in vpc.add-igw-route event",
+			"cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := s.igw.EnsureSubnetEgress(context.Background(), evt.VpcId, evt.SubnetId, prefix); err != nil {
+		slog.Error("subscribers: EnsureSubnetEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr,
+			"igw_id", evt.InternetGatewayId, "err", err)
+		respond(msg, err)
+		return
+	}
+	slog.Info("subscribers: installed IGW route policy",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr,
+		"igw_id", evt.InternetGatewayId)
+	respond(msg, nil)
+}
+
+func (s *Subscriber) handleDeleteIGWRoute(msg *nats.Msg) {
+	var evt IGWRouteEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.delete-igw-route event", "err", err)
+		respond(msg, err)
+		return
+	}
+	prefix, err := netip.ParsePrefix(evt.DestinationCidr)
+	if err != nil {
+		slog.Error("subscribers: invalid destination CIDR in vpc.delete-igw-route event",
+			"cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := s.igw.RemoveSubnetEgress(context.Background(), evt.VpcId, evt.SubnetId, prefix); err != nil {
+		slog.Warn("subscribers: RemoveSubnetEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	slog.Info("subscribers: removed IGW route policy",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr)
+	respond(msg, nil)
+}

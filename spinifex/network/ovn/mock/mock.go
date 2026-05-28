@@ -25,6 +25,7 @@ type Client struct {
 	DHCPOpts       map[string]*nbdb.DHCPOptions
 	NATs           map[string]*nbdb.NAT                      // keyed by UUID
 	StaticRoutes   map[string]*nbdb.LogicalRouterStaticRoute // keyed by UUID
+	LRPolicies     map[string]*nbdb.LogicalRouterPolicy      // keyed by UUID
 	PortGroups     map[string]*nbdb.PortGroup                // keyed by name
 	ACLs           map[string]*nbdb.ACL                      // keyed by UUID
 	GatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
@@ -55,6 +56,7 @@ func New() *Client {
 		DHCPOpts:       make(map[string]*nbdb.DHCPOptions),
 		NATs:           make(map[string]*nbdb.NAT),
 		StaticRoutes:   make(map[string]*nbdb.LogicalRouterStaticRoute),
+		LRPolicies:     make(map[string]*nbdb.LogicalRouterPolicy),
 		PortGroups:     make(map[string]*nbdb.PortGroup),
 		ACLs:           make(map[string]*nbdb.ACL),
 		GatewayChassis: make(map[string]*nbdb.GatewayChassis),
@@ -641,6 +643,91 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 		}
 	}
 	delete(m.StaticRoutes, foundUUID)
+	return nil
+}
+
+// Logical Router Policies
+
+func (m *Client) AddLogicalRouterPolicy(_ context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	if policy.UUID == "" {
+		policy.UUID = utils.GenerateResourceID("lrp")
+	}
+	stored := *policy
+	m.LRPolicies[policy.UUID] = &stored
+	lr.Policies = append(lr.Policies, policy.UUID)
+	return nil
+}
+
+func (m *Client) FindLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if !ok {
+			continue
+		}
+		if p.Priority == priority && p.Match == match {
+			result := *p
+			return &result, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	out := make([]nbdb.LogicalRouterPolicy, 0, len(lr.Policies))
+	for _, uuid := range lr.Policies {
+		if p, ok := m.LRPolicies[uuid]; ok {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
+func (m *Client) DeleteLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	var foundUUID string
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if !ok {
+			continue
+		}
+		if p.Priority == priority && p.Match == match {
+			foundUUID = uuid
+			break
+		}
+	}
+	if foundUUID == "" {
+		return nil
+	}
+	for i, uuid := range lr.Policies {
+		if uuid == foundUUID {
+			lr.Policies = append(lr.Policies[:i], lr.Policies[i+1:]...)
+			break
+		}
+	}
+	delete(m.LRPolicies, foundUUID)
 	return nil
 }
 

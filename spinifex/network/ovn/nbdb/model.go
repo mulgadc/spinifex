@@ -83,6 +83,21 @@ type LogicalRouterStaticRoute struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
+// LogicalRouterPolicy represents an OVN Logical_Router_Policy row attached
+// to Logical_Router.policies. Used for per-subnet egress steering: the match
+// expression typically combines an `inport == "rtr-<subnetID>"` filter with
+// a destination predicate, and the action reroutes via a chosen nexthop.
+type LogicalRouterPolicy struct {
+	UUID        string            `ovsdb:"_uuid"`
+	Priority    int               `ovsdb:"priority"`
+	Match       string            `ovsdb:"match"`
+	Action      string            `ovsdb:"action"` // "allow", "drop", "reroute"
+	Nexthop     *string           `ovsdb:"nexthop"`
+	Nexthops    []string          `ovsdb:"nexthops"`
+	Options     map[string]string `ovsdb:"options"`
+	ExternalIDs map[string]string `ovsdb:"external_ids"`
+}
+
 // PortGroup represents an OVN Port_Group (used for SG enforcement).
 type PortGroup struct {
 	UUID        string            `ovsdb:"_uuid"`
@@ -135,6 +150,7 @@ func FullDatabaseModel() (model.ClientDBModel, error) {
 		"DHCP_Options":                &DHCPOptions{},
 		"NAT":                         &NAT{},
 		"Logical_Router_Static_Route": &LogicalRouterStaticRoute{},
+		"Logical_Router_Policy":       &LogicalRouterPolicy{},
 		"Gateway_Chassis":             &GatewayChassis{},
 		"Port_Group":                  &PortGroup{},
 		"ACL":                         &ACL{},

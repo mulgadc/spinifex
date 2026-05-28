@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -24,6 +26,16 @@ const (
 	// namespaces live in disjoint KV buckets so a SigV4 prefix-first
 	// dispatch cannot be confused by a misfiled record.
 	SessionAccessKeyIDPrefix = "ASIA"
+
+	// janitorInterval is how often the sweep runs. Tight enough that
+	// expired-then-resurrected AKIDs would have to wait < this for cleanup;
+	// loose enough that the iterate-all-keys cost is amortised.
+	janitorInterval = 5 * time.Minute
+
+	// janitorGracePeriod keeps just-expired records around so a client whose
+	// clock is slightly ahead still gets ExpiredToken (a diagnosable error)
+	// rather than InvalidClientTokenId (which masks the real cause).
+	janitorGracePeriod = 1 * time.Hour
 )
 
 // SessionCredential is the on-disk record for an STS-issued temporary
@@ -146,4 +158,85 @@ func (s *STSServiceImpl) LookupSessionCredential(accessKeyID string) (*SessionCr
 		return nil, fmt.Errorf("unmarshal session credential: %w", err)
 	}
 	return &cred, nil
+}
+
+// RunJanitor periodically removes session credentials whose ExpiresAt is
+// further in the past than janitorGracePeriod. The sweep is idempotent —
+// delete-of-already-deleted is a JetStream no-op — so multiple awsgw
+// instances may run independently without coordination.
+//
+// Blocks until ctx is cancelled. Intended to be invoked as `go svc.RunJanitor(ctx)`.
+func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
+	ticker := time.NewTicker(janitorInterval)
+	defer ticker.Stop()
+
+	slog.Info("STS session credential janitor started",
+		"interval", janitorInterval,
+		"grace_period", janitorGracePeriod)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("STS session credential janitor stopped")
+			return
+		case <-ticker.C:
+			s.sweepExpired(time.Now().UTC())
+		}
+	}
+}
+
+// sweepExpired iterates the session-credentials bucket and deletes every
+// record whose ExpiresAt is older than now - janitorGracePeriod. Per-key
+// errors are logged and skipped — one corrupt record must not stall the
+// sweep. Returns the number of records deleted (exposed for tests).
+func (s *STSServiceImpl) sweepExpired(now time.Time) int {
+	cutoff := now.Add(-janitorGracePeriod)
+
+	keys, err := s.sessionsBucket.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return 0
+		}
+		slog.Warn("STS janitor: list session credential keys failed", "err", err)
+		return 0
+	}
+
+	var deleted int
+	for _, key := range keys {
+		if key == utils.VersionKey {
+			continue
+		}
+		entry, err := s.sessionsBucket.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			slog.Warn("STS janitor: get session credential failed",
+				"key", key, "err", err)
+			continue
+		}
+
+		var cred SessionCredential
+		if err := json.Unmarshal(entry.Value(), &cred); err != nil {
+			slog.Warn("STS janitor: unmarshal session credential failed",
+				"key", key, "err", err)
+			continue
+		}
+
+		if !cred.ExpiresAt.Before(cutoff) {
+			continue
+		}
+
+		if err := s.sessionsBucket.Delete(key); err != nil {
+			slog.Warn("STS janitor: delete expired session credential failed",
+				"key", key, "err", err)
+			continue
+		}
+		deleted++
+	}
+
+	if deleted > 0 {
+		slog.Info("session credentials swept", "count", deleted)
+	}
+	return deleted
 }

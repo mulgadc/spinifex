@@ -1,6 +1,7 @@
 package handlers_sts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -164,4 +165,93 @@ func TestVerifySessionToken_CorruptStoredHMACRejects(t *testing.T) {
 		SessionTokenHMAC: "!!!not-base64!!!",
 	}
 	assert.False(t, svc.VerifySessionToken(cred, "any-token"))
+}
+
+// putCredWithExpiry persists a session credential with a chosen ExpiresAt
+// so the janitor sweep can observe each state without waiting real time.
+func putCredWithExpiry(t *testing.T, svc *STSServiceImpl, akid string, expiresAt time.Time) {
+	t.Helper()
+	cred := newTestSessionCredential(akid)
+	cred.ExpiresAt = expiresAt
+	require.NoError(t, putSessionCredential(svc.sessionsBucket, cred))
+}
+
+func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	now := time.Now().UTC()
+
+	putCredWithExpiry(t, svc, "ASIALIVE000000000001", now.Add(time.Hour))                       // live
+	putCredWithExpiry(t, svc, "ASIAJUSTEXPIRED00002", now.Add(-30*time.Minute))                 // expired, within grace
+	putCredWithExpiry(t, svc, "ASIAPASTGRACE0000003", now.Add(-janitorGracePeriod-time.Minute)) // past grace
+	putCredWithExpiry(t, svc, "ASIAANCIENT000000004", now.Add(-24*time.Hour))                   // long past grace
+
+	deleted := svc.sweepExpired(now)
+	assert.Equal(t, 2, deleted)
+
+	// Live and within-grace must still exist; past-grace must be gone.
+	_, err := svc.sessionsBucket.Get("ASIALIVE000000000001")
+	require.NoError(t, err)
+	_, err = svc.sessionsBucket.Get("ASIAJUSTEXPIRED00002")
+	require.NoError(t, err)
+
+	_, err = svc.sessionsBucket.Get("ASIAPASTGRACE0000003")
+	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+	_, err = svc.sessionsBucket.Get("ASIAANCIENT000000004")
+	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+}
+
+func TestSweepExpired_EmptyBucketIsNoop(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	assert.Equal(t, 0, svc.sweepExpired(time.Now().UTC()))
+}
+
+func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
+	// A single unmarshalable record must not stall the sweep — neighbouring
+	// expired records still need to be cleaned up. Asserts the per-key error
+	// path in sweepExpired is log-and-continue, not abort.
+	svc, _ := newTestSetup(t)
+	now := time.Now().UTC()
+
+	_, err := svc.sessionsBucket.Put("ASIACORRUPT000000001", []byte("not json"))
+	require.NoError(t, err)
+	putCredWithExpiry(t, svc, "ASIAEXPIRED000000002", now.Add(-24*time.Hour))
+
+	deleted := svc.sweepExpired(now)
+	assert.Equal(t, 1, deleted)
+
+	_, err = svc.sessionsBucket.Get("ASIAEXPIRED000000002")
+	require.ErrorIs(t, err, nats.ErrKeyNotFound)
+	// Corrupt record is left in place — janitor is not authorised to delete
+	// data it cannot interpret; an operator must inspect it.
+	_, err = svc.sessionsBucket.Get("ASIACORRUPT000000001")
+	require.NoError(t, err)
+}
+
+func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
+	// The bucket version stamp shares the key namespace; the janitor's
+	// iterator must skip it (it's not a SessionCredential and unmarshal
+	// would fail every sweep).
+	svc, _ := newTestSetup(t)
+	assert.Equal(t, 0, svc.sweepExpired(time.Now().UTC()))
+
+	_, err := svc.sessionsBucket.Get(utils.VersionKey)
+	require.NoError(t, err, "version key must survive the sweep")
+}
+
+func TestRunJanitor_StopsOnContextCancel(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		svc.RunJanitor(ctx)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunJanitor did not return after context cancel")
+	}
 }

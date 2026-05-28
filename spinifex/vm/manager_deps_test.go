@@ -157,3 +157,45 @@ func (f *fakeVolumeMounter) UnmountOne(req types.EBSRequest) {
 }
 
 var _ VolumeMounter = (*fakeVolumeMounter)(nil)
+
+// fakeVolumeStateUpdater records every UpdateVolumeState call so tests can
+// assert that AttachVolume / DetachVolume / boot-volume promotion pass the
+// correct attachment-device name. The arguments captured here back the
+// AWS-spec round-trip through DescribeVolumes' attachment.device filter,
+// so a regression that passes the in-guest path (e.g. /dev/vdc) instead
+// of the API-form name (e.g. /dev/sdf) shows up as the wrong stored
+// device on the recorded call.
+type fakeVolumeStateUpdater struct {
+	mu    sync.Mutex
+	calls []volumeStateUpdate
+	err   error
+}
+
+type volumeStateUpdate struct {
+	VolumeID         string
+	State            string
+	InstanceID       string
+	AttachmentDevice string
+}
+
+func (f *fakeVolumeStateUpdater) UpdateVolumeState(volumeID, state, instanceID, attachmentDevice string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, volumeStateUpdate{
+		VolumeID:         volumeID,
+		State:            state,
+		InstanceID:       instanceID,
+		AttachmentDevice: attachmentDevice,
+	})
+	return f.err
+}
+
+func (f *fakeVolumeStateUpdater) snapshot() []volumeStateUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]volumeStateUpdate, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+var _ VolumeStateUpdater = (*fakeVolumeStateUpdater)(nil)

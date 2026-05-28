@@ -647,6 +647,90 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+// TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata locks down the
+// AWS-spec contract that Volume.Attachments[].Device carries the API-form
+// name (/dev/sd[f-p]), not the in-guest virtio path (/dev/vd*). The
+// Terraform AWS provider's aws_volume_attachment polls DescribeVolumes
+// with attachment.device=/dev/sdf — storing the guest path makes that
+// filter reject every attached volume and the wait loop times out with
+// "couldn't find resource". This regression is mulga-siv-154.
+//
+// The QMP responder returns a query-block payload where vdisk-vol-1
+// maps to /dev/vdc (the third virtio slot after os + cloudinit), so the
+// test can distinguish the API name from the guest name in every assertion.
+// BlockDeviceMappings still carries the guest device name per mulga-599;
+// only the volume-metadata path uses the API name.
+func TestAttachVolume_PersistsAPIDeviceNameInVolumeMetadata(t *testing.T) {
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-block" {
+			return map[string]any{
+				"return": []qmp.BlockDevice{
+					{
+						Device:   "os",
+						Inserted: &qmp.BlockInserted{},
+						QDev:     "/machine/peripheral-anon/device[0]/virtio-backend",
+					},
+					{
+						Device:   "cloudinit",
+						Inserted: &qmp.BlockInserted{},
+						QDev:     "/machine/peripheral-anon/device[1]/virtio-backend",
+					},
+					{
+						Device:   "",
+						Inserted: &qmp.BlockInserted{},
+						QDev:     "/machine/peripheral/vdisk-vol-1/hotplug-ebs1/virtio-backend",
+					},
+				},
+			}
+		}
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock"}
+	stateUpdater := &fakeVolumeStateUpdater{}
+
+	m := NewManagerWithDeps(Deps{
+		VolumeMounter:      mounter,
+		VolumeStateUpdater: stateUpdater,
+	})
+	m.Insert(&VM{
+		ID:        "i-1",
+		Status:    StateRunning,
+		Instance:  &ec2.Instance{},
+		QMPClient: qmpClient,
+	})
+
+	res, err := m.AttachVolume("i-1", "vol-1", "/dev/sdf")
+	require.NoError(t, err)
+
+	assert.Equal(t, "/dev/sdf", res.DeviceName,
+		"AttachVolumeResult.DeviceName must echo the API-form name so the daemon's AttachVolume response and aws_volume_attachment's post-attach wait both round-trip the AWS-spec contract")
+	assert.Equal(t, "/dev/vdc", res.GuestDevice,
+		"AttachVolumeResult.GuestDevice must carry the in-guest virtio path discovered from query-block")
+
+	calls := stateUpdater.snapshot()
+	require.Len(t, calls, 1,
+		"AttachVolume must persist exactly one volume-metadata update")
+	assert.Equal(t, "vol-1", calls[0].VolumeID)
+	assert.Equal(t, "in-use", calls[0].State)
+	assert.Equal(t, "i-1", calls[0].InstanceID)
+	assert.Equal(t, "/dev/sdf", calls[0].AttachmentDevice,
+		"UpdateVolumeState must persist the API-form name (/dev/sdf), not the in-guest path (/dev/vdc) — the attachment.device filter on DescribeVolumes only matches the API form")
+
+	v, ok := m.Get("i-1")
+	require.True(t, ok)
+	require.Len(t, v.Instance.BlockDeviceMappings, 1,
+		"AttachVolume must append exactly one BlockDeviceMapping")
+	bdm := v.Instance.BlockDeviceMappings[0]
+	require.NotNil(t, bdm.DeviceName)
+	assert.Equal(t, "/dev/vdc", *bdm.DeviceName,
+		"BlockDeviceMappings[].DeviceName must carry the guest virtio path so `lsblk` inside the VM matches DescribeInstances (mulga-599 / PR #55)")
+	require.NotNil(t, bdm.Ebs)
+	require.NotNil(t, bdm.Ebs.VolumeId)
+	assert.Equal(t, "vol-1", *bdm.Ebs.VolumeId)
+}
+
 // TestTryBlockdevDel covers the bounded retry loop that handles QEMU's
 // transient "node is in use" GenericError after device_del. Each sub-test
 // configures a QMP responder that fails the first N attempts with the

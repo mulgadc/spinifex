@@ -45,8 +45,20 @@ type TerminateStoppedInstanceOutput struct {
 
 // ResourceCapacityProvider exposes per-node instance-type availability used by
 // DescribeInstanceTypes. Implemented by daemon.ResourceManager.
+//
+// GetAvailableInstanceTypeInfos reports types gated by free schedulable
+// capacity (one entry per free slot when showCapacity is true). It is used
+// when callers ask "what could you launch right now?" — typically with the
+// capacity=true filter for aggregated cluster-wide accounting.
+//
+// GetSupportedInstanceTypeInfos reports every type this node is configured
+// to run, regardless of current allocation. This is the AWS-compatible
+// answer for plain DescribeInstanceTypes and is what tooling like the
+// Terraform AWS provider expects when it performs a metadata lookup after
+// RunInstances.
 type ResourceCapacityProvider interface {
 	GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo
+	GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo
 }
 
 // InstanceTypeAllocator extends ResourceCapacityProvider with the mutating

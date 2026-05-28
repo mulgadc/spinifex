@@ -434,8 +434,10 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
-		// Get expected instance types from ResourceManager
-		expectedTypes := daemon.resourceMgr.GetAvailableInstanceTypeInfos(false)
+		// Get expected instance types from ResourceManager. The no-filter
+		// handler path returns the supported set (AWS-compatible), not the
+		// capacity-gated set, so compare against the same source.
+		expectedTypes := daemon.resourceMgr.GetSupportedInstanceTypeInfos()
 		require.NotEmpty(t, expectedTypes, "Should have expected instance types")
 
 		// Build map of expected instance type names
@@ -464,9 +466,11 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		t.Logf("Verified %d instance types match expected list", len(output.InstanceTypes))
 	})
 
-	// Test 3: Filter unavailable types after allocating 2 CPUs
-	t.Run("FilterUnavailableTypesAfterAllocation", func(t *testing.T) {
-		// Get initial available types
+	// Test 3a: No-filter responses list every supported type even when an
+	// allocation has consumed slots. This is the AWS-compatible semantics
+	// that lets the Terraform provider look up an instance type's metadata
+	// after RunInstances has taken the last free slot.
+	t.Run("NoFilterReturnsSupportedRegardlessOfAllocation", func(t *testing.T) {
 		input := &ec2.DescribeInstanceTypesInput{}
 		msgData, err := json.Marshal(input)
 		require.NoError(t, err)
@@ -480,110 +484,102 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		require.NoError(t, err)
 
 		initialCount := len(initialOutput.InstanceTypes)
-		t.Logf("Initial available instance types: %d", initialCount)
+		t.Logf("Initial supported instance types: %d", initialCount)
 
-		// Find an instance type that uses 2 vCPUs from the available types
-		// (not the raw map, which may contain types that exceed host memory)
 		var instanceType2CPU *ec2.InstanceTypeInfo
-		var instanceTypeName string
 		for _, it := range initialOutput.InstanceTypes {
 			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 {
 				instanceType2CPU = it
-				if it.InstanceType != nil {
-					instanceTypeName = *it.InstanceType
-				}
 				break
 			}
 		}
-
 		require.NotNil(t, instanceType2CPU, "Should find an instance type with 2 vCPUs")
-		t.Logf("Allocating instance type: %s (2 vCPUs)", instanceTypeName)
 
-		// Allocate the 2 vCPU instance type
 		err = daemon.resourceMgr.allocate(instanceType2CPU)
 		require.NoError(t, err, "Should be able to allocate 2 vCPU instance")
+		assert.Equal(t, 2, daemon.resourceMgr.allocatedVCPU)
 
-		// Verify allocation
-		assert.Equal(t, 2, daemon.resourceMgr.allocatedVCPU, "Should have allocated 2 vCPUs")
-		t.Logf("Allocated resources: %d vCPUs, %.2f GB RAM",
-			daemon.resourceMgr.allocatedVCPU, daemon.resourceMgr.allocatedMem)
-
-		// Get available types after allocation
 		reply, err = daemon.natsConn.Request("ec2.DescribeInstanceTypes", msgData, 5*time.Second)
 		require.NoError(t, err)
-		require.NotNil(t, reply)
 
 		var afterAllocationOutput ec2.DescribeInstanceTypesOutput
 		err = json.Unmarshal(reply.Data, &afterAllocationOutput)
 		require.NoError(t, err)
 
-		afterAllocationCount := len(afterAllocationOutput.InstanceTypes)
-		t.Logf("Available instance types after allocation: %d", afterAllocationCount)
+		assert.Equal(t, initialCount, len(afterAllocationOutput.InstanceTypes),
+			"no-filter response must list the same supported types before and after allocation")
 
-		// Verify fewer types are available
-		assert.LessOrEqual(t, afterAllocationCount, initialCount,
-			"Should have fewer or equal instance types after allocation")
+		afterTypes := make(map[string]bool)
+		for _, info := range afterAllocationOutput.InstanceTypes {
+			require.NotNil(t, info.InstanceType)
+			afterTypes[*info.InstanceType] = true
+		}
+		require.NotNil(t, instanceType2CPU.InstanceType)
+		assert.True(t, afterTypes[*instanceType2CPU.InstanceType],
+			"the allocated type %s must still appear in no-filter responses", *instanceType2CPU.InstanceType)
 
-		// Calculate remaining schedulable resources (host - reserved - allocated).
+		daemon.resourceMgr.deallocate(instanceType2CPU)
+		assert.Equal(t, 0, daemon.resourceMgr.allocatedVCPU)
+	})
+
+	// Test 3b: capacity=true must still gate on remaining schedulable
+	// resources so cluster-wide aggregation reflects current load.
+	t.Run("CapacityFilterRespectsAllocation", func(t *testing.T) {
+		capInput := &ec2.DescribeInstanceTypesInput{
+			Filters: []*ec2.Filter{
+				{Name: aws.String("capacity"), Values: []*string{aws.String("true")}},
+			},
+		}
+		capMsgData, err := json.Marshal(capInput)
+		require.NoError(t, err)
+
+		// Pick a 2-vCPU type from the capacity-aware set so we know the
+		// host has room for it — the raw instanceTypes map contains
+		// entries (e.g. r5.large at 16 GiB) that exceed schedulable
+		// memory on small test hosts.
+		var instanceType2CPU *ec2.InstanceTypeInfo
+		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(false) {
+			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 &&
+				it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
+				instanceType2CPU = it
+				break
+			}
+		}
+		require.NotNil(t, instanceType2CPU, "Should find a 2-vCPU type that fits the host")
+
+		err = daemon.resourceMgr.allocate(instanceType2CPU)
+		require.NoError(t, err)
+		defer daemon.resourceMgr.deallocate(instanceType2CPU)
+
+		reply, err := daemon.natsConn.Request("ec2.DescribeInstanceTypes", capMsgData, 5*time.Second)
+		require.NoError(t, err)
+
+		var capOutput ec2.DescribeInstanceTypesOutput
+		err = json.Unmarshal(reply.Data, &capOutput)
+		require.NoError(t, err)
+
 		remainingVCPU := daemon.resourceMgr.hostVCPU - daemon.resourceMgr.reservedVCPU - daemon.resourceMgr.allocatedVCPU
 		remainingMem := daemon.resourceMgr.hostMemGB - daemon.resourceMgr.reservedMem - daemon.resourceMgr.allocatedMem
-
 		t.Logf("Remaining resources: %d vCPUs, %.2f GB RAM", remainingVCPU, remainingMem)
 
-		// Verify all returned types fit within remaining resources
-		for _, info := range afterAllocationOutput.InstanceTypes {
-			require.NotNil(t, info.InstanceType, "InstanceType should not be nil")
-			require.NotNil(t, info.VCpuInfo, "VCpuInfo should not be nil")
-			require.NotNil(t, info.VCpuInfo.DefaultVCpus, "DefaultVCpus should not be nil")
-			require.NotNil(t, info.MemoryInfo, "MemoryInfo should not be nil")
-			require.NotNil(t, info.MemoryInfo.SizeInMiB, "SizeInMiB should not be nil")
+		for _, info := range capOutput.InstanceTypes {
+			require.NotNil(t, info.InstanceType)
+			require.NotNil(t, info.VCpuInfo)
+			require.NotNil(t, info.VCpuInfo.DefaultVCpus)
+			require.NotNil(t, info.MemoryInfo)
+			require.NotNil(t, info.MemoryInfo.SizeInMiB)
 
 			typeName := *info.InstanceType
 			vcpus := int(*info.VCpuInfo.DefaultVCpus)
 			memGB := float64(*info.MemoryInfo.SizeInMiB) / 1024.0
 
 			assert.LessOrEqual(t, vcpus, remainingVCPU,
-				"Instance type %s (%d vCPUs) should not exceed remaining vCPUs (%d)",
+				"capacity=true: %s (%d vCPUs) should not exceed remaining vCPUs (%d)",
 				typeName, vcpus, remainingVCPU)
 			assert.LessOrEqual(t, memGB, remainingMem,
-				"Instance type %s (%.2f GB) should not exceed remaining memory (%.2f GB)",
+				"capacity=true: %s (%.2f GB) should not exceed remaining memory (%.2f GB)",
 				typeName, memGB, remainingMem)
-
-			t.Logf("Available: %s (vCPUs: %d, Memory: %.2f GB)", typeName, vcpus, memGB)
 		}
-
-		// Verify that instance types requiring more than remaining resources are NOT returned
-		// Find instance types that should be filtered out
-		for _, it := range daemon.resourceMgr.instanceTypes {
-			if it.InstanceType == nil || it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil {
-				continue
-			}
-
-			typeName := *it.InstanceType
-			vcpus := int(*it.VCpuInfo.DefaultVCpus)
-			memGB := float64(0)
-			if it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
-				memGB = float64(*it.MemoryInfo.SizeInMiB) / 1024.0
-			}
-
-			// If this type exceeds remaining resources, it should NOT be in the response
-			if vcpus > remainingVCPU || memGB > remainingMem {
-				found := false
-				for _, returnedInfo := range afterAllocationOutput.InstanceTypes {
-					if returnedInfo.InstanceType != nil && *returnedInfo.InstanceType == typeName {
-						found = true
-						break
-					}
-				}
-				assert.False(t, found,
-					"Instance type %s (%d vCPUs, %.2f GB) should NOT be returned as it exceeds remaining resources",
-					typeName, vcpus, memGB)
-			}
-		}
-
-		// Cleanup: deallocate
-		daemon.resourceMgr.deallocate(instanceType2CPU)
-		assert.Equal(t, 0, daemon.resourceMgr.allocatedVCPU, "Should have deallocated all vCPUs")
 	})
 
 	// Test 4: Verify "capacity" filter returns duplicates
@@ -3032,6 +3028,99 @@ func TestCanAllocate_GPUType_BypassesCPUMemory(t *testing.T) {
 	gpuType := makeGPUInstanceType("g7e.4xlarge", 16, 128*1024)
 	assert.Equal(t, 1, rm.canAllocate(gpuType, 1),
 		"GPU type must be allocatable even when CPU/memory would normally block it")
+}
+
+// --- GetSupportedInstanceTypeInfos ---
+
+// Supported set is independent of remaining capacity: even when every host
+// slot for a type is occupied the type must still appear, because callers
+// (e.g. Terraform AWS provider) treat DescribeInstanceTypes as a global
+// metadata lookup, not a "what can fit right now" query.
+func TestGetSupportedInstanceTypeInfos_IgnoresFreeSlots(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:      4,
+		hostMemGB:     8.0,
+		allocatedVCPU: 4, // fully consumed
+		allocatedMem:  8.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"t3.micro": {
+				InstanceType: aws.String("t3.micro"),
+				VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+				MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(1024)},
+			},
+			"m5.large": {
+				InstanceType: aws.String("m5.large"),
+				VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+				MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(8 * 1024)},
+			},
+		},
+	}
+
+	// Capacity-gated view: nothing fits because resources are exhausted.
+	assert.Empty(t, rm.GetAvailableInstanceTypeInfos(false),
+		"capacity-gated set must be empty when resources are exhausted")
+
+	// Supported view: every loaded type is still announced.
+	supported := rm.GetSupportedInstanceTypeInfos()
+	got := make(map[string]bool)
+	for _, it := range supported {
+		require.NotNil(t, it.InstanceType)
+		got[*it.InstanceType] = true
+	}
+	assert.True(t, got["t3.micro"], "t3.micro must appear in supported set")
+	assert.True(t, got["m5.large"], "m5.large must appear in supported set even with no free slots")
+}
+
+// System types and entries missing CPU/memory metadata stay filtered — they
+// would break callers if returned regardless of capacity.
+func TestGetSupportedInstanceTypeInfos_SkipsSystemAndIncomplete(t *testing.T) {
+	systemTypeName := "sys.micro"
+	require.True(t, instancetypes.IsSystemType(systemTypeName),
+		"sentinel %s must satisfy IsSystemType — update the test if the prefix changes", systemTypeName)
+
+	rm := &ResourceManager{
+		hostVCPU:  16,
+		hostMemGB: 64.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			systemTypeName: {
+				InstanceType: aws.String(systemTypeName),
+				VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(1)},
+				MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(512)},
+			},
+			"t3.micro": {
+				InstanceType: aws.String("t3.micro"),
+				VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+				MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(1024)},
+			},
+			"broken.type": {
+				InstanceType: aws.String("broken.type"),
+				// missing VCpuInfo / MemoryInfo → metadata gate excludes it
+			},
+		},
+	}
+
+	supported := rm.GetSupportedInstanceTypeInfos()
+	require.Len(t, supported, 1, "only the well-formed non-system type must appear")
+	require.NotNil(t, supported[0].InstanceType)
+	assert.Equal(t, "t3.micro", *supported[0].InstanceType)
+}
+
+// GPU types must appear in the supported set regardless of GPU pool state —
+// the goal is to advertise what this node *can* run, not what it can run
+// right now. Capacity gating is the capacity=true path's job.
+func TestGetSupportedInstanceTypeInfos_GPUType_AppearsWithoutPool(t *testing.T) {
+	rm := &ResourceManager{
+		hostVCPU:  128,
+		hostMemGB: 1024.0,
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			"g7e.4xlarge": makeGPUInstanceType("g7e.4xlarge", 16, 128*1024),
+		},
+		// no gpuManager
+	}
+	supported := rm.GetSupportedInstanceTypeInfos()
+	require.Len(t, supported, 1, "GPU type must appear in supported set even without a GPU manager")
+	require.NotNil(t, supported[0].InstanceType)
+	assert.Equal(t, "g7e.4xlarge", *supported[0].InstanceType)
 }
 
 // --- NewDaemon ---

@@ -2102,9 +2102,12 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// DescribeInstanceTypes returns instance types provisionable on this node.
-// The "capacity" filter (when "true") expands each type to one entry per
-// available slot so callers can report cluster-wide capacity by aggregating.
+// DescribeInstanceTypes returns instance types this node supports. Without
+// the "capacity" filter the response lists every supported type once,
+// matching AWS semantics — callers (e.g. the Terraform AWS provider) expect
+// a stable answer that does not depend on current allocation. With
+// `capacity=true` each type expands to one entry per free schedulable slot
+// so callers can aggregate cluster-wide remaining capacity.
 func (s *InstanceServiceImpl) DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
 	slog.Info("Processing DescribeInstanceTypes request from this node")
 
@@ -2124,8 +2127,13 @@ func (s *InstanceServiceImpl) DescribeInstanceTypes(input *ec2.DescribeInstanceT
 		}
 	}
 
-	filteredTypes := s.resourceMgr.GetAvailableInstanceTypeInfos(showCapacity)
-	slog.Info("DescribeInstanceTypes completed", "count", len(filteredTypes))
+	var filteredTypes []*ec2.InstanceTypeInfo
+	if showCapacity {
+		filteredTypes = s.resourceMgr.GetAvailableInstanceTypeInfos(true)
+	} else {
+		filteredTypes = s.resourceMgr.GetSupportedInstanceTypeInfos()
+	}
+	slog.Info("DescribeInstanceTypes completed", "count", len(filteredTypes), "showCapacity", showCapacity)
 	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: filteredTypes}, nil
 }
 

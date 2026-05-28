@@ -548,6 +548,31 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	return infos
 }
 
+// GetSupportedInstanceTypeInfos returns every instance type this node is
+// configured to run, irrespective of current free capacity. It mirrors
+// AWS's DescribeInstanceTypes semantics: callers asking "what types do you
+// support?" must see a stable answer even when every slot is occupied.
+// System types and entries with incomplete CPU/memory metadata are still
+// skipped.
+func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var infos []*ec2.InstanceTypeInfo
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+		if instanceTypeVCPUs(it) == 0 || instanceTypeMemoryMiB(it) == 0 {
+			continue
+		}
+		infos = append(infos, it)
+	}
+
+	slog.Info("GetSupportedInstanceTypeInfos", "total_types", len(rm.instanceTypes), "supported", len(infos))
+	return infos
+}
+
 // GetResourceStats returns current resource allocation stats for the node status response.
 // totalVCPU / totalMemGB are the raw host figures; reservedVCPU / reservedMemGB are
 // held back from guest scheduling. Per-type caps reflect host - reserved - allocated,
@@ -745,16 +770,18 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.RevokeSecurityGroupIngress", d.handleEC2RevokeSecurityGroupIngress, "spinifex-workers"},
 		{"ec2.RevokeSecurityGroupEgress", d.handleEC2RevokeSecurityGroupEgress, "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", d.handleEC2ModifyInstanceAttribute, "spinifex-workers"},
-		{"ec2.DescribeInstanceAttribute", d.handleEC2DescribeInstanceAttribute, "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
 		{fmt.Sprintf("ec2.start.%s", d.node), d.handleEC2StartStoppedInstanceDirect, ""},
 		{"ec2.terminate", d.handleEC2TerminateStoppedInstance, "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", d.handleEC2DescribeStoppedInstances, "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", d.handleEC2DescribeTerminatedInstances, "spinifex-workers"},
-		// these 3 fan out to all nodes and gateway aggregates the results
+		// these fan out to all nodes and gateway aggregates the results. The
+		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
+		// any queue-grouped routing produces 1/N false NotFound responses.
 		{"ec2.DescribeInstances", d.handleEC2DescribeInstances, ""},
 		{"ec2.DescribeInstanceStatus", d.handleEC2DescribeInstanceStatus, ""},
 		{"ec2.DescribeInstanceTypes", d.handleEC2DescribeInstanceTypes, ""},
+		{"ec2.DescribeInstanceAttribute", d.handleEC2DescribeInstanceAttribute, ""},
 		// IAM instance profile associations: Disassociate/Replace mutate the
 		// owning daemon's vm.VM (non-owners NoOp with Found=false); Describe
 		// returns per-daemon matches that the gateway concatenates.

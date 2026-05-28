@@ -845,19 +845,29 @@ func TestCloudInitVolumeNamePerInstance(t *testing.T) {
 // --- 1b-pre Describe* coverage (siv-22 parts) ------------------------------
 
 type fakeResourceCapacityProvider struct {
-	types         []*ec2.InstanceTypeInfo
-	gotShowCap    bool
-	calls         int
-	instanceTypes map[string]*ec2.InstanceTypeInfo
-	allocateErr   error
-	allocated     []*ec2.InstanceTypeInfo
-	deallocated   []*ec2.InstanceTypeInfo
-	canAllocFn    func(*ec2.InstanceTypeInfo, int) int
+	types          []*ec2.InstanceTypeInfo
+	supportedTypes []*ec2.InstanceTypeInfo
+	gotShowCap     bool
+	calls          int
+	supportedCalls int
+	instanceTypes  map[string]*ec2.InstanceTypeInfo
+	allocateErr    error
+	allocated      []*ec2.InstanceTypeInfo
+	deallocated    []*ec2.InstanceTypeInfo
+	canAllocFn     func(*ec2.InstanceTypeInfo, int) int
 }
 
 func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
 	f.calls++
 	f.gotShowCap = showCapacity
+	return f.types
+}
+
+func (f *fakeResourceCapacityProvider) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	f.supportedCalls++
+	if f.supportedTypes != nil {
+		return f.supportedTypes
+	}
 	return f.types
 }
 
@@ -961,23 +971,38 @@ func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
-func TestDescribeInstanceTypes_ReturnsProviderTypes(t *testing.T) {
+func TestDescribeInstanceTypes_ReturnsSupportedByDefault(t *testing.T) {
 	prov := &fakeResourceCapacityProvider{
-		types: []*ec2.InstanceTypeInfo{
+		supportedTypes: []*ec2.InstanceTypeInfo{
 			{InstanceType: aws.String("t3.micro")},
 			{InstanceType: aws.String("t3.small")},
+			{InstanceType: aws.String("m5.large")},
+		},
+		types: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
 		},
 	}
 	svc := &InstanceServiceImpl{resourceMgr: prov}
 
 	out, err := svc.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{}, "")
 	require.NoError(t, err)
-	require.Len(t, out.InstanceTypes, 2)
-	assert.False(t, prov.gotShowCap)
+	require.Len(t, out.InstanceTypes, 3,
+		"no-filter DescribeInstanceTypes must return the supported set, not the capacity-gated set")
+	assert.Equal(t, 1, prov.supportedCalls, "supported-types path must be hit when capacity filter absent")
+	assert.Equal(t, 0, prov.calls, "capacity-gated path must not be hit when capacity filter absent")
 }
 
-func TestDescribeInstanceTypes_CapacityFilterPropagates(t *testing.T) {
-	prov := &fakeResourceCapacityProvider{}
+func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
+	prov := &fakeResourceCapacityProvider{
+		types: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("t3.micro")},
+		},
+		supportedTypes: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("m5.large")},
+		},
+	}
 	svc := &InstanceServiceImpl{resourceMgr: prov}
 
 	input := &ec2.DescribeInstanceTypesInput{
@@ -985,9 +1010,12 @@ func TestDescribeInstanceTypes_CapacityFilterPropagates(t *testing.T) {
 			{Name: aws.String("capacity"), Values: []*string{aws.String("true")}},
 		},
 	}
-	_, err := svc.DescribeInstanceTypes(input, "")
+	out, err := svc.DescribeInstanceTypes(input, "")
 	require.NoError(t, err)
+	require.Len(t, out.InstanceTypes, 2, "capacity=true must use the per-slot list")
+	assert.Equal(t, 1, prov.calls, "capacity-gated path must be hit when capacity=true")
 	assert.True(t, prov.gotShowCap, "capacity=true filter must reach the provider")
+	assert.Equal(t, 0, prov.supportedCalls, "supported-types path must not be hit when capacity=true")
 }
 
 func TestDescribeInstances_Empty(t *testing.T) {

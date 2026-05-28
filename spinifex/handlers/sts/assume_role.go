@@ -290,8 +290,12 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 		return false
 	}
 
-	// :root → any principal in the same account.
-	if clauseARN.resource == "root" && clauseARN.account == callerParts.account {
+	// :root → any principal in the same account. Scoped to the IAM service
+	// segment; arn:aws:s3::A:root (or any other service) must not match —
+	// validators upstream do not check service-segment shape, so a malformed
+	// ARN pasted into a trust policy must fail closed here.
+	if clauseARN.service == "iam" && clauseARN.resource == "root" &&
+		clauseARN.account == callerParts.account {
 		return true
 	}
 

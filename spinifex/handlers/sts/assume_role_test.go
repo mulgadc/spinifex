@@ -131,6 +131,22 @@ func TestAssumeRole_RootPrincipal_MatchesAnyPrincipalInAccount(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestAssumeRole_NonIAMRootARN_DoesNotMatch ensures the :root shorthand is
+// scoped to arn:aws:iam — a malformed ARN like arn:aws:s3::A:root pasted into
+// a trust policy must fail closed, not silently grant the account.
+func TestAssumeRole_NonIAMRootARN_DoesNotMatch(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	trustPolicy := fmt.Sprintf(
+		`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:s3::%s:root"},"Action":"sts:AssumeRole"}]}`,
+		testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "s3root", trustPolicy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
 func TestAssumeRole_BareAccountIDPrincipal_TreatedAsRoot(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "bare", trustPolicyAllowingBareAccount(testCallerAccountID))

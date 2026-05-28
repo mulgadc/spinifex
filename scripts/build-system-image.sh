@@ -370,7 +370,15 @@ if [[ -n "${SETUP_SCRIPT:-}" ]]; then
     sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
     sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
     if [[ "$DISTRO" == "ubuntu" ]]; then
+        if [[ ! -x "${MOUNT_DIR}/bin/bash" ]]; then
+            echo "ERROR: /bin/bash not found or not executable in chroot (${MOUNT_DIR}/bin/bash)"
+            exit 1
+        fi
+        echo "  chroot: $(sudo chroot "$MOUNT_DIR" /bin/bash --version 2>&1 | head -1)"
+        echo "  mounts: $(mount | grep "$MOUNT_DIR" | awk '{print $3}' | tr '\n' ' ')"
+        set -x
         sudo chroot "$MOUNT_DIR" /bin/bash /tmp/setup.sh
+        { set +x; } 2>/dev/null
     else
         sudo chroot "$MOUNT_DIR" /tmp/setup.sh
     fi

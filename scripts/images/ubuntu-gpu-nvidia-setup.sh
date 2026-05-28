@@ -21,21 +21,23 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
 
-# Detect the cloud image's existing kernel BEFORE installing anything.
-# Installing linux-image-generic would upgrade to a newer kernel version;
-# DKMS would then build for that version but the VM boots the original
-# cloud image kernel, causing a version mismatch at modprobe time.
+# The Ubuntu minimal cloud image ships without a kernel. Install linux-image-generic
+# first so DKMS has a kernel to build against and the guest boots the same kernel
+# the module was built for.
+apt-get install -y --no-install-recommends \
+    linux-image-generic \
+    initramfs-tools
+
 KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
 if [[ -z "${KVER}" ]]; then
-    echo "ERROR: No kernel found under /boot"
+    echo "ERROR: No kernel found under /boot after kernel install"
     exit 1
 fi
 echo "Target kernel: ${KVER}"
 
-# Install headers for the exact kernel already present, plus initramfs-tools.
+# Install headers for the exact installed kernel version for the DKMS build.
 apt-get install -y --no-install-recommends \
-    "linux-headers-${KVER}" \
-    initramfs-tools
+    "linux-headers-${KVER}"
 
 # Install the NVIDIA server DKMS driver. Use the distro default version (no
 # hardcoded suffix) so Ubuntu 26.04's 580 driver is used instead of 550.

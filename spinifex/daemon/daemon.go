@@ -548,6 +548,31 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	return infos
 }
 
+// GetSupportedInstanceTypeInfos returns every instance type this node is
+// configured to run, irrespective of current free capacity. It mirrors
+// AWS's DescribeInstanceTypes semantics: callers asking "what types do you
+// support?" must see a stable answer even when every slot is occupied.
+// System types and entries with incomplete CPU/memory metadata are still
+// skipped.
+func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var infos []*ec2.InstanceTypeInfo
+	for name, it := range rm.instanceTypes {
+		if instancetypes.IsSystemType(name) {
+			continue
+		}
+		if instanceTypeVCPUs(it) == 0 || instanceTypeMemoryMiB(it) == 0 {
+			continue
+		}
+		infos = append(infos, it)
+	}
+
+	slog.Info("GetSupportedInstanceTypeInfos", "total_types", len(rm.instanceTypes), "supported", len(infos))
+	return infos
+}
+
 // GetResourceStats returns current resource allocation stats for the node status response.
 // totalVCPU / totalMemGB are the raw host figures; reservedVCPU / reservedMemGB are
 // held back from guest scheduling. Per-type caps reflect host - reserved - allocated,

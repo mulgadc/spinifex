@@ -34,7 +34,7 @@ function Users() {
             <Button>Create User</Button>
           </Link>
         }
-        title="IAM Users"
+        title="Users"
       />
 
       {users.length > 0 ? (

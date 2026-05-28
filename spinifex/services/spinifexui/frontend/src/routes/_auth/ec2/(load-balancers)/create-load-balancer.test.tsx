@@ -147,7 +147,7 @@ describe("create-load-balancer route", () => {
     await selectSubnets(user)
 
     await user.click(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     )
 
     await waitFor(() => {
@@ -198,7 +198,7 @@ describe("create-load-balancer route", () => {
     await user.click(tgItem)
 
     await user.click(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     )
 
     await waitFor(() => {
@@ -246,7 +246,7 @@ describe("create-load-balancer route", () => {
     await selectSubnets(user)
 
     await user.click(
-      screen.getByRole("button", { name: "Create load balancer" }),
+      screen.getByRole("button", { name: "Create Load Balancer" }),
     )
 
     await expect(

@@ -192,7 +192,7 @@ function InstanceDetail() {
               <StateBadge state={instance.State?.Name} />
             </div>
           }
-          subtitle="EC2 Instance Details"
+          subtitle="Instance Details"
           title={instance.InstanceId}
         />
 

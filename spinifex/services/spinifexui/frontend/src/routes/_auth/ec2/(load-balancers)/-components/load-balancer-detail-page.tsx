@@ -113,7 +113,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
               <StateBadge state={lb.State?.Code} />
             </div>
           }
-          subtitle="Load balancer details"
+          subtitle="Load Balancer Details"
           title={lb.LoadBalancerName ?? lb.LoadBalancerArn}
         />
 

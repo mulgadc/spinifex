@@ -35,7 +35,7 @@ function Buckets() {
             <Button>Create Bucket</Button>
           </Link>
         }
-        title="S3 Buckets"
+        title="Buckets"
       />
 
       {buckets.length > 0 ? (

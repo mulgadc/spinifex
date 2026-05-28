@@ -13,7 +13,7 @@ import {
 
 export const Route = createFileRoute("/_auth/s3/service-metrics")({
   head: () => ({
-    meta: [{ title: "Service Metrics | Mulga" }],
+    meta: [{ title: "Service Metrics | S3 | Mulga" }],
   }),
   component: ServiceMetricsPage,
 })
@@ -39,7 +39,7 @@ function ServiceMetricsPage() {
 
   return (
     <>
-      <PageHeading title="S3 Service Metrics" />
+      <PageHeading title="Service Metrics" />
       <div className="space-y-6">
         {/* Section 1: Storage Overview */}
         <Card>

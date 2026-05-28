@@ -224,7 +224,7 @@ export function CreateLoadBalancerPage() {
         Back to load balancers
       </BackLink>
 
-      <PageHeading title="Create load balancer" />
+      <PageHeading title="Create Load Balancer" />
 
       {wizardMutation.error && (
         <ErrorBanner
@@ -575,7 +575,7 @@ export function CreateLoadBalancerPage() {
             await navigate({ to: "/ec2/describe-load-balancers" })
           }
           pendingLabel="Creating…"
-          submitLabel="Create load balancer"
+          submitLabel="Create Load Balancer"
         />
       </form>
     </>

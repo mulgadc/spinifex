@@ -116,7 +116,7 @@ export function SidebarLayout() {
                     pathname.startsWith("/ec2/describe-instances") ||
                     pathname.startsWith("/ec2/run-instances")
                   }
-                  tooltip="EC2 Instances"
+                  tooltip="Instances"
                 >
                   <Server className="size-4" />
                   <span>Instances</span>

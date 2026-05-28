@@ -204,7 +204,7 @@ function UserDetail() {
               Delete
             </Button>
           }
-          subtitle="IAM User Details"
+          subtitle="User Details"
           title={user.UserName ?? ""}
         />
 

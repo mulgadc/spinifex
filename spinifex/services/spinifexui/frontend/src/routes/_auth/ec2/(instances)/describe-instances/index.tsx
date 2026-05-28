@@ -57,7 +57,7 @@ function Ec2() {
             <Button>Run Instances</Button>
           </Link>
         }
-        title="EC2 Instances"
+        title="Instances"
       />
 
       {instances.length > 0 ? (

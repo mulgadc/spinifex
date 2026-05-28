@@ -173,7 +173,7 @@ function CreateInstance() {
   return (
     <>
       <BackLink to="/ec2/describe-instances">Back to instances</BackLink>
-      <PageHeading title="Run EC2 Instances" />
+      <PageHeading title="Run Instances" />
 
       {/* Handle error when no instance types available */}
       {uniqueInstanceTypes.length === 0 && (

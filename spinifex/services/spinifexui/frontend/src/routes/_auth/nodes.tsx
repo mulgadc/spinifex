@@ -8,7 +8,6 @@ import { useAdmin } from "@/contexts/admin-context"
 import {
   adminNodesQueryOptions,
   adminVMsQueryOptions,
-  type InstanceTypeCap,
   type NodeInfo,
   type VMInfo,
 } from "@/queries/admin"
@@ -93,9 +92,6 @@ function NodesPage() {
       }
     }
   }
-  const instanceTypes = [...typeMap.entries()]
-    .map(([name, data]) => ({ name, ...data }))
-    .toSorted((a, b) => a.name.localeCompare(b.name))
 
   return (
     <>
@@ -146,14 +142,6 @@ function NodesPage() {
             ) : (
               <>
                 <ResourceTable nodes={nodes} />
-                {instanceTypes.length > 0 && (
-                  <>
-                    <h4 className="mt-4 text-xs font-medium text-muted-foreground">
-                      Instance Type Capacity
-                    </h4>
-                    <InstanceTypesTable instanceTypes={instanceTypes} />
-                  </>
-                )}
               </>
             )}
           </CardContent>
@@ -292,37 +280,6 @@ function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
                 {formatMemory(node.total_mem_gb)}
               </td>
               <td className="py-1.5">{node.vm_count}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function InstanceTypesTable({
-  instanceTypes,
-}: {
-  instanceTypes: InstanceTypeCap[]
-}) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Instance Type</th>
-            <th className="pr-4 pb-1 font-medium">Available</th>
-            <th className="pr-4 pb-1 font-medium">vCPU</th>
-            <th className="pb-1 font-medium">Memory</th>
-          </tr>
-        </thead>
-        <tbody>
-          {instanceTypes.map((it) => (
-            <tr key={it.name} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono">{it.name}</td>
-              <td className="py-1.5 pr-4">{it.available}</td>
-              <td className="py-1.5 pr-4">{it.vcpu}</td>
-              <td className="py-1.5">{formatMemory(it.memory_gb)}</td>
             </tr>
           ))}
         </tbody>

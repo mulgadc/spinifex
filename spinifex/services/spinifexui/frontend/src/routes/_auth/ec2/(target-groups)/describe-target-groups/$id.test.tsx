@@ -118,7 +118,7 @@ describe("target-group detail route", () => {
     renderWithClient(<TargetGroupDetailPage arn={TG_ARN} />, seed())
 
     expect(screen.getByText("my-tg")).toBeInTheDocument()
-    expect(screen.getByText("Target group details")).toBeInTheDocument()
+    expect(screen.getByText("Target Group Details")).toBeInTheDocument()
     expect(screen.getByText(TG_ARN)).toBeInTheDocument()
     expect(screen.getByText("instance")).toBeInTheDocument()
   })

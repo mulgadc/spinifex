@@ -82,7 +82,7 @@ function KeyPairDetail() {
               Delete
             </Button>
           }
-          subtitle="EC2 Key Pair Details"
+          subtitle="Key Pair Details"
           title={keyPair.KeyName ?? ""}
         />
 

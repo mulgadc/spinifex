@@ -31,7 +31,7 @@ function Images() {
 
   return (
     <>
-      <PageHeading title="EC2 Images" />
+      <PageHeading title="Images" />
 
       {images.length > 0 ? (
         <div className="space-y-4">

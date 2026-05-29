@@ -760,6 +760,19 @@ Requires pool mode with external IPAM (NOT dev_networking).
 - Terminate client VM
 - Cleanup: delete LB, verify ENI removal, delete TG
 
+### Phase 3e: ALB Internal — ModifyListener
+- Create two HTTP target groups (tgA, tgB), register the same 2 app instances in each
+- `create-load-balancer` (type=application, scheme=internal)
+- `create-listener` (HTTP:80) → tgA
+- Wait for ALB active, both TGs healthy
+- Baseline probe at port 80 → assert round-robin across both instances
+- `modify-listener` Port=8090 (same tgA), verify DescribeListeners persisted
+- Probe at port 8090 → assert round-robin (proves HAProxy reconciled without
+  dropping the listener)
+- `modify-listener` DefaultActions → tgB (same port 8090)
+- Probe at port 8090 → assert round-robin still flows through tgB
+- Cleanup: delete listener, LB, deregister, delete both TGs
+
 ### Phase 4: Cleanup (trap)
 - Terminate app instances, wait for terminated
 - Delete key pair, subnet, IGW, VPC

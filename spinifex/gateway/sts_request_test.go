@@ -37,6 +37,12 @@ func (m *flexMockSTSService) AssumeRole(callerAccountID, callerARN, callerIdenti
 	return &sts.AssumeRoleOutput{}, nil
 }
 
+// AssumeRoleForInstance is the in-process IMDS entry point, never dispatched
+// over the HTTPS gateway; the mock exists only to satisfy the interface.
+func (m *flexMockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
+	return &sts.AssumeRoleOutput{}, nil
+}
+
 func (m *flexMockSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	if m.getCallerIdentityFn != nil {
 		return m.getCallerIdentityFn(callerAccountID, callerARN, callerUserID, input)

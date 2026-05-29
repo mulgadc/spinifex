@@ -49,13 +49,20 @@ echo "Target kernel: ${KVER}"
 apt-get install -y --no-install-recommends \
     "linux-headers-${KVER}"
 
-# Install the NVIDIA server DKMS driver. Use the distro default version (no
-# hardcoded suffix) so Ubuntu 26.04's 580 driver is used instead of 550.
-# nvidia-dkms-server is a meta package that resolves to the current recommended
-# version; nvidia-utils-server brings nvidia-smi and related tools.
+# Detect the latest available versioned NVIDIA server driver. Ubuntu 26.04+
+# no longer ships unversioned meta-packages (nvidia-dkms-server); the packages
+# are now versioned (e.g. nvidia-dkms-570-server).
+NVIDIA_VER=$(apt-cache search '^nvidia-dkms-[0-9]+-server$' 2>/dev/null \
+    | grep -oP '(?<=nvidia-dkms-)\d+(?=-server)' | sort -rn | head -1)
+if [[ -z "${NVIDIA_VER}" ]]; then
+    echo "ERROR: No versioned nvidia-dkms-*-server package found in apt cache"
+    apt-cache search nvidia-dkms || true
+    exit 1
+fi
+echo "Installing NVIDIA server driver version: ${NVIDIA_VER}"
 apt-get install -y --no-install-recommends \
-    nvidia-dkms-server \
-    nvidia-utils-server
+    "nvidia-dkms-${NVIDIA_VER}-server" \
+    "nvidia-utils-${NVIDIA_VER}-server"
 
 # Detect the installed NVIDIA DKMS module name + version for explicit build.
 NVIDIA_DKMS_NAME=$(dkms status 2>/dev/null | awk -F'[,/ ]+' '/nvidia/{print $1; exit}')

@@ -430,6 +430,9 @@ if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
     rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        IMPORT_ARGS+=(--name "$AMI_NAME")
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
@@ -438,10 +441,14 @@ else
     echo "To import as AMI, run:"
     echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
+    NAME_HINT=""
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        NAME_HINT=" \\\n    --name ${AMI_NAME}"
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE} \\"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"
         echo "    --tag ${SYSTEM_TAG}"
     else
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT}"
     fi
 fi

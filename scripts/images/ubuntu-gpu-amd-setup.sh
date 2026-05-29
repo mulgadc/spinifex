@@ -64,6 +64,14 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
 apt-get update -qq
 apt-get install -y --no-install-recommends rocminfo rocm-smi-lib amd-smi-lib
 
+# Create /opt/rocm symlink (normally done by rocm-core) and add to PATH.
+ROCM_DIR=$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1)
+if [[ -n "${ROCM_DIR}" ]]; then
+    ln -sfn "${ROCM_DIR}" /opt/rocm
+    echo "export PATH=\"/opt/rocm/bin:\$PATH\"" > /etc/profile.d/rocm.sh
+    chmod 644 /etc/profile.d/rocm.sh
+fi
+
 # ── Docker CE ─────────────────────────────────────────────────────────────────
 # AMD GPU containers use device passthrough — no separate container runtime
 # is needed. Users pass --device=/dev/kfd --device=/dev/dri at run time.
@@ -81,13 +89,11 @@ systemctl enable docker
 groupadd -f render
 groupadd -f video
 
-# Add the cloud-init default user to docker/render/video at first boot.
+# Add the cloud-init default user (UID 1000) to docker/render/video at first boot.
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/99-gpu-groups.cfg <<'EOF'
-groups:
-  - docker
-  - render
-  - video
+runcmd:
+  - usermod -aG docker,render,video $(awk -F: '$3==1000{print $1}' /etc/passwd) || true
 EOF
 
 echo "Rebuilding initramfs for kernel: ${KVER}"

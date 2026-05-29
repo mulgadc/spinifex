@@ -146,11 +146,11 @@ apt-get install -y --no-install-recommends \
 nvidia-ctk runtime configure --runtime=docker
 systemctl enable docker
 
-# Add the cloud-init default user to docker at first boot.
+# Add the cloud-init default user (UID 1000) to docker at first boot.
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/99-gpu-groups.cfg <<'EOF'
-groups:
-  - docker
+runcmd:
+  - usermod -aG docker $(awk -F: '$3==1000{print $1}' /etc/passwd) || true
 EOF
 
 mkdir -p /etc/apt/apt.conf.d

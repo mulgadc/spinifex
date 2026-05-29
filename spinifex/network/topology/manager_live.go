@@ -218,15 +218,8 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 	}
 
 	dhcpOpts := &nbdb.DHCPOptions{
-		CIDR: cidr,
-		Options: map[string]string{
-			"server_id":  gwIP,
-			"server_mac": routerMAC,
-			"lease_time": "3600",
-			"router":     gwIP,
-			"dns_server": m.dnsServer(),
-			"mtu":        "1442",
-		},
+		CIDR:    cidr,
+		Options: BuildSubnetDHCPOptions(gwIP, routerMAC, m.dnsServer()),
 		ExternalIDs: map[string]string{
 			"spinifex:subnet_id": spec.SubnetID,
 			"spinifex:vpc_id":    spec.VPCID,

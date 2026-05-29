@@ -102,15 +102,8 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 
 		if existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID); err != nil || existing == nil {
 			opts := &nbdb.DHCPOptions{
-				CIDR: spec.CIDR.String(),
-				Options: map[string]string{
-					"server_id":  gwIP,
-					"server_mac": routerMAC,
-					"lease_time": "3600",
-					"router":     gwIP,
-					"dns_server": "8.8.8.8",
-					"mtu":        "1442",
-				},
+				CIDR:    spec.CIDR.String(),
+				Options: topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer),
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,

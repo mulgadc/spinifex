@@ -137,6 +137,107 @@ func TestNATSSystemInstanceLauncher_TerminateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNewNATSSystemInstanceLauncher_DefaultTimeout(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 0)
+	concrete, ok := launcher.(*natsSystemInstanceLauncher)
+	require.True(t, ok)
+	assert.Equal(t, defaultSystemInstanceTimeout, concrete.timeout)
+
+	negative, ok := NewNATSSystemInstanceLauncher(nc, -1*time.Second).(*natsSystemInstanceLauncher)
+	require.True(t, ok)
+	assert.Equal(t, defaultSystemInstanceTimeout, negative.timeout)
+}
+
+func TestNATSSystemInstanceLauncher_LaunchNilInput(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
+	_, err := launcher.LaunchSystemInstance(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "input is nil")
+}
+
+func TestNATSSystemInstanceLauncher_LaunchMissingInstanceType(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
+	_, err := launcher.LaunchSystemInstance(&SystemInstanceInput{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing InstanceType")
+}
+
+func TestNATSSystemInstanceLauncher_LaunchDecodeFailure(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte("{not valid json"))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
+	_, err = launcher.LaunchSystemInstance(&SystemInstanceInput{InstanceType: "sys.micro"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode launch reply")
+}
+
+func TestNATSSystemInstanceLauncher_LaunchMissingOutput(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	sub, err := nc.Subscribe("system.LaunchInstance.sys.micro", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte("{}"))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
+	_, err = launcher.LaunchSystemInstance(&SystemInstanceInput{InstanceType: "sys.micro"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing output payload")
+}
+
+func TestNATSSystemInstanceLauncher_TerminateEmptyID(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, time.Second)
+	err := launcher.TerminateSystemInstance("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty instance ID")
+}
+
+func TestNATSSystemInstanceLauncher_TerminateNoResponder(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 250*time.Millisecond)
+	err := launcher.TerminateSystemInstance("i-no-one-listens")
+	require.Error(t, err)
+}
+
+func TestNATSSystemInstanceLauncher_TerminateDecodeFailure(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	sub, err := nc.Subscribe("system.TerminateInstance.i-decode", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte("{not valid json"))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	launcher := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
+	err = launcher.TerminateSystemInstance("i-decode")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode terminate reply")
+}
+
 func TestNATSSystemInstanceLauncher_TerminatePropagatesRemoteError(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	defer nc.Close()

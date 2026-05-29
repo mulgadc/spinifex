@@ -75,6 +75,10 @@ func (s *NATSELBv2Service) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	return utils.NATSRequest[elbv2.DeleteListenerOutput](s.natsConn, "elbv2.DeleteListener", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) ModifyListener(input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error) {
+	return utils.NATSRequest[elbv2.ModifyListenerOutput](s.natsConn, "elbv2.ModifyListener", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
 	return utils.NATSRequest[elbv2.DescribeListenersOutput](s.natsConn, "elbv2.DescribeListeners", input, defaultTimeout, accountID)
 }

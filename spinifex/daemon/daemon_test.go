@@ -486,14 +486,22 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		initialCount := len(initialOutput.InstanceTypes)
 		t.Logf("Initial supported instance types: %d", initialCount)
 
+		schedulableMem := daemon.resourceMgr.hostMemGB - daemon.resourceMgr.reservedMem
 		var instanceType2CPU *ec2.InstanceTypeInfo
 		for _, it := range initialOutput.InstanceTypes {
-			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 {
-				instanceType2CPU = it
-				break
+			if it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil || *it.VCpuInfo.DefaultVCpus != 2 {
+				continue
 			}
+			if it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil {
+				continue
+			}
+			if float64(*it.MemoryInfo.SizeInMiB)/1024.0 > schedulableMem {
+				continue
+			}
+			instanceType2CPU = it
+			break
 		}
-		require.NotNil(t, instanceType2CPU, "Should find an instance type with 2 vCPUs")
+		require.NotNil(t, instanceType2CPU, "Should find a 2 vCPU instance type that fits schedulable memory")
 
 		err = daemon.resourceMgr.allocate(instanceType2CPU)
 		require.NoError(t, err, "Should be able to allocate 2 vCPU instance")

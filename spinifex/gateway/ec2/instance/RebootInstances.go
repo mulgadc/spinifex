@@ -14,7 +14,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateRebootInstancesInput validates the input parameters
 func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

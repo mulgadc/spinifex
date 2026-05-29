@@ -9,13 +9,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateModifyNetworkInterfaceAttributeInput validates the input parameters
 func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterfaceAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Groups) == 0 && input.Description == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return nil
 }

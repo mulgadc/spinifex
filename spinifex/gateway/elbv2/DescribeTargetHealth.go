@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeTargetHealthInput validates the input parameters
 func ValidateDescribeTargetHealthInput(input *elbv2.DescribeTargetHealthInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

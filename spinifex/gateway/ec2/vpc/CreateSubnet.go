@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateSubnetInput validates the input parameters
 func ValidateCreateSubnetInput(input *ec2.CreateSubnetInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

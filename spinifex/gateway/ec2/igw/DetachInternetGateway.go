@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDetachInternetGatewayInput validates the input parameters
 func ValidateDetachInternetGatewayInput(input *ec2.DetachInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

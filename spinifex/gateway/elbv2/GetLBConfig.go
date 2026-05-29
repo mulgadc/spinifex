@@ -8,7 +8,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateGetLBConfigInput validates the input parameters
 func ValidateGetLBConfigInput(input *handlers_elbv2.GetLBConfigInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

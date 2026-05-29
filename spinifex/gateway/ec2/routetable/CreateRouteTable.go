@@ -9,10 +9,20 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func ValidateCreateRouteTableInput(input *ec2.CreateRouteTableInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.VpcId == nil || *input.VpcId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
 func CreateRouteTable(input *ec2.CreateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteTableOutput, error) {
 	var output ec2.CreateRouteTableOutput
-	if input == nil {
-		return output, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateCreateRouteTableInput(input); err != nil {
+		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
 	result, err := svc.CreateRouteTable(input, accountID)

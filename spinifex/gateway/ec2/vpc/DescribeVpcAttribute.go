@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeVpcAttributeInput validates the input parameters
 func ValidateDescribeVpcAttributeInput(input *ec2.DescribeVpcAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -10,7 +10,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateModifyVolumeInput validates the input parameters
 func ValidateModifyVolumeInput(input *ec2.ModifyVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

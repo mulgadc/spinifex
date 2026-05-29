@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateListenerInput validates the input parameters
 func ValidateCreateListenerInput(input *elbv2.CreateListenerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

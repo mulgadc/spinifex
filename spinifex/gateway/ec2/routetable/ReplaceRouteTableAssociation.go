@@ -9,10 +9,23 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func ValidateReplaceRouteTableAssociationInput(input *ec2.ReplaceRouteTableAssociationInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.AssociationId == nil || *input.AssociationId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.RouteTableId == nil || *input.RouteTableId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
 func ReplaceRouteTableAssociation(input *ec2.ReplaceRouteTableAssociationInput, natsConn *nats.Conn, accountID string) (ec2.ReplaceRouteTableAssociationOutput, error) {
 	var output ec2.ReplaceRouteTableAssociationOutput
-	if input == nil {
-		return output, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateReplaceRouteTableAssociationInput(input); err != nil {
+		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
 	result, err := svc.ReplaceRouteTableAssociation(input, accountID)

@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteSubnetInput validates the input parameters
 func ValidateDeleteSubnetInput(input *ec2.DeleteSubnetInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDisassociateAddressInput validates the input parameters
 func ValidateDisassociateAddressInput(input *ec2.DisassociateAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

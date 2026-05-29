@@ -9,10 +9,20 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func ValidateDeleteRouteTableInput(input *ec2.DeleteRouteTableInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.RouteTableId == nil || *input.RouteTableId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
 func DeleteRouteTable(input *ec2.DeleteRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DeleteRouteTableOutput, error) {
 	var output ec2.DeleteRouteTableOutput
-	if input == nil {
-		return output, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateDeleteRouteTableInput(input); err != nil {
+		return output, err
 	}
 	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
 	result, err := svc.DeleteRouteTable(input, accountID)

@@ -741,15 +741,70 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 	// In-place port change.
 	modifyListenerPort(t, c, listener, altPort)
 	assert.Equal(t, altPort, describeListenerPort(t, c, listener), "listener port persisted")
-	// Tiny settle: HAProxy reload is fast but not synchronous with the API
-	// response. 3s is well under the previous delete+create gap.
-	time.Sleep(3 * time.Second)
+	// lb-agent picks up the new HAProxy config on its next 5s tick, not
+	// synchronously with the ModifyListener API. Poll until the listener
+	// actually answers on altPort before driving the assertive probe.
+	waitForListenerServing(t, f, priv, altPort, label+" port 8090", 60*time.Second)
 	probeAtPort(t, f, priv, altPort, label+" after port-modify (port 8090)")
 
 	// Defaults: in-place TG swap on same port.
 	modifyListenerDefaultTG(t, c, listener, tgB)
 	harness.WaitForTargetsHealthy(t, c, tgB, 2, label+" tgB (post-swap)", 2*time.Minute)
 	probeAtPort(t, f, priv, altPort, label+" after TG-swap (still port 8090, now tgB)")
+}
+
+// waitForListenerServing polls the shared client with a tiny round of probes
+// until at least one returns a successful instance_id payload. Used after
+// ModifyListener calls so the assertive probeAtPort doesn't race the
+// lb-agent's poll-driven HAProxy reload (5s tick + reload latency).
+func waitForListenerServing(t *testing.T, f *sharedFixture, lbIP string, port int64, label string, timeout time.Duration) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		r, err := probeOnce(f, lbIP, port, 2)
+		if err != nil {
+			return err
+		}
+		if r.Successful == 0 {
+			return fmt.Errorf("%s: listener not serving on :%d (0/%d successful)", label, port, r.Total)
+		}
+		return nil
+	}, timeout, 2*time.Second)
+}
+
+// probeOnce drives the shared client to issue `count` HTTP probes at
+// lbIP:port and returns the parsed TrafficResult. Errors are returned rather
+// than failing the test so callers can poll.
+func probeOnce(f *sharedFixture, lbIP string, port int64, count int) (harness.TrafficResult, error) {
+	resultsFile := fmt.Sprintf("mod-%d-%d.txt", port, time.Now().UnixNano())
+	order := map[string]any{
+		"proto":     "http",
+		"ip":        lbIP,
+		"count":     count,
+		"outfile":   resultsFile,
+		"http_port": port,
+		"tcp_port":  tcpPort,
+	}
+	body, err := json.Marshal(order)
+	if err != nil {
+		return harness.TrafficResult{}, err
+	}
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("trigger: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return harness.TrafficResult{}, fmt.Errorf("trigger status %d", resp.StatusCode)
+	}
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("fetch %s: %w", resultsFile, err)
+	}
+	return harness.VerifyResultsLines(results, "http"), nil
 }
 
 // probeAtPort runs round-robin probes from the shared client to lbIP:port and

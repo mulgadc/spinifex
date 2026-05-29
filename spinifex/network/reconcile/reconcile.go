@@ -129,6 +129,8 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 		"intent_igws", len(intent.IGWs),
 		"intent_eips", len(intent.EIPs),
 		"intent_natgws", len(intent.NATGWs),
+		"intent_igw_routes", len(intent.IGWRoutes),
+		"intent_natgw_routes", len(intent.NATGWRoutes),
 	)
 
 	r.applyVPCs(ctx, intent, actual)
@@ -138,6 +140,8 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)
 	r.applyNATGWs(ctx, intent, actual)
+	r.applyIGWRoutes(ctx, intent, actual)
+	r.applyNATGWRoutes(ctx, intent, actual)
 
 	slog.Info("reconcile: complete")
 	return nil

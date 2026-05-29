@@ -254,8 +254,64 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadIntentFromKV on empty cluster: %v", err)
 	}
-	if len(intent.VPCs)+len(intent.Subnets)+len(intent.Ports)+len(intent.SGs)+len(intent.IGWs)+len(intent.EIPs)+len(intent.NATGWs) != 0 {
+	if len(intent.VPCs)+len(intent.Subnets)+len(intent.Ports)+len(intent.SGs)+len(intent.IGWs)+len(intent.EIPs)+len(intent.NATGWs)+len(intent.IGWRoutes)+len(intent.NATGWRoutes) != 0 {
 		t.Errorf("expected empty intent on fresh cluster, got %#v", intent)
+	}
+}
+
+// TestLoadIntentFromKV_IGWRoutesFanOutMainRT covers the bootstrap race:
+// publisher fires vpc.add-igw-route before subscribers attach, the event
+// is dropped, and KV is the only source of truth left. The reconcile pass
+// must rediscover the per-subnet egress intent from the main RT and fan it
+// out to every subnet (including implicit-main subnets with no explicit
+// non-main association).
+func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-implicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-implicit", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
+		}),
+		"acct/subnet-explicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-explicit", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
+			},
+		}),
+		"acct/rtb-explicit": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-explicit", VpcId: "vpc-local",
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-x", SubnetId: "subnet-explicit"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if len(intent.IGWRoutes) != 1 {
+		t.Fatalf("got %d IGWRoutes, want 1; routes=%#v", len(intent.IGWRoutes), intent.IGWRoutes)
+	}
+	for _, spec := range intent.IGWRoutes {
+		if spec.SubnetID != "subnet-implicit" {
+			t.Errorf("SubnetID=%q, want %q (explicit subnet is on rtb-explicit which has no IGW route)",
+				spec.SubnetID, "subnet-implicit")
+		}
+		if spec.DestCIDR.String() != "0.0.0.0/0" {
+			t.Errorf("DestCIDR=%q, want 0.0.0.0/0", spec.DestCIDR.String())
+		}
 	}
 }
 

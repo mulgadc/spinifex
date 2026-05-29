@@ -75,6 +75,9 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"DeleteListener": elbv2Handler(func(input *elbv2.DeleteListenerInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DeleteListener(input, gw.NATSConn, accountID)
 	}),
+	"ModifyListener": elbv2Handler(func(input *elbv2.ModifyListenerInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyListener(input, gw.NATSConn, accountID)
+	}),
 	"DescribeListeners": elbv2Handler(func(input *elbv2.DescribeListenersInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListeners(input, gw.NATSConn, accountID)
 	}),

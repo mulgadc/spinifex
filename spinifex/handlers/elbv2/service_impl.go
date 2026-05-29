@@ -1658,6 +1658,132 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	return &elbv2.DeleteListenerOutput{}, nil
 }
 
+func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error) {
+	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
+	if err != nil {
+		slog.Error("ModifyListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if listener == nil || listener.AccountID != accountID {
+		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
+	}
+
+	lb, err := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
+	if err != nil {
+		slog.Error("ModifyListener: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if lb == nil {
+		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
+	}
+
+	updated := *listener
+
+	if input.Protocol != nil && *input.Protocol != "" {
+		proto := *input.Protocol
+		switch lb.Type {
+		case LoadBalancerTypeNetwork:
+			switch proto {
+			case ProtocolTCP, ProtocolUDP, ProtocolTLS, ProtocolTCPUDP:
+			default:
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		default:
+			switch proto {
+			case ProtocolHTTP, ProtocolHTTPS:
+			default:
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+		updated.Protocol = proto
+	}
+
+	if input.Port != nil {
+		newPort := *input.Port
+		if newPort != updated.Port {
+			existingListeners, listErr := s.store.ListListenersByLB(lb.LoadBalancerArn)
+			if listErr != nil {
+				slog.Error("ModifyListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", listErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			for _, l := range existingListeners {
+				if l.ListenerID == updated.ListenerID {
+					continue
+				}
+				if l.Port == newPort {
+					return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+				}
+			}
+			updated.Port = newPort
+		}
+	}
+
+	if len(input.DefaultActions) > 0 {
+		var actions []ListenerAction
+		for _, a := range input.DefaultActions {
+			action := ListenerAction{}
+			if a.Type != nil {
+				action.Type = *a.Type
+			}
+			if a.TargetGroupArn != nil {
+				action.TargetGroupArn = *a.TargetGroupArn
+			}
+			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
+				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
+				if tgErr != nil {
+					slog.Error("ModifyListener: failed to get target group", "arn", action.TargetGroupArn, "err", tgErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
+				if tg == nil {
+					return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+				}
+				if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {
+					return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+				}
+			}
+			actions = append(actions, action)
+		}
+		updated.DefaultActions = actions
+	} else if input.Protocol != nil && updated.Protocol != listener.Protocol {
+		for _, a := range updated.DefaultActions {
+			if a.Type != ActionTypeForward || a.TargetGroupArn == "" {
+				continue
+			}
+			tg, tgErr := s.store.GetTargetGroupByArn(a.TargetGroupArn)
+			if tgErr != nil {
+				slog.Error("ModifyListener: failed to get target group", "arn", a.TargetGroupArn, "err", tgErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if tg == nil {
+				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+			}
+			if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+	}
+
+	if err := s.store.PutListener(&updated); err != nil {
+		slog.Error("ModifyListener: failed to persist record", "listenerId", updated.ListenerID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := s.updateStoredConfig(lb); err != nil {
+		slog.Error("ModifyListener: failed to update config", "listenerArn", updated.ListenerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("ModifyListener completed", "listenerArn", updated.ListenerArn, "lbArn", lb.LoadBalancerArn, "port", updated.Port, "protocol", updated.Protocol, "accountID", accountID)
+
+	return &elbv2.ModifyListenerOutput{
+		Listeners: []*elbv2.Listener{s.listenerRecordToSDK(&updated)},
+	}, nil
+}
+
 func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
 	var listeners []*ListenerRecord
 	var err error

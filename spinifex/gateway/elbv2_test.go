@@ -48,6 +48,7 @@ func TestELBv2ActionsMap_AllActionsRegistered(t *testing.T) {
 		"DescribeTargetHealth",
 		"CreateListener",
 		"DeleteListener",
+		"ModifyListener",
 		"DescribeListeners",
 		"DescribeTags",
 		"LBAgentHeartbeat",

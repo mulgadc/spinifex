@@ -825,6 +825,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"elbv2.DescribeTargetHealth", d.handleELBv2DescribeTargetHealth, "spinifex-workers"},
 			natsSub{"elbv2.CreateListener", d.handleELBv2CreateListener, "spinifex-workers"},
 			natsSub{"elbv2.DeleteListener", d.handleELBv2DeleteListener, "spinifex-workers"},
+			natsSub{"elbv2.ModifyListener", d.handleELBv2ModifyListener, "spinifex-workers"},
 			natsSub{"elbv2.DescribeListeners", d.handleELBv2DescribeListeners, "spinifex-workers"},
 			natsSub{"elbv2.DescribeTags", d.handleELBv2DescribeTags, "spinifex-workers"},
 			natsSub{"elbv2.LBAgentHeartbeat", d.handleELBv2LBAgentHeartbeat, "spinifex-workers"},

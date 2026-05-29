@@ -28,9 +28,19 @@ apt-get install -y \
     linux-image-generic \
     initramfs-tools
 
+echo "=== /boot ==="
+ls -la /boot/ || true
+echo "=== /lib/modules ==="
+ls /lib/modules/ || true
+echo "=== installed kernel packages ==="
+dpkg -l 'linux-image-*' | grep '^ii' || true
+
 KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
 if [[ -z "${KVER}" ]]; then
-    echo "ERROR: No kernel found under /boot after kernel install"
+    KVER=$(ls /lib/modules/ 2>/dev/null | sort -V | tail -1)
+fi
+if [[ -z "${KVER}" ]]; then
+    echo "ERROR: No kernel found in /boot or /lib/modules after kernel install"
     exit 1
 fi
 echo "Target kernel: ${KVER}"

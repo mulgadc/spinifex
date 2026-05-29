@@ -614,3 +614,177 @@ func TestRoles_AccountScoping(t *testing.T) {
 	})
 	require.NoError(t, err, "Account B's role must survive Account A's delete")
 }
+
+// ============================================================================
+// Trust Policy Validator — rejected fields (Condition / NotPrincipal /
+// NotAction / empty Action / empty Principal). These must fail loudly at
+// write time because v1 does not evaluate the rejected fields at runtime,
+// and silently accepting them would turn an unenforced-Condition or
+// universe-allow NotPrincipal into a security hole.
+// ============================================================================
+
+func TestCreateRole_MalformedTrustPolicy_ConditionRejected_StringEquals(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"abc"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("with-externalid"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_ConditionRejected_IpAddress(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("with-sourceip"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_TrustPolicy_EmptyConditionAccepted(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	// Condition: {} is trivially empty — no field actually present at
+	// runtime — so the rejection must not fire.
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{}}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("empty-cond-obj"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+}
+
+func TestCreateRole_TrustPolicy_NullConditionAccepted(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":null}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("null-cond"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+}
+
+func TestCreateRole_MalformedTrustPolicy_NotPrincipalRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotPrincipal":{"AWS":"arn:aws:iam::123456789012:user/Bob"},"Action":"sts:AssumeRole"}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("notprincipal"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_NotActionRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"NotAction":["sts:AssumeRole"]}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("notaction"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_EmptyActionElement(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	// len(Action) > 0, but the single element is empty — the original
+	// validator only checked length, so this would slip through.
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":[""]}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("emptyaction"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_EmptyPrincipalObject(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{},"Action":"sts:AssumeRole"}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("emptyprincipal-obj"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_EmptyPrincipalArray(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":[],"Action":"sts:AssumeRole"}]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("emptyprincipal-arr"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreateRole_MalformedTrustPolicy_MultiStatementOneForbidden(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	// First statement is clean; the second carries a Condition. The whole
+	// document must be rejected — not just the offending statement skipped.
+	doc := `{"Version":"2012-10-17","Statement":[` +
+		`{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"},` +
+		`{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"abc"}}}` +
+		`]}`
+	_, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("multi-forbidden"),
+		AssumeRolePolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestUpdateAssumeRolePolicy_ConditionRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "update-cond")
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"abc"}}}]}`
+	_, err := svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String("update-cond"),
+		PolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestUpdateAssumeRolePolicy_NotPrincipalRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "update-notprincipal")
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotPrincipal":{"AWS":"arn:aws:iam::123456789012:user/Bob"},"Action":"sts:AssumeRole"}]}`
+	_, err := svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String("update-notprincipal"),
+		PolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestUpdateAssumeRolePolicy_NotActionRejected(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "update-notaction")
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"NotAction":["sts:AssumeRole"]}]}`
+	_, err := svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String("update-notaction"),
+		PolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}

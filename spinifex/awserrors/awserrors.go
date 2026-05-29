@@ -43,6 +43,7 @@ var (
 	ErrorDuplicateSubnetsInSameZone                            = "DuplicateSubnetsInSameZone"
 	ErrorEncryptedVolumesNotSupported                          = "EncryptedVolumesNotSupported"
 	ErrorExistingVpcEndpointConnections                        = "ExistingVpcEndpointConnections"
+	ErrorExpiredToken                                          = "ExpiredToken"
 	ErrorFilterLimitExceeded                                   = "FilterLimitExceeded"
 	ErrorFleetNotInModifiableState                             = "FleetNotInModifiableState"
 	ErrorFlowLogAlreadyExists                                  = "FlowLogAlreadyExists"
@@ -341,11 +342,13 @@ var (
 	ErrorOperationNotPermitted                                 = "OperationNotPermitted"
 	ErrorOptInRequired                                         = "OptInRequired"
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded          = "OutstandingVpcPeeringConnectionLimitExceeded"
+	ErrorPackedPolicyTooLarge                                  = "PackedPolicyTooLarge"
 	ErrorPendingSnapshotLimitExceeded                          = "PendingSnapshotLimitExceeded"
 	ErrorPendingVerification                                   = "PendingVerification"
 	ErrorPendingVpcPeeringConnectionLimitExceeded              = "PendingVpcPeeringConnectionLimitExceeded"
 	ErrorPlacementGroupLimitExceeded                           = "PlacementGroupLimitExceeded"
 	ErrorPrivateIpAddressLimitExceeded                         = "PrivateIpAddressLimitExceeded"
+	ErrorRegionDisabled                                        = "RegionDisabledException"
 	ErrorRequestEntityTooLarge                                 = "RequestEntityTooLarge"
 	ErrorRequestExpired                                        = "RequestExpired"
 	ErrorRequestLimitExceeded                                  = "RequestLimitExceeded"
@@ -506,6 +509,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorDuplicateSubnetsInSameZone:                            {HTTPCode: 400, Message: "For an interface VPC endpoint, you can specify only one subnet per Availability Zone."},
 	ErrorEncryptedVolumesNotSupported:                          {HTTPCode: 400, Message: "Encrypted Amazon EBS volumes may only be attached to instances that support Amazon EBS encryption. For more information, see Amazon EBS encryption."},
 	ErrorExistingVpcEndpointConnections:                        {HTTPCode: 400, Message: "You cannot delete a VPC endpoint service configuration or change the load balancers for the endpoint service if there are endpoints attached to the service."},
+	ErrorExpiredToken:                                          {HTTPCode: 400, Message: "The security token included in the request is expired."},
 	ErrorFilterLimitExceeded:                                   {HTTPCode: 400, Message: "The request uses too many filters or too many filter values."},
 	ErrorFleetNotInModifiableState:                             {HTTPCode: 400, Message: "The Spot Fleet request must be in the active state in order to modify it. For more information, see Spot Fleet request types."},
 	ErrorFlowLogAlreadyExists:                                  {HTTPCode: 409, Message: "A flow log with the specified configuration already exists."},
@@ -804,11 +808,13 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorOperationNotPermitted:                                 {HTTPCode: 400, Message: "The specified operation is not allowed. This error can occur for a number of reasons; for example, you might be trying to terminate an instance that has termination protection enabled, or trying to detach the primary network interface (eth0) from an instance."},
 	ErrorOptInRequired:                                         {HTTPCode: 403, Message: "You are not authorized to use the requested service. Ensure that you have subscribed to the service you are trying to use. If you are new to AWS, your account might take some time to be activated while your credit card details are being verified."},
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded:          {HTTPCode: 400, Message: "You've reached the limit on the number of VPC peering connection requests that you can create for the specified VPC."},
+	ErrorPackedPolicyTooLarge:                                  {HTTPCode: 400, Message: "Serialized policy size exceeded the allowed maximum."},
 	ErrorPendingSnapshotLimitExceeded:                          {HTTPCode: 409, Message: "You've reached the limit on the number of Amazon EBS snapshots that you can have in the pending state."},
 	ErrorPendingVerification:                                   {HTTPCode: 409, Message: "Your account is pending verification. Until the verification process is complete, you may not be able to carry out requests with this account. If you have questions, contact Support."},
 	ErrorPendingVpcPeeringConnectionLimitExceeded:              {HTTPCode: 409, Message: "You've reached the limit on the number of pending VPC peering connections that you can have."},
 	ErrorPlacementGroupLimitExceeded:                           {HTTPCode: 400, Message: "You've reached the limit on the number of placement groups that you can have."},
 	ErrorPrivateIpAddressLimitExceeded:                         {HTTPCode: 400, Message: "You've reached the limit on the number of private IP addresses that you can assign to the specified network interface for that type of instance. For more information, see IP addresses per network interface."},
+	ErrorRegionDisabled:                                        {HTTPCode: 403, Message: "STS is not activated in this region."},
 	ErrorRequestEntityTooLarge:                                 {HTTPCode: 413, Message: "Request body exceeds the maximum allowed size."},
 	ErrorRequestExpired:                                        {HTTPCode: 403, Message: "The request reached the service more than 15 minutes after the date stamp on the request or more than 15 minutes after the request expiration date (such as for presigned URLs), or the date stamp on the request is more than 15 minutes in the future. If you're using temporary security credentials, this error can also occur if the credentials have expired. For more information, see Temporary security credentials in the IAM User Guide."},
 	ErrorRequestLimitExceeded:                                  {HTTPCode: 503, Message: "The maximum request rate permitted by the Amazon EC2 APIs has been exceeded for your account. For best results, use an increasing or variable sleep interval between requests. For more information, see Query API request rate."},

@@ -12,7 +12,7 @@ func TestErrorLookup_Structure(t *testing.T) {
 		t.Fatalf("ErrorLookup unexpectedly small: %d entries", len(ErrorLookup))
 	}
 
-	validHTTP := map[int]bool{400: true, 403: true, 404: true, 409: true, 412: true, 413: true, 500: true, 503: true}
+	validHTTP := map[int]bool{400: true, 403: true, 404: true, 409: true, 412: true, 413: true, 500: true, 501: true, 503: true}
 	for code, msg := range ErrorLookup {
 		if !validHTTP[msg.HTTPCode] {
 			t.Errorf("%s has invalid HTTPCode %d", code, msg.HTTPCode)

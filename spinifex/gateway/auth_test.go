@@ -10,17 +10,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1539,4 +1543,377 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	if !strings.Contains(xmlStr, "/local/status") {
 		t.Errorf("Expected /local/status hint in body, got: %s", xmlStr)
 	}
+}
+
+// --- Session credential (ASIA) auth tests ---
+
+// mockSTSService implements handlers_sts.STSService for auth-middleware tests.
+// Only LookupSessionCredential and VerifySessionToken are exercised; the rest
+// of the interface returns nil so a misrouted call surfaces as a test panic
+// rather than a silent allow.
+type mockSTSService struct {
+	sessions  map[string]*handlers_sts.SessionCredential
+	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
+	lookupErr error
+	lookups   atomic.Int32 // counts LookupSessionCredential calls for negative-side-effect assertions
+}
+
+func (m *mockSTSService) AssumeRole(_, _, _ string, _ *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
+	return nil, nil
+}
+func (m *mockSTSService) GetCallerIdentity(_, _, _ string, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
+	return nil, nil
+}
+func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
+	m.lookups.Add(1)
+	if m.lookupErr != nil {
+		return nil, m.lookupErr
+	}
+	if !strings.HasPrefix(accessKeyID, "ASIA") {
+		return nil, nil
+	}
+	cred, ok := m.sessions[accessKeyID]
+	if !ok {
+		return nil, nil
+	}
+	return cred, nil
+}
+
+// VerifySessionToken mirrors the production semantics (HMAC equivalence under
+// the master key) using plaintext equality. Tests that call this through the
+// production STSServiceImpl would round-trip the actual HMAC; the mock keeps
+// the wiring simple while preserving the contract.
+func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential, wireToken string) bool {
+	if cred == nil {
+		return false
+	}
+	want, ok := m.tokens[cred.AccessKeyID]
+	if !ok {
+		return false
+	}
+	return want == wireToken
+}
+
+const (
+	testSessionAKID  = "ASIATESTSESSIONAAAAA"
+	testSessionToken = "wire-session-token-plain"
+	testRoleARN      = "arn:aws:iam::123456789012:role/test-role"
+	testAssumedARN   = "arn:aws:sts::123456789012:assumed-role/test-role/test-session"
+)
+
+// setupSessionTestApp wires a gateway with both IAM and STS mocks. The session
+// credential's stored secret is real (AES-GCM under testMasterKey) so the
+// SigV4 verify path exercises the same decrypt code as production.
+func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mockSTSService) {
+	t.Helper()
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+
+	cred := &handlers_sts.SessionCredential{
+		AccessKeyID:       testSessionAKID,
+		SecretEncrypted:   encryptedSecret,
+		SessionTokenHMAC:  "ignored-in-mock", // mock verifies by plaintext map
+		AccountID:         "123456789012",
+		AssumedRoleARN:    testAssumedARN,
+		UnderlyingRoleARN: testRoleARN,
+		RoleID:            "AROAEXAMPLEAAAAAA",
+		AssumedRoleID:     "AROAEXAMPLEAAAAAA:test-session",
+		SessionName:       "test-session",
+		ExpiresAt:         expiresAt,
+		CreatedAt:         time.Now().UTC().Add(-time.Minute),
+	}
+
+	stsMock := &mockSTSService{
+		sessions: map[string]*handlers_sts.SessionCredential{testSessionAKID: cred},
+		tokens:   map[string]string{testSessionAKID: testSessionToken},
+	}
+
+	iamMock := &mockIAMService{
+		masterKey: testMasterKey,
+		accessKeys: map[string]*handlers_iam.AccessKey{
+			testAccessKey: {
+				AccessKeyID:     testAccessKey,
+				SecretAccessKey: encryptedSecret,
+				UserName:        "alice",
+				AccountID:       "999999999999",
+				Status:          "Active",
+			},
+		},
+	}
+
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		IAMService:     iamMock,
+		STSService:     stsMock,
+	}
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
+		fmt.Fprintf(w,
+			"identity=%v|accountId=%v|principalType=%v|assumedRoleARN=%v",
+			ctx.Value(ctxIdentity),
+			ctx.Value(ctxAccountID),
+			ctx.Value(ctxPrincipalType),
+			ctx.Value(ctxAssumedRoleARN),
+		)
+	})
+	return r, stsMock
+}
+
+// signSessionRequest pre-sets the X-Amz-Security-Token header before signing
+// so the SDK signer includes it in SignedHeaders — matching what the AWS CLI /
+// SDK do when given session credentials.
+func signSessionRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret, sessionToken string) {
+	t.Helper()
+	req.Header.Set("X-Amz-Security-Token", sessionToken)
+	signTestRequest(t, req, body, accessKey, secret)
+}
+
+func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "identity=test-session")
+	assert.Contains(t, bodyStr, "accountId=123456789012")
+	assert.Contains(t, bodyStr, "principalType=assumed-role")
+	assert.Contains(t, bodyStr, "assumedRoleARN="+testAssumedARN)
+}
+
+func TestSigV4Auth_Session_Expired(t *testing.T) {
+	// Past expiry but still within the janitor grace window — record still
+	// resolvable, must reject as ExpiredToken (not InvalidClientTokenId).
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(-time.Minute))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, 400, resp.StatusCode)
+	assert.Contains(t, string(body), "ExpiredToken")
+}
+
+func TestSigV4Auth_Session_WrongSecurityToken(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, "wrong-wire-token")
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	// Sign without setting X-Amz-Security-Token — the ASIA path requires it.
+	signTestRequest(t, req, nil, testSessionAKID, testSecretKey)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+func TestSigV4Auth_Session_AKIDNotInBucket(t *testing.T) {
+	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, "ASIAOTHERAKIDAAAAAAA", testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+}
+
+func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
+	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	// Neither AKIA nor ASIA — must reject without any STS or IAM lookup.
+	signTestRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", testSecretKey)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "InvalidClientTokenId")
+	assert.Equal(t, int32(0), stsMock.lookups.Load(), "STSService must not be consulted for unknown-prefix AKIDs")
+}
+
+func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
+	// Regression: existing long-lived path must set ctxPrincipalType=user so
+	// downstream policy lookups remain gated correctly.
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+
+	iamMock := &mockIAMService{
+		masterKey: testMasterKey,
+		accessKeys: map[string]*handlers_iam.AccessKey{
+			testAccessKey: {
+				AccessKeyID:     testAccessKey,
+				SecretAccessKey: encryptedSecret,
+				UserName:        "alice",
+				AccountID:       "111111111111",
+				Status:          "Active",
+			},
+		},
+	}
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: iamMock}
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
+		fmt.Fprintf(w, "principalType=%v|assumedRoleARN=%v",
+			req.Context().Value(ctxPrincipalType),
+			req.Context().Value(ctxAssumedRoleARN))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signTestRequest(t, req, nil, testAccessKey, testSecretKey)
+	resp := doRequest(r, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+	assert.Contains(t, string(body), "principalType=user")
+	// ctxAssumedRoleARN should be unset → "<nil>" via fmt %v
+	assert.Contains(t, string(body), "assumedRoleARN=<nil>")
+}
+
+func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
+	// A session AKID presented to a gateway whose STSService is nil is a
+	// configuration error — fail loud with InternalError.
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	iamMock := &mockIAMService{
+		masterKey:  testMasterKey,
+		accessKeys: map[string]*handlers_iam.AccessKey{},
+	}
+	_ = encryptedSecret
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		IAMService:     iamMock,
+		STSService:     nil,
+	}
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(r, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, string(body), "InternalError")
+}
+
+// TestCheckPolicy_SessionNameCollision is the privilege-escalation regression
+// the ctxPrincipalType gate exists to prevent: an IAM user named "alice" has
+// a permissive Allow policy; a session is minted with SessionName="alice". A
+// missing gate would silently pass the session's identity through
+// GetUserPolicies("alice") and inherit alice's permissions. With the gate,
+// the assumed-role principal must fail closed regardless of name collisions.
+func TestCheckPolicy_SessionNameCollision(t *testing.T) {
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+
+	// Real IAM user "alice" with permissive policy.
+	iamMock := &policyMockIAMService{
+		mockIAMService: mockIAMService{
+			masterKey: testMasterKey,
+			accessKeys: map[string]*handlers_iam.AccessKey{
+				testAccessKey: {
+					AccessKeyID:     testAccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       "123456789012",
+					Status:          "Active",
+				},
+			},
+		},
+		getUserPoliciesFn: func(_, userName string) ([]handlers_iam.PolicyDocument, error) {
+			if userName == "alice" {
+				return []handlers_iam.PolicyDocument{
+					{
+						Version: "2012-10-17",
+						Statement: []handlers_iam.Statement{
+							{
+								Effect:   "Allow",
+								Action:   handlers_iam.StringOrArr{"ec2:*"},
+								Resource: handlers_iam.StringOrArr{"*"},
+							},
+						},
+					},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	// Session whose SessionName == "alice" — colliding with the IAM user.
+	cred := &handlers_sts.SessionCredential{
+		AccessKeyID:       testSessionAKID,
+		SecretEncrypted:   encryptedSecret,
+		AccountID:         "123456789012",
+		AssumedRoleARN:    "arn:aws:sts::123456789012:assumed-role/some-role/alice",
+		UnderlyingRoleARN: "arn:aws:iam::123456789012:role/some-role",
+		SessionName:       "alice",
+		ExpiresAt:         time.Now().UTC().Add(time.Hour),
+		CreatedAt:         time.Now().UTC().Add(-time.Minute),
+	}
+	stsMock := &mockSTSService{
+		sessions: map[string]*handlers_sts.SessionCredential{testSessionAKID: cred},
+		tokens:   map[string]string{testSessionAKID: testSessionToken},
+	}
+
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		IAMService:     iamMock,
+		STSService:     stsMock,
+	}
+
+	handler := setupPolicyTestHandler(gw)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	// The collision must NOT escalate to alice's permissions — the gate
+	// rejects the session before it can even consult user policies.
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
 }

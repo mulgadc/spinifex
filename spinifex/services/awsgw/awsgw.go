@@ -1,6 +1,7 @@
 package awsgw
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
@@ -130,6 +132,20 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
 
+	// STS service shares the IAM master key (single envelope for at-rest
+	// secrets + session-token HMACs) and resolves roles via IAMService.
+	stsService, err := handlers_sts.NewSTSServiceImpl(natsConn, iamService, masterKey, len(config.Nodes))
+	if err != nil {
+		return fmt.Errorf("initialize STS service: %w", err)
+	}
+
+	// Janitor sweeps expired session credentials. Bound to the process
+	// lifetime — the server below blocks until exit, so cancelling on return
+	// is sufficient to let the goroutine drain.
+	janitorCtx, cancelJanitor := context.WithCancel(context.Background())
+	defer cancelJanitor()
+	go stsService.RunJanitor(janitorCtx)
+
 	// First boot: consume bootstrap.json → seed IAM users into NATS KV → delete file.
 	// Check data directory first (production: /var/lib/spinifex/awsgw/), then
 	// awsgw subdir (dev: ~/spinifex/awsgw/), then legacy config dir.
@@ -169,6 +185,7 @@ func launchService(config *config.ClusterConfig) error {
 		Region:         nodeConfig.Region,
 		AZ:             nodeConfig.AZ,
 		IAMService:     iamService,
+		STSService:     stsService,
 		Version:        version,
 		Commit:         commit,
 	}

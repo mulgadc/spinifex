@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mulgadc/predastore/auth"
@@ -19,6 +20,14 @@ import (
 
 // Maximum request body size for signature validation (10 MB).
 const maxBodySize = 10 * 1024 * 1024
+
+// AKID prefixes. Branching on the prefix BEFORE any IAM/STS lookup eliminates
+// a class of bypass where a misfiled record could be resolved by the wrong
+// path.
+const (
+	longLivedAKIDPrefix = "AKIA"
+	sessionAKIDPrefix   = "ASIA"
+)
 
 // SigV4AuthMiddleware returns stdlib middleware that validates AWS Signature V4 authentication.
 func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
@@ -61,28 +70,29 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
 				return
 			}
-			ak, err := gw.IAMService.LookupAccessKey(sig.AccessKeyID)
-			if err != nil {
-				if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
-					slog.Warn("Auth failure: access key not found", "accessKeyID", sig.AccessKeyID, "sourceIP", clientIP)
-					gw.RateLimiter.RecordFailure(clientIP)
-					gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId)
-					return
-				}
-				slog.Error("IAM lookup failed", "accessKeyID", sig.AccessKeyID, "err", err)
-				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
-				return
-			}
-			if ak.Status != handlers_iam.AccessKeyStatusActive {
-				slog.Warn("Auth failure: access key inactive", "accessKeyID", sig.AccessKeyID, "sourceIP", clientIP)
+
+			// Resolve the AKID to a secret + principal context. Prefix-first
+			// dispatch — AWS does not mint AKIDs outside these two namespaces,
+			// and the bucket-prefix invariant guarantees an AKIA AKID cannot
+			// land in the session bucket or vice versa.
+			var (
+				secret     string
+				principal  principalContext
+				lookupCode string
+			)
+			switch {
+			case strings.HasPrefix(sig.AccessKeyID, longLivedAKIDPrefix):
+				secret, principal, lookupCode = gw.resolveLongLivedAKID(sig.AccessKeyID, clientIP)
+			case strings.HasPrefix(sig.AccessKeyID, sessionAKIDPrefix):
+				secret, principal, lookupCode = gw.resolveSessionAKID(r, sig.AccessKeyID, clientIP)
+			default:
+				slog.Warn("Auth failure: unknown AKID prefix", "accessKeyID", sig.AccessKeyID, "sourceIP", clientIP)
 				gw.RateLimiter.RecordFailure(clientIP)
 				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidClientTokenId)
 				return
 			}
-			secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
-			if err != nil {
-				slog.Error("Failed to decrypt IAM secret", "accessKeyID", sig.AccessKeyID, "err", err)
-				gw.writeSigV4Error(w, r, awserrors.ErrorInternalError)
+			if lookupCode != "" {
+				gw.writeSigV4Error(w, r, lookupCode)
 				return
 			}
 
@@ -122,11 +132,18 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 
 			ctx := r.Context()
-			ctx = context.WithValue(ctx, ctxIdentity, ak.UserName)
-			ctx = context.WithValue(ctx, ctxAccountID, ak.AccountID)
+			ctx = context.WithValue(ctx, ctxIdentity, principal.identity)
+			ctx = context.WithValue(ctx, ctxAccountID, principal.accountID)
 			ctx = context.WithValue(ctx, ctxService, sig.Service)
 			ctx = context.WithValue(ctx, ctxRegion, sig.Region)
 			ctx = context.WithValue(ctx, ctxAccessKey, sig.AccessKeyID)
+			ctx = context.WithValue(ctx, ctxPrincipalType, principal.principalType)
+			if principal.assumedRoleARN != "" {
+				ctx = context.WithValue(ctx, ctxAssumedRoleARN, principal.assumedRoleARN)
+			}
+			if principal.assumedRoleID != "" {
+				ctx = context.WithValue(ctx, ctxAssumedRoleID, principal.assumedRoleID)
+			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error, the
 			// dispatcher re-parses and returns MalformedQueryString.
@@ -137,11 +154,108 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				}
 			}
 
-			slog.Debug("SigV4 authentication successful", "accessKey", sig.AccessKeyID, "identity", ak.UserName)
+			slog.Debug("SigV4 authentication successful",
+				"accessKey", sig.AccessKeyID,
+				"identity", principal.identity,
+				"principalType", principal.principalType)
 			gw.RateLimiter.RecordSuccess(clientIP)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// principalContext is the identity envelope set on the request context after
+// SigV4 verification succeeds.
+type principalContext struct {
+	identity       string
+	accountID      string
+	principalType  string
+	assumedRoleARN string
+	assumedRoleID  string
+}
+
+// resolveLongLivedAKID handles the AKIA path: IAMService lookup, status check,
+// secret decryption. Returns an error code from awserrors on failure.
+func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (string, principalContext, string) {
+	ak, err := gw.IAMService.LookupAccessKey(accessKeyID)
+	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity) {
+			slog.Warn("Auth failure: access key not found", "accessKeyID", accessKeyID, "sourceIP", clientIP)
+			gw.RateLimiter.RecordFailure(clientIP)
+			return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
+		}
+		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
+		return "", principalContext{}, awserrors.ErrorInternalError
+	}
+	if ak.Status != handlers_iam.AccessKeyStatusActive {
+		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", clientIP)
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
+	}
+	secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
+	if err != nil {
+		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
+		return "", principalContext{}, awserrors.ErrorInternalError
+	}
+	return secret, principalContext{
+		identity:      ak.UserName,
+		accountID:     ak.AccountID,
+		principalType: principalTypeUser,
+	}, ""
+}
+
+// resolveSessionAKID handles the ASIA path: STS lookup, expiry check,
+// X-Amz-Security-Token HMAC verification, secret decryption. A missing STS
+// service is a configuration error and surfaces as InternalError so the
+// problem is loud at startup, not a silent allow.
+func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, clientIP string) (string, principalContext, string) {
+	if gw.STSService == nil {
+		slog.Error("SigV4 auth: STS service not initialized but session AKID presented", "accessKeyID", accessKeyID)
+		return "", principalContext{}, awserrors.ErrorInternalError
+	}
+	cred, err := gw.STSService.LookupSessionCredential(accessKeyID)
+	if err != nil {
+		slog.Error("STS lookup failed", "accessKeyID", accessKeyID, "err", err)
+		return "", principalContext{}, awserrors.ErrorInternalError
+	}
+	if cred == nil {
+		slog.Warn("Auth failure: session credential not found", "accessKeyID", accessKeyID, "sourceIP", clientIP)
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
+	}
+	if time.Now().UTC().After(cred.ExpiresAt) {
+		slog.Warn("Auth failure: session credential expired",
+			"accessKeyID", accessKeyID, "sourceIP", clientIP, "expiresAt", cred.ExpiresAt)
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorExpiredToken
+	}
+
+	tokenHeader := r.Header.Get("X-Amz-Security-Token")
+	if tokenHeader == "" {
+		slog.Warn("Auth failure: session AKID presented without X-Amz-Security-Token",
+			"accessKeyID", accessKeyID, "sourceIP", clientIP)
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
+	}
+	if !gw.STSService.VerifySessionToken(cred, tokenHeader) {
+		slog.Warn("Auth failure: session token HMAC mismatch",
+			"accessKeyID", accessKeyID, "sourceIP", clientIP)
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
+	}
+
+	secret, err := gw.IAMService.DecryptSecret(cred.SecretEncrypted)
+	if err != nil {
+		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
+		return "", principalContext{}, awserrors.ErrorInternalError
+	}
+	return secret, principalContext{
+		identity:       cred.SessionName,
+		accountID:      cred.AccountID,
+		principalType:  principalTypeAssumedRole,
+		assumedRoleARN: cred.AssumedRoleARN,
+		assumedRoleID:  cred.AssumedRoleID,
+	}, ""
 }
 
 func parseSigV4ErrorCode(err error) string {

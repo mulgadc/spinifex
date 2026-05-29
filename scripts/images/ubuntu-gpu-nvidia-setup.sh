@@ -146,6 +146,13 @@ apt-get install -y --no-install-recommends \
 nvidia-ctk runtime configure --runtime=docker
 systemctl enable docker
 
+# Add the cloud-init default user to docker at first boot.
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/99-gpu-groups.cfg <<'EOF'
+groups:
+  - docker
+EOF
+
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99-gpu-ami <<'EOF'
 Unattended-Upgrade::Package-Blacklist {

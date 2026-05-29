@@ -62,7 +62,7 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     ffmpeg libgl1 libglib2.0-0
 
 apt-get update -qq
-apt-get install -y --no-install-recommends rocminfo rocm-smi-lib
+apt-get install -y --no-install-recommends rocminfo rocm-smi-lib amd-smi-lib
 
 # ── Docker CE ─────────────────────────────────────────────────────────────────
 # AMD GPU containers use device passthrough — no separate container runtime
@@ -80,6 +80,15 @@ systemctl enable docker
 # Ensure render + video groups exist for /dev/kfd and /dev/dri access.
 groupadd -f render
 groupadd -f video
+
+# Add the cloud-init default user to docker/render/video at first boot.
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/99-gpu-groups.cfg <<'EOF'
+groups:
+  - docker
+  - render
+  - video
+EOF
 
 echo "Rebuilding initramfs for kernel: ${KVER}"
 update-initramfs -u -k "${KVER}"

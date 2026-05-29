@@ -30,6 +30,15 @@ type IGWManager interface {
 	EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 	// RemoveSubnetEgress is the inverse. Idempotent.
 	RemoveSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
+	// EnsureNATGatewaySubnetEgress installs the per-subnet egress policy that
+	// gives private-subnet packets a default route to leave the LR after
+	// NATGW SNAT. Reuses the IGW's gateway port + wan nexthop (NATGW SNAT
+	// happens on the same VPC router); priority SubnetEgressPriorityNATGW
+	// (lower than IGW so an IGW route on the same subnet would win).
+	// Requires AttachIGW to have run first (NATGW depends on IGW per AWS).
+	EnsureNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
+	// RemoveNATGatewaySubnetEgress is the inverse. Idempotent.
+	RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -255,23 +264,7 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 // nexthop out the gateway LRP. Idempotent (drift-replace via the underlying
 // policy.RouteManager).
 func (m *igwManager) EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
-	if vpcID == "" || subnetID == "" {
-		return errors.New("EnsureSubnetEgress: vpcID and subnetID required")
-	}
-	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
-	if err != nil {
-		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
-	}
-	if nexthop == "" {
-		return fmt.Errorf("EnsureSubnetEgress: no gateway nexthop available for %s (IGW not attached?)", vpcID)
-	}
-	return m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
-		SubnetID:   subnetID,
-		Prefix:     prefix,
-		Nexthop:    nexthop,
-		OutputPort: topology.GatewayRouterPort(vpcID),
-		Priority:   policy.SubnetEgressPriorityIGW,
-	})
+	return m.ensureSubnetEgressAtPriority(ctx, vpcID, subnetID, prefix, policy.SubnetEgressPriorityIGW, "EnsureSubnetEgress")
 }
 
 // RemoveSubnetEgress deletes the policy installed by EnsureSubnetEgress.
@@ -281,6 +274,43 @@ func (m *igwManager) RemoveSubnetEgress(ctx context.Context, vpcID, subnetID str
 		return errors.New("RemoveSubnetEgress: vpcID and subnetID required")
 	}
 	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix)
+}
+
+// EnsureNATGatewaySubnetEgress is the NATGW priority sibling of
+// EnsureSubnetEgress. Same nexthop and output port; lower priority so an
+// IGW route on the same subnet (if ever both present) wins.
+func (m *igwManager) EnsureNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
+	return m.ensureSubnetEgressAtPriority(ctx, vpcID, subnetID, prefix, policy.SubnetEgressPriorityNATGW, "EnsureNATGatewaySubnetEgress")
+}
+
+// RemoveNATGatewaySubnetEgress deletes the per-subnet egress policy at any
+// priority for (subnetID, prefix). policy.RouteManager.DeleteSubnetEgress
+// already deletes both IGW and NATGW priorities defensively.
+func (m *igwManager) RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("RemoveNATGatewaySubnetEgress: vpcID and subnetID required")
+	}
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix)
+}
+
+func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, priority int, opName string) error {
+	if vpcID == "" || subnetID == "" {
+		return fmt.Errorf("%s: vpcID and subnetID required", opName)
+	}
+	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
+	if err != nil {
+		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
+	}
+	if nexthop == "" {
+		return fmt.Errorf("%s: no gateway nexthop available for %s (IGW not attached?)", opName, vpcID)
+	}
+	return m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
+		SubnetID:   subnetID,
+		Prefix:     prefix,
+		Nexthop:    nexthop,
+		OutputPort: topology.GatewayRouterPort(vpcID),
+		Priority:   priority,
+	})
 }
 
 // resolveGatewayNetwork picks LRP Networks/nexthop/IP. Distributed: link-local.

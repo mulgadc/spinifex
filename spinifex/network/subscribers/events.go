@@ -66,11 +66,17 @@ type NATEvent struct {
 }
 
 // NATGatewayEvent is published on vpc.add-nat-gateway / vpc.delete-nat-gateway.
+// SubnetId + DestinationCidr identify the per-subnet egress policy installed
+// alongside the SNAT rule so the LR has a default route for the private
+// subnet (priority SubnetEgressPriorityNATGW). Without that policy, SNAT
+// rewrites the source IP but the packet has no route to leave the LR.
 type NATGatewayEvent struct {
-	VpcId        string `json:"vpc_id"`
-	NatGatewayId string `json:"nat_gateway_id"`
-	PublicIp     string `json:"public_ip"`
-	SubnetCidr   string `json:"subnet_cidr"` // private subnet CIDR for SNAT rule
+	VpcId           string `json:"vpc_id"`
+	NatGatewayId    string `json:"nat_gateway_id"`
+	PublicIp        string `json:"public_ip"`
+	SubnetCidr      string `json:"subnet_cidr"`      // private subnet CIDR for SNAT logical_ip
+	SubnetId        string `json:"subnet_id"`        // private subnet ID for inport policy match
+	DestinationCidr string `json:"destination_cidr"` // route destination, typically 0.0.0.0/0
 }
 
 // IGWRouteEvent is published on vpc.add-igw-route / vpc.delete-igw-route

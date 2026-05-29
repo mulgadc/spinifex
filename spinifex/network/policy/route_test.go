@@ -230,3 +230,128 @@ func TestRouteManager_DeleteSubnetEgress_IdempotentOnMissing(t *testing.T) {
 
 	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
 }
+
+func TestRouteManager_AddSubnetEgress_RejectsMissingFields(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	base := SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}
+
+	cases := map[string]func(s *SubnetEgressSpec){
+		"missing SubnetID":   func(s *SubnetEgressSpec) { s.SubnetID = "" },
+		"missing OutputPort": func(s *SubnetEgressSpec) { s.OutputPort = "" },
+		"zero Priority":      func(s *SubnetEgressSpec) { s.Priority = 0 },
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec := base
+			mut(&spec)
+			err := rm.AddSubnetEgress(ctx, "vpc-1", spec)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestRouteManager_AddSubnetEgress_PropagatesFindError(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	rm := NewRouteManager(m)
+
+	err := rm.AddSubnetEgress(ctx, "vpc-missing", SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw",
+		Priority:   SubnetEgressPriorityIGW,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "find LR policy")
+}
+
+func TestRouteManager_AddSubnetEgress_ReplacesPolicyOnActionDrift(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	router := topology.VPCRouter("vpc-1")
+	rm := NewRouteManager(m)
+
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	match := subnetEgressMatch("subnet-pub", prefix)
+
+	stale := &nbdb.LogicalRouterPolicy{
+		UUID:        "drift-uuid",
+		Priority:    SubnetEgressPriorityIGW,
+		Match:       match,
+		Action:      "drop",
+		ExternalIDs: map[string]string{"spinifex:output_port": "gw-vpc-1"},
+	}
+	m.LRPolicies[stale.UUID] = stale
+	m.Routers[router].Policies = append(m.Routers[router].Policies, stale.UUID)
+
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     prefix,
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, router)
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Equal(t, "reroute", policies[0].Action)
+}
+
+func TestRouteManager_AddSubnetEgress_ReplacesPolicyOnOutputPortDrift(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	router := topology.VPCRouter("vpc-1")
+	rm := NewRouteManager(m)
+
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	match := subnetEgressMatch("subnet-pub", prefix)
+	nexthop := "192.168.1.1"
+
+	stale := &nbdb.LogicalRouterPolicy{
+		UUID:        "drift-uuid",
+		Priority:    SubnetEgressPriorityIGW,
+		Match:       match,
+		Action:      "reroute",
+		Nexthop:     &nexthop,
+		ExternalIDs: map[string]string{"spinifex:output_port": "stale-port"},
+	}
+	m.LRPolicies[stale.UUID] = stale
+	m.Routers[router].Policies = append(m.Routers[router].Policies, stale.UUID)
+
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:   "subnet-pub",
+		Prefix:     prefix,
+		Nexthop:    nexthop,
+		OutputPort: "gw-vpc-1",
+		Priority:   SubnetEgressPriorityIGW,
+	}))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, router)
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Equal(t, "gw-vpc-1", policies[0].ExternalIDs["spinifex:output_port"])
+}
+
+func TestRouteManager_DeleteSubnetEgress_PropagatesError(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	rm := NewRouteManager(m)
+
+	err := rm.DeleteSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete IGW LR policy")
+}

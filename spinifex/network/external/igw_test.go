@@ -262,3 +262,128 @@ func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {
 	_, err := m.GetLogicalSwitch(ctx, topology.ExternalSwitch("vpc-1"))
 	assert.Error(t, err, "external switch must be unwound on allocator failure")
 }
+
+// TestEnsureNATGatewaySubnetEgress installs an LR policy at the NATGW
+// priority (lower than IGW) reusing the IGW's gateway port + nexthop.
+// Without this policy, NATGW SNAT rewrites the source IP but the packet
+// has no route to leave the LR — private subnets cannot reach the internet.
+func TestEnsureNATGatewaySubnetEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Equal(t, policy.SubnetEgressPriorityNATGW, policies[0].Priority)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, pool.Gateway, *policies[0].Nexthop)
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), policies[0].ExternalIDs["spinifex:output_port"])
+	assert.Contains(t, policies[0].Match, topology.SubnetRouterPort("subnet-priv"))
+}
+
+// TestEnsureNATGatewaySubnetEgress_IsIdempotent re-runs the install and
+// asserts the row count stays at 1 (no drift, no duplicate).
+func TestEnsureNATGatewaySubnetEgress_IsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, nil)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+	require.NoError(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Len(t, policies, 1)
+}
+
+// TestRemoveNATGatewaySubnetEgress removes the policy installed by
+// EnsureNATGatewaySubnetEgress and is idempotent when absent.
+func TestRemoveNATGatewaySubnetEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, nil)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+	require.NoError(t, mgr.RemoveNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+
+	// Idempotent: second remove is a no-op.
+	require.NoError(t, mgr.RemoveNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+}
+
+// TestNATGatewaySubnetEgress_RejectsEmptyArgs guards the helper validation
+// for callers that hand in zero values from malformed events.
+func TestNATGatewaySubnetEgress_RejectsEmptyArgs(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
+
+	require.Error(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+	require.Error(t, mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "", netip.MustParsePrefix("0.0.0.0/0")))
+	require.Error(t, mgr.RemoveNATGatewaySubnetEgress(ctx, "", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+	require.Error(t, mgr.RemoveNATGatewaySubnetEgress(ctx, "vpc-1", "", netip.MustParsePrefix("0.0.0.0/0")))
+}
+
+// TestEnsureNATGatewaySubnetEgress_RequiresAttachedIGW asserts a clear error
+// when AttachIGW hasn't run — the gateway nexthop must exist or we'd install
+// an unreachable policy. NATGW depends on IGW per AWS.
+func TestEnsureNATGatewaySubnetEgress_RequiresAttachedIGW(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 24} // no Gateway → distributed link-local
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool, failingAllocator{}, nil)
+
+	err := mgr.EnsureNATGatewaySubnetEgress(ctx, "vpc-1", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0"))
+	require.Error(t, err, "missing gateway nexthop must surface as an error")
+}
+
+// TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError verifies the manager
+// surfaces an OVN delete error (e.g. router missing). policy.RouteManager.
+// DeleteSubnetEgress targets the VPC router by name; with no router seeded the
+// mock returns "router not found", which must bubble up.
+func TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
+
+	err := mgr.RemoveNATGatewaySubnetEgress(ctx, "vpc-missing", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0"))
+	require.Error(t, err)
+}
+
+// TestRemoveSubnetEgress_RejectsEmptyArgs covers the IGW-priority sibling of
+// the NATGW empty-arg guard. Both vpcID and subnetID are mandatory.
+func TestRemoveSubnetEgress_RejectsEmptyArgs(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
+
+	require.Error(t, mgr.RemoveSubnetEgress(ctx, "", "subnet-priv", netip.MustParsePrefix("0.0.0.0/0")))
+	require.Error(t, mgr.RemoveSubnetEgress(ctx, "vpc-1", "", netip.MustParsePrefix("0.0.0.0/0")))
+}
+
+// TestRemoveSubnetEgress_PropagatesDeleteError exercises the delegate path
+// to policy.RouteManager.DeleteSubnetEgress when the router doesn't exist.
+func TestRemoveSubnetEgress_PropagatesDeleteError(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
+
+	err := mgr.RemoveSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"))
+	require.Error(t, err)
+}

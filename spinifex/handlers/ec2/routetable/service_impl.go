@@ -418,7 +418,7 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 		}
 
 		// Publish vpc.add-nat-gateway events for each subnet associated with this route table
-		s.publishNatGatewayEvents(accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp)
+		s.publishNatGatewayEvents(accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
 
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -480,6 +480,10 @@ func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, account
 
 	if departing.GatewayId != "" && strings.HasPrefix(departing.GatewayId, "igw-") {
 		s.publishIGWRouteEvents(accountID, "vpc.delete-igw-route", record, record.VpcId, departing.GatewayId, departing.DestinationCidrBlock)
+	}
+
+	if departing.NatGatewayId != "" {
+		s.publishNatGatewayDeleteEvents(accountID, record, departing.NatGatewayId, departing.DestinationCidrBlock)
 	}
 
 	slog.Info("DeleteRoute completed", "routeTableId", rtbID, "destination", destCidr, "accountID", accountID)
@@ -915,7 +919,7 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 // associated with this route table, so vpcd creates the SNAT rules. Called by
 // CreateRoute when a NAT GW route is added to a table that may already have
 // subnet associations.
-func (s *RouteTableServiceImpl) publishNatGatewayEvents(accountID string, record *RouteTableRecord, vpcID, natgwID, publicIp string) {
+func (s *RouteTableServiceImpl) publishNatGatewayEvents(accountID string, record *RouteTableRecord, vpcID, natgwID, publicIp, destCidr string) {
 	if s.natsConn == nil {
 		return
 	}
@@ -923,7 +927,36 @@ func (s *RouteTableServiceImpl) publishNatGatewayEvents(accountID string, record
 		if assoc.SubnetId == "" || assoc.Main {
 			continue
 		}
-		s.publishNatGatewayEventForSubnet(accountID, "vpc.add-nat-gateway", assoc.SubnetId, vpcID, natgwID, publicIp)
+		s.publishNatGatewayEventForSubnet(accountID, "vpc.add-nat-gateway", assoc.SubnetId, vpcID, natgwID, publicIp, destCidr)
+	}
+}
+
+// publishNatGatewayDeleteEvents fans vpc.delete-nat-gateway out to every
+// associated subnet so each per-subnet SNAT rule + egress policy is removed
+// when CreateRoute's NATGW route is deleted (mirror of publishNatGatewayEvents).
+func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(accountID string, record *RouteTableRecord, natgwID, destCidr string) {
+	if s.natsConn == nil {
+		return
+	}
+	natgwEntry, err := s.natgwKV.Get(utils.AccountKey(accountID, natgwID))
+	if err != nil {
+		slog.Warn("NAT GW event: natgw lookup failed", "topic", "vpc.delete-nat-gateway", "natGatewayId", natgwID, "err", err)
+		return
+	}
+	var natgw struct {
+		NatGatewayId string `json:"nat_gateway_id"`
+		VpcId        string `json:"vpc_id"`
+		PublicIp     string `json:"public_ip"`
+	}
+	if err := json.Unmarshal(natgwEntry.Value(), &natgw); err != nil {
+		slog.Warn("NAT GW event: natgw unmarshal failed", "topic", "vpc.delete-nat-gateway", "natGatewayId", natgwID, "err", err)
+		return
+	}
+	for _, assoc := range record.Associations {
+		if assoc.SubnetId == "" || assoc.Main {
+			continue
+		}
+		s.publishNatGatewayEventForSubnet(accountID, "vpc.delete-nat-gateway", assoc.SubnetId, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, destCidr)
 	}
 }
 
@@ -953,14 +986,14 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventsForAssociation(accountID,
 			slog.Warn("NAT GW event: natgw unmarshal failed", "topic", topic, "natGatewayId", r.NatGatewayId, "err", err)
 			continue
 		}
-		s.publishNatGatewayEventForSubnet(accountID, topic, subnetID, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp)
+		s.publishNatGatewayEventForSubnet(accountID, topic, subnetID, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, r.DestinationCidrBlock)
 	}
 }
 
 // publishNatGatewayEventForSubnet publishes a single vpc.{add,delete}-nat-gateway
 // event for the given subnet. Side-effect only — logs and swallows errors so a
 // missing subnet record doesn't fail the caller's API response.
-func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic, subnetID, vpcID, natgwID, publicIp string) {
+func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic, subnetID, vpcID, natgwID, publicIp, destCidr string) {
 	if s.natsConn == nil {
 		return
 	}
@@ -975,15 +1008,19 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic
 		return
 	}
 	evt := struct {
-		VpcId        string `json:"vpc_id"`
-		NatGatewayId string `json:"nat_gateway_id"`
-		PublicIp     string `json:"public_ip"`
-		SubnetCidr   string `json:"subnet_cidr"`
+		VpcId           string `json:"vpc_id"`
+		NatGatewayId    string `json:"nat_gateway_id"`
+		PublicIp        string `json:"public_ip"`
+		SubnetCidr      string `json:"subnet_cidr"`
+		SubnetId        string `json:"subnet_id"`
+		DestinationCidr string `json:"destination_cidr"`
 	}{
-		VpcId:        vpcID,
-		NatGatewayId: natgwID,
-		PublicIp:     publicIp,
-		SubnetCidr:   subnet.CidrBlock,
+		VpcId:           vpcID,
+		NatGatewayId:    natgwID,
+		PublicIp:        publicIp,
+		SubnetCidr:      subnet.CidrBlock,
+		SubnetId:        subnetID,
+		DestinationCidr: destCidr,
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {
@@ -994,7 +1031,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic
 		slog.Warn("NAT GW event: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
 		return
 	}
-	slog.Info("NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp)
+	slog.Info("NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp, "subnetId", subnetID, "destinationCidr", destCidr)
 }
 
 // publishIGWRouteEvents emits one vpc.{add,delete}-igw-route event per subnet

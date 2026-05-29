@@ -266,7 +266,8 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 		slog.Error("subscribers: failed to unmarshal vpc.add-nat-gateway event", "err", err)
 		return
 	}
-	if err := s.natgw.AttachNATGateway(context.Background(), policy.NATGWSpec{
+	ctx := context.Background()
+	if err := s.natgw.AttachNATGateway(ctx, policy.NATGWSpec{
 		VPCID:        evt.VpcId,
 		NATGatewayID: evt.NatGatewayId,
 		PublicIP:     evt.PublicIp,
@@ -280,6 +281,33 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 	slog.Info("subscribers: NAT Gateway SNAT rule added",
 		"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId,
 		"public_ip", evt.PublicIp, "subnet_cidr", evt.SubnetCidr)
+
+	// SNAT rewrites src IP but the LR still needs a route to egress. Install
+	// a per-subnet LR policy at NATGW priority so private-subnet packets are
+	// rerouted out the IGW gateway port (NATGW SNAT happens on the same LR
+	// before egress).
+	if evt.SubnetId == "" {
+		return
+	}
+	destCidr := evt.DestinationCidr
+	if destCidr == "" {
+		destCidr = "0.0.0.0/0"
+	}
+	prefix, err := netip.ParsePrefix(destCidr)
+	if err != nil {
+		slog.Error("subscribers: invalid destination CIDR in vpc.add-nat-gateway event",
+			"cidr", destCidr, "err", err)
+		return
+	}
+	if err := s.igw.EnsureNATGatewaySubnetEgress(ctx, evt.VpcId, evt.SubnetId, prefix); err != nil {
+		slog.Error("subscribers: EnsureNATGatewaySubnetEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr,
+			"natgw_id", evt.NatGatewayId, "err", err)
+		return
+	}
+	slog.Info("subscribers: installed NATGW route policy",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr,
+		"natgw_id", evt.NatGatewayId)
 }
 
 func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
@@ -288,7 +316,26 @@ func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-nat-gateway event", "err", err)
 		return
 	}
-	if err := s.natgw.DetachNATGateway(context.Background(), evt.VpcId, evt.SubnetCidr); err != nil {
+	ctx := context.Background()
+	// Remove the per-subnet policy first so no packets are routed to the LR
+	// uplink after the SNAT rule is gone (which would leak un-NAT'd private IPs).
+	if evt.SubnetId != "" {
+		destCidr := evt.DestinationCidr
+		if destCidr == "" {
+			destCidr = "0.0.0.0/0"
+		}
+		if prefix, err := netip.ParsePrefix(destCidr); err != nil {
+			slog.Error("subscribers: invalid destination CIDR in vpc.delete-nat-gateway event",
+				"cidr", destCidr, "err", err)
+		} else if err := s.igw.RemoveNATGatewaySubnetEgress(ctx, evt.VpcId, evt.SubnetId, prefix); err != nil {
+			slog.Warn("subscribers: RemoveNATGatewaySubnetEgress failed",
+				"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr, "err", err)
+		} else {
+			slog.Info("subscribers: removed NATGW route policy",
+				"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr)
+		}
+	}
+	if err := s.natgw.DetachNATGateway(ctx, evt.VpcId, evt.SubnetCidr); err != nil {
 		slog.Warn("subscribers: DeleteNATGateway failed",
 			"vpc_id", evt.VpcId, "subnet_cidr", evt.SubnetCidr, "err", err)
 		return

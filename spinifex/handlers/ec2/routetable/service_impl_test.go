@@ -477,13 +477,17 @@ func receiveNatGWEvent(t *testing.T, sub *nats.Subscription, wantCidr string) (n
 	msg, err := sub.NextMsg(2 * time.Second)
 	require.NoError(t, err, "expected NAT GW event on %s", sub.Subject)
 	var evt struct {
-		VpcId        string `json:"vpc_id"`
-		NatGatewayId string `json:"nat_gateway_id"`
-		PublicIp     string `json:"public_ip"`
-		SubnetCidr   string `json:"subnet_cidr"`
+		VpcId           string `json:"vpc_id"`
+		NatGatewayId    string `json:"nat_gateway_id"`
+		PublicIp        string `json:"public_ip"`
+		SubnetCidr      string `json:"subnet_cidr"`
+		SubnetId        string `json:"subnet_id"`
+		DestinationCidr string `json:"destination_cidr"`
 	}
 	require.NoError(t, json.Unmarshal(msg.Data, &evt))
 	assert.Equal(t, wantCidr, evt.SubnetCidr)
+	assert.NotEmpty(t, evt.SubnetId, "subnet_id required so subscriber can install per-subnet egress policy")
+	assert.NotEmpty(t, evt.DestinationCidr, "destination_cidr required so subscriber can install per-subnet egress policy")
 	return evt.NatGatewayId, evt.PublicIp
 }
 
@@ -571,6 +575,45 @@ func TestDisassociateRouteTable_PublishesNatGatewayDeleteEvent(t *testing.T) {
 
 	natgwID, _ := receiveNatGWEvent(t, delSub, "10.0.11.0/24")
 	assert.Equal(t, "nat-test1", natgwID)
+}
+
+// TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets covers DeleteRoute
+// on a NATGW route: every subnet associated with the table receives a
+// vpc.delete-nat-gateway event so the subscriber tears down both the SNAT rule
+// and the per-subnet egress policy (mirror of the IGW DeleteRoute path).
+func TestDeleteRoute_NATGW_PublishesDeleteForAssociatedSubnets(t *testing.T) {
+	svc := setupTestService(t)
+	addSub, err := svc.natsConn.SubscribeSync("vpc.add-nat-gateway")
+	require.NoError(t, err)
+	defer func() { _ = addSub.Unsubscribe() }()
+	delSub, err := svc.natsConn.SubscribeSync("vpc.delete-nat-gateway")
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	rtbID := createTestRtb(t, svc)
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String("nat-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	// Drain the add event from CreateRoute.
+	natgwID, _ := receiveNatGWEvent(t, addSub, "10.0.11.0/24")
+	require.Equal(t, "nat-test1", natgwID)
+
+	_, err = svc.DeleteRoute(&ec2.DeleteRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	delNatgwID, _ := receiveNatGWEvent(t, delSub, "10.0.11.0/24")
+	assert.Equal(t, "nat-test1", delNatgwID)
 }
 
 // TestReplaceRouteTableAssociation_PublishesNatGatewayEvents covers the move

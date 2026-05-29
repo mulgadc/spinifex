@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
 )
 
 // HTTP paths. IMDSv2 token issuance is a PUT; everything else is a token-gated
@@ -235,7 +238,7 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 		return
 	}
 
-	role, err := s.iam.GetRole(eni.accountID, getRoleInput(profile.RoleName))
+	role, err := s.iam.GetRole(eni.accountID, &iam.GetRoleInput{RoleName: aws.String(profile.RoleName)})
 	if err != nil || role == nil || role.Role == nil || role.Role.Arn == nil {
 		slog.Error("IMDS: resolve role ARN failed", "account_id", eni.accountID, "role", profile.RoleName, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
@@ -160,9 +159,4 @@ func (s *IMDSServiceImpl) sweepTokens(ctx context.Context) {
 			s.tokens.sweep(s.now())
 		}
 	}
-}
-
-// getRoleInput builds the GetRole input for a role name.
-func getRoleInput(roleName string) *iam.GetRoleInput {
-	return &iam.GetRoleInput{RoleName: aws.String(roleName)}
 }

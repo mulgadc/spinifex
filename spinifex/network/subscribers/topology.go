@@ -38,12 +38,12 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		return
 	}
 	// IMDS topology rides on every VPC (not just IGW-attached ones): private
-	// instances still need instance metadata + role credentials.
+	// instances still need instance metadata + role credentials. Install is
+	// best-effort — the reconciler re-ensures it idempotently as drift repair,
+	// so a transient OVN failure here must not fail CreateVpc.
 	if s.imds != nil {
 		if _, err := s.imds.EnsureForVPC(ctx, evt.VpcId); err != nil {
-			slog.Error("subscribers: IMDS EnsureForVPC failed", "vpc_id", evt.VpcId, "err", err)
-			respond(msg, err)
-			return
+			slog.Warn("subscribers: IMDS EnsureForVPC failed; reconciler will converge", "vpc_id", evt.VpcId, "err", err)
 		}
 	}
 	respond(msg, nil)

@@ -341,22 +341,18 @@ func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, e
 	}
 	var single string
 	if err := json.Unmarshal(raw, &single); err == nil {
-		return matchServiceEntry(single, principalSource), nil
+		return allowedServicePrincipals[single] && single == principalSource, nil
 	}
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
 	}
 	for _, entry := range arr {
-		if matchServiceEntry(entry, principalSource) {
+		if allowedServicePrincipals[entry] && entry == principalSource {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-func matchServiceEntry(clause, principalSource string) bool {
-	return allowedServicePrincipals[clause] && clause == principalSource
 }
 
 func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {

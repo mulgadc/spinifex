@@ -82,6 +82,11 @@ type VPCServiceImpl struct {
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
 	externalIPAM *ExternalIPAM
 	eipKV        nats.KeyValue
+
+	// Optional: injected after construction. Maintains the eni-by-vpc-ip
+	// reverse index the IMDS handler reads. Nil-safe — focused tests and
+	// IMDS-less deployments leave it unset.
+	eniIndex *ENIByIPIndex
 }
 
 // SetExternalIPAM injects external IPAM and EIP KV store references so that
@@ -89,6 +94,13 @@ type VPCServiceImpl struct {
 func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV nats.KeyValue) {
 	s.externalIPAM = ipam
 	s.eipKV = eipKV
+}
+
+// SetENIByIPIndex injects the eni-by-vpc-ip reverse-index writer so
+// CreateNetworkInterface / DeleteNetworkInterface keep the IMDS source-IP→ENI
+// lookup index in sync. Optional: when unset, the index is simply not written.
+func (s *VPCServiceImpl) SetENIByIPIndex(index *ENIByIPIndex) {
+	s.eniIndex = index
 }
 
 // localAZ returns the node's local availability zone, sourced from

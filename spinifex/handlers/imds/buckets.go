@@ -43,6 +43,15 @@ func InitBuckets(js nats.JetStreamContext, replicas int) (vpcVeth, eniByIP nats.
 	return vpcVeth, eniByIP, nil
 }
 
+// InitENIByIPBucket opens (or creates) just the eni-by-vpc-ip reverse-index
+// bucket. The ENI controller (VPC service) is its writer and runs in the
+// daemon, which may start before the IMDS service on a fresh cluster, so it
+// needs an init path independent of InitBuckets. Idempotent — both callers
+// converge on the same history-1 config.
+func InitENIByIPBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
+	return initIMDSBucket(js, KVBucketENIByVPCIP, KVBucketENIByVPCIPVersion, replicas)
+}
+
 // initIMDSBucket opens (or creates) a single IMDS KV bucket and runs any
 // pending migrations.
 func initIMDSBucket(js nats.JetStreamContext, bucket string, version, replicas int) (nats.KeyValue, error) {

@@ -56,7 +56,9 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     ffmpeg libgl1 libglib2.0-0
 
 # rocminfo and rocm-smi-lib ship in Ubuntu 26.04 universe.
-add-apt-repository -y universe
+# Ubuntu 22.04+ uses deb822 format; fall back to sources.list for older layouts.
+sed -i 's/^Components: main$/Components: main universe/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || \
+    sed -i 's/ main$/ main universe/' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y --no-install-recommends rocminfo rocm-smi-lib
 

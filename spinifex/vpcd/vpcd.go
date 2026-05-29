@@ -496,10 +496,9 @@ func launchService(cfg *Config) error {
 	// intent-driven pass that runs once at startup (leader-gated) and then
 	// on a 5-minute drift ticker; together they replace the five separate
 	// passes the old vpcd ran on boot.
-	dnsServer := pickDNSServer(cfg.ExternalPools)
 	var topoOpts []topology.Option
-	if dnsServer != "" {
-		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dnsServer }))
+	if dns := pickDNSServer(cfg.ExternalPools); dns != "" {
+		topoOpts = append(topoOpts, topology.WithDNSServer(func() string { return dns }))
 	}
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
@@ -597,7 +596,7 @@ func launchService(cfg *Config) error {
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
-		DNSServer:    dnsServer,
+		DNSServer:    pickDNSServer(cfg.ExternalPools),
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

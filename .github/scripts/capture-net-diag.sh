@@ -42,6 +42,25 @@ run ovn.sb_show                         sudo ovn-sbctl show
 run ovn.nb_show                         sudo ovn-nbctl show
 run ovn.sb_chassis                      sudo ovn-sbctl list chassis
 
+run_per_lr() {
+    local label="$1"; shift
+    local subcmd="$1"; shift
+    {
+        echo "# ovn-nbctl $subcmd <each-logical-router>"
+        local lrs
+        lrs="$(sudo ovn-nbctl --bare --columns=name list Logical_Router 2>/dev/null)"
+        for lr in $lrs; do
+            echo
+            echo "=== $lr ==="
+            sudo ovn-nbctl "$subcmd" "$lr" 2>&1
+        done
+    } > "$OUT/$label" || true
+}
+
+run_per_lr ovn.lr_routes                lr-route-list
+run_per_lr ovn.lr_policies              lr-policy-list
+run_per_lr ovn.lr_nat                   lr-nat-list
+
 run ovs.show                            sudo ovs-vsctl show
 run ovs.flows_br_int                    sudo ovs-ofctl dump-flows br-int
 run ovs.tunnels                         sudo ovs-appctl ofproto/list-tunnels br-int

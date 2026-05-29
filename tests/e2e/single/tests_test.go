@@ -225,6 +225,16 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	runSTS(t, requireSingleNodeFixture(t))
 }
 
+// TestIMDS exercises the host-served IMDSv2 surface end-to-end (imds-v1.md
+// Step 11): token issuance, the v2-only stance, the metadata surface, the
+// instance-role credential path + wire round-trip, DHCP option 121, the
+// per-VPC localport datapath, and cross-VPC source-IP isolation. Owns its own
+// role/profile + a second VPC, but sequential: it launches profile-bound VMs
+// and a fresh VPC, so it must not race the singleton-mutation tests above.
+func TestIMDS(t *testing.T) {
+	runIMDS(t, requireSingleNodeFixture(t))
+}
+
 // TestFinalClusterStats runs as the last sequential test (parallel bucket
 // runs afterwards, but those Tests are read-only / own-everything so a
 // later cluster-stats snapshot would still be valid).

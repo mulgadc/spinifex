@@ -123,6 +123,8 @@ apt-get install -y -o Acquire::Retries=3 \
 
 # ── Docker CE + nvidia-container-toolkit ──────────────────────────────────────
 UBUNTU_CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")
+apt-get install -y --no-install-recommends gnupg ca-certificates
+mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
 
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

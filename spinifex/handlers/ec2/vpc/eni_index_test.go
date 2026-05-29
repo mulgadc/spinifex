@@ -23,20 +23,28 @@ func openTestENIByIPBucket(t *testing.T, nc *nats.Conn) nats.KeyValue {
 	return kv
 }
 
-// readIndexENIID reads the raw vpcID/ip entry and returns its eni_id, or ""
-// when the key is absent.
-func readIndexENIID(t *testing.T, kv nats.KeyValue, vpcID, ip string) string {
+// readIndexEntry reads the raw vpcID/ip entry and returns its eni_id and
+// account_id, or ("", "") when the key is absent.
+func readIndexEntry(t *testing.T, kv nats.KeyValue, vpcID, ip string) (eniID, accountID string) {
 	t.Helper()
 	entry, err := kv.Get(vpcID + "/" + ip)
 	if err != nil {
 		require.ErrorIs(t, err, nats.ErrKeyNotFound)
-		return ""
+		return "", ""
 	}
 	var v struct {
-		ENIId string `json:"eni_id"`
+		ENIId     string `json:"eni_id"`
+		AccountID string `json:"account_id"`
 	}
 	require.NoError(t, json.Unmarshal(entry.Value(), &v))
-	return v.ENIId
+	return v.ENIId, v.AccountID
+}
+
+// readIndexENIID is the eni_id-only convenience wrapper.
+func readIndexENIID(t *testing.T, kv nats.KeyValue, vpcID, ip string) string {
+	t.Helper()
+	eniID, _ := readIndexEntry(t, kv, vpcID, ip)
+	return eniID
 }
 
 func TestENIByIPIndex_PutGetDelete(t *testing.T) {
@@ -44,11 +52,13 @@ func TestENIByIPIndex_PutGetDelete(t *testing.T) {
 	kv := openTestENIByIPBucket(t, nc)
 	idx := NewENIByIPIndex(kv)
 
-	require.NoError(t, idx.Put("vpc-abc12345", "10.0.1.5", "eni-deadbeef"))
-	assert.Equal(t, "eni-deadbeef", readIndexENIID(t, kv, "vpc-abc12345", "10.0.1.5"))
+	require.NoError(t, idx.Put("vpc-abc12345", "10.0.1.5", "eni-deadbeef", "111122223333"))
+	eniID, accountID := readIndexEntry(t, kv, "vpc-abc12345", "10.0.1.5")
+	assert.Equal(t, "eni-deadbeef", eniID)
+	assert.Equal(t, "111122223333", accountID)
 
 	// Overwrite is allowed (rebind is a Put).
-	require.NoError(t, idx.Put("vpc-abc12345", "10.0.1.5", "eni-cafef00d"))
+	require.NoError(t, idx.Put("vpc-abc12345", "10.0.1.5", "eni-cafef00d", "111122223333"))
 	assert.Equal(t, "eni-cafef00d", readIndexENIID(t, kv, "vpc-abc12345", "10.0.1.5"))
 
 	require.NoError(t, idx.Delete("vpc-abc12345", "10.0.1.5"))
@@ -67,8 +77,8 @@ func TestENIByIPIndex_KeysAreVPCScoped(t *testing.T) {
 	kv := openTestENIByIPBucket(t, nc)
 	idx := NewENIByIPIndex(kv)
 
-	require.NoError(t, idx.Put("vpc-aaaaaaaa", "10.0.1.5", "eni-aaa"))
-	require.NoError(t, idx.Put("vpc-bbbbbbbb", "10.0.1.5", "eni-bbb"))
+	require.NoError(t, idx.Put("vpc-aaaaaaaa", "10.0.1.5", "eni-aaa", "111122223333"))
+	require.NoError(t, idx.Put("vpc-bbbbbbbb", "10.0.1.5", "eni-bbb", "444455556666"))
 
 	assert.Equal(t, "eni-aaa", readIndexENIID(t, kv, "vpc-aaaaaaaa", "10.0.1.5"))
 	assert.Equal(t, "eni-bbb", readIndexENIID(t, kv, "vpc-bbbbbbbb", "10.0.1.5"))
@@ -89,7 +99,9 @@ func TestCreateNetworkInterface_WritesENIIndex(t *testing.T) {
 
 	eniID := *out.NetworkInterface.NetworkInterfaceId
 	ip := *out.NetworkInterface.PrivateIpAddress
-	assert.Equal(t, eniID, readIndexENIID(t, kv, vpcID, ip))
+	gotENI, gotAccount := readIndexEntry(t, kv, vpcID, ip)
+	assert.Equal(t, eniID, gotENI)
+	assert.Equal(t, testAccountID, gotAccount)
 }
 
 func TestDeleteNetworkInterface_RemovesENIIndex(t *testing.T) {

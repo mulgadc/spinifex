@@ -148,7 +148,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 	// write. A failure here leaves IMDS returning safe 404s for this IP rather
 	// than phantom permissions, so it is logged, not fatal.
 	if s.eniIndex != nil {
-		if err := s.eniIndex.Put(subnet.VpcId, privateIP, eniId); err != nil {
+		if err := s.eniIndex.Put(subnet.VpcId, privateIP, eniId, accountID); err != nil {
 			slog.Warn("CreateNetworkInterface: eni-by-ip index write failed", "eniId", eniId, "vpcId", subnet.VpcId, "ip", privateIP, "err", err)
 		}
 	}

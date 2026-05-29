@@ -17,15 +17,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends curl gnupg ca-certificates
 
-# AMD ROCm apt repository — rocminfo and rocm-smi-lib are not in the Ubuntu
-# default repos, so we add AMD's signed repo before the main package install.
+# Ubuntu 26.04 ships ROCm 7.1 in the official universe repo — no external
+# AMD repo needed.
 UBUNTU_CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.3 ${UBUNTU_CODENAME} main" \
-    > /etc/apt/sources.list.d/rocm.list
-apt-get update -qq
 
 # The Ubuntu minimal cloud image already ships with a kernel. Detect it and
 # install matching headers — do NOT install linux-image-generic, which pulls a
@@ -57,10 +51,12 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     linux-firmware \
     initramfs-tools \
     pciutils \
-    rocminfo rocm-smi-lib \
     python3 python3-venv python3-pip \
     git curl wget htop tmux \
     ffmpeg libgl1 libglib2.0-0
+
+# rocminfo and rocm-smi-lib ship in Ubuntu 26.04 universe.
+apt-get install -y --no-install-recommends rocminfo rocm-smi-lib
 
 # ── Docker CE ─────────────────────────────────────────────────────────────────
 # AMD GPU containers use device passthrough — no separate container runtime

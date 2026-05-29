@@ -30,8 +30,10 @@ apt-get update -qq
 # The Ubuntu minimal cloud image already ships with a kernel. Detect it and
 # install matching headers — do NOT install linux-image-generic, which pulls a
 # newer ABI the bootloader won't know about (grub-install can't run in a chroot).
-KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
+KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||') || true
 if [[ -z "${KVER}" ]]; then
+    # Ubuntu 26.04 minimal cloud image keeps the kernel on the ESP (not mounted
+    # in the chroot), so /boot is empty — fall back to /lib/modules.
     KVER=$(ls /lib/modules/ 2>/dev/null | sort -V | tail -1)
 fi
 if [[ -z "${KVER}" ]]; then

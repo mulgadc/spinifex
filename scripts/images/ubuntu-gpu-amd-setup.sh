@@ -93,7 +93,7 @@ groupadd -f video
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/99-gpu-groups.cfg <<'EOF'
 runcmd:
-  - usermod -aG docker,render,video $(awk -F: '$3==1000{print $1}' /etc/passwd) || true
+  - usermod -aG docker,render,video $(id -un 1000) || true
 EOF
 
 echo "Rebuilding initramfs for kernel: ${KVER}"

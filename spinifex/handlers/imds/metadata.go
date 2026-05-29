@@ -3,6 +3,7 @@ package handlers_imds
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -380,7 +381,7 @@ func synthHostname(ip, region string) string {
 
 func writeText(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte(body))
+	_, _ = io.WriteString(w, body)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

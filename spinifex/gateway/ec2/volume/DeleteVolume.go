@@ -10,7 +10,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteVolumeInput validates the input parameters
 func ValidateDeleteVolumeInput(input *ec2.DeleteVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

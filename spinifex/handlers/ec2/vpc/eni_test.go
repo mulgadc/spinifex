@@ -572,18 +572,6 @@ func TestModifyNetworkInterfaceAttribute_Description(t *testing.T) {
 	assert.Equal(t, "updated description", *desc.NetworkInterfaces[0].Description)
 }
 
-func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
-	svc := setupTestVPCService(t)
-	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
-	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	eniId := createTestENI(t, svc, subnetId)
-
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
-		NetworkInterfaceId: aws.String(eniId),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidParameterValue")
-}
-
 func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
@@ -592,15 +580,6 @@ func TestModifyNetworkInterfaceAttribute_NotFound(t *testing.T) {
 		Groups:             []*string{aws.String("sg-111")},
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
-}
-
-func TestModifyNetworkInterfaceAttribute_MissingID(t *testing.T) {
-	svc := setupTestVPCService(t)
-
-	_, err := svc.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
-		Groups: []*string{aws.String("sg-111")},
-	}, testAccountID)
-	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {

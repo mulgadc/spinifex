@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteTargetGroupInput validates the input parameters
 func ValidateDeleteTargetGroupInput(input *elbv2.DeleteTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

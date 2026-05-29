@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreatePlacementGroupInput validates the input parameters
 func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

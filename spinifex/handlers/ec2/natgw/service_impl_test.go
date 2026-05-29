@@ -195,20 +195,6 @@ func TestGetNatGateway_NotFound(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
 }
 
-func TestCreateNatGateway_MissingParams(t *testing.T) {
-	svc := setupTestService(t)
-
-	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
-		AllocationId: aws.String("eipalloc-test1"),
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-
-	_, err = svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
-		SubnetId: aws.String("subnet-pub1"),
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
 func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 	svc := setupTestService(t)
 	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{

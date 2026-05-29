@@ -207,10 +207,6 @@ func (s *RouteTableServiceImpl) CreateRouteTableForVPC(vpcID, vpcCidr, accountID
 
 // CreateRouteTable creates a new custom (non-main) route table for a VPC
 func (s *RouteTableServiceImpl) CreateRouteTable(input *ec2.CreateRouteTableInput, accountID string) (*ec2.CreateRouteTableOutput, error) {
-	if input.VpcId == nil || *input.VpcId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	vpcID := *input.VpcId
 	vpcCidr, err := s.getVPCCidr(accountID, vpcID)
 	if err != nil {
@@ -229,10 +225,6 @@ func (s *RouteTableServiceImpl) CreateRouteTable(input *ec2.CreateRouteTableInpu
 
 // DeleteRouteTable deletes a route table (must not be main, must have no subnet associations)
 func (s *RouteTableServiceImpl) DeleteRouteTable(input *ec2.DeleteRouteTableInput, accountID string) (*ec2.DeleteRouteTableOutput, error) {
-	if input.RouteTableId == nil || *input.RouteTableId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	rtbID := *input.RouteTableId
 	record, err := s.getRouteTable(accountID, rtbID)
 	if err != nil {
@@ -342,6 +334,8 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(input *ec2.DescribeRouteTabl
 
 // CreateRoute adds a route to a route table
 func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error) {
+	// Reachable from internal daemon callers that bypass the gateway, so the
+	// required-field checks stay here as the trust boundary for that path.
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -435,13 +429,6 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 
 // DeleteRoute removes a route from a route table (cannot delete local route)
 func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, accountID string) (*ec2.DeleteRouteOutput, error) {
-	if input.RouteTableId == nil || *input.RouteTableId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	rtbID := *input.RouteTableId
 	destCidr := *input.DestinationCidrBlock
 
@@ -479,13 +466,6 @@ func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, account
 
 // ReplaceRoute atomically replaces the target of an existing route
 func (s *RouteTableServiceImpl) ReplaceRoute(input *ec2.ReplaceRouteInput, accountID string) (*ec2.ReplaceRouteOutput, error) {
-	if input.RouteTableId == nil || *input.RouteTableId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	rtbID := *input.RouteTableId
 	destCidr := *input.DestinationCidrBlock
 
@@ -544,13 +524,6 @@ func (s *RouteTableServiceImpl) ReplaceRoute(input *ec2.ReplaceRouteInput, accou
 
 // AssociateRouteTable associates a subnet with a route table
 func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTableInput, accountID string) (*ec2.AssociateRouteTableOutput, error) {
-	if input.RouteTableId == nil || *input.RouteTableId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.SubnetId == nil || *input.SubnetId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	rtbID := *input.RouteTableId
 	subnetID := *input.SubnetId
 
@@ -613,10 +586,6 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTab
 
 // DisassociateRouteTable removes a subnet association (cannot disassociate main)
 func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRouteTableInput, accountID string) (*ec2.DisassociateRouteTableOutput, error) {
-	if input.AssociationId == nil || *input.AssociationId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	assocID := *input.AssociationId
 
 	// Search all route tables for this account to find the association
@@ -675,13 +644,6 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRo
 
 // ReplaceRouteTableAssociation atomically moves a subnet from one route table to another
 func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(input *ec2.ReplaceRouteTableAssociationInput, accountID string) (*ec2.ReplaceRouteTableAssociationOutput, error) {
-	if input.AssociationId == nil || *input.AssociationId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if input.RouteTableId == nil || *input.RouteTableId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
 	assocID := *input.AssociationId
 	newRtbID := *input.RouteTableId
 

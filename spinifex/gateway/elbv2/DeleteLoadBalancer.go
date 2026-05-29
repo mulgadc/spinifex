@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteLoadBalancerInput validates the input parameters
 func ValidateDeleteLoadBalancerInput(input *elbv2.DeleteLoadBalancerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

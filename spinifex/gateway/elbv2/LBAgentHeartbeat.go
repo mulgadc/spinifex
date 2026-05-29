@@ -8,7 +8,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateLBAgentHeartbeatInput validates the input parameters
 func ValidateLBAgentHeartbeatInput(input *handlers_elbv2.LBAgentHeartbeatInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

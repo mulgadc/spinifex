@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateRegisterTargetsInput validates the input parameters
 func ValidateRegisterTargetsInput(input *elbv2.RegisterTargetsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

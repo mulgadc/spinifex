@@ -119,6 +119,8 @@ func (s *EIPServiceImpl) AllocateAddress(input *ec2.AllocateAddressInput, accoun
 
 // ReleaseAddress releases a previously allocated Elastic IP back to the IPAM pool.
 func (s *EIPServiceImpl) ReleaseAddress(input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error) {
+	// Reachable from internal callers that bypass the gateway, so the
+	// required-field check stays here as the trust boundary for that path.
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -157,6 +159,8 @@ func (s *EIPServiceImpl) ReleaseAddress(input *ec2.ReleaseAddressInput, accountI
 
 // AssociateAddress associates an Elastic IP with an ENI or instance.
 func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, accountID string) (*ec2.AssociateAddressOutput, error) {
+	// Reachable from internal callers that bypass the gateway, so the
+	// required-field check stays here as the trust boundary for that path.
 	if input.AllocationId == nil || *input.AllocationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -242,6 +246,8 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 
 // DisassociateAddress removes an Elastic IP association from an ENI.
 func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput, accountID string) (*ec2.DisassociateAddressOutput, error) {
+	// Reachable from internal callers that bypass the gateway, so the
+	// required-field check stays here as the trust boundary for that path.
 	if input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}

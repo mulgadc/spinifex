@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteListenerInput validates the input parameters
 func ValidateDeleteListenerInput(input *elbv2.DeleteListenerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

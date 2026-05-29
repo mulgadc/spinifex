@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateVpcInput validates the input parameters
 func ValidateCreateVpcInput(input *ec2.CreateVpcInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

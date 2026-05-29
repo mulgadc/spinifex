@@ -13,7 +13,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateGetConsoleOutputInput validates the input parameters
 func ValidateGetConsoleOutputInput(input *ec2.GetConsoleOutputInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

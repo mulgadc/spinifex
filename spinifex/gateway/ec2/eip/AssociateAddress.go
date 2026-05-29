@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateAssociateAddressInput validates the input parameters
 func ValidateAssociateAddressInput(input *ec2.AssociateAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

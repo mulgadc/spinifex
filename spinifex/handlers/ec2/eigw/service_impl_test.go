@@ -52,20 +52,6 @@ func TestCreateEgressOnlyInternetGateway(t *testing.T) {
 	assert.Equal(t, "attached", *out.EgressOnlyInternetGateway.Attachments[0].State)
 }
 
-func TestCreateEgressOnlyInternetGateway_MissingVpcId(t *testing.T) {
-	svc := setupTestEIGWService(t)
-	_, err := svc.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{}, testAccountID)
-	assert.ErrorContains(t, err, "MissingParameter")
-}
-
-func TestCreateEgressOnlyInternetGateway_EmptyVpcId(t *testing.T) {
-	svc := setupTestEIGWService(t)
-	_, err := svc.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
-		VpcId: aws.String(""),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "MissingParameter")
-}
-
 func TestCreateEgressOnlyInternetGateway_WithTags(t *testing.T) {
 	svc := setupTestEIGWService(t)
 	out, err := svc.CreateEgressOnlyInternetGateway(&ec2.CreateEgressOnlyInternetGatewayInput{
@@ -133,20 +119,6 @@ func TestDeleteEgressOnlyInternetGateway_NotFound(t *testing.T) {
 		EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent"),
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidEgressOnlyInternetGatewayId.NotFound")
-}
-
-func TestDeleteEgressOnlyInternetGateway_MissingID(t *testing.T) {
-	svc := setupTestEIGWService(t)
-	_, err := svc.DeleteEgressOnlyInternetGateway(&ec2.DeleteEgressOnlyInternetGatewayInput{}, testAccountID)
-	assert.ErrorContains(t, err, "MissingParameter")
-}
-
-func TestDeleteEgressOnlyInternetGateway_EmptyID(t *testing.T) {
-	svc := setupTestEIGWService(t)
-	_, err := svc.DeleteEgressOnlyInternetGateway(&ec2.DeleteEgressOnlyInternetGatewayInput{
-		EgressOnlyInternetGatewayId: aws.String(""),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "MissingParameter")
 }
 
 func TestDescribeEgressOnlyInternetGateways_All(t *testing.T) {

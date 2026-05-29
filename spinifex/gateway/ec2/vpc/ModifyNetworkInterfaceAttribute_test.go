@@ -26,9 +26,17 @@ func TestModifyNetworkInterfaceAttribute_EmptyNetworkInterfaceId(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
+func TestModifyNetworkInterfaceAttribute_NoAttributes(t *testing.T) {
+	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String("eni-abc123"),
+	}, nil, "123456789012")
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
 func TestModifyNetworkInterfaceAttribute_NilNATS(t *testing.T) {
 	_, err := ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String("eni-abc123"),
+		Description:        &ec2.AttributeValue{Value: aws.String("desc")},
 	}, nil, "123456789012")
 	assert.Error(t, err)
 }

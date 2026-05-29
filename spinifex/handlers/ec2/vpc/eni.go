@@ -64,6 +64,8 @@ type ENIRecord struct {
 
 // CreateNetworkInterface creates a new ENI in the specified subnet
 func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	// Reachable from internal callers that bypass the gateway, so the
+	// required-field check stays here as the trust boundary for that path.
 	if input.SubnetId == nil || *input.SubnetId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -162,6 +164,8 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 
 // DeleteNetworkInterface deletes an ENI
 func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+	// Reachable from internal callers that bypass the gateway, so the
+	// required-field check stays here as the trust boundary for that path.
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -225,13 +229,6 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 
 // ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups, description).
 func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
-	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-	if len(input.Groups) == 0 && input.Description == nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
 	eniId := *input.NetworkInterfaceId
 	key := utils.AccountKey(accountID, eniId)
 

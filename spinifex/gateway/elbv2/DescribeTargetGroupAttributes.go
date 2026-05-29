@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeTargetGroupAttributesInput validates the input parameters
 func ValidateDescribeTargetGroupAttributesInput(input *elbv2.DescribeTargetGroupAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

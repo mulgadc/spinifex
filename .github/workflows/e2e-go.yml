@@ -215,6 +215,16 @@ jobs:
           tar -C spinifex/tests/e2e/_bin -cf - . | ssh "${SSH_OPTS[@]}" "$VM" "tar -xf - -C \$HOME/spinifex-e2e-bin"
           ok "shipped binaries to $VM"
 
+      - name: Start packet capture on VM br-wan
+        run: |
+          set +e
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          scp "${SSH_OPTS[@]}" \
+            "${GITHUB_WORKSPACE}/spinifex/.github/scripts/start-net-capture.sh" \
+            "$VM":/tmp/start-net-capture.sh
+          ssh "${SSH_OPTS[@]}" "$VM" "bash /tmp/start-net-capture.sh" || true
+
       - name: Run Go E2E suites
         id: e2e
         run: |
@@ -580,6 +590,19 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" "rm -rf \$HOME/spinifex-e2e-bin && mkdir -p \$HOME/spinifex-e2e-bin"
           tar -C spinifex/tests/e2e/_bin -cf - . | ssh "${SSH_OPTS[@]}" "$VM" "tar -xf - -C \$HOME/spinifex-e2e-bin"
           ok "shipped binaries to $VM"
+
+      - name: Start packet capture on all nodes br-wan
+        run: |
+          set +e
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
+          IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
+          for ip in "${NODE_LIST[@]}"; do
+              [ -z "$ip" ] && continue
+              scp "${SSH_OPTS[@]}" \
+                  "${GITHUB_WORKSPACE}/spinifex/.github/scripts/start-net-capture.sh" \
+                  tf-user@"$ip":/tmp/start-net-capture.sh
+              ssh "${SSH_OPTS[@]}" tf-user@"$ip" "bash /tmp/start-net-capture.sh" || true
+          done
 
       - name: Pre-flight diagnostics on node1
         # Captures cluster + tf-user state directly via SSH so the post-mortem

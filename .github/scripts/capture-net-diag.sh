@@ -68,7 +68,21 @@ run ovs.tunnels                         sudo ovs-appctl ofproto/list-tunnels br-
 run net.links                           ip -s link show
 run net.routes                          ip route show table all
 run net.addrs                           ip -br addr show
+run net.neigh                           ip neigh show
+run net.bridge_fdb                      bridge fdb show
+run net.conntrack                       sudo conntrack -L
 
 run systemd.failed_units                sudo systemctl list-units --state=failed --no-pager
+
+# Background pcap (started by start-net-capture.sh, if present).
+if [ -f /tmp/spinifex-e2e-tcpdump.pid ]; then
+    PID="$(cat /tmp/spinifex-e2e-tcpdump.pid 2>/dev/null)"
+    sudo kill -INT "$PID" 2>/dev/null || true
+    sleep 1
+    if [ -f /tmp/spinifex-e2e-wan.pcap ]; then
+        sudo cp /tmp/spinifex-e2e-wan.pcap "$OUT/wan.pcap" 2>/dev/null || true
+        sudo chmod 0644 "$OUT/wan.pcap" 2>/dev/null || true
+    fi
+fi
 
 exit 0

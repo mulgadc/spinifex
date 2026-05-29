@@ -188,9 +188,9 @@ describe("ListenersTab", () => {
       wrapper: createWrapper(queryClient),
     })
     await user.click(screen.getByLabelText("Edit listener HTTP:80"))
-    expect(
-      await screen.findByRole("alertdialog", { name: /edit listener/i }),
-    ).toBeInTheDocument()
+    await expect(
+      screen.findByRole("alertdialog", { name: /edit listener/i }),
+    ).resolves.toBeInTheDocument()
     const portInput = screen.getByLabelText(/^port$/i) as HTMLInputElement
     expect(portInput.value).toBe("80")
     await user.clear(portInput)

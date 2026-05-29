@@ -275,7 +275,10 @@ function AddListenerDialog({
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent className="sm:max-w-lg">
+      <AlertDialogContent
+        className="grid-cols-[minmax(0,1fr)]"
+        style={{ maxWidth: "32rem", width: "calc(100vw - 2rem)" }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Add listener</AlertDialogTitle>
           <AlertDialogDescription>
@@ -284,7 +287,7 @@ function AddListenerDialog({
         </AlertDialogHeader>
 
         <form
-          className="space-y-4"
+          className="min-w-0 space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
             void handleConfirm()
@@ -345,7 +348,10 @@ function EditListenerDialog({
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent className="sm:max-w-lg">
+      <AlertDialogContent
+        className="grid-cols-[minmax(0,1fr)]"
+        style={{ maxWidth: "32rem", width: "calc(100vw - 2rem)" }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>Edit listener</AlertDialogTitle>
           <AlertDialogDescription>
@@ -355,7 +361,7 @@ function EditListenerDialog({
         </AlertDialogHeader>
 
         <form
-          className="space-y-4"
+          className="min-w-0 space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
             void handleConfirm()

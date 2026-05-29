@@ -56,6 +56,8 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     ffmpeg libgl1 libglib2.0-0
 
 # rocminfo and rocm-smi-lib ship in Ubuntu 26.04 universe.
+add-apt-repository -y universe
+apt-get update -qq
 apt-get install -y --no-install-recommends rocminfo rocm-smi-lib
 
 # ── Docker CE ─────────────────────────────────────────────────────────────────

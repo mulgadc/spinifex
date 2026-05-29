@@ -690,15 +690,9 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/network/interfaces/...` | GET | Multi-ENI rendering | **NOT STARTED** (404) |
 | `/latest/meta-data/tags/...` | GET | Instance-tag metadata | **NOT STARTED** (404) |
 
-### IMDS — DHCP option 121 dependency
+### IMDS — Reachability (subnet-router proxy-ARP)
 
-OVN-served DHCP pushes a classless-static-route (option 121) for `169.254.169.254/32` via the subnet gateway, so guests reach IMDS through the subnet router instead of ARPing for the address link-locally. This is required for distros that auto-install a `169.254.0.0/16` link-scope route (NetworkManager, RHEL/Fedora, Ubuntu desktop). Every cloud AMI uses DHCP by default and gets this automatically.
-
-A guest configured with a **fully static IP (no DHCP client)** never sees option 121 and cannot reach IMDS until you add the route manually inside the guest:
-
-```bash
-ip route add 169.254.169.254/32 via <subnet-gateway>
-```
+`169.254.169.254` answers ARP link-local on every subnet via the subnet router LSP's OVN `options:arp_proxy`. The subnet LRP replies to the guest's ARP for the IMDS address, the guest sends the frame to the LRP, and the VPC router forwards it over the per-VPC `/32` static route to the IMDS listener. This matches AWS Nitro: **DHCP and fully static guests reach IMDS identically, with no in-guest route configuration.** A guest needs only an on-link link-local route (the kernel default for `169.254.0.0/16`) or a usable default route — anything with general connectivity already has one.
 
 ---
 

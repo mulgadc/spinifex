@@ -114,21 +114,17 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		"imds-port LSP %s must be type=localport so every chassis self-serves IMDS "+
 			"(a regular LSP binds one chassis and forces Geneve tunnelling)", imdsLSP)
 
-	// --- DHCP option 121 pushed the IMDS /32 route into the guest -----------
-	// Without it, distros that auto-install a 169.254.0.0/16 link-scope route
-	// would ARP for 169.254.169.254 on the subnet LS and never reach the IMDS
-	// LSP. The /32 must be a routed (via gw) entry, not a link-scope catch.
-	harness.Step(t, "guest route to 169.254.169.254 must be via the subnet gateway")
-	harness.EventuallyErr(t, func() error {
-		out, err := runSSHCombined(tgtX, "ip route show 169.254.169.254")
-		if err != nil {
-			return fmt.Errorf("ip route show: %w (out=%q)", err, out)
-		}
-		if !strings.Contains(out, "via ") {
-			return fmt.Errorf("no option-121 /32 route (got %q); DHCP option 121 missing", strings.TrimSpace(out))
-		}
-		return nil
-	}, 60*time.Second, 3*time.Second)
+	// --- Subnet-router proxy-ARP makes 169.254.169.254 reachable link-local --
+	// IMDS reachability no longer depends on a DHCP option-121 route in the
+	// guest; the subnet router LSP answers ARP for the IMDS address via OVN
+	// options:arp_proxy, so DHCP and fully static guests reach it identically.
+	harness.Step(t, "subnet router LSP rtr-port-%s must carry options:arp_proxy", subX)
+	rtrLSP := "rtr-port-" + subX // mirrors topology.SubnetSwitchRouterPort
+	lspOpts := harness.OvnNbctl(t, "--no-leader-only", "--bare", "--columns=options",
+		"find", "logical_switch_port", "name="+rtrLSP)
+	require.Containsf(t, lspOpts, "arp_proxy=169.254.169.254",
+		"subnet router LSP %s must set options:arp_proxy=169.254.169.254 so the subnet LRP "+
+			"answers ARP for IMDS link-local (static-IP and NetworkManager/RHEL/Ubuntu guests)", rtrLSP)
 
 	// --- IMDSv2 token issuance ----------------------------------------------
 	harness.Step(t, "PUT /latest/api/token (IMDSv2)")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"strings"
 	"testing"
 
 	imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
@@ -86,20 +85,16 @@ func assertPortSecurity(t *testing.T, m *mock.Client, portName, want string) {
 	}
 }
 
-// TestI5_SubnetDHCPOptionsContainsIMDSRoute asserts the per-subnet DHCPOptions
-// row carries classless_static_route (RFC 3442 option 121) with both the
-// default route and the IMDS /32, via the subnet gateway. Both the helper and
-// both emission paths (live EnsureSubnet, reconciler applySubnets) are checked
-// so the two paths cannot diverge again. Without option 121, guests with an
-// auto-installed 169.254.0.0/16 link-local route never reach IMDS.
-func TestI5_SubnetDHCPOptionsContainsIMDSRoute(t *testing.T) {
+// TestI5_SubnetRouterPortProxiesIMDSARP asserts the subnet router LSP carries
+// options:arp_proxy = 169.254.169.254, so the subnet LRP answers ARP/ND for the
+// IMDS address link-local. Both emission paths (live EnsureSubnet, reconciler
+// applySubnets) are checked so they cannot diverge. This replaces the former
+// DHCP option-121 mechanism: proxy-ARP reaches DHCP and fully static guests
+// identically (AWS Nitro parity), whereas option 121 never reached a guest with
+// no DHCP client.
+func TestI5_SubnetRouterPortProxiesIMDSARP(t *testing.T) {
 	ctx := context.Background()
 	const cidr = "10.0.1.0/24"
-
-	t.Run("helper", func(t *testing.T) {
-		opts := topology.BuildSubnetDHCPOptions("10.0.1.1", "02:00:00:00:00:01", "{8.8.8.8}")
-		assertClasslessStaticRoute(t, opts, "10.0.1.1")
-	})
 
 	t.Run("live", func(t *testing.T) {
 		m := mock.New()
@@ -110,8 +105,7 @@ func TestI5_SubnetDHCPOptionsContainsIMDSRoute(t *testing.T) {
 		if err := mgr.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix(cidr)}); err != nil {
 			t.Fatalf("EnsureSubnet: %v", err)
 		}
-		opts := dhcpOptionsFor(t, m, cidr)
-		assertClasslessStaticRoute(t, opts, "10.0.1.1")
+		assertARPProxy(t, m, topology.SubnetSwitchRouterPort("subnet-a"))
 	})
 
 	t.Run("reconciler", func(t *testing.T) {
@@ -119,32 +113,23 @@ func TestI5_SubnetDHCPOptionsContainsIMDSRoute(t *testing.T) {
 		if err := rec.Reconcile(ctx, freshIntent(t)); err != nil {
 			t.Fatalf("Reconcile: %v", err)
 		}
-		opts := dhcpOptionsFor(t, m, cidr)
-		assertClasslessStaticRoute(t, opts, "10.0.1.1")
+		assertARPProxy(t, m, topology.SubnetSwitchRouterPort("subnet-a"))
 	})
 }
 
-// dhcpOptionsFor returns the emitted Options map for a subnet CIDR.
-func dhcpOptionsFor(t *testing.T, m *mock.Client, cidr string) map[string]string {
+// assertARPProxy fails with the ADR clause unless the subnet router LSP carries
+// options:arp_proxy for the IMDS address.
+func assertARPProxy(t *testing.T, m *mock.Client, portName string) {
 	t.Helper()
-	row, err := m.FindDHCPOptionsByCIDR(context.Background(), cidr)
+	lsp, err := m.GetLogicalSwitchPort(context.Background(), portName)
 	if err != nil {
-		t.Fatalf("DHCPOptions for %s missing: %v", cidr, err)
+		t.Fatalf("subnet router LSP %s missing: %v", portName, err)
 	}
-	return row.Options
-}
-
-// assertClasslessStaticRoute fails with the ADR clause unless option 121 carries
-// both the default route and the IMDS /32 via gwIP.
-func assertClasslessStaticRoute(t *testing.T, opts map[string]string, gwIP string) {
-	t.Helper()
-	got := opts["classless_static_route"]
-	wantDefault := "0.0.0.0/0," + gwIP
-	wantIMDS := imds.MetaDataServerIP + "/32," + gwIP
-	if !strings.Contains(got, wantDefault) || !strings.Contains(got, wantIMDS) {
-		t.Errorf("classless_static_route = %q, must contain both %q and %q: subnets "+
-			"without DHCP option 121 for %s break IMDS reachability on guests with "+
-			"auto-installed link-local routes (NetworkManager, RHEL/Fedora, Ubuntu desktop)",
-			got, wantDefault, wantIMDS, imds.MetaDataServerIP)
+	if lsp.Options["arp_proxy"] != imds.MetaDataServerIP {
+		t.Errorf("subnet router LSP %s options:arp_proxy = %q, want %q: subnet router "+
+			"ports without options:arp_proxy for %s leave IMDS unreachable for any guest "+
+			"that treats the address as link-local (the common static-IP and "+
+			"NetworkManager/RHEL/Ubuntu case)",
+			portName, lsp.Options["arp_proxy"], imds.MetaDataServerIP, imds.MetaDataServerIP)
 	}
 }

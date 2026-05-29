@@ -2,16 +2,23 @@ package topology
 
 import "testing"
 
-// The classless_static_route (RFC 3442 option 121) must carry the default
-// route AND the IMDS /32, both via the subnet gateway. A client honouring
-// option 121 ignores option 3 (router), so omitting the default route strips
-// the gateway; omitting the /32 leaves guests unable to reach 169.254.169.254.
-func TestBuildSubnetDHCPOptions_ClasslessStaticRoute(t *testing.T) {
+// IMDS reachability moved from DHCP option 121 to the subnet router LSP's
+// options:arp_proxy (Step 14), so BuildSubnetDHCPOptions must no longer emit a
+// classless_static_route key. The default gateway is still carried by option 3
+// (router), and dns_server/server_id remain present.
+func TestBuildSubnetDHCPOptions_NoClasslessStaticRoute(t *testing.T) {
 	opts := BuildSubnetDHCPOptions("10.0.1.1", "02:00:00:00:00:01", "{8.8.8.8, 1.1.1.1}")
 
-	got := opts["classless_static_route"]
-	want := "{0.0.0.0/0,10.0.1.1, 169.254.169.254/32,10.0.1.1}"
-	if got != want {
-		t.Errorf("classless_static_route = %q, want %q", got, want)
+	if _, ok := opts["classless_static_route"]; ok {
+		t.Errorf("classless_static_route must be absent (IMDS now uses subnet-router proxy-ARP, not DHCP option 121); got %q", opts["classless_static_route"])
+	}
+	if got := opts["router"]; got != "10.0.1.1" {
+		t.Errorf("router = %q, want %q", got, "10.0.1.1")
+	}
+	if got := opts["dns_server"]; got != "{8.8.8.8, 1.1.1.1}" {
+		t.Errorf("dns_server = %q, want %q", got, "{8.8.8.8, 1.1.1.1}")
+	}
+	if got := opts["server_id"]; got != "10.0.1.1" {
+		t.Errorf("server_id = %q, want %q", got, "10.0.1.1")
 	}
 }

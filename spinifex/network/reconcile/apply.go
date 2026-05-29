@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -89,12 +90,15 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			actual.RouterPorts[routerPortName] = struct{}{}
 		}
 
-		if _, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
+		if existing, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
 			lsp := &nbdb.LogicalSwitchPort{
 				Name:      switchRouterPortName,
 				Type:      "router",
 				Addresses: []string{"router"},
-				Options:   map[string]string{"router-port": routerPortName},
+				Options: map[string]string{
+					"router-port": routerPortName,
+					"arp_proxy":   handlers_imds.MetaDataServerIP,
+				},
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,
@@ -103,6 +107,20 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			if err := r.ovn.CreateLogicalSwitchPort(ctx, switchName, lsp); err != nil {
 				slog.Error("reconcile/apply: create subnet router-LSP failed", "subnet_id", subnetID, "err", err)
 				continue
+			}
+		} else if existing.Options["arp_proxy"] != handlers_imds.MetaDataServerIP {
+			// Drift convergence: a subnet router LSP created before IMDS proxy-ARP
+			// landed will not gain arp_proxy from a redeploy alone (the create
+			// branch above only fires when the LSP is absent). Patch it in place so
+			// existing subnets become IMDS-reachable for link-local guests.
+			if existing.Options == nil {
+				existing.Options = map[string]string{}
+			}
+			existing.Options["arp_proxy"] = handlers_imds.MetaDataServerIP
+			if err := r.ovn.UpdateLogicalSwitchPort(ctx, existing); err != nil {
+				slog.Error("reconcile/apply: patch subnet router-LSP arp_proxy failed", "subnet_id", subnetID, "err", err)
+			} else {
+				slog.Info("reconcile/apply: patched subnet router-LSP with IMDS arp_proxy", "subnet_id", subnetID, "port", switchRouterPortName)
 			}
 		}
 

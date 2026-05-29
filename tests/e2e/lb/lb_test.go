@@ -443,7 +443,7 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
 
-	eni := lbENI(t, c, scheme, eniDescPrefix, lb.ID)
+	eni := lbENI(t, c, eniDescPrefix, lb)
 
 	if scheme == "internet-facing" {
 		ip := publicIP(eni)
@@ -561,15 +561,14 @@ func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 	if lb.ARN == "" {
 		return
 	}
-	prefix, lbName := "app", "alb"
+	prefix := "app"
 	if lb.Type == "network" {
-		prefix, lbName = "net", "nlb"
+		prefix = "net"
 	}
-	suffix := "int"
-	if lb.Scheme == "internet-facing" {
-		suffix = "inet"
-	}
-	filter := fmt.Sprintf("ELB %s/lb-e2e-%s-%s/%s", prefix, lbName, suffix, lb.ID)
+	parts := strings.Split(lb.ARN, "/")
+	require.GreaterOrEqualf(t, len(parts), 3, "deleteLB: malformed LB ARN %q", lb.ARN)
+	lbName := parts[len(parts)-2]
+	filter := fmt.Sprintf("ELB %s/%s/%s", prefix, lbName, lb.ID)
 
 	// Capture the underlying sys.micro VM id before deleting so we can wait
 	// for it to actually terminate. ELBv2.DeleteLoadBalancer returns once
@@ -732,7 +731,7 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	harness.WaitForTargetsHealthy(t, c, tgA, 2, label+" tgA", 2*time.Minute)
 
-	eni := lbENI(t, c, "internal", "app", lb.ID)
+	eni := lbENI(t, c, "app", lb)
 	priv := privateIP(eni)
 	require.NotEmpty(t, priv, label+" needs private IP")
 
@@ -786,17 +785,12 @@ func probeAtPort(t *testing.T, f *sharedFixture, lbIP string, port int64, label 
 		1, probesPerRun/2, label)
 }
 
-func lbENI(t *testing.T, c *harness.AWSClient, scheme, prefix, lbID string) *ec2.NetworkInterface {
+func lbENI(t *testing.T, c *harness.AWSClient, prefix string, lb lbInfo) *ec2.NetworkInterface {
 	t.Helper()
-	suffix := "int"
-	if scheme == "internet-facing" {
-		suffix = "inet"
-	}
-	lbName := "alb"
-	if prefix == "net" {
-		lbName = "nlb"
-	}
-	desc := fmt.Sprintf("ELB %s/lb-e2e-%s-%s/%s", prefix, lbName, suffix, lbID)
+	parts := strings.Split(lb.ARN, "/")
+	require.GreaterOrEqualf(t, len(parts), 3, "lbENI: malformed LB ARN %q", lb.ARN)
+	lbName := parts[len(parts)-2]
+	desc := fmt.Sprintf("ELB %s/%s/%s", prefix, lbName, lb.ID)
 	var eni *ec2.NetworkInterface
 	harness.EventuallyErr(t, func() error {
 		out, err := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{

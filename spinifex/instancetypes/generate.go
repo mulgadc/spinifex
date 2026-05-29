@@ -20,11 +20,21 @@ func IsSystemType(name string) bool {
 // generateForGeneration creates the instance type map for the given CPU generation.
 // It generates all instance families matching the generation's family list across
 // burstable, general purpose, compute optimized, and memory optimized categories.
+//
+// On x86_64 hosts the cross-vendor sibling family for each member of
+// gen.families is also emitted (e.g. Intel Skylake's "t3" pulls in "t3a" so
+// AMD-targeted RunInstances requests can land on this host). ARM and
+// legacy Intel-only families have no sibling and are unaffected.
 func generateForGeneration(gen cpuGeneration, arch string) map[string]*ec2.InstanceTypeInfo {
-	// Build a set of allowed families for fast lookup
-	allowed := make(map[string]bool, len(gen.families))
+	// Build a set of allowed families for fast lookup. Include cross-vendor
+	// siblings so a mixed Intel+AMD cluster routes RunInstances of either
+	// vendor family to any x86_64 host with capacity.
+	allowed := make(map[string]bool, len(gen.families)*2)
 	for _, f := range gen.families {
 		allowed[f] = true
+		if sib, ok := vendorSiblingFamily[f]; ok {
+			allowed[sib] = true
+		}
 	}
 
 	instanceTypes := make(map[string]*ec2.InstanceTypeInfo)

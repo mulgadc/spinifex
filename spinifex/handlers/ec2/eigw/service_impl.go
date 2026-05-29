@@ -75,6 +75,10 @@ func NewEgressOnlyIGWServiceImplWithNATS(cfg *config.Config, natsConn *nats.Conn
 
 // CreateEgressOnlyInternetGateway creates a new Egress-only Internet Gateway
 func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(input *ec2.CreateEgressOnlyInternetGatewayInput, accountID string) (*ec2.CreateEgressOnlyInternetGatewayOutput, error) {
+	if input.VpcId == nil || *input.VpcId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
 	// Verify the caller owns the target VPC (fail-closed if KV unavailable)
 	if s.vpcKV == nil {
 		slog.Error("VPC KV unavailable, cannot verify VPC ownership")
@@ -112,6 +116,10 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(input *ec2.Cr
 
 // DeleteEgressOnlyInternetGateway deletes an Egress-only Internet Gateway
 func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(input *ec2.DeleteEgressOnlyInternetGatewayInput, accountID string) (*ec2.DeleteEgressOnlyInternetGatewayOutput, error) {
+	if input.EgressOnlyInternetGatewayId == nil || *input.EgressOnlyInternetGatewayId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
 	eigwID := *input.EgressOnlyInternetGatewayId
 	key := utils.AccountKey(accountID, eigwID)
 

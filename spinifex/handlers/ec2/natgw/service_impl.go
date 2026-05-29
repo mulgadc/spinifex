@@ -101,6 +101,13 @@ type natGatewayEvent struct {
 
 // CreateNatGateway creates a NAT Gateway in a public subnet with an EIP
 func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInput, accountID string) (*ec2.CreateNatGatewayOutput, error) {
+	if input.SubnetId == nil || *input.SubnetId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.AllocationId == nil || *input.AllocationId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
 	subnetID := *input.SubnetId
 	allocID := *input.AllocationId
 
@@ -159,6 +166,10 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInpu
 
 // DeleteNatGateway deletes a NAT Gateway and removes OVN SNAT rules
 func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInput, accountID string) (*ec2.DeleteNatGatewayOutput, error) {
+	if input.NatGatewayId == nil || *input.NatGatewayId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
 	natgwID := *input.NatGatewayId
 	key := utils.AccountKey(accountID, natgwID)
 

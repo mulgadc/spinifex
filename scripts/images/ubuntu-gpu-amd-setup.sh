@@ -61,6 +61,24 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     python3 python3-venv python3-pip \
     git curl wget htop tmux \
     ffmpeg libgl1 libglib2.0-0
+
+# ── Docker CE ─────────────────────────────────────────────────────────────────
+# AMD GPU containers use device passthrough — no separate container runtime
+# is needed. Users pass --device=/dev/kfd --device=/dev/dri at run time.
+mkdir -p /usr/share/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable docker
+
+# Ensure render + video groups exist for /dev/kfd and /dev/dri access.
+groupadd -f render
+groupadd -f video
+
 echo "Rebuilding initramfs for kernel: ${KVER}"
 update-initramfs -u -k "${KVER}"
 
@@ -72,7 +90,9 @@ Unattended-Upgrade::Package-Blacklist {
     "linux-firmware";
     "linux-image-";
     "linux-headers-";
+    "docker-";
+    "containerd";
 };
 EOF
 
-echo "AMD GPU image setup complete: kernel=${KVER}, linux-firmware and ROCm userland installed"
+echo "AMD GPU image setup complete: kernel=${KVER}, linux-firmware and ROCm userland installed, Docker ready"

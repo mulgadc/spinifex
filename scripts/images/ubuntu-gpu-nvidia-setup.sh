@@ -121,17 +121,42 @@ apt-get install -y -o Acquire::Retries=3 \
     git curl wget htop tmux \
     ffmpeg libgl1 libglib2.0-0
 
+# ── Docker CE + nvidia-container-toolkit ──────────────────────────────────────
+UBUNTU_CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's|deb https://|deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://|g' \
+    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    nvidia-container-toolkit
+
+# Wire nvidia runtime into Docker so --gpus all works on first boot.
+nvidia-ctk runtime configure --runtime=docker
+systemctl enable docker
+
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99-gpu-ami <<'EOF'
 Unattended-Upgrade::Package-Blacklist {
     "linux-";
     "nvidia-";
     "libnvidia-";
+    "docker-";
+    "containerd";
+    "nvidia-container-toolkit";
 };
 EOF
 
 # Rebuild initramfs with nouveau blacklisted and NVIDIA module included.
 update-initramfs -u -k "${KVER}"
 
-
-echo "NVIDIA GPU image setup complete: kernel=${KVER}, NVIDIA driver + DKMS pre-built"
+echo "NVIDIA GPU image setup complete: kernel=${KVER}, NVIDIA driver + DKMS pre-built, Docker + nvidia-container-toolkit installed"

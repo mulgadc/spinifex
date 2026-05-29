@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -520,6 +521,18 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
+	// IMDS per-VPC OVN topology installer. Replicas track the chassis count so
+	// the vpc-veth bucket survives a node loss (create-or-open: awsgw inits the
+	// same bucket; first writer wins).
+	imdsVethKV, _, err := handlers_imds.InitBuckets(js, max(len(chassisNames), 1))
+	if err != nil {
+		return fmt.Errorf("init imds buckets: %w", err)
+	}
+	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, routeMgr, handlers_imds.NewVethStore(imdsVethKV))
+	if err != nil {
+		return fmt.Errorf("construct IMDS topology manager: %w", err)
+	}
+
 	dhcpMgr, dhcpSubs, err := startDHCPManagerIfNeeded(ctx, nc, js, cfg)
 	if err != nil {
 		return fmt.Errorf("start dhcp manager: %w", err)
@@ -571,6 +584,7 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
+		IMDS:     imdsTopoMgr,
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)
@@ -593,6 +607,7 @@ func launchService(cfg *Config) error {
 		Routes:       routeMgr,
 		IGW:          igwMgr,
 		Topology:     topoMgr,
+		IMDS:         imdsTopoMgr,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,

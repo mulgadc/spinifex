@@ -15,22 +15,28 @@ import (
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.VPCs {
 		routerName := topology.VPCRouter(vpcID)
-		if _, ok := actual.Routers[routerName]; ok {
-			continue
+		if _, ok := actual.Routers[routerName]; !ok {
+			lr := &nbdb.LogicalRouter{
+				Name: routerName,
+				ExternalIDs: map[string]string{
+					"spinifex:vpc_id": vpcID,
+					"spinifex:cidr":   spec.CIDR.String(),
+				},
+			}
+			if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
+				slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
+				continue
+			}
+			actual.Routers[routerName] = struct{}{}
+			slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 		}
-		lr := &nbdb.LogicalRouter{
-			Name: routerName,
-			ExternalIDs: map[string]string{
-				"spinifex:vpc_id": vpcID,
-				"spinifex:cidr":   spec.CIDR.String(),
-			},
+		// Install IMDS topology for every intent VPC (idempotent via the
+		// vpc-veth bucket gate); the router must exist for the IMDS LRP.
+		if r.imds != nil {
+			if _, err := r.imds.EnsureForVPC(ctx, vpcID); err != nil {
+				slog.Error("reconcile/apply: IMDS EnsureForVPC failed", "vpc_id", vpcID, "err", err)
+			}
 		}
-		if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
-			slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
-			continue
-		}
-		actual.Routers[routerName] = struct{}{}
-		slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 	}
 }
 

@@ -31,10 +31,20 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		}
 		spec.CIDR = cidr
 	}
-	if err := s.topology.EnsureVPC(context.Background(), spec); err != nil {
+	ctx := context.Background()
+	if err := s.topology.EnsureVPC(ctx, spec); err != nil {
 		slog.Error("subscribers: EnsureVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
+	}
+	// IMDS topology rides on every VPC (not just IGW-attached ones): private
+	// instances still need instance metadata + role credentials.
+	if s.imds != nil {
+		if _, err := s.imds.EnsureForVPC(ctx, evt.VpcId); err != nil {
+			slog.Error("subscribers: IMDS EnsureForVPC failed", "vpc_id", evt.VpcId, "err", err)
+			respond(msg, err)
+			return
+		}
 	}
 	respond(msg, nil)
 }
@@ -46,7 +56,17 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.topology.DeleteVPC(context.Background(), evt.VpcId); err != nil {
+	ctx := context.Background()
+	// Remove IMDS topology before the router goes away — the IMDS LRP and
+	// static route live on vpc-{vpcID}.
+	if s.imds != nil {
+		if err := s.imds.RemoveForVPC(ctx, evt.VpcId); err != nil {
+			slog.Error("subscribers: IMDS RemoveForVPC failed", "vpc_id", evt.VpcId, "err", err)
+			respond(msg, err)
+			return
+		}
+	}
+	if err := s.topology.DeleteVPC(ctx, evt.VpcId); err != nil {
 		slog.Error("subscribers: DeleteVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return

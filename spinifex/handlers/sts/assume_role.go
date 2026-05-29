@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -274,7 +275,7 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 	if clause == globalWildcard {
 		return true
 	}
-	if isTwelveDigits(clause) {
+	if utils.IsAccountID(clause) {
 		clause = fmt.Sprintf("arn:aws:iam::%s:root", clause)
 	}
 	if clause == callerARN {
@@ -337,18 +338,6 @@ func lastPathSegment(s string) string {
 		return s[i+1:]
 	}
 	return s
-}
-
-func isTwelveDigits(s string) bool {
-	if len(s) != 12 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // mintSessionCredential generates a fresh ASIA AKID, secret, and session

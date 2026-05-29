@@ -613,16 +613,6 @@ func TestParseRoleARN(t *testing.T) {
 	}
 }
 
-func TestIsTwelveDigits(t *testing.T) {
-	assert.True(t, isTwelveDigits("123456789012"))
-	assert.True(t, isTwelveDigits("000000000000"))
-	assert.False(t, isTwelveDigits(""))
-	assert.False(t, isTwelveDigits("12345678901"))   // 11 chars
-	assert.False(t, isTwelveDigits("1234567890123")) // 13 chars
-	assert.False(t, isTwelveDigits("12345678901A"))
-	assert.False(t, isTwelveDigits("arn:aws:iam::123456789012:root"))
-}
-
 func TestComputeTokenHMAC_Deterministic(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	a := computeTokenHMAC(key, "wire-token")

@@ -27,11 +27,31 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.
     > /etc/apt/sources.list.d/rocm.list
 apt-get update -qq
 
+# The Ubuntu minimal cloud image already ships with a kernel. Detect it and
+# install matching headers — do NOT install linux-image-generic, which pulls a
+# newer ABI the bootloader won't know about (grub-install can't run in a chroot).
+KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
+if [[ -z "${KVER}" ]]; then
+    KVER=$(ls /lib/modules/ 2>/dev/null | sort -V | tail -1)
+fi
+if [[ -z "${KVER}" ]]; then
+    echo "ERROR: No kernel found in /boot or /lib/modules — base image may be missing a kernel"
+    exit 1
+fi
+echo "Target kernel: ${KVER}"
+
+# Prevent kernel postinst hooks from attempting grub-install against the host disk.
+cat > /etc/kernel-img.conf <<'EOF'
+do_symlinks = yes
+do_bootloader = no
+do_initrd = yes
+link_in_boot = yes
+EOF
+
 # linux-firmware carries the AMD GPU firmware blobs loaded by the amdgpu
 # kernel module at boot. Without them the GPU is invisible to guest userland.
 apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
-    linux-image-generic \
-    linux-headers-generic \
+    "linux-headers-${KVER}" \
     linux-firmware \
     initramfs-tools \
     pciutils \
@@ -39,12 +59,6 @@ apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
     python3 python3-venv python3-pip \
     git curl wget htop tmux \
     ffmpeg libgl1 libglib2.0-0
-
-KVER=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 | sed 's|/boot/vmlinuz-||')
-if [ -z "${KVER}" ]; then
-    echo "ERROR: No kernel found under /boot"
-    exit 1
-fi
 echo "Rebuilding initramfs for kernel: ${KVER}"
 update-initramfs -u -k "${KVER}"
 

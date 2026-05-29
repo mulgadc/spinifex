@@ -21,12 +21,11 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 
-# The Ubuntu minimal cloud image ships without a kernel. Install linux-image-generic
-# first so DKMS has a kernel to build against and the guest boots the same kernel
-# the module was built for.
-apt-get install -y \
-    linux-image-generic \
-    initramfs-tools
+# The Ubuntu minimal cloud image already ships with a kernel. We detect it and
+# build DKMS against it — do NOT install linux-image-generic, which pulls a
+# newer kernel ABI that won't boot (grub-install can't run in a chroot, so the
+# bootloader never learns about the new kernel and keeps booting the original).
+apt-get install -y --no-install-recommends initramfs-tools
 
 echo "=== /boot ==="
 ls -la /boot/ || true
@@ -40,12 +39,22 @@ if [[ -z "${KVER}" ]]; then
     KVER=$(ls /lib/modules/ 2>/dev/null | sort -V | tail -1)
 fi
 if [[ -z "${KVER}" ]]; then
-    echo "ERROR: No kernel found in /boot or /lib/modules after kernel install"
+    echo "ERROR: No kernel found in /boot or /lib/modules — base image may be missing a kernel"
     exit 1
 fi
 echo "Target kernel: ${KVER}"
 
-# Install headers for the exact installed kernel version for the DKMS build.
+# Prevent kernel postinst hooks from attempting grub-install against the host
+# disk — this fails silently in a chroot and can abort the postinst, leaving
+# /boot incomplete.
+cat > /etc/kernel-img.conf <<'EOF'
+do_symlinks = yes
+do_bootloader = no
+do_initrd = yes
+link_in_boot = yes
+EOF
+
+# Install headers for the exact pre-installed kernel so DKMS builds against it.
 apt-get install -y --no-install-recommends \
     "linux-headers-${KVER}"
 

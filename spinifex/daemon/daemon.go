@@ -47,6 +47,7 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
@@ -130,6 +131,7 @@ type Daemon struct {
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
+	eksService            *handlers_eks.EKSServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -841,6 +843,48 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// EKS gateway → daemon subscriptions. Every handler currently returns
+	// NotImplemented; topics are subscribed up-front so the wiring layer is
+	// stable while real bodies land.
+	if d.eksService != nil {
+		subs = append(subs,
+			natsSub{"eks.CreateCluster", d.handleEKSCreateCluster, "spinifex-workers"},
+			natsSub{"eks.DescribeCluster", d.handleEKSDescribeCluster, "spinifex-workers"},
+			natsSub{"eks.ListClusters", d.handleEKSListClusters, "spinifex-workers"},
+			natsSub{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig, "spinifex-workers"},
+			natsSub{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion, "spinifex-workers"},
+			natsSub{"eks.DeleteCluster", d.handleEKSDeleteCluster, "spinifex-workers"},
+			natsSub{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, "spinifex-workers"},
+			natsSub{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, "spinifex-workers"},
+			natsSub{"eks.ListNodegroups", d.handleEKSListNodegroups, "spinifex-workers"},
+			natsSub{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, "spinifex-workers"},
+			natsSub{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion, "spinifex-workers"},
+			natsSub{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, "spinifex-workers"},
+			natsSub{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry, "spinifex-workers"},
+			natsSub{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry, "spinifex-workers"},
+			natsSub{"eks.ListAccessEntries", d.handleEKSListAccessEntries, "spinifex-workers"},
+			natsSub{"eks.UpdateAccessEntry", d.handleEKSUpdateAccessEntry, "spinifex-workers"},
+			natsSub{"eks.DeleteAccessEntry", d.handleEKSDeleteAccessEntry, "spinifex-workers"},
+			natsSub{"eks.AssociateAccessPolicy", d.handleEKSAssociateAccessPolicy, "spinifex-workers"},
+			natsSub{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy, "spinifex-workers"},
+			natsSub{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies, "spinifex-workers"},
+			natsSub{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies, "spinifex-workers"},
+			natsSub{"eks.ListAddons", d.handleEKSListAddons, "spinifex-workers"},
+			natsSub{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, "spinifex-workers"},
+			natsSub{"eks.CreateAddon", d.handleEKSCreateAddon, "spinifex-workers"},
+			natsSub{"eks.DeleteAddon", d.handleEKSDeleteAddon, "spinifex-workers"},
+			natsSub{"eks.DescribeAddon", d.handleEKSDescribeAddon, "spinifex-workers"},
+			natsSub{"eks.UpdateAddon", d.handleEKSUpdateAddon, "spinifex-workers"},
+			natsSub{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, "spinifex-workers"},
+			natsSub{"eks.DisassociateIdentityProviderConfig", d.handleEKSDisassociateIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.TagResource", d.handleEKSTagResource, "spinifex-workers"},
+			natsSub{"eks.UntagResource", d.handleEKSUntagResource, "spinifex-workers"},
+			natsSub{"eks.ListTagsForResource", d.handleEKSListTagsForResource, "spinifex-workers"},
+		)
+	}
+
 	// EIP operations require external IPAM (pool mode). Only subscribe when available;
 	// without a subscriber the gateway returns a NATS timeout → clean error to the client.
 	if d.eipService != nil {
@@ -1021,6 +1065,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.accountService must be nil before startCluster")
 	case d.elbv2Service != nil:
 		return errors.New("d.elbv2Service must be nil before startCluster")
+	case d.eksService != nil:
+		return errors.New("d.eksService must be nil before startCluster")
 	}
 	return nil
 }
@@ -1273,6 +1319,13 @@ func (d *Daemon) startCluster() error {
 	if err := d.elbv2Service.ResetTargetHealthOnStartup(context.Background()); err != nil {
 		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
 			"err", err)
+	}
+
+	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
+		return handlers_eks.NewEKSServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize EKS service: %w", err)
 	}
 
 	// Ensure default VPC exists for system and admin accounts

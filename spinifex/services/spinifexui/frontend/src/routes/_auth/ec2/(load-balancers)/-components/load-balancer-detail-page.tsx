@@ -19,7 +19,7 @@ import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
-import { getNameTag } from "@/lib/utils"
+import { formatDateTime, getNameTag } from "@/lib/utils"
 import {
   useDeleteLoadBalancer,
   useModifyLoadBalancerAttributes,
@@ -113,7 +113,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
               <StateBadge state={lb.State?.Code} />
             </div>
           }
-          subtitle="Load balancer details"
+          subtitle="Load Balancer Details"
           title={lb.LoadBalancerName ?? lb.LoadBalancerArn}
         />
 
@@ -145,11 +145,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
                 <DetailRow label="VPC" value={lb.VpcId} />
                 <DetailRow
                   label="Created at"
-                  value={
-                    lb.CreatedTime
-                      ? new Date(lb.CreatedTime).toLocaleString()
-                      : undefined
-                  }
+                  value={formatDateTime(lb.CreatedTime)}
                 />
               </DetailCard.Content>
             </DetailCard>

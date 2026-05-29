@@ -1566,7 +1566,7 @@ func TestHandleEC2DescribeInstanceAttribute_RunningInstance_InstanceType(t *test
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1608,7 +1608,7 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedInstance_InstanceType(t *test
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1648,7 +1648,7 @@ func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1687,7 +1687,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1731,7 +1731,7 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t 
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1769,7 +1769,7 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_WithSecurityGroups(t *testi
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1815,7 +1815,7 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_NilInstance(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1852,7 +1852,7 @@ func TestHandleEC2DescribeInstanceAttribute_InstanceNotFound(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1875,7 +1875,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
@@ -1911,7 +1911,7 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceAttribute", "spinifex-workers", daemon.handleEC2DescribeInstanceAttribute)
+	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceAttribute", daemon.handleEC2DescribeInstanceAttribute)
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 

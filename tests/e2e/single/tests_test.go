@@ -218,6 +218,13 @@ func TestIAMInstanceProfileAssociation(t *testing.T) {
 	runIAMInstanceProfileAssociation(t, requireSingleNodeFixture(t))
 }
 
+// TestSTSAssumeRoleAndGetCallerIdentity exercises the STS v1 surface. Owns
+// its own role, so safe alongside the IAM Roles tests above, but sequential
+// so trust-policy mutations don't race a parallel AssumeRole.
+func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
+	runSTS(t, requireSingleNodeFixture(t))
+}
+
 // TestFinalClusterStats runs as the last sequential test (parallel bucket
 // runs afterwards, but those Tests are read-only / own-everything so a
 // later cluster-stats snapshot would still be valid).

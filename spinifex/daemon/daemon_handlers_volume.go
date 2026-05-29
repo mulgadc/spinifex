@@ -80,7 +80,14 @@ func (d *Daemon) handleAttachVolume(msg *nats.Msg, command types.EC2InstanceComm
 		return
 	}
 
-	d.respondWithVolumeAttachment(msg, volumeID, command.ID, res.GuestDevice, "attached")
+	// AttachVolume returns the API-form device name (/dev/sd[f-p]), not
+	// the in-guest path. Callers (including the Terraform AWS provider)
+	// round-trip this through DescribeVolumes' attachment.device filter,
+	// which only matches the API-form name persisted in volume metadata.
+	// A guest-form name here breaks the immediate post-attach wait loop.
+	// This diverges intentionally from BlockDeviceMappings, which retain
+	// the guest path under mulga-599.
+	d.respondWithVolumeAttachment(msg, volumeID, command.ID, res.DeviceName, "attached")
 }
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to

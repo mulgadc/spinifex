@@ -43,7 +43,7 @@ function KeyPairs() {
             </Link>
           </div>
         }
-        title="EC2 Key Pairs"
+        title="Key Pairs"
       />
 
       {keyPairs.length > 0 ? (

@@ -64,6 +64,7 @@ type NetworkConfig struct {
 	ExternalMode   string   `json:"external_mode"`
 	PoolName       string   `json:"pool_name"`
 	PoolSource     string   `json:"pool_source,omitempty"`
+	PoolBindBridge string   `json:"pool_bind_bridge,omitempty"`
 	PoolStart      string   `json:"pool_start,omitempty"`
 	PoolEnd        string   `json:"pool_end,omitempty"`
 	PoolGateway    string   `json:"pool_gateway"`

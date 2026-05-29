@@ -77,7 +77,7 @@ export function CreateTargetGroupPage() {
         Back to target groups
       </BackLink>
 
-      <PageHeading title="Create target group" />
+      <PageHeading title="Create Target Group" />
 
       {createMutation.error && (
         <ErrorBanner
@@ -98,7 +98,7 @@ export function CreateTargetGroupPage() {
             await navigate({ to: "/ec2/describe-target-groups" })
           }
           pendingLabel="Creating…"
-          submitLabel="Create target group"
+          submitLabel="Create Target Group"
         />
       </form>
     </>

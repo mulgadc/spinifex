@@ -136,7 +136,7 @@ function SnapshotDetail() {
               <StateBadge state={snapshot.State} />
             </div>
           }
-          subtitle="EC2 Snapshot Details"
+          subtitle="Snapshot Details"
           title={snapshot.SnapshotId}
         />
 

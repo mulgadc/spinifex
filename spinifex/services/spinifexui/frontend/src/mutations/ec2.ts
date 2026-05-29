@@ -190,7 +190,14 @@ export function useCreateKeyPair() {
         KeyName: params.keyName,
         KeyType: "rsa",
       })
-      return await getEc2Client().send(command)
+      const response = await getEc2Client().send(command)
+      if (!response.KeyMaterial) {
+        // Private key is only ever returned once; missing material means it is unrecoverable.
+        throw new Error(
+          "Key pair was created but the API returned no private key. The key cannot be recovered — delete it and try again.",
+        )
+      }
+      return response
     },
     onSuccess: () => {
       void queryClient.invalidateQueries(ec2KeyPairsQueryOptions)

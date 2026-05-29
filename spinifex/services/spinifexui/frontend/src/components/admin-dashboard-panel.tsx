@@ -136,7 +136,7 @@ export function AdminDashboardPanel() {
               <span>{nodes.length}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">EC2 Instances</span>
+              <span className="text-muted-foreground">Instances</span>
               <span>{vms.length}</span>
             </div>
             <div className="flex justify-between">

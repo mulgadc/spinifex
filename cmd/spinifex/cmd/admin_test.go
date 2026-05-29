@@ -288,3 +288,101 @@ func TestImagesRemoveCmd_FlagSchema(t *testing.T) {
 
 // cobraRequiredAnnotation is the annotation key cobra uses to mark required flags.
 const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_flag"
+
+// `spx admin init` must expose --external-source and --external-bind-bridge so
+// operators can pick the DHCP path for [[network.external_pools]].
+func TestAdminInitCmd_ExternalDHCPFlagSchema(t *testing.T) {
+	sourceFlag := adminInitCmd.Flags().Lookup("external-source")
+	require.NotNil(t, sourceFlag, "--external-source must be defined")
+	assert.Equal(t, "", sourceFlag.DefValue)
+
+	bindFlag := adminInitCmd.Flags().Lookup("external-bind-bridge")
+	require.NotNil(t, bindFlag, "--external-bind-bridge must be defined")
+	assert.Equal(t, "", bindFlag.DefValue)
+
+	poolFlag := adminInitCmd.Flags().Lookup("external-pool")
+	require.NotNil(t, poolFlag)
+	assert.Equal(t, "", poolFlag.DefValue)
+}
+
+// DHCP-sourced pool must emit source + bind_bridge into spinifex.toml so the
+// daemon's validator and vpcd's DHCPManager find the bridge they DORA on.
+func TestSpinifexTomlTemplate_ExternalPoolDHCPSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:           "node1",
+		Az:             "ap-southeast-2a",
+		Port:           "4432",
+		Region:         "ap-southeast-2",
+		BindIP:         "10.11.12.1",
+		ConfigDir:      dir,
+		OVNNBAddr:      "tcp:127.0.0.1:6641",
+		OVNSBAddr:      "tcp:127.0.0.1:6642",
+		ExternalMode:   "pool",
+		ExternalIface:  "eth0",
+		PoolName:       "wan",
+		PoolSource:     "dhcp",
+		PoolBindBridge: "br-wan",
+		PoolPrefixLen:  24,
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `source      = "dhcp"`)
+	assert.Contains(t, content, `bind_bridge = "br-wan"`)
+	assert.NotContains(t, content, "range_start", "dhcp pool must not emit range_start")
+	assert.NotContains(t, content, "range_end", "dhcp pool must not emit range_end")
+	assert.NotContains(t, content, "gateway     =", "gateway omitted for dhcp pool (discovered from OFFER)")
+}
+
+// Static-sourced pool must not emit bind_bridge — the validator rejects it.
+func TestSpinifexTomlTemplate_ExternalPoolStaticSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:          "node1",
+		Az:            "ap-southeast-2a",
+		Port:          "4432",
+		Region:        "ap-southeast-2",
+		BindIP:        "10.11.12.1",
+		ConfigDir:     dir,
+		OVNNBAddr:     "tcp:127.0.0.1:6641",
+		OVNSBAddr:     "tcp:127.0.0.1:6642",
+		ExternalMode:  "pool",
+		ExternalIface: "eth0",
+		PoolName:      "wan",
+		PoolSource:    "static",
+		PoolStart:     "192.168.1.150",
+		PoolEnd:       "192.168.1.250",
+		PoolGateway:   "192.168.1.1",
+		PoolPrefixLen: 24,
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `source      = "static"`)
+	assert.NotContains(t, content, "bind_bridge", "static pool must not emit bind_bridge")
+	assert.Contains(t, content, `range_start = "192.168.1.150"`)
+	assert.Contains(t, content, `gateway     = "192.168.1.1"`)
+}
+
+// Formation joiners must receive PoolBindBridge from the init node so the
+// cluster-wide config reaches every chassis intact.
+func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
+	settings := &admin.ConfigSettings{}
+	nc := &formation.NetworkConfig{
+		ExternalMode:   "pool",
+		PoolName:       "wan",
+		PoolSource:     "dhcp",
+		PoolBindBridge: "br-wan",
+		PoolPrefixLen:  24,
+	}
+	applyNetworkConfig(settings, nc)
+	assert.Equal(t, "dhcp", settings.PoolSource)
+	assert.Equal(t, "br-wan", settings.PoolBindBridge)
+}

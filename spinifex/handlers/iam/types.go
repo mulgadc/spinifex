@@ -110,12 +110,21 @@ type TrustPolicyDocument struct {
 }
 
 // TrustStatement is a single statement within a trust policy document.
+//
+// NotPrincipal and NotAction are accepted by the JSON unmarshal so the
+// validator can see — and reject — them. Without these fields a policy
+// containing `{"Effect":"Allow","NotPrincipal":{...}}` would unmarshal
+// with NotPrincipal silently dropped, leaving the validator unable to
+// distinguish it from a (still-empty) Principal and effectively turning
+// every NotPrincipal-Allow into a universe-allow at runtime.
 type TrustStatement struct {
-	Sid       string          `json:"Sid,omitempty"`
-	Effect    string          `json:"Effect"`
-	Principal json.RawMessage `json:"Principal"`
-	Action    StringOrArr     `json:"Action"`
-	Condition json.RawMessage `json:"Condition,omitempty"`
+	Sid          string          `json:"Sid,omitempty"`
+	Effect       string          `json:"Effect"`
+	Principal    json.RawMessage `json:"Principal"`
+	NotPrincipal json.RawMessage `json:"NotPrincipal,omitempty"`
+	Action       StringOrArr     `json:"Action"`
+	NotAction    StringOrArr     `json:"NotAction,omitempty"`
+	Condition    json.RawMessage `json:"Condition,omitempty"`
 }
 
 // StringOrArr handles JSON fields that can be either a string or an array of strings.

@@ -20,7 +20,7 @@ resources:
   - title: "Trinity on HuggingFace"
     url: "https://huggingface.co/arcee-ai/Trinity-Large-Preview-FP8"
   - title: "AMD Instinct MI350X"
-    url: "https://www.amd.com/en/products/accelerators/instinct/mi350/mi350x.html"
+    url: "https://www.amd.com/en/products/accelerators/instinct/mi300/mi350x.html"
   - title: "vLLM Documentation"
     url: "https://docs.vllm.ai"
 sections:
@@ -317,5 +317,3 @@ Trinity Large Preview demonstrates that frontier-class open-weight models are no
 Combining this with Spinifex as the infrastructure layer allows teams to own the entire workflow. Provisioning a `g7e.12xlarge` instance, pulling a 400 GB model, and serving it through vLLM took a handful of standard `aws ec2` commands and a single `docker run`. The same workflow runs identically on any Spinifex-managed bare-metal node, with the GPUs returned to the pool when instances terminate.
 
 For teams evaluating Trinity for production agentic workloads — tool calling, structured outputs, long-context reasoning — this represents a credible self-hosted deployment path: open weights, Apache 2.0 license, owned hardware and familiar tooling.
-
-*Model access: `arcee-ai/Trinity-Large-Preview-FP8` via HuggingFace. Hardware access via Supermicro JumpStart Program.*

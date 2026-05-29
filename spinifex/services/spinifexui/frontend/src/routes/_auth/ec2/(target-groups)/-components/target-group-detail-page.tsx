@@ -95,7 +95,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
               Delete
             </Button>
           }
-          subtitle="Target group details"
+          subtitle="Target Group Details"
           title={tg.TargetGroupName ?? tg.TargetGroupArn}
         />
 
@@ -223,7 +223,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
         onConfirm={handleDelete}
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
-        title="Delete target group"
+        title="Delete Target Group"
       />
     </>
   )

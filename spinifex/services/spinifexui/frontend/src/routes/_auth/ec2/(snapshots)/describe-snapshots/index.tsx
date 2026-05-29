@@ -37,7 +37,7 @@ function Snapshots() {
             <Button>Create Snapshot</Button>
           </Link>
         }
-        title="EC2 Snapshots"
+        title="Snapshots"
       />
 
       {snapshots.length > 0 ? (

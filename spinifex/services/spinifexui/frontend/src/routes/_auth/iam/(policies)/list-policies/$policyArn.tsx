@@ -106,7 +106,7 @@ function PolicyDetail() {
               Delete
             </Button>
           }
-          subtitle="IAM Policy Details"
+          subtitle="Policy Details"
           title={policy.PolicyName ?? ""}
         />
 

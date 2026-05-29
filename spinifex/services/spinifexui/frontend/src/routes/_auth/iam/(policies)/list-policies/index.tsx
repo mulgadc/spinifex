@@ -34,7 +34,7 @@ function Policies() {
             <Button>Create Policy</Button>
           </Link>
         }
-        title="IAM Policies"
+        title="Policies"
       />
 
       {policies.length > 0 ? (

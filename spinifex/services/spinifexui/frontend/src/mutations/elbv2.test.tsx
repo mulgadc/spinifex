@@ -13,7 +13,6 @@ import type { CreateTargetGroupFormData } from "@/types/elbv2"
 
 import {
   useCreateListener,
-  useCreateLoadBalancer,
   useCreateLoadBalancerWizard,
   useCreateTargetGroup,
   useDeleteListener,
@@ -179,50 +178,6 @@ describe("useCreateTargetGroup", () => {
     expect(mockSend.mock.calls[0]?.[0].input.Tags).toStrictEqual([
       { Key: "env", Value: "prod" },
     ])
-  })
-})
-
-describe("useCreateLoadBalancer", () => {
-  it("sends CreateLoadBalancerCommand with ALB defaults (Type=application, IpAddressType=ipv4)", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateLoadBalancer(), { wrapper })
-
-    result.current.mutate({
-      name: "my-alb",
-      scheme: "internet-facing",
-      subnetIds: ["subnet-a", "subnet-b"],
-      securityGroupIds: ["sg-1"],
-      tags: [{ key: "env", value: "prod" }],
-    })
-
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      Name: "my-alb",
-      Scheme: "internet-facing",
-      Type: "application",
-      IpAddressType: "ipv4",
-      Subnets: ["subnet-a", "subnet-b"],
-      SecurityGroups: ["sg-1"],
-      Tags: [{ Key: "env", Value: "prod" }],
-    })
-  })
-
-  it("omits SecurityGroups/Tags when empty", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateLoadBalancer(), { wrapper })
-
-    result.current.mutate({
-      name: "my-alb",
-      scheme: "internal",
-      subnetIds: ["subnet-a", "subnet-b"],
-      securityGroupIds: [],
-      tags: [],
-    })
-
-    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
-    const input = mockSend.mock.calls[0]?.[0].input
-    expect(input.SecurityGroups).toBeUndefined()
-    expect(input.Tags).toBeUndefined()
   })
 })
 

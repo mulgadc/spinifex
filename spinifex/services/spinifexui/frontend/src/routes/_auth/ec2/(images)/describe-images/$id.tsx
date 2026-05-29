@@ -47,7 +47,7 @@ function ImageDetail() {
       <div className="space-y-6">
         <PageHeading
           actions={<StateBadge state={image.State} />}
-          subtitle="EC2 Image Details"
+          subtitle="Image Details"
           title={image.ImageId}
         />
 

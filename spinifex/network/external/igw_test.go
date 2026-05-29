@@ -191,11 +191,47 @@ type failingAllocator struct{}
 
 var _ GatewayIPAllocator = failingAllocator{}
 
-func (failingAllocator) Allocate(_ context.Context, _ string, _ *ExternalPoolConfig) (string, int, bool, error) {
-	return "", 0, false, errors.New("boom")
+func (failingAllocator) Allocate(_ context.Context, _ string, _ *ExternalPoolConfig) (string, int, string, bool, error) {
+	return "", 0, "", false, errors.New("boom")
 }
 
 func (failingAllocator) Release(_ context.Context, _ string) error { return nil }
+
+// fixedNexthopAllocator returns a non-empty nexthop so the IGW manager's
+// allocator-nexthop override is exercised.
+type fixedNexthopAllocator struct {
+	ip      string
+	prefix  int
+	nexthop string
+}
+
+var _ GatewayIPAllocator = fixedNexthopAllocator{}
+
+func (a fixedNexthopAllocator) Allocate(_ context.Context, _ string, _ *ExternalPoolConfig) (string, int, string, bool, error) {
+	return a.ip, a.prefix, a.nexthop, true, nil
+}
+
+func (fixedNexthopAllocator) Release(_ context.Context, _ string) error { return nil }
+
+// TestAttachIGW_Centralized_AllocatorNexthopOverridesPool covers the bug
+// where DHCP-source pools have empty pool.Gateway and fell back to
+// 169.254.0.2. Allocator-returned nexthop must win.
+func TestAttachIGW_Centralized_AllocatorNexthopOverridesPool(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	// pool.Gateway empty (mirrors DHCP-source config).
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 24}
+	alloc := fixedNexthopAllocator{ip: "192.168.1.50", prefix: 24, nexthop: "192.168.1.254"}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool, alloc, []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	require.NoError(t, err)
+	require.NotNil(t, route)
+	assert.Equal(t, "192.168.1.254", route.Nexthop, "allocator-supplied nexthop must override pool/link-local fallback")
+}
 
 func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {
 	ctx := context.Background()

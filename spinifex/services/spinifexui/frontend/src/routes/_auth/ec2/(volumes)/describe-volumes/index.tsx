@@ -35,7 +35,7 @@ function Volumes() {
             <Button>Create Volume</Button>
           </Link>
         }
-        title="EC2 Volumes"
+        title="Volumes"
       />
 
       {volumes.length > 0 ? (

@@ -21,43 +21,6 @@ import type {
   CreateTargetGroupFormData,
 } from "@/types/elbv2"
 
-export interface CreateLoadBalancerParams {
-  name: string
-  scheme: "internet-facing" | "internal"
-  subnetIds: string[]
-  securityGroupIds: string[]
-  tags: { key: string; value: string }[]
-}
-
-export function useCreateLoadBalancer() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: async (params: CreateLoadBalancerParams) => {
-      const tags: Tag[] = params.tags
-        .filter((t) => t.key.length > 0)
-        .map((t) => ({ Key: t.key, Value: t.value }))
-      const command = new CreateLoadBalancerCommand({
-        Name: params.name,
-        Scheme: params.scheme,
-        Type: "application",
-        IpAddressType: "ipv4",
-        Subnets: params.subnetIds,
-        SecurityGroups:
-          params.securityGroupIds.length > 0
-            ? params.securityGroupIds
-            : undefined,
-        Tags: tags.length > 0 ? tags : undefined,
-      })
-      return await getElbv2Client().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["elbv2", "loadBalancers"],
-      })
-    },
-  })
-}
-
 export function useDeleteLoadBalancer() {
   const queryClient = useQueryClient()
   return useMutation({

@@ -104,7 +104,7 @@ function PlacementGroupDetail() {
               <StateBadge state={pg.State} />
             </div>
           }
-          subtitle="EC2 Placement Group Details"
+          subtitle="Placement Group Details"
           title={pg.GroupName ?? pg.GroupId}
         />
 

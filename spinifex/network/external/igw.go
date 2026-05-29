@@ -263,12 +263,15 @@ func (m *igwManager) resolveGatewayNetwork(ctx context.Context, vpcID string) (n
 		return network, nexthop, "", nil
 	}
 
-	ip, prefix, ok, allocErr := m.allocator.Allocate(ctx, vpcID, m.pool)
+	ip, prefix, allocNexthop, ok, allocErr := m.allocator.Allocate(ctx, vpcID, m.pool)
 	if allocErr != nil {
 		return "", "", "", fmt.Errorf("allocate gateway LRP IP: %w", allocErr)
 	}
 	if !ok {
 		return network, nexthop, "", nil
+	}
+	if allocNexthop != "" {
+		nexthop = allocNexthop
 	}
 	return fmt.Sprintf("%s/%d", ip, prefix), nexthop, ip, nil
 }

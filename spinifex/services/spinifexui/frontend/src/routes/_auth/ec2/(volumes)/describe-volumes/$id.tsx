@@ -214,7 +214,7 @@ function VolumeDetail() {
               <StateBadge state={volume.State} />
             </div>
           }
-          subtitle="EC2 Volume Details"
+          subtitle="Volume Details"
           title={volume.VolumeId}
         />
 

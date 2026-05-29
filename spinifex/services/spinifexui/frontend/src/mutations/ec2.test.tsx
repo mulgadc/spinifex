@@ -336,6 +336,7 @@ describe("useRebootInstance", () => {
 describe("useCreateKeyPair", () => {
   it("sends CreateKeyPairCommand with key name and rsa type", async () => {
     createQueryClient()
+    mockSend.mockResolvedValueOnce({ KeyMaterial: "-----BEGIN RSA-----" })
     const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
 
     result.current.mutate({ keyName: "my-key" })
@@ -345,6 +346,17 @@ describe("useCreateKeyPair", () => {
       KeyName: "my-key",
       KeyType: "rsa",
     })
+  })
+
+  it("fails when the API omits the private key material", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({})
+    const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
+
+    result.current.mutate({ keyName: "my-key" })
+
+    await waitFor(() => expect(result.current.isError).toBeTruthy())
+    expect(result.current.error?.message).toContain("no private key")
   })
 })
 

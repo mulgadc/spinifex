@@ -89,7 +89,7 @@ describe("create-target-group route", () => {
     await expect(screen.findByLabelText("Name")).resolves.toBeInTheDocument()
     await user.type(screen.getByLabelText("Name"), "my-tg")
     await user.click(
-      screen.getByRole("button", { name: "Create target group" }),
+      screen.getByRole("button", { name: "Create Target Group" }),
     )
 
     await waitFor(() => {
@@ -119,7 +119,7 @@ describe("create-target-group route", () => {
     setup()
 
     await user.click(
-      screen.getByRole("button", { name: "Create target group" }),
+      screen.getByRole("button", { name: "Create Target Group" }),
     )
 
     await expect(
@@ -139,7 +139,7 @@ describe("create-target-group route", () => {
 
     await user.type(screen.getByLabelText("Name"), "my-tg")
     await user.click(
-      screen.getByRole("button", { name: "Create target group" }),
+      screen.getByRole("button", { name: "Create Target Group" }),
     )
 
     await expect(

@@ -46,8 +46,10 @@ func FindPool(pools []ExternalPoolConfig, region, az string) *ExternalPoolConfig
 
 // GatewayIPAllocator resolves the gateway LRP IP for a VPC.
 // ok=false means caller falls back to link-local; error means abort.
+// nexthop is the upstream gateway the VPC's default route should point at;
+// empty means caller falls back to pool.Gateway / link-local.
 type GatewayIPAllocator interface {
-	Allocate(ctx context.Context, vpcID string, pool *ExternalPoolConfig) (ip string, prefixLen int, ok bool, err error)
+	Allocate(ctx context.Context, vpcID string, pool *ExternalPoolConfig) (ip string, prefixLen int, nexthop string, ok bool, err error)
 	Release(ctx context.Context, vpcID string) error
 }
 
@@ -56,8 +58,8 @@ type LinkLocalAllocator struct{}
 
 var _ GatewayIPAllocator = LinkLocalAllocator{}
 
-func (LinkLocalAllocator) Allocate(_ context.Context, _ string, _ *ExternalPoolConfig) (string, int, bool, error) {
-	return "", 0, false, nil
+func (LinkLocalAllocator) Allocate(_ context.Context, _ string, _ *ExternalPoolConfig) (string, int, string, bool, error) {
+	return "", 0, "", false, nil
 }
 
 func (LinkLocalAllocator) Release(_ context.Context, _ string) error { return nil }
@@ -76,16 +78,17 @@ func NewStaticRangeAllocator(client ovn.Client) *StaticRangeAllocator {
 
 // Allocate returns the next free gateway LRP IP for vpcID. Idempotent: if the
 // LRP already exists with a recorded allocation, returns the existing IP.
-func (a *StaticRangeAllocator) Allocate(ctx context.Context, vpcID string, pool *ExternalPoolConfig) (string, int, bool, error) {
+// Nexthop comes from pool.Gateway (operator-supplied for static pools).
+func (a *StaticRangeAllocator) Allocate(ctx context.Context, vpcID string, pool *ExternalPoolConfig) (string, int, string, bool, error) {
 	start, end, prefix, ok := gwLrpRange(pool)
 	if !ok {
-		return "", 0, false, nil
+		return "", 0, "", false, nil
 	}
 
 	gwPortName := topology.GatewayRouterPort(vpcID)
 	lrps, err := a.OVN.ListLogicalRouterPorts(ctx)
 	if err != nil {
-		return "", 0, false, fmt.Errorf("list LRPs for gw IP allocation: %w", err)
+		return "", 0, "", false, fmt.Errorf("list LRPs for gw IP allocation: %w", err)
 	}
 	used := make(map[uint32]struct{}, len(lrps))
 	for _, lrp := range lrps {
@@ -94,7 +97,7 @@ func (a *StaticRangeAllocator) Allocate(ctx context.Context, vpcID string, pool 
 			continue
 		}
 		if lrp.Name == gwPortName {
-			return existing, prefix, true, nil
+			return existing, prefix, pool.Gateway, true, nil
 		}
 		if v := net.ParseIP(existing).To4(); v != nil {
 			used[ipv4ToUint32(v)] = struct{}{}
@@ -107,9 +110,9 @@ func (a *StaticRangeAllocator) Allocate(ctx context.Context, vpcID string, pool 
 		if _, taken := used[n]; taken {
 			continue
 		}
-		return uint32ToIPv4(n).String(), prefix, true, nil
+		return uint32ToIPv4(n).String(), prefix, pool.Gateway, true, nil
 	}
-	return "", 0, false, fmt.Errorf("gw_lrp_range exhausted for pool %q (%s-%s)", pool.Name, pool.GwLrpRangeStart, pool.GwLrpRangeEnd)
+	return "", 0, "", false, fmt.Errorf("gw_lrp_range exhausted for pool %q (%s-%s)", pool.Name, pool.GwLrpRangeStart, pool.GwLrpRangeEnd)
 }
 
 // Release is a no-op — LRP external_id is source of truth, cleared on detach.

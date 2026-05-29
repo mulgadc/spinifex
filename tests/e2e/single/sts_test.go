@@ -1,0 +1,310 @@
+//go:build e2e
+
+package single
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
+	"github.com/stretchr/testify/require"
+)
+
+// STS E2E identifiers. The role name carries an sts-e2e- prefix so it never
+// collides with the IAM-roles suite (which owns "app-role" / "other-role").
+const (
+	stsRoleName    = "sts-e2e-role"
+	stsSessionName = "e2e-session-1"
+
+	// Chained-assume target: a second role whose trust policy names the
+	// first role's IAM ARN. Exercises the role-ARN-clause vs. session-ARN-
+	// caller auto-expansion path in the trust-policy matcher.
+	stsRoleNameChain    = "sts-e2e-role-chain"
+	stsSessionNameChain = "e2e-chain-session"
+
+	// Role names used only by the write-time-rejection sub-tests. CreateRole
+	// is expected to fail before any persistence, so cleanup is best-effort.
+	stsRoleNameForbidCondition    = "sts-e2e-forbid-condition"
+	stsRoleNameForbidNotPrincipal = "sts-e2e-forbid-notprincipal"
+	stsRoleNameForbidNotAction    = "sts-e2e-forbid-notaction"
+
+	// Trust policy with a wildcard AWS principal so the test isn't coupled to
+	// whatever user the bootstrap profile maps to (root vs. a named user).
+	stsTrustPolicyAllowAny = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`
+
+	// Trust policy that names a principal which cannot exist in this cluster.
+	// Used to confirm a trust-policy denial surfaces AccessDenied without
+	// changing the role contract on the SDK side.
+	stsTrustPolicyDenyAny = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:user/ghost"},"Action":"sts:AssumeRole"}]}`
+)
+
+// runSTS covers the STS v1 surface: GetCallerIdentity smoke, the AssumeRole
+// happy path (ASIA AKID + session token + ~1h expiry), use-the-session-token
+// round-trip via GetCallerIdentity, the cross-service assumed-role denial at
+// the gateway policy gate, chained assume (assumed-role session calls
+// AssumeRole on a second role whose trust policy names the source role),
+// trust-policy denial after UpdateAssumeRolePolicy, NoSuchEntity on a missing
+// same-account role, and write-time rejection of forbidden trust-policy
+// blocks (Condition / NotPrincipal / NotAction) via the SDK.
+func runSTS(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — STS AssumeRole + GetCallerIdentity")
+	adminAccount := iamEnsureAdminAccountID(t, fix)
+
+	// Bootstrap-creds GetCallerIdentity — sanity check the live endpoint and
+	// capture the active ARN for the detail log so failures elsewhere are
+	// easier to attribute.
+	harness.Step(t, "get-caller-identity (bootstrap)")
+	who, err := fix.AWS.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	require.NoError(t, err, "get-caller-identity (bootstrap)")
+	require.Equal(t, adminAccount, aws.StringValue(who.Account),
+		"bootstrap account mismatch")
+	require.NotEmpty(t, aws.StringValue(who.Arn), "empty caller ARN")
+	require.NotEmpty(t, aws.StringValue(who.UserId), "empty caller UserId")
+	harness.Detail(t, "arn", aws.StringValue(who.Arn),
+		"user_id", aws.StringValue(who.UserId))
+
+	// Defensive sweep + parent-scoped cleanup so a mid-test panic still
+	// removes the role. iamDeleteRoleAndProfilesBestEffort tolerates a
+	// missing role. Cleans up every role the suite might create — the
+	// forbid-* roles are expected to fail at CreateRole but the sweep is
+	// cheap and protects against a future validator regression that lets
+	// one slip through.
+	stsRoles := []string{
+		stsRoleName,
+		stsRoleNameChain,
+		stsRoleNameForbidCondition,
+		stsRoleNameForbidNotPrincipal,
+		stsRoleNameForbidNotAction,
+	}
+	for _, name := range stsRoles {
+		iamDeleteRoleAndProfilesBestEffort(fix, name, nil)
+	}
+	fix.Harness.RegisterCleanup(func() {
+		for _, name := range stsRoles {
+			iamDeleteRoleAndProfilesBestEffort(fix, name, nil)
+		}
+	})
+
+	harness.Step(t, "create-role %q (trust=AWS:*)", stsRoleName)
+	createOut, err := fix.AWS.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(stsRoleName),
+		AssumeRolePolicyDocument: aws.String(stsTrustPolicyAllowAny),
+		Description:              aws.String("E2E STS AssumeRole + GetCallerIdentity"),
+	})
+	require.NoError(t, err, "create-role")
+	roleARN := aws.StringValue(createOut.Role.Arn)
+	require.Equal(t, iamRoleARN(adminAccount, stsRoleName), roleARN,
+		"role ARN must follow arn:aws:iam::<acct>:role/<name>")
+
+	// Happy path. Verify the wire-format invariants: ASIA prefix, non-empty
+	// secret + token, expiration ≈ 1h, and the AssumedRoleUser shape.
+	harness.Step(t, "assume-role %q session=%q", roleARN, stsSessionName)
+	beforeAssume := time.Now().UTC()
+	aOut, err := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleARN),
+		RoleSessionName: aws.String(stsSessionName),
+	})
+	require.NoError(t, err, "assume-role")
+
+	creds := aOut.Credentials
+	require.NotNil(t, creds, "AssumeRole returned nil Credentials")
+	akid := aws.StringValue(creds.AccessKeyId)
+	secret := aws.StringValue(creds.SecretAccessKey)
+	token := aws.StringValue(creds.SessionToken)
+	require.True(t, strings.HasPrefix(akid, "ASIA"),
+		"session AKID must start with ASIA, got %q", akid)
+	require.NotEmpty(t, secret, "empty SecretAccessKey")
+	require.NotEmpty(t, token, "empty SessionToken")
+	require.NotNil(t, creds.Expiration, "nil Expiration")
+
+	// Default DurationSeconds is 3600 (1h). Bound the assertion loosely so a
+	// few seconds of test-runner latency doesn't flake CI.
+	expiresIn := creds.Expiration.Sub(beforeAssume)
+	require.Greater(t, expiresIn, 30*time.Minute,
+		"expiration too soon: %v (akid=%s)", expiresIn, akid)
+	require.LessOrEqual(t, expiresIn, time.Hour+5*time.Minute,
+		"expiration too far: %v (akid=%s)", expiresIn, akid)
+
+	expectedAssumedARN := "arn:aws:sts::" + adminAccount + ":assumed-role/" +
+		stsRoleName + "/" + stsSessionName
+	require.NotNil(t, aOut.AssumedRoleUser, "nil AssumedRoleUser")
+	require.Equal(t, expectedAssumedARN, aws.StringValue(aOut.AssumedRoleUser.Arn),
+		"assumed-role ARN shape mismatch")
+	assumedRoleID := aws.StringValue(aOut.AssumedRoleUser.AssumedRoleId)
+	require.NotEmpty(t, assumedRoleID, "empty AssumedRoleId")
+	require.True(t, strings.HasSuffix(assumedRoleID, ":"+stsSessionName),
+		"AssumedRoleId must end with :%s, got %q", stsSessionName, assumedRoleID)
+	harness.Detail(t, "akid", akid, "assumed_role_arn", expectedAssumedARN,
+		"assumed_role_id", assumedRoleID)
+
+	// Drive the SigV4 ASIA path: use the freshly-minted creds against
+	// GetCallerIdentity and assert the identity round-trips. The endpoint's
+	// own auth middleware verifies X-Amz-Security-Token, so a wire-token
+	// mismatch would surface here as InvalidClientTokenId.
+	harness.Step(t, "get-caller-identity with assumed-role creds (ASIA path)")
+	sessionCli := harness.NewAWSClientWithSessionCreds(t, fix.Env, akid, secret, token)
+	sessWho, err := sessionCli.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	require.NoError(t, err, "get-caller-identity (assumed)")
+	require.Equal(t, adminAccount, aws.StringValue(sessWho.Account),
+		"assumed account mismatch")
+	require.Equal(t, expectedAssumedARN, aws.StringValue(sessWho.Arn),
+		"assumed ARN must be the sts:assumed-role form")
+	require.Equal(t, assumedRoleID, aws.StringValue(sessWho.UserId),
+		"UserId for assumed-role must equal AssumedRoleId")
+
+	// Cross-service ASIA SigV4: drive a non-STS endpoint with the assumed
+	// creds. gateway.checkPolicy hard-denies any assumed-role principal
+	// (gateway.go switch on principalTypeAssumedRole) — locking that in
+	// here catches a future refactor that relaxes the gate before the role-
+	// policy evaluator exists. The wire path also proves ctxPrincipalType
+	// propagates beyond the STS service into the EC2 dispatcher; a unit
+	// test of checkPolicy cannot exercise that propagation.
+	harness.Step(t, "ec2 describe-regions with assumed-role creds (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := sessionCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+		return e
+	})
+
+	// Chained assume: create a second role whose trust policy names the
+	// first role's IAM ARN, then have the assumed-role session call
+	// AssumeRole on it. Exercises the role-ARN-clause vs. session-ARN-
+	// caller auto-expansion path end-to-end — eval logic is unit-tested,
+	// the wire flow (ASIA SigV4 → ctxAssumedRoleARN → handler caller ARN
+	// → trust-policy match → new ASIA mint) is not.
+	chainedTrustPolicy := fmt.Sprintf(
+		`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`,
+		iamRoleARN(adminAccount, stsRoleName),
+	)
+	harness.Step(t, "create-role %q (trust=role/%s for chained assume)",
+		stsRoleNameChain, stsRoleName)
+	chainCreateOut, err := fix.AWS.IAM.CreateRole(&iam.CreateRoleInput{
+		RoleName:                 aws.String(stsRoleNameChain),
+		AssumeRolePolicyDocument: aws.String(chainedTrustPolicy),
+		Description:              aws.String("E2E STS chained AssumeRole target"),
+	})
+	require.NoError(t, err, "create-role (chain)")
+	chainedRoleARN := aws.StringValue(chainCreateOut.Role.Arn)
+
+	harness.Step(t, "assume-role %q via assumed-role session (chained)", chainedRoleARN)
+	chainOut, err := sessionCli.STS.AssumeRole(&sts.AssumeRoleInput{
+		RoleArn:         aws.String(chainedRoleARN),
+		RoleSessionName: aws.String(stsSessionNameChain),
+	})
+	require.NoError(t, err, "assume-role (chain)")
+	require.NotNil(t, chainOut.Credentials, "chained AssumeRole returned nil Credentials")
+	chainAKID := aws.StringValue(chainOut.Credentials.AccessKeyId)
+	chainSecret := aws.StringValue(chainOut.Credentials.SecretAccessKey)
+	chainToken := aws.StringValue(chainOut.Credentials.SessionToken)
+	require.True(t, strings.HasPrefix(chainAKID, "ASIA"),
+		"chained session AKID must start with ASIA, got %q", chainAKID)
+	require.NotEmpty(t, chainSecret, "empty chained SecretAccessKey")
+	require.NotEmpty(t, chainToken, "empty chained SessionToken")
+
+	expectedChainARN := "arn:aws:sts::" + adminAccount + ":assumed-role/" +
+		stsRoleNameChain + "/" + stsSessionNameChain
+	require.NotNil(t, chainOut.AssumedRoleUser, "nil chained AssumedRoleUser")
+	require.Equal(t, expectedChainARN, aws.StringValue(chainOut.AssumedRoleUser.Arn),
+		"chained assumed-role ARN shape mismatch")
+	harness.Detail(t, "chain_akid", chainAKID, "chain_arn", expectedChainARN)
+
+	// Round-trip the chained creds to prove the new session token verifies
+	// on the wire and the gateway reports the chained-role ARN, not the
+	// source-role ARN. Catches a regression that reuses the source session
+	// token or fails to refresh ctxAssumedRoleARN on the new session.
+	harness.Step(t, "get-caller-identity with chained assumed-role creds")
+	chainCli := harness.NewAWSClientWithSessionCreds(t, fix.Env, chainAKID, chainSecret, chainToken)
+	chainWho, err := chainCli.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	require.NoError(t, err, "get-caller-identity (chained)")
+	require.Equal(t, expectedChainARN, aws.StringValue(chainWho.Arn),
+		"chained GetCallerIdentity must report the chained-role ARN, not the source-role ARN")
+
+	// Trust-policy denial: swap to a principal that cannot match the caller,
+	// then re-assume to confirm the trust-policy evaluator returns
+	// AccessDenied. Uses a different session name to make any stale-record
+	// confusion easier to spot in logs.
+	harness.Step(t, "update-assume-role-policy → unmatched principal")
+	_, err = fix.AWS.IAM.UpdateAssumeRolePolicy(&iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String(stsRoleName),
+		PolicyDocument: aws.String(stsTrustPolicyDenyAny),
+	})
+	require.NoError(t, err, "update-assume-role-policy")
+	harness.Step(t, "assume-role after policy swap (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         aws.String(roleARN),
+			RoleSessionName: aws.String("e2e-session-2"),
+		})
+		return e
+	})
+
+	// Same-account miss → NoSuchEntity. Cross-account miss is masked to
+	// AccessDenied by the handler; that's covered by handlers/sts unit tests
+	// since the single-node fixture only has one account.
+	harness.Step(t, "assume-role missing role (expect NoSuchEntity)")
+	harness.ExpectError(t, "NoSuchEntity", func() error {
+		_, e := fix.AWS.STS.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn: aws.String(iamRoleARN(adminAccount,
+				"sts-e2e-no-such-role")),
+			RoleSessionName: aws.String("ghost"),
+		})
+		return e
+	})
+
+	// Write-time trust-policy rejection via the SDK: Condition, NotPrincipal,
+	// and NotAction must be refused at CreateRole rather than silently
+	// accepted (silent-allow vector). Handler-level unit tests cover the
+	// validator; the e2e value here is proving the SDK marshals these fields
+	// over the wire intact and the gateway returns the AWS-conformant
+	// MalformedPolicyDocument code rather than a generic ValidationError.
+	for _, tc := range []struct {
+		label    string
+		roleName string
+		doc      string
+	}{
+		{
+			label:    "Condition",
+			roleName: stsRoleNameForbidCondition,
+			doc:      `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"abc"}}}]}`,
+		},
+		{
+			label:    "NotPrincipal",
+			roleName: stsRoleNameForbidNotPrincipal,
+			doc:      `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotPrincipal":{"AWS":"arn:aws:iam::123456789012:user/Bob"},"Action":"sts:AssumeRole"}]}`,
+		},
+		{
+			label:    "NotAction",
+			roleName: stsRoleNameForbidNotAction,
+			doc:      `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"NotAction":["sts:AssumeRole"]}]}`,
+		},
+	} {
+		harness.Step(t, "create-role with %s trust block (expect MalformedPolicyDocument)", tc.label)
+		harness.ExpectError(t, "MalformedPolicyDocument", func() error {
+			_, e := fix.AWS.IAM.CreateRole(&iam.CreateRoleInput{
+				RoleName:                 aws.String(tc.roleName),
+				AssumeRolePolicyDocument: aws.String(tc.doc),
+			})
+			return e
+		})
+	}
+
+	// Assertive teardown — the cleanup hook above is the safety net; this is
+	// the happy-path delete so the test surfaces a DeleteConflict regression
+	// (e.g. stray attached policy from a future refactor) loudly. The chained
+	// role tears down first so its trust-policy dependency on stsRoleName
+	// doesn't matter, but DeleteRole is unaffected by trust-policy references
+	// in either direction — order is purely for readability.
+	_, err = fix.AWS.IAM.DeleteRole(&iam.DeleteRoleInput{
+		RoleName: aws.String(stsRoleNameChain),
+	})
+	require.NoError(t, err, "delete-role (chain)")
+	_, err = fix.AWS.IAM.DeleteRole(&iam.DeleteRoleInput{
+		RoleName: aws.String(stsRoleName),
+	})
+	require.NoError(t, err, "delete-role")
+}

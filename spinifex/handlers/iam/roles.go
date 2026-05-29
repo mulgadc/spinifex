@@ -421,9 +421,16 @@ func roleToSDK(r *Role) *iam.Role {
 }
 
 // ValidateTrustPolicyDocument parses and validates an AssumeRolePolicyDocument
-// JSON string. Trust-policy evaluation (Principal/Condition semantics, Action
-// being sts:AssumeRole, etc.) is deferred to STS — this layer only checks the
+// JSON string. Trust-policy evaluation (Principal semantics, Action being
+// sts:AssumeRole, etc.) is deferred to STS — this layer only checks the
 // document shape.
+//
+// Three categories of fields are rejected at write time rather than silently
+// accepted-then-ignored at evaluation time: Condition blocks, NotPrincipal,
+// and NotAction. Each would otherwise let an author write a policy whose
+// runtime behaviour silently diverges from its stated intent (e.g. an
+// ExternalId-protected role that ignores ExternalId, or a NotPrincipal-Allow
+// that grants the universe). Loud failure here beats silent allow there.
 func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	if len(docJSON) > maxTrustPolicyDocumentSize {
 		return nil, fmt.Errorf("trust policy exceeds maximum size of %d bytes", maxTrustPolicyDocumentSize)
@@ -446,13 +453,44 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 		if stmt.Effect != PolicyEffectAllow && stmt.Effect != PolicyEffectDeny {
 			return nil, fmt.Errorf("statement %d: Effect must be Allow or Deny, got %q", i, stmt.Effect)
 		}
-		if len(stmt.Principal) == 0 {
+		if !isRawJSONNonEmpty(stmt.Principal) {
 			return nil, fmt.Errorf("statement %d: Principal is required", i)
 		}
 		if len(stmt.Action) == 0 {
 			return nil, fmt.Errorf("statement %d: Action is required", i)
 		}
+		for j, a := range stmt.Action {
+			if a == "" {
+				return nil, fmt.Errorf("statement %d: Action element %d must not be empty", i, j)
+			}
+		}
+		if isRawJSONNonEmpty(stmt.Condition) {
+			return nil, fmt.Errorf("statement %d: trust policy Condition blocks are not supported in this release; remove the Condition field or wait for v1.1", i)
+		}
+		if isRawJSONNonEmpty(stmt.NotPrincipal) {
+			return nil, fmt.Errorf("statement %d: trust policy NotPrincipal blocks are not supported in this release; use Principal with an explicit allow-list instead", i)
+		}
+		if len(stmt.NotAction) > 0 {
+			return nil, fmt.Errorf("statement %d: trust policy NotAction blocks are not supported in this release", i)
+		}
 	}
 
 	return &doc, nil
+}
+
+// isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful
+// value. Whitespace, the JSON null literal, and the empty object/array
+// literals all count as empty — they would otherwise let `Condition: {}`
+// trip the Condition rejection and let `Principal: {}` slip past the
+// Principal-is-required check.
+func isRawJSONNonEmpty(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	switch strings.TrimSpace(string(raw)) {
+	case "", "null", "{}", "[]":
+		return false
+	default:
+		return true
+	}
 }

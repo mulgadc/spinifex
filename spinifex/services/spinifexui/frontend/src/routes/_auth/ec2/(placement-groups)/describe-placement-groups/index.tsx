@@ -37,7 +37,7 @@ function PlacementGroups() {
             <Button>Create Placement Group</Button>
           </Link>
         }
-        title="EC2 Placement Groups"
+        title="Placement Groups"
       />
 
       {placementGroups.length > 0 ? (

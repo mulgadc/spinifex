@@ -649,6 +649,80 @@ Condition evaluator so accepting them would silently allow.
 
 ---
 
+## IMDS (Instance Metadata Service)
+
+Host-served at `169.254.169.254` to every running guest VM, with **no in-VM
+agent** — matching the AWS Nitro shape. There is no `spx`/AWS CLI surface; the
+endpoint is reached from inside a guest over plain HTTP. A single in-process
+handler in `awsgw` binds one listener per VPC via an OVN localport + host veth,
+so a request's veth identifies the VPC and its OVN `port_security`-attested
+source IP identifies the ENI.
+
+**IMDSv2-only.** Every read requires a session token. A tokenless (v1-style)
+`GET` returns `401 Unauthorized` with an empty body. Obtain a token with a
+`PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds`
+(1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
+Modern `aws-cli` v2, `boto3`, and `aws-sdk-go` default to v2; legacy tooling
+that issues a tokenless `GET` must be updated. Tokens are bound to the issuing
+ENI (surviving guest IP churn), held in-memory, and dropped on `awsgw` restart
+(SDKs retry transparently).
+
+```bash
+# Inside the guest VM:
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id
+
+# Tokenless GET → 401 Unauthorized (empty body)
+curl -i http://169.254.169.254/latest/meta-data/instance-id
+```
+
+### IMDS — Supported paths
+
+| Path | Method | Source | Status |
+|------|--------|--------|--------|
+| `/latest/api/token` | PUT | Issues an ENI-bound IMDSv2 token; `X-aws-ec2-metadata-token-ttl-seconds` ∈ [1, 21600] required | **DONE** |
+| `/latest/meta-data/` | GET | Directory listing of supported children | **DONE** |
+| `/latest/meta-data/instance-id` | GET | `vm.ID` | **DONE** |
+| `/latest/meta-data/instance-type` | GET | `vm.InstanceType` | **DONE** |
+| `/latest/meta-data/ami-id` | GET | launch `ImageId` | **DONE** |
+| `/latest/meta-data/local-ipv4` | GET | `ENIRecord.PrivateIpAddress` (== request source IP) | **DONE** |
+| `/latest/meta-data/public-ipv4` | GET | EIP, else instance public IP; empty body if none | **DONE** |
+| `/latest/meta-data/mac` | GET | `ENIRecord.MacAddress` | **DONE** |
+| `/latest/meta-data/security-groups` | GET | `ENIRecord.SecurityGroupIds`, newline-separated | **DONE** |
+| `/latest/meta-data/hostname`, `/local-hostname` | GET | Synthesised `ip-<dashed-ip>.<region>.compute.internal` | **DONE** |
+| `/latest/meta-data/placement/availability-zone` | GET | `ENIRecord.AvailabilityZone` | **DONE** |
+| `/latest/meta-data/placement/region` | GET | Derived from AZ (trailing letter stripped) | **DONE** |
+| `/latest/meta-data/iam/info` | GET | `{InstanceProfileArn, InstanceProfileId}`; 404 if no profile | **DONE** |
+| `/latest/meta-data/iam/security-credentials/` | GET | Role name(s) under the profile, one per line; empty body if none | **DONE** |
+| `/latest/meta-data/iam/security-credentials/<role>` | GET | STS `AssumeRoleForInstance` → ASIA-prefixed temporary credential JSON | **DONE** |
+| `/latest/user-data` | GET | `vm.UserData`; 404 if none | **DONE** |
+| `/latest/dynamic/instance-identity/document` | GET | Needs a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
+| `/latest/meta-data/network/interfaces/...` | GET | Multi-ENI rendering | **NOT STARTED** (404) |
+| `/latest/meta-data/tags/...` | GET | Instance-tag metadata | **NOT STARTED** (404) |
+
+### IMDS — DHCP option 121 dependency
+
+OVN-served DHCP pushes a classless-static-route (option 121) for
+`169.254.169.254/32` via the subnet gateway, so guests reach IMDS through the
+subnet router instead of ARPing for the address link-locally. This is required
+for distros that auto-install a `169.254.0.0/16` link-scope route
+(NetworkManager, RHEL/Fedora, Ubuntu desktop). Every cloud AMI uses DHCP by
+default and gets this automatically.
+
+A guest configured with a **fully static IP (no DHCP client)** never sees
+option 121 and cannot reach IMDS until you add the route manually inside the
+guest:
+
+```bash
+ip route add 169.254.169.254/32 via <subnet-gateway>
+```
+
+Static-IP guest support is out of scope for v1.
+
+---
+
 ## ELBv2 (Application & Network Load Balancer)
 
 The data plane uses a system-managed LB VM running HAProxy, launched automatically during `create-load-balancer`. HAProxy config is pushed via NATS on listener/target changes.

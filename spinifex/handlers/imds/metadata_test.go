@@ -161,6 +161,35 @@ func TestHTTP_TokenGETMethodNotAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
+// TestHTTP_ForwardedForRejected pins AWS IMDS's SSRF defence: any request
+// carrying X-Forwarded-For is refused with 403 regardless of token or identity,
+// on both the read path and token issuance.
+func TestHTTP_ForwardedForRejected(t *testing.T) {
+	svc, _ := newTestService(&fakeResolver{eni: testENI()}, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+
+	// A valid token + resolvable ENI is still refused once X-Forwarded-For is set.
+	token := issueToken(t, h)
+	req := httptest.NewRequest(http.MethodGet, "http://"+MetaDataServerIP+prefixMetaData+"instance-id", nil)
+	req.RemoteAddr = testIP + ":50000"
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyVPCID, testVPC))
+	req.Header.Set(hdrToken, token)
+	req.Header.Set(hdrForwardedFor, "10.0.0.99")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+
+	// Token issuance is refused too.
+	put := httptest.NewRequest(http.MethodPut, "http://"+MetaDataServerIP+pathToken, nil)
+	put.RemoteAddr = testIP + ":50000"
+	put = put.WithContext(context.WithValue(put.Context(), ctxKeyVPCID, testVPC))
+	put.Header.Set(hdrTokenTTL, "60")
+	put.Header.Set(hdrForwardedFor, "10.0.0.99")
+	putRec := httptest.NewRecorder()
+	h.ServeHTTP(putRec, put)
+	assert.Equal(t, http.StatusForbidden, putRec.Code)
+}
+
 func TestHTTP_ENIMissReturns404(t *testing.T) {
 	svc, _ := newTestService(&fakeResolver{eni: nil}, &fakeIAM{}, &fakeAssumer{})
 	h := svc.httpHandler()

@@ -26,7 +26,25 @@ const (
 
 	hdrToken    = "X-Aws-Ec2-Metadata-Token"             //nolint:gosec // HTTP header name, not a credential
 	hdrTokenTTL = "X-Aws-Ec2-Metadata-Token-Ttl-Seconds" //nolint:gosec // HTTP header name, not a credential
+
+	hdrForwardedFor = "X-Forwarded-For"
 )
+
+// rejectForwarded enforces AWS IMDS's SSRF defence: any request carrying an
+// X-Forwarded-For header is refused with 403, before token or identity checks.
+// A reverse proxy or request-forwarding app on the instance stamps that header,
+// so rejecting it stops the classic "trick a server-side app into relaying a
+// metadata request" attack. Applies to every path including the token PUT,
+// matching AWS.
+func rejectForwarded(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(hdrForwardedFor) != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // handleToken serves PUT /latest/api/token. It binds a fresh token to the
 // requesting ENI (resolved from the datapath-attested source IP) and returns it

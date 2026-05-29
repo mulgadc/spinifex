@@ -731,7 +731,6 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	harness.WaitForTargetsHealthy(t, c, tgA, 2, label+" tgA", 2*time.Minute)
-	harness.WaitForTargetsHealthy(t, c, tgB, 2, label+" tgB", 2*time.Minute)
 
 	eni := lbENI(t, c, "internal", "app", lb.ID)
 	priv := privateIP(eni)
@@ -750,7 +749,7 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 
 	// Defaults: in-place TG swap on same port.
 	modifyListenerDefaultTG(t, c, listener, tgB)
-	time.Sleep(3 * time.Second)
+	harness.WaitForTargetsHealthy(t, c, tgB, 2, label+" tgB (post-swap)", 2*time.Minute)
 	probeAtPort(t, f, priv, altPort, label+" after TG-swap (still port 8090, now tgB)")
 }
 

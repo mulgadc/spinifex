@@ -40,6 +40,7 @@ var _ IMDSService = (*IMDSServiceImpl)(nil)
 type eniResolver interface {
 	resolveENI(vpcID, srcIP string) (*eniFacts, error)
 	resolveInstance(eni *eniFacts) (*instanceFacts, error)
+	resolveSGNames(accountID string, sgIDs []string) []string
 }
 
 // IMDSServiceImpl is the in-process IMDS implementation. It is not part of the
@@ -93,10 +94,20 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		return nil, fmt.Errorf("open %s bucket: %w", KVBucketIMDSVPCVeth, err)
 	}
 
+	// The SG bucket is owned by the VPC service and only feeds the non-critical
+	// security-groups path. Open it best-effort: if it isn't up yet, IMDS still
+	// starts and resolveSGNames degrades to serving raw IDs.
+	sgKV, err := js.KeyValue(kvBucketSecurityGroups)
+	if err != nil {
+		slog.Warn("IMDS: security-group bucket unavailable, /security-groups will serve IDs", "bucket", kvBucketSecurityGroups, "err", err)
+		sgKV = nil
+	}
+
 	svc := &IMDSServiceImpl{
 		resolver: &metadataResolver{
 			index:  indexKV,
 			eniKV:  eniKV,
+			sgKV:   sgKV,
 			lookup: &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
 		tokens: newTokenStore(),

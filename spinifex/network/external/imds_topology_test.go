@@ -63,7 +63,7 @@ func TestIMDSEnsureForVPC_InstallsTopology(t *testing.T) {
 	assert.Equal(t, "imds-lrp-vpc-0a1b2c3d4e5f6789", spec.LRPName)
 	assert.Equal(t, "imds-port-vpc-0a1b2c3d4e5f6789", spec.LSPName)
 	assert.Equal(t, "4e5f6789", spec.ShortVPCID)
-	assert.Equal(t, "imds-ovs-4e5f6789", spec.OVSEndName)
+	assert.Equal(t, "imds-o-4e5f6789", spec.OVSEndName)
 	assert.Equal(t, "imds-h-4e5f6789", spec.HostEndName)
 
 	// Logical switch exists, tagged as IMDS.

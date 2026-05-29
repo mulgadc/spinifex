@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,3 +91,32 @@ func TestBindManager_BindPropagatesVethError(t *testing.T) {
 }
 
 var errEnsureFailed = io.ErrUnexpectedEOF
+
+// TestBindManager_SyncSkipsVersionKey guards that the schema-version marker
+// migrate.RunKV stamps into the vpc-veth bucket is not mistaken for a VPC ID
+// and made to bring up a bogus veth + listener.
+func TestBindManager_SyncSkipsVersionKey(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	vpcVeth, _, err := InitBuckets(js, 1)
+	require.NoError(t, err)
+
+	// InitBuckets → migrate.RunKV stamps utils.VersionKey; add one real VPC too.
+	_, err = vpcVeth.PutString("vpc-abcdef12", "{}")
+	require.NoError(t, err)
+
+	var bound sync.Map
+	ensure := func(_ context.Context, vpcID string) (string, error) {
+		bound.Store(vpcID, true)
+		return "imds-h-" + vpcID, nil
+	}
+	remove := func(context.Context, string) error { return nil }
+	bm := newBindManager(vpcVeth, http.NewServeMux(), ensure, remove, loopbackListen(&sync.Map{}))
+
+	require.NoError(t, bm.sync(context.Background()))
+	defer bm.shutdown()
+
+	_, versionBound := bound.Load(utils.VersionKey)
+	assert.False(t, versionBound, "_version marker must not be bound as a VPC")
+	_, vpcBound := bound.Load("vpc-abcdef12")
+	assert.True(t, vpcBound, "real VPC entry must be bound")
+}

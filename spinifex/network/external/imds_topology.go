@@ -38,7 +38,7 @@ type IMDSVPCSpec struct {
 	LSPName       string // imds-port-{vpcID} (localport; host veth binds here)
 	LSPMAC        string // 02:.. — HashMAC("imds-"+vpcID)
 	LRPNetwork    string // imdsLRPNetwork
-	OVSEndName    string // imds-ovs-{shortVpcID}
+	OVSEndName    string // imds-o-{shortVpcID}
 	HostEndName   string // imds-h-{shortVpcID}
 }
 

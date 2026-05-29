@@ -45,12 +45,12 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"ovs-vsctl", "port-to-br", "imds-ovs-89abcdef"},
-		{"ip", "link", "add", "imds-ovs-89abcdef", "type", "veth", "peer", "name", "imds-h-89abcdef"},
-		{"ip", "link", "set", "imds-ovs-89abcdef", "up"},
+		{"ovs-vsctl", "port-to-br", "imds-o-89abcdef"},
+		{"ip", "link", "add", "imds-o-89abcdef", "type", "veth", "peer", "name", "imds-h-89abcdef"},
+		{"ip", "link", "set", "imds-o-89abcdef", "up"},
 		{"ip", "link", "set", "imds-h-89abcdef", "up"},
-		{"ovs-vsctl", "add-port", "br-int", "imds-ovs-89abcdef",
-			"--", "set", "Interface", "imds-ovs-89abcdef",
+		{"ovs-vsctl", "add-port", "br-int", "imds-o-89abcdef",
+			"--", "set", "Interface", "imds-o-89abcdef",
 			"external_ids:iface-id=imds-port-" + testVPCID},
 	}
 	if len(*calls) != len(want) {
@@ -139,7 +139,7 @@ func TestRemoveIMDSVeth(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"ovs-vsctl", "--if-exists", "del-port", "imds-ovs-89abcdef"},
+		{"ovs-vsctl", "--if-exists", "del-port", "imds-o-89abcdef"},
 		{"ip", "link", "del", "imds-h-89abcdef"},
 	}
 	if len(*calls) != len(want) {
@@ -163,5 +163,25 @@ func TestRemoveIMDSVeth_MissingDeviceIsNotError(t *testing.T) {
 
 	if err := RemoveIMDSVeth(context.Background(), testVPCID); err != nil {
 		t.Fatalf("expected nil for absent device, got %v", err)
+	}
+}
+
+// TestIMDSVethNamesWithinIFNAMSIZ guards the load-bearing constraint that both
+// veth-end names fit Linux's IFNAMSIZ-1 (15 chars). A longer name makes
+// `ip link add` fail with "name too long" for every VPC, silently taking IMDS
+// offline cluster-wide — and the SudoCommand mock would never catch it.
+func TestIMDSVethNamesWithinIFNAMSIZ(t *testing.T) {
+	const ifnamsizMax = 15
+	for _, vpcID := range []string{
+		"vpc-0123456789abcdef",
+		"vpc-0a1b2c3d4e5f6a7b8",
+		"vpc-deadbeef",
+		"short",
+	} {
+		for _, name := range []string{IMDSOVSPortName(vpcID), IMDSHostVethName(vpcID)} {
+			if len(name) > ifnamsizMax {
+				t.Errorf("veth name %q (%d chars) exceeds IFNAMSIZ-1 (%d) for vpc %q", name, len(name), ifnamsizMax, vpcID)
+			}
+		}
 	}
 }

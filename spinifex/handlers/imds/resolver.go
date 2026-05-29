@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/nats-io/nats.go"
 )
@@ -14,6 +15,11 @@ import (
 // import this package — importing it back would close a cycle. The veth_store
 // record type lives here for the same reason.
 const kvBucketENIs = "spinifex-vpc-enis"
+
+// kvBucketSecurityGroups is the security-group source-of-truth bucket
+// (handlers_ec2_vpc.KVBucketSecurityGroups). Duplicated as a literal for the
+// same import-cycle reason as kvBucketENIs.
+const kvBucketSecurityGroups = "spinifex-vpc-security-groups"
 
 // eniFacts is the subset of an ENIRecord the IMDS metadata surface serves
 // directly, plus the account ID recovered from the ENI bucket key. Everything
@@ -59,6 +65,13 @@ type eniIndexValue struct {
 	AccountID string `json:"account_id"`
 }
 
+// sgNameRecord is the slice of handlers_ec2_vpc.SecurityGroupRecord the metadata
+// surface needs: the human-readable group name AWS serves at
+// /latest/meta-data/security-groups (not the sg-* ID).
+type sgNameRecord struct {
+	GroupName string `json:"group_name"`
+}
+
 // eniRecord is the subset of handlers_ec2_vpc.ENIRecord the resolver reads. The
 // full record is owned by the ENI controller; only these fields feed IMDS.
 type eniRecord struct {
@@ -88,6 +101,7 @@ type eniRecord struct {
 type metadataResolver struct {
 	index  nats.KeyValue // spinifex-network-eni-by-vpc-ip
 	eniKV  nats.KeyValue // spinifex-vpc-enis
+	sgKV   nats.KeyValue // spinifex-vpc-security-groups (nil-safe: degrades to IDs)
 	lookup instanceLookup
 }
 
@@ -146,4 +160,35 @@ func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error
 		return nil, nil
 	}
 	return r.lookup.describe(eni.accountID, eni.instanceID)
+}
+
+// resolveSGNames maps security-group IDs to their group names, since AWS serves
+// names (not sg-* IDs) at /latest/meta-data/security-groups. Best-effort: a
+// group whose record is missing or unreadable falls back to its own ID rather
+// than failing the whole request, and a nil sgKV (bucket unavailable at start)
+// degrades the endpoint to IDs. Order is preserved.
+func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []string {
+	names := make([]string, len(sgIDs))
+	for i, id := range sgIDs {
+		names[i] = id
+		if r.sgKV == nil {
+			continue
+		}
+		raw, err := r.sgKV.Get(accountID + "." + id)
+		if err != nil {
+			if !errors.Is(err, nats.ErrKeyNotFound) {
+				slog.Warn("IMDS: security-group name lookup failed", "account_id", accountID, "sg_id", id, "err", err)
+			}
+			continue
+		}
+		var rec sgNameRecord
+		if err := json.Unmarshal(raw.Value(), &rec); err != nil {
+			slog.Warn("IMDS: security-group unmarshal failed", "sg_id", id, "err", err)
+			continue
+		}
+		if rec.GroupName != "" {
+			names[i] = rec.GroupName
+		}
+	}
+	return names
 }

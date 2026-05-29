@@ -131,7 +131,7 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case prefixMetaData + "mac":
 		writeText(w, eni.mac)
 	case prefixMetaData + "security-groups":
-		writeText(w, strings.Join(eni.securityGroupIDs, "\n"))
+		writeText(w, strings.Join(s.resolver.resolveSGNames(eni.accountID, eni.securityGroupIDs), "\n"))
 	case prefixMetaData + "hostname", prefixMetaData + "local-hostname":
 		writeText(w, synthHostname(eni.privateIP, regionFromAZ(eni.availabilityZone)))
 	case prefixMetaData + "placement", prefixMetaData + "placement/":
@@ -184,10 +184,14 @@ func (s *IMDSServiceImpl) serveUserData(w http.ResponseWriter, eni *eniFacts) {
 	_, _ = w.Write(inst.userData)
 }
 
-// serveIAMInfo writes {InstanceProfileArn, InstanceProfileId}, or 404 when the
-// instance has no instance profile.
+// serveIAMInfo writes {InstanceProfileArn, InstanceProfileId}, 404 when the
+// instance has no instance profile, or 500 when the profile can't be resolved.
 func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
-	profile := s.profileFor(eni)
+	profile, err := s.profileFor(eni)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if profile == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -199,10 +203,17 @@ func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
 }
 
 // serveSecurityCredentialsList writes the role name(s) under the profile, one
-// per line. An instance with no profile/role returns an empty 200 body, exactly
-// as AWS does (the SDK then concludes there is no instance role).
+// per line. An instance with genuinely no profile/role returns an empty 200
+// body, exactly as AWS does (the SDK then concludes there is no instance role).
+// A backend failure resolving the profile is a 500, never an empty 200 — the
+// latter would make a transient hiccup indistinguishable from "no role" and
+// silently strip the instance's credentials.
 func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, eni *eniFacts) {
-	profile := s.profileFor(eni)
+	profile, err := s.profileFor(eni)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if profile == nil || profile.RoleName == "" {
 		writeText(w, "")
 		return
@@ -212,9 +223,13 @@ func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, en
 
 // serveRoleCredentials mints (or serves cached) credentials for the named role.
 // AWS only accepts the actual role name as the path parameter, not the profile
-// name, so a mismatch is 404.
+// name, so a mismatch is 404; a backend failure resolving the profile is 500.
 func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFacts, roleParam string) {
-	profile := s.profileFor(eni)
+	profile, err := s.profileFor(eni)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if profile == nil || profile.RoleName == "" || roleParam != profile.RoleName {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -261,20 +276,33 @@ func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *ins
 	return inst
 }
 
-// profileFor resolves the instance's IAM instance profile, or nil when the
-// instance has none (or it can't be resolved). Used by the iam/* paths, which
-// 404 / empty-body on nil per the AWS contract.
-func (s *IMDSServiceImpl) profileFor(eni *eniFacts) *resolvedProfile {
+// profileFor resolves the instance's IAM instance profile. It returns:
+//   - (profile, nil) when the instance has a resolvable profile,
+//   - (nil, nil) when the instance genuinely has no profile (no attached
+//     instance, no profile ARN, or the ARN dereferences to nothing),
+//   - (nil, err) when a backend lookup fails.
+//
+// Callers must distinguish the last case (500) from the middle one (404 /
+// empty body): collapsing a backend error into "no profile" would make a
+// transient failure look like a roleless instance and silently drop creds.
+func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	inst, err := s.resolver.resolveInstance(eni)
-	if err != nil || inst == nil || inst.iamInstanceProfileArn == "" {
-		return nil
+	if err != nil {
+		slog.Error("IMDS: instance resolution failed", "instance_id", eni.instanceID, "err", err)
+		return nil, err
+	}
+	if inst == nil || inst.iamInstanceProfileArn == "" {
+		return nil, nil
 	}
 	profile, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn)
-	if err != nil || profile == nil {
-		slog.Warn("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)
-		return nil
+	if err != nil {
+		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)
+		return nil, err
 	}
-	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}
+	if profile == nil {
+		return nil, nil
+	}
+	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, nil
 }
 
 // resolvedProfile is the slice of an IAM instance profile the metadata surface

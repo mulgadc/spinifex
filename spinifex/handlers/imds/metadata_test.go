@@ -2,6 +2,7 @@ package handlers_imds
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,11 +23,24 @@ type fakeResolver struct {
 	eniErr  error
 	inst    *instanceFacts
 	instErr error
+	sgNames map[string]string // sg-id → group name; absent IDs fall back to the ID
 }
 
 func (f *fakeResolver) resolveENI(_, _ string) (*eniFacts, error) { return f.eni, f.eniErr }
 func (f *fakeResolver) resolveInstance(_ *eniFacts) (*instanceFacts, error) {
 	return f.inst, f.instErr
+}
+
+func (f *fakeResolver) resolveSGNames(_ string, sgIDs []string) []string {
+	out := make([]string, len(sgIDs))
+	for i, id := range sgIDs {
+		if name, ok := f.sgNames[id]; ok {
+			out[i] = name
+		} else {
+			out[i] = id
+		}
+	}
+	return out
 }
 
 type fakeIAM struct {
@@ -165,8 +179,9 @@ func TestHTTP_ENIMissReturns404(t *testing.T) {
 
 func TestHTTP_MetadataPaths(t *testing.T) {
 	res := &fakeResolver{
-		eni:  testENI(),
-		inst: &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", userData: []byte("#!/bin/sh\necho hi")},
+		eni:     testENI(),
+		inst:    &instanceFacts{instanceType: "t3.micro", imageID: "ami-12345", userData: []byte("#!/bin/sh\necho hi")},
+		sgNames: map[string]string{"sg-1": "web-sg", "sg-2": "db-sg"},
 	}
 	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
 	h := svc.httpHandler()
@@ -181,7 +196,7 @@ func TestHTTP_MetadataPaths(t *testing.T) {
 		{prefixMetaData + "mac", "02:11:22:33:44:55"},
 		{prefixMetaData + "placement/availability-zone", "ap-southeast-2a"},
 		{prefixMetaData + "placement/region", "ap-southeast-2"},
-		{prefixMetaData + "security-groups", "sg-1\nsg-2"},
+		{prefixMetaData + "security-groups", "web-sg\ndb-sg"},
 		{prefixMetaData + "hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
 		{prefixMetaData + "local-hostname", "ip-10-0-1-5.ap-southeast-2.compute.internal"},
 		{pathUserData, "#!/bin/sh\necho hi"},
@@ -278,6 +293,36 @@ func TestHTTP_SecurityCredentialsListNoRoleEmpty(t *testing.T) {
 	rec := get(t, h, pathSecurityCredsDir, token)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, rec.Body.String())
+}
+
+// A backend failure resolving the instance must surface as 500, never an empty
+// 200 — otherwise a transient hiccup is indistinguishable from "instance has no
+// role" and the SDK silently proceeds unauthenticated.
+func TestHTTP_SecurityCredentialsListBackendError500(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, pathSecurityCredsDir, token)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestHTTP_IAMInfoBackendError500(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app-profile"}}
+	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New("iam unavailable")}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixMetaData+"iam/info", token)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestHTTP_RoleCredentialsBackendError500(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixSecurityCreds+"app-role", token)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 func TestHTTP_RoleCredentials(t *testing.T) {

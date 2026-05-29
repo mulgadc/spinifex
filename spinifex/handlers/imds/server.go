@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sys/unix"
 )
@@ -73,6 +74,9 @@ func (b *bindManager) sync(ctx context.Context) error {
 		return fmt.Errorf("list vpc-veth keys: %w", err)
 	}
 	for _, vpcID := range keys {
+		if vpcID == utils.VersionKey {
+			continue // schema-version marker written by migrate.RunKV, not a VPC
+		}
 		if err := b.bind(ctx, vpcID); err != nil {
 			slog.Error("IMDS: bind failed during sync", "vpc_id", vpcID, "err", err)
 		}
@@ -103,6 +107,9 @@ func (b *bindManager) watch(ctx context.Context) {
 				// nil marks the end of the initial replay; sync() already
 				// covered those, so there is nothing extra to do.
 				continue
+			}
+			if entry.Key() == utils.VersionKey {
+				continue // schema-version marker written by migrate.RunKV, not a VPC
 			}
 			switch entry.Operation() {
 			case nats.KeyValuePut:

@@ -382,8 +382,9 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	if att.PCIAddress != "" {
 		if e, ok := byPCI[att.PCIAddress]; ok {
 			return &types.VMGPUInfo{
-				Model:   e.Device.Model,
-				VRAMMiB: e.Device.MemoryMiB,
+				Model:      e.Device.Model,
+				VRAMMiB:    e.Device.MemoryMiB,
+				PCIAddress: att.PCIAddress,
 			}
 		}
 	}

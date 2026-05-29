@@ -31,6 +31,7 @@ interface GPUInfo {
 interface VMGPUInfo {
   model: string
   vram_mib: number
+  pci_address?: string
   profile?: string
   mdev_path?: string
 }

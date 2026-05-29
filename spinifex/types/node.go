@@ -29,10 +29,11 @@ type GPUInfo struct {
 
 // VMGPUInfo describes the GPU attached to a VM.
 type VMGPUInfo struct {
-	Model    string `json:"model"`
-	VRAMMiB  int64  `json:"vram_mib"`
-	Profile  string `json:"profile,omitempty"`   // MIG profile name; empty for whole-GPU
-	MdevPath string `json:"mdev_path,omitempty"` // MIG only
+	Model      string `json:"model"`
+	VRAMMiB    int64  `json:"vram_mib"`
+	PCIAddress string `json:"pci_address,omitempty"` // whole-GPU passthrough only
+	Profile    string `json:"profile,omitempty"`     // MIG profile name; empty for whole-GPU
+	MdevPath   string `json:"mdev_path,omitempty"`   // MIG only
 }
 
 // NodeStatusResponse is returned by the spinifex.node.status NATS topic (fan-out).

@@ -350,15 +350,8 @@ function InstanceDetail() {
               {vmInfo.gpu.mdev_path && (
                 <DetailRow label="Mdev path" value={vmInfo.gpu.mdev_path} />
               )}
-              {!vmInfo.gpu.mdev_path && !vmInfo.gpu.profile && (
-                <DetailRow
-                  label="PCI address"
-                  value={
-                    instance.InstanceType?.startsWith("g")
-                      ? instance.InstanceType
-                      : undefined
-                  }
-                />
+              {vmInfo.gpu.pci_address && (
+                <DetailRow label="PCI address" value={vmInfo.gpu.pci_address} />
               )}
             </DetailCard.Content>
           </DetailCard>

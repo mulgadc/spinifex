@@ -651,21 +651,9 @@ Condition evaluator so accepting them would silently allow.
 
 ## IMDS (Instance Metadata Service)
 
-Host-served at `169.254.169.254` to every running guest VM, with **no in-VM
-agent** — matching the AWS Nitro shape. There is no `spx`/AWS CLI surface; the
-endpoint is reached from inside a guest over plain HTTP. A single in-process
-handler in `awsgw` binds one listener per VPC via an OVN localport + host veth,
-so a request's veth identifies the VPC and its OVN `port_security`-attested
-source IP identifies the ENI.
+Host-served at `169.254.169.254` to every running guest VM, with **no in-VM agent** — matching the AWS Nitro shape. There is no `spx`/AWS CLI surface; the endpoint is reached from inside a guest over plain HTTP. A single in-process handler in `awsgw` binds one listener per VPC via an OVN localport + host veth, so a request's veth identifies the VPC and its OVN `port_security`-attested source IP identifies the ENI.
 
-**IMDSv2-only.** Every read requires a session token. A tokenless (v1-style)
-`GET` returns `401 Unauthorized` with an empty body. Obtain a token with a
-`PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds`
-(1–21600), then send it back in `X-aws-ec2-metadata-token` on every read.
-Modern `aws-cli` v2, `boto3`, and `aws-sdk-go` default to v2; legacy tooling
-that issues a tokenless `GET` must be updated. Tokens are bound to the issuing
-ENI (surviving guest IP churn), held in-memory, and dropped on `awsgw` restart
-(SDKs retry transparently).
+**IMDSv2-only.** Every read requires a session token. A tokenless (v1-style) `GET` returns `401 Unauthorized` with an empty body. Obtain a token with a `PUT /latest/api/token` carrying `X-aws-ec2-metadata-token-ttl-seconds` (1–21600), then send it back in `X-aws-ec2-metadata-token` on every read. Modern `aws-cli` v2, `boto3`, and `aws-sdk-go` default to v2; legacy tooling that issues a tokenless `GET` must be updated. Tokens are bound to the issuing ENI (surviving guest IP churn), held in-memory, and dropped on `awsgw` restart (SDKs retry transparently).
 
 ```bash
 # Inside the guest VM:
@@ -704,22 +692,13 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 
 ### IMDS — DHCP option 121 dependency
 
-OVN-served DHCP pushes a classless-static-route (option 121) for
-`169.254.169.254/32` via the subnet gateway, so guests reach IMDS through the
-subnet router instead of ARPing for the address link-locally. This is required
-for distros that auto-install a `169.254.0.0/16` link-scope route
-(NetworkManager, RHEL/Fedora, Ubuntu desktop). Every cloud AMI uses DHCP by
-default and gets this automatically.
+OVN-served DHCP pushes a classless-static-route (option 121) for `169.254.169.254/32` via the subnet gateway, so guests reach IMDS through the subnet router instead of ARPing for the address link-locally. This is required for distros that auto-install a `169.254.0.0/16` link-scope route (NetworkManager, RHEL/Fedora, Ubuntu desktop). Every cloud AMI uses DHCP by default and gets this automatically.
 
-A guest configured with a **fully static IP (no DHCP client)** never sees
-option 121 and cannot reach IMDS until you add the route manually inside the
-guest:
+A guest configured with a **fully static IP (no DHCP client)** never sees option 121 and cannot reach IMDS until you add the route manually inside the guest:
 
 ```bash
 ip route add 169.254.169.254/32 via <subnet-gateway>
 ```
-
-Static-IP guest support is out of scope for v1.
 
 ---
 

@@ -273,7 +273,7 @@ func (m *igwManager) RemoveSubnetEgress(ctx context.Context, vpcID, subnetID str
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveSubnetEgress: vpcID and subnetID required")
 	}
-	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix)
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.vpcExcludeCIDRs(ctx, vpcID))
 }
 
 // EnsureNATGatewaySubnetEgress is the NATGW priority sibling of
@@ -290,7 +290,7 @@ func (m *igwManager) RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, su
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveNATGatewaySubnetEgress: vpcID and subnetID required")
 	}
-	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix)
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.vpcExcludeCIDRs(ctx, vpcID))
 }
 
 func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, priority int, opName string) error {
@@ -305,12 +305,33 @@ func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, su
 		return fmt.Errorf("%s: no gateway nexthop available for %s (IGW not attached?)", opName, vpcID)
 	}
 	return m.routes.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
-		SubnetID:   subnetID,
-		Prefix:     prefix,
-		Nexthop:    nexthop,
-		OutputPort: topology.GatewayRouterPort(vpcID),
-		Priority:   priority,
+		SubnetID:     subnetID,
+		Prefix:       prefix,
+		Nexthop:      nexthop,
+		OutputPort:   topology.GatewayRouterPort(vpcID),
+		Priority:     priority,
+		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
 	})
+}
+
+// vpcExcludeCIDRs fetches the VPC's primary CIDR from the LR ExternalIDs
+// label so per-subnet egress reroute policies skip in-VPC destinations.
+// Returns nil on lookup failure or unset label — caller installs a policy
+// without exclusions, preserving prior behaviour.
+func (m *igwManager) vpcExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
+	router, err := m.ovn.GetLogicalRouter(ctx, topology.VPCRouter(vpcID))
+	if err != nil || router == nil {
+		return nil
+	}
+	cidr := router.ExternalIDs["spinifex:cidr"]
+	if cidr == "" {
+		return nil
+	}
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return nil
+	}
+	return []netip.Prefix{prefix}
 }
 
 // resolveGatewayNetwork picks LRP Networks/nexthop/IP. Distributed: link-local.

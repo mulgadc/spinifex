@@ -215,7 +215,7 @@ func TestRouteManager_DeleteSubnetEgress_RemovesPolicy(t *testing.T) {
 		OutputPort: "gw-vpc-1",
 		Priority:   SubnetEgressPriorityIGW,
 	}))
-	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", prefix))
+	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", prefix, nil))
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestRouteManager_DeleteSubnetEgress_IdempotentOnMissing(t *testing.T) {
 	seedRouter(t, m, "vpc-1")
 	rm := NewRouteManager(m)
 
-	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"), nil))
 }
 
 func TestRouteManager_AddSubnetEgress_RejectsMissingFields(t *testing.T) {
@@ -284,7 +284,7 @@ func TestRouteManager_AddSubnetEgress_ReplacesPolicyOnActionDrift(t *testing.T) 
 	rm := NewRouteManager(m)
 
 	prefix := netip.MustParsePrefix("0.0.0.0/0")
-	match := subnetEgressMatch("subnet-pub", prefix)
+	match := subnetEgressMatch("subnet-pub", prefix, nil)
 
 	stale := &nbdb.LogicalRouterPolicy{
 		UUID:        "drift-uuid",
@@ -318,7 +318,7 @@ func TestRouteManager_AddSubnetEgress_ReplacesPolicyOnOutputPortDrift(t *testing
 	rm := NewRouteManager(m)
 
 	prefix := netip.MustParsePrefix("0.0.0.0/0")
-	match := subnetEgressMatch("subnet-pub", prefix)
+	match := subnetEgressMatch("subnet-pub", prefix, nil)
 	nexthop := "192.168.1.1"
 
 	stale := &nbdb.LogicalRouterPolicy{
@@ -351,7 +351,71 @@ func TestRouteManager_DeleteSubnetEgress_PropagatesError(t *testing.T) {
 	m := mock.New()
 	rm := NewRouteManager(m)
 
-	err := rm.DeleteSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"))
+	err := rm.DeleteSubnetEgress(ctx, "vpc-missing", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0"), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete IGW LR policy")
+}
+
+func TestSubnetEgressMatch_AppendsExcludeCIDRs(t *testing.T) {
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	excludes := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/16"),
+		netip.MustParsePrefix("172.20.0.0/24"),
+	}
+	got := subnetEgressMatch("subnet-pub", prefix, excludes)
+
+	assert.Contains(t, got, `inport == "rtr-subnet-pub"`)
+	assert.Contains(t, got, "ip4.dst == 0.0.0.0/0")
+	assert.Contains(t, got, "ip4.dst != 10.0.0.0/16")
+	assert.Contains(t, got, "ip4.dst != 172.20.0.0/24")
+}
+
+func TestSubnetEgressMatch_SkipsInvalidExcludes(t *testing.T) {
+	got := subnetEgressMatch("subnet-pub", netip.MustParsePrefix("0.0.0.0/0"), []netip.Prefix{{}})
+	assert.NotContains(t, got, "ip4.dst !=")
+}
+
+func TestRouteManager_AddSubnetEgress_PersistsExcludeInMatch(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	excludes := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/16")}
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:     "subnet-pub",
+		Prefix:       netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:      "192.168.1.1",
+		OutputPort:   "gw-vpc-1",
+		Priority:     SubnetEgressPriorityNATGW,
+		ExcludeCIDRs: excludes,
+	}))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Contains(t, policies[0].Match, "ip4.dst != 10.0.0.0/16")
+}
+
+func TestRouteManager_DeleteSubnetEgress_MatchesAddedExcludes(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	excludes := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/16")}
+	require.NoError(t, rm.AddSubnetEgress(ctx, "vpc-1", SubnetEgressSpec{
+		SubnetID:     "subnet-pub",
+		Prefix:       prefix,
+		Nexthop:      "192.168.1.1",
+		OutputPort:   "gw-vpc-1",
+		Priority:     SubnetEgressPriorityNATGW,
+		ExcludeCIDRs: excludes,
+	}))
+	require.NoError(t, rm.DeleteSubnetEgress(ctx, "vpc-1", "subnet-pub", prefix, excludes))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Empty(t, policies, "delete must match same predicate as add when excludes are present")
 }

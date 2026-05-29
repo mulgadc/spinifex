@@ -32,13 +32,18 @@ type RouteSpec struct {
 // SubnetEgressSpec describes a per-subnet egress override installed as an
 // OVN Logical_Router_Policy. The match is built from SubnetID (inport ==
 // "rtr-<subnetID>") AND ip4.dst == Prefix; the action is "reroute" via
-// Nexthop, egressing through OutputPort.
+// Nexthop, egressing through OutputPort. ExcludeCIDRs are appended as
+// `&& ip4.dst != <cidr>` clauses so in-VPC traffic skips the reroute and
+// follows the directly-connected route instead — without this, NATGW egress
+// policies on a `0.0.0.0/0` prefix would intercept return traffic from
+// peer subnets (bastion -> private SSH) and forward it to the public IP.
 type SubnetEgressSpec struct {
-	SubnetID   string
-	Prefix     netip.Prefix
-	Nexthop    string
-	OutputPort string
-	Priority   int
+	SubnetID     string
+	Prefix       netip.Prefix
+	Nexthop      string
+	OutputPort   string
+	Priority     int
+	ExcludeCIDRs []netip.Prefix
 }
 
 // RouteManager owns static routes on VPC LogicalRouters. Adds are
@@ -50,7 +55,7 @@ type RouteManager interface {
 	AddStaticRoute(ctx context.Context, vpcID string, route RouteSpec) error
 	DeleteStaticRoute(ctx context.Context, vpcID string, prefix netip.Prefix) error
 	AddSubnetEgress(ctx context.Context, vpcID string, spec SubnetEgressSpec) error
-	DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
+	DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
 }
 
 type routeManager struct {
@@ -143,7 +148,7 @@ func (m *routeManager) AddSubnetEgress(ctx context.Context, vpcID string, spec S
 		return fmt.Errorf("subnet egress: Priority required")
 	}
 	router := topology.VPCRouter(vpcID)
-	match := subnetEgressMatch(spec.SubnetID, spec.Prefix)
+	match := subnetEgressMatch(spec.SubnetID, spec.Prefix, spec.ExcludeCIDRs)
 
 	existing, err := m.ovn.FindLogicalRouterPolicy(ctx, router, spec.Priority, match)
 	if err != nil {
@@ -176,9 +181,9 @@ func (m *routeManager) AddSubnetEgress(ctx context.Context, vpcID string, spec S
 	return nil
 }
 
-func (m *routeManager) DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
+func (m *routeManager) DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error {
 	router := topology.VPCRouter(vpcID)
-	match := subnetEgressMatch(subnetID, prefix)
+	match := subnetEgressMatch(subnetID, prefix, excludeCIDRs)
 	if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, SubnetEgressPriorityIGW, match); err != nil {
 		return fmt.Errorf("delete IGW LR policy %q on %s: %w", match, router, err)
 	}
@@ -188,8 +193,15 @@ func (m *routeManager) DeleteSubnetEgress(ctx context.Context, vpcID, subnetID s
 	return nil
 }
 
-func subnetEgressMatch(subnetID string, prefix netip.Prefix) string {
-	return fmt.Sprintf(`inport == %q && ip4.dst == %s`, topology.SubnetRouterPort(subnetID), prefix.String())
+func subnetEgressMatch(subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) string {
+	match := fmt.Sprintf(`inport == %q && ip4.dst == %s`, topology.SubnetRouterPort(subnetID), prefix.String())
+	for _, ex := range excludeCIDRs {
+		if !ex.IsValid() {
+			continue
+		}
+		match += fmt.Sprintf(` && ip4.dst != %s`, ex.String())
+	}
+	return match
 }
 
 func policyMatches(existing *nbdb.LogicalRouterPolicy, want SubnetEgressSpec) bool {

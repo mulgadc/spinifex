@@ -98,11 +98,12 @@ type ResourceManager struct {
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
 	// Dynamic instance-type subscription management
-	subsMu       sync.Mutex
-	natsConn     *nats.Conn
-	instanceSubs map[string]*nats.Subscription
-	handler      nats.MsgHandler
-	nodeID       string // node identifier for node-specific topic subscriptions
+	subsMu        sync.Mutex
+	natsConn      *nats.Conn
+	instanceSubs  map[string]*nats.Subscription
+	handler       nats.MsgHandler
+	systemHandler nats.MsgHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
+	nodeID        string          // node identifier for node-specific topic subscriptions
 }
 
 // Daemon represents the main daemon service
@@ -1240,8 +1241,13 @@ func (d *Daemon) startCluster() error {
 		d.elbv2Service.VPCService = d.vpcService
 	}
 
-	// Wire LB VM lifecycle: instance launcher for system VMs.
-	d.elbv2Service.InstanceLauncher = d
+	// Wire LB VM lifecycle: route system VM launches through NATS so they
+	// fan out across the cluster instead of always running on whichever node
+	// handled the upstream CreateLoadBalancer call. The daemon's own
+	// system.LaunchInstance.* subscriptions (registered by ResourceManager)
+	// will pick up the request locally when this node has capacity, or hand
+	// off to another node via the spinifex-workers queue group otherwise.
+	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
 	// Wire system credentials + gateway URL for LB agent SigV4 auth.
 	d.wireLBAgentConfig()
@@ -1309,7 +1315,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize dynamic per-instance-type subscriptions for capacity-aware routing.
 	// Each instance type gets its own NATS topic (ec2.RunInstances.{type}) so requests
 	// are only routed to nodes with available capacity.
-	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.node)
+	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
@@ -2028,21 +2034,31 @@ func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migPr
 	rm.updateInstanceSubscriptions()
 }
 
-func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, nodeID string) {
+func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, systemHandler nats.MsgHandler, nodeID string) {
 	rm.natsConn = nc
 	rm.handler = handler
+	rm.systemHandler = systemHandler
 	rm.nodeID = nodeID
 	rm.instanceSubs = make(map[string]*nats.Subscription)
 	rm.updateInstanceSubscriptions()
 }
 
 // updateInstanceSubscriptions recalculates which instance types can fit on this
-// node and subscribes/unsubscribes from the corresponding NATS topics. Each type
-// gets two topics:
-//   - ec2.RunInstances.{type} with spinifex-workers queue group (load-balanced, for single-instance launches)
-//   - ec2.RunInstances.{type}.{nodeId} without queue group (targeted, for multi-node distribution)
+// node and subscribes/unsubscribes from the corresponding NATS topics.
 //
-// Both use the same handler. NATS only routes requests to nodes with available capacity.
+// Customer instance types use the ec2.RunInstances.* subject root and the
+// rm.handler callback. Each customer type gets:
+//   - ec2.RunInstances.{type} with spinifex-workers queue group
+//   - ec2.RunInstances.{type}.{nodeId} without queue group (targeted)
+//
+// System instance types (sys.*) are not exposed via the customer EC2 API and
+// instead route under system.LaunchInstance.* with the rm.systemHandler
+// callback. Same shape (queue + node-targeted topic) so ELBv2's ALB-VM
+// launches load-balance across the cluster instead of piling on the handler
+// node that processed the upstream CreateLoadBalancer call.
+//
+// NATS only routes requests to nodes whose subscription is live, so capacity
+// pressure naturally re-distributes load when a host fills up.
 func (rm *ResourceManager) updateInstanceSubscriptions() {
 	if rm.natsConn == nil {
 		return
@@ -2052,17 +2068,26 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 	defer rm.subsMu.Unlock()
 
 	for typeName, typeInfo := range rm.instanceTypes {
-		// System types (sys.micro, etc.) are internal-only — not routable via customer API.
-		if instancetypes.IsSystemType(typeName) {
-			continue
-		}
-		queueTopic := fmt.Sprintf("ec2.RunInstances.%s", typeName)
 		canFit := rm.canAllocate(typeInfo, 1) >= 1
 
-		// Queue group subscription (load-balanced across nodes)
+		subjectRoot := "ec2.RunInstances"
+		handler := rm.handler
+		queueGroup := "spinifex-workers"
+		if instancetypes.IsSystemType(typeName) {
+			// System types (sys.micro, etc.) are internal-only — not exposed
+			// via the customer EC2 API and use a dedicated subject root so
+			// ELBv2 can fan out ALB-VM launches across the cluster.
+			if rm.systemHandler == nil {
+				continue
+			}
+			subjectRoot = "system.LaunchInstance"
+			handler = rm.systemHandler
+		}
+
+		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
 		_, subscribed := rm.instanceSubs[queueTopic]
 		if canFit && !subscribed {
-			sub, err := rm.natsConn.QueueSubscribe(queueTopic, "spinifex-workers", rm.handler)
+			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, handler)
 			if err != nil {
 				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
 				continue
@@ -2077,12 +2102,11 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic)
 		}
 
-		// Node-specific subscription (targeted routing for multi-node distribution)
 		if rm.nodeID != "" {
-			nodeTopic := fmt.Sprintf("ec2.RunInstances.%s.%s", typeName, rm.nodeID)
+			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
 			_, nodeSubscribed := rm.instanceSubs[nodeTopic]
 			if canFit && !nodeSubscribed {
-				sub, err := rm.natsConn.Subscribe(nodeTopic, rm.handler)
+				sub, err := rm.natsConn.Subscribe(nodeTopic, handler)
 				if err != nil {
 					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
 					continue

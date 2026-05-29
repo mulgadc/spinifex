@@ -1296,7 +1296,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Count how many types actually fit on this machine (excluding system types)
 		fittableTypes := 0
@@ -1330,7 +1330,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
 		require.Greater(t, initialCount, 0)
@@ -1355,7 +1355,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		expectedCount := len(rm.instanceSubs)
 
@@ -1386,7 +1386,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Leave only 2 vCPUs and 1 GB schedulable — enough for nano/micro but not larger types.
 		rm.mu.Lock()
@@ -1415,7 +1415,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
 		require.Greater(t, initialCount, 0)
@@ -1459,7 +1459,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Fill the node completely
 		rm.mu.Lock()

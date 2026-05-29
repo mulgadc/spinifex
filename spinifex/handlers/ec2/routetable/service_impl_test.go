@@ -805,3 +805,154 @@ func TestDisassociateRouteTable_PublishesDeleteIGWRoute(t *testing.T) {
 	assert.Equal(t, "subnet-priv1", subnetID)
 	assert.Equal(t, "igw-test1", igwID)
 }
+
+// drainIGWSubnets reads up to `count` events from sub and returns the unique
+// SubnetIds. Used to assert fan-out shape regardless of NATS message order.
+func drainIGWSubnets(t *testing.T, sub *nats.Subscription, count int) map[string]bool {
+	t.Helper()
+	got := map[string]bool{}
+	for range count {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		var evt struct {
+			SubnetId string `json:"subnet_id"`
+		}
+		require.NoError(t, json.Unmarshal(msg.Data, &evt))
+		got[evt.SubnetId] = true
+	}
+	return got
+}
+
+// TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets covers the primary
+// publish-gap fixed in this change: CreateRoute(IGW) on a VPC's main RT must
+// emit one vpc.add-igw-route event per subnet that has no explicit non-main
+// RT association (AWS implicit-main semantics).
+func TestCreateRoute_IGW_OnMainRT_FansOutToImplicitSubnets(t *testing.T) {
+	svc := setupTestService(t)
+	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(mainRT.RouteTableId),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := drainIGWSubnets(t, sub, 4)
+	assert.True(t, got["subnet-test1"], "implicit main-RT subnet must receive add event")
+	assert.True(t, got["subnet-priv1"], "implicit main-RT subnet must receive add event")
+	assert.Len(t, got, 2)
+}
+
+// TestCreateRoute_IGW_OnMainRT_SkipsExplicitlyAssociatedSubnets ensures a
+// subnet with an explicit non-main RT association does NOT receive the main
+// RT's IGW route event — its effective route table is the explicit one.
+func TestCreateRoute_IGW_OnMainRT_SkipsExplicitlyAssociatedSubnets(t *testing.T) {
+	svc := setupTestService(t)
+	sub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+
+	customRtbID := createTestRtb(t, svc)
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(customRtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(mainRT.RouteTableId),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := drainIGWSubnets(t, sub, 4)
+	assert.True(t, got["subnet-test1"], "implicit subnet must receive add event")
+	assert.False(t, got["subnet-priv1"], "explicitly-associated subnet must NOT receive main-RT event")
+}
+
+// TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet covers the
+// symmetric fix: when a subnet leaves implicit main-RT membership for an
+// explicit non-main RT, the main RT's per-subnet rules must be torn down so
+// state matches AWS effective-route semantics.
+func TestAssociateRouteTable_RemovesMainRTRoutesForJoiningSubnet(t *testing.T) {
+	svc := setupTestService(t)
+	delSub, err := svc.natsConn.SubscribeSync("vpc.delete-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(mainRT.RouteTableId),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	customRtbID := createTestRtb(t, svc)
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(customRtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := drainIGWSubnets(t, delSub, 2)
+	assert.True(t, got["subnet-priv1"], "joining subnet must receive delete event for main-RT routes")
+	assert.Len(t, got, 1)
+}
+
+// TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet covers
+// the symmetric add-back: when a subnet leaves an explicit RT and falls back
+// to implicit main-RT membership, the main RT's per-subnet rules must be
+// re-installed.
+func TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet(t *testing.T) {
+	svc := setupTestService(t)
+	addSub, err := svc.natsConn.SubscribeSync("vpc.add-igw-route")
+	require.NoError(t, err)
+	defer func() { _ = addSub.Unsubscribe() }()
+
+	mainRT, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(mainRT.RouteTableId),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	customRtbID := createTestRtb(t, svc)
+	assocOut, err := svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(customRtbID),
+		SubnetId:     aws.String("subnet-priv1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Drain everything published during setup so the Disassociate assertions
+	// only see post-disassociate events.
+	for {
+		if _, err := addSub.NextMsg(100 * time.Millisecond); err != nil {
+			break
+		}
+	}
+
+	_, err = svc.DisassociateRouteTable(&ec2.DisassociateRouteTableInput{
+		AssociationId: assocOut.AssociationId,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got := drainIGWSubnets(t, addSub, 2)
+	assert.True(t, got["subnet-priv1"], "departing subnet must receive add event for main-RT routes")
+	assert.Len(t, got, 1)
+}

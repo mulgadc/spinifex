@@ -301,17 +301,19 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Publish event for vpcd to create OVN external switch + gateway + SNAT
+	// Block on vpcd creating the OVN external switch + gateway LRP + SNAT
+	// rules so any subsequent route-table or NATGW event arrives at a fully
+	// wired router. Fire-and-forget Publish raced subsequent route policy
+	// installs against AttachIGW's barrier, leaving installed-but-inert
+	// reroute policies whose nexthop never resolved.
 	if s.natsConn != nil {
 		event := types.IGWEvent{
 			InternetGatewayId: igwID,
 			VpcId:             vpcID,
 		}
-		eventData, err := json.Marshal(event)
-		if err != nil {
-			slog.Warn("Failed to marshal IGW attach event", "error", err)
-		} else if err := s.natsConn.Publish("vpc.igw-attach", eventData); err != nil {
-			slog.Warn("Failed to publish IGW attach event", "error", err)
+		if err := utils.RequestEvent(s.natsConn, "vpc.igw-attach", event, 30*time.Second); err != nil {
+			slog.Warn("AttachInternetGateway: vpc.igw-attach request failed — OVN gateway may be unwired",
+				"igwId", igwID, "vpcId", vpcID, "err", err)
 		}
 	}
 

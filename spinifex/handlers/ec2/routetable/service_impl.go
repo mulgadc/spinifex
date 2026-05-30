@@ -1148,6 +1148,15 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(accountID, topic
 		SubnetId:        subnetID,
 		DestinationCidr: destCidr,
 	}
+	if strings.HasPrefix(topic, "vpc.add-") {
+		if err := utils.RequestEvent(s.natsConn, topic, evt, 30*time.Second); err != nil {
+			slog.Warn("NAT GW event: request failed — OVN SNAT + reroute not committed",
+				"topic", topic, "subnetId", subnetID, "err", err)
+			return
+		}
+		slog.Info("NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp, "subnetId", subnetID, "destinationCidr", destCidr)
+		return
+	}
 	data, err := json.Marshal(evt)
 	if err != nil {
 		slog.Warn("NAT GW event: marshal failed", "topic", topic, "err", err)
@@ -1209,9 +1218,10 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventsForAssociation(accountID, t
 }
 
 // publishIGWRouteEventForSubnet publishes a single vpc.{add,delete}-igw-route
-// event. Side-effect only — logs and swallows errors so a publish failure
-// doesn't fail the caller's API response. The subscriber (network/subscribers)
-// resolves the gateway nexthop and installs the OVN Logical_Router_Policy.
+// event. add-* topics use request-reply so the OVN reroute policy is committed
+// before the API returns — otherwise the subscriber races AttachIGW's LRP
+// install and northd compiles a reroute against a non-existent nexthop.
+// delete-* topics stay fire-and-forget; teardown ordering doesn't matter.
 func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(topic, subnetID, vpcID, igwID, destCidr string) {
 	if s.natsConn == nil {
 		return
@@ -1226,6 +1236,15 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(topic, subnetID, v
 		SubnetId:          subnetID,
 		DestinationCidr:   destCidr,
 		InternetGatewayId: igwID,
+	}
+	if strings.HasPrefix(topic, "vpc.add-") {
+		if err := utils.RequestEvent(s.natsConn, topic, evt, 10*time.Second); err != nil {
+			slog.Warn("IGW route event: request failed — OVN reroute policy not installed",
+				"topic", topic, "subnetId", subnetID, "err", err)
+			return
+		}
+		slog.Info("IGW route event published", "topic", topic, "subnetId", subnetID, "destinationCidr", destCidr, "igwId", igwID)
+		return
 	}
 	data, err := json.Marshal(evt)
 	if err != nil {

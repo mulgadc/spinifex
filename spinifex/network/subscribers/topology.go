@@ -264,6 +264,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 	var evt NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.add-nat-gateway event", "err", err)
+		respond(msg, err)
 		return
 	}
 	ctx := context.Background()
@@ -276,6 +277,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 		slog.Error("subscribers: AddNATGateway failed",
 			"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId,
 			"public_ip", evt.PublicIp, "subnet_cidr", evt.SubnetCidr, "err", err)
+		respond(msg, err)
 		return
 	}
 	slog.Info("subscribers: NAT Gateway SNAT rule added",
@@ -287,6 +289,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 	// rerouted out the IGW gateway port (NATGW SNAT happens on the same LR
 	// before egress).
 	if evt.SubnetId == "" {
+		respond(msg, nil)
 		return
 	}
 	destCidr := evt.DestinationCidr
@@ -297,17 +300,20 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 	if err != nil {
 		slog.Error("subscribers: invalid destination CIDR in vpc.add-nat-gateway event",
 			"cidr", destCidr, "err", err)
+		respond(msg, err)
 		return
 	}
 	if err := s.igw.EnsureNATGatewaySubnetEgress(ctx, evt.VpcId, evt.SubnetId, prefix); err != nil {
 		slog.Error("subscribers: EnsureNATGatewaySubnetEgress failed",
 			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr,
 			"natgw_id", evt.NatGatewayId, "err", err)
+		respond(msg, err)
 		return
 	}
 	slog.Info("subscribers: installed NATGW route policy",
 		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr,
 		"natgw_id", evt.NatGatewayId)
+	respond(msg, nil)
 }
 
 func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {

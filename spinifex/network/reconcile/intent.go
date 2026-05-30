@@ -34,6 +34,7 @@ type IntentState struct {
 	NATGWs      map[string]policy.NATGWSpec
 	IGWRoutes   map[string]SubnetEgressIntent // per (subnet, dest) IGW egress reroute
 	NATGWRoutes map[string]SubnetEgressIntent // per (subnet, dest) NATGW egress reroute
+	DropGates   map[string]SubnetEgressIntent // per (subnet, dest=0.0.0.0/0) drop policy
 }
 
 // SubnetEgressIntent is a per-subnet default-route policy installed on the
@@ -64,6 +65,7 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 		NATGWs:      make(map[string]policy.NATGWSpec),
 		IGWRoutes:   make(map[string]SubnetEgressIntent),
 		NATGWRoutes: make(map[string]SubnetEgressIntent),
+		DropGates:   make(map[string]SubnetEgressIntent),
 	}
 
 	localVPCs, err := loadVPCs(js, localAZ, intent.VPCs)
@@ -93,6 +95,7 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 		return IntentState{}, err
 	}
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
 	_ = ctx
 	return intent, nil
@@ -177,6 +180,41 @@ func loadSubnetEgressRoutes(
 					DestCIDR: prefix,
 				}
 			}
+		}
+	}
+}
+
+// loadSubnetDropGates emits one drop intent per subnet whose VPC has an
+// attached IGW but which has no 0.0.0.0/0 reroute path (neither IGWRoutes
+// nor NATGWRoutes carry an entry for it). VPCs without an attached IGW
+// have no router-wide default static route, so lr_in_ip_routing already
+// kills the packet — no drop policy needed.
+func loadSubnetDropGates(
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	igws map[string]external.IGWSpec,
+	igwRoutes, natgwRoutes map[string]SubnetEgressIntent,
+	out map[string]SubnetEgressIntent,
+) {
+	defaultPrefix := netip.MustParsePrefix("0.0.0.0/0")
+	for _, subnet := range subnets {
+		if _, ok := localVPCs[subnet.VPCID]; !ok {
+			continue
+		}
+		if _, ok := igws[subnet.VPCID]; !ok {
+			continue
+		}
+		key := subnetEgressKey(subnet.SubnetID, defaultPrefix)
+		if _, ok := igwRoutes[key]; ok {
+			continue
+		}
+		if _, ok := natgwRoutes[key]; ok {
+			continue
+		}
+		out[key] = SubnetEgressIntent{
+			VPCID:    subnet.VPCID,
+			SubnetID: subnet.SubnetID,
+			DestCIDR: defaultPrefix,
 		}
 	}
 }

@@ -198,6 +198,131 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(accountID, vpcID strin
 	return implicit, nil
 }
 
+// effectiveRouteTable returns the route table whose routes apply to subnetID
+// per AWS semantics: explicit non-main association if one exists, otherwise
+// the VPC's main RT. Returns (nil, nil) when neither is present.
+func (s *RouteTableServiceImpl) effectiveRouteTable(accountID, vpcID, subnetID string) (*RouteTableRecord, error) {
+	rts, err := s.allRouteTablesForVPC(accountID, vpcID)
+	if err != nil {
+		return nil, err
+	}
+	var main *RouteTableRecord
+	for i := range rts {
+		for _, assoc := range rts[i].Associations {
+			if assoc.SubnetId == subnetID && !assoc.Main {
+				return &rts[i], nil
+			}
+		}
+		if rts[i].IsMain {
+			main = &rts[i]
+		}
+	}
+	return main, nil
+}
+
+// subnetHasDefaultEgress reports whether subnetID's effective RT carries a
+// destCidr route pointing at any internet-bound target (IGW or NAT GW). If
+// false, the subnet must be gated with a DROP policy because the VPC LR's
+// router-wide default static route would otherwise let packets egress.
+func (s *RouteTableServiceImpl) subnetHasDefaultEgress(accountID, vpcID, subnetID, destCidr string) (bool, error) {
+	rt, err := s.effectiveRouteTable(accountID, vpcID, subnetID)
+	if err != nil {
+		return false, err
+	}
+	if rt == nil {
+		return false, nil
+	}
+	for _, r := range rt.Routes {
+		if r.DestinationCidrBlock != destCidr {
+			continue
+		}
+		if r.GatewayId != "" && strings.HasPrefix(r.GatewayId, "igw-") {
+			return true, nil
+		}
+		if r.NatGatewayId != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// publishSubnetEgressGateDecision recomputes the gate/ungate decision for one
+// subnet+destCidr pair and emits either vpc.gate-subnet-egress (when the
+// effective RT lacks an internet-bound route) or vpc.ungate-subnet-egress
+// (when one is present). Called after every per-subnet IGW/NATGW event so
+// the drop policy state always matches the AWS RT view. Side-effect only;
+// errors are logged.
+func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(accountID, vpcID, subnetID, destCidr string) {
+	if s.natsConn == nil || subnetID == "" || vpcID == "" {
+		return
+	}
+	if destCidr == "" {
+		destCidr = "0.0.0.0/0"
+	}
+	hasEgress, err := s.subnetHasDefaultEgress(accountID, vpcID, subnetID, destCidr)
+	if err != nil {
+		slog.Warn("subnet egress gate: effective RT lookup failed",
+			"vpcId", vpcID, "subnetId", subnetID, "err", err)
+		return
+	}
+	topic := "vpc.gate-subnet-egress"
+	if hasEgress {
+		topic = "vpc.ungate-subnet-egress"
+	}
+	evt := struct {
+		VpcId           string `json:"vpc_id"`
+		SubnetId        string `json:"subnet_id"`
+		DestinationCidr string `json:"destination_cidr"`
+	}{
+		VpcId:           vpcID,
+		SubnetId:        subnetID,
+		DestinationCidr: destCidr,
+	}
+	data, err := json.Marshal(evt)
+	if err != nil {
+		slog.Warn("subnet egress gate: marshal failed", "topic", topic, "err", err)
+		return
+	}
+	if err := s.natsConn.Publish(topic, data); err != nil {
+		slog.Warn("subnet egress gate: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
+		return
+	}
+	slog.Info("subnet egress gate decision published",
+		"topic", topic, "vpcId", vpcID, "subnetId", subnetID, "destinationCidr", destCidr)
+}
+
+// publishSubnetEgressGateDecisionForRT recomputes gate/ungate per subnet in a
+// route table (explicit associations + implicit-main subnets if the RT is
+// main). destCidr is the route prefix whose presence/absence drove the call.
+func (s *RouteTableServiceImpl) publishSubnetEgressGateDecisionForRT(accountID string, record *RouteTableRecord, destCidr string) {
+	if s.natsConn == nil || record == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, assoc := range record.Associations {
+		if assoc.SubnetId == "" || assoc.Main || seen[assoc.SubnetId] {
+			continue
+		}
+		seen[assoc.SubnetId] = true
+		s.publishSubnetEgressGateDecision(accountID, record.VpcId, assoc.SubnetId, destCidr)
+	}
+	if !record.IsMain {
+		return
+	}
+	implicit, err := s.subnetsImplicitlyOnMainRT(accountID, record.VpcId)
+	if err != nil {
+		slog.Warn("subnet egress gate: enumerate implicit main-RT subnets failed",
+			"vpcId", record.VpcId, "err", err)
+		return
+	}
+	for _, subnetID := range implicit {
+		if seen[subnetID] {
+			continue
+		}
+		s.publishSubnetEgressGateDecision(accountID, record.VpcId, subnetID, destCidr)
+	}
+}
+
 // allRouteTablesForVPC returns all route tables belonging to a VPC
 func (s *RouteTableServiceImpl) allRouteTablesForVPC(accountID, vpcID string) ([]RouteTableRecord, error) {
 	prefix := accountID + "."
@@ -500,6 +625,12 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 		return nil, err
 	}
 
+	// Re-evaluate per-subnet gate decision now that the new route is in KV.
+	// publishSubnetEgressGateDecisionForRT skips when natsConn is nil.
+	if destCidr == "0.0.0.0/0" {
+		s.publishSubnetEgressGateDecisionForRT(accountID, record, destCidr)
+	}
+
 	slog.Info("CreateRoute completed", "routeTableId", rtbID, "destination", destCidr, "accountID", accountID)
 
 	return &ec2.CreateRouteOutput{
@@ -554,6 +685,13 @@ func (s *RouteTableServiceImpl) DeleteRoute(input *ec2.DeleteRouteInput, account
 
 	if departing.NatGatewayId != "" {
 		s.publishNatGatewayDeleteEvents(accountID, record, departing.NatGatewayId, departing.DestinationCidrBlock)
+	}
+
+	// Re-evaluate gate decision: if the deleted route was 0.0.0.0/0 and no
+	// other egress target remains in the effective RT, subnets that were
+	// allowed now need a drop policy installed.
+	if departing.DestinationCidrBlock == "0.0.0.0/0" {
+		s.publishSubnetEgressGateDecisionForRT(accountID, record, departing.DestinationCidrBlock)
 	}
 
 	slog.Info("DeleteRoute completed", "routeTableId", rtbID, "destination", destCidr, "accountID", accountID)
@@ -699,6 +837,9 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTab
 	s.publishNatGatewayEventsForAssociation(accountID, "vpc.add-nat-gateway", record, subnetID)
 	s.publishIGWRouteEventsForAssociation(accountID, "vpc.add-igw-route", record, subnetID)
 
+	// Subnet's effective RT just changed — recompute gate decision.
+	s.publishSubnetEgressGateDecision(accountID, record.VpcId, subnetID, "0.0.0.0/0")
+
 	slog.Info("AssociateRouteTable completed", "routeTableId", rtbID, "subnetId", subnetID, "associationId", assocID, "accountID", accountID)
 
 	return &ec2.AssociateRouteTableOutput{
@@ -773,6 +914,9 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRo
 					s.publishNatGatewayEventsForAssociation(accountID, "vpc.add-nat-gateway", mainRT, departingSubnetID)
 					s.publishIGWRouteEventsForAssociation(accountID, "vpc.add-igw-route", mainRT, departingSubnetID)
 				}
+
+				// Subnet's effective RT just changed — recompute gate decision.
+				s.publishSubnetEgressGateDecision(accountID, record.VpcId, departingSubnetID, "0.0.0.0/0")
 
 				slog.Info("DisassociateRouteTable completed", "associationId", assocID, "routeTableId", record.RouteTableId, "accountID", accountID)
 				return &ec2.DisassociateRouteTableOutput{}, nil
@@ -877,6 +1021,9 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(input *ec2.ReplaceR
 			// Install SNAT for any NAT GW routes on the new table.
 			s.publishNatGatewayEventsForAssociation(accountID, "vpc.add-nat-gateway", newRecord, assoc.SubnetId)
 			s.publishIGWRouteEventsForAssociation(accountID, "vpc.add-igw-route", newRecord, assoc.SubnetId)
+
+			// Subnet's effective RT just changed — recompute gate decision.
+			s.publishSubnetEgressGateDecision(accountID, newRecord.VpcId, assoc.SubnetId, "0.0.0.0/0")
 
 			slog.Info("ReplaceRouteTableAssociation completed",
 				"oldAssociationId", assocID, "newAssociationId", newAssocID,

@@ -2,24 +2,26 @@ package subscribers
 
 // NATS topic names for VPC lifecycle events published by daemon.
 const (
-	TopicVPCCreate        = "vpc.create"
-	TopicVPCDelete        = "vpc.delete"
-	TopicSubnetCreate     = "vpc.create-subnet"
-	TopicSubnetDelete     = "vpc.delete-subnet"
-	TopicCreatePort       = "vpc.create-port"
-	TopicDeletePort       = "vpc.delete-port"
-	TopicUpdatePortSGs    = "vpc.update-port-sgs"
-	TopicIGWAttach        = "vpc.igw-attach"
-	TopicIGWDetach        = "vpc.igw-detach"
-	TopicAddNAT           = "vpc.add-nat"
-	TopicDeleteNAT        = "vpc.delete-nat"
-	TopicAddNATGateway    = "vpc.add-nat-gateway"
-	TopicDeleteNATGateway = "vpc.delete-nat-gateway"
-	TopicAddIGWRoute      = "vpc.add-igw-route"
-	TopicDeleteIGWRoute   = "vpc.delete-igw-route"
-	TopicCreateSG         = "vpc.create-sg"
-	TopicDeleteSG         = "vpc.delete-sg"
-	TopicUpdateSG         = "vpc.update-sg"
+	TopicVPCCreate          = "vpc.create"
+	TopicVPCDelete          = "vpc.delete"
+	TopicSubnetCreate       = "vpc.create-subnet"
+	TopicSubnetDelete       = "vpc.delete-subnet"
+	TopicCreatePort         = "vpc.create-port"
+	TopicDeletePort         = "vpc.delete-port"
+	TopicUpdatePortSGs      = "vpc.update-port-sgs"
+	TopicIGWAttach          = "vpc.igw-attach"
+	TopicIGWDetach          = "vpc.igw-detach"
+	TopicAddNAT             = "vpc.add-nat"
+	TopicDeleteNAT          = "vpc.delete-nat"
+	TopicAddNATGateway      = "vpc.add-nat-gateway"
+	TopicDeleteNATGateway   = "vpc.delete-nat-gateway"
+	TopicAddIGWRoute        = "vpc.add-igw-route"
+	TopicDeleteIGWRoute     = "vpc.delete-igw-route"
+	TopicGateSubnetEgress   = "vpc.gate-subnet-egress"
+	TopicUngateSubnetEgress = "vpc.ungate-subnet-egress"
+	TopicCreateSG           = "vpc.create-sg"
+	TopicDeleteSG           = "vpc.delete-sg"
+	TopicUpdateSG           = "vpc.update-sg"
 )
 
 // VPCEvent is published on vpc.create / vpc.delete.
@@ -88,6 +90,27 @@ type IGWRouteEvent struct {
 	SubnetId          string `json:"subnet_id"`
 	DestinationCidr   string `json:"destination_cidr"`
 	InternetGatewayId string `json:"internet_gateway_id"`
+}
+
+// SubnetEgressGateEvent is published on vpc.gate-subnet-egress when the
+// effective route table of SubnetId loses (or never had) a DestinationCidr
+// entry pointing at any egress target (IGW / NATGW). The subscriber installs
+// an OVN Logical_Router_Policy DROP at SubnetEgressPriorityDrop so the
+// subnet cannot reach external destinations via the VPC LR's router-wide
+// default static route.
+type SubnetEgressGateEvent struct {
+	VpcId           string `json:"vpc_id"`
+	SubnetId        string `json:"subnet_id"`
+	DestinationCidr string `json:"destination_cidr"`
+}
+
+// SubnetEgressUngateEvent is published on vpc.ungate-subnet-egress when a
+// previously-gated subnet acquires an egress target in its effective route
+// table. The subscriber removes the DROP policy installed by the gate event.
+type SubnetEgressUngateEvent struct {
+	VpcId           string `json:"vpc_id"`
+	SubnetId        string `json:"subnet_id"`
+	DestinationCidr string `json:"destination_cidr"`
 }
 
 // SGRule mirrors handlers/ec2/vpc.SGRule on the wire (kept local to avoid

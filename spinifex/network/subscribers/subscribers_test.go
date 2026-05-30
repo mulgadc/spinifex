@@ -97,6 +97,7 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 		TopicAddNAT, TopicDeleteNAT,
 		TopicAddNATGateway, TopicDeleteNATGateway,
 		TopicAddIGWRoute, TopicDeleteIGWRoute,
+		TopicGateSubnetEgress, TopicUngateSubnetEgress,
 		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
 	}
 	if len(subs) != len(wantTopics) {
@@ -502,6 +503,7 @@ func TestBadJSON_AllRequestReplies(t *testing.T) {
 		TopicCreatePort, TopicDeletePort, TopicUpdatePortSGs,
 		TopicIGWAttach, TopicIGWDetach,
 		TopicAddNAT, TopicDeleteNAT,
+		TopicGateSubnetEgress, TopicUngateSubnetEgress,
 		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
 	}
 	for _, topic := range topics {

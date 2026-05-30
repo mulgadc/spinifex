@@ -80,6 +80,8 @@ func (s *Subscriber) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 		{TopicDeleteNATGateway, s.handleDeleteNATGateway},
 		{TopicAddIGWRoute, s.handleAddIGWRoute},
 		{TopicDeleteIGWRoute, s.handleDeleteIGWRoute},
+		{TopicGateSubnetEgress, s.handleGateSubnetEgress},
+		{TopicUngateSubnetEgress, s.handleUngateSubnetEgress},
 		{TopicCreateSG, s.handleCreateSG},
 		{TopicDeleteSG, s.handleDeleteSG},
 		{TopicUpdateSG, s.handleUpdateSG},

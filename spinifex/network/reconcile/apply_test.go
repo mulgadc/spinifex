@@ -370,6 +370,7 @@ func freshIntent(t *testing.T) IntentState {
 		NATGWs:      map[string]policy.NATGWSpec{},
 		IGWRoutes:   map[string]SubnetEgressIntent{},
 		NATGWRoutes: map[string]SubnetEgressIntent{},
+		DropGates:   map[string]SubnetEgressIntent{},
 	}
 }
 

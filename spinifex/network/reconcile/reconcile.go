@@ -142,6 +142,7 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyNATGWs(ctx, intent, actual)
 	r.applyIGWRoutes(ctx, intent, actual)
 	r.applyNATGWRoutes(ctx, intent, actual)
+	r.applyDropGates(ctx, intent, actual)
 
 	slog.Info("reconcile: complete")
 	return nil

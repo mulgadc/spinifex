@@ -16,6 +16,12 @@ const (
 	// SubnetEgressPriorityIGW is the priority assigned to per-subnet default
 	// egress policies routing via an IGW. NATGW egress sits at a different
 	// priority so the route precedence is deterministic when both apply.
+	// SubnetEgressPriorityDrop sits above both reroute priorities; a subnet
+	// whose effective route table lacks 0.0.0.0/0 gets a drop policy at this
+	// priority to override the VPC LR's router-wide default static route
+	// (which is required so lr_in_ip_routing doesn't drop at priority 0
+	// before lr_in_policy fires).
+	SubnetEgressPriorityDrop  = 1100
 	SubnetEgressPriorityIGW   = 1000
 	SubnetEgressPriorityNATGW = 900
 )
@@ -56,6 +62,22 @@ type RouteManager interface {
 	DeleteStaticRoute(ctx context.Context, vpcID string, prefix netip.Prefix) error
 	AddSubnetEgress(ctx context.Context, vpcID string, spec SubnetEgressSpec) error
 	DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
+	AddSubnetEgressDrop(ctx context.Context, vpcID string, spec SubnetEgressDropSpec) error
+	DeleteSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
+}
+
+// SubnetEgressDropSpec describes a per-subnet egress DROP override installed
+// as an OVN Logical_Router_Policy at SubnetEgressPriorityDrop. Match shape
+// mirrors SubnetEgressSpec (inport == rtr-<subnet> && ip4.dst == prefix with
+// optional ip4.dst != <exclude> clauses) but the action is "drop" with no
+// nexthop/output port. Used to gate subnets whose effective route table
+// lacks a 0.0.0.0/0 entry; the policy fires after lr_in_ip_routing has
+// already matched the VPC LR's router-wide default static route, killing
+// the packet before egress.
+type SubnetEgressDropSpec struct {
+	SubnetID     string
+	Prefix       netip.Prefix
+	ExcludeCIDRs []netip.Prefix
 }
 
 type routeManager struct {
@@ -193,6 +215,54 @@ func (m *routeManager) DeleteSubnetEgress(ctx context.Context, vpcID, subnetID s
 	return nil
 }
 
+func (m *routeManager) AddSubnetEgressDrop(ctx context.Context, vpcID string, spec SubnetEgressDropSpec) error {
+	if spec.SubnetID == "" {
+		return fmt.Errorf("subnet egress drop: SubnetID required")
+	}
+	if !spec.Prefix.IsValid() {
+		return fmt.Errorf("subnet egress drop: Prefix required")
+	}
+	router := topology.VPCRouter(vpcID)
+	match := subnetEgressMatch(spec.SubnetID, spec.Prefix, spec.ExcludeCIDRs)
+
+	existing, err := m.ovn.FindLogicalRouterPolicy(ctx, router, SubnetEgressPriorityDrop, match)
+	if err != nil {
+		return fmt.Errorf("find LR drop policy %q on %s: %w", match, router, err)
+	}
+	if existing != nil {
+		if dropPolicyMatches(existing) {
+			return nil
+		}
+		if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, SubnetEgressPriorityDrop, match); err != nil {
+			return fmt.Errorf("delete drifted LR drop policy %q on %s: %w", match, router, err)
+		}
+	}
+
+	row := &nbdb.LogicalRouterPolicy{
+		Priority: SubnetEgressPriorityDrop,
+		Match:    match,
+		Action:   "drop",
+		Options:  map[string]string{},
+		ExternalIDs: map[string]string{
+			"spinifex:subnet": spec.SubnetID,
+			"spinifex:gate":   "drop",
+		},
+	}
+	if err := m.ovn.AddLogicalRouterPolicy(ctx, router, row); err != nil {
+		return fmt.Errorf("add LR drop policy %q on %s: %w", match, router, err)
+	}
+	return nil
+}
+
+func (m *routeManager) DeleteSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error {
+	router := topology.VPCRouter(vpcID)
+	match := subnetEgressMatch(subnetID, prefix, excludeCIDRs)
+	if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, SubnetEgressPriorityDrop, match); err != nil {
+		return fmt.Errorf("delete LR drop policy %q on %s: %w", match, router, err)
+	}
+	return nil
+}
+
 func subnetEgressMatch(subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) string {
 	match := fmt.Sprintf(`inport == %q && ip4.dst == %s`, topology.SubnetRouterPort(subnetID), prefix.String())
 	for _, ex := range excludeCIDRs {
@@ -215,6 +285,10 @@ func policyMatches(existing *nbdb.LogicalRouterPolicy, want SubnetEgressSpec) bo
 		return false
 	}
 	return true
+}
+
+func dropPolicyMatches(existing *nbdb.LogicalRouterPolicy) bool {
+	return existing.Action == "drop"
 }
 
 func routeMatches(existing *nbdb.LogicalRouterStaticRoute, want RouteSpec) bool {

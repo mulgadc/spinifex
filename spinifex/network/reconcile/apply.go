@@ -292,6 +292,19 @@ func (r *reconciler) applyNATGWRoutes(ctx context.Context, intent IntentState, _
 	}
 }
 
+// applyDropGates installs a DROP policy at SubnetEgressPriorityDrop for every
+// subnet whose VPC has an attached IGW but whose effective route table lacks
+// a 0.0.0.0/0 IGW/NATGW entry. Without this, the VPC LR's router-wide default
+// static route would let the subnet egress.
+func (r *reconciler) applyDropGates(ctx context.Context, intent IntentState, _ ActualState) {
+	for _, spec := range intent.DropGates {
+		if err := r.igw.EnsureSubnetEgressDrop(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
+			slog.Error("reconcile/apply: EnsureSubnetEgressDrop failed",
+				"vpc_id", spec.VPCID, "subnet_id", spec.SubnetID, "cidr", spec.DestCIDR.String(), "err", err)
+		}
+	}
+}
+
 // diffSets returns (desired - current, current - desired).
 func diffSets(desired, current []string) (add, remove []string) {
 	desiredSet := make(map[string]struct{}, len(desired))

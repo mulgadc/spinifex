@@ -395,3 +395,53 @@ func (s *Subscriber) handleDeleteIGWRoute(msg *nats.Msg) {
 		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr)
 	respond(msg, nil)
 }
+
+func (s *Subscriber) handleGateSubnetEgress(msg *nats.Msg) {
+	var evt SubnetEgressGateEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.gate-subnet-egress event", "err", err)
+		respond(msg, err)
+		return
+	}
+	prefix, err := netip.ParsePrefix(evt.DestinationCidr)
+	if err != nil {
+		slog.Error("subscribers: invalid destination CIDR in vpc.gate-subnet-egress event",
+			"cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := s.igw.EnsureSubnetEgressDrop(context.Background(), evt.VpcId, evt.SubnetId, prefix); err != nil {
+		slog.Error("subscribers: EnsureSubnetEgressDrop failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	slog.Info("subscribers: gated subnet egress",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr)
+	respond(msg, nil)
+}
+
+func (s *Subscriber) handleUngateSubnetEgress(msg *nats.Msg) {
+	var evt SubnetEgressUngateEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.ungate-subnet-egress event", "err", err)
+		respond(msg, err)
+		return
+	}
+	prefix, err := netip.ParsePrefix(evt.DestinationCidr)
+	if err != nil {
+		slog.Error("subscribers: invalid destination CIDR in vpc.ungate-subnet-egress event",
+			"cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	if err := s.igw.RemoveSubnetEgressDrop(context.Background(), evt.VpcId, evt.SubnetId, prefix); err != nil {
+		slog.Warn("subscribers: RemoveSubnetEgressDrop failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr, "err", err)
+		respond(msg, err)
+		return
+	}
+	slog.Info("subscribers: ungated subnet egress",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", evt.DestinationCidr)
+	respond(msg, nil)
+}

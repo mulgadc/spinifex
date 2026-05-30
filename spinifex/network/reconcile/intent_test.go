@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -312,6 +313,90 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 		if spec.DestCIDR.String() != "0.0.0.0/0" {
 			t.Errorf("DestCIDR=%q, want 0.0.0.0/0", spec.DestCIDR.String())
 		}
+	}
+}
+
+// TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet whose
+// effective RT has no 0.0.0.0/0 entry, in a VPC with an attached IGW, must
+// surface a DropGates intent so the reconciler installs the per-subnet
+// drop policy that gates the VPC LR's router-wide default static route.
+func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-routed": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-routed", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
+		}),
+		"acct/subnet-isolated": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-isolated", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-1": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-1", VpcId: "vpc-local", State: "available",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-r", SubnetId: "subnet-routed"},
+			},
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
+			},
+		}),
+		"acct/rtb-isolated": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-isolated", VpcId: "vpc-local",
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-i", SubnetId: "subnet-isolated"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.IGWRoutes[subnetEgressKey("subnet-routed", netip.MustParsePrefix("0.0.0.0/0"))]; !ok {
+		t.Errorf("subnet-routed missing IGW egress intent")
+	}
+	if _, ok := intent.DropGates[subnetEgressKey("subnet-routed", netip.MustParsePrefix("0.0.0.0/0"))]; ok {
+		t.Errorf("subnet-routed must not have a drop gate (it has an IGW route)")
+	}
+	if _, ok := intent.DropGates[subnetEgressKey("subnet-isolated", netip.MustParsePrefix("0.0.0.0/0"))]; !ok {
+		t.Errorf("subnet-isolated missing drop gate intent (no 0.0.0.0/0 in its RT, IGW is attached)")
+	}
+}
+
+// TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC without an attached IGW
+// has no router-wide default static route, so unrouted subnets are already
+// dropped by lr_in_ip_routing priority-0 — no drop policy needed.
+func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-air-gapped": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-air-gapped", CidrBlock: "10.99.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-local", VpcId: "vpc-air-gapped", CidrBlock: "10.99.1.0/24",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if len(intent.DropGates) != 0 {
+		t.Errorf("VPC has no IGW: expected 0 drop gates, got %d (%v)", len(intent.DropGates), intent.DropGates)
 	}
 }
 

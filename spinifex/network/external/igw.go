@@ -189,6 +189,10 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		return fmt.Errorf("create switch gateway port %s: %w", switchGWPortName, err)
 	}
 
+	if err := m.routes.AddDefaultRoute(ctx, spec.VPCID, wanNexthop, gwPortName); err != nil {
+		return fmt.Errorf("add default route on %s: %w", routerName, err)
+	}
+
 	if len(m.chassis) == 0 {
 		slog.Warn("external: no chassis configured — gateway port has no chassis binding, external traffic will not flow",
 			"vpc_id", spec.VPCID, "gw_port", gwPortName)
@@ -226,6 +230,10 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	gwPortName := topology.GatewayRouterPort(vpcID)
 	switchGWPortName := topology.GatewaySwitchPort(vpcID)
 	routerName := topology.VPCRouter(vpcID)
+
+	if err := m.routes.DeleteDefaultRoute(ctx, vpcID); err != nil {
+		slog.Warn("external: delete default route failed", "router", routerName, "err", err)
+	}
 
 	if router, err := m.ovn.GetLogicalRouter(ctx, routerName); err == nil {
 		vpcCIDR := router.ExternalIDs["spinifex:cidr"]

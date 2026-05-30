@@ -86,11 +86,17 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 	_, hasGwIP := lrp.ExternalIDs[gatewayIPExtIDKey]
 	assert.False(t, hasGwIP, "link-local LRP must not record a gateway IP")
 
-	// AWS parity: AttachIGW installs no default route on the VPC router.
-	// Egress is wired by EnsureSubnetEgress when CreateRoute targets the IGW.
-	noRoute, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	// OVN pipeline runs lr_in_ip_routing (table 15) before lr_in_policy
+	// (table 17) — without a router-wide default static route every external
+	// destination drops in routing before EnsureSubnetEgress's reroute policy
+	// gets a chance. AttachIGW installs `0.0.0.0/0 -> pool.Gateway` on the
+	// VPC router so policy lookup can refine per-subnet egress on top.
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
-	assert.Nil(t, noRoute, "AttachIGW must not install a router-wide default static route")
+	require.NotNil(t, route, "AttachIGW must install the default static route so routing forwards to gw-port")
+	require.NotNil(t, route.OutputPort)
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), *route.OutputPort)
+	assert.Equal(t, pool.Gateway, route.Nexthop)
 
 	// EnsureSubnetEgress installs per-subnet policy with the expected nexthop.
 	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
@@ -160,9 +166,12 @@ func TestAttachIGW_NoPoolNoChassis_UsesLinkLocalFallbacks(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	noRoute, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
+	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
-	assert.Nil(t, noRoute, "AttachIGW must not install a router-wide default static route")
+	require.NotNil(t, route, "AttachIGW must install the default static route so routing forwards to gw-port")
+	require.NotNil(t, route.OutputPort)
+	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), *route.OutputPort)
+	assert.Equal(t, linkLocalGatewayNexthop, route.Nexthop)
 
 	require.NoError(t, mgr.EnsureSubnetEgress(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))

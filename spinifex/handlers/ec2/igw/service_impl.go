@@ -332,13 +332,13 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 		}
 	}
 
-	// Recompute egress gate state for every subnet in the VPC. At attach
-	// time the LR gains a router-wide default static route to the IGW; any
-	// subnet whose effective RT lacks 0.0.0.0/0 must be DROPped to preserve
-	// AWS isolation semantics. Closes the reconciler-drift window.
-	if s.gatePublisher != nil {
-		s.gatePublisher.PublishGateDecisionsForVPC(accountID, vpcID, "0.0.0.0/0")
-	}
+	// Gate fan-out intentionally skipped on attach. The default-VPC
+	// bootstrap path attaches the IGW and immediately publishes a
+	// 0.0.0.0/0 → IGW CreateRoute event; the two race across distinct
+	// NATS subjects (gate vs ungate) and ungate-then-gate leaves the
+	// subnet DROPped. Subnets without a default route stay protected by
+	// the reconciler's drift pass (loadSubnetDropGates). Detach is
+	// race-free because no follow-up CreateRoute fires.
 
 	slog.Info("AttachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 

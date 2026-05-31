@@ -699,7 +699,12 @@ func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
 	}
 }
 
-func TestAttachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
+// TestAttachInternetGateway_NoGateFanOut documents that attach intentionally
+// skips the gate fan-out to avoid racing the default-VPC bootstrap path,
+// which attaches the IGW and immediately adds a 0.0.0.0/0 → IGW route. The
+// two events would race across the gate/ungate NATS subjects and leave the
+// default subnet DROPped when ungate landed first.
+func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	pub := &fakeGatePublisher{}
 	svc.SetGatePublisher(pub)
@@ -711,11 +716,7 @@ func TestAttachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	calls := pub.snapshot()
-	require.Len(t, calls, 1, "expected one gate fan-out call")
-	assert.Equal(t, testAccountID, calls[0].AccountID)
-	assert.Equal(t, "vpc-test123", calls[0].VpcID)
-	assert.Equal(t, "0.0.0.0/0", calls[0].DestCidr)
+	assert.Empty(t, pub.snapshot(), "attach must not fan out gate decisions")
 }
 
 func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {

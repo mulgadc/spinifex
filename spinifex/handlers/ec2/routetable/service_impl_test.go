@@ -1269,6 +1269,69 @@ func TestPublishGateDecisionsForVPC_UngatesSubnetWithIGWRoute(t *testing.T) {
 	assert.Len(t, gateGot, 1)
 }
 
+// TestEffectiveRouteTable_DeterministicWithDuplicateMain seeds two
+// IsMain=true RTs for the same VPC (the bootstrap-race symptom) and asserts
+// effectiveRouteTable picks the one with more routes — the "real" RT carries
+// any user-added 0.0.0.0/0 entry, while the orphan only has the implicit
+// local route. Non-deterministic selection produced the run 26699045536
+// guest-SSH timeout: CreateRoute's post-write gate recompute happened to
+// resolve to the orphan and published vpc.gate-subnet-egress.
+func TestEffectiveRouteTable_DeterministicWithDuplicateMain(t *testing.T) {
+	svc := setupTestService(t)
+	now := time.Now()
+
+	orphan := RouteTableRecord{
+		RouteTableId: "rtb-zzzorphan",
+		VpcId:        "vpc-test1",
+		AccountID:    testAccountID,
+		IsMain:       true,
+		Routes:       []RouteRecord{{DestinationCidrBlock: "10.0.0.0/16", GatewayId: "local", State: "active", Origin: "CreateRouteTable"}},
+		CreatedAt:    now.Add(time.Second), // later, would lose tiebreak even with same route count
+	}
+	real_ := RouteTableRecord{
+		RouteTableId: "rtb-aaareal",
+		VpcId:        "vpc-test1",
+		AccountID:    testAccountID,
+		IsMain:       true,
+		Routes: []RouteRecord{
+			{DestinationCidrBlock: "10.0.0.0/16", GatewayId: "local", State: "active", Origin: "CreateRouteTable"},
+			{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-test1", State: "active", Origin: "CreateRoute"},
+		},
+		CreatedAt: now,
+	}
+	require.NoError(t, svc.putRouteTable(testAccountID, &orphan))
+	require.NoError(t, svc.putRouteTable(testAccountID, &real_))
+
+	rt, err := svc.effectiveRouteTable(testAccountID, "vpc-test1", "subnet-priv1")
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	assert.Equal(t, "rtb-aaareal", rt.RouteTableId, "must prefer main RT with more routes")
+
+	main, err := svc.mainRouteTable(testAccountID, "vpc-test1")
+	require.NoError(t, err)
+	require.NotNil(t, main)
+	assert.Equal(t, "rtb-aaareal", main.RouteTableId, "mainRouteTable must use same tiebreak")
+}
+
+// TestPreferMain_RouteCountWinsOverCreatedAt confirms route-count is the
+// primary tiebreaker — a later-created RT with more routes beats an older
+// orphan with only the implicit local route.
+func TestPreferMain_RouteCountWinsOverCreatedAt(t *testing.T) {
+	older := &RouteTableRecord{RouteTableId: "rtb-a", CreatedAt: time.Unix(100, 0), Routes: []RouteRecord{{}}}
+	newer := &RouteTableRecord{RouteTableId: "rtb-b", CreatedAt: time.Unix(200, 0), Routes: []RouteRecord{{}, {}}}
+	assert.True(t, preferMain(older, newer), "more routes wins regardless of CreatedAt")
+	assert.False(t, preferMain(newer, older), "asymmetric — older with fewer routes loses")
+}
+
+// TestPreferMain_CreatedAtTiebreak: equal route counts → oldest CreatedAt
+// wins (original record beats the late dup).
+func TestPreferMain_CreatedAtTiebreak(t *testing.T) {
+	older := &RouteTableRecord{RouteTableId: "rtb-b", CreatedAt: time.Unix(100, 0), Routes: []RouteRecord{{}}}
+	newer := &RouteTableRecord{RouteTableId: "rtb-a", CreatedAt: time.Unix(200, 0), Routes: []RouteRecord{{}}}
+	assert.True(t, preferMain(newer, older), "older CreatedAt wins on equal route count")
+	assert.False(t, preferMain(older, newer), "asymmetric — newer loses")
+}
+
 // TestPublishGateDecisionsForVPC_EmptyVPCNoOp: VPC with zero subnets must
 // silently emit no events.
 func TestPublishGateDecisionsForVPC_EmptyVPCNoOp(t *testing.T) {

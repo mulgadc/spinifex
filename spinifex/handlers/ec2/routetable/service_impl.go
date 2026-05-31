@@ -131,17 +131,24 @@ func (s *RouteTableServiceImpl) getVPCCidr(accountID, vpcID string) (string, err
 // mainRouteTable returns the VPC's main route table or (nil, nil) if none
 // exists. Used to enumerate effective routes for subnets that have no
 // explicit RT association (AWS implicit-main semantics).
+//
+// Deterministic across duplicate IsMain=true records: see preferMain. A
+// duplicate is a bootstrap-race symptom — the canonical fix lives in
+// VPCServiceImpl.createMainRouteTable, but the picker stays defensive so a
+// stale dup (e.g. cross-AZ restore, manual KV edit) can't break gate
+// recomputation by selecting the orphan non-deterministically.
 func (s *RouteTableServiceImpl) mainRouteTable(accountID, vpcID string) (*RouteTableRecord, error) {
 	rts, err := s.allRouteTablesForVPC(accountID, vpcID)
 	if err != nil {
 		return nil, err
 	}
+	var main *RouteTableRecord
 	for i := range rts {
-		if rts[i].IsMain {
-			return &rts[i], nil
+		if rts[i].IsMain && preferMain(main, &rts[i]) {
+			main = &rts[i]
 		}
 	}
-	return nil, nil
+	return main, nil
 }
 
 // subnetsImplicitlyOnMainRT returns SubnetIds in vpcID that have no explicit
@@ -201,6 +208,9 @@ func (s *RouteTableServiceImpl) subnetsImplicitlyOnMainRT(accountID, vpcID strin
 // effectiveRouteTable returns the route table whose routes apply to subnetID
 // per AWS semantics: explicit non-main association if one exists, otherwise
 // the VPC's main RT. Returns (nil, nil) when neither is present.
+//
+// Main-RT selection is deterministic across IsMain=true duplicates via
+// preferMain — see mainRouteTable.
 func (s *RouteTableServiceImpl) effectiveRouteTable(accountID, vpcID, subnetID string) (*RouteTableRecord, error) {
 	rts, err := s.allRouteTablesForVPC(accountID, vpcID)
 	if err != nil {
@@ -213,11 +223,30 @@ func (s *RouteTableServiceImpl) effectiveRouteTable(accountID, vpcID, subnetID s
 				return &rts[i], nil
 			}
 		}
-		if rts[i].IsMain {
+		if rts[i].IsMain && preferMain(main, &rts[i]) {
 			main = &rts[i]
 		}
 	}
 	return main, nil
+}
+
+// preferMain reports whether candidate should replace current as the chosen
+// main RT. Ordered tiebreakers when two IsMain=true records survive for one
+// VPC: (1) more routes — user-added 0.0.0.0/0 etc. flag the "real" RT vs an
+// orphan that only carries the implicit local route; (2) oldest CreatedAt —
+// the original wins over a late dup; (3) smaller RouteTableId — total order
+// so the same input always produces the same answer across nodes.
+func preferMain(current, candidate *RouteTableRecord) bool {
+	if current == nil {
+		return true
+	}
+	if len(candidate.Routes) != len(current.Routes) {
+		return len(candidate.Routes) > len(current.Routes)
+	}
+	if !candidate.CreatedAt.Equal(current.CreatedAt) {
+		return candidate.CreatedAt.Before(current.CreatedAt)
+	}
+	return candidate.RouteTableId < current.RouteTableId
 }
 
 // subnetHasDefaultEgress reports whether subnetID's effective RT carries a

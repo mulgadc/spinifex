@@ -1126,7 +1126,22 @@ func (s *VPCServiceImpl) EnsureDefaultVPC(accountID string, bootstrap ...Bootstr
 
 // createMainRouteTable writes a main route table record directly to the route table KV bucket.
 // This avoids a circular import (routetable package imports vpc package for validation).
+//
+// Idempotency: when concurrent daemons race EnsureDefaultVPC for the same
+// bootstrap-pinned VPC, both would otherwise mint a fresh random rtb-ID
+// and Put it, leaving the KV with two IsMain=true records for one VPC.
+// effectiveRouteTable then resolves the subnet's RT non-deterministically,
+// and CreateRoute's post-write gate recompute can publish
+// vpc.gate-subnet-egress against the orphan (route-less) main RT, installing
+// a Priority-1100 DROP that kills egress on the default subnet.
 func (s *VPCServiceImpl) createMainRouteTable(accountID, vpcID, vpcCidr string) error {
+	if existing, err := s.findMainRouteTableID(accountID, vpcID); err != nil {
+		return fmt.Errorf("check existing main route table: %w", err)
+	} else if existing != "" {
+		slog.Info("Main route table already exists for VPC, skipping creation",
+			"routeTableId", existing, "vpcId", vpcID, "accountID", accountID)
+		return nil
+	}
 	type rtbRecord struct {
 		RouteTableId string `json:"route_table_id"`
 		VpcId        string `json:"vpc_id"`
@@ -1180,6 +1195,44 @@ func (s *VPCServiceImpl) createMainRouteTable(accountID, vpcID, vpcCidr string) 
 
 	slog.Info("Created main route table for VPC", "routeTableId", rtbID, "vpcId", vpcID, "accountID", accountID)
 	return nil
+}
+
+// findMainRouteTableID returns the rtb-ID of the main route table for vpcID
+// in accountID, or "" if none exists. Partial unmarshal — only the fields
+// needed to identify a main RT, so this stays cheap on hot KV scans.
+func (s *VPCServiceImpl) findMainRouteTableID(accountID, vpcID string) (string, error) {
+	prefix := accountID + "."
+	keys, err := s.rtbKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return "", nil
+		}
+		return "", fmt.Errorf("list rtb keys: %w", err)
+	}
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.rtbKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			return "", fmt.Errorf("read rtb %s: %w", key, err)
+		}
+		var rt struct {
+			RouteTableId string `json:"route_table_id"`
+			VpcId        string `json:"vpc_id"`
+			IsMain       bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rt); err != nil {
+			continue
+		}
+		if rt.VpcId == vpcID && rt.IsMain {
+			return rt.RouteTableId, nil
+		}
+	}
+	return "", nil
 }
 
 // GetDefaultSubnet returns the default subnet for RunInstances when no SubnetId is specified.

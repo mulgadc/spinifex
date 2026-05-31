@@ -1209,3 +1209,81 @@ func TestDisassociateRouteTable_RestoresMainRTRoutesForDepartingSubnet(t *testin
 	assert.True(t, got["subnet-priv1"], "departing subnet must receive add event for main-RT routes")
 	assert.Len(t, got, 1)
 }
+
+// TestPublishGateDecisionsForVPC_GatesAllSubnetsWhenNoEgress: with a main RT
+// carrying only the local route, every subnet in the VPC must receive a gate
+// event. Exercises the IGW attach/detach fan-out hook.
+func TestPublishGateDecisionsForVPC_GatesAllSubnetsWhenNoEgress(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+
+	gate, err := svc.natsConn.SubscribeSync("vpc.gate-subnet-egress")
+	require.NoError(t, err)
+	defer func() { _ = gate.Unsubscribe() }()
+
+	svc.PublishGateDecisionsForVPC(testAccountID, "vpc-test1", "0.0.0.0/0")
+
+	got := drainGateSubnets(t, gate, 4)
+	assert.Equal(t, "0.0.0.0/0", got["subnet-test1"])
+	assert.Equal(t, "0.0.0.0/0", got["subnet-priv1"])
+	assert.Len(t, got, 2)
+}
+
+// TestPublishGateDecisionsForVPC_UngatesSubnetWithIGWRoute: a subnet whose
+// effective RT carries 0.0.0.0/0 -> IGW must receive ungate; the other
+// (implicit-main, no egress) subnet still receives gate.
+func TestPublishGateDecisionsForVPC_UngatesSubnetWithIGWRoute(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateRouteTableForVPC("vpc-test1", "10.0.0.0/16", testAccountID, true, "")
+	require.NoError(t, err)
+
+	// Custom RT with 0.0.0.0/0 -> IGW, associated to subnet-test1.
+	rtbID := createTestRtb(t, svc)
+	_, err = svc.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+		RouteTableId: aws.String(rtbID),
+		SubnetId:     aws.String("subnet-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	gate, err := svc.natsConn.SubscribeSync("vpc.gate-subnet-egress")
+	require.NoError(t, err)
+	defer func() { _ = gate.Unsubscribe() }()
+	ungate, err := svc.natsConn.SubscribeSync("vpc.ungate-subnet-egress")
+	require.NoError(t, err)
+	defer func() { _ = ungate.Unsubscribe() }()
+
+	svc.PublishGateDecisionsForVPC(testAccountID, "vpc-test1", "0.0.0.0/0")
+
+	gateGot := drainGateSubnets(t, gate, 4)
+	ungateGot := drainGateSubnets(t, ungate, 4)
+	assert.Equal(t, "0.0.0.0/0", ungateGot["subnet-test1"], "subnet-test1 has IGW route → ungate")
+	assert.Equal(t, "0.0.0.0/0", gateGot["subnet-priv1"], "subnet-priv1 implicit-main no egress → gate")
+	assert.Len(t, ungateGot, 1)
+	assert.Len(t, gateGot, 1)
+}
+
+// TestPublishGateDecisionsForVPC_EmptyVPCNoOp: VPC with zero subnets must
+// silently emit no events.
+func TestPublishGateDecisionsForVPC_EmptyVPCNoOp(t *testing.T) {
+	svc := setupTestService(t)
+	gate, err := svc.natsConn.SubscribeSync("vpc.gate-subnet-egress")
+	require.NoError(t, err)
+	defer func() { _ = gate.Unsubscribe() }()
+	ungate, err := svc.natsConn.SubscribeSync("vpc.ungate-subnet-egress")
+	require.NoError(t, err)
+	defer func() { _ = ungate.Unsubscribe() }()
+
+	svc.PublishGateDecisionsForVPC(testAccountID, "vpc-empty", "0.0.0.0/0")
+
+	_, err = gate.NextMsg(150 * time.Millisecond)
+	assert.Error(t, err, "expected no gate event")
+	_, err = ungate.NextMsg(150 * time.Millisecond)
+	assert.Error(t, err, "expected no ungate event")
+}

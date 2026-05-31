@@ -291,6 +291,65 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(accountID, vpcID
 		"topic", topic, "vpcId", vpcID, "subnetId", subnetID, "destinationCidr", destCidr)
 }
 
+// PublishGateDecisionsForVPC recomputes gate/ungate for every subnet in
+// vpcID against destCidr by enumerating all subnets in the VPC and resolving
+// each one's effective RT. Called from the IGW handler on Attach / Detach so
+// per-subnet OVN DROP policies are reinstated immediately instead of waiting
+// for the reconciler's drift tick. destCidr defaults to 0.0.0.0/0.
+func (s *RouteTableServiceImpl) PublishGateDecisionsForVPC(accountID, vpcID, destCidr string) {
+	if s.natsConn == nil || vpcID == "" {
+		return
+	}
+	if destCidr == "" {
+		destCidr = "0.0.0.0/0"
+	}
+	subnets, err := s.allSubnetsForVPC(accountID, vpcID)
+	if err != nil {
+		slog.Warn("PublishGateDecisionsForVPC: enumerate subnets failed",
+			"vpcId", vpcID, "err", err)
+		return
+	}
+	for _, subnetID := range subnets {
+		s.publishSubnetEgressGateDecision(accountID, vpcID, subnetID, destCidr)
+	}
+}
+
+// allSubnetsForVPC returns every SubnetId in vpcID by scanning the subnet KV.
+// Order is unspecified.
+func (s *RouteTableServiceImpl) allSubnetsForVPC(accountID, vpcID string) ([]string, error) {
+	prefix := accountID + "."
+	keys, err := s.subnetKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list subnet keys: %w", err)
+	}
+	var subnets []string
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.subnetKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("read subnet %s: %w", key, err)
+		}
+		var subnet handlers_ec2_vpc.SubnetRecord
+		if err := json.Unmarshal(entry.Value(), &subnet); err != nil {
+			slog.Warn("allSubnetsForVPC: corrupt subnet record", "key", key, "err", err)
+			continue
+		}
+		if subnet.VpcId != vpcID || subnet.SubnetId == "" {
+			continue
+		}
+		subnets = append(subnets, subnet.SubnetId)
+	}
+	return subnets, nil
+}
+
 // publishSubnetEgressGateDecisionForRT recomputes gate/ungate per subnet in a
 // route table (explicit associations + implicit-main subnets if the RT is
 // main). destCidr is the route prefix whose presence/absence drove the call.

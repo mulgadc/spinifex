@@ -114,15 +114,16 @@ func TestLoadBalancer(t *testing.T) {
 // --- Fixture: shared VPC, subnet, IGW, SG, app instances ----------------
 
 type sharedFixture struct {
-	VPCID          string
-	SubnetID       string
-	IGWID          string
-	SecurityGroup  string
-	AMIID          string
-	InstanceType   string
-	AppInstanceIDs []string
-	ClientID       string
-	ClientPublicIP string
+	VPCID            string
+	SubnetID         string
+	IGWID            string
+	MainRouteTableID string
+	SecurityGroup    string
+	AMIID            string
+	InstanceType     string
+	AppInstanceIDs   []string
+	ClientID         string
+	ClientPublicIP   string
 }
 
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
@@ -144,6 +145,8 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	t.Cleanup(func() { deleteIGW(t, c, f) })
 	createSubnet(t, c, f)
 	t.Cleanup(func() { deleteSubnet(t, c, f) })
+	addPublicRoute(t, c, f)
+	t.Cleanup(func() { deletePublicRoute(t, c, f) })
 	configureDefaultSG(t, c, f)
 
 	harness.Phase(t, "Launching app instances (2× %s)", f.InstanceType)
@@ -317,6 +320,43 @@ func deleteSubnet(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	}
 	if _, err := c.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(f.SubnetID)}); err != nil {
 		t.Logf("delete subnet: %v", err)
+	}
+}
+
+// addPublicRoute installs 0.0.0.0/0 → IGW on the VPC's main route table.
+// Without this, the daemon classifies the subnet as private and installs an
+// OVN LR policy DROP on the subnet's egress (priority 1100), breaking the
+// return path for inbound DNATed probes to the public IP.
+func addPublicRoute(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(f.VPCID)}},
+			{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
+		},
+	})
+	require.NoError(t, err, "describe main route table")
+	require.NotEmpty(t, out.RouteTables, "VPC %s has no main route table", f.VPCID)
+	f.MainRouteTableID = aws.StringValue(out.RouteTables[0].RouteTableId)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(f.MainRouteTableID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String(f.IGWID),
+	})
+	require.NoError(t, err, "create-route 0.0.0.0/0 -> IGW")
+	t.Logf("public route: %s 0.0.0.0/0 -> %s", f.MainRouteTableID, f.IGWID)
+}
+
+func deletePublicRoute(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	if f.MainRouteTableID == "" {
+		return
+	}
+	if _, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
+		RouteTableId:         aws.String(f.MainRouteTableID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+	}); err != nil {
+		t.Logf("delete public route: %v", err)
 	}
 }
 

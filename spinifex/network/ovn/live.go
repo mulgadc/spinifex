@@ -1095,6 +1095,125 @@ func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, i
 	return nil
 }
 
+// Logical Router Policies (per-subnet egress steering).
+
+func (c *LiveClient) AddLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	if policy.UUID == "" {
+		policy.UUID = namedUUID("lrp_", fmt.Sprintf("%d:%s", policy.Priority, policy.Match))
+	}
+	if policy.ExternalIDs == nil {
+		policy.ExternalIDs = map[string]string{}
+	}
+	if policy.Options == nil {
+		policy.Options = map[string]string{}
+	}
+
+	createOps, err := c.client.Create(policy)
+	if err != nil {
+		return fmt.Errorf("create LR policy ops: %w", err)
+	}
+
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for policy add: %w", err)
+	}
+
+	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
+		Field:   &lr.Policies,
+		Mutator: "insert",
+		Value:   []string{policy.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate router policies ops: %w", err)
+	}
+
+	if err := c.transactOps(ctx, append(createOps, mutateOps...)); err != nil {
+		return fmt.Errorf("add LR policy transact: %w", err)
+	}
+	return nil
+}
+
+func (c *LiveClient) FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for policy lookup: %w", err)
+	}
+	owned := make(map[string]struct{}, len(lr.Policies))
+	for _, u := range lr.Policies {
+		owned[u] = struct{}{}
+	}
+	var policies []nbdb.LogicalRouterPolicy
+	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
+		if p.Priority != priority || p.Match != match {
+			return false
+		}
+		_, ok := owned[p.UUID]
+		return ok
+	}).List(ctx, &policies); err != nil {
+		return nil, fmt.Errorf("list LR policies: %w", err)
+	}
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	return &policies[0], nil
+}
+
+func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for policy list: %w", err)
+	}
+	if len(lr.Policies) == 0 {
+		return nil, nil
+	}
+	owned := make(map[string]struct{}, len(lr.Policies))
+	for _, u := range lr.Policies {
+		owned[u] = struct{}{}
+	}
+	var policies []nbdb.LogicalRouterPolicy
+	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
+		_, ok := owned[p.UUID]
+		return ok
+	}).List(ctx, &policies); err != nil {
+		return nil, fmt.Errorf("list LR policies: %w", err)
+	}
+	return policies, nil
+}
+
+func (c *LiveClient) DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error {
+	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, priority, match)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return nil
+	}
+
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return fmt.Errorf("get logical router for policy delete: %w", err)
+	}
+
+	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
+		Field:   &lr.Policies,
+		Mutator: "delete",
+		Value:   []string{existing.UUID},
+	})
+	if err != nil {
+		return fmt.Errorf("mutate router policies ops: %w", err)
+	}
+
+	deleteOps, err := c.client.Where(existing).Delete()
+	if err != nil {
+		return fmt.Errorf("delete LR policy ops: %w", err)
+	}
+
+	if err := c.transactOps(ctx, append(mutateOps, deleteOps...)); err != nil {
+		return fmt.Errorf("delete LR policy transact: %w", err)
+	}
+	return nil
+}
+
 // Port Groups
 
 func (c *LiveClient) CreatePortGroup(ctx context.Context, name string, ports []string) error {
@@ -1355,6 +1474,86 @@ func (c *LiveClient) ClearACLs(ctx context.Context, portGroupName string) error 
 
 	if err := c.transactOps(ctx, ops); err != nil {
 		return fmt.Errorf("clear ACLs transact: %w", err)
+	}
+	return nil
+}
+
+// ReplaceACLs atomically swaps the port group's ACL set in a single OVSDB
+// transaction: detach + delete every existing ACL row, create the new rows,
+// attach them to the port group. Equivalent to ClearACLs followed by AddACLs
+// without the mid-flight window where the port group has zero ACLs (which
+// would otherwise default-drop tenant traffic on the egress test path).
+func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
+	pg, err := c.getPortGroup(ctx, portGroupName)
+	if err != nil {
+		return fmt.Errorf("replace ACLs port group lookup: %w", err)
+	}
+
+	var ops []ovsdb.Operation
+
+	if len(pg.ACLs) > 0 {
+		detachOps, dErr := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.ACLs,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   pg.ACLs,
+		})
+		if dErr != nil {
+			return fmt.Errorf("mutate port group ACLs (detach) ops: %w", dErr)
+		}
+		ops = append(ops, detachOps...)
+		for _, aclUUID := range pg.ACLs {
+			delOps, dErr := c.client.Where(&nbdb.ACL{UUID: aclUUID}).Delete()
+			if dErr != nil {
+				return fmt.Errorf("delete ACL ops: %w", dErr)
+			}
+			ops = append(ops, delOps...)
+		}
+	}
+
+	uuids := make([]string, 0, len(specs))
+	for i, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:        namedUUID("acl_", fmt.Sprintf("%s_%d_%s", portGroupName, i, spec.Direction)),
+			Direction:   spec.Direction,
+			Priority:    spec.Priority,
+			Match:       spec.Match,
+			Action:      spec.Action,
+			Log:         spec.Log,
+			ExternalIDs: map[string]string{},
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		createOps, cErr := c.client.Create(acl)
+		if cErr != nil {
+			return fmt.Errorf("create ACL ops: %w", cErr)
+		}
+		ops = append(ops, createOps...)
+		uuids = append(uuids, acl.UUID)
+	}
+
+	if len(uuids) > 0 {
+		attachOps, aErr := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.ACLs,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   uuids,
+		})
+		if aErr != nil {
+			return fmt.Errorf("mutate port group ACLs (attach) ops: %w", aErr)
+		}
+		ops = append(ops, attachOps...)
+	}
+
+	if len(ops) == 0 {
+		return nil
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("replace ACLs transact: %w", err)
 	}
 	return nil
 }

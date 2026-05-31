@@ -25,13 +25,30 @@ import (
 // IntentState is the desired OVN state derived from the JetStream KV
 // snapshot, scoped to the local AZ. Empty maps are valid.
 type IntentState struct {
-	VPCs    map[string]topology.VPCSpec
-	Subnets map[string]topology.SubnetSpec
-	Ports   map[string]topology.PortSpec
-	SGs     map[string]policy.SGSpec
-	IGWs    map[string]external.IGWSpec // attached only
-	EIPs    map[string]policy.EIPSpec   // keyed by logicalIP; associated only
-	NATGWs  map[string]policy.NATGWSpec
+	VPCs        map[string]topology.VPCSpec
+	Subnets     map[string]topology.SubnetSpec
+	Ports       map[string]topology.PortSpec
+	SGs         map[string]policy.SGSpec
+	IGWs        map[string]external.IGWSpec // attached only
+	EIPs        map[string]policy.EIPSpec   // keyed by logicalIP; associated only
+	NATGWs      map[string]policy.NATGWSpec
+	IGWRoutes   map[string]SubnetEgressIntent // per (subnet, dest) IGW egress reroute
+	NATGWRoutes map[string]SubnetEgressIntent // per (subnet, dest) NATGW egress reroute
+	DropGates   map[string]SubnetEgressIntent // per (subnet, dest=0.0.0.0/0) drop policy
+}
+
+// SubnetEgressIntent is a per-subnet default-route policy installed on the
+// VPC LR. Mirrors the publishIGWRouteEvent fan-out: one entry per (subnet,
+// destCIDR) that the source route table directs at an IGW or NAT gateway.
+type SubnetEgressIntent struct {
+	VPCID    string
+	SubnetID string
+	DestCIDR netip.Prefix
+}
+
+// subnetEgressKey is the IGWRoutes/NATGWRoutes map key.
+func subnetEgressKey(subnetID string, prefix netip.Prefix) string {
+	return subnetID + "|" + prefix.String()
 }
 
 // LoadIntentFromKV assembles IntentState scoped to localAZ. Missing buckets
@@ -39,13 +56,16 @@ type IntentState struct {
 // localAZ`. Children inherit the filter transitively via their parent VPC.
 func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ string) (IntentState, error) {
 	intent := IntentState{
-		VPCs:    make(map[string]topology.VPCSpec),
-		Subnets: make(map[string]topology.SubnetSpec),
-		Ports:   make(map[string]topology.PortSpec),
-		SGs:     make(map[string]policy.SGSpec),
-		IGWs:    make(map[string]external.IGWSpec),
-		EIPs:    make(map[string]policy.EIPSpec),
-		NATGWs:  make(map[string]policy.NATGWSpec),
+		VPCs:        make(map[string]topology.VPCSpec),
+		Subnets:     make(map[string]topology.SubnetSpec),
+		Ports:       make(map[string]topology.PortSpec),
+		SGs:         make(map[string]policy.SGSpec),
+		IGWs:        make(map[string]external.IGWSpec),
+		EIPs:        make(map[string]policy.EIPSpec),
+		NATGWs:      make(map[string]policy.NATGWSpec),
+		IGWRoutes:   make(map[string]SubnetEgressIntent),
+		NATGWRoutes: make(map[string]SubnetEgressIntent),
+		DropGates:   make(map[string]SubnetEgressIntent),
 	}
 
 	localVPCs, err := loadVPCs(js, localAZ, intent.VPCs)
@@ -74,9 +94,129 @@ func LoadIntentFromKV(ctx context.Context, js nats.JetStreamContext, localAZ str
 	if err := loadNATGWs(js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
 		return IntentState{}, err
 	}
+	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
 	_ = ctx
 	return intent, nil
+}
+
+// loadSubnetEgressRoutes fans IGW/NATGW routes out over the subnets that
+// inherit them — explicit non-main associations plus, for the main RT,
+// subnets in the same VPC with no explicit non-main association. Mirrors
+// publishIGWRouteEvents/publishNatGatewayEvents so the reconcile pass
+// reaches the same per-subnet set as the runtime event path.
+func loadSubnetEgressRoutes(
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	igwOut, natgwOut map[string]SubnetEgressIntent,
+) {
+	subnetsByVPC := make(map[string][]string, len(localVPCs))
+	for id, spec := range subnets {
+		subnetsByVPC[spec.VPCID] = append(subnetsByVPC[spec.VPCID], id)
+	}
+
+	explicitByVPC := make(map[string]map[string]struct{}, len(routeTables))
+	for _, rt := range routeTables {
+		if _, ok := localVPCs[rt.VpcId]; !ok {
+			continue
+		}
+		ex, ok := explicitByVPC[rt.VpcId]
+		if !ok {
+			ex = map[string]struct{}{}
+			explicitByVPC[rt.VpcId] = ex
+		}
+		for _, assoc := range rt.Associations {
+			if assoc.SubnetId == "" || assoc.Main {
+				continue
+			}
+			ex[assoc.SubnetId] = struct{}{}
+		}
+	}
+
+	for _, rt := range routeTables {
+		if _, ok := localVPCs[rt.VpcId]; !ok {
+			continue
+		}
+		targets := map[string]struct{}{}
+		for _, assoc := range rt.Associations {
+			if assoc.SubnetId == "" || assoc.Main {
+				continue
+			}
+			targets[assoc.SubnetId] = struct{}{}
+		}
+		if rt.IsMain {
+			for _, subnetID := range subnetsByVPC[rt.VpcId] {
+				if _, ok := explicitByVPC[rt.VpcId][subnetID]; ok {
+					continue
+				}
+				targets[subnetID] = struct{}{}
+			}
+		}
+		for _, r := range rt.Routes {
+			if r.State != "" && !strings.EqualFold(r.State, "active") {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(r.DestinationCidrBlock)
+			if err != nil {
+				slog.Warn("reconcile/intent: route CIDR parse failed",
+					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
+				continue
+			}
+			var sink map[string]SubnetEgressIntent
+			switch {
+			case strings.HasPrefix(r.GatewayId, "igw-"):
+				sink = igwOut
+			case r.NatGatewayId != "":
+				sink = natgwOut
+			default:
+				continue
+			}
+			for subnetID := range targets {
+				sink[subnetEgressKey(subnetID, prefix)] = SubnetEgressIntent{
+					VPCID:    rt.VpcId,
+					SubnetID: subnetID,
+					DestCIDR: prefix,
+				}
+			}
+		}
+	}
+}
+
+// loadSubnetDropGates emits one drop intent per subnet whose VPC has an
+// attached IGW but which has no 0.0.0.0/0 reroute path (neither IGWRoutes
+// nor NATGWRoutes carry an entry for it). VPCs without an attached IGW
+// have no router-wide default static route, so lr_in_ip_routing already
+// kills the packet — no drop policy needed.
+func loadSubnetDropGates(
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	igws map[string]external.IGWSpec,
+	igwRoutes, natgwRoutes map[string]SubnetEgressIntent,
+	out map[string]SubnetEgressIntent,
+) {
+	defaultPrefix := netip.MustParsePrefix("0.0.0.0/0")
+	for _, subnet := range subnets {
+		if _, ok := localVPCs[subnet.VPCID]; !ok {
+			continue
+		}
+		if _, ok := igws[subnet.VPCID]; !ok {
+			continue
+		}
+		key := subnetEgressKey(subnet.SubnetID, defaultPrefix)
+		if _, ok := igwRoutes[key]; ok {
+			continue
+		}
+		if _, ok := natgwRoutes[key]; ok {
+			continue
+		}
+		out[key] = SubnetEgressIntent{
+			VPCID:    subnet.VPCID,
+			SubnetID: subnet.SubnetID,
+			DestCIDR: defaultPrefix,
+		}
+	}
 }
 
 // matchesLocalAZ enforces §11.1: empty AZ counts as local (legacy records).

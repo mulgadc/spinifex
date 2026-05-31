@@ -285,3 +285,107 @@ func TestEnsurePortGroup_ConcurrentSingleSurvivor(t *testing.T) {
 		t.Fatalf("expected 1 port group, got %d", len(rows))
 	}
 }
+
+func TestLogicalRouterPolicies_RouterMissing(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if err := m.AddLogicalRouterPolicy(ctx, "vpc-missing", &nbdb.LogicalRouterPolicy{
+		Priority: 1000, Match: "inport == \"x\"", Action: "reroute",
+	}); err == nil {
+		t.Fatal("AddLogicalRouterPolicy: expected error for missing router")
+	}
+
+	if _, err := m.FindLogicalRouterPolicy(ctx, "vpc-missing", 1000, "x"); err == nil {
+		t.Fatal("FindLogicalRouterPolicy: expected error for missing router")
+	}
+
+	if _, err := m.ListLogicalRouterPolicies(ctx, "vpc-missing"); err == nil {
+		t.Fatal("ListLogicalRouterPolicies: expected error for missing router")
+	}
+
+	if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-missing", 1000, "x"); err == nil {
+		t.Fatal("DeleteLogicalRouterPolicy: expected error for missing router")
+	}
+}
+
+func TestLogicalRouterPolicies_Roundtrip(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r1"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+
+	nexthop := "192.168.1.1"
+	p1 := &nbdb.LogicalRouterPolicy{Priority: 1000, Match: `inport == "rtr-a"`, Action: "reroute", Nexthop: &nexthop}
+	p2 := &nbdb.LogicalRouterPolicy{Priority: 900, Match: `inport == "rtr-b"`, Action: "reroute", Nexthop: &nexthop}
+
+	if err := m.AddLogicalRouterPolicy(ctx, "vpc-r1", p1); err != nil {
+		t.Fatalf("AddLogicalRouterPolicy p1: %v", err)
+	}
+	if err := m.AddLogicalRouterPolicy(ctx, "vpc-r1", p2); err != nil {
+		t.Fatalf("AddLogicalRouterPolicy p2: %v", err)
+	}
+
+	got, err := m.FindLogicalRouterPolicy(ctx, "vpc-r1", 1000, `inport == "rtr-a"`)
+	if err != nil || got == nil {
+		t.Fatalf("FindLogicalRouterPolicy: %v %v", got, err)
+	}
+	if got.Match != `inport == "rtr-a"` {
+		t.Errorf("Find match mismatch: %q", got.Match)
+	}
+
+	miss, err := m.FindLogicalRouterPolicy(ctx, "vpc-r1", 1000, `inport == "nope"`)
+	if err != nil || miss != nil {
+		t.Errorf("FindLogicalRouterPolicy (miss): %v %v", miss, err)
+	}
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, "vpc-r1")
+	if err != nil {
+		t.Fatalf("ListLogicalRouterPolicies: %v", err)
+	}
+	if len(policies) != 2 {
+		t.Fatalf("expected 2 policies, got %d", len(policies))
+	}
+
+	if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-r1", 1000, `inport == "rtr-a"`); err != nil {
+		t.Fatalf("DeleteLogicalRouterPolicy: %v", err)
+	}
+	if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-r1", 1000, `inport == "rtr-a"`); err != nil {
+		t.Errorf("DeleteLogicalRouterPolicy (idempotent): %v", err)
+	}
+
+	policies, _ = m.ListLogicalRouterPolicies(ctx, "vpc-r1")
+	if len(policies) != 1 {
+		t.Errorf("expected 1 policy after delete, got %d", len(policies))
+	}
+}
+
+func TestLogicalRouterPolicies_DanglingUUIDsIgnored(t *testing.T) {
+	m := New()
+	_ = m.Connect(context.Background())
+	ctx := context.Background()
+
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-r1"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+
+	m.Routers["vpc-r1"].Policies = []string{"missing-uuid", "also-missing"}
+
+	if _, err := m.FindLogicalRouterPolicy(ctx, "vpc-r1", 1000, "x"); err != nil {
+		t.Fatalf("Find with dangling refs: %v", err)
+	}
+	if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-r1", 1000, "x"); err != nil {
+		t.Fatalf("Delete with dangling refs: %v", err)
+	}
+	policies, err := m.ListLogicalRouterPolicies(ctx, "vpc-r1")
+	if err != nil {
+		t.Fatalf("List with dangling refs: %v", err)
+	}
+	if len(policies) != 0 {
+		t.Fatalf("expected 0 policies, got %d", len(policies))
+	}
+}

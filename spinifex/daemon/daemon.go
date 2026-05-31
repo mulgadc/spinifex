@@ -106,6 +106,10 @@ type ResourceManager struct {
 	nodeID        string          // node identifier for node-specific topic subscriptions
 }
 
+// Compile-time guarantee that the RouteTable service satisfies the IGW
+// handler's GatePublisher hook — the two services are wired together below.
+var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
+
 // Daemon represents the main daemon service
 type Daemon struct {
 	node                  string
@@ -1136,6 +1140,9 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
 	}
+
+	// Wire IGW attach/detach to RT-aware per-subnet egress gate fan-out.
+	d.igwService.SetGatePublisher(d.routeTableService)
 
 	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*handlers_ec2_natgw.NatGatewayServiceImpl, error) {
 		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.natsConn)

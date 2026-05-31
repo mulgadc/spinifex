@@ -158,6 +158,16 @@ type Client interface {
 	AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
 
+	// ReplaceACLs atomically swaps the port group's ACL set: detach + delete
+	// the existing rows and attach freshly-created rows in ONE OVSDB
+	// transaction. SG mutations must use this instead of ClearACLs followed
+	// by AddACLs — the latter leaves the port group with zero ACLs between
+	// transactions, and a no-ACL port group on a tenant LSP path defaults
+	// to drop, producing observable mid-flight egress drops on connectionless
+	// traffic (ICMP) and on TCP SYNs that don't match an existing conntrack
+	// entry.
+	ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
+
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error
 	GetGatewayChassisByName(ctx context.Context, name string) (*nbdb.GatewayChassis, error)

@@ -1477,3 +1477,83 @@ func (c *LiveClient) ClearACLs(ctx context.Context, portGroupName string) error 
 	}
 	return nil
 }
+
+// ReplaceACLs atomically swaps the port group's ACL set in a single OVSDB
+// transaction: detach + delete every existing ACL row, create the new rows,
+// attach them to the port group. Equivalent to ClearACLs followed by AddACLs
+// without the mid-flight window where the port group has zero ACLs (which
+// would otherwise default-drop tenant traffic on the egress test path).
+func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
+	pg, err := c.getPortGroup(ctx, portGroupName)
+	if err != nil {
+		return fmt.Errorf("replace ACLs port group lookup: %w", err)
+	}
+
+	var ops []ovsdb.Operation
+
+	if len(pg.ACLs) > 0 {
+		detachOps, dErr := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.ACLs,
+			Mutator: ovsdb.MutateOperationDelete,
+			Value:   pg.ACLs,
+		})
+		if dErr != nil {
+			return fmt.Errorf("mutate port group ACLs (detach) ops: %w", dErr)
+		}
+		ops = append(ops, detachOps...)
+		for _, aclUUID := range pg.ACLs {
+			delOps, dErr := c.client.Where(&nbdb.ACL{UUID: aclUUID}).Delete()
+			if dErr != nil {
+				return fmt.Errorf("delete ACL ops: %w", dErr)
+			}
+			ops = append(ops, delOps...)
+		}
+	}
+
+	uuids := make([]string, 0, len(specs))
+	for i, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:        namedUUID("acl_", fmt.Sprintf("%s_%d_%s", portGroupName, i, spec.Direction)),
+			Direction:   spec.Direction,
+			Priority:    spec.Priority,
+			Match:       spec.Match,
+			Action:      spec.Action,
+			Log:         spec.Log,
+			ExternalIDs: map[string]string{},
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		createOps, cErr := c.client.Create(acl)
+		if cErr != nil {
+			return fmt.Errorf("create ACL ops: %w", cErr)
+		}
+		ops = append(ops, createOps...)
+		uuids = append(uuids, acl.UUID)
+	}
+
+	if len(uuids) > 0 {
+		attachOps, aErr := c.client.Where(pg).Mutate(pg, model.Mutation{
+			Field:   &pg.ACLs,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   uuids,
+		})
+		if aErr != nil {
+			return fmt.Errorf("mutate port group ACLs (attach) ops: %w", aErr)
+		}
+		ops = append(ops, attachOps...)
+	}
+
+	if len(ops) == 0 {
+		return nil
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("replace ACLs transact: %w", err)
+	}
+	return nil
+}

@@ -40,8 +40,10 @@ type Client struct {
 
 	// AddACLErrAfter, when > 0, makes AddACLs return an error on the Nth
 	// (1-indexed) call. Lets tests inject a transient failure mid-flow.
-	AddACLErrAfter int
-	AddACLCalls    int
+	AddACLErrAfter  int
+	AddACLCalls     int
+	ClearACLCalls   int
+	ReplaceACLCalls int
 }
 
 var _ ovn.Client = (*Client)(nil)
@@ -893,6 +895,7 @@ func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.AC
 func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
+	m.ClearACLCalls++
 	pg, exists := m.PortGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
@@ -901,6 +904,48 @@ func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 		delete(m.ACLs, aclUUID)
 	}
 	pg.ACLs = nil
+	return nil
+}
+
+// ReplaceACLs atomically swaps the port group's ACL set under a single mutex
+// hold — semantically equivalent to ClearACLs+AddACLs but with no observable
+// mid-flight window where pg.ACLs is empty.
+func (m *Client) ReplaceACLs(_ context.Context, portGroupName string, specs []ovn.ACLSpec) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	m.ReplaceACLCalls++
+	m.AddACLCalls++
+	if m.AddACLErrAfter > 0 && m.AddACLCalls == m.AddACLErrAfter {
+		return fmt.Errorf("injected ReplaceACLs failure on call %d", m.AddACLCalls)
+	}
+	pg, exists := m.PortGroups[portGroupName]
+	if !exists {
+		return fmt.Errorf("port group %q not found", portGroupName)
+	}
+	for _, aclUUID := range pg.ACLs {
+		delete(m.ACLs, aclUUID)
+	}
+	pg.ACLs = pg.ACLs[:0]
+	for _, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:      utils.GenerateResourceID("acl"),
+			Direction: spec.Direction,
+			Priority:  spec.Priority,
+			Match:     spec.Match,
+			Action:    spec.Action,
+			Log:       spec.Log,
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		m.ACLs[acl.UUID] = acl
+		pg.ACLs = append(pg.ACLs, acl.UUID)
+	}
 	return nil
 }
 

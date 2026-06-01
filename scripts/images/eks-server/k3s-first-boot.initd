@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# k3s-first-boot — one-shot OpenRC service that runs the first-boot publisher
+# after K3s is up. Self-disables by removing itself from the default runlevel
+# once the sentinel file is gone.
+
+description="K3s first-boot publisher (node-token + admin kubeconfig)"
+command="/usr/local/sbin/k3s-first-boot"
+command_background="no"
+pidfile="/run/k3s-first-boot.pid"
+output_log="/var/log/k3s-first-boot.log"
+error_log="/var/log/k3s-first-boot.log"
+
+depend() {
+    need k3s
+    after k3s
+}
+
+start_pre() {
+    if [ ! -f /var/lib/spinifex-eks/first-boot.pending ]; then
+        einfo "first-boot already complete; nothing to do"
+        return 0
+    fi
+}

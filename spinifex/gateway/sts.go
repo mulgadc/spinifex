@@ -58,6 +58,13 @@ var stsActions = map[string]STSHandler{
 	"AssumeRole": stsHandler(func(c stsCaller, input *sts.AssumeRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
 	}),
+	// TODO: AssumeRoleWithWebIdentity is anonymous on AWS — the caller is
+	// authenticated by the JWT body, not by a SigV4 envelope. The current
+	// dispatch path runs SigV4 first, then enters this handler with a synthetic
+	// stsCaller. That works for in-cluster callers that already hold SigV4
+	// credentials but rejects the true anonymous code path (no AWS creds, only
+	// a projected ServiceAccount token). The AWS gateway mux needs a pre-auth
+	// route for this action so the JWT can be the sole authenticator.
 	"AssumeRoleWithWebIdentity": stsHandler(func(_ stsCaller, input *sts.AssumeRoleWithWebIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRoleWithWebIdentity(input, gw.STSService)
 	}),

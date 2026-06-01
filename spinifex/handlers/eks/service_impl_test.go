@@ -18,17 +18,26 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 	return svc
 }
 
-func TestEKSServiceImpl_ClusterMethodsReturnNotImplemented(t *testing.T) {
+// TestEKSServiceImpl_ClusterLifecycleShimMode covers the four lifecycle
+// methods when the service is constructed via NewEKSServiceImplWithNATS
+// (the shim path the daemon-handler routing test uses): orchestration deps
+// are absent so CreateCluster/DeleteCluster short-circuit to ServerInternal,
+// DescribeCluster hits an empty per-account bucket and surfaces
+// ResourceNotFound, and ListClusters returns an empty list. The
+// UpdateClusterConfig + UpdateClusterVersion paths stay NotImplemented.
+func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	svc := setupTestService(t)
 
 	_, err := svc.CreateCluster(&eks.CreateClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
 
 	_, err = svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorResourceNotFound)
 
-	_, err = svc.ListClusters(&eks.ListClustersInput{}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	out, err := svc.ListClusters(&eks.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Empty(t, out.Clusters)
 
 	_, err = svc.UpdateClusterConfig(&eks.UpdateClusterConfigInput{Name: aws.String("c1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
@@ -37,7 +46,7 @@ func TestEKSServiceImpl_ClusterMethodsReturnNotImplemented(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
 }
 
 func TestEKSServiceImpl_NodegroupMethodsReturnNotImplemented(t *testing.T) {

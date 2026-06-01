@@ -1328,10 +1328,13 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
-		return handlers_eks.NewEKSServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_eks.NewEKSServiceImpl(d.buildEKSServiceDeps())
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
+	}
+	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
+		slog.Warn("EKS: SpawnRegisteredReconcilers failed", "err", err)
 	}
 
 	// Ensure default VPC exists for system and admin accounts
@@ -1925,6 +1928,11 @@ func (d *Daemon) setupShutdown() {
 		// Stop ELBv2 background goroutines
 		if d.elbv2Service != nil {
 			d.elbv2Service.Close()
+		}
+
+		// Stop EKS per-cluster reconciler + bootstrap goroutines.
+		if d.eksService != nil {
+			d.eksService.Shutdown()
 		}
 
 		// Final cleanup

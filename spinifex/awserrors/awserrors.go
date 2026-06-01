@@ -366,6 +366,7 @@ var (
 	ErrorResourceCountExceeded                                 = "ResourceCountExceeded"
 	ErrorResourceCountLimitExceeded                            = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                 = "ResourceLimitExceeded"
+	ErrorResourceNotFound                                      = "ResourceNotFound"
 	ErrorRetryableError                                        = "RetryableError"
 	ErrorRouteAlreadyExists                                    = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                                    = "RouteLimitExceeded"
@@ -842,6 +843,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceCountExceeded:                                 {HTTPCode: 400, Message: "You have exceeded the number of resources allowed for this request; for example, if you try to launch more instances than AWS allows in a single request. This limit is separate from your individual resource limit. If you get this error, break up your request into smaller requests; for example, if you are launching 15 instances, try launching 5 instances in 3 separate requests."},
 	ErrorResourceCountLimitExceeded:                            {HTTPCode: 400, Message: "You have exceeded a resource limit for creating routes."},
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
+	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},

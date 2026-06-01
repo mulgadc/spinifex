@@ -45,7 +45,9 @@ type ClusterMeta struct {
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`
 	ControlPlaneInstanceID  string            `json:"controlPlaneInstanceId,omitempty"`
 	ControlPlaneENIID       string            `json:"controlPlaneEniId,omitempty"`
+	ControlPlaneENIIP       string            `json:"controlPlaneEniIp,omitempty"`
 	NLBArn                  string            `json:"nlbArn,omitempty"`
+	NLBTargetGroupArn       string            `json:"nlbTargetGroupArn,omitempty"`
 	CreatedAt               time.Time         `json:"createdAt"`
 }
 

@@ -14,6 +14,10 @@ const (
 	// (HAProxy VMs, their ENIs, the LB AMI).
 	ManagedByELBv2 = "elbv2"
 
+	// ManagedByEKS identifies EKS-owned resources (K3s control-plane VMs,
+	// their ENIs, the eks-server / eks-agent AMIs, cluster + nodegroup SGs).
+	ManagedByEKS = "eks"
+
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 )

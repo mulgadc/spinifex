@@ -36,6 +36,7 @@ func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 		"elbv2.DescribeTargetHealth":  func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeTargetHealth) },
 		"elbv2.CreateListener":        func(msg *nats.Msg) { handleNATSMsg(msg, backend.CreateListener) },
 		"elbv2.DeleteListener":        func(msg *nats.Msg) { handleNATSMsg(msg, backend.DeleteListener) },
+		"elbv2.ModifyListener":        func(msg *nats.Msg) { handleNATSMsg(msg, backend.ModifyListener) },
 		"elbv2.DescribeListeners":     func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeListeners) },
 	}
 
@@ -231,6 +232,36 @@ func TestNATSE2E_DeleteLoadBalancerCascadesListeners(t *testing.T) {
 	// TG should now be deletable (no listeners reference it)
 	_, err = client.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoError(t, err)
+}
+
+func TestNATSE2E_ModifyListener(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	tgOut, _ := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("e2e-mod-tg")}, testAccountID)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	lbOut, _ := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-mod-lb")}, testAccountID)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	lstOut, err := client.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbArn,
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	modOut, err := client.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Port:        aws.Int64(8080),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, modOut.Listeners, 1)
+	assert.Equal(t, int64(8080), *modOut.Listeners[0].Port)
+
+	desc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Listeners, 1)
+	assert.Equal(t, int64(8080), *desc.Listeners[0].Port)
 }
 
 func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {

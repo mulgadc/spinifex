@@ -14,7 +14,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateStopInstancesInput validates the input parameters
 func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

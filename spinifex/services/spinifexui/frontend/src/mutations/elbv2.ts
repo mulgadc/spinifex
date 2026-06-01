@@ -9,6 +9,7 @@ import {
   DeleteLoadBalancerCommand,
   DeleteTargetGroupCommand,
   DeregisterTargetsCommand,
+  ModifyListenerCommand,
   ModifyLoadBalancerAttributesCommand,
   ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
@@ -192,6 +193,40 @@ export function useDeleteListener() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["elbv2", "listeners"] })
+    },
+  })
+}
+
+export interface ModifyListenerParams {
+  listenerArn: string
+  loadBalancerArn: string
+  protocol: "HTTP"
+  port: number
+  defaultTargetGroupArn: string
+}
+
+export function useModifyListener() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: ModifyListenerParams) => {
+      const defaultActions: Action[] = [
+        {
+          Type: "forward",
+          TargetGroupArn: params.defaultTargetGroupArn,
+        },
+      ]
+      const command = new ModifyListenerCommand({
+        ListenerArn: params.listenerArn,
+        Protocol: params.protocol,
+        Port: params.port,
+        DefaultActions: defaultActions,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "listeners", variables.loadBalancerArn],
+      })
     },
   })
 }

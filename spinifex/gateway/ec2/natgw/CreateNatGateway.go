@@ -9,10 +9,23 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.SubnetId == nil || *input.SubnetId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.AllocationId == nil || *input.AllocationId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
 func CreateNatGateway(input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
 	var output ec2.CreateNatGatewayOutput
-	if input == nil {
-		return output, errors.New(awserrors.ErrorInvalidParameterValue)
+	if err := ValidateCreateNatGatewayInput(input); err != nil {
+		return output, err
 	}
 	svc := handlers_ec2_natgw.NewNATSNatGatewayService(natsConn)
 	result, err := svc.CreateNatGateway(input, accountID)

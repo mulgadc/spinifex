@@ -365,9 +365,12 @@ func freshIntent(t *testing.T) IntentState {
 		SGs: map[string]policy.SGSpec{
 			"sg-a": {GroupID: "sg-a", VPCID: "vpc-a"},
 		},
-		IGWs:   map[string]external.IGWSpec{},
-		EIPs:   map[string]policy.EIPSpec{},
-		NATGWs: map[string]policy.NATGWSpec{},
+		IGWs:        map[string]external.IGWSpec{},
+		EIPs:        map[string]policy.EIPSpec{},
+		NATGWs:      map[string]policy.NATGWSpec{},
+		IGWRoutes:   map[string]SubnetEgressIntent{},
+		NATGWRoutes: map[string]SubnetEgressIntent{},
+		DropGates:   map[string]SubnetEgressIntent{},
 	}
 }
 

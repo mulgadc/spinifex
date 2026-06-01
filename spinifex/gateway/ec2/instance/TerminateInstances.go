@@ -19,7 +19,6 @@ type terminateStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }
 
-// ValidateTerminateInstancesInput validates the input parameters
 func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

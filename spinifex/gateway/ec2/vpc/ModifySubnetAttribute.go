@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateModifySubnetAttributeInput validates the input parameters
 func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

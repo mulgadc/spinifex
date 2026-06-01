@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeregisterTargetsInput validates the input parameters
 func ValidateDeregisterTargetsInput(input *elbv2.DeregisterTargetsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

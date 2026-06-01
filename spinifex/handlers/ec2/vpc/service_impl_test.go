@@ -596,6 +596,58 @@ func TestEnsureDefaultVPC_SkipsWhenDefaultExists(t *testing.T) {
 	assert.Equal(t, 1, defaultCount)
 }
 
+// TestCreateMainRouteTable_Idempotent asserts a second createMainRouteTable
+// call for the same VPC is a no-op. Without this guard, concurrent multi-node
+// EnsureDefaultVPC calls (admin account, bootstrap-pinned VpcId) each Put a
+// random rtb-ID with IsMain=true, and the resulting duplicate causes
+// CreateRoute's post-write gate recompute to resolve effective RT to the
+// orphan (route-less) record and publish vpc.gate-subnet-egress.
+func TestCreateMainRouteTable_Idempotent(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.99.0.0/16") // CreateVpc auto-calls createMainRouteTable
+
+	firstID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	require.NoError(t, err)
+	require.NotEmpty(t, firstID, "CreateVpc should have created a main route table")
+
+	require.NoError(t, svc.createMainRouteTable(testAccountID, vpcID, "10.99.0.0/16"))
+
+	secondID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	require.NoError(t, err)
+	assert.Equal(t, firstID, secondID, "second call must be a no-op")
+
+	mains := countMainRouteTablesForVPC(t, svc, vpcID)
+	assert.Equal(t, 1, mains, "exactly one IsMain=true record after duplicate call")
+}
+
+// countMainRouteTablesForVPC scans rtbKV directly to surface duplicate-main
+// state in tests. Returns the number of IsMain=true records for vpcID.
+func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) int {
+	t.Helper()
+	keys, err := svc.rtbKV.Keys()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, key := range keys {
+		entry, err := svc.rtbKV.Get(key)
+		if err != nil {
+			continue
+		}
+		var rt struct {
+			VpcId  string `json:"vpc_id"`
+			IsMain bool   `json:"is_main"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rt); err != nil {
+			continue
+		}
+		if rt.VpcId == vpcID && rt.IsMain {
+			n++
+		}
+	}
+	return n
+}
+
 // TestEnsureDefaultVPC_NoVpcdResponder simulates the daemon-startup race where
 // EnsureDefaultVPC runs before vpcd has subscribed to vpc.create-sg. Without
 // the fix, the synchronous SG round-trip errors out and EnsureDefaultVPC

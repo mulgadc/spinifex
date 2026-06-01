@@ -102,15 +102,8 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 
 		if existing, err := r.ovn.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", subnetID); err != nil || existing == nil {
 			opts := &nbdb.DHCPOptions{
-				CIDR: spec.CIDR.String(),
-				Options: map[string]string{
-					"server_id":  gwIP,
-					"server_mac": routerMAC,
-					"lease_time": "3600",
-					"router":     gwIP,
-					"dns_server": "8.8.8.8",
-					"mtu":        "1442",
-				},
+				CIDR:    spec.CIDR.String(),
+				Options: topology.BuildSubnetDHCPOptions(gwIP, routerMAC, r.dnsServer),
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,
@@ -272,6 +265,42 @@ func (r *reconciler) applyNATGWs(ctx context.Context, intent IntentState, _ Actu
 		if err := r.nat.AddNATGateway(ctx, spec); err != nil {
 			slog.Warn("reconcile/apply: AddNATGateway failed (likely already exists)",
 				"natgw_id", spec.NATGatewayID, "subnet_cidr", spec.SubnetCIDR, "err", err)
+		}
+	}
+}
+
+// applyIGWRoutes installs per-subnet egress reroute policies for every IGW
+// route in intent. Closes the bootstrap race where the publisher fires
+// vpc.add-igw-route before subscribers attach: events vanish, KV retains the
+// route, this pass re-derives and installs.
+func (r *reconciler) applyIGWRoutes(ctx context.Context, intent IntentState, _ ActualState) {
+	for _, spec := range intent.IGWRoutes {
+		if err := r.igw.EnsureSubnetEgress(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
+			slog.Error("reconcile/apply: EnsureSubnetEgress failed",
+				"vpc_id", spec.VPCID, "subnet_id", spec.SubnetID, "cidr", spec.DestCIDR.String(), "err", err)
+		}
+	}
+}
+
+// applyNATGWRoutes is the NATGW priority sibling of applyIGWRoutes.
+func (r *reconciler) applyNATGWRoutes(ctx context.Context, intent IntentState, _ ActualState) {
+	for _, spec := range intent.NATGWRoutes {
+		if err := r.igw.EnsureNATGatewaySubnetEgress(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
+			slog.Error("reconcile/apply: EnsureNATGatewaySubnetEgress failed",
+				"vpc_id", spec.VPCID, "subnet_id", spec.SubnetID, "cidr", spec.DestCIDR.String(), "err", err)
+		}
+	}
+}
+
+// applyDropGates installs a DROP policy at SubnetEgressPriorityDrop for every
+// subnet whose VPC has an attached IGW but whose effective route table lacks
+// a 0.0.0.0/0 IGW/NATGW entry. Without this, the VPC LR's router-wide default
+// static route would let the subnet egress.
+func (r *reconciler) applyDropGates(ctx context.Context, intent IntentState, _ ActualState) {
+	for _, spec := range intent.DropGates {
+		if err := r.igw.EnsureSubnetEgressDrop(ctx, spec.VPCID, spec.SubnetID, spec.DestCIDR); err != nil {
+			slog.Error("reconcile/apply: EnsureSubnetEgressDrop failed",
+				"vpc_id", spec.VPCID, "subnet_id", spec.SubnetID, "cidr", spec.DestCIDR.String(), "err", err)
 		}
 	}
 }

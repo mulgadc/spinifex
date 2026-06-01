@@ -47,6 +47,7 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
@@ -98,12 +99,17 @@ type ResourceManager struct {
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
 	// Dynamic instance-type subscription management
-	subsMu       sync.Mutex
-	natsConn     *nats.Conn
-	instanceSubs map[string]*nats.Subscription
-	handler      nats.MsgHandler
-	nodeID       string // node identifier for node-specific topic subscriptions
+	subsMu        sync.Mutex
+	natsConn      *nats.Conn
+	instanceSubs  map[string]*nats.Subscription
+	handler       nats.MsgHandler
+	systemHandler nats.MsgHandler // handles system.LaunchInstance.* requests (ALB-VM fan-out)
+	nodeID        string          // node identifier for node-specific topic subscriptions
 }
+
+// Compile-time guarantee that the RouteTable service satisfies the IGW
+// handler's GatePublisher hook — the two services are wired together below.
+var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
 
 // Daemon represents the main daemon service
 type Daemon struct {
@@ -125,6 +131,7 @@ type Daemon struct {
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
+	eksService            *handlers_eks.EKSServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -824,6 +831,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"elbv2.DescribeTargetHealth", d.handleELBv2DescribeTargetHealth, "spinifex-workers"},
 			natsSub{"elbv2.CreateListener", d.handleELBv2CreateListener, "spinifex-workers"},
 			natsSub{"elbv2.DeleteListener", d.handleELBv2DeleteListener, "spinifex-workers"},
+			natsSub{"elbv2.ModifyListener", d.handleELBv2ModifyListener, "spinifex-workers"},
 			natsSub{"elbv2.DescribeListeners", d.handleELBv2DescribeListeners, "spinifex-workers"},
 			natsSub{"elbv2.DescribeTags", d.handleELBv2DescribeTags, "spinifex-workers"},
 			natsSub{"elbv2.LBAgentHeartbeat", d.handleELBv2LBAgentHeartbeat, "spinifex-workers"},
@@ -832,6 +840,48 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"elbv2.DescribeTargetGroupAttributes", d.handleELBv2DescribeTargetGroupAttributes, "spinifex-workers"},
 			natsSub{"elbv2.ModifyLoadBalancerAttributes", d.handleELBv2ModifyLoadBalancerAttributes, "spinifex-workers"},
 			natsSub{"elbv2.DescribeLoadBalancerAttributes", d.handleELBv2DescribeLoadBalancerAttributes, "spinifex-workers"},
+		)
+	}
+
+	// EKS gateway → daemon subscriptions. Every handler currently returns
+	// NotImplemented; topics are subscribed up-front so the wiring layer is
+	// stable while real bodies land.
+	if d.eksService != nil {
+		subs = append(subs,
+			natsSub{"eks.CreateCluster", d.handleEKSCreateCluster, "spinifex-workers"},
+			natsSub{"eks.DescribeCluster", d.handleEKSDescribeCluster, "spinifex-workers"},
+			natsSub{"eks.ListClusters", d.handleEKSListClusters, "spinifex-workers"},
+			natsSub{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig, "spinifex-workers"},
+			natsSub{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion, "spinifex-workers"},
+			natsSub{"eks.DeleteCluster", d.handleEKSDeleteCluster, "spinifex-workers"},
+			natsSub{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, "spinifex-workers"},
+			natsSub{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, "spinifex-workers"},
+			natsSub{"eks.ListNodegroups", d.handleEKSListNodegroups, "spinifex-workers"},
+			natsSub{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, "spinifex-workers"},
+			natsSub{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion, "spinifex-workers"},
+			natsSub{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, "spinifex-workers"},
+			natsSub{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry, "spinifex-workers"},
+			natsSub{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry, "spinifex-workers"},
+			natsSub{"eks.ListAccessEntries", d.handleEKSListAccessEntries, "spinifex-workers"},
+			natsSub{"eks.UpdateAccessEntry", d.handleEKSUpdateAccessEntry, "spinifex-workers"},
+			natsSub{"eks.DeleteAccessEntry", d.handleEKSDeleteAccessEntry, "spinifex-workers"},
+			natsSub{"eks.AssociateAccessPolicy", d.handleEKSAssociateAccessPolicy, "spinifex-workers"},
+			natsSub{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy, "spinifex-workers"},
+			natsSub{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies, "spinifex-workers"},
+			natsSub{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies, "spinifex-workers"},
+			natsSub{"eks.ListAddons", d.handleEKSListAddons, "spinifex-workers"},
+			natsSub{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, "spinifex-workers"},
+			natsSub{"eks.CreateAddon", d.handleEKSCreateAddon, "spinifex-workers"},
+			natsSub{"eks.DeleteAddon", d.handleEKSDeleteAddon, "spinifex-workers"},
+			natsSub{"eks.DescribeAddon", d.handleEKSDescribeAddon, "spinifex-workers"},
+			natsSub{"eks.UpdateAddon", d.handleEKSUpdateAddon, "spinifex-workers"},
+			natsSub{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, "spinifex-workers"},
+			natsSub{"eks.DisassociateIdentityProviderConfig", d.handleEKSDisassociateIdentityProviderConfig, "spinifex-workers"},
+			natsSub{"eks.TagResource", d.handleEKSTagResource, "spinifex-workers"},
+			natsSub{"eks.UntagResource", d.handleEKSUntagResource, "spinifex-workers"},
+			natsSub{"eks.ListTagsForResource", d.handleEKSListTagsForResource, "spinifex-workers"},
 		)
 	}
 
@@ -1015,6 +1065,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.accountService must be nil before startCluster")
 	case d.elbv2Service != nil:
 		return errors.New("d.elbv2Service must be nil before startCluster")
+	case d.eksService != nil:
+		return errors.New("d.eksService must be nil before startCluster")
 	}
 	return nil
 }
@@ -1135,6 +1187,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
 	}
 
+	// Wire IGW attach/detach to RT-aware per-subnet egress gate fan-out.
+	d.igwService.SetGatePublisher(d.routeTableService)
+
 	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*handlers_ec2_natgw.NatGatewayServiceImpl, error) {
 		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.natsConn)
 	})
@@ -1240,8 +1295,13 @@ func (d *Daemon) startCluster() error {
 		d.elbv2Service.VPCService = d.vpcService
 	}
 
-	// Wire LB VM lifecycle: instance launcher for system VMs.
-	d.elbv2Service.InstanceLauncher = d
+	// Wire LB VM lifecycle: route system VM launches through NATS so they
+	// fan out across the cluster instead of always running on whichever node
+	// handled the upstream CreateLoadBalancer call. The daemon's own
+	// system.LaunchInstance.* subscriptions (registered by ResourceManager)
+	// will pick up the request locally when this node has capacity, or hand
+	// off to another node via the spinifex-workers queue group otherwise.
+	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
 	// Wire system credentials + gateway URL for LB agent SigV4 auth.
 	d.wireLBAgentConfig()
@@ -1259,6 +1319,13 @@ func (d *Daemon) startCluster() error {
 	if err := d.elbv2Service.ResetTargetHealthOnStartup(context.Background()); err != nil {
 		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
 			"err", err)
+	}
+
+	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
+		return handlers_eks.NewEKSServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize EKS service: %w", err)
 	}
 
 	// Ensure default VPC exists for system and admin accounts
@@ -1309,7 +1376,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize dynamic per-instance-type subscriptions for capacity-aware routing.
 	// Each instance type gets its own NATS topic (ec2.RunInstances.{type}) so requests
 	// are only routed to nodes with available capacity.
-	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.node)
+	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
@@ -2028,21 +2095,31 @@ func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migPr
 	rm.updateInstanceSubscriptions()
 }
 
-func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, nodeID string) {
+func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHandler, systemHandler nats.MsgHandler, nodeID string) {
 	rm.natsConn = nc
 	rm.handler = handler
+	rm.systemHandler = systemHandler
 	rm.nodeID = nodeID
 	rm.instanceSubs = make(map[string]*nats.Subscription)
 	rm.updateInstanceSubscriptions()
 }
 
 // updateInstanceSubscriptions recalculates which instance types can fit on this
-// node and subscribes/unsubscribes from the corresponding NATS topics. Each type
-// gets two topics:
-//   - ec2.RunInstances.{type} with spinifex-workers queue group (load-balanced, for single-instance launches)
-//   - ec2.RunInstances.{type}.{nodeId} without queue group (targeted, for multi-node distribution)
+// node and subscribes/unsubscribes from the corresponding NATS topics.
 //
-// Both use the same handler. NATS only routes requests to nodes with available capacity.
+// Customer instance types use the ec2.RunInstances.* subject root and the
+// rm.handler callback. Each customer type gets:
+//   - ec2.RunInstances.{type} with spinifex-workers queue group
+//   - ec2.RunInstances.{type}.{nodeId} without queue group (targeted)
+//
+// System instance types (sys.*) are not exposed via the customer EC2 API and
+// instead route under system.LaunchInstance.* with the rm.systemHandler
+// callback. Same shape (queue + node-targeted topic) so ELBv2's ALB-VM
+// launches load-balance across the cluster instead of piling on the handler
+// node that processed the upstream CreateLoadBalancer call.
+//
+// NATS only routes requests to nodes whose subscription is live, so capacity
+// pressure naturally re-distributes load when a host fills up.
 func (rm *ResourceManager) updateInstanceSubscriptions() {
 	if rm.natsConn == nil {
 		return
@@ -2052,17 +2129,26 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 	defer rm.subsMu.Unlock()
 
 	for typeName, typeInfo := range rm.instanceTypes {
-		// System types (sys.micro, etc.) are internal-only — not routable via customer API.
-		if instancetypes.IsSystemType(typeName) {
-			continue
-		}
-		queueTopic := fmt.Sprintf("ec2.RunInstances.%s", typeName)
 		canFit := rm.canAllocate(typeInfo, 1) >= 1
 
-		// Queue group subscription (load-balanced across nodes)
+		subjectRoot := "ec2.RunInstances"
+		handler := rm.handler
+		queueGroup := "spinifex-workers"
+		if instancetypes.IsSystemType(typeName) {
+			// System types (sys.micro, etc.) are internal-only — not exposed
+			// via the customer EC2 API and use a dedicated subject root so
+			// ELBv2 can fan out ALB-VM launches across the cluster.
+			if rm.systemHandler == nil {
+				continue
+			}
+			subjectRoot = "system.LaunchInstance"
+			handler = rm.systemHandler
+		}
+
+		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
 		_, subscribed := rm.instanceSubs[queueTopic]
 		if canFit && !subscribed {
-			sub, err := rm.natsConn.QueueSubscribe(queueTopic, "spinifex-workers", rm.handler)
+			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, handler)
 			if err != nil {
 				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
 				continue
@@ -2077,12 +2163,11 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic)
 		}
 
-		// Node-specific subscription (targeted routing for multi-node distribution)
 		if rm.nodeID != "" {
-			nodeTopic := fmt.Sprintf("ec2.RunInstances.%s.%s", typeName, rm.nodeID)
+			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
 			_, nodeSubscribed := rm.instanceSubs[nodeTopic]
 			if canFit && !nodeSubscribed {
-				sub, err := rm.natsConn.Subscribe(nodeTopic, rm.handler)
+				sub, err := rm.natsConn.Subscribe(nodeTopic, handler)
 				if err != nil {
 					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
 					continue

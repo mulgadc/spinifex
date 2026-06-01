@@ -105,20 +105,25 @@ func TestLoadBalancer(t *testing.T) {
 		time.Sleep(15 * time.Second)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
+	t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
+		time.Sleep(15 * time.Second)
+		runModifyListenerSuite(t, client, fixture)
+	})
 }
 
 // --- Fixture: shared VPC, subnet, IGW, SG, app instances ----------------
 
 type sharedFixture struct {
-	VPCID          string
-	SubnetID       string
-	IGWID          string
-	SecurityGroup  string
-	AMIID          string
-	InstanceType   string
-	AppInstanceIDs []string
-	ClientID       string
-	ClientPublicIP string
+	VPCID            string
+	SubnetID         string
+	IGWID            string
+	MainRouteTableID string
+	SecurityGroup    string
+	AMIID            string
+	InstanceType     string
+	AppInstanceIDs   []string
+	ClientID         string
+	ClientPublicIP   string
 }
 
 func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *sharedFixture {
@@ -140,6 +145,8 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	t.Cleanup(func() { deleteIGW(t, c, f) })
 	createSubnet(t, c, f)
 	t.Cleanup(func() { deleteSubnet(t, c, f) })
+	addPublicRoute(t, c, f)
+	t.Cleanup(func() { deletePublicRoute(t, c, f) })
 	configureDefaultSG(t, c, f)
 
 	harness.Phase(t, "Launching app instances (2× %s)", f.InstanceType)
@@ -316,6 +323,43 @@ func deleteSubnet(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	}
 }
 
+// addPublicRoute installs 0.0.0.0/0 → IGW on the VPC's main route table.
+// Without this, the daemon classifies the subnet as private and installs an
+// OVN LR policy DROP on the subnet's egress (priority 1100), breaking the
+// return path for inbound DNATed probes to the public IP.
+func addPublicRoute(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(f.VPCID)}},
+			{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
+		},
+	})
+	require.NoError(t, err, "describe main route table")
+	require.NotEmpty(t, out.RouteTables, "VPC %s has no main route table", f.VPCID)
+	f.MainRouteTableID = aws.StringValue(out.RouteTables[0].RouteTableId)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(f.MainRouteTableID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String(f.IGWID),
+	})
+	require.NoError(t, err, "create-route 0.0.0.0/0 -> IGW")
+	t.Logf("public route: %s 0.0.0.0/0 -> %s", f.MainRouteTableID, f.IGWID)
+}
+
+func deletePublicRoute(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	if f.MainRouteTableID == "" {
+		return
+	}
+	if _, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
+		RouteTableId:         aws.String(f.MainRouteTableID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+	}); err != nil {
+		t.Logf("delete public route: %v", err)
+	}
+}
+
 func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	out, err := c.EC2.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
@@ -439,7 +483,7 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
 
-	eni := lbENI(t, c, scheme, eniDescPrefix, lb.ID)
+	eni := lbENI(t, c, eniDescPrefix, lb)
 
 	if scheme == "internet-facing" {
 		ip := publicIP(eni)
@@ -557,15 +601,14 @@ func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 	if lb.ARN == "" {
 		return
 	}
-	prefix, lbName := "app", "alb"
+	prefix := "app"
 	if lb.Type == "network" {
-		prefix, lbName = "net", "nlb"
+		prefix = "net"
 	}
-	suffix := "int"
-	if lb.Scheme == "internet-facing" {
-		suffix = "inet"
-	}
-	filter := fmt.Sprintf("ELB %s/lb-e2e-%s-%s/%s", prefix, lbName, suffix, lb.ID)
+	parts := strings.Split(lb.ARN, "/")
+	require.GreaterOrEqualf(t, len(parts), 3, "deleteLB: malformed LB ARN %q", lb.ARN)
+	lbName := parts[len(parts)-2]
+	filter := fmt.Sprintf("ELB %s/%s/%s", prefix, lbName, lb.ID)
 
 	// Capture the underlying sys.micro VM id before deleting so we can wait
 	// for it to actually terminate. ELBv2.DeleteLoadBalancer returns once
@@ -656,17 +699,193 @@ func deleteListener(t *testing.T, c *harness.AWSClient, arn string) {
 	}
 }
 
-func lbENI(t *testing.T, c *harness.AWSClient, scheme, prefix, lbID string) *ec2.NetworkInterface {
+// modifyListenerPort changes the listener's port in place. Verifies that
+// HAProxy is reconciled without the listener being deleted (no traffic outage).
+func modifyListenerPort(t *testing.T, c *harness.AWSClient, listenerArn string, port int64) {
 	t.Helper()
-	suffix := "int"
-	if scheme == "internet-facing" {
-		suffix = "inet"
+	_, err := c.ELBv2.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: aws.String(listenerArn),
+		Port:        aws.Int64(port),
+	})
+	require.NoErrorf(t, err, "modify-listener port=%d", port)
+	t.Logf("listener %s: port → %d", listenerArn, port)
+}
+
+// modifyListenerDefaultTG swaps the listener's default target group.
+func modifyListenerDefaultTG(t *testing.T, c *harness.AWSClient, listenerArn, tgArn string) {
+	t.Helper()
+	_, err := c.ELBv2.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: aws.String(listenerArn),
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("forward"),
+			TargetGroupArn: aws.String(tgArn),
+		}},
+	})
+	require.NoError(t, err, "modify-listener default actions")
+	t.Logf("listener %s: default TG → %s", listenerArn, tgArn)
+}
+
+// describeListenerPort fetches the current port of a listener — used to
+// assert that ModifyListener actually persisted before probing.
+func describeListenerPort(t *testing.T, c *harness.AWSClient, listenerArn string) int64 {
+	t.Helper()
+	out, err := c.ELBv2.DescribeListeners(&elbv2.DescribeListenersInput{
+		ListenerArns: []*string{aws.String(listenerArn)},
+	})
+	require.NoError(t, err, "describe-listeners")
+	require.NotEmpty(t, out.Listeners)
+	return aws.Int64Value(out.Listeners[0].Port)
+}
+
+// runModifyListenerSuite verifies that an in-place listener edit reroutes
+// traffic without dropping the listener — the regression mulga-944 fixes
+// (frontend previously delete+created on every edit).
+//
+//   - Start: listener HTTP:80 → tgA, probes round-robin across 2 app instances.
+//   - ModifyListener port=8090 → same tgA. Probe at 8090 must succeed
+//     immediately (port: 80 must not be active any more, port 8090 must serve).
+//   - ModifyListener defaultActions → tgB (same backends). Probe still
+//     round-robins; proves DefaultActions swap is honoured by HAProxy.
+func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	const label = "ALB internal ModifyListener"
+	const altPort int64 = 8090
+
+	tgA := createTargetGroup(t, c, f, "lb-e2e-mod-tg-a", "HTTP", httpPort, "/index.html")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgA) })
+
+	tgB := createTargetGroup(t, c, f, "lb-e2e-mod-tg-b", "HTTP", httpPort, "/index.html")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgB) })
+
+	registerTargets(t, c, tgA, f.AppInstanceIDs)
+	t.Cleanup(func() { deregisterTargets(t, c, tgA, f.AppInstanceIDs) })
+	registerTargets(t, c, tgB, f.AppInstanceIDs)
+	t.Cleanup(func() { deregisterTargets(t, c, tgB, f.AppInstanceIDs) })
+
+	lb := createLB(t, c, f, "lb-e2e-mod", "application", "internal")
+	t.Cleanup(func() { deleteLB(t, c, lb) })
+
+	listener := createListener(t, c, lb.ARN, "HTTP", httpPort, tgA)
+	t.Cleanup(func() { deleteListener(t, c, listener) })
+
+	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	harness.WaitForTargetsHealthy(t, c, tgA, 2, label+" tgA", 2*time.Minute)
+
+	eni := lbENI(t, c, "app", lb)
+	priv := privateIP(eni)
+	require.NotEmpty(t, priv, label+" needs private IP")
+
+	// Baseline: traffic on the original port.
+	probeAtPort(t, f, priv, httpPort, label+" before modify (port 80)")
+
+	// In-place port change.
+	modifyListenerPort(t, c, listener, altPort)
+	assert.Equal(t, altPort, describeListenerPort(t, c, listener), "listener port persisted")
+	// lb-agent picks up the new HAProxy config on its next 5s tick, not
+	// synchronously with the ModifyListener API. Poll until the listener
+	// actually answers on altPort before driving the assertive probe.
+	waitForListenerServing(t, f, priv, altPort, label+" port 8090", 60*time.Second)
+	probeAtPort(t, f, priv, altPort, label+" after port-modify (port 8090)")
+
+	// Defaults: in-place TG swap on same port.
+	modifyListenerDefaultTG(t, c, listener, tgB)
+	harness.WaitForTargetsHealthy(t, c, tgB, 2, label+" tgB (post-swap)", 2*time.Minute)
+	probeAtPort(t, f, priv, altPort, label+" after TG-swap (still port 8090, now tgB)")
+}
+
+// waitForListenerServing polls the shared client with a tiny round of probes
+// until at least one returns a successful instance_id payload. Used after
+// ModifyListener calls so the assertive probeAtPort doesn't race the
+// lb-agent's poll-driven HAProxy reload (5s tick + reload latency).
+func waitForListenerServing(t *testing.T, f *sharedFixture, lbIP string, port int64, label string, timeout time.Duration) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		r, err := probeOnce(f, lbIP, port, 2)
+		if err != nil {
+			return err
+		}
+		if r.Successful == 0 {
+			return fmt.Errorf("%s: listener not serving on :%d (0/%d successful)", label, port, r.Total)
+		}
+		return nil
+	}, timeout, 2*time.Second)
+}
+
+// probeOnce drives the shared client to issue `count` HTTP probes at
+// lbIP:port and returns the parsed TrafficResult. Errors are returned rather
+// than failing the test so callers can poll.
+func probeOnce(f *sharedFixture, lbIP string, port int64, count int) (harness.TrafficResult, error) {
+	resultsFile := fmt.Sprintf("mod-%d-%d.txt", port, time.Now().UnixNano())
+	order := map[string]any{
+		"proto":     "http",
+		"ip":        lbIP,
+		"count":     count,
+		"outfile":   resultsFile,
+		"http_port": port,
+		"tcp_port":  tcpPort,
 	}
-	lbName := "alb"
-	if prefix == "net" {
-		lbName = "nlb"
+	body, err := json.Marshal(order)
+	if err != nil {
+		return harness.TrafficResult{}, err
 	}
-	desc := fmt.Sprintf("ELB %s/lb-e2e-%s-%s/%s", prefix, lbName, suffix, lbID)
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("trigger: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return harness.TrafficResult{}, fmt.Errorf("trigger status %d", resp.StatusCode)
+	}
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("fetch %s: %w", resultsFile, err)
+	}
+	return harness.VerifyResultsLines(results, "http"), nil
+}
+
+// probeAtPort runs round-robin probes from the shared client to lbIP:port and
+// asserts both app instances respond. Mirrors runInternalTrafficViaClient but
+// takes an explicit port so ModifyListener edits can be verified.
+func probeAtPort(t *testing.T, f *sharedFixture, lbIP string, port int64, label string) {
+	t.Helper()
+	resultsFile := fmt.Sprintf("mod-%d-%d.txt", port, time.Now().UnixNano())
+	order := map[string]any{
+		"proto":     "http",
+		"ip":        lbIP,
+		"count":     probesPerRun,
+		"outfile":   resultsFile,
+		"http_port": port,
+		"tcp_port":  tcpPort,
+	}
+	body, err := json.Marshal(order)
+	require.NoError(t, err)
+
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	require.NoErrorf(t, err, "trigger probe %s", label)
+	resp.Body.Close()
+	require.Equalf(t, 200, resp.StatusCode, "trigger probe %s status", label)
+
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	require.NoErrorf(t, err, "fetch %s", resultsFile)
+	harness.AssertRoundRobin(t,
+		harness.VerifyResultsLines(results, "http"),
+		1, probesPerRun/2, label)
+}
+
+func lbENI(t *testing.T, c *harness.AWSClient, prefix string, lb lbInfo) *ec2.NetworkInterface {
+	t.Helper()
+	parts := strings.Split(lb.ARN, "/")
+	require.GreaterOrEqualf(t, len(parts), 3, "lbENI: malformed LB ARN %q", lb.ARN)
+	lbName := parts[len(parts)-2]
+	desc := fmt.Sprintf("ELB %s/%s/%s", prefix, lbName, lb.ID)
 	var eni *ec2.NetworkInterface
 	harness.EventuallyErr(t, func() error {
 		out, err := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{

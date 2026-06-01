@@ -10,7 +10,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDescribeVolumesInput validates the input parameters
 func ValidateDescribeVolumesInput(input *ec2.DescribeVolumesInput) error {
 	if input == nil {
 		return nil

@@ -596,6 +596,7 @@ func launchService(cfg *Config) error {
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
+		DNSServer:    pickDNSServer(cfg.ExternalPools),
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

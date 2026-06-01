@@ -46,6 +46,10 @@ func (d *Daemon) handleELBv2DeleteListener(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.DeleteListener)
 }
 
+func (d *Daemon) handleELBv2ModifyListener(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.ModifyListener)
+}
+
 func (d *Daemon) handleELBv2DescribeListeners(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.DescribeListeners)
 }

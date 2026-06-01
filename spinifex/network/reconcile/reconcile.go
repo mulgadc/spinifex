@@ -41,18 +41,23 @@ type Config struct {
 	NodeHostname string
 	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
 	Chassis []string
+	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}") emitted on
+	// subnet DHCPOptions rows. Empty falls back to the topology default, so the
+	// reconciler and live topology paths emit the same value (no drift).
+	DNSServer string
 }
 
 type reconciler struct {
-	ovn      ovn.Client
-	sg       policy.SecurityGroupManager
-	nat      policy.NATManager
-	routes   policy.RouteManager
-	igw      external.IGWManager
-	topology topology.Manager
-	localAZ  string
-	host     string
-	chassis  []string
+	ovn       ovn.Client
+	sg        policy.SecurityGroupManager
+	nat       policy.NATManager
+	routes    policy.RouteManager
+	igw       external.IGWManager
+	topology  topology.Manager
+	localAZ   string
+	host      string
+	chassis   []string
+	dnsServer string
 }
 
 var _ Reconciler = (*reconciler)(nil)
@@ -76,16 +81,21 @@ func New(cfg Config) (Reconciler, error) {
 	case cfg.NodeHostname == "":
 		return nil, errors.New("reconcile: NodeHostname required")
 	}
+	dnsServer := cfg.DNSServer
+	if dnsServer == "" {
+		dnsServer = topology.FormatDNSServerList(nil)
+	}
 	return &reconciler{
-		ovn:      cfg.OVN,
-		sg:       cfg.SG,
-		nat:      cfg.NAT,
-		routes:   cfg.Routes,
-		igw:      cfg.IGW,
-		topology: cfg.Topology,
-		localAZ:  cfg.LocalAZ,
-		host:     cfg.NodeHostname,
-		chassis:  cfg.Chassis,
+		ovn:       cfg.OVN,
+		sg:        cfg.SG,
+		nat:       cfg.NAT,
+		routes:    cfg.Routes,
+		igw:       cfg.IGW,
+		topology:  cfg.Topology,
+		localAZ:   cfg.LocalAZ,
+		host:      cfg.NodeHostname,
+		chassis:   cfg.Chassis,
+		dnsServer: dnsServer,
 	}, nil
 }
 
@@ -119,6 +129,8 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 		"intent_igws", len(intent.IGWs),
 		"intent_eips", len(intent.EIPs),
 		"intent_natgws", len(intent.NATGWs),
+		"intent_igw_routes", len(intent.IGWRoutes),
+		"intent_natgw_routes", len(intent.NATGWRoutes),
 	)
 
 	r.applyVPCs(ctx, intent, actual)
@@ -128,6 +140,9 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)
 	r.applyNATGWs(ctx, intent, actual)
+	r.applyIGWRoutes(ctx, intent, actual)
+	r.applyNATGWRoutes(ctx, intent, actual)
+	r.applyDropGates(ctx, intent, actual)
 
 	slog.Info("reconcile: complete")
 	return nil

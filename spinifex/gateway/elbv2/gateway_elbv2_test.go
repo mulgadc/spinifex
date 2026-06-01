@@ -140,6 +140,16 @@ func TestDeleteListener_MissingArn(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
+func TestModifyListener_NilInput(t *testing.T) {
+	_, err := ModifyListener(nil, nil, "123456789012")
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestModifyListener_MissingArn(t *testing.T) {
+	_, err := ModifyListener(&elbv2.ModifyListenerInput{}, nil, "123456789012")
+	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
+}
+
 func TestDescribeListeners_NilInput(t *testing.T) {
 	_, err := DescribeListeners(nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)

@@ -25,6 +25,7 @@ type Client struct {
 	DHCPOpts       map[string]*nbdb.DHCPOptions
 	NATs           map[string]*nbdb.NAT                      // keyed by UUID
 	StaticRoutes   map[string]*nbdb.LogicalRouterStaticRoute // keyed by UUID
+	LRPolicies     map[string]*nbdb.LogicalRouterPolicy      // keyed by UUID
 	PortGroups     map[string]*nbdb.PortGroup                // keyed by name
 	ACLs           map[string]*nbdb.ACL                      // keyed by UUID
 	GatewayChassis map[string]*nbdb.GatewayChassis           // keyed by UUID
@@ -39,8 +40,10 @@ type Client struct {
 
 	// AddACLErrAfter, when > 0, makes AddACLs return an error on the Nth
 	// (1-indexed) call. Lets tests inject a transient failure mid-flow.
-	AddACLErrAfter int
-	AddACLCalls    int
+	AddACLErrAfter  int
+	AddACLCalls     int
+	ClearACLCalls   int
+	ReplaceACLCalls int
 }
 
 var _ ovn.Client = (*Client)(nil)
@@ -55,6 +58,7 @@ func New() *Client {
 		DHCPOpts:       make(map[string]*nbdb.DHCPOptions),
 		NATs:           make(map[string]*nbdb.NAT),
 		StaticRoutes:   make(map[string]*nbdb.LogicalRouterStaticRoute),
+		LRPolicies:     make(map[string]*nbdb.LogicalRouterPolicy),
 		PortGroups:     make(map[string]*nbdb.PortGroup),
 		ACLs:           make(map[string]*nbdb.ACL),
 		GatewayChassis: make(map[string]*nbdb.GatewayChassis),
@@ -644,6 +648,91 @@ func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefi
 	return nil
 }
 
+// Logical Router Policies
+
+func (m *Client) AddLogicalRouterPolicy(_ context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	if policy.UUID == "" {
+		policy.UUID = utils.GenerateResourceID("lrp")
+	}
+	stored := *policy
+	m.LRPolicies[policy.UUID] = &stored
+	lr.Policies = append(lr.Policies, policy.UUID)
+	return nil
+}
+
+func (m *Client) FindLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if !ok {
+			continue
+		}
+		if p.Priority == priority && p.Match == match {
+			result := *p
+			return &result, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	out := make([]nbdb.LogicalRouterPolicy, 0, len(lr.Policies))
+	for _, uuid := range lr.Policies {
+		if p, ok := m.LRPolicies[uuid]; ok {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
+func (m *Client) DeleteLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	var foundUUID string
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if !ok {
+			continue
+		}
+		if p.Priority == priority && p.Match == match {
+			foundUUID = uuid
+			break
+		}
+	}
+	if foundUUID == "" {
+		return nil
+	}
+	for i, uuid := range lr.Policies {
+		if uuid == foundUUID {
+			lr.Policies = append(lr.Policies[:i], lr.Policies[i+1:]...)
+			break
+		}
+	}
+	delete(m.LRPolicies, foundUUID)
+	return nil
+}
+
 // Port Groups
 
 func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string) error {
@@ -806,6 +895,7 @@ func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.AC
 func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
+	m.ClearACLCalls++
 	pg, exists := m.PortGroups[portGroupName]
 	if !exists {
 		return fmt.Errorf("port group %q not found", portGroupName)
@@ -814,6 +904,48 @@ func (m *Client) ClearACLs(_ context.Context, portGroupName string) error {
 		delete(m.ACLs, aclUUID)
 	}
 	pg.ACLs = nil
+	return nil
+}
+
+// ReplaceACLs atomically swaps the port group's ACL set under a single mutex
+// hold — semantically equivalent to ClearACLs+AddACLs but with no observable
+// mid-flight window where pg.ACLs is empty.
+func (m *Client) ReplaceACLs(_ context.Context, portGroupName string, specs []ovn.ACLSpec) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	m.ReplaceACLCalls++
+	m.AddACLCalls++
+	if m.AddACLErrAfter > 0 && m.AddACLCalls == m.AddACLErrAfter {
+		return fmt.Errorf("injected ReplaceACLs failure on call %d", m.AddACLCalls)
+	}
+	pg, exists := m.PortGroups[portGroupName]
+	if !exists {
+		return fmt.Errorf("port group %q not found", portGroupName)
+	}
+	for _, aclUUID := range pg.ACLs {
+		delete(m.ACLs, aclUUID)
+	}
+	pg.ACLs = pg.ACLs[:0]
+	for _, spec := range specs {
+		acl := &nbdb.ACL{
+			UUID:      utils.GenerateResourceID("acl"),
+			Direction: spec.Direction,
+			Priority:  spec.Priority,
+			Match:     spec.Match,
+			Action:    spec.Action,
+			Log:       spec.Log,
+		}
+		if spec.Name != "" {
+			name := spec.Name
+			acl.Name = &name
+		}
+		if spec.Severity != "" {
+			severity := spec.Severity
+			acl.Severity = &severity
+		}
+		m.ACLs[acl.UUID] = acl
+		pg.ACLs = append(pg.ACLs, acl.UUID)
+	}
 	return nil
 }
 

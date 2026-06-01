@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateAttachInternetGatewayInput validates the input parameters
 func ValidateAttachInternetGatewayInput(input *ec2.AttachInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateReleaseAddressInput validates the input parameters
 func ValidateReleaseAddressInput(input *ec2.ReleaseAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

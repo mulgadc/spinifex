@@ -67,6 +67,31 @@ type cpuGeneration struct {
 	families []string // e.g. ["t3", "c6i", "m6i", "r6i"]
 }
 
+// vendorSiblingFamily maps an x86_64 family to its cross-vendor counterpart
+// (Intel ↔ AMD) within the same generation tier. Resource shape (vCPU /
+// memory ratio per size) is identical between siblings, so a host that can
+// run t3.medium can run t3a.medium on the same KVM substrate. Used by
+// generateForGeneration so any x86_64 host accepts requests for either
+// vendor family — load balances across mixed Intel + AMD clusters.
+//
+// ARM (Graviton t4g/c?g/m?g/r?g) and legacy Intel-only (t2, c4, m4, r4)
+// families have no cross-vendor sibling and are omitted.
+var vendorSiblingFamily = map[string]string{
+	"t3": "t3a", "t3a": "t3",
+	"c5": "c5a", "c5a": "c5",
+	"m5": "m5a", "m5a": "m5",
+	"r5": "r5a", "r5a": "r5",
+	"c6i": "c6a", "c6a": "c6i",
+	"m6i": "m6a", "m6a": "m6i",
+	"r6i": "r6a", "r6a": "r6i",
+	"c7i": "c7a", "c7a": "c7i",
+	"m7i": "m7a", "m7a": "m7i",
+	"r7i": "r7a", "r7a": "r7i",
+	"c8i": "c8a", "c8a": "c8i",
+	"m8i": "m8a", "m8a": "m8i",
+	"r8i": "r8a", "r8a": "r8i",
+}
+
 var (
 	// Intel generations
 	genIntelBroadwell      = cpuGeneration{"Intel Broadwell", []string{"t2", "c4", "m4", "r4"}}

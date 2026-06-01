@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateLoadBalancerInput validates the input parameters
 func ValidateCreateLoadBalancerInput(input *elbv2.CreateLoadBalancerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

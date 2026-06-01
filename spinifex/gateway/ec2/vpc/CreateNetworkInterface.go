@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateNetworkInterfaceInput validates the input parameters
 func ValidateCreateNetworkInterfaceInput(input *ec2.CreateNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

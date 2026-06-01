@@ -37,12 +37,29 @@ type IGWRecord struct {
 	CreatedAt         time.Time         `json:"created_at"`
 }
 
+// GatePublisher recomputes the per-subnet egress gate/ungate decision for
+// every subnet in a VPC. Wired by the daemon after IGW + RouteTable services
+// are constructed so AttachInternetGateway / DetachInternetGateway can fan
+// out gate decisions immediately instead of waiting up to 5 minutes for the
+// reconciler's drift tick to install OVN DROP policies on unrouted subnets.
+// Nil-safe: when unset the handler falls back to publish-only behaviour.
+type GatePublisher interface {
+	PublishGateDecisionsForVPC(accountID, vpcID, destCidr string)
+}
+
 // IGWServiceImpl implements Internet Gateway operations with NATS JetStream persistence
 type IGWServiceImpl struct {
-	config   *config.Config
-	igwKV    nats.KeyValue
-	vpcKV    nats.KeyValue
-	natsConn *nats.Conn
+	config        *config.Config
+	igwKV         nats.KeyValue
+	vpcKV         nats.KeyValue
+	natsConn      *nats.Conn
+	gatePublisher GatePublisher
+}
+
+// SetGatePublisher installs the cross-handler fan-out hook. Called by the
+// daemon after the RouteTable service is constructed.
+func (s *IGWServiceImpl) SetGatePublisher(p GatePublisher) {
+	s.gatePublisher = p
 }
 
 // NewIGWServiceImplWithNATS creates an Internet Gateway service with NATS JetStream for persistence
@@ -315,6 +332,14 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 		}
 	}
 
+	// Gate fan-out intentionally skipped on attach. The default-VPC
+	// bootstrap path attaches the IGW and immediately publishes a
+	// 0.0.0.0/0 → IGW CreateRoute event; the two race across distinct
+	// NATS subjects (gate vs ungate) and ungate-then-gate leaves the
+	// subnet DROPped. Subnets without a default route stay protected by
+	// the reconciler's drift pass (loadSubnetDropGates). Detach is
+	// race-free because no follow-up CreateRoute fires.
+
 	slog.Info("AttachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 
 	return &ec2.AttachInternetGatewayOutput{}, nil
@@ -371,6 +396,14 @@ func (s *IGWServiceImpl) DetachInternetGateway(input *ec2.DetachInternetGatewayI
 		} else if err := s.natsConn.Publish("vpc.igw-detach", eventData); err != nil {
 			slog.Warn("Failed to publish IGW detach event", "error", err)
 		}
+	}
+
+	// After detach the VPC's LR external gateway and router-wide default
+	// route are removed; any subnet whose effective RT still points at the
+	// (now-blackholed) IGW must surface the ungate→gate transition so the
+	// reconciler drops the previous ungate policy in favour of a DROP.
+	if s.gatePublisher != nil {
+		s.gatePublisher.PublishGateDecisionsForVPC(accountID, vpcID, "0.0.0.0/0")
 	}
 
 	slog.Info("DetachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)

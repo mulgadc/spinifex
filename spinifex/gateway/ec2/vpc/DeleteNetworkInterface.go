@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDeleteNetworkInterfaceInput validates the input parameters
 func ValidateDeleteNetworkInterfaceInput(input *ec2.DeleteNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

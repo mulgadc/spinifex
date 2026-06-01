@@ -9,7 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateCreateEgressOnlyInternetGatewayInput validates the input parameters
 func ValidateCreateEgressOnlyInternetGatewayInput(input *ec2.CreateEgressOnlyInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

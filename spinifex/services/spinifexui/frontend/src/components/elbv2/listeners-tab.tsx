@@ -2,11 +2,12 @@ import type { Listener } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { Pencil, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ListenerForm } from "@/components/elbv2/listener-form"
+import { ListenerRulesTab } from "@/components/elbv2/listener-rules-tab"
 import { ErrorBanner } from "@/components/error-banner"
 import {
   AlertDialog,
@@ -51,6 +52,7 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
   const [addOpen, setAddOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Listener | undefined>()
   const [deleteTarget, setDeleteTarget] = useState<Listener | undefined>()
+  const [rulesOpenArn, setRulesOpenArn] = useState<string | undefined>()
 
   const listeners = listenersData.Listeners ?? []
   const allTgs = tgsData.TargetGroups ?? []
@@ -165,41 +167,62 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
               </tr>
             </thead>
             <tbody>
-              {listeners.map((listener) => (
-                <tr
-                  className="border-b last:border-0"
-                  key={listener.ListenerArn ?? ""}
-                >
-                  <td className="px-4 py-2">{listener.Protocol}</td>
-                  <td className="px-4 py-2">{listener.Port}</td>
-                  <td className="px-4 py-2 text-xs">
-                    {formatDefaultAction(listener)}
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs">
-                    {listener.ListenerArn}
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        aria-label={`Edit listener ${listener.Protocol}:${listener.Port}`}
-                        onClick={() => setEditTarget(listener)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button
-                        aria-label={`Delete listener ${listener.Protocol}:${listener.Port}`}
-                        onClick={() => setDeleteTarget(listener)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {listeners.map((listener) => {
+                const arn = listener.ListenerArn ?? ""
+                const rulesOpen = rulesOpenArn === arn
+                return (
+                  <Fragment key={arn}>
+                    <tr className="border-b last:border-0">
+                      <td className="px-4 py-2">{listener.Protocol}</td>
+                      <td className="px-4 py-2">{listener.Port}</td>
+                      <td className="px-4 py-2 text-xs">
+                        {formatDefaultAction(listener)}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs">{arn}</td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            aria-label={`${rulesOpen ? "Hide" : "Show"} rules for listener ${listener.Protocol}:${listener.Port}`}
+                            onClick={() =>
+                              setRulesOpenArn(rulesOpen ? undefined : arn)
+                            }
+                            size="sm"
+                            variant="ghost"
+                          >
+                            {rulesOpen ? "Hide rules" : "Rules"}
+                          </Button>
+                          <Button
+                            aria-label={`Edit listener ${listener.Protocol}:${listener.Port}`}
+                            onClick={() => setEditTarget(listener)}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            <Pencil className="size-4" />
+                          </Button>
+                          <Button
+                            aria-label={`Delete listener ${listener.Protocol}:${listener.Port}`}
+                            onClick={() => setDeleteTarget(listener)}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                    {rulesOpen && arn && (
+                      <tr className="border-b bg-muted/30 last:border-0">
+                        <td className="px-4 py-3" colSpan={5}>
+                          <ListenerRulesTab
+                            listenerArn={arn}
+                            targetGroups={vpcTgs}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>

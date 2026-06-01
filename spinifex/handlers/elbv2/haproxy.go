@@ -34,6 +34,12 @@ defaults
 {{range .Frontends}}
 frontend {{.Name}}
     bind *:{{.Port}}
+{{- range .Rules}}
+{{- range .ACLs}}
+    acl {{.Name}} {{.Expr}}
+{{- end}}
+    use_backend {{.Backend}} if{{range .ConditionNames}} {{.}}{{end}}
+{{- end}}
     default_backend {{.DefaultBackend}}
 {{end}}
 {{range .Backends}}
@@ -98,6 +104,23 @@ type HAProxyFrontend struct {
 	BindAddr       string
 	Port           int64
 	DefaultBackend string
+	Rules          []HAProxyRule
+}
+
+// HAProxyRule represents one routing rule emitted as ACL declarations + a
+// use_backend directive. Multiple ACLs sharing a Name are OR'd by HAProxy;
+// distinct ConditionNames in the use_backend "if" clause are AND'd.
+type HAProxyRule struct {
+	Backend        string
+	ACLs           []HAProxyACL
+	ConditionNames []string
+}
+
+// HAProxyACL is one acl line. Name may repeat across the rule's ACL slice to
+// express OR semantics over multiple match expressions.
+type HAProxyACL struct {
+	Name string
+	Expr string
 }
 
 // HAProxyBackend represents a target group backend.
@@ -120,18 +143,22 @@ type HAProxyServer struct {
 	Rise          int64
 }
 
-// GenerateHAProxyConfig builds an HAProxy config string from the LB, its listeners,
-// and associated target groups. For NLBs it generates a TCP-mode config.
-func GenerateHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string) (string, error) {
+// GenerateHAProxyConfig builds an HAProxy config string from the LB, its
+// listeners, target groups, and per-listener rules. For NLBs it generates a
+// TCP-mode config and ignores rules (NLB has no L7 routing).
+func GenerateHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string) (string, error) {
 	if lb.Type == LoadBalancerTypeNetwork {
 		return generateNLBConfig(lb, listeners, tgByArn, bindAddr)
 	}
-	return generateALBConfig(lb, listeners, tgByArn, bindAddr)
+	return generateALBConfig(lb, listeners, tgByArn, rulesByListener, bindAddr)
 }
 
 // generateALBConfig builds an HTTP-mode HAProxy config for ALBs.
-func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string) (string, error) {
-	cfg := buildHAProxyConfig(lb, listeners, tgByArn, bindAddr, false)
+func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string) (string, error) {
+	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr, false)
+	if err != nil {
+		return "", err
+	}
 
 	var buf strings.Builder
 	if err := haproxyHTTPTmpl.Execute(&buf, cfg); err != nil {
@@ -143,7 +170,10 @@ func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgBy
 
 // generateNLBConfig builds a TCP-mode HAProxy config for NLBs.
 func generateNLBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string) (string, error) {
-	cfg := buildHAProxyConfig(lb, listeners, tgByArn, bindAddr, true)
+	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, nil, bindAddr, true)
+	if err != nil {
+		return "", err
+	}
 
 	var buf strings.Builder
 	if err := haproxyTCPTmpl.Execute(&buf, cfg); err != nil {
@@ -153,8 +183,10 @@ func generateNLBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgBy
 	return buf.String(), nil
 }
 
-// buildHAProxyConfig constructs the HAProxyConfig struct shared by ALB and NLB generation.
-func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string, isTCP bool) HAProxyConfig {
+// buildHAProxyConfig constructs the HAProxyConfig struct shared by ALB and NLB
+// generation. For ALBs, rulesByListener provides per-listener rules sorted by
+// priority; nil/empty for NLBs.
+func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, isTCP bool) (HAProxyConfig, error) {
 	socketDir := filepath.Join(os.TempDir(), "spinifex-haproxy")
 	// Use "lb" prefix for both ALB and NLB — must match the agent's socket path.
 	socketPath := filepath.Join(socketDir, fmt.Sprintf("lb-%s.sock", lb.LoadBalancerID))
@@ -162,56 +194,29 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 	cfg := HAProxyConfig{
 		SocketPath: socketPath,
 	}
+	backendAdded := make(map[string]struct{})
 
-	for _, l := range listeners {
-		if len(l.DefaultActions) == 0 {
-			continue
-		}
-
-		tgArn := l.DefaultActions[0].TargetGroupArn
+	addBackend := func(tgArn string) {
 		backendName := sanitizeName("bk", tgArn)
-
-		cfg.Frontends = append(cfg.Frontends, HAProxyFrontend{
-			Name:           sanitizeName("ft", l.ListenerArn),
-			BindAddr:       bindAddr,
-			Port:           l.Port,
-			DefaultBackend: backendName,
-		})
-
+		if _, ok := backendAdded[backendName]; ok {
+			return
+		}
 		tg, ok := tgByArn[tgArn]
 		if !ok {
-			continue
+			return
 		}
 
-		// Check if backend already added (multiple listeners can share a TG)
-		alreadyAdded := false
-		for _, b := range cfg.Backends {
-			if b.Name == backendName {
-				alreadyAdded = true
-				break
-			}
-		}
-		if alreadyAdded {
-			continue
-		}
-
-		backend := HAProxyBackend{
-			Name: backendName,
-		}
-
+		backend := HAProxyBackend{Name: backendName}
 		if isTCP {
-			// NLB: determine health check mode from target group's health check protocol
 			switch tg.HealthCheck.Protocol {
 			case ProtocolHTTP, ProtocolHTTPS:
 				backend.HTTPCheck = true
 				backend.HealthCheckPath = tg.HealthCheck.Path
 				backend.HealthCheckMatcher = tg.HealthCheck.Matcher
 			default:
-				// TCP health check (default for NLB)
 				backend.TCPCheck = true
 			}
 		} else {
-			// ALB: always HTTP health check
 			backend.HealthCheckPath = tg.HealthCheck.Path
 			backend.HealthCheckMatcher = tg.HealthCheck.Matcher
 		}
@@ -229,11 +234,192 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 				Rise:          tg.HealthCheck.HealthyThreshold,
 			})
 		}
-
 		cfg.Backends = append(cfg.Backends, backend)
+		backendAdded[backendName] = struct{}{}
 	}
 
-	return cfg
+	for _, l := range listeners {
+		if len(l.DefaultActions) == 0 {
+			continue
+		}
+
+		tgArn := l.DefaultActions[0].TargetGroupArn
+		defaultBackendName := sanitizeName("bk", tgArn)
+
+		frontend := HAProxyFrontend{
+			Name:           sanitizeName("ft", l.ListenerArn),
+			BindAddr:       bindAddr,
+			Port:           l.Port,
+			DefaultBackend: defaultBackendName,
+		}
+
+		if !isTCP {
+			rules := rulesByListener[l.ListenerArn]
+			for _, r := range rules {
+				rule, err := buildHAProxyRule(r)
+				if err != nil {
+					return HAProxyConfig{}, err
+				}
+				frontend.Rules = append(frontend.Rules, rule)
+				for _, a := range r.Actions {
+					if a.Type == ActionTypeForward && a.TargetGroupArn != "" {
+						addBackend(a.TargetGroupArn)
+					}
+				}
+			}
+		}
+
+		cfg.Frontends = append(cfg.Frontends, frontend)
+		addBackend(tgArn)
+	}
+
+	return cfg, nil
+}
+
+// buildHAProxyRule converts a RuleRecord into the rendered ACL+use_backend
+// shape. Returns an error if any condition value fails the defence-in-depth
+// re-validation (HAProxy meta-character rejection).
+func buildHAProxyRule(r *RuleRecord) (HAProxyRule, error) {
+	if len(r.Actions) == 0 || r.Actions[0].Type != ActionTypeForward {
+		return HAProxyRule{}, fmt.Errorf("rule %s has no forward action", r.RuleID)
+	}
+
+	rule := HAProxyRule{Backend: sanitizeName("bk", r.Actions[0].TargetGroupArn)}
+
+	for ci, c := range r.Conditions {
+		aclName := fmt.Sprintf("r%s_c%d", sanitizeACLToken(r.RuleID), ci)
+		exprs, err := buildHAProxyACLExprs(c)
+		if err != nil {
+			return HAProxyRule{}, fmt.Errorf("rule %s condition %d: %w", r.RuleID, ci, err)
+		}
+		for _, e := range exprs {
+			rule.ACLs = append(rule.ACLs, HAProxyACL{Name: aclName, Expr: e})
+		}
+		rule.ConditionNames = append(rule.ConditionNames, aclName)
+	}
+
+	return rule, nil
+}
+
+// buildHAProxyACLExprs returns one or more HAProxy ACL expressions for a
+// single rule condition. Multiple expressions represent OR semantics over the
+// condition's values (HAProxy ORs same-name ACL declarations).
+func buildHAProxyACLExprs(c RuleCondition) ([]string, error) {
+	switch c.Field {
+	case RuleFieldHostHeader:
+		return hostOrPathExprs("hdr(host) -i", c.Values)
+	case RuleFieldPathPattern:
+		return hostOrPathExprs("path", c.Values)
+	case RuleFieldHTTPHeader:
+		if err := validateRenderSafe(c.HTTPHeaderName); err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(c.Values))
+		for _, v := range c.Values {
+			if err := validateRenderSafe(v); err != nil {
+				return nil, err
+			}
+			out = append(out, fmt.Sprintf("hdr(%s) -i -m str %s", c.HTTPHeaderName, v))
+		}
+		return out, nil
+	case RuleFieldHTTPRequestMethod:
+		out := make([]string, 0, len(c.Values))
+		for _, v := range c.Values {
+			if err := validateRenderSafe(v); err != nil {
+				return nil, err
+			}
+			out = append(out, fmt.Sprintf("method %s", v))
+		}
+		return out, nil
+	case RuleFieldQueryString:
+		out := make([]string, 0, len(c.QueryStringKVs))
+		for _, kv := range c.QueryStringKVs {
+			if err := validateRenderSafe(kv.Value); err != nil {
+				return nil, err
+			}
+			if kv.Key == "" {
+				out = append(out, fmt.Sprintf("url_sub %s", kv.Value))
+				continue
+			}
+			if err := validateRenderSafe(kv.Key); err != nil {
+				return nil, err
+			}
+			out = append(out, fmt.Sprintf("urlp(%s) -m str %s", kv.Key, kv.Value))
+		}
+		return out, nil
+	case RuleFieldSourceIP:
+		out := make([]string, 0, len(c.Values))
+		for _, v := range c.Values {
+			if err := validateRenderSafe(v); err != nil {
+				return nil, err
+			}
+			out = append(out, fmt.Sprintf("src %s", v))
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported rule field %q", c.Field)
+	}
+}
+
+func hostOrPathExprs(prefix string, values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if err := validateRenderSafe(v); err != nil {
+			return nil, err
+		}
+		flag, lit := wildcardMatch(v)
+		out = append(out, fmt.Sprintf("%s -m %s %s", prefix, flag, lit))
+	}
+	return out, nil
+}
+
+// wildcardMatch maps a host/path pattern to a HAProxy match flag + literal.
+// Supports leading *, trailing *, or no wildcard. Embedded `?` or interior `*`
+// fall through to substring match (`sub`) — AWS treats `?` as single-char
+// wildcard; HAProxy lacks an exact equivalent so we widen to substring (false
+// positives over false negatives is the right failure mode for a router).
+func wildcardMatch(v string) (flag, literal string) {
+	hasLead := strings.HasPrefix(v, "*")
+	hasTrail := strings.HasSuffix(v, "*")
+	switch {
+	case hasLead && hasTrail && len(v) > 2:
+		return "sub", v[1 : len(v)-1]
+	case hasLead && len(v) > 1:
+		return "end", v[1:]
+	case hasTrail && len(v) > 1:
+		return "beg", v[:len(v)-1]
+	case strings.ContainsAny(v, "*?"):
+		return "sub", strings.Trim(v, "*?")
+	default:
+		return "str", v
+	}
+}
+
+// validateRenderSafe rejects bytes that could break ACL parsing or inject new
+// directives. Mirrors the write-time validators in service_impl_rules.go;
+// duplicated here so a future migration that bypasses the API cannot leak a
+// malicious string into the generated config.
+func validateRenderSafe(v string) error {
+	if v == "" {
+		return fmt.Errorf("empty rule token")
+	}
+	for _, r := range v {
+		if r == '\n' || r == '\r' || r == '#' || r == '"' || r == ' ' || r == '\t' {
+			return fmt.Errorf("rule token contains forbidden character %q", r)
+		}
+	}
+	return nil
+}
+
+// sanitizeACLToken trims an identifier to safe HAProxy ACL-name characters.
+func sanitizeACLToken(id string) string {
+	var sb strings.Builder
+	for _, c := range id {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			sb.WriteRune(c)
+		}
+	}
+	return sb.String()
 }
 
 // sanitizeName creates a safe identifier from an ARN or ID for use in HAProxy config.

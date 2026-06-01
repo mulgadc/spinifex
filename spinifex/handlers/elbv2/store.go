@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/migrate"
@@ -20,6 +21,7 @@ const (
 	KeyPrefixLB       = "lb."
 	KeyPrefixTG       = "tg."
 	KeyPrefixListener = "listener."
+	KeyPrefixRule     = "rule."
 )
 
 // Store provides CRUD operations for ELBv2 resources backed by JetStream KV.
@@ -314,6 +316,83 @@ func (s *Store) GetListenerByArn(arn string) (*ListenerRecord, error) {
 	for _, l := range listeners {
 		if l.ListenerArn == arn {
 			return l, nil
+		}
+	}
+	return nil, nil
+}
+
+// --- Rule CRUD ---
+
+// PutRule stores a rule record.
+func (s *Store) PutRule(r *RuleRecord) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal rule: %w", err)
+	}
+	_, err = s.kv.Put(KeyPrefixRule+r.RuleID, data)
+	return err
+}
+
+// GetRule retrieves a rule by its short ID.
+func (s *Store) GetRule(ruleID string) (*RuleRecord, error) {
+	entry, err := s.kv.Get(KeyPrefixRule + ruleID)
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var r RuleRecord
+	if err := json.Unmarshal(entry.Value(), &r); err != nil {
+		return nil, fmt.Errorf("unmarshal rule: %w", err)
+	}
+	return &r, nil
+}
+
+// DeleteRule removes a rule by its short ID.
+func (s *Store) DeleteRule(ruleID string) error {
+	err := s.kv.Delete(KeyPrefixRule + ruleID)
+	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+		return err
+	}
+	return nil
+}
+
+// ListRules returns all rule records.
+func (s *Store) ListRules() ([]*RuleRecord, error) {
+	return listByPrefix[RuleRecord](s.kv, KeyPrefixRule)
+}
+
+// ListRulesByListener returns all rules attached to a listener ARN, sorted by
+// ascending priority. Callers downstream of this method (HAProxy renderer,
+// SetRulePriorities) rely on the sort.
+func (s *Store) ListRulesByListener(listenerArn string) ([]*RuleRecord, error) {
+	all, err := s.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	var result []*RuleRecord
+	for _, r := range all {
+		if r.ListenerArn == listenerArn {
+			result = append(result, r)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Priority < result[j].Priority })
+	return result, nil
+}
+
+// GetRuleByArn finds a rule by its ARN. Falls back to linear scan because the
+// listener-rule ARN structure embeds the rule short ID after several
+// listener-specific segments; parsing it is brittle and rules-per-account is
+// bounded.
+func (s *Store) GetRuleByArn(arn string) (*RuleRecord, error) {
+	rules, err := s.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rules {
+		if r.RuleArn == arn {
+			return r, nil
 		}
 	}
 	return nil, nil

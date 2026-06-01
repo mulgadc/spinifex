@@ -36,6 +36,26 @@ const (
 	// Listener action types
 	ActionTypeForward = "forward"
 
+	// Rule condition fields
+	RuleFieldHostHeader        = "host-header"
+	RuleFieldPathPattern       = "path-pattern"
+	RuleFieldHTTPHeader        = "http-header"
+	RuleFieldHTTPRequestMethod = "http-request-method"
+	RuleFieldQueryString       = "query-string"
+	RuleFieldSourceIP          = "source-ip"
+
+	// Rule priority bounds (AWS-compatible).
+	RuleMinPriority = 1
+	RuleMaxPriority = 50000
+
+	// Rule limits per listener.
+	MaxRulesPerListener   = 100
+	MaxConditionsPerRule  = 5
+	MaxValuesPerCondition = 5
+	MaxActionsPerRule     = 1 // forward only; mulga-951 may bump
+	MaxConditionValueLen  = 128
+	MaxHTTPHeaderNameLen  = 40
+
 	// Default health check values (ALB)
 	DefaultHealthCheckInterval           = 30
 	DefaultHealthCheckTimeout            = 5
@@ -175,6 +195,34 @@ type ListenerRecord struct {
 type ListenerAction struct {
 	Type           string `json:"type"` // "forward"
 	TargetGroupArn string `json:"target_group_arn"`
+}
+
+// RuleRecord represents a stored listener rule.
+type RuleRecord struct {
+	RuleArn     string           `json:"rule_arn"`
+	RuleID      string           `json:"rule_id"`
+	ListenerArn string           `json:"listener_arn"`
+	Priority    int              `json:"priority"`
+	Conditions  []RuleCondition  `json:"conditions"`
+	Actions     []ListenerAction `json:"actions"`
+	AccountID   string           `json:"account_id"`
+	CreatedAt   time.Time        `json:"created_at"`
+}
+
+// RuleCondition is one routing predicate on a rule. Only the field block
+// matching Field is populated.
+type RuleCondition struct {
+	Field          string              `json:"field"`
+	Values         []string            `json:"values,omitempty"`
+	HTTPHeaderName string              `json:"http_header_name,omitempty"`
+	QueryStringKVs []RuleQueryStringKV `json:"query_string_kvs,omitempty"`
+}
+
+// RuleQueryStringKV is one query-string key/value pair for a query-string
+// condition. Key is optional (empty Key matches any key with the given Value).
+type RuleQueryStringKV struct {
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value"`
 }
 
 // DefaultLoadBalancerAttributes returns the default attribute set for a load

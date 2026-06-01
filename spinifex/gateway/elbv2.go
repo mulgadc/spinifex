@@ -81,6 +81,21 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"DescribeListeners": elbv2Handler(func(input *elbv2.DescribeListenersInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListeners(input, gw.NATSConn, accountID)
 	}),
+	"CreateRule": elbv2Handler(func(input *elbv2.CreateRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.CreateRule(input, gw.NATSConn, accountID)
+	}),
+	"ModifyRule": elbv2Handler(func(input *elbv2.ModifyRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyRule(input, gw.NATSConn, accountID)
+	}),
+	"DeleteRule": elbv2Handler(func(input *elbv2.DeleteRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DeleteRule(input, gw.NATSConn, accountID)
+	}),
+	"DescribeRules": elbv2Handler(func(input *elbv2.DescribeRulesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeRules(input, gw.NATSConn, accountID)
+	}),
+	"SetRulePriorities": elbv2Handler(func(input *elbv2.SetRulePrioritiesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetRulePriorities(input, gw.NATSConn, accountID)
+	}),
 	"DescribeTags": elbv2Handler(func(input *elbv2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeTags(input, gw.NATSConn, accountID)
 	}),

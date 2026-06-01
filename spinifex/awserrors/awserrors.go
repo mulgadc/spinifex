@@ -463,6 +463,12 @@ var (
 	ErrorELBv2SubnetNotFound               = "SubnetNotFound"
 	ErrorELBv2AvailabilityZoneNotSupported = "AvailabilityZoneNotSupported"
 	ErrorELBv2InvalidConfigurationRequest  = "InvalidConfigurationRequest"
+	ErrorELBv2RuleNotFound                 = "RuleNotFound"
+	ErrorELBv2PriorityInUse                = "PriorityInUse"
+	ErrorELBv2TooManyRules                 = "TooManyRules"
+	ErrorELBv2TooManyActions               = "TooManyActions"
+	ErrorELBv2InvalidRulePriority          = "InvalidRulePriority"
+	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -932,4 +938,10 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2SubnetNotFound:               {HTTPCode: 400, Message: "The specified subnet does not exist."},
 	ErrorELBv2AvailabilityZoneNotSupported: {HTTPCode: 400, Message: "The specified Availability Zone is not supported."},
 	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "Security groups are not supported for load balancers with type 'network'."},
+	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found."},
+	ErrorELBv2PriorityInUse:                {HTTPCode: 400, Message: "The specified priority is in use."},
+	ErrorELBv2TooManyRules:                 {HTTPCode: 400, Message: "You've reached the limit on the number of rules per load balancer."},
+	ErrorELBv2TooManyActions:               {HTTPCode: 400, Message: "You've reached the limit on the number of actions per rule."},
+	ErrorELBv2InvalidRulePriority:          {HTTPCode: 400, Message: "The specified rule priority is not valid. Priority must be between 1 and 50000."},
+	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
 }

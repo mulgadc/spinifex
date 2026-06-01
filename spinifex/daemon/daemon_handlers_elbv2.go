@@ -54,6 +54,26 @@ func (d *Daemon) handleELBv2DescribeListeners(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.DescribeListeners)
 }
 
+func (d *Daemon) handleELBv2CreateRule(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.CreateRule)
+}
+
+func (d *Daemon) handleELBv2ModifyRule(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.ModifyRule)
+}
+
+func (d *Daemon) handleELBv2DeleteRule(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.DeleteRule)
+}
+
+func (d *Daemon) handleELBv2DescribeRules(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.DescribeRules)
+}
+
+func (d *Daemon) handleELBv2SetRulePriorities(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.SetRulePriorities)
+}
+
 func (d *Daemon) handleELBv2DescribeTags(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.DescribeTags)
 }

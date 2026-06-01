@@ -123,6 +123,6 @@ func setPromisc(iface string, on bool) error {
 }
 
 func ioctl(fd int, req uint, arg unsafe.Pointer) syscall.Errno {
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(req), uintptr(arg)) //nolint:gosec // standard syscall uintptr conversion
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(req), uintptr(arg))
 	return errno
 }

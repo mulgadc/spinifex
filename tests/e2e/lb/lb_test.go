@@ -856,7 +856,7 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	t.Cleanup(ruleCleanup)
 
 	harness.WaitForTargetsHealthy(t, c, tgB, 1, label+" tgB (post-rule)", 2*time.Minute)
-	waitForPathRouted(t, f, priv, httpPort, "/alpha/", "", appAHost, label+" wait rule active", 60*time.Second)
+	waitForPathRoutedAway(t, f, priv, httpPort, "/alpha/", appAHost, label+" wait rule active", 60*time.Second)
 	ruleResp := probeAtPath(t, f, priv, httpPort, "/alpha/", "", label+" path /alpha/ -> tgB")
 	require.Equal(t, 1, ruleResp.Unique(), label+" rule probe expects 1 responder")
 	appBHost := singleResponder(ruleResp)
@@ -872,9 +872,10 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	assert.GreaterOrEqual(t, len(rules), 2, label+" expect rule + default")
 	assert.True(t, hasRule(rules, ruleArn), label+" CreateRule arn must appear in DescribeRules")
 
-	// ModifyRule: /alpha* -> /beta*. /alpha now falls back to default.
+	// ModifyRule: /alpha* -> /beta*. /alpha now falls back to default;
+	// /beta* now reaches tgB (appB).
 	modifyPathRule(t, c, ruleArn, "/beta*")
-	waitForPathRouted(t, f, priv, httpPort, "/beta/", appAHost, appAHost, label+" wait modify active", 60*time.Second)
+	waitForPathRoutedTo(t, f, priv, httpPort, "/beta/", appBHost, label+" wait modify active", 60*time.Second)
 	modified := probeAtPath(t, f, priv, httpPort, "/alpha/", "", label+" /alpha/ falls to default after modify")
 	require.Equal(t, 1, modified.Unique())
 	assert.Equal(t, appAHost, singleResponder(modified), label+" /alpha/ should hit default after pattern change")
@@ -887,7 +888,7 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	// DeleteRule: /beta also falls to default.
 	deleteRule(t, c, ruleArn)
 	ruleArn = ""
-	waitForPathRouted(t, f, priv, httpPort, "/beta/", appBHost, appAHost, label+" wait delete active", 60*time.Second)
+	waitForPathRoutedAway(t, f, priv, httpPort, "/beta/", appBHost, label+" wait delete active", 60*time.Second)
 	afterDelete := probeAtPath(t, f, priv, httpPort, "/beta/", "", label+" /beta/ after delete")
 	require.Equal(t, 1, afterDelete.Unique())
 	assert.Equal(t, appAHost, singleResponder(afterDelete), label+" /beta/ must hit default after delete")
@@ -999,11 +1000,11 @@ func waitForPathServing(t *testing.T, f *sharedFixture, lbIP string, port int64,
 	}, timeout, 2*time.Second)
 }
 
-// waitForPathRouted polls until the path probe stops returning oldHost and
-// instead returns newHost. Uses 2-probe samples to keep the poll cheap.
-// oldHost may equal newHost when the caller just wants to wait for any
-// successful response from newHost.
-func waitForPathRouted(t *testing.T, f *sharedFixture, lbIP string, port int64, path, oldHost, newHost, label string, timeout time.Duration) {
+// waitForPathRoutedAway polls a path until responses stop coming from
+// awayFrom. Use after CreateRule/ModifyRule/DeleteRule to wait out the
+// lb-agent's reconcile window. Requires at least one successful probe so
+// we don't pass on a transient outage.
+func waitForPathRoutedAway(t *testing.T, f *sharedFixture, lbIP string, port int64, path, awayFrom, label string, timeout time.Duration) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {
 		r, err := probeOnceAt(f, lbIP, port, path, "", 2)
@@ -1013,11 +1014,24 @@ func waitForPathRouted(t *testing.T, f *sharedFixture, lbIP string, port int64, 
 		if r.Successful == 0 {
 			return fmt.Errorf("%s: 0/%d successful", label, r.Total)
 		}
-		if oldHost != "" && oldHost != newHost && r.Distribution[oldHost] > 0 {
-			return fmt.Errorf("%s: still seeing old host %s", label, oldHost)
+		if r.Distribution[awayFrom] > 0 {
+			return fmt.Errorf("%s: still seeing %s", label, awayFrom)
 		}
-		if r.Distribution[newHost] == 0 {
-			return fmt.Errorf("%s: new host %s not yet observed", label, newHost)
+		return nil
+	}, timeout, 2*time.Second)
+}
+
+// waitForPathRoutedTo polls a path until responses come from wantHost.
+// Use when the caller already knows the expected backend hostname.
+func waitForPathRoutedTo(t *testing.T, f *sharedFixture, lbIP string, port int64, path, wantHost, label string, timeout time.Duration) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		r, err := probeOnceAt(f, lbIP, port, path, "", 2)
+		if err != nil {
+			return err
+		}
+		if r.Distribution[wantHost] == 0 {
+			return fmt.Errorf("%s: %s not yet observed", label, wantHost)
 		}
 		return nil
 	}, timeout, 2*time.Second)

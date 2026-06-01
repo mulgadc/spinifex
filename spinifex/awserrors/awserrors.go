@@ -167,6 +167,9 @@ var (
 	ErrorInvalidIPAddressInUse                                 = "InvalidIPAddress.InUse"
 	ErrorInvalidIamInstanceProfileArnMalformed                 = "InvalidIamInstanceProfileArn.Malformed"
 	ErrorInvalidIamInstanceProfileNotFound                     = "InvalidIamInstanceProfile.NotFound"
+	ErrorInvalidIdentityToken                                  = "InvalidIdentityToken"
+	ErrorIDPRejectedClaim                                      = "IDPRejectedClaim"
+	ErrorIDPCommunicationError                                 = "IDPCommunicationError"
 	ErrorIamInstanceProfileAlreadyAssociated                   = "IamInstanceProfileAlreadyAssociated"
 	ErrorNoSuchAssociation                                     = "NoSuchAssociation"
 	ErrorInvalidInput                                          = "InvalidInput"
@@ -634,6 +637,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidIPAddressInUse:                                 {HTTPCode: 409, Message: "The specified IP address is already in use. If you are trying to release an address, you must first disassociate it from the instance."},
 	ErrorInvalidIamInstanceProfileArnMalformed:                 {HTTPCode: 400, Message: "The specified IAM instance profile ARN is not valid. For more information about valid ARN formats, see Amazon Resource Names (ARNs)."},
 	ErrorInvalidIamInstanceProfileNotFound:                     {HTTPCode: 404, Message: "The specified IAM instance profile name or ARN does not exist."},
+	ErrorInvalidIdentityToken:                                  {HTTPCode: 400, Message: "The web identity token that was passed is invalid or expired."},
+	ErrorIDPRejectedClaim:                                      {HTTPCode: 403, Message: "The identity provider (IdP) reported that authentication failed."},
+	ErrorIDPCommunicationError:                                 {HTTPCode: 400, Message: "The request could not be fulfilled because the identity provider (IdP) that was asked to verify the incoming identity token could not be reached."},
 	ErrorIamInstanceProfileAlreadyAssociated:                   {HTTPCode: 400, Message: "There is an existing association for the specified instance."},
 	ErrorNoSuchAssociation:                                     {HTTPCode: 404, Message: "The specified IAM instance profile association does not exist."},
 	ErrorInvalidInput:                                          {HTTPCode: 400, Message: "An input parameter in the request is not valid. For example, you may have specified an incorrect Reserved Instance listing ID in the request or the Reserved Instance you tried to list cannot be sold in the Reserved Instances Marketplace (for example, if it has a scope of Region, or is a Convertible Reserved Instance)."},

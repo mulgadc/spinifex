@@ -113,12 +113,18 @@ aws ec2 describe-instance-types \
 
 ### Launching GPU Instances
 
-Import the GPU-enabled AMI before launching:
+Spinifex ships two pre-built GPU guest images. Import the one that matches your host hardware before launching:
 
 ```bash
-spx admin images import --name ubuntu-gpu-nvidia   # NVIDIA hosts
-spx admin images import --name ubuntu-gpu-amd      # AMD hosts
+spx admin images import --name ubuntu-26.04-nvidia-gpu-x86_64   # NVIDIA hosts
+spx admin images import --name ubuntu-26.04-amd-gpu-x86_64      # AMD hosts
 ```
+
+These images are built on Ubuntu 26.04 and serve as a base for GPU workloads. Both include Docker CE, Python 3, and common utilities (`git`, `curl`, `htop`, `tmux`, `ffmpeg`).
+
+**NVIDIA** (`ubuntu-26.04-nvidia-gpu-x86_64`): NVIDIA server driver with DKMS pre-built against the image kernel, `nvidia-smi`, nvidia-container-toolkit wired into Docker (`--gpus all` works on first boot). CUDA toolkit and cuDNN are not included — use an NGC container or install inside the instance.
+
+**AMD** (`ubuntu-26.04-amd-gpu-x86_64`): `linux-firmware` (amdgpu firmware blobs), ROCm 7.2 CLI tools (`rocm-smi`, `rocminfo`, `amd-smi`). Full ROCm compute libraries (`rocblas`, etc.) are not included — install inside the instance as needed.
 
 Launch a GPU instance:
 

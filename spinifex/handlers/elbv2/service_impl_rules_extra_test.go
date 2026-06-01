@@ -384,3 +384,34 @@ func TestBuildHAProxyRule_RejectsNonForward(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+// TestTargetGroupsForLB_IncludesRuleTGs guards against regressing the
+// rule-TG visibility bug: without rule-action enumeration, the health
+// checker cannot resolve rule-only TGs back to a TG record and never
+// transitions them from initial -> healthy. Reproduces the e2e failure
+// where tgB (referenced only by a CreateRule action) timed out at 0/1
+// healthy because TargetGroupsForLB walked only DefaultActions.
+func TestTargetGroupsForLB_IncludesRuleTGs(t *testing.T) {
+	env := newRuleTestEnv(t, "tgs-rule")
+	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/a"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgAltArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lb, err := env.svc.store.GetLoadBalancerByArn(env.lbArn)
+	require.NoError(t, err)
+	require.NotNil(t, lb)
+
+	tgs, err := env.svc.store.TargetGroupsForLB(lb.LoadBalancerID)
+	require.NoError(t, err)
+
+	arns := make(map[string]bool, len(tgs))
+	for _, tg := range tgs {
+		arns[tg.TargetGroupArn] = true
+	}
+	assert.Truef(t, arns[env.tgArn], "default TG missing: have %v", arns)
+	assert.Truef(t, arns[env.tgAltArn], "rule TG missing: have %v", arns)
+}

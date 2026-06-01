@@ -209,16 +209,31 @@ func (s *Store) TargetGroupsForLB(lbID string) ([]*TargetGroupRecord, error) {
 		return nil, fmt.Errorf("list listeners for %s: %w", lbID, err)
 	}
 
-	// Collect unique TG IDs from listener actions.
+	// Collect unique TG IDs from listener default actions and rule actions.
+	// Rule TGs must be included so the health checker can update their state
+	// when HAProxy reports server status — HAProxy probes every backend it
+	// renders, including rule backends.
 	seen := make(map[string]struct{})
+	collect := func(tgArn string) {
+		if tgArn == "" {
+			return
+		}
+		// TG ARN format: arn:aws:elasticloadbalancing:{region}:{account}:targetgroup/{name}/{tgID}
+		if idx := strings.LastIndex(tgArn, "/"); idx >= 0 {
+			seen[tgArn[idx+1:]] = struct{}{}
+		}
+	}
 	for _, l := range listeners {
 		for _, a := range l.DefaultActions {
-			if a.TargetGroupArn == "" {
-				continue
-			}
-			// TG ARN format: arn:aws:elasticloadbalancing:{region}:{account}:targetgroup/{name}/{tgID}
-			if idx := strings.LastIndex(a.TargetGroupArn, "/"); idx >= 0 {
-				seen[a.TargetGroupArn[idx+1:]] = struct{}{}
+			collect(a.TargetGroupArn)
+		}
+		rules, err := s.ListRulesByListener(l.ListenerArn)
+		if err != nil {
+			return nil, fmt.Errorf("list rules for listener %s: %w", l.ListenerArn, err)
+		}
+		for _, r := range rules {
+			for _, a := range r.Actions {
+				collect(a.TargetGroupArn)
 			}
 		}
 	}

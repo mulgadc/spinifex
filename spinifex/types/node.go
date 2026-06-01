@@ -5,6 +5,37 @@ type NodeDiscoverResponse struct {
 	Node string `json:"node"`
 }
 
+// GPUSliceInfo describes a single MIG slice within a physical GPU.
+type GPUSliceInfo struct {
+	GIID       int    `json:"gi_id"`
+	Profile    string `json:"profile"`
+	VRAMMiB    int64  `json:"vram_mib"`
+	MdevPath   string `json:"mdev_path"`
+	InstanceID string `json:"instance_id,omitempty"`
+}
+
+// GPUInfo describes a physical GPU on a node and its current allocation state.
+// For MIG GPUs, Slices lists each carved slice. For whole-GPU passthrough,
+// Slices is nil and InstanceID identifies the claiming VM (empty if free).
+type GPUInfo struct {
+	PCIAddress string         `json:"pci_address"`
+	Model      string         `json:"model"`
+	VRAMMiB    int64          `json:"vram_mib"`
+	MIGEnabled bool           `json:"mig_enabled"`
+	MIGProfile string         `json:"mig_profile,omitempty"`
+	InstanceID string         `json:"instance_id,omitempty"`
+	Slices     []GPUSliceInfo `json:"slices,omitempty"`
+}
+
+// VMGPUInfo describes the GPU attached to a VM.
+type VMGPUInfo struct {
+	Model      string `json:"model"`
+	VRAMMiB    int64  `json:"vram_mib"`
+	PCIAddress string `json:"pci_address,omitempty"` // whole-GPU passthrough only
+	Profile    string `json:"profile,omitempty"`     // MIG profile name; empty for whole-GPU
+	MdevPath   string `json:"mdev_path,omitempty"`   // MIG only
+}
+
 // NodeStatusResponse is returned by the spinifex.node.status NATS topic (fan-out).
 //
 // ReservedVCPU / ReservedMemGB are held back from guest scheduling for the
@@ -30,6 +61,7 @@ type NodeStatusResponse struct {
 	GPUCapable     bool              `json:"gpu_capable,omitempty"`
 	GPUPassthrough bool              `json:"gpu_passthrough,omitempty"`
 	GPUModels      []string          `json:"gpu_models,omitempty"`
+	GPUs           []GPUInfo         `json:"gpus,omitempty"`
 	VMCount        int               `json:"vm_count"`
 	InstanceTypes  []InstanceTypeCap `json:"instance_types"`
 
@@ -57,7 +89,8 @@ type VMInfo struct {
 	// ManagedBy is the Spinifex platform component that owns this VM
 	// (e.g. "elbv2"). Empty for customer VMs. The UI uses this to filter
 	// system-managed resources out of customer-facing listings.
-	ManagedBy string `json:"managed_by,omitempty"`
+	ManagedBy string     `json:"managed_by,omitempty"`
+	GPU       *VMGPUInfo `json:"gpu,omitempty"`
 }
 
 // NodeVMsResponse is returned by the spinifex.node.vms NATS topic (fan-out).

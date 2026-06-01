@@ -324,14 +324,19 @@ func extractGIFields(line string) (giID int, profileName string, memMiB int64, o
 	return giID, profileName, memMiB, true
 }
 
-// parseMIGMemory extracts the MiB value encoded in a profile name like "3g.40gb".
+// parseMIGMemory extracts the MiB value encoded in a profile name like "3g.40gb"
+// or Blackwell-style variants like "1g.24gb+gfx", "1g.24gb-me", "1g.24gb+me.all".
 func parseMIGMemory(name string) int64 {
-	// Name format: "<compute>g.<mem>gb"
 	parts := strings.SplitN(name, ".", 2)
 	if len(parts) != 2 {
 		return 0
 	}
-	gbStr := strings.TrimSuffix(parts[1], "gb")
+	memPart := parts[1]
+	// Strip Blackwell capability suffixes (+gfx, -me, +me, +me.all, etc.)
+	if idx := strings.IndexAny(memPart, "+-"); idx >= 0 {
+		memPart = memPart[:idx]
+	}
+	gbStr := strings.TrimSuffix(memPart, "gb")
 	gb, err := strconv.ParseInt(gbStr, 10, 64)
 	if err != nil {
 		return 0

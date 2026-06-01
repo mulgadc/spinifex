@@ -10,6 +10,32 @@ interface InstanceTypeCap {
   available: number
 }
 
+interface GPUSliceInfo {
+  gi_id: number
+  profile: string
+  vram_mib: number
+  mdev_path: string
+  instance_id?: string
+}
+
+interface GPUInfo {
+  pci_address: string
+  model: string
+  vram_mib: number
+  mig_enabled: boolean
+  mig_profile?: string
+  instance_id?: string
+  slices?: GPUSliceInfo[]
+}
+
+interface VMGPUInfo {
+  model: string
+  vram_mib: number
+  pci_address?: string
+  profile?: string
+  mdev_path?: string
+}
+
 interface NodeInfo {
   node: string
   status: string
@@ -23,7 +49,10 @@ interface NodeInfo {
   total_mem_gb: number
   alloc_vcpu: number
   alloc_mem_gb: number
+  total_gpus: number
+  alloc_gpus: number
   instance_types: InstanceTypeCap[]
+  gpus?: GPUInfo[]
   nats_role?: string
   predastore_role?: string
 }
@@ -42,6 +71,7 @@ interface VMInfo {
   node: string
   launch_time: number
   managed_by?: string
+  gpu?: VMGPUInfo
 }
 
 interface GetVMsOutput {
@@ -87,6 +117,9 @@ interface StorageStatusOutput {
 
 export type {
   InstanceTypeCap,
+  GPUSliceInfo,
+  GPUInfo,
+  VMGPUInfo,
   NodeInfo,
   GetNodesOutput,
   VMInfo,

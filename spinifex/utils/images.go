@@ -432,6 +432,36 @@ var AvailableImages = map[string]Images{
 		ChecksumType: "sha256",
 		BootMode:     "uefi",
 	},
+
+	"ubuntu-26.04-nvidia-gpu-x86_64": {
+		Name:         "ubuntu-26.04-nvidia-gpu-x86_64",
+		Description:  "Ubuntu 26.04 NVIDIA GPU base image — NVIDIA server driver, Python toolchain, Docker, nvidia-container-toolkit",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-nvidia-gpu-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-nvidia-gpu-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+		Tags:         map[string]string{"gpu-vendor": "nvidia"},
+	},
+
+	"ubuntu-26.04-amd-gpu-x86_64": {
+		Name:         "ubuntu-26.04-amd-gpu-x86_64",
+		Description:  "Ubuntu 26.04 AMD GPU base image — linux-firmware, ROCm CLI, Python toolchain, Docker",
+		Distro:       "ubuntu",
+		Version:      "26.04",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-amd-gpu-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-amd-gpu-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "uefi",
+		Tags:         map[string]string{"gpu-vendor": "amd"},
+	},
 }
 
 // AMI / image extraction utils

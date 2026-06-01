@@ -429,6 +429,42 @@ func (m *Manager) TotalCount() int {
 	return len(m.pool)
 }
 
+// PoolEntry is a read-only snapshot of a single pool slot, safe to inspect
+// without holding the manager lock. Returned by Snapshot.
+type PoolEntry struct {
+	Device      GPUDevice
+	MIGInstance *MIGInstance // nil for whole-GPU entries
+	InstanceID  string       // empty if free
+	Available   bool
+}
+
+// Snapshot returns a point-in-time copy of every pool slot plus any free
+// MIG GPUs (not yet committed to a profile). The caller receives owned copies
+// and may inspect them without further synchronisation.
+func (m *Manager) Snapshot() []PoolEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]PoolEntry, 0, len(m.pool)+len(m.freeMIGGPUs))
+	for _, e := range m.pool {
+		entry := PoolEntry{
+			Device:     e.Device,
+			InstanceID: e.InstanceID,
+			Available:  e.Available,
+		}
+		if e.MIGInstance != nil {
+			mig := *e.MIGInstance
+			entry.MIGInstance = &mig
+		}
+		out = append(out, entry)
+	}
+	// Free MIG GPUs are MIG-capable but not yet carved into slices.
+	for _, dev := range m.freeMIGGPUs {
+		out = append(out, PoolEntry{Device: dev, Available: true})
+	}
+	return out
+}
+
 // ReclaimByAddress marks the GPU at addr as claimed by instanceID without
 // performing sysfs writes. Used on daemon restart to re-register GPUs that
 // are still bound to vfio-pci from a previous run.

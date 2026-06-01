@@ -134,7 +134,7 @@ if ! command -v qemu-img &>/dev/null; then
     exit 1
 fi
 
-if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null; then
+if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null && ! [[ -x /usr/sbin/parted ]]; then
     echo "ERROR: parted not found. Install parted."
     exit 1
 fi
@@ -370,7 +370,11 @@ if [[ -n "${SETUP_SCRIPT:-}" ]]; then
     sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
     sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
     if [[ "$DISTRO" == "ubuntu" ]]; then
-        sudo chroot "$MOUNT_DIR" /bin/bash /tmp/setup.sh
+        if [[ ! -x "${MOUNT_DIR}/bin/bash" ]]; then
+            echo "ERROR: /bin/bash not found or not executable in chroot"
+            exit 1
+        fi
+        sudo chroot "$MOUNT_DIR" /bin/bash -x /tmp/setup.sh
     else
         sudo chroot "$MOUNT_DIR" /tmp/setup.sh
     fi
@@ -426,6 +430,9 @@ if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
     rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        IMPORT_ARGS+=(--name "$AMI_NAME")
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
@@ -434,10 +441,14 @@ else
     echo "To import as AMI, run:"
     echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
+    NAME_HINT=""
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        NAME_HINT=" \\\n    --name ${AMI_NAME}"
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE} \\"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"
         echo "    --tag ${SYSTEM_TAG}"
     else
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT}"
     fi
 fi

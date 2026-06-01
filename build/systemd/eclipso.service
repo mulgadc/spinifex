@@ -1,0 +1,54 @@
+[Unit]
+Description=Eclipso (Authoritative DNS for Mulga)
+PartOf=spinifex.target
+After=spinifex-nats.service spinifex-predastore.service
+# Wants= rather than Requires= so eclipso restarts do not cascade to
+# predastore/nats; spxd handles the bootstrap ordering on cold-boot.
+Wants=spinifex-nats.service spinifex-predastore.service
+
+[Service]
+Type=simple
+User=eclipso
+Group=eclipso
+# Binary built by `make deploy` (Eclipso submodule). EnvironmentFile is
+# written by spxd at install time after the dns-resolver IAM principal
+# exists (route53-v0.md R7). Until that file lands on disk, systemd
+# treats EnvironmentFile= with the leading "-" as best-effort so the
+# unit can be enabled before its env materialises.
+ExecStart=/usr/local/bin/eclipso
+EnvironmentFile=-/etc/spinifex/eclipso.env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+# Bind UDP/TCP 53 + DoT 853 as a non-root user — the only capability
+# the binary needs is CAP_NET_BIND_SERVICE.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectHostname=yes
+KeyringMode=private
+RemoveIPC=yes
+LimitCORE=0
+LimitNOFILE=65536
+ReadOnlyPaths=/etc/spinifex/eclipso/eclipso.crt /etc/spinifex/eclipso/eclipso.key /etc/spinifex/eclipso.env
+
+[Install]
+WantedBy=spinifex.target

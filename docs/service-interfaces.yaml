@@ -31,10 +31,12 @@ services:
       - "ec2.*"
       - "elbv2.*"
       - "iam.*"
+      - "dns.*"
     depends_on:
       - "ec2.*"
       - "elbv2.*"
       - "iam.*"
+      - "dns.*"
 
   spinifex_daemon:
     path: spinifex/services/spinifex
@@ -51,6 +53,7 @@ services:
       - spinifex/handlers/ec2
       - spinifex/handlers/elbv2
       - spinifex/handlers/iam
+      - spinifex/handlers/route53
     subscribes:
       # EC2 instance lifecycle.
       - "ec2.RunInstances"
@@ -95,6 +98,15 @@ services:
       - "elbv2.CreateListener"
       - "elbv2.DeleteListener"
       - "elbv2.DescribeListeners"
+      # Route53 control plane (Sprint 1a stubs; bodies in 1b/1c).
+      - "dns.CreateHostedZone"
+      - "dns.GetHostedZone"
+      - "dns.ListHostedZones"
+      - "dns.UpdateHostedZoneComment"
+      - "dns.DeleteHostedZone"
+      - "dns.ChangeResourceRecordSets"
+      - "dns.ListResourceRecordSets"
+      - "dns.GetChange"
     publishes:
       # → vpcd
       - "vpc.create"

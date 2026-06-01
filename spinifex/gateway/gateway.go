@@ -75,6 +75,7 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"route53":              true,
 	"spinifex":             true,
 }
 
@@ -202,7 +203,8 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 	}
 
 	var xmlBody string
-	if svc == "iam" || svc == "sts" {
+	switch svc {
+	case "iam", "sts":
 		iam := IAMErrorResponse{
 			Error: IAMErrorDetail{
 				Type:    "Sender",
@@ -217,7 +219,9 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.
 			out = []byte(`<ErrorResponse><Error><Type>Sender</Type><Code>ServiceUnavailable</Code><Message>` + clusterUnavailableMsg + `</Message></Error><RequestId>` + requestID + `</RequestId></ErrorResponse>`)
 		}
 		xmlBody = xml.Header + string(out)
-	} else {
+	case "route53":
+		xmlBody = string(GenerateRoute53ErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID))
+	default:
 		// ec2, elasticloadbalancing, account, spinifex — all share the EC2 envelope.
 		xmlBody = xml.Header + `<Response><Errors><Error><Code>` + awserrors.ErrorServiceUnavailable +
 			`</Code><Message>` + clusterUnavailableMsg + `</Message></Error></Errors><RequestID>` +
@@ -237,7 +241,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" || svc == "sts" || svc == "eks" {
+	if svc == "iam" || svc == "sts" || svc == "eks" || svc == "route53" {
 		errorCode = awserrors.ErrorThrottling
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
@@ -254,9 +258,12 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 
 	var xmlErr []byte
-	if svc == "iam" || svc == "sts" {
+	switch svc {
+	case "iam", "sts":
 		xmlErr = GenerateIAMErrorResponse(errorCode, errorMsg.Message, requestID)
-	} else { // ec2, elasticloadbalancing, account, spinifex
+	case "route53":
+		xmlErr = GenerateRoute53ErrorResponse(errorCode, errorMsg.Message, requestID)
+	default: // ec2, elasticloadbalancing, account, spinifex
 		xmlErr = GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
 	}
 
@@ -305,6 +312,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "route53":
+		err = gw.Route53_Request(w, r)
 	case "spinifex":
 		err = gw.Spinifex_Request(w, r)
 	default:
@@ -469,9 +478,12 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	}
 
 	var xmlError []byte
-	if svc == "iam" || svc == "sts" {
+	switch svc {
+	case "iam", "sts":
 		xmlError = GenerateIAMErrorResponse(err.Error(), errorMsg.Message, requestId)
-	} else {
+	case "route53":
+		xmlError = GenerateRoute53ErrorResponse(err.Error(), errorMsg.Message, requestId)
+	default:
 		xmlError = GenerateEC2ErrorResponse(err.Error(), errorMsg.Message, requestId)
 	}
 

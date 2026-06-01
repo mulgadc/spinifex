@@ -49,6 +49,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	handlers_route53 "github.com/mulgadc/spinifex/spinifex/handlers/route53"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -132,6 +133,8 @@ type Daemon struct {
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
+	route53Service        *handlers_route53.Route53ServiceImpl
+	eclipsoCtl            *EclipsoCtl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -885,6 +888,22 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Route53 gateway → daemon subscriptions. Every handler currently
+	// returns NotImplemented; topics are subscribed up-front so the
+	// wiring layer is stable while real bodies land in 1b/1c.
+	if d.route53Service != nil {
+		subs = append(subs,
+			natsSub{handlers_route53.SubjectCreateHostedZone, d.handleRoute53CreateHostedZone, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectGetHostedZone, d.handleRoute53GetHostedZone, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectListHostedZones, d.handleRoute53ListHostedZones, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectUpdateHostedZoneComment, d.handleRoute53UpdateHostedZoneComment, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectDeleteHostedZone, d.handleRoute53DeleteHostedZone, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectChangeResourceRecordSets, d.handleRoute53ChangeResourceRecordSets, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectListResourceRecordSets, d.handleRoute53ListResourceRecordSets, "spinifex-workers"},
+			natsSub{handlers_route53.SubjectGetChange, d.handleRoute53GetChange, "spinifex-workers"},
+		)
+	}
+
 	// EIP operations require external IPAM (pool mode). Only subscribe when available;
 	// without a subscriber the gateway returns a NATS timeout → clean error to the client.
 	if d.eipService != nil {
@@ -1067,6 +1086,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.elbv2Service must be nil before startCluster")
 	case d.eksService != nil:
 		return errors.New("d.eksService must be nil before startCluster")
+	case d.route53Service != nil:
+		return errors.New("d.route53Service must be nil before startCluster")
 	}
 	return nil
 }
@@ -1327,6 +1348,18 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
 	}
+
+	// Route53 service (Sprint 1a): NATS-only at this stage; predastore
+	// zone-store + Eclipso reload-event tracker hooks land in 1b/1c.
+	// Method bodies return NotImplemented so callers exercising the
+	// gateway dispatch get a stable AWS-shaped reply.
+	d.route53Service = handlers_route53.NewRoute53ServiceImplWithNATS(d.natsConn)
+
+	// EclipsoCtl handles systemctl invocations for the eclipso.service
+	// unit. Sprint 1a wires the controller; spxd bootstrap order
+	// (NATS → predastore → IAM seed → dns-zones bucket → env file →
+	// EclipsoCtl.Start) lands in 1b.
+	d.eclipsoCtl = NewEclipsoCtl()
 
 	// Ensure default VPC exists for system and admin accounts
 	// (matches AWS: every account has a default VPC with IGW + default SG)

@@ -74,6 +74,7 @@ var supportedServices = map[string]bool{
 	"sts":                  true,
 	"account":              true,
 	"elasticloadbalancing": true,
+	"eks":                  true,
 	"spinifex":             true,
 }
 
@@ -172,6 +173,9 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	}
 }
 
+// eksJSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
+const eksJSONContentType = "application/x-amz-json-1.1"
+
 // clusterUnavailableMsg is the body returned when the gateway short-circuits
 // because the daemon's NATS connection is down. Points operators at the
 // daemon's /local/status (1b) for triage instead of letting them watch the
@@ -185,6 +189,18 @@ const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check 
 // here to make sure the /local/status hint actually reaches the operator.
 func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, _ *http.Request, svc string) {
 	requestID := uuid.NewString()
+
+	// EKS uses AWS REST-JSON 1.1 — different content type, different envelope.
+	if svc == "eks" {
+		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
+		w.Header().Set("Content-Type", eksJSONContentType)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if _, err := w.Write(body); err != nil {
+			slog.Error("Failed to write EKS cluster-unavailable response", "err", err)
+		}
+		return
+	}
+
 	var xmlBody string
 	if svc == "iam" || svc == "sts" {
 		iam := IAMErrorResponse{
@@ -221,10 +237,21 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" || svc == "sts" {
+	if svc == "iam" || svc == "sts" || svc == "eks" {
 		errorCode = awserrors.ErrorThrottling
 	}
 	errorMsg := awserrors.ErrorLookup[errorCode]
+
+	// EKS uses AWS REST-JSON 1.1 — emit JSON envelope instead of XML.
+	if svc == "eks" {
+		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
+		w.Header().Set("Content-Type", eksJSONContentType)
+		w.WriteHeader(errorMsg.HTTPCode)
+		if _, err := w.Write(body); err != nil {
+			slog.Error("Failed to write EKS throttle error response", "err", err)
+		}
+		return
+	}
 
 	var xmlErr []byte
 	if svc == "iam" || svc == "sts" {
@@ -276,6 +303,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.STS_Request(w, r)
 	case "elasticloadbalancing":
 		err = gw.ELBv2_Request(w, r)
+	case "eks":
+		err = gw.EKS_Request(w, r)
 	case "spinifex":
 		err = gw.Spinifex_Request(w, r)
 	default:
@@ -418,10 +447,27 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	errorMsg = awserrors.ErrorLookup[err.Error()]
 
-	// IAM and STS use the ErrorResponse XML envelope; EC2-style services use
-	// <Response><Errors>...</Errors></Response>. AWS SDK v1 strictly parses
-	// the per-service shape and would reject a mismatch with
-	// SerializationError, dropping the awserr.Code() for callers.
+	// EKS uses AWS REST-JSON 1.1: {"__type":"<Code>Exception","message":"..."}
+	// with Content-Type application/x-amz-json-1.1. EC2-style services use
+	// <Response><Errors>...</Errors></Response>; IAM and STS use the
+	// <ErrorResponse> envelope. AWS SDK v1 strictly parses the per-service
+	// shape and would reject a mismatch with SerializationError, dropping
+	// the awserr.Code() for callers.
+	if errorMsg.HTTPCode == 0 {
+		errorMsg.HTTPCode = 500
+	}
+
+	if svc == "eks" {
+		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
+		slog.Debug("Generated EKS error response", "error", err.Error(), "json", string(body), "requestId", requestId)
+		w.Header().Set("Content-Type", eksJSONContentType)
+		w.WriteHeader(errorMsg.HTTPCode)
+		if _, err := w.Write(body); err != nil {
+			slog.Error("Failed to write EKS error response", "err", err)
+		}
+		return
+	}
+
 	var xmlError []byte
 	if svc == "iam" || svc == "sts" {
 		xmlError = GenerateIAMErrorResponse(err.Error(), errorMsg.Message, requestId)
@@ -430,10 +476,6 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	}
 
 	slog.Debug("Generated error response", "error", err.Error(), "xml", string(xmlError), "requestId", requestId)
-
-	if errorMsg.HTTPCode == 0 {
-		errorMsg.HTTPCode = 500
-	}
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(errorMsg.HTTPCode)

@@ -339,6 +339,7 @@ var (
 	ErrorNoSuchVersion                                         = "NoSuchVersion"
 	ErrorNonEBSInstance                                        = "NonEBSInstance"
 	ErrorNotExportable                                         = "NotExportable"
+	ErrorNotImplemented                                        = "NotImplemented"
 	ErrorOperationNotPermitted                                 = "OperationNotPermitted"
 	ErrorOptInRequired                                         = "OptInRequired"
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded          = "OutstandingVpcPeeringConnectionLimitExceeded"
@@ -805,6 +806,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorNoSuchVersion:                                         {HTTPCode: 404, Message: "The specified API version does not exist."},
 	ErrorNonEBSInstance:                                        {HTTPCode: 400, Message: "The specified instance does not support Amazon EBS. Restart the instance and try again, to ensure that the code is run on an instance with updated code."},
 	ErrorNotExportable:                                         {HTTPCode: 400, Message: "The specified instance cannot be exported. You can only export certain instances. For more information, see Considerations for instance export."},
+	ErrorNotImplemented:                                        {HTTPCode: 501, Message: "Operation not implemented"},
 	ErrorOperationNotPermitted:                                 {HTTPCode: 400, Message: "The specified operation is not allowed. This error can occur for a number of reasons; for example, you might be trying to terminate an instance that has termination protection enabled, or trying to detach the primary network interface (eth0) from an instance."},
 	ErrorOptInRequired:                                         {HTTPCode: 403, Message: "You are not authorized to use the requested service. Ensure that you have subscribed to the service you are trying to use. If you are new to AWS, your account might take some time to be activated while your credit card details are being verified."},
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded:          {HTTPCode: 400, Message: "You've reached the limit on the number of VPC peering connection requests that you can create for the specified VPC."},

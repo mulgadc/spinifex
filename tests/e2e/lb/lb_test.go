@@ -834,7 +834,6 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
 	harness.WaitForTargetsHealthy(t, c, tgA, 1, label+" tgA", 2*time.Minute)
-	harness.WaitForTargetsHealthy(t, c, tgB, 1, label+" tgB", 2*time.Minute)
 
 	eni := lbENI(t, c, "app", lb)
 	priv := privateIP(eni)
@@ -845,7 +844,8 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	require.Equal(t, 1, base.Unique(), label+" default expects 1 responder (tgA single backend)")
 	appAHost := singleResponder(base)
 
-	// CreateRule: path-pattern /alpha* -> tgB.
+	// CreateRule wires tgB to the listener; only then does spinifex begin
+	// health-checking tgB. Wait for healthy AFTER rule creation.
 	ruleArn := createPathRule(t, c, listener, 10, "/alpha*", tgB)
 	ruleCleanup := func() {
 		if ruleArn == "" {
@@ -855,6 +855,7 @@ func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture)
 	}
 	t.Cleanup(ruleCleanup)
 
+	harness.WaitForTargetsHealthy(t, c, tgB, 1, label+" tgB (post-rule)", 2*time.Minute)
 	waitForPathRouted(t, f, priv, httpPort, "/alpha/", "", appAHost, label+" wait rule active", 60*time.Second)
 	ruleResp := probeAtPath(t, f, priv, httpPort, "/alpha/", "", label+" path /alpha/ -> tgB")
 	require.Equal(t, 1, ruleResp.Unique(), label+" rule probe expects 1 responder")

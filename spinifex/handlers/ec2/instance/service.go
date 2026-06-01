@@ -129,15 +129,32 @@ type SubnetInfo struct {
 	MapPublicIpOnLaunch bool
 }
 
+// ENIInfo carries the subset of ENI metadata RunInstances needs to attach a
+// pre-created ENI as the primary interface. Translated from
+// handlers/ec2/vpc.ENIRecord by the daemon adapter to avoid a cyclic
+// instance↔vpc import.
+type ENIInfo struct {
+	NetworkInterfaceID string
+	SubnetID           string
+	VpcID              string
+	PrivateIpAddress   string
+	MacAddress         string
+	Status             string
+	SecurityGroupIDs   []string
+}
+
 // ENICreator covers the VPC/ENI operations RunInstances performs while
 // auto-attaching a primary interface. Implemented via an adapter over
 // handlers/ec2/vpc.VPCServiceImpl on the daemon. DetachENI lives here (not on
 // ENIDeleter) because the launch-time NAT-rollback path needs to flip the ENI
 // to "available" before ENIDeleter.DeleteNetworkInterface, which rejects
-// in-use ENIs.
+// in-use ENIs. GetENI supports the pre-created-ENI launch path where the
+// caller passes NetworkInterfaces[0].NetworkInterfaceId and RunInstances
+// attaches the existing ENI instead of creating a new one.
 type ENICreator interface {
 	GetDefaultSubnet(accountID string) (*SubnetInfo, error)
 	GetSubnet(accountID, subnetID string) (*SubnetInfo, error)
+	GetENI(accountID, eniID string) (*ENIInfo, error)
 	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	AttachENI(accountID, eniID, instanceID string, deviceIndex int64) (string, error)
 	DetachENI(accountID, eniID string) error

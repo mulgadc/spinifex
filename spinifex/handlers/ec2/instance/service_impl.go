@@ -631,6 +631,35 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
+		// Pre-created ENI path: when the caller passes
+		// NetworkInterfaces[0].NetworkInterfaceId, attach that existing ENI
+		// instead of auto-creating one. AWS-parity behaviour; consumed by the
+		// EKS cluster launcher which needs the ENI to live under the customer
+		// account before the K3s server VM is created.
+		preExistingENIID := ""
+		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+			preExistingENIID = aws.StringValue(input.NetworkInterfaces[0].NetworkInterfaceId)
+		}
+		if preExistingENIID != "" {
+			if s.eniCreator == nil {
+				slog.Error("PrepareRunInstances: pre-created ENI specified but ENI service unavailable",
+					"instanceId", instance.ID, "eniId", preExistingENIID)
+				lastRunErr = errors.New(awserrors.ErrorServerInternal)
+				s.resourceMgr.Deallocate(instanceType)
+				continue
+			}
+			if err := s.attachPreCreatedENI(accountID, preExistingENIID, instance, ec2Instance); err != nil {
+				slog.Error("PrepareRunInstances: pre-created ENI attach failed",
+					"instanceId", instance.ID, "eniId", preExistingENIID, "err", err)
+				lastRunErr = err
+				s.resourceMgr.Deallocate(instanceType)
+				continue
+			}
+			instances = append(instances, instance)
+			allEC2Instances = append(allEC2Instances, ec2Instance)
+			continue
+		}
+
 		if (input.SubnetId == nil || *input.SubnetId == "") && s.eniCreator != nil {
 			defaultSubnet, dsErr := s.eniCreator.GetDefaultSubnet(accountID)
 			if dsErr == nil && defaultSubnet != nil {
@@ -772,6 +801,62 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	}
 
 	return reservation, instances, instanceType, nil
+}
+
+// attachPreCreatedENI looks up an existing ENI in accountID, verifies it is
+// not already in-use, attaches it as device-0 to instance, and populates the
+// VM + ec2.Instance with the ENI's network identity (private IP, MAC, subnet,
+// VPC, security groups). Returns an error without mutating any state if the
+// lookup or attach fails. Public-IP auto-assignment is skipped on the
+// pre-created path because the caller is expected to manage that out-of-band.
+func (s *InstanceServiceImpl) attachPreCreatedENI(accountID, eniID string, instance *vm.VM, ec2Instance *ec2.Instance) error {
+	eniInfo, err := s.eniCreator.GetENI(accountID, eniID)
+	if err != nil {
+		return err
+	}
+	if eniInfo == nil {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+	}
+	if eniInfo.Status == "in-use" {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+	}
+	if _, err := s.eniCreator.AttachENI(accountID, eniID, instance.ID, 0); err != nil {
+		return err
+	}
+
+	instance.ENIId = eniID
+	instance.ENIMac = eniInfo.MacAddress
+
+	ec2Instance.SetPrivateIpAddress(eniInfo.PrivateIpAddress)
+	ec2Instance.SetSubnetId(eniInfo.SubnetID)
+	ec2Instance.SetVpcId(eniInfo.VpcID)
+	if len(eniInfo.SecurityGroupIDs) > 0 {
+		groups := make([]*ec2.GroupIdentifier, 0, len(eniInfo.SecurityGroupIDs))
+		for _, id := range eniInfo.SecurityGroupIDs {
+			groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id)})
+		}
+		ec2Instance.SecurityGroups = groups
+	}
+	ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String(eniID),
+		PrivateIpAddress:   aws.String(eniInfo.PrivateIpAddress),
+		MacAddress:         aws.String(eniInfo.MacAddress),
+		SubnetId:           aws.String(eniInfo.SubnetID),
+		VpcId:              aws.String(eniInfo.VpcID),
+		Status:             aws.String("in-use"),
+		Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+			DeviceIndex: aws.Int64(0),
+			Status:      aws.String("attached"),
+		},
+	}}
+
+	slog.Info("PrepareRunInstances: attached pre-created ENI",
+		"instanceId", instance.ID,
+		"eniId", eniID,
+		"privateIp", eniInfo.PrivateIpAddress,
+		"mac", eniInfo.MacAddress,
+	)
+	return nil
 }
 
 // LaunchRunInstances takes the VMs created by PrepareRunInstances (already

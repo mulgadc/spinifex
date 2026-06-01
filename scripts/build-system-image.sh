@@ -326,25 +326,6 @@ apt-get install -y --no-install-recommends ${APT_PACKAGES}
 "
 fi
 
-# Enable services
-if [[ -n "${ENABLE_SERVICES:-}" ]]; then
-    echo "Enabling services: ${ENABLE_SERVICES}..."
-    IFS=' ' read -ra SERVICES <<< "$ENABLE_SERVICES"
-    for svc in "${SERVICES[@]}"; do
-        if [[ "$DISTRO" == "alpine" ]]; then
-            if ! sudo chroot "$MOUNT_DIR" /bin/sh -c "rc-update add ${svc} default"; then
-                echo "ERROR: Failed to enable service '${svc}' — does it exist in the image?"
-                exit 1
-            fi
-        else
-            if ! sudo chroot "$MOUNT_DIR" /bin/bash -c "systemctl enable ${svc}"; then
-                echo "ERROR: Failed to enable service '${svc}'"
-                exit 1
-            fi
-        fi
-    done
-fi
-
 # Step 5: Copy binaries into the image (before setup script, which may reference them)
 if [[ -n "${INSTALL_BINARIES:-}" ]]; then
     echo "Installing binaries..."
@@ -356,6 +337,27 @@ if [[ -n "${INSTALL_BINARIES:-}" ]]; then
         echo "  ${src} -> ${dst}"
         sudo cp "$src_path" "${MOUNT_DIR}${dst}"
         sudo chmod 755 "${MOUNT_DIR}${dst}"
+    done
+fi
+
+# Copy auxiliary files (systemd units, OpenRC initd scripts, cron entries, configs).
+# Same src:dst pair grammar as INSTALL_BINARIES; mode 0644, parent dirs auto-created.
+# Optional — manifests without INSTALL_FILES (e.g. existing GPU images) skip this step.
+if [[ -n "${INSTALL_FILES:-}" ]]; then
+    echo "Installing files..."
+    IFS=' ' read -ra FILE_PAIRS <<< "$INSTALL_FILES"
+    for pair in "${FILE_PAIRS[@]}"; do
+        src="${pair%%:*}"
+        dst="${pair#*:}"
+        src_path="${PROJECT_DIR}/${src}"
+        if [[ ! -f "$src_path" ]]; then
+            echo "ERROR: INSTALL_FILES source not found: $src_path"
+            exit 1
+        fi
+        echo "  ${src} -> ${dst}"
+        sudo mkdir -p "${MOUNT_DIR}$(dirname "$dst")"
+        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
+        sudo chmod 0644 "${MOUNT_DIR}${dst}"
     done
 fi
 
@@ -379,6 +381,26 @@ if [[ -n "${SETUP_SCRIPT:-}" ]]; then
         sudo chroot "$MOUNT_DIR" /tmp/setup.sh
     fi
     sudo rm -f "${MOUNT_DIR}/tmp/setup.sh"
+fi
+
+# Enable services (runs after INSTALL_FILES + SETUP_SCRIPT so init scripts the
+# manifest references are already on disk).
+if [[ -n "${ENABLE_SERVICES:-}" ]]; then
+    echo "Enabling services: ${ENABLE_SERVICES}..."
+    IFS=' ' read -ra SERVICES <<< "$ENABLE_SERVICES"
+    for svc in "${SERVICES[@]}"; do
+        if [[ "$DISTRO" == "alpine" ]]; then
+            if ! sudo chroot "$MOUNT_DIR" /bin/sh -c "rc-update add ${svc} default"; then
+                echo "ERROR: Failed to enable service '${svc}' — does it exist in the image?"
+                exit 1
+            fi
+        else
+            if ! sudo chroot "$MOUNT_DIR" /bin/bash -c "systemctl enable ${svc}"; then
+                echo "ERROR: Failed to enable service '${svc}'"
+                exit 1
+            fi
+        fi
+    done
 fi
 
 # Step 6: Clean up and unmount

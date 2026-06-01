@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+# K3s server control plane. v1 = single-node embedded etcd (eks-v1.md Q6).
+# --cluster-init bootstraps a new etcd quorum on first start; subsequent
+# starts pick up the existing data dir at /var/lib/rancher/k3s. v2 HA grows
+# the cluster by launching additional eks-server VMs with --server pointing
+# at the existing NLB endpoint (Q17) — no AMI change required.
+
+description="K3s Kubernetes server (Mulga EKS control plane)"
+command="/usr/local/bin/k3s"
+command_args="server --config /etc/rancher/k3s/config.yaml"
+command_background="yes"
+pidfile="/run/k3s.pid"
+output_log="/var/log/k3s.log"
+error_log="/var/log/k3s.log"
+
+# Generous start timeout — K3s bootstraps containerd, runs etcd cluster-init,
+# pulls system images. First boot can take 2-3 minutes on cold cache.
+start_stop_daemon_args="--wait 5000"
+
+depend() {
+    need net cgroups
+    after firewall
+}
+
+start_pre() {
+    # config.yaml is written by k3s-first-boot from the skeleton + cloud-init
+    # data. Refuse to start if neither exists.
+    if [ ! -f /etc/rancher/k3s/config.yaml ]; then
+        if [ -f /etc/rancher/k3s/config.yaml.skel ]; then
+            cp /etc/rancher/k3s/config.yaml.skel /etc/rancher/k3s/config.yaml
+        else
+            eerror "no /etc/rancher/k3s/config.yaml and no .skel to derive from"
+            return 1
+        fi
+    fi
+}

@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# eks-token-webhook — K8s TokenReview authenticator for IAM-backed kubectl.
+# Binds 127.0.0.1:8443 only; kube-apiserver is the sole client (loopback path).
+# Stub binary returns 503 on every request until cs-eks-6c lands.
+
+description="EKS Token Review webhook (Mulga)"
+command="/usr/local/bin/eks-token-webhook"
+command_args="--addr=127.0.0.1:8443"
+command_background="yes"
+pidfile="/run/eks-token-webhook.pid"
+output_log="/var/log/eks-token-webhook.log"
+error_log="/var/log/eks-token-webhook.log"
+
+depend() {
+    need net
+    before k3s
+}

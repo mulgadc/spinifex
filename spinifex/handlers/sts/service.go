@@ -17,10 +17,25 @@ type STSService interface {
 	// strings to keep the handler unit-testable.
 	AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 
+	// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a
+	// projected K8s ServiceAccount token signed by an EKS cluster's
+	// per-cluster signing key) for short-lived AWS credentials bound to the
+	// target IAM role. Called anonymously — the caller is identified by the
+	// iss/sub/aud claims of the supplied JWT, not by SigV4.
+	AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
+
 	// GetCallerIdentity returns the authenticated principal's account / ARN /
 	// UserId. AWS allows every authenticated principal to call this; the
 	// gateway does not gate it with checkPolicy.
 	GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+
+	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for
+	// the sts:GetCallerIdentity action — the token shape produced by `aws
+	// eks get-token` — and resolves the calling principal. The EKS token
+	// webhook calls this over NATS as part of TokenReview processing.
+	// expectedClusterName is constant-time-compared against the signed
+	// X-K8s-Aws-Id header value to prevent cross-cluster replay.
+	VerifyPresignedGetCallerIdentity(presignedURL, expectedClusterName string) (*PresignedCallerIdentity, error)
 
 	// LookupSessionCredential resolves an access-key ID to its stored
 	// SessionCredential record. Used by the SigV4 middleware to verify

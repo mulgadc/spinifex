@@ -58,6 +58,9 @@ var stsActions = map[string]STSHandler{
 	"AssumeRole": stsHandler(func(c stsCaller, input *sts.AssumeRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.AssumeRole(c.accountID, c.arn, c.identity, input, gw.STSService)
 	}),
+	"AssumeRoleWithWebIdentity": stsHandler(func(_ stsCaller, input *sts.AssumeRoleWithWebIdentityInput, gw *GatewayConfig) (any, error) {
+		return gateway_sts.AssumeRoleWithWebIdentity(input, gw.STSService)
+	}),
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
@@ -66,10 +69,13 @@ var stsActions = map[string]STSHandler{
 // stsSkipPolicyCheck lists the actions whose authorization is NOT gated by an
 // IAM policy check on the caller. AssumeRole is gated by the target role's
 // trust policy (evaluated inside the handler); GetCallerIdentity is always
-// allowed per AWS so SDK init flows do not break.
+// allowed per AWS so SDK init flows do not break;
+// AssumeRoleWithWebIdentity is anonymous — caller is identified by the JWT,
+// not by SigV4 — and trust-policy-gated inside the handler.
 var stsSkipPolicyCheck = map[string]bool{
-	"AssumeRole":        true,
-	"GetCallerIdentity": true,
+	"AssumeRole":                true,
+	"AssumeRoleWithWebIdentity": true,
+	"GetCallerIdentity":         true,
 }
 
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {

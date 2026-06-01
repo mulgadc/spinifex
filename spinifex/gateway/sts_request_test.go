@@ -59,6 +59,14 @@ func (m *flexMockSTSService) VerifySessionToken(*handlers_sts.SessionCredential,
 	return true
 }
 
+func (m *flexMockSTSService) AssumeRoleWithWebIdentity(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
+func (m *flexMockSTSService) VerifyPresignedGetCallerIdentity(string, string) (*handlers_sts.PresignedCallerIdentity, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
 // stsRequestParams is the set of identity values the dispatcher pulls from
 // SigV4 context. Defaults work for a user principal in the global account.
 type stsRequestParams struct {

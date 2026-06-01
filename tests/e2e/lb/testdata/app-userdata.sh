@@ -4,8 +4,10 @@
 #   TCP:9000  echoes <hostname> for NLB suites
 INSTANCE_ID=$(hostname)
 
-mkdir -p /tmp/httpd && cd /tmp/httpd
+mkdir -p /tmp/httpd/alpha /tmp/httpd/beta && cd /tmp/httpd
 echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > index.html
+echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > alpha/index.html
+echo "{\"instance_id\": \"${INSTANCE_ID}\"}" > beta/index.html
 nohup python3 -m http.server 80 --bind 0.0.0.0 > /dev/null 2>&1 &
 
 cat > /tmp/tcp_echo.py << 'PYEOF'

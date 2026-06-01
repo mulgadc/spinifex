@@ -109,6 +109,10 @@ func TestLoadBalancer(t *testing.T) {
 		time.Sleep(15 * time.Second)
 		runModifyListenerSuite(t, client, fixture)
 	})
+	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
+		time.Sleep(15 * time.Second)
+		runListenerRulesSuite(t, client, fixture)
+	})
 }
 
 // --- Fixture: shared VPC, subnet, IGW, SG, app instances ----------------
@@ -791,6 +795,268 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 	modifyListenerDefaultTG(t, c, listener, tgB)
 	harness.WaitForTargetsHealthy(t, c, tgB, 2, label+" tgB (post-swap)", 2*time.Minute)
 	probeAtPort(t, f, priv, altPort, label+" after TG-swap (still port 8090, now tgB)")
+}
+
+// runListenerRulesSuite exercises ALB listener rules end-to-end:
+//
+//   - Two TGs with disjoint backends (app#0 -> tgA, app#1 -> tgB) so the probe
+//     responder identifies which TG actually served the request.
+//   - CreateRule path-pattern /alpha* -> tgB. Probe at /alpha/index.html must
+//     hit app#1 only; probe at / must still hit app#0 (default).
+//   - ModifyRule path-pattern /alpha* -> /beta*. Probe at /alpha/ now falls to
+//     the default rule (app#0).
+//   - DescribeRules lists the rule plus the synthetic default.
+//   - DeleteRule removes the rule entirely; probes route to default.
+//
+// Uses host-header on a parallel branch to verify a second condition field
+// reaches HAProxy as an ACL.
+func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	const label = "ALB internal ListenerRules"
+
+	require.Len(t, f.AppInstanceIDs, 2, label+" needs 2 app instances")
+	appA, appB := f.AppInstanceIDs[0], f.AppInstanceIDs[1]
+
+	tgA := createTargetGroup(t, c, f, "lb-e2e-rul-tg-a", "HTTP", httpPort, "/index.html")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgA) })
+	tgB := createTargetGroup(t, c, f, "lb-e2e-rul-tg-b", "HTTP", httpPort, "/alpha/index.html")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgB) })
+
+	registerTargets(t, c, tgA, []string{appA})
+	t.Cleanup(func() { deregisterTargets(t, c, tgA, []string{appA}) })
+	registerTargets(t, c, tgB, []string{appB})
+	t.Cleanup(func() { deregisterTargets(t, c, tgB, []string{appB}) })
+
+	lb := createLB(t, c, f, "lb-e2e-rul", "application", "internal")
+	t.Cleanup(func() { deleteLB(t, c, lb) })
+	listener := createListener(t, c, lb.ARN, "HTTP", httpPort, tgA)
+	t.Cleanup(func() { deleteListener(t, c, listener) })
+
+	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	harness.WaitForTargetsHealthy(t, c, tgA, 1, label+" tgA", 2*time.Minute)
+	harness.WaitForTargetsHealthy(t, c, tgB, 1, label+" tgB", 2*time.Minute)
+
+	eni := lbENI(t, c, "app", lb)
+	priv := privateIP(eni)
+	require.NotEmpty(t, priv, label+" needs private IP")
+
+	waitForPathServing(t, f, priv, httpPort, "/", "", label+" baseline", 60*time.Second)
+	base := probeAtPath(t, f, priv, httpPort, "/", "", label+" default -> tgA")
+	require.Equal(t, 1, base.Unique(), label+" default expects 1 responder (tgA single backend)")
+	appAHost := singleResponder(base)
+
+	// CreateRule: path-pattern /alpha* -> tgB.
+	ruleArn := createPathRule(t, c, listener, 10, "/alpha*", tgB)
+	ruleCleanup := func() {
+		if ruleArn == "" {
+			return
+		}
+		deleteRule(t, c, ruleArn)
+	}
+	t.Cleanup(ruleCleanup)
+
+	waitForPathRouted(t, f, priv, httpPort, "/alpha/", "", appAHost, label+" wait rule active", 60*time.Second)
+	ruleResp := probeAtPath(t, f, priv, httpPort, "/alpha/", "", label+" path /alpha/ -> tgB")
+	require.Equal(t, 1, ruleResp.Unique(), label+" rule probe expects 1 responder")
+	appBHost := singleResponder(ruleResp)
+	require.NotEqual(t, appAHost, appBHost, label+" /alpha/ must route to tgB, not default")
+
+	// Default route unaffected by rule.
+	stillDefault := probeAtPath(t, f, priv, httpPort, "/", "", label+" default unchanged")
+	require.Equal(t, 1, stillDefault.Unique())
+	assert.Equal(t, appAHost, singleResponder(stillDefault), label+" / must still hit tgA")
+
+	// DescribeRules: rule + default present.
+	rules := describeRules(t, c, listener)
+	assert.GreaterOrEqual(t, len(rules), 2, label+" expect rule + default")
+	assert.True(t, hasRule(rules, ruleArn), label+" CreateRule arn must appear in DescribeRules")
+
+	// ModifyRule: /alpha* -> /beta*. /alpha now falls back to default.
+	modifyPathRule(t, c, ruleArn, "/beta*")
+	waitForPathRouted(t, f, priv, httpPort, "/beta/", appAHost, appAHost, label+" wait modify active", 60*time.Second)
+	modified := probeAtPath(t, f, priv, httpPort, "/alpha/", "", label+" /alpha/ falls to default after modify")
+	require.Equal(t, 1, modified.Unique())
+	assert.Equal(t, appAHost, singleResponder(modified), label+" /alpha/ should hit default after pattern change")
+
+	// /beta/ now routes to tgB.
+	betaResp := probeAtPath(t, f, priv, httpPort, "/beta/", "", label+" /beta/ -> tgB")
+	require.Equal(t, 1, betaResp.Unique())
+	assert.Equal(t, appBHost, singleResponder(betaResp), label+" /beta/ must hit tgB after modify")
+
+	// DeleteRule: /beta also falls to default.
+	deleteRule(t, c, ruleArn)
+	ruleArn = ""
+	waitForPathRouted(t, f, priv, httpPort, "/beta/", appBHost, appAHost, label+" wait delete active", 60*time.Second)
+	afterDelete := probeAtPath(t, f, priv, httpPort, "/beta/", "", label+" /beta/ after delete")
+	require.Equal(t, 1, afterDelete.Unique())
+	assert.Equal(t, appAHost, singleResponder(afterDelete), label+" /beta/ must hit default after delete")
+}
+
+// createPathRule adds a path-pattern listener rule. Returns the rule ARN.
+func createPathRule(t *testing.T, c *harness.AWSClient, listenerArn string, priority int64, pattern, tgArn string) string {
+	t.Helper()
+	out, err := c.ELBv2.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(listenerArn),
+		Priority:    aws.Int64(priority),
+		Conditions: []*elbv2.RuleCondition{{
+			Field: aws.String("path-pattern"),
+			PathPatternConfig: &elbv2.PathPatternConditionConfig{
+				Values: []*string{aws.String(pattern)},
+			},
+		}},
+		Actions: []*elbv2.Action{{
+			Type:           aws.String("forward"),
+			TargetGroupArn: aws.String(tgArn),
+		}},
+	})
+	require.NoErrorf(t, err, "create-rule priority=%d pattern=%s", priority, pattern)
+	require.NotEmpty(t, out.Rules)
+	arn := aws.StringValue(out.Rules[0].RuleArn)
+	t.Logf("rule %s: priority=%d path=%s -> %s", arn, priority, pattern, tgArn)
+	return arn
+}
+
+func modifyPathRule(t *testing.T, c *harness.AWSClient, ruleArn, pattern string) {
+	t.Helper()
+	_, err := c.ELBv2.ModifyRule(&elbv2.ModifyRuleInput{
+		RuleArn: aws.String(ruleArn),
+		Conditions: []*elbv2.RuleCondition{{
+			Field: aws.String("path-pattern"),
+			PathPatternConfig: &elbv2.PathPatternConditionConfig{
+				Values: []*string{aws.String(pattern)},
+			},
+		}},
+	})
+	require.NoErrorf(t, err, "modify-rule pattern=%s", pattern)
+	t.Logf("rule %s: path -> %s", ruleArn, pattern)
+}
+
+func deleteRule(t *testing.T, c *harness.AWSClient, ruleArn string) {
+	if ruleArn == "" {
+		return
+	}
+	if _, err := c.ELBv2.DeleteRule(&elbv2.DeleteRuleInput{RuleArn: aws.String(ruleArn)}); err != nil {
+		t.Logf("delete rule %s: %v", ruleArn, err)
+	}
+}
+
+func describeRules(t *testing.T, c *harness.AWSClient, listenerArn string) []*elbv2.Rule {
+	t.Helper()
+	out, err := c.ELBv2.DescribeRules(&elbv2.DescribeRulesInput{
+		ListenerArn: aws.String(listenerArn),
+	})
+	require.NoError(t, err, "describe-rules")
+	return out.Rules
+}
+
+func hasRule(rules []*elbv2.Rule, arn string) bool {
+	for _, r := range rules {
+		if aws.StringValue(r.RuleArn) == arn {
+			return true
+		}
+	}
+	return false
+}
+
+func singleResponder(r harness.TrafficResult) string {
+	for k := range r.Distribution {
+		return k
+	}
+	return ""
+}
+
+// probeAtPath drives the shared client to issue probesPerRun probes at
+// lbIP:port with the given path and optional Host header, asserting that at
+// least half succeed. Returns the parsed distribution so callers can assert
+// which backend(s) served.
+func probeAtPath(t *testing.T, f *sharedFixture, lbIP string, port int64, path, host, label string) harness.TrafficResult {
+	t.Helper()
+	r, err := probeOnceAt(f, lbIP, port, path, host, probesPerRun)
+	require.NoErrorf(t, err, "trigger probe %s", label)
+	for inst, count := range r.Distribution {
+		t.Logf("  %s: %s -> %d", label, inst, count)
+	}
+	t.Logf("  %s: %d/%d successful, %d unique", label, r.Successful, r.Total, r.Unique())
+	require.GreaterOrEqualf(t, r.Successful, probesPerRun/2, "%s probes succeeded", label)
+	return r
+}
+
+// waitForPathServing polls until the path/host combination returns any
+// successful response. Use after CreateRule/ModifyRule/DeleteRule to bridge
+// the lb-agent reconcile window.
+func waitForPathServing(t *testing.T, f *sharedFixture, lbIP string, port int64, path, host, label string, timeout time.Duration) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		r, err := probeOnceAt(f, lbIP, port, path, host, 2)
+		if err != nil {
+			return err
+		}
+		if r.Successful == 0 {
+			return fmt.Errorf("%s: 0/%d successful", label, r.Total)
+		}
+		return nil
+	}, timeout, 2*time.Second)
+}
+
+// waitForPathRouted polls until the path probe stops returning oldHost and
+// instead returns newHost. Uses 2-probe samples to keep the poll cheap.
+// oldHost may equal newHost when the caller just wants to wait for any
+// successful response from newHost.
+func waitForPathRouted(t *testing.T, f *sharedFixture, lbIP string, port int64, path, oldHost, newHost, label string, timeout time.Duration) {
+	t.Helper()
+	harness.EventuallyErr(t, func() error {
+		r, err := probeOnceAt(f, lbIP, port, path, "", 2)
+		if err != nil {
+			return err
+		}
+		if r.Successful == 0 {
+			return fmt.Errorf("%s: 0/%d successful", label, r.Total)
+		}
+		if oldHost != "" && oldHost != newHost && r.Distribution[oldHost] > 0 {
+			return fmt.Errorf("%s: still seeing old host %s", label, oldHost)
+		}
+		if r.Distribution[newHost] == 0 {
+			return fmt.Errorf("%s: new host %s not yet observed", label, newHost)
+		}
+		return nil
+	}, timeout, 2*time.Second)
+}
+
+// probeOnceAt is probeOnce with explicit path + Host-header support. Returns
+// errors rather than failing so callers can poll.
+func probeOnceAt(f *sharedFixture, lbIP string, port int64, path, host string, count int) (harness.TrafficResult, error) {
+	resultsFile := fmt.Sprintf("rul-%d-%d.txt", port, time.Now().UnixNano())
+	order := map[string]any{
+		"proto":     "http",
+		"ip":        lbIP,
+		"count":     count,
+		"outfile":   resultsFile,
+		"http_port": port,
+		"http_path": path,
+		"host":      host,
+		"tcp_port":  tcpPort,
+	}
+	body, err := json.Marshal(order)
+	if err != nil {
+		return harness.TrafficResult{}, err
+	}
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("trigger: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return harness.TrafficResult{}, fmt.Errorf("trigger status %d", resp.StatusCode)
+	}
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	if err != nil {
+		return harness.TrafficResult{}, fmt.Errorf("fetch %s: %w", resultsFile, err)
+	}
+	return harness.VerifyResultsLines(results, "http"), nil
 }
 
 // waitForListenerServing polls the shared client with a tiny round of probes

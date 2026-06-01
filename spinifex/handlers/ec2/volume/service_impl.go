@@ -161,7 +161,6 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 			AvailabilityZone: *input.AvailabilityZone,
 			VolumeType:       volumeType,
 			IOPS:             iops,
-			IsEncrypted:      false,
 			SnapshotID:       snapshotID,
 		},
 	}
@@ -230,7 +229,7 @@ func (s *VolumeServiceImpl) CreateVolume(input *ec2.CreateVolumeInput, accountID
 		AvailabilityZone: input.AvailabilityZone,
 		CreateTime:       aws.Time(now),
 		Iops:             aws.Int64(int64(iops)),
-		Encrypted:        aws.Bool(false),
+		Encrypted:        aws.Bool(mkey != nil),
 	}
 
 	if snapshotID != "" {
@@ -904,7 +903,7 @@ type volumeResult struct {
 // getVolumeByID fetches a single volume's config from S3 and builds an EC2 Volume.
 // Returns the volume and the stored TenantID for account scoping.
 func (s *VolumeServiceImpl) getVolumeByID(volumeID string) (*volumeResult, error) {
-	cfg, err := s.GetVolumeConfig(volumeID)
+	cfg, encryptionEnabled, err := s.getVolumeConfigAndEncryption(volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -937,7 +936,7 @@ func (s *VolumeServiceImpl) getVolumeByID(volumeID string) (*volumeResult, error
 		AvailabilityZone: aws.String(volMeta.AvailabilityZone),
 		CreateTime:       aws.Time(volMeta.CreatedAt),
 		VolumeType:       aws.String(volumeType),
-		Encrypted:        aws.Bool(volMeta.IsEncrypted),
+		Encrypted:        aws.Bool(encryptionEnabled),
 	}
 
 	if volMeta.IOPS > 0 {
@@ -977,6 +976,15 @@ type volumeConfigWrapper struct {
 
 // GetVolumeConfig reads the raw VolumeConfig from S3 for a given volume ID.
 func (s *VolumeServiceImpl) GetVolumeConfig(volumeID string) (*viperblock.VolumeConfig, error) {
+	cfg, _, err := s.getVolumeConfigAndEncryption(volumeID)
+	return cfg, err
+}
+
+// getVolumeConfigAndEncryption reads config.json and surfaces both the
+// VolumeConfig and the authoritative VBState.EncryptionEnabled flag. Wrapper-
+// only blobs (pre-VBState volumes or freshly-seeded test fixtures) report
+// encryptionEnabled=false — they predate encryption-at-rest by construction.
+func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*viperblock.VolumeConfig, bool, error) {
 	configKey := volumeID + "/config.json"
 
 	getResult, err := s.store.GetObject(&s3.GetObjectInput{
@@ -985,23 +993,31 @@ func (s *VolumeServiceImpl) GetVolumeConfig(volumeID string) (*viperblock.Volume
 	})
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
-			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+			return nil, false, errors.New(awserrors.ErrorInvalidVolumeNotFound)
 		}
-		return nil, fmt.Errorf("failed to get config: %w", err)
+		return nil, false, fmt.Errorf("failed to get config: %w", err)
 	}
 	defer getResult.Body.Close()
 
 	body, err := io.ReadAll(getResult.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config body: %w", err)
+		return nil, false, fmt.Errorf("failed to read config body: %w", err)
+	}
+
+	// Try full VBState first (matches mergeVolumeConfig's careful decode
+	// pattern). A populated BlockSize is the marker that the blob is a full
+	// state rather than a wrapper-only fallback.
+	var state viperblock.VBState
+	if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&state); decodeErr == nil && state.BlockSize != 0 {
+		return &state.VolumeConfig, state.EncryptionEnabled, nil
 	}
 
 	var wrapper volumeConfigWrapper
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		return nil, false, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	return &wrapper.VolumeConfig, nil
+	return &wrapper.VolumeConfig, false, nil
 }
 
 // putVolumeConfig writes a VolumeConfig back to S3 as config.json.

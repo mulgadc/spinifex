@@ -603,14 +603,29 @@ func TestGetVolumeByID_FullMetadata(t *testing.T) {
 		VolumeType:          "gp3",
 		IOPS:                5000,
 		SnapshotID:          "snap-abc",
-		IsEncrypted:         true,
 		AttachedInstance:    "i-12345",
 		DeviceName:          "/dev/nbd0",
 		DeleteOnTermination: true,
 		AttachedAt:          now,
 		Tags:                map[string]string{"Name": "test-vol", "env": "dev"},
 	}
-	createVolumeInStoreWithMeta(t, store, "vol-full", meta)
+	// Seed as a full VBState with EncryptionEnabled=true so getVolumeByID
+	// reports Encrypted via the authoritative VBState.EncryptionEnabled path.
+	state := viperblock.VBState{
+		VolumeName:        "vol-full",
+		VolumeSize:        meta.SizeGiB * 1024 * 1024 * 1024,
+		BlockSize:         4096,
+		EncryptionEnabled: true,
+		VolumeConfig:      viperblock.VolumeConfig{VolumeMetadata: meta},
+	}
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+	_, err = store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("vol-full/config.json"),
+		Body:   strings.NewReader(string(data)),
+	})
+	require.NoError(t, err)
 
 	result, err := svc.getVolumeByID("vol-full")
 	require.NoError(t, err)

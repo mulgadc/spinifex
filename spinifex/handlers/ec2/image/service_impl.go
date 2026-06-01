@@ -119,6 +119,7 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 	}
 
 	var images []*ec2.Image
+	encryptedAtRest := s.clusterEncryptionEnabled()
 
 	// Iterate over CommonPrefixes to find ami-* directories
 	for _, prefix := range result.CommonPrefixes {
@@ -267,7 +268,7 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 			BootMode:           aws.String(amiMeta.BootMode),
 		}
 
-		if bdms := synthesizeRootBlockDeviceMapping(amiMeta); bdms != nil {
+		if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 			image.RootDeviceName = aws.String("/dev/sda1")
 			image.BlockDeviceMappings = bdms
 		}
@@ -918,7 +919,7 @@ func (s *ImageServiceImpl) DescribeImageAttribute(input *ec2.DescribeImageAttrib
 	case ec2.ImageAttributeNameDescription:
 		output.Description = &ec2.AttributeValue{Value: aws.String(meta.Description)}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
-		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta)
+		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.clusterEncryptionEnabled())
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -927,9 +928,26 @@ func (s *ImageServiceImpl) DescribeImageAttribute(input *ec2.DescribeImageAttrib
 	return output, nil
 }
 
+// clusterEncryptionEnabled reports whether the daemon has a viperblock master
+// key configured. AMI metadata carries no per-image encryption flag, so block
+// device synthesis falls back to this cluster-level posture.
+func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
+	if s.config == nil {
+		return false
+	}
+	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.Warn("clusterEncryptionEnabled: failed to load master key, reporting false", "err", err)
+		return false
+	}
+	return mkey != nil
+}
+
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from
-// AMIMetadata, or nil for non-EBS AMIs.
-func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata) []*ec2.BlockDeviceMapping {
+// AMIMetadata, or nil for non-EBS AMIs. encrypted reflects the cluster-level
+// encryption-at-rest posture (master key configured) since AMI metadata does
+// not carry a per-image encryption flag of its own.
+func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil
 	}
@@ -937,7 +955,7 @@ func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata) []*ec2.BlockD
 		VolumeSize:          aws.Int64(utils.SafeUint64ToInt64(meta.VolumeSizeGiB)),
 		VolumeType:          aws.String("gp3"),
 		DeleteOnTermination: aws.Bool(true),
-		Encrypted:           aws.Bool(false),
+		Encrypted:           aws.Bool(encrypted),
 	}
 	if meta.SnapshotID != "" {
 		ebs.SnapshotId = aws.String(meta.SnapshotID)

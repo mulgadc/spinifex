@@ -147,6 +147,35 @@ func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
 	assert.Equal(t, "1.32-bumped", got.Version)
 }
 
+func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+
+	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
+	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "ca-blob-b64", got.CertificateAuthorityB64)
+
+	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
+	got, err = GetClusterMeta(kv, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "ca-blob-b64", got.CertificateAuthorityB64)
+}
+
+func TestSetClusterCertificateAuthority_MissingReturnsErrClusterNotFound(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+
+	err := SetClusterCertificateAuthority(kv, "ghost", "ca-blob")
+	require.ErrorIs(t, err, ErrClusterNotFound)
+}
+
+func TestSetClusterCertificateAuthority_EmptyInputsRejected(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+
+	require.Error(t, SetClusterCertificateAuthority(kv, "", "ca-blob"))
+	require.Error(t, SetClusterCertificateAuthority(kv, "alpha", ""))
+}
+
 func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 

@@ -215,7 +215,7 @@ func (m *Manager) spawnLoop(e Entry, reaffirm bool) {
 		existing.cancel()
 		delete(m.loops, e.Lease.ClientID)
 	}
-	loopCtx, cancel := context.WithCancel(m.parentCtx)
+	loopCtx, cancel := context.WithCancel(m.parentCtx) //nolint:gosec // cancel stored in leaseLoop and called on replacement/shutdown
 	loop := &leaseLoop{cancel: cancel}
 	m.loops[e.Lease.ClientID] = loop
 	m.wg.Add(1)

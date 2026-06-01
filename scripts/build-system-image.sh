@@ -134,7 +134,7 @@ if ! command -v qemu-img &>/dev/null; then
     exit 1
 fi
 
-if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null; then
+if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null && ! [[ -x /usr/sbin/parted ]]; then
     echo "ERROR: parted not found. Install parted."
     exit 1
 fi

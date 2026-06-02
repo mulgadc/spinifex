@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: cluster-post
+  description: |
+    Post-bootstrap idempotent fixtures on the init host: import SSH key,
+    import Ubuntu AMI (dual-version detect 24.04/26.04). Skip when
+    artifacts already exist.
+dependencies: []

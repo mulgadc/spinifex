@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: cluster-join
+  description: |
+    Run `spx admin join` against the cluster init host's formation server.
+    Installs cluster CA + starts spinifex.target after join completes
+    (CA-before-services ordering avoids predastore TLS-verify crashes).
+dependencies: []

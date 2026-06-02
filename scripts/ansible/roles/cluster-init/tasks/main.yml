@@ -1,0 +1,77 @@
+---
+- name: cluster-init — assert this is the init host
+  ansible.builtin.assert:
+    that: spinifex_node_role == "init"
+    fail_msg: "cluster-init role must only run against hosts in the [init] group"
+
+# vars/defaults.yml sets spinifex_node_{name,count} for single-node dev use
+# (precedence 11). Inventory hostvars (precedence 4) lose that fight, so
+# we promote the inventory values via set_fact (precedence 15) before any
+# task templates `{{ spinifex_node_count }}`.
+- name: cluster-init — promote inventory node identity over defaults.yml
+  ansible.builtin.set_fact:
+    spinifex_node_name: "{{ hostvars[inventory_hostname]['spinifex_node_name'] }}"
+    spinifex_node_count: "{{ groups[cluster_env] | length }}"
+
+- name: cluster-init — assemble external network flags
+  ansible.builtin.set_fact:
+    cluster_external_flags: >-
+      {% if cluster_external_pool | length > 0 %}--external-mode=pool --external-pool={{ cluster_external_pool }}{% endif %}
+
+- name: cluster-init — run spx admin init (backgrounded, formation server waits for joins)
+  become: true
+  ansible.builtin.shell: |
+    set -o pipefail
+    spx admin init --force \
+      --node {{ spinifex_node_name }} \
+      --nodes {{ spinifex_node_count }} \
+      --bind {{ spinifex_wan_ip }} \
+      --cluster-bind {{ spinifex_wan_ip }} \
+      --port {{ cluster_formation_port }} \
+      --region {{ spinifex_region }} \
+      --az {{ spinifex_az }} \
+      {{ cluster_external_flags }} \
+      > /tmp/spx-admin-init.log 2>&1
+  async: 600
+  poll: 0
+  register: cluster_init_async
+
+- name: cluster-init — brief pause so init can fail fast if misconfigured
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: cluster-init — check if init exited prematurely (sanity)
+  ansible.builtin.shell: |
+    if pgrep -f 'spx admin init' >/dev/null; then
+      echo "running"
+    else
+      tail -50 /tmp/spx-admin-init.log 2>/dev/null
+      exit 1
+    fi
+  register: cluster_init_alive
+  changed_when: false
+  failed_when: cluster_init_alive.rc != 0
+
+- name: cluster-init — wait for formation server health
+  ansible.builtin.uri:
+    url: "https://{{ spinifex_wan_ip }}:{{ cluster_formation_port }}/formation/health"
+    validate_certs: false
+    status_code: 200
+  register: cluster_init_health
+  until: cluster_init_health.status == 200
+  retries: "{{ cluster_formation_timeout // 2 }}"
+  delay: 2
+
+- name: cluster-init — fetch join token (delegated read for joiners)
+  become: true
+  ansible.builtin.slurp:
+    src: "{{ cluster_join_token_path }}"
+  register: cluster_join_token_raw
+
+- name: cluster-init — register join token as host fact
+  ansible.builtin.set_fact:
+    cluster_join_token: "{{ cluster_join_token_raw.content | b64decode | trim }}"
+
+- name: cluster-init — join token captured; waiting for joins handled by later play
+  ansible.builtin.debug:
+    msg: "Formation server up on {{ spinifex_wan_ip }}:{{ cluster_formation_port }}, {{ spinifex_node_count }} nodes expected"

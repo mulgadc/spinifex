@@ -77,6 +77,37 @@ jobs:
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
 
+      - name: Start Packet Capture (siv-167)
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' <<'REMOTE'
+          set -x
+          sudo mkdir -p /tmp/spinifex-diag
+          sudo chmod 0777 /tmp/spinifex-diag
+          sudo rm -f /tmp/spinifex-diag/br-wan.pcap /tmp/spinifex-diag/tcpdump.pid /tmp/spinifex-diag/tcpdump.log
+          sudo bash -c '
+            nohup tcpdump -i br-wan -nn -s 0 -U \
+              -w /tmp/spinifex-diag/br-wan.pcap \
+              "(tcp port 22 or tcp port 80 or tcp port 443 or tcp port 9999) or arp" \
+              </dev/null >/tmp/spinifex-diag/tcpdump.log 2>&1 &
+            echo $! > /tmp/spinifex-diag/tcpdump.pid
+          '
+          sleep 2
+          PID=$(cat /tmp/spinifex-diag/tcpdump.pid 2>/dev/null || echo "")
+          if [ -n "$PID" ] && sudo kill -0 "$PID" 2>/dev/null; then
+            echo "tcpdump running PID=$PID"
+            ls -la /tmp/spinifex-diag/
+          else
+            echo "tcpdump failed to start"
+            cat /tmp/spinifex-diag/tcpdump.log 2>&1 || true
+            exit 1
+          fi
+          REMOTE
+
       - name: Run E2E Tests
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -100,7 +131,14 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' > "$DIAG_DIR/collect.log" 2>&1 <<'REMOTE' || true
           set -x
           DIAG=/tmp/spinifex-diag
-          sudo rm -rf "$DIAG" && mkdir -p "$DIAG" && cd "$DIAG"
+          sudo mkdir -p "$DIAG" && cd "$DIAG"
+          if [ -f tcpdump.pid ]; then
+            PID=$(cat tcpdump.pid)
+            sudo kill -INT "$PID" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do sudo kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+            sudo kill -KILL "$PID" 2>/dev/null || true
+          fi
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
           sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
           sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
           sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
@@ -115,16 +153,24 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true
           sudo ip route > ip-route.txt 2>&1 || true
           sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
           sudo iptables-save > iptables.txt 2>&1 || true
           sudo nft list ruleset > nft.txt 2>&1 || true
           sudo dmesg --ctime > dmesg.txt 2>&1 || true
           sudo virsh list --all > virsh-list.txt 2>&1 || true
           ls -la /var/lib/spinifex /var/log/spinifex 2>&1 > spinifex-dirs.txt || true
+          sudo chmod -R a+r /tmp/spinifex-diag
           tar czf /tmp/spinifex-diag.tar.gz -C /tmp spinifex-diag
           REMOTE
           scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" \
@@ -217,6 +263,7 @@ jobs:
           set -x
           DIAG=/tmp/spinifex-diag
           sudo rm -rf "$DIAG" && mkdir -p "$DIAG" && cd "$DIAG"
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
           sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
           sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
           sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
@@ -231,11 +278,18 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true
           sudo ip route > ip-route.txt 2>&1 || true
           sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
           sudo iptables-save > iptables.txt 2>&1 || true
           sudo nft list ruleset > nft.txt 2>&1 || true
           sudo dmesg --ctime > dmesg.txt 2>&1 || true
@@ -347,6 +401,7 @@ jobs:
           set -x
           DIAG=/tmp/spinifex-diag
           sudo rm -rf "$DIAG" && mkdir -p "$DIAG" && cd "$DIAG"
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
           sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
           sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
           sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
@@ -361,11 +416,18 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true
           sudo ip route > ip-route.txt 2>&1 || true
           sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
           sudo iptables-save > iptables.txt 2>&1 || true
           sudo nft list ruleset > nft.txt 2>&1 || true
           sudo dmesg --ctime > dmesg.txt 2>&1 || true

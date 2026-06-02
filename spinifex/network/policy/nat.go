@@ -58,6 +58,17 @@ type NATManager interface {
 // `ovn-nbctl --wait=hv sync`; tests leave it nil.
 type FlowsBarrier func() error
 
+// GARPEmitter forces ovn-controller to emit a gratuitous ARP for the EIP so
+// upstream switches and host ARP caches relearn the MAC owning that IP.
+// Required after AddEIP when the external IP is being recycled onto a
+// different LR — ovn-controller skips its automatic GARP when the LSP
+// binding stays on the same chassis, leaving upstream ARP entries pointed
+// at the prior chassis-redirect MAC until the kernel ARP timeout expires
+// (60-300s).
+//
+// Best-effort: implementations return errors but callers warn and proceed.
+type GARPEmitter func(EIPSpec) error
+
 type Option func(*natManager)
 
 // WithFlowsBarrier injects the post-write flow-install barrier so callers
@@ -70,10 +81,22 @@ func WithFlowsBarrier(b FlowsBarrier) Option {
 	}
 }
 
+// WithGARPEmitter injects the post-AddEIP gratuitous-ARP hook. Without it,
+// AddEIP relies on OVN's automatic GARP-on-binding-migration, which does not
+// fire when the new LSP binds to the same chassis as the prior occupant.
+func WithGARPEmitter(g GARPEmitter) Option {
+	return func(m *natManager) {
+		if g != nil {
+			m.garp = g
+		}
+	}
+}
+
 type natManager struct {
 	ovn     ovn.Client
 	mode    NATMode
 	barrier FlowsBarrier
+	garp    GARPEmitter
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -88,6 +111,7 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 		ovn:     client,
 		mode:    mode,
 		barrier: func() error { return nil },
+		garp:    func(EIPSpec) error { return nil },
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -142,6 +166,9 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	}
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
+	}
+	if err := m.garp(eip); err != nil {
+		slog.Warn("policy: AddEIP gratuitous-ARP emission failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	return nil
 }

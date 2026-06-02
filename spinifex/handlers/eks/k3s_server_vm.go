@@ -74,6 +74,19 @@ const (
 	// k3sConfigPath is the K3s server config file cloud-init writes; K3s
 	// reads it at startup (overrides the AMI-baked config.yaml.skel).
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
+
+	// k3sResolvConfPath is the on-VM resolver file. The Alpine eks-server AMI
+	// runs dhcpcd, whose resolv.conf hook fails to persist the DHCP-supplied
+	// nameservers ("can't create /etc/resolv.conf: nonexistent directory"), so
+	// the VM boots with no resolver and containerd cannot resolve registry-1.
+	// docker.io to pull the system-pod images. cloud-init writes a static
+	// resolver here; the dhcpcd hook never clobbers it (it errors before it
+	// would). Reachable via the cluster's egress SNAT.
+	k3sResolvConfPath = "/etc/resolv.conf"
+
+	// k3sResolvConf is the static resolver content. Public anycast resolvers
+	// reached over the control-plane VM's egress path.
+	k3sResolvConf = "nameserver 1.1.1.1\nnameserver 8.8.8.8"
 )
 
 // K3sServerInput is the launcher's input shape. AccountID is the customer
@@ -369,6 +382,20 @@ func buildK3sUserData(in K3sServerInput) string {
 
 	var buf strings.Builder
 	buf.WriteString("#cloud-config\n")
+
+	// Resolver via bootcmd, NOT write_files: on the Alpine AMI /etc/resolv.conf
+	// is a dangling symlink (its target dir does not exist — which is why the
+	// dhcpcd hook cannot persist DHCP DNS), and pointing write_files at it makes
+	// cloud-init follow the dead link, fail, and abort the WHOLE write_files
+	// block (dropping first-boot.env + the k3s config). bootcmd runs before
+	// write_files in the init stage and as a shell, so it can drop the symlink
+	// and write a real file. Containerd needs this to resolve registry-1.docker.
+	// io for system-pod image pulls; reachable over the cluster egress SNAT.
+	buf.WriteString("bootcmd:\n")
+	buf.WriteString("  - rm -f " + k3sResolvConfPath + "\n")
+	fmt.Fprintf(&buf, "  - printf '%s\\n' > %s\n",
+		strings.ReplaceAll(k3sResolvConf, "\n", "\\n"), k3sResolvConfPath)
+
 	buf.WriteString("write_files:\n")
 	for _, f := range files {
 		fmt.Fprintf(&buf, "  - path: %s\n", f.Path)

@@ -256,6 +256,15 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.True(t, strings.HasPrefix(udata, "#cloud-config\n"))
 	assert.Contains(t, udata, "write_files:")
 
+	// Static resolver via bootcmd (NOT write_files — /etc/resolv.conf is a
+	// dangling symlink on the AMI; write_files would follow it, fail, and abort
+	// the whole block). Without it containerd image pulls cannot resolve.
+	assert.Contains(t, udata, "bootcmd:")
+	assert.Contains(t, udata, "rm -f "+k3sResolvConfPath)
+	assert.Contains(t, udata, "nameserver 1.1.1.1")
+	// Resolver must NOT be a write_files entry (that path is what broke seeding).
+	assert.NotContains(t, udata, "path: "+k3sResolvConfPath)
+
 	assert.Contains(t, udata, "path: "+k3sFirstBootEnvPath)
 	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
 	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")

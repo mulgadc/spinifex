@@ -33,6 +33,7 @@ type eksServiceFixture struct {
 	inst *fakeK3sInst
 	vpc  *fakeK3sVPC
 	ami  *fakeK3sAMI
+	eip  *fakeEIPProvisioner
 }
 
 func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
@@ -45,6 +46,7 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	inst := &fakeK3sInst{}
 	vpc := &fakeK3sVPC{}
 	ami := &fakeK3sAMI{}
+	eip := newFakeEIPProvisioner()
 
 	svc, err := NewEKSServiceImpl(EKSServiceDeps{
 		NATSConn:       nc,
@@ -61,11 +63,12 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		NLB:            nlb,
 		Instance:       inst,
 		Image:          ami,
+		EIP:            eip,
 	})
 	require.NoError(t, err)
 	t.Cleanup(svc.Shutdown)
 
-	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami}
+	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip}
 }
 
 // deleteClusterFixture is an eksServiceFixture pre-seeded with a CREATING

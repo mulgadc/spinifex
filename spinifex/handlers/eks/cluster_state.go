@@ -47,9 +47,14 @@ type ClusterMeta struct {
 	ControlPlaneInstanceID  string            `json:"controlPlaneInstanceId,omitempty"`
 	ControlPlaneENIID       string            `json:"controlPlaneEniId,omitempty"`
 	ControlPlaneENIIP       string            `json:"controlPlaneEniIp,omitempty"`
-	NLBArn                  string            `json:"nlbArn,omitempty"`
-	NLBTargetGroupArn       string            `json:"nlbTargetGroupArn,omitempty"`
-	CreatedAt               time.Time         `json:"createdAt"`
+	// EgressEIPAllocationID / EgressEIPPublicIP track the hidden pool address
+	// SNAT'd to the control-plane VM for egress-only internet (image pulls).
+	// Released + the snat removed on DeleteCluster.
+	EgressEIPAllocationID string    `json:"egressEipAllocationId,omitempty"`
+	EgressEIPPublicIP     string    `json:"egressEipPublicIp,omitempty"`
+	NLBArn                string    `json:"nlbArn,omitempty"`
+	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
+	CreatedAt             time.Time `json:"createdAt"`
 	// HealthIssue is the last /healthz probe failure reason for an ACTIVE
 	// cluster; empty means healthy. DescribeCluster surfaces a non-empty value
 	// as a ClusterHealth issue so a dead control plane is visible behind the

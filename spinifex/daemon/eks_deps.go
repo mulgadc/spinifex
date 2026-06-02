@@ -58,6 +58,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		NLB:            d.elbv2Service,
 		Instance:       d,
 		Image:          d.imageService,
+		EIP:            d.eipService,
 	}
 }
 

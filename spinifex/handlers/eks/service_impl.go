@@ -14,9 +14,12 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -52,6 +55,16 @@ type EKSServiceDeps struct {
 	NLB       nlbProvisioner
 	Instance  k3sInstanceLauncher
 	Image     k3sAMIResolver
+	EIP       eipProvisioner
+}
+
+// eipProvisioner is the narrow EIP surface CreateCluster needs to give the
+// hidden K3s control-plane VM an egress-only public IP (the distributed-NAT
+// dev/edge topology has no shared masquerade address). The daemon adapts the
+// concrete EIP service onto this.
+type eipProvisioner interface {
+	AllocateAddress(input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error)
+	ReleaseAddress(input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error)
 }
 
 // EKSServiceImpl is the daemon-side EKSService. CreateCluster /
@@ -217,6 +230,9 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	if s.deps.Image == nil {
 		missing = append(missing, "Image")
 	}
+	if s.deps.EIP == nil {
+		missing = append(missing, "EIP")
+	}
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
 	}
@@ -371,8 +387,25 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	meta.ControlPlaneENIID = k3sOut.ENIID
 	meta.ControlPlaneENIIP = k3sOut.ENIIP
 
-	// Record the VM + ENI before registering the target so a failed register
-	// (or anything after) leaves them recoverable by DeleteCluster.
+	// Egress: the control-plane VM must pull container images. Allocate a
+	// hidden pool address and wire an egress-only SNAT for its /32 (no DNAT —
+	// the VM stays unreachable inbound; the NLB is its only front door).
+	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, fmt.Errorf("allocate cluster egress IP: %w", err)
+	}
+	meta.EgressEIPAllocationID = egressAllocID
+	meta.EgressEIPPublicIP = egressIP
+	utils.PublishEvent(s.deps.NATSConn, "vpc.add-system-egress", systemEgressEvent{
+		VpcId:      vpcID,
+		SubnetId:   subnetIDs[0],
+		InstanceIp: k3sOut.ENIIP,
+		ExternalIp: egressIP,
+	})
+
+	// Record the VM + ENI + egress IP before registering the target so a failed
+	// register (or anything after) leaves them recoverable by DeleteCluster.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
 		return nil, fmt.Errorf("persist control-plane ids: %w", err)
@@ -391,6 +424,36 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	s.spawnReconciler(accountID, name, meta)
 
 	return &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+}
+
+// systemEgressEvent is the wire shape for vpc.add-system-egress /
+// vpc.delete-system-egress (mirrors network/subscribers.SystemEgressEvent;
+// kept local to avoid importing the network layer from a handler).
+type systemEgressEvent struct {
+	VpcId      string `json:"vpc_id"`
+	SubnetId   string `json:"subnet_id"`
+	InstanceIp string `json:"instance_ip"`
+	ExternalIp string `json:"external_ip"`
+}
+
+// allocateClusterEgressIP allocates a hidden pool address for the cluster's
+// control-plane VM egress, tagged ManagedBy=eks so it stays out of customer
+// DescribeAddresses listings.
+func (s *EKSServiceImpl) allocateClusterEgressIP(accountID, name string) (publicIP, allocationID string, err error) {
+	out, err := s.deps.EIP.AllocateAddress(&ec2.AllocateAddressInput{
+		Domain: aws.String("vpc"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("elastic-ip"),
+			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}},
+		}},
+	}, accountID)
+	if err != nil {
+		return "", "", err
+	}
+	if out == nil || aws.StringValue(out.PublicIp) == "" || aws.StringValue(out.AllocationId) == "" {
+		return "", "", errors.New("eks: AllocateAddress returned incomplete EIP")
+	}
+	return aws.StringValue(out.PublicIp), aws.StringValue(out.AllocationId), nil
 }
 
 func (s *EKSServiceImpl) DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error) {
@@ -528,6 +591,32 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
 			accountID, meta.ControlPlaneInstanceID, meta.ControlPlaneENIID); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM: %w", err))
+		}
+	}
+
+	// Egress: drop the OVN reroute+snat (fire-and-forget event, prune-safe) and
+	// release the hidden pool address. ReleaseAddress is blocking — the EIP is
+	// billable and its allocation ID lives in the meta we are about to erase, so
+	// a release failure must not let the KV sweep orphan it.
+	if meta.EgressEIPPublicIP != "" || meta.EgressEIPAllocationID != "" {
+		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" && meta.ControlPlaneENIIP != "" {
+			subnetID := ""
+			if len(meta.ResourcesVpcConfig.SubnetIds) > 0 {
+				subnetID = meta.ResourcesVpcConfig.SubnetIds[0]
+			}
+			utils.PublishEvent(s.deps.NATSConn, "vpc.delete-system-egress", systemEgressEvent{
+				VpcId:      meta.ResourcesVpcConfig.VpcId,
+				SubnetId:   subnetID,
+				InstanceIp: meta.ControlPlaneENIIP,
+				ExternalIp: meta.EgressEIPPublicIP,
+			})
+		}
+		if meta.EgressEIPAllocationID != "" {
+			if _, err := s.deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{
+				AllocationId: aws.String(meta.EgressEIPAllocationID),
+			}, accountID); err != nil {
+				teardownErrs = append(teardownErrs, fmt.Errorf("release egress EIP: %w", err))
+			}
 		}
 	}
 

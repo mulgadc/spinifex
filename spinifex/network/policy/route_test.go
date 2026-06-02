@@ -131,6 +131,128 @@ func TestRouteManager_AddSubnetEgress_InstallsScopedPolicy(t *testing.T) {
 	assert.Equal(t, "gw-vpc-1", p.ExternalIDs["spinifex:output_port"])
 }
 
+func TestRouteManager_AddSystemInstanceEgress_InstallsScopedPolicy(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", SystemInstanceEgressSpec{
+		SubnetID:   "subnet-k3s",
+		SrcIP:      netip.MustParseAddr("172.31.4.10"),
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+	}))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	p := policies[0]
+	assert.Equal(t, "reroute", p.Action)
+	assert.Equal(t, SystemInstanceEgressPriority, p.Priority)
+	require.NotNil(t, p.Nexthop)
+	assert.Equal(t, "192.168.1.1", *p.Nexthop)
+	// Scoped to the single instance /32 source so peers in the subnet are untouched.
+	assert.Contains(t, p.Match, "ip4.src == 172.31.4.10/32")
+	assert.Contains(t, p.Match, topology.SubnetRouterPort("subnet-k3s"))
+	assert.Equal(t, "172.31.4.10", p.ExternalIDs["spinifex:src_ip"])
+	assert.Equal(t, "system-instance-egress", p.ExternalIDs["spinifex:role"])
+}
+
+func TestRouteManager_AddSystemInstanceEgress_IsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	spec := SystemInstanceEgressSpec{
+		SubnetID:   "subnet-k3s",
+		SrcIP:      netip.MustParseAddr("172.31.4.10"),
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+	}
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Len(t, policies, 1)
+}
+
+func TestRouteManager_AddSystemInstanceEgress_DriftReplacesNexthop(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	spec := SystemInstanceEgressSpec{
+		SubnetID:   "subnet-k3s",
+		SrcIP:      netip.MustParseAddr("172.31.4.10"),
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+	}
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
+	spec.Nexthop = "192.168.1.254"
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", spec))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].Nexthop)
+	assert.Equal(t, "192.168.1.254", *policies[0].Nexthop)
+}
+
+func TestRouteManager_AddSystemInstanceEgress_RejectsMissingFields(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	valid := SystemInstanceEgressSpec{
+		SubnetID:   "subnet-k3s",
+		SrcIP:      netip.MustParseAddr("172.31.4.10"),
+		Prefix:     netip.MustParsePrefix("0.0.0.0/0"),
+		Nexthop:    "192.168.1.1",
+		OutputPort: "gw-vpc-1",
+	}
+
+	noSubnet := valid
+	noSubnet.SubnetID = ""
+	assert.Error(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", noSubnet))
+
+	noSrc := valid
+	noSrc.SrcIP = netip.Addr{}
+	assert.Error(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", noSrc))
+
+	noPort := valid
+	noPort.OutputPort = ""
+	assert.Error(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", noPort))
+}
+
+func TestRouteManager_DeleteSystemInstanceEgress_RemovesAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	rm := NewRouteManager(m)
+
+	src := netip.MustParseAddr("172.31.4.10")
+	prefix := netip.MustParsePrefix("0.0.0.0/0")
+	require.NoError(t, rm.AddSystemInstanceEgress(ctx, "vpc-1", SystemInstanceEgressSpec{
+		SubnetID: "subnet-k3s", SrcIP: src, Prefix: prefix, Nexthop: "192.168.1.1", OutputPort: "gw-vpc-1",
+	}))
+
+	require.NoError(t, rm.DeleteSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", src, prefix, nil))
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+	// Idempotent on a missing policy.
+	require.NoError(t, rm.DeleteSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", src, prefix, nil))
+}
+
 func TestRouteManager_AddSubnetEgress_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

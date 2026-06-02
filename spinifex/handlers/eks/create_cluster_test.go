@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -181,4 +182,29 @@ func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	assert.NotEmpty(t, meta.NLBArn)
 	assert.NotEmpty(t, meta.ControlPlaneInstanceID)
 	assert.NotEmpty(t, meta.ControlPlaneENIID)
+}
+
+func TestCreateCluster_AllocatesHiddenEgressEIP(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.CreateCluster(createInput("egress"), testAccountID)
+	require.NoError(t, err)
+
+	meta, err := GetClusterMeta(f.kv, "egress")
+	require.NoError(t, err)
+	assert.Equal(t, f.eip.publicIP, meta.EgressEIPPublicIP)
+	assert.Equal(t, f.eip.allocationID, meta.EgressEIPAllocationID)
+
+	require.Len(t, f.eip.allocateCalls, 1)
+	// The pool address is tagged ManagedBy=eks so it stays out of customer
+	// DescribeAddresses listings.
+	tagged := false
+	for _, spec := range f.eip.allocateCalls[0].TagSpecifications {
+		for _, tg := range spec.Tags {
+			if aws.StringValue(tg.Key) == tags.ManagedByKey && aws.StringValue(tg.Value) == tags.ManagedByEKS {
+				tagged = true
+			}
+		}
+	}
+	assert.True(t, tagged, "egress EIP must carry the ManagedBy=eks tag")
 }

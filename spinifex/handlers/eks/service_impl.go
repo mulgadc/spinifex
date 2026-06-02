@@ -2,8 +2,6 @@ package handlers_eks
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -285,15 +283,10 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	}
 	meta.OIDCIssuer = oidcIssuer
 
-	if _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey); err != nil {
-		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("generate OIDC keypair: %w", err)
-	}
-
-	privPEM, err := s.loadOIDCPrivateKeyPEM(acctKV, name)
+	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, err
+		return nil, fmt.Errorf("generate OIDC keypair: %w", err)
 	}
 
 	k3sOut, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, K3sServerInput{
@@ -656,18 +649,6 @@ func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
 	if err := SetClusterStatus(kv, name, ClusterStatusFailed); err != nil {
 		slog.Warn("CreateCluster: SetClusterStatus(FAILED) failed", "cluster", name, "err", err)
 	}
-}
-
-func (s *EKSServiceImpl) loadOIDCPrivateKeyPEM(kv nats.KeyValue, name string) (string, error) {
-	priv, err := LoadClusterOIDCPrivateKey(kv, name, s.deps.MasterKey)
-	if err != nil {
-		return "", fmt.Errorf("load OIDC private key: %w", err)
-	}
-	pkcs8, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return "", fmt.Errorf("marshal pkcs8: %w", err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})), nil
 }
 
 // spawnBootstrap launches the one-shot NATS bootstrap subscriber for a cluster.

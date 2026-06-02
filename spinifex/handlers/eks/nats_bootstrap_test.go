@@ -44,7 +44,7 @@ func newBootstrapHarness(t *testing.T) *natsBootstrapHarness {
 
 	// Lay down the controller-generated JWKS so persistJWKS has something
 	// to cross-check against.
-	_, err = GenerateClusterOIDCKeypair(kv, bootstrapTestCluster, bootstrapTestMasterKey)
+	_, _, err = GenerateClusterOIDCKeypair(kv, bootstrapTestCluster, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
 	sub, err := NewNATSBootstrap(nc, kv, bootstrapTestMasterKey, testAccountID, bootstrapTestCluster)

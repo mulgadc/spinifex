@@ -94,7 +94,7 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	require.NoError(t, PutClusterMeta(kv, meta))
 
 	// Real OIDC key so ZeroizeClusterOIDCKey has material to wipe.
-	_, err := GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
+	_, _, err := GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
 	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc}

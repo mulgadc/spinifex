@@ -4,8 +4,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"testing"
 
@@ -25,7 +27,7 @@ var testMasterKey = func() []byte {
 func TestGenerateClusterOIDCKeypair_PersistsJWKSAndEncryptedPrivateKey(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
 	require.NotEmpty(t, jwksBytes)
 
@@ -40,10 +42,31 @@ func TestGenerateClusterOIDCKeypair_PersistsJWKSAndEncryptedPrivateKey(t *testin
 		"encrypted blob must not contain a PEM header")
 }
 
+// The generator returns the plaintext private-key PEM directly so CreateCluster
+// avoids a second KV read + decrypt; it must match the key persisted in KV.
+func TestGenerateClusterOIDCKeypair_ReturnsPrivateKeyPEMMatchingStored(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+
+	privPEM, _, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	require.NoError(t, err)
+	require.Contains(t, privPEM, "BEGIN PRIVATE KEY", "returned PEM must be plaintext")
+
+	block, _ := pem.Decode([]byte(privPEM))
+	require.NotNil(t, block)
+	returned, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	require.NoError(t, err)
+	returnedEC, ok := returned.(*ecdsa.PrivateKey)
+	require.True(t, ok)
+
+	stored, err := LoadClusterOIDCPrivateKey(kv, "alpha", testMasterKey)
+	require.NoError(t, err)
+	assert.True(t, stored.Equal(returnedEC), "returned PEM must match the persisted key")
+}
+
 func TestGenerateClusterOIDCKeypair_JWKSShapeIsRFC7517EC_P256(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
 
 	var doc oidcJWKS
@@ -68,9 +91,9 @@ func TestGenerateClusterOIDCKeypair_JWKSShapeIsRFC7517EC_P256(t *testing.T) {
 func TestGenerateClusterOIDCKeypair_TwoCallsProduceDistinctKeys(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	a, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, a, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
-	b, err := GenerateClusterOIDCKeypair(kv, "beta", testMasterKey)
+	_, b, err := GenerateClusterOIDCKeypair(kv, "beta", testMasterKey)
 	require.NoError(t, err)
 	assert.NotEqual(t, a, b, "JWKS for distinct clusters must differ")
 }
@@ -78,16 +101,16 @@ func TestGenerateClusterOIDCKeypair_TwoCallsProduceDistinctKeys(t *testing.T) {
 func TestGenerateClusterOIDCKeypair_EmptyArgsRejected(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	_, err := GenerateClusterOIDCKeypair(kv, "", testMasterKey)
+	_, _, err := GenerateClusterOIDCKeypair(kv, "", testMasterKey)
 	require.Error(t, err)
-	_, err = GenerateClusterOIDCKeypair(kv, "alpha", nil)
+	_, _, err = GenerateClusterOIDCKeypair(kv, "alpha", nil)
 	require.Error(t, err)
 }
 
 func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 
-	jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, jwksBytes, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
 
 	priv, err := LoadClusterOIDCPrivateKey(kv, "alpha", testMasterKey)
@@ -110,7 +133,7 @@ func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
 
 func TestLoadClusterOIDCPrivateKey_WrongMasterKeyFails(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	_, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, _, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
 
 	other := make([]byte, 32)
@@ -127,7 +150,7 @@ func TestLoadClusterOIDCPrivateKey_MissingReturnsErrClusterNotFound(t *testing.T
 
 func TestZeroizeClusterOIDCKey_DeletesKeyAndLeavesSiblingsIntact(t *testing.T) {
 	kv := newClusterStateTestKV(t)
-	_, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	_, _, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
 	require.NoError(t, err)
 
 	require.NoError(t, ZeroizeClusterOIDCKey(kv, "alpha"))

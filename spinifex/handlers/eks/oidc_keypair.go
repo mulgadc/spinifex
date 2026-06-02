@@ -40,43 +40,44 @@ const p256CoordLen = 32
 // GenerateClusterOIDCKeypair creates a fresh ECDSA-P256 keypair for the
 // cluster, PEM-marshals the private key as PKCS8, envelope-encrypts the PEM
 // with masterKey, writes the ciphertext to OIDCSigningKeyKey and the JWKS
-// document to OIDCJWKSKey. Returns the JWKS bytes so the caller (CreateCluster)
-// can pass them straight through to user-data without a follow-up KV read.
-func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey []byte) ([]byte, error) {
+// document to OIDCJWKSKey. Returns the plaintext private-key PEM and the JWKS
+// bytes so the caller (CreateCluster) can pass them straight to user-data
+// without a follow-up KV read + decrypt.
+func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
 	if clusterName == "" {
-		return nil, errors.New("eks: GenerateClusterOIDCKeypair empty cluster name")
+		return "", nil, errors.New("eks: GenerateClusterOIDCKeypair empty cluster name")
 	}
 	if len(masterKey) == 0 {
-		return nil, errors.New("eks: GenerateClusterOIDCKeypair empty master key")
+		return "", nil, errors.New("eks: GenerateClusterOIDCKeypair empty master key")
 	}
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generate ECDSA-P256 key: %w", err)
+		return "", nil, fmt.Errorf("generate ECDSA-P256 key: %w", err)
 	}
 
 	pkcs8, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
-		return nil, fmt.Errorf("marshal pkcs8 private key: %w", err)
+		return "", nil, fmt.Errorf("marshal pkcs8 private key: %w", err)
 	}
 	pemBlock := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
 
 	ciphertext, err := handlers_iam.EncryptSecret(string(pemBlock), masterKey)
 	if err != nil {
-		return nil, fmt.Errorf("encrypt OIDC private key: %w", err)
+		return "", nil, fmt.Errorf("encrypt OIDC private key: %w", err)
 	}
 	if _, err := kv.Put(OIDCSigningKeyKey(clusterName), []byte(ciphertext)); err != nil {
-		return nil, fmt.Errorf("kv put %s: %w", OIDCSigningKeyKey(clusterName), err)
+		return "", nil, fmt.Errorf("kv put %s: %w", OIDCSigningKeyKey(clusterName), err)
 	}
 
-	jwksBytes, err := marshalJWKS(&priv.PublicKey)
+	jwksBytes, err = marshalJWKS(&priv.PublicKey)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if _, err := kv.Put(OIDCJWKSKey(clusterName), jwksBytes); err != nil {
-		return nil, fmt.Errorf("kv put %s: %w", OIDCJWKSKey(clusterName), err)
+		return "", nil, fmt.Errorf("kv put %s: %w", OIDCJWKSKey(clusterName), err)
 	}
-	return jwksBytes, nil
+	return string(pemBlock), jwksBytes, nil
 }
 
 // LoadClusterOIDCPrivateKey reads the encrypted PEM from KV, decrypts with

@@ -208,10 +208,11 @@ func GenerateMIGTypes(profiles []MIGProfileSpec, arch string) map[string]*ec2.In
 		if _, exists := types[name]; exists {
 			continue
 		}
+		vcpus, memMiB := MIGHostResources(p.Name)
 		types[name] = &ec2.InstanceTypeInfo{
 			InstanceType: aws.String(name),
-			VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(0)},
-			MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(0)},
+			VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(vcpus)},
+			MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(memMiB)},
 			ProcessorInfo: &ec2.ProcessorInfo{
 				SupportedArchitectures: []*string{aws.String(arch)},
 			},

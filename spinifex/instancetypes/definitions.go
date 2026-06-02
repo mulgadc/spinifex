@@ -1,6 +1,9 @@
 package instancetypes
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // GPUModel describes a GPU device model that maps to a specific GPU instance family.
 type GPUModel struct {
@@ -25,7 +28,8 @@ var (
 	NVIDIAa100sxm80 = GPUModel{"10de", "20b5", "p4de", "NVIDIA", "A100", 81920} // SXM4 80 GiB
 	NVIDIAh100sxm   = GPUModel{"10de", "2330", "p5", "NVIDIA", "H100", 81920}   // SXM5 80 GiB
 	NVIDIAh100pcie  = GPUModel{"10de", "2331", "p5", "NVIDIA", "H100", 81920}   // PCIe 80 GiB
-	NVIDIAh200sxm   = GPUModel{"10de", "2335", "p5e", "NVIDIA", "H200", 144384} // SXM5 141 GiB
+	NVIDIAh200sxm              = GPUModel{"10de", "2335", "p5e", "NVIDIA", "H200", 144384}                                   // SXM5 141 GiB
+	NVIDIArtxPro6000BlackwellSE = GPUModel{"10de", "2bb5", "g7e", "NVIDIA", "RTX Pro 6000 Blackwell Server Edition", 98304} // 96 GiB GDDR7
 
 	// AMD GPU models
 	AMDradeonV520 = GPUModel{"1002", "7362", "g4ad", "AMD", "Radeon Pro V520", 8192}
@@ -45,6 +49,7 @@ var knownGPUModels = []GPUModel{
 	NVIDIAh100sxm,
 	NVIDIAh100pcie,
 	NVIDIAh200sxm,
+	NVIDIArtxPro6000BlackwellSE,
 	AMDradeonV520,
 	AMDmi350x,
 }
@@ -224,7 +229,7 @@ var gr6Sizes = []instanceSize{
 	{"8xlarge", 32, 256},
 }
 
-// g7eSizes are the G7e instance sizes (AMD Instinct MI350X).
+// g7eSizes are the G7e instance sizes (NVIDIA RTX Pro 6000 Blackwell Server Edition / AMD Instinct MI350X).
 // 12xlarge carries 2 GPUs; sizes above that are excluded (require 4+ GPUs).
 var g7eSizes = []instanceSize{
 	{"2xlarge", 8, 64},
@@ -384,4 +389,74 @@ var instanceFamilyDefs = []instanceFamilyDef{
 	{name: "r8i", sizes: memorySizes, currentGen: true},
 	{name: "r8a", sizes: memorySizes, currentGen: true},
 	{name: "r8g", sizes: memorySizesSmall, currentGen: true},
+}
+
+// migHostResources maps a MIG profile name to the host vCPU count and memory
+// that EC2 instances of that type receive. MIG only partitions GPU resources;
+// host CPU/RAM allocation is a policy decision with no NVIDIA-defined mapping.
+//
+// Sizing rule: 4 vCPUs and 32 GiB host RAM per compute slice (the leading digit
+// in the profile name, e.g. "3g.40gb" = 3 slices → 12 vCPUs / 96 GiB).
+// This table covers all profiles defined by NVIDIA for A100, H100, H100 NVL,
+// H200, A30, and RTX Pro 6000 Blackwell Server Edition.
+var migHostResources = map[string]struct {
+	vcpus    int
+	memoryGB float64
+}{
+	// A100 40 GiB (7-way MIG)
+	"1g.5gb":  {4, 32},
+	"2g.10gb": {8, 64},
+	"3g.20gb": {12, 96},
+	"4g.20gb": {16, 128},
+	"7g.40gb": {28, 224},
+	// A100 80 GiB / H100 SXM 80 GiB (7-way MIG)
+	"1g.10gb": {4, 32},
+	"2g.20gb": {8, 64},
+	"3g.40gb": {12, 96},
+	"4g.40gb": {16, 128},
+	"7g.80gb": {28, 224},
+	// H100 NVL 94 GiB (7-way MIG)
+	"1g.12gb": {4, 32},
+	"2g.24gb": {8, 64},
+	"3g.47gb": {12, 96},
+	"4g.47gb": {16, 128},
+	"7g.94gb": {28, 224},
+	// H200 SXM 141 GiB (7-way MIG)
+	"1g.18gb":  {4, 32},
+	"2g.35gb":  {8, 64},
+	"4g.71gb":  {16, 128},
+	"7g.141gb": {28, 224},
+	// A30 24 GiB (4-way MIG)
+	"1g.6gb": {4, 32},
+	"2g.12gb": {8, 64},
+	"4g.24gb": {16, 128},
+	// RTX Pro 6000 Blackwell Server Edition 96 GiB (4-way MIG)
+	"1g.24gb": {4, 32},
+	"2g.48gb": {8, 64},
+	"4g.96gb": {16, 128},
+}
+
+// migHostDefault is used for unrecognised profile names. Mirrors a single
+// 1-slice allocation: conservative enough for the smallest known profiles.
+var migHostDefault = struct {
+	vcpus    int
+	memoryGB float64
+}{4, 32}
+
+// MIGHostResources returns the host vCPU count and memory in MiB to assign to
+// an EC2 instance of the given MIG profile name (e.g. "1g.10gb"). The profile
+// name is matched after stripping any hardware-specific suffixes (+gfx, -me,
+// +me) that nvidia-smi appends on some architectures. Returns a 4-vCPU /
+// 32-GiB default for profiles not present in the table.
+func MIGHostResources(profileName string) (vcpus, memMiB int64) {
+	// Strip Blackwell/Hopper suffixes that nvidia-smi appends.
+	clean := profileName
+	for _, suffix := range []string{"+gfx", "+me", "-me"} {
+		clean = strings.TrimSuffix(clean, suffix)
+	}
+	s, ok := migHostResources[clean]
+	if !ok {
+		s = migHostDefault
+	}
+	return int64(s.vcpus), int64(s.memoryGB * 1024)
 }

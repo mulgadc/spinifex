@@ -2,11 +2,13 @@ package handlers_eks
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
@@ -326,6 +328,41 @@ func TestTerminateK3sServerVM_InstanceErrorReturnedENIStillDeleted(t *testing.T)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "terminate instance i-aaa111")
 	require.Len(t, vpc.deleteCalls, 1, "ENI delete should still run after instance terminate fails")
+}
+
+func TestTerminateK3sServerVM_ENINotFoundIsIdempotent(t *testing.T) {
+	// A retried delete-cluster after the instance-terminate cascade already
+	// removed the ENI: DeleteNetworkInterface returns NotFound. This must be
+	// treated as success so the SG + KV sweep downstream is not blocked.
+	vpc := &fakeK3sVPC{deleteErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)}
+	inst := &fakeK3sInst{}
+
+	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
+	require.NoError(t, err, "ENI already gone must be idempotent success, not a blocking error")
+	require.Len(t, vpc.deleteCalls, 1)
+}
+
+func TestTerminateK3sServerVM_ENIInUseIsRetryable(t *testing.T) {
+	// The VM is still terminating async and holds the ENI. InUse must surface
+	// as an error so the cluster stays DELETING and the reconciler retries.
+	vpc := &fakeK3sVPC{deleteErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)}
+	inst := &fakeK3sInst{}
+
+	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
+	require.Error(t, err, "ENI still in use must be retryable, not swallowed")
+	assert.Contains(t, err.Error(), "delete ENI eni-aaa111")
+}
+
+func TestTerminateK3sServerVM_InstanceAlreadyGoneIsIdempotent(t *testing.T) {
+	// On a reconciler retry the VM already drained, so TerminateSystemInstance
+	// returns ErrSystemInstanceNotFound. This must not block teardown; the ENI
+	// delete still runs.
+	vpc := &fakeK3sVPC{}
+	inst := &fakeK3sInst{terminateErr: fmt.Errorf("%w: i-aaa111", sysinstance.ErrSystemInstanceNotFound)}
+
+	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
+	require.NoError(t, err, "instance already gone must be idempotent success")
+	require.Len(t, vpc.deleteCalls, 1, "ENI delete still runs after a tolerated instance-gone")
 }
 
 func assertEC2TaggedAsEKSControlPlane(t *testing.T, ec2Tags []*ec2.Tag, clusterName string) {

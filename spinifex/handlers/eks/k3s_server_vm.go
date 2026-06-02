@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
@@ -200,18 +201,38 @@ func TerminateK3sServerVM(
 	}
 	var firstErr error
 	if instanceID != "" {
+		// A retried DeleteCluster reaches here after the VM already drained, so
+		// "instance not found" is the steady-state success case, not a failure —
+		// treat it as idempotent so teardown can proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
-			slog.Warn("TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
-			firstErr = fmt.Errorf("terminate instance %s: %w", instanceID, err)
+			if errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
+				slog.Debug("TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
+			} else {
+				slog.Warn("TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
+				firstErr = fmt.Errorf("terminate instance %s: %w", instanceID, err)
+			}
 		}
 	}
 	if eniID != "" {
 		if _, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 			NetworkInterfaceId: aws.String(eniID),
 		}, accountID); err != nil {
-			slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
+			switch {
+			case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+				awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
+				// The instance-terminate cascade (or a prior retry) already
+				// deleted the ENI. Idempotent success — must NOT block the SG +
+				// KV sweep, or the cluster wedges in DELETING permanently.
+				slog.Debug("TerminateK3sServerVM: ENI already gone", "eniId", eniID)
+			default:
+				// InvalidNetworkInterface.InUse (the VM is still terminating
+				// async and holds the ENI) and any other error are retryable:
+				// surface so the cluster stays DELETING and the reconciler
+				// retries once the instance releases the ENI.
+				slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
+				}
 			}
 		}
 	}

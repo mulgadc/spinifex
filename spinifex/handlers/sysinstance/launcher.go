@@ -14,6 +14,15 @@
 // them as type aliases for source compatibility.
 package sysinstance
 
+import "errors"
+
+// ErrSystemInstanceNotFound is returned by TerminateSystemInstance when the
+// target instance is unknown to the daemon — already terminated, or never
+// present on this node. Teardown callers treat it as idempotent success so a
+// retried delete (e.g. EKS DeleteCluster after the VM already drained) does not
+// wedge forever on a VM that is legitimately gone.
+var ErrSystemInstanceNotFound = errors.New("sysinstance: instance not found")
+
 // BootMode selects how a system instance boots.
 type BootMode string
 

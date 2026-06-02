@@ -492,7 +492,7 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
-		return fmt.Errorf("instance %s not found", instanceID)
+		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was

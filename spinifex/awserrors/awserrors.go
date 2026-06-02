@@ -1,5 +1,7 @@
 package awserrors
 
+import "strings"
+
 type ErrorMessage struct {
 	HTTPCode int
 	Message  string
@@ -482,6 +484,15 @@ func ValidErrorCode(code string) string {
 		return code
 	}
 	return ErrorServerInternal
+}
+
+// IsErrorCode reports whether err carries the named AWS error code. Service
+// handlers return these codes as plain strings (errors.New(code)), commonly
+// wrapped with %w by orchestration callers, so the match is a substring test
+// against err.Error() rather than equality. Use it to classify a delete error
+// as idempotent (already-gone) or retryable (still-in-use) in teardown paths.
+func IsErrorCode(err error, code string) bool {
+	return err != nil && strings.Contains(err.Error(), code)
 }
 
 var ErrorLookup = map[string]ErrorMessage{

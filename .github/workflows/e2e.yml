@@ -87,18 +87,24 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' <<'REMOTE'
           set -x
           sudo mkdir -p /tmp/spinifex-diag
-          sudo rm -f /tmp/spinifex-diag/br-wan.pcap /tmp/spinifex-diag/tcpdump.pid
-          sudo nohup tcpdump -i br-wan -nn -s 0 -U \
-            -w /tmp/spinifex-diag/br-wan.pcap \
-            '(tcp port 22 or tcp port 80 or tcp port 443 or tcp port 9999) or arp' \
-            > /tmp/spinifex-diag/tcpdump.log 2>&1 &
-          echo $! | sudo tee /tmp/spinifex-diag/tcpdump.pid
-          sleep 1
-          if sudo kill -0 "$(cat /tmp/spinifex-diag/tcpdump.pid)" 2>/dev/null; then
-            echo "tcpdump running PID=$(cat /tmp/spinifex-diag/tcpdump.pid)"
+          sudo chmod 0777 /tmp/spinifex-diag
+          sudo rm -f /tmp/spinifex-diag/br-wan.pcap /tmp/spinifex-diag/tcpdump.pid /tmp/spinifex-diag/tcpdump.log
+          sudo bash -c '
+            nohup tcpdump -i br-wan -nn -s 0 -U \
+              -w /tmp/spinifex-diag/br-wan.pcap \
+              "(tcp port 22 or tcp port 80 or tcp port 443 or tcp port 9999) or arp" \
+              </dev/null >/tmp/spinifex-diag/tcpdump.log 2>&1 &
+            echo $! > /tmp/spinifex-diag/tcpdump.pid
+          '
+          sleep 2
+          PID=$(cat /tmp/spinifex-diag/tcpdump.pid 2>/dev/null || echo "")
+          if [ -n "$PID" ] && sudo kill -0 "$PID" 2>/dev/null; then
+            echo "tcpdump running PID=$PID"
+            ls -la /tmp/spinifex-diag/
           else
             echo "tcpdump failed to start"
-            sudo cat /tmp/spinifex-diag/tcpdump.log
+            cat /tmp/spinifex-diag/tcpdump.log 2>&1 || true
+            exit 1
           fi
           REMOTE
 

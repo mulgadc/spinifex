@@ -374,6 +374,50 @@ func TestAllocateForLaunch(t *testing.T) {
 	}
 }
 
+func TestCanAllocateLocked_MIGvsWholeGPU(t *testing.T) {
+	gpuInfo := &ec2.GpuInfo{
+		Gpus: []*ec2.GpuDeviceInfo{{
+			Count:        aws.Int64(1),
+			Manufacturer: aws.String("NVIDIA"),
+			Name:         aws.String("MIG 1g.10gb"),
+			MemoryInfo:   &ec2.GpuDeviceMemoryInfo{SizeInMiB: aws.Int64(10240)},
+		}},
+		TotalGpuMemoryInMiB: aws.Int64(10240),
+	}
+
+	// Host with 8 schedulable vCPUs and 32 GiB schedulable memory (after reserve).
+	rm := &ResourceManager{
+		hostVCPU:     10,
+		hostMemGB:    34.0,
+		reservedVCPU: 2,
+		reservedMem:  2.0,
+	}
+
+	migType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("mig.1g.10gb"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(4)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(32 * 1024)},
+		GpuInfo:      gpuInfo,
+	}
+	wholeGPUType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("g7e.4xlarge"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(16)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(128 * 1024)},
+		GpuInfo:      gpuInfo,
+	}
+
+	// MIG: exactly one slice fits (4 vCPUs, 32 GiB on an 8 vCPU / 32 GiB host).
+	assert.Equal(t, 1, rm.canAllocateLocked(migType, 10), "MIG: one slice fits")
+
+	// MIG: a second slice would exceed host resources — must be gated.
+	rm.allocatedVCPU = 4
+	rm.allocatedMem = 32.0
+	assert.Equal(t, 0, rm.canAllocateLocked(migType, 10), "MIG: second slice rejected when resources exhausted")
+
+	// Whole-GPU: resource check bypassed — count returned regardless of headroom.
+	assert.Equal(t, 10, rm.canAllocateLocked(wholeGPUType, 10), "whole-GPU: bypasses CPU/mem check")
+}
+
 func TestResolveHostReserve(t *testing.T) {
 	tests := []struct {
 		name     string

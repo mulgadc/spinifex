@@ -78,7 +78,7 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 		})
 
 	lookup := NewNATSProfileLookup(nc)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		prof, err := lookup.ResolveInstanceProfile(imdsTestAccountID, "app")
 		require.NoError(t, err)
 		assert.Equal(t, "app-role", prof.RoleName)
@@ -99,7 +99,7 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 		})
 
 	lookup := NewNATSProfileLookup(nc)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		out, err := lookup.GetRole(imdsTestAccountID, &iam.GetRoleInput{RoleName: aws.String("app-role")})
 		require.NoError(t, err)
 		assert.Equal(t, "arn:aws:iam::123456789012:role/app-role", aws.StringValue(out.Role.Arn))

@@ -150,7 +150,11 @@ func seedBootstrapState(t *testing.T, kv nats.KeyValue) {
 	require.NoError(t, err)
 	_, err = kv.Put(AdminKubeconfigKey("alpha"), []byte("enc-kc"))
 	require.NoError(t, err)
+	// Pre-seeded JWKS plus the verified-marker persistJWKS writes on a passing
+	// cross-check — bootstrapReady gates ACTIVE on the marker, not the seed.
 	_, err = kv.Put(OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
+	require.NoError(t, err)
+	_, err = kv.Put(OIDCJWKSVerifiedKey("alpha"), []byte("verified"))
 	require.NoError(t, err)
 	require.NoError(t, SetClusterCertificateAuthority(kv, "alpha", "ca-blob-b64"))
 }
@@ -220,6 +224,44 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 	meta, err := GetClusterMeta(acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "must remain CREATING when bootstrap incomplete")
+}
+
+func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
+	// Regression for the ACTIVE-on-pre-seeded-JWKS race: every artifact is
+	// present INCLUDING the controller-pre-seeded OIDCJWKSKey, but the VM's
+	// JWKS cross-check has not passed (no verified-marker). The cluster must
+	// stay CREATING — reaching ACTIVE here would mean signing IRSA tokens under
+	// a key the controller never confirmed.
+	stub := &stubHTTPDoer{status: http.StatusOK}
+	r, _, acctKV := newReconcilerHarness(t,
+		"https://nlb.example/healthz",
+		WithHTTPClient(stub),
+		WithReconcileInterval(10*time.Millisecond),
+		WithLeaseRefresh(10*time.Second),
+	)
+	release, ok := r.AcquireLease()
+	require.True(t, ok)
+	defer release()
+
+	freshenClusterCreatedAt(t, acctKV)
+
+	_, err := acctKV.Put(NodeTokenKey("alpha"), []byte("enc-token"))
+	require.NoError(t, err)
+	_, err = acctKV.Put(AdminKubeconfigKey("alpha"), []byte("enc-kc"))
+	require.NoError(t, err)
+	require.NoError(t, SetClusterCertificateAuthority(acctKV, "alpha", "ca-blob-b64"))
+	// Pre-seeded JWKS present, but NO verified-marker.
+	_, err = acctKV.Put(OIDCJWKSKey("alpha"), []byte(`{"keys":[]}`))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = r.Run(ctx)
+
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusCreating, meta.Status,
+		"must remain CREATING until the JWKS cross-check positively passes")
 }
 
 func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {

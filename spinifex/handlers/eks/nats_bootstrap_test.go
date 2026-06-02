@@ -132,6 +132,11 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
 	require.NoError(t, err)
 	assert.Equal(t, caB64, meta.CertificateAuthorityB64)
+
+	// The passing JWKS cross-check must record the verified-marker the
+	// reconciler gates ACTIVE on.
+	_, err = h.kv.Get(OIDCJWKSVerifiedKey(bootstrapTestCluster))
+	require.NoError(t, err, "persistJWKS must write the verified-marker on a passing cross-check")
 }
 
 func TestNATSBootstrap_ContextCancelReturnsErr(t *testing.T) {
@@ -172,6 +177,24 @@ func TestNATSBootstrap_JWKSMismatchReturnsErr(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return on JWKS mismatch")
 	}
+}
+
+func TestAssertJWKSMatch_RejectsKtyMismatch(t *testing.T) {
+	// Same kid as the controller key, but RSA instead of EC — a published key
+	// that cannot be the one the controller distributed despite the kid
+	// collision. Must be rejected.
+	existing := []byte(`{"keys":[{"kty":"EC","kid":"abc","crv":"P-256","x":"AAA","y":"BBB"}]}`)
+	incoming := []byte(`{"keys":[{"kty":"RSA","kid":"abc","n":"AAA","e":"AQAB"}]}`)
+
+	err := assertJWKSMatch(existing, incoming)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errBootstrapPermanent)
+	assert.Contains(t, err.Error(), "key type")
+}
+
+func TestAssertJWKSMatch_AcceptsMatchingKidAndKty(t *testing.T) {
+	jwks := []byte(`{"keys":[{"kty":"EC","kid":"abc","crv":"P-256","x":"AAA","y":"BBB"}]}`)
+	require.NoError(t, assertJWKSMatch(jwks, jwks))
 }
 
 func TestNATSBootstrap_EmptyEnvelopeFieldsRejected(t *testing.T) {
@@ -296,9 +319,10 @@ func TestBootstrapPendingKinds(t *testing.T) {
 	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
 	require.NoError(t, err)
 
-	// Fresh cluster: none of the three artifacts present.
+	// Fresh cluster: all four pending. The JWKS verified-marker is absent even
+	// though the controller pre-seeded OIDCJWKSKey, so JWKS is still pending.
 	assert.Equal(t,
-		[]string{BootstrapSubjectToken, BootstrapSubjectKubeconfig, BootstrapSubjectCA},
+		[]string{BootstrapSubjectToken, BootstrapSubjectKubeconfig, BootstrapSubjectJWKS, BootstrapSubjectCA},
 		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
 
 	// Persist token only -> token drops out of pending.
@@ -307,13 +331,21 @@ func TestBootstrapPendingKinds(t *testing.T) {
 	_, err = h.kv.Put(NodeTokenKey(bootstrapTestCluster), []byte(ct))
 	require.NoError(t, err)
 	assert.Equal(t,
-		[]string{BootstrapSubjectKubeconfig, BootstrapSubjectCA},
+		[]string{BootstrapSubjectKubeconfig, BootstrapSubjectJWKS, BootstrapSubjectCA},
 		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
 
-	// Persist kubeconfig + CA-on-meta -> nothing pending.
+	// Persist kubeconfig + CA-on-meta -> only JWKS (unverified) still pending.
 	_, err = h.kv.Put(AdminKubeconfigKey(bootstrapTestCluster), []byte(ct))
 	require.NoError(t, err)
 	meta.CertificateAuthorityB64 = "ca-b64"
+	assert.Equal(t,
+		[]string{BootstrapSubjectJWKS},
+		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+
+	// Write the JWKS verified-marker (persistJWKS does this on a passing
+	// cross-check) -> nothing pending.
+	_, err = h.kv.Put(OIDCJWKSVerifiedKey(bootstrapTestCluster), []byte("verified"))
+	require.NoError(t, err)
 	assert.Empty(t, BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
 }
 

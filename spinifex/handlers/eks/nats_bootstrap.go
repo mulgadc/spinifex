@@ -127,12 +127,14 @@ func NewNATSBootstrap(nc *nats.Conn, kv nats.KeyValue, masterKey []byte, account
 // NATS and never republishes, so re-waiting on an already-arrived subject
 // would deadlock.
 //
-// JWKS is deliberately excluded: it persists no artifact (it only cross-checks
-// the VM's published JWKS against the controller key written at create time),
-// so there is no way to tell from KV whether it arrived, and re-waiting on it
-// after a restart would hang forever. The cross-check is therefore best-effort
-// across a restart — losing it degrades a defense-in-depth validation, not the
-// cluster's ability to reach ACTIVE.
+// JWKS is tracked by its verified-marker (OIDCJWKSVerifiedKey), written by
+// persistJWKS only after the cross-check passes — NOT by OIDCJWKSKey, which the
+// controller pre-seeds at create time. Until the marker exists the cross-check
+// has not positively passed, so resume re-subscribes to JWKS like any other
+// pending subject. (If the VM published JWKS during the restart window the
+// re-subscribe waits for a republish that never comes and the cluster fails on
+// the create timeout — the same one-shot limitation every bootstrap subject
+// shares, now applied uniformly so ACTIVE always implies a verified key.)
 func BootstrapPendingKinds(kv nats.KeyValue, clusterName string, meta *ClusterMeta) []string {
 	var pending []string
 	if _, err := kv.Get(NodeTokenKey(clusterName)); err != nil {
@@ -140,6 +142,9 @@ func BootstrapPendingKinds(kv nats.KeyValue, clusterName string, meta *ClusterMe
 	}
 	if _, err := kv.Get(AdminKubeconfigKey(clusterName)); err != nil {
 		pending = append(pending, BootstrapSubjectKubeconfig)
+	}
+	if _, err := kv.Get(OIDCJWKSVerifiedKey(clusterName)); err != nil {
+		pending = append(pending, BootstrapSubjectJWKS)
 	}
 	if meta == nil || meta.CertificateAuthorityB64 == "" {
 		pending = append(pending, BootstrapSubjectCA)
@@ -314,6 +319,13 @@ func (b *NATSBootstrap) persistJWKS(data []byte) error {
 	if err := assertJWKSMatch(existing.Value(), []byte(env.JWKS)); err != nil {
 		return err
 	}
+	// Record the positive cross-check as a distinct marker. The reconciler
+	// gates ACTIVE on this key — never on OIDCJWKSKey, which the controller
+	// pre-seeds at create time — so a cluster cannot reach ACTIVE on an
+	// unverified or mismatched signing key.
+	if _, err := b.kv.Put(OIDCJWKSVerifiedKey(b.clusterName), []byte("verified")); err != nil {
+		return fmt.Errorf("kv put %s: %w", OIDCJWKSVerifiedKey(b.clusterName), err)
+	}
 	return nil
 }
 
@@ -339,10 +351,12 @@ func unmarshalBootstrapEnvelope(data []byte) (BootstrapEnvelope, error) {
 	return env, nil
 }
 
-// assertJWKSMatch verifies that every key id (kid) declared in the incoming
-// JWKS exists in the controller-generated existing JWKS. Mismatch means the
-// VM either failed to consume our PEM or generated its own signing key —
-// reject the publication.
+// assertJWKSMatch verifies that every key in the incoming JWKS matches a
+// controller-generated key by both key id (kid) and key type (kty). A kid
+// mismatch means the VM generated its own signing key instead of consuming our
+// PEM; a kty mismatch (e.g. an RSA key carrying our EC key's kid) means the
+// published key cannot be the one the controller distributed even though the
+// kid collides. Either rejects the publication.
 func assertJWKSMatch(existing, incoming []byte) error {
 	var ex, in oidcJWKS
 	if err := json.Unmarshal(existing, &ex); err != nil {
@@ -354,13 +368,18 @@ func assertJWKSMatch(existing, incoming []byte) error {
 	if len(in.Keys) == 0 {
 		return fmt.Errorf("%w: incoming JWKS has no keys", errBootstrapPermanent)
 	}
-	have := map[string]struct{}{}
+	have := make(map[string]oidcJWK, len(ex.Keys))
 	for _, k := range ex.Keys {
-		have[k.Kid] = struct{}{}
+		have[k.Kid] = k
 	}
 	for _, k := range in.Keys {
-		if _, ok := have[k.Kid]; !ok {
+		exKey, ok := have[k.Kid]
+		if !ok {
 			return fmt.Errorf("%w: bootstrap JWKS kid %q does not match generated keypair", errBootstrapPermanent, k.Kid)
+		}
+		if k.Kty != exKey.Kty {
+			return fmt.Errorf("%w: bootstrap JWKS kid %q key type %q does not match generated %q",
+				errBootstrapPermanent, k.Kid, k.Kty, exKey.Kty)
 		}
 	}
 	return nil

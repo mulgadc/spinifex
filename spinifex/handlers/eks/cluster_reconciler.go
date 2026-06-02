@@ -294,7 +294,11 @@ func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason strin
 }
 
 // bootstrapReady returns true once the four NATS bootstrap KV artifacts are
-// present (node token, admin kubeconfig, OIDC JWKS, and the CA on meta).
+// present: node token, admin kubeconfig, the OIDC JWKS verified-marker, and the
+// CA on meta. The JWKS gate is the verified-marker (written only after the VM's
+// published JWKS passes the controller cross-check), NOT the pre-seeded
+// OIDCJWKSKey — so a cluster never transitions to ACTIVE on an unverified or
+// mismatched signing key.
 func (r *ClusterReconciler) bootstrapReady(meta *ClusterMeta) (bool, string) {
 	if meta.CertificateAuthorityB64 == "" {
 		return false, "CA absent on meta"
@@ -302,7 +306,7 @@ func (r *ClusterReconciler) bootstrapReady(meta *ClusterMeta) (bool, string) {
 	keys := []string{
 		NodeTokenKey(r.clusterName),
 		AdminKubeconfigKey(r.clusterName),
-		OIDCJWKSKey(r.clusterName),
+		OIDCJWKSVerifiedKey(r.clusterName),
 	}
 	for _, k := range keys {
 		if _, err := r.acctKV.Get(k); err != nil {

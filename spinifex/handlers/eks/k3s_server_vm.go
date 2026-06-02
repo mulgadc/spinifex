@@ -53,8 +53,14 @@ const (
 
 	// k3sOIDCSigningKeyPath is the on-VM path where cloud-init drops the
 	// per-cluster OIDC private key PEM. K3s reads it via the
-	// service-account-key-file kube-apiserver arg baked into config.yaml.
+	// service-account-signing-key-file kube-apiserver arg (signs SA tokens).
 	k3sOIDCSigningKeyPath = "/etc/rancher/k3s/oidc-signing-key.pem"
+
+	// k3sOIDCPublicKeyPath is where cloud-init drops the matching public key
+	// PEM. kube-apiserver's service-account-key-file requires a PUBLIC key
+	// (it rejects a private-key PEM with "data does not contain any valid RSA
+	// or ECDSA public keys" and crash-loops), so it must be a separate file.
+	k3sOIDCPublicKeyPath = "/etc/rancher/k3s/oidc-signing-key.pub.pem"
 
 	// k3sFirstBootEnvPath is the env file k3s-first-boot.sh sources at boot
 	// (see scripts/images/eks-server/k3s-first-boot.sh ENVFILE).
@@ -83,6 +89,7 @@ type K3sServerInput struct {
 	NLBDNS            string
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
+	OIDCPublicKeyPEM  string
 	NATSURL           string
 	NATSToken         string
 	NATSCACert        string
@@ -305,6 +312,8 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCIssuer")
 	case strings.TrimSpace(in.OIDCPrivateKeyPEM) == "":
 		return errors.New("eks: K3sServerInput empty OIDCPrivateKeyPEM")
+	case strings.TrimSpace(in.OIDCPublicKeyPEM) == "":
+		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
 	case in.NATSURL == "":
 		return errors.New("eks: K3sServerInput empty NATSURL")
 	case in.NATSToken == "":
@@ -343,7 +352,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"tls-san:",
 		"  - " + in.NLBDNS,
 		"kube-apiserver-arg:",
-		"  - service-account-key-file=" + k3sOIDCSigningKeyPath,
+		"  - service-account-key-file=" + k3sOIDCPublicKeyPath,
 		"  - service-account-signing-key-file=" + k3sOIDCSigningKeyPath,
 		"  - service-account-issuer=" + in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
@@ -353,6 +362,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		// first-boot.env carries the NATS token, so keep it root-only (0600).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
+		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
 		{Path: k3sNATSCAPath, Perms: "0644", Body: strings.TrimRight(in.NATSCACert, "\n")},
 	}

@@ -1,6 +1,7 @@
 package handlers_eks
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +16,31 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
+
+// PublicKeyPEMFromPrivate parses a PKCS#8 private-key PEM and returns the PKIX
+// public-key PEM. kube-apiserver's --service-account-key-file requires a PUBLIC
+// key (ParsePublicKeysPEM rejects private-key blocks), while the matching
+// --service-account-signing-key-file takes the private key; the K3s server VM
+// needs both, seeded to separate files.
+func PublicKeyPEMFromPrivate(privPEM string) (string, error) {
+	block, _ := pem.Decode([]byte(privPEM))
+	if block == nil {
+		return "", errors.New("eks: PublicKeyPEMFromPrivate: no PEM block in private key")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse pkcs8 private key: %w", err)
+	}
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return "", errors.New("eks: PublicKeyPEMFromPrivate: private key is not a crypto.Signer")
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return "", fmt.Errorf("marshal pkix public key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})), nil
+}
 
 // oidcJWK and oidcJWKS are the RFC 7517 wire shapes the per-cluster JWKS
 // document uses. handlers_sts decodes the same JSON via its own JWK / JWKS

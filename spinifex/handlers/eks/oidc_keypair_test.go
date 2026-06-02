@@ -42,6 +42,39 @@ func TestGenerateClusterOIDCKeypair_PersistsJWKSAndEncryptedPrivateKey(t *testin
 		"encrypted blob must not contain a PEM header")
 }
 
+// PublicKeyPEMFromPrivate must yield a PKIX PUBLIC KEY PEM matching the private
+// key's public part — kube-apiserver's --service-account-key-file requires a
+// public key and crash-loops on a private-key PEM.
+func TestPublicKeyPEMFromPrivate_RoundTrips(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+	privPEM, _, err := GenerateClusterOIDCKeypair(kv, "alpha", testMasterKey)
+	require.NoError(t, err)
+
+	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
+	require.NoError(t, err)
+	require.Contains(t, pubPEM, "BEGIN PUBLIC KEY")
+	assert.NotContains(t, pubPEM, "PRIVATE KEY")
+
+	block, _ := pem.Decode([]byte(pubPEM))
+	require.NotNil(t, block)
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	require.NoError(t, err)
+	pubEC, ok := pub.(*ecdsa.PublicKey)
+	require.True(t, ok)
+
+	stored, err := LoadClusterOIDCPrivateKey(kv, "alpha", testMasterKey)
+	require.NoError(t, err)
+	assert.True(t, stored.PublicKey.Equal(pubEC), "derived public key must match the private key")
+}
+
+func TestPublicKeyPEMFromPrivate_RejectsGarbage(t *testing.T) {
+	_, err := PublicKeyPEMFromPrivate("not a pem")
+	require.Error(t, err)
+
+	_, err = PublicKeyPEMFromPrivate("-----BEGIN PRIVATE KEY-----\nbm90LWtleQ==\n-----END PRIVATE KEY-----\n")
+	require.Error(t, err)
+}
+
 // The generator returns the plaintext private-key PEM directly so CreateCluster
 // avoids a second KV read + decrypt; it must match the key persisted in KV.
 func TestGenerateClusterOIDCKeypair_ReturnsPrivateKeyPEMMatchingStored(t *testing.T) {

@@ -336,6 +336,11 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		s.markFailed(acctKV, name)
 		return nil, fmt.Errorf("generate OIDC keypair: %w", err)
 	}
+	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, fmt.Errorf("derive OIDC public key: %w", err)
+	}
 
 	k3sOut, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, K3sServerInput{
 		AccountID:         accountID,
@@ -346,6 +351,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		NLBDNS:            nlb.DNSName,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
+		OIDCPublicKeyPEM:  pubPEM,
 		NATSURL:           s.deps.NATSURL,
 		NATSToken:         s.deps.NATSToken,
 		NATSCACert:        s.deps.NATSCACert,

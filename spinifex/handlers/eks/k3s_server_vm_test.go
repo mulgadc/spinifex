@@ -116,7 +116,8 @@ func validK3sInput() K3sServerInput {
 		ControlPlaneSGID:  "sg-cp-aaa",
 		NLBDNS:            "eks-alpha-lb-001.us-east-1.elb.spinifex.local",
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
-		OIDCPrivateKeyPEM: "-----BEGIN EC PRIVATE KEY-----\nFAKEKEY\n-----END EC PRIVATE KEY-----\n",
+		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
+		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
 		NATSURL:           "nats://localhost:4222",
 		NATSToken:         "s3cr3t-token",
 		NATSCACert:        "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
@@ -140,6 +141,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty NLBDNS", mk(func(in *K3sServerInput) { in.NLBDNS = "" })},
 		{"empty OIDCIssuer", mk(func(in *K3sServerInput) { in.OIDCIssuer = "" })},
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
+		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
 		{"empty NATSURL", mk(func(in *K3sServerInput) { in.NATSURL = "" })},
 		{"empty NATSToken", mk(func(in *K3sServerInput) { in.NATSToken = "" })},
 		{"empty NATSCACert", mk(func(in *K3sServerInput) { in.NATSCACert = "  \n" })},
@@ -265,13 +267,22 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 
 	assert.Contains(t, udata, "path: "+k3sOIDCSigningKeyPath)
 	assert.Contains(t, udata, "permissions: '0600'")
-	assert.Contains(t, udata, "-----BEGIN EC PRIVATE KEY-----")
+	assert.Contains(t, udata, "-----BEGIN PRIVATE KEY-----")
 	assert.Contains(t, udata, "FAKEKEY")
+
+	assert.Contains(t, udata, "path: "+k3sOIDCPublicKeyPath)
+	assert.Contains(t, udata, "-----BEGIN PUBLIC KEY-----")
+	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
-	assert.Contains(t, udata, "service-account-key-file="+k3sOIDCSigningKeyPath)
+	// service-account-key-file must point at the PUBLIC key; the signing key
+	// (private) is a separate file — pointing key-file at the private key
+	// crash-loops kube-apiserver.
+	assert.Contains(t, udata, "service-account-key-file="+k3sOIDCPublicKeyPath)
+	assert.Contains(t, udata, "service-account-signing-key-file="+k3sOIDCSigningKeyPath)
+	assert.NotContains(t, udata, "service-account-key-file="+k3sOIDCSigningKeyPath)
 	assert.Contains(t, udata, "service-account-issuer=https://oidc.spinifex.local/clusters/111122223333/alpha")
 	assert.Contains(t, udata, "api-audiences=sts.amazonaws.com")
 

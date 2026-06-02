@@ -23,7 +23,7 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 // (the shim path the daemon-handler routing test uses): orchestration deps
 // are absent so CreateCluster/DeleteCluster short-circuit to ServerInternal,
 // DescribeCluster hits an empty per-account bucket and surfaces
-// ResourceNotFound, and ListClusters returns an empty list. The
+// ResourceNotFoundException, and ListClusters returns an empty list. The
 // UpdateClusterConfig + UpdateClusterVersion paths stay NotImplemented.
 func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	svc := setupTestService(t)
@@ -32,7 +32,7 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorServerInternal)
 
 	_, err = svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorResourceNotFound)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 
 	out, err := svc.ListClusters(&eks.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)

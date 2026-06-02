@@ -207,9 +207,23 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
 
-	if _, err := GetClusterMeta(acctKV, name); err == nil {
-		slog.Info("CreateCluster: cluster already exists", "name", name, "accountID", accountID)
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+	if existing, err := GetClusterMeta(acctKV, name); err == nil {
+		if existing.Status != ClusterStatusFailed {
+			slog.Info("CreateCluster: cluster already exists",
+				"name", name, "accountID", accountID, "status", existing.Status)
+			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		}
+		// A prior attempt failed. Reclaim whatever it left behind and clear its
+		// state so this create starts clean — makes a retry (including the
+		// SDK's own auto-retry) idempotent instead of masking the original
+		// failure with a spurious "already exists" error. If teardown of the
+		// failed attempt's resources fails, surface that rather than recreating
+		// on top of orphans.
+		slog.Info("CreateCluster: reclaiming FAILED cluster before recreate",
+			"name", name, "accountID", accountID)
+		if perr := s.purgeClusterInfra(accountID, name, existing, acctKV); perr != nil {
+			return nil, fmt.Errorf("reclaim failed cluster %s: %w", name, perr)
+		}
 	} else if !errors.Is(err, ErrClusterNotFound) {
 		return nil, fmt.Errorf("preflight get meta: %w", err)
 	}
@@ -341,7 +355,7 @@ func (s *EKSServiceImpl) DescribeCluster(input *eks.DescribeClusterInput, accoun
 	meta, err := GetClusterMeta(acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorResourceNotFound)
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
 	}
@@ -408,7 +422,7 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	meta, err := GetClusterMeta(acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorResourceNotFound)
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
 	}
@@ -418,12 +432,25 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	}
 	meta.Status = ClusterStatusDeleting
 
+	if err := s.purgeClusterInfra(accountID, name, meta, acctKV); err != nil {
+		slog.Error("DeleteCluster: teardown incomplete; leaving cluster DELETING for retry",
+			"cluster", name, "err", err)
+		return nil, fmt.Errorf("eks: DeleteCluster %s: %w", name, err)
+	}
+
+	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+}
+
+// purgeClusterInfra tears down a cluster's live AWS resources and erases its
+// per-cluster KV state. Zeroize (a security guarantee — no recoverable key
+// material) plus NLB and VM teardown are blocking: their failures are joined
+// and returned BEFORE the KV sweep, so a billable resource is never orphaned
+// without the meta record that owns its ARNs/IDs. SG cleanup is best-effort
+// (a leaked SG strands no owning record). Shared by DeleteCluster and the
+// FAILED-cluster reclaim path in CreateCluster.
+func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue) error {
 	s.registry.Stop(accountID, name)
 
-	// Blocking teardown. Zeroize is a security guarantee (no recoverable key
-	// material after delete) and NLB/VM are billable resources whose only
-	// owning record is the meta blob — if any of these fail we must NOT sweep
-	// KV (that erases the ARNs/IDs a retry needs) and must NOT report success.
 	var teardownErrs []error
 
 	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
@@ -435,8 +462,7 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 		// + target group, so a stale target registration cannot leak past it.
 		if meta.NLBTargetGroupArn != "" && meta.ControlPlaneENIIP != "" {
 			if err := DeregisterClusterTarget(s.deps.NLB, accountID, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
-				slog.Warn("DeleteCluster: deregister NLB target failed",
-					"cluster", name, "err", err)
+				slog.Warn("purgeClusterInfra: deregister NLB target failed", "cluster", name, "err", err)
 			}
 		}
 		if err := DeleteClusterNLB(s.deps.NLB, accountID, name); err != nil {
@@ -452,27 +478,20 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	}
 
 	if len(teardownErrs) > 0 {
-		joined := errors.Join(teardownErrs...)
-		slog.Error("DeleteCluster: teardown incomplete; leaving cluster DELETING for retry",
-			"cluster", name, "err", joined)
-		return nil, fmt.Errorf("eks: DeleteCluster %s teardown incomplete: %w", name, joined)
+		return errors.Join(teardownErrs...)
 	}
 
-	// SG cleanup is best-effort per plan step 5 — a leaked SG strands no owning
-	// record and must not block the KV sweep.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
-			slog.Warn("DeleteCluster: DeleteClusterSGs failed", "cluster", name, "err", err)
+			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
 		}
 	}
 
 	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
 	if err := DeleteClusterPrefix(acctKV, name); err != nil {
-		slog.Error("DeleteCluster: KV prefix sweep incomplete", "cluster", name, "err", err)
-		return nil, fmt.Errorf("delete cluster prefix: %w", err)
+		return fmt.Errorf("delete cluster prefix: %w", err)
 	}
-
-	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+	return nil
 }
 
 func (s *EKSServiceImpl) UpdateClusterConfig(_ *eks.UpdateClusterConfigInput, _ string) (*eks.UpdateClusterConfigOutput, error) {

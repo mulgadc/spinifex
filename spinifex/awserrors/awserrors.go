@@ -367,6 +367,8 @@ var (
 	ErrorResourceCountLimitExceeded                            = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                 = "ResourceLimitExceeded"
 	ErrorResourceNotFound                                      = "ResourceNotFound"
+	ErrorEKSResourceInUse                                      = "ResourceInUseException"
+	ErrorEKSResourceNotFound                                   = "ResourceNotFoundException"
 	ErrorRetryableError                                        = "RetryableError"
 	ErrorRouteAlreadyExists                                    = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                                    = "RouteLimitExceeded"
@@ -844,6 +846,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceCountLimitExceeded:                            {HTTPCode: 400, Message: "You have exceeded a resource limit for creating routes."},
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
+	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
+	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},

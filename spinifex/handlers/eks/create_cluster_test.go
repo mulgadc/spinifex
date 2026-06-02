@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +60,63 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	assert.NotEmpty(t, f.nlb.deleteLBCalls, "DeleteCluster must tear down the NLB recorded by the failed create")
 	_, getErr := GetClusterMeta(f.kv, "alpha")
 	assert.ErrorIs(t, getErr, ErrClusterNotFound)
+}
+
+// A live (CREATING/ACTIVE) cluster of the same name blocks create with a
+// cluster-scoped ResourceInUseException, not the ELBv2 target-group message.
+func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	meta := sampleClusterMeta("alpha")
+	meta.Status = ClusterStatusActive
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
+}
+
+// A FAILED cluster from a prior attempt must not block a retry: create reclaims
+// it (tearing down recorded resources) and proceeds to a fresh CREATING cluster.
+func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
+	f.inst.runErr = errors.New("no capacity")
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	require.Error(t, err)
+	failed, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	require.Equal(t, ClusterStatusFailed, failed.Status)
+
+	// Retry now succeeds: the reclaim path purges the failed attempt's NLB and
+	// the create starts clean.
+	f.inst.runErr = nil
+	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	got, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusCreating, got.Status)
+	assert.NotEmpty(t, f.nlb.deleteLBCalls, "reclaim must tear down the failed attempt's NLB")
+}
+
+// A FAILED cluster is observable via Describe and List (bead 165.6) — no state
+// where create blocks but describe/list show nothing.
+func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	meta := sampleClusterMeta("alpha")
+	meta.Status = ClusterStatusFailed
+	meta.StatusReason = "bootstrap failed: boom"
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.ClusterStatusFailed, aws.StringValue(desc.Cluster.Status))
+
+	list, err := f.svc.ListClusters(&eks.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Contains(t, aws.StringValueSlice(list.Clusters), "alpha")
 }
 
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {

@@ -82,4 +82,15 @@ touch /var/lib/spinifex-eks/first-boot.pending 2>/dev/null || {
     touch /var/lib/spinifex-eks/first-boot.pending
 }
 
+# Bind /dev/console to the serial port so userspace boot output — OpenRC
+# service starts, cloud-init, and k3s-first-boot diagnostics — reaches ttyS0,
+# which the orchestrator captures to a host-side log. The stock Alpine cloud
+# image lists `console=tty0` LAST in default_kernel_opts; Linux makes the last
+# console= the controlling /dev/console, so userspace logs to the framebuffer
+# and the serial capture sees only kernel dmesg. Reorder so ttyS0 is last in
+# both the generator config and the already-rendered extlinux.conf.
+sed -i \
+    's|console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0|console=tty0 console=ttyAMA0,115200n8 console=ttyS0,115200n8|' \
+    /etc/update-extlinux.conf /boot/extlinux.conf
+
 echo "[eks-server-setup] done"

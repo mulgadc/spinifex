@@ -56,7 +56,11 @@ while [ "${i}" -lt 300 ]; do
     i=$((i + 2))
     sleep 2
 done
-[ "${i}" -lt 300 ] || die "K3s did not become healthy within 5 minutes"
+if [ "${i}" -ge 300 ]; then
+    log "K3s did not become healthy within 5 minutes; last 40 lines of /var/log/k3s.log follow:"
+    tail -n 40 /var/log/k3s.log 2>/dev/null || log "(no /var/log/k3s.log)"
+    die "K3s did not become healthy within 5 minutes"
+fi
 
 # 2. Read node-token + admin kubeconfig.
 TOKEN_FILE=/var/lib/rancher/k3s/server/node-token

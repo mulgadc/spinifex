@@ -53,9 +53,10 @@ const (
 	// (see scripts/images/eks-server/k3s-first-boot.sh ENVFILE).
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
 
-	// k3sNATSCredsPath is the on-VM destination for the system NATS creds.
-	// Path matches k3s-first-boot.sh SPINIFEX_NATS_CREDS_FILE default.
-	k3sNATSCredsPath = "/etc/spinifex-eks/nats.creds" //nolint:gosec // file path, not credentials
+	// k3sNATSCAPath is the on-VM destination for the NATS CA cert PEM. The K3s
+	// VM uses it to verify the daemon's NATS TLS when publishing bootstrap
+	// messages. Path matches k3s-first-boot.sh SPINIFEX_NATS_CA.
+	k3sNATSCAPath = "/etc/spinifex-eks/nats-ca.pem"
 
 	// k3sConfigPath is the K3s server config file cloud-init writes; K3s
 	// reads it at startup (overrides the AMI-baked config.yaml.skel).
@@ -76,7 +77,8 @@ type K3sServerInput struct {
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	NATSURL           string
-	NATSCredsContent  string
+	NATSToken         string
+	NATSCACert        string
 	InstanceType      string
 }
 
@@ -290,6 +292,10 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPrivateKeyPEM")
 	case in.NATSURL == "":
 		return errors.New("eks: K3sServerInput empty NATSURL")
+	case in.NATSToken == "":
+		return errors.New("eks: K3sServerInput empty NATSToken")
+	case strings.TrimSpace(in.NATSCACert) == "":
+		return errors.New("eks: K3sServerInput empty NATSCACert")
 	}
 	return nil
 }
@@ -309,7 +315,8 @@ func buildK3sUserData(in K3sServerInput) string {
 
 	envBody := strings.Join([]string{
 		"SPINIFEX_NATS_URL=" + in.NATSURL,
-		"SPINIFEX_NATS_CREDS_FILE=" + k3sNATSCredsPath,
+		"SPINIFEX_NATS_TOKEN=" + in.NATSToken,
+		"SPINIFEX_NATS_CA=" + k3sNATSCAPath,
 		"EKS_ACCOUNT_ID=" + in.AccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
@@ -328,12 +335,11 @@ func buildK3sUserData(in K3sServerInput) string {
 	}, "\n")
 
 	files := []userDataFile{
-		{Path: k3sFirstBootEnvPath, Perms: "0644", Body: envBody},
+		// first-boot.env carries the NATS token, so keep it root-only (0600).
+		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
-	}
-	if in.NATSCredsContent != "" {
-		files = append(files, userDataFile{Path: k3sNATSCredsPath, Perms: "0600", Body: strings.TrimRight(in.NATSCredsContent, "\n")})
+		{Path: k3sNATSCAPath, Perms: "0644", Body: strings.TrimRight(in.NATSCACert, "\n")},
 	}
 
 	var buf strings.Builder

@@ -41,6 +41,13 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
+	// NATS auth handed to the K3s server VM so it can publish its one-shot
+	// bootstrap messages. Shared token + CA (PEM content) + a VM-reachable
+	// URL — spinifex has no per-principal nkeys hierarchy to scope against.
+	NATSURL    string
+	NATSToken  string
+	NATSCACert string
+
 	VPCSG     sgProvisioner
 	VPCK3s    k3sVPCProvisioner
 	VPCSubnet SubnetVPCResolver
@@ -263,7 +270,9 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		NLBDNS:            nlb.DNSName,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
-		NATSURL:           s.deps.NATSConn.ConnectedUrl(),
+		NATSURL:           s.deps.NATSURL,
+		NATSToken:         s.deps.NATSToken,
+		NATSCACert:        s.deps.NATSCACert,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)

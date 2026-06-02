@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
@@ -28,6 +29,19 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		masterKey = nil
 	}
 
+	// CA PEM the K3s server VM uses to verify the daemon's NATS TLS. Same CA
+	// that signs the AWSGW server cert; read here so the VM can publish its
+	// one-shot bootstrap messages over the token+TLS NATS endpoint.
+	natsCA := ""
+	if d.config.NATS.CACert != "" {
+		if caBytes, readErr := os.ReadFile(d.config.NATS.CACert); readErr == nil {
+			natsCA = string(caBytes)
+		} else {
+			slog.Warn("EKS: read NATS CACert failed; K3s server VM will not reach NATS over TLS",
+				"path", d.config.NATS.CACert, "err", readErr)
+		}
+	}
+
 	return handlers_eks.EKSServiceDeps{
 		Config:         d.config,
 		NATSConn:       d.natsConn,
@@ -35,6 +49,9 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		GatewayBaseURL: d.resolveGatewayBaseURL(),
 		Region:         d.config.Region,
 		HolderID:       d.node,
+		NATSURL:        d.resolveNATSURL(),
+		NATSToken:      d.config.NATS.ACL.Token,
+		NATSCACert:     natsCA,
 		VPCSG:          d.vpcService,
 		VPCK3s:         d.vpcService,
 		VPCSubnet:      &daemonEKSSubnetResolver{d: d},
@@ -44,12 +61,12 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	}
 }
 
-// resolveGatewayBaseURL mirrors the LB-agent gateway URL precedence that
-// startCluster applies later for ELBv2 (advertise → mgmt → AWSGW bind →
-// dev-shim). Centralized here so EKS OIDC issuers come from the same source
-// as the LB agent target. Returns "" if no reachable host can be derived,
-// in which case CreateCluster fails at depsReadyForOrchestration.
-func (d *Daemon) resolveGatewayBaseURL() string {
+// resolveGatewayHost mirrors the LB-agent host precedence that startCluster
+// applies later for ELBv2 (advertise → mgmt → AWSGW bind → dev-shim).
+// Centralized so EKS OIDC issuers and the EKS NATS URL come from the same
+// off-host-reachable source as the LB agent target. Returns "" if no
+// reachable host can be derived.
+func (d *Daemon) resolveGatewayHost() string {
 	awsgwBindIP := ""
 	if d.config.AWSGW.Host != "" {
 		if h, _, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil {
@@ -58,29 +75,53 @@ func (d *Daemon) resolveGatewayBaseURL() string {
 	}
 	advertiseIP := d.config.AdvertiseIP
 
-	var gatewayHost string
 	switch {
 	case d.mgmtBridgeIP != "" && awsgwBindIP != "" && awsgwBindIP != "0.0.0.0" &&
 		!net.ParseIP(awsgwBindIP).IsLoopback() && awsgwBindIP != advertiseIP:
-		gatewayHost = awsgwBindIP
+		return awsgwBindIP
 	case advertiseIP != "" && advertiseIP != "0.0.0.0":
-		gatewayHost = advertiseIP
+		return advertiseIP
 	case d.mgmtBridgeIP != "":
-		gatewayHost = d.mgmtBridgeIP
+		return d.mgmtBridgeIP
 	case d.config.Daemon.DevNetworking:
-		gatewayHost = "10.0.2.2"
+		return "10.0.2.2"
 	case awsgwBindIP != "" && awsgwBindIP != "0.0.0.0":
-		gatewayHost = awsgwBindIP
+		return awsgwBindIP
 	}
-	if gatewayHost == "" {
+	return ""
+}
+
+// resolveGatewayBaseURL is the HTTPS AWSGW endpoint EKS OIDC issuers are built
+// from. Returns "" if no reachable host can be derived, in which case
+// CreateCluster fails at depsReadyForOrchestration.
+func (d *Daemon) resolveGatewayBaseURL() string {
+	host := d.resolveGatewayHost()
+	if host == "" {
 		return ""
 	}
-
 	gatewayPort := "9999"
 	if d.config.AWSGW.Host != "" {
 		if _, port, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil && port != "" {
 			gatewayPort = port
 		}
 	}
-	return "https://" + net.JoinHostPort(gatewayHost, gatewayPort)
+	return "https://" + net.JoinHostPort(host, gatewayPort)
+}
+
+// resolveNATSURL derives the NATS URL the K3s server VM dials to publish its
+// one-shot bootstrap messages. Host reuses the gateway host resolution; port
+// comes from the configured NATS listen address (default 4222). Returns "" if
+// no reachable host can be derived.
+func (d *Daemon) resolveNATSURL() string {
+	host := d.resolveGatewayHost()
+	if host == "" {
+		return ""
+	}
+	natsPort := "4222"
+	if d.config.NATS.Host != "" {
+		if _, port, splitErr := net.SplitHostPort(d.config.NATS.Host); splitErr == nil && port != "" {
+			natsPort = port
+		}
+	}
+	return "nats://" + net.JoinHostPort(host, natsPort)
 }

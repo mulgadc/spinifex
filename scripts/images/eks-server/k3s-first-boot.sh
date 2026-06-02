@@ -10,7 +10,8 @@ set -eu
 #
 # Required env (from cloud-init user-data /etc/spinifex-eks/first-boot.env):
 #   SPINIFEX_NATS_URL          nats://...
-#   SPINIFEX_NATS_CREDS_FILE   /etc/spinifex-eks/nats.creds
+#   SPINIFEX_NATS_TOKEN        shared NATS auth token
+#   SPINIFEX_NATS_CA           /etc/spinifex-eks/nats-ca.pem (TLS CA bundle)
 #   EKS_ACCOUNT_ID
 #   EKS_CLUSTER_NAME
 #   EKS_NLB_ENDPOINT           https://{cluster}.{accountID}.eks.{region}.{suffix}
@@ -73,8 +74,11 @@ TOKEN_SUBJ="eks.bus.${EKS_ACCOUNT_ID}.${EKS_CLUSTER_NAME}.k3s-bootstrap-token"
 KUBE_SUBJ="eks.bus.${EKS_ACCOUNT_ID}.${EKS_CLUSTER_NAME}.k3s-admin-kubeconfig"
 
 NATS_ARGS="-s ${SPINIFEX_NATS_URL}"
-if [ -n "${SPINIFEX_NATS_CREDS_FILE:-}" ] && [ -f "${SPINIFEX_NATS_CREDS_FILE}" ]; then
-    NATS_ARGS="${NATS_ARGS} --creds ${SPINIFEX_NATS_CREDS_FILE}"
+if [ -n "${SPINIFEX_NATS_TOKEN:-}" ]; then
+    NATS_ARGS="${NATS_ARGS} --token ${SPINIFEX_NATS_TOKEN}"
+fi
+if [ -n "${SPINIFEX_NATS_CA:-}" ] && [ -f "${SPINIFEX_NATS_CA}" ]; then
+    NATS_ARGS="${NATS_ARGS} --tlsca ${SPINIFEX_NATS_CA}"
 fi
 
 log "publishing node-token to ${TOKEN_SUBJ}"

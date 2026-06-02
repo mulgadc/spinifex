@@ -121,6 +121,8 @@ func validK3sInput() K3sServerInput {
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
 		OIDCPrivateKeyPEM: "-----BEGIN EC PRIVATE KEY-----\nFAKEKEY\n-----END EC PRIVATE KEY-----\n",
 		NATSURL:           "nats://localhost:4222",
+		NATSToken:         "s3cr3t-token",
+		NATSCACert:        "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
 	}
 }
 
@@ -142,6 +144,8 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCIssuer", mk(func(in *K3sServerInput) { in.OIDCIssuer = "" })},
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty NATSURL", mk(func(in *K3sServerInput) { in.NATSURL = "" })},
+		{"empty NATSToken", mk(func(in *K3sServerInput) { in.NATSToken = "" })},
+		{"empty NATSCACert", mk(func(in *K3sServerInput) { in.NATSCACert = "  \n" })},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,10 +249,8 @@ func TestLaunchK3sServerVM_HonorsCustomInstanceType(t *testing.T) {
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
-	in := validK3sInput()
-	in.NATSCredsContent = "-----BEGIN NATS USER CREDS-----\nfake-creds\n-----END NATS USER CREDS-----\n"
 
-	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.NoError(t, err)
 	require.Len(t, inst.runCalls, 1)
 
@@ -261,7 +263,8 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 
 	assert.Contains(t, udata, "path: "+k3sFirstBootEnvPath)
 	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
-	assert.Contains(t, udata, "SPINIFEX_NATS_CREDS_FILE="+k3sNATSCredsPath)
+	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")
+	assert.Contains(t, udata, "SPINIFEX_NATS_CA="+k3sNATSCAPath)
 	assert.Contains(t, udata, "EKS_ACCOUNT_ID=111122223333")
 	assert.Contains(t, udata, "EKS_CLUSTER_NAME=alpha")
 	assert.Contains(t, udata, "EKS_NLB_ENDPOINT=https://eks-alpha-lb-001.us-east-1.elb.spinifex.local:443")
@@ -279,22 +282,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "service-account-issuer=https://oidc.spinifex.local/clusters/111122223333/alpha")
 	assert.Contains(t, udata, "api-audiences=sts.amazonaws.com")
 
-	assert.Contains(t, udata, "path: "+k3sNATSCredsPath)
-	assert.Contains(t, udata, "BEGIN NATS USER CREDS")
-}
-
-func TestLaunchK3sServerVM_UserDataOmitsNATSCredsWhenAbsent(t *testing.T) {
-	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
-
-	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
-	require.NoError(t, err)
-	require.Len(t, inst.runCalls, 1)
-
-	decoded, decodeErr := base64.StdEncoding.DecodeString(aws.StringValue(inst.runCalls[0].UserData))
-	require.NoError(t, decodeErr)
-	udata := string(decoded)
-
-	assert.NotContains(t, udata, "path: "+k3sNATSCredsPath)
+	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
+	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
+	assert.Contains(t, udata, "FAKECA")
 }
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {

@@ -37,6 +37,7 @@ type ClusterMeta struct {
 	Name                    string            `json:"name"`
 	Arn                     string            `json:"arn"`
 	Status                  ClusterStatus     `json:"status"`
+	StatusReason            string            `json:"statusReason,omitempty"`
 	Version                 string            `json:"version"`
 	RoleArn                 string            `json:"roleArn"`
 	Endpoint                string            `json:"endpoint,omitempty"`
@@ -97,13 +98,14 @@ func GetClusterMeta(kv nats.KeyValue, name string) (*ClusterMeta, error) {
 	return &meta, nil
 }
 
-// SetClusterStatus does a revision-checked update of the meta.Status field.
-// Retries on KV CAS conflict (concurrent reconciler write) up to
-// maxClusterStateCASRetries. Returns ErrClusterNotFound if the meta record
-// was deleted underneath us.
-func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error {
+// casUpdateMeta does a revision-checked read-modify-write of the cluster meta
+// record. mutate receives the decoded meta and returns true if it changed a
+// field (false short-circuits to a no-op success). Retries on KV CAS conflict
+// (concurrent reconciler write) up to maxClusterStateCASRetries. Returns
+// ErrClusterNotFound if the meta record was deleted underneath us.
+func casUpdateMeta(kv nats.KeyValue, name string, mutate func(*ClusterMeta) bool) error {
 	if name == "" {
-		return errors.New("eks: SetClusterStatus empty name")
+		return errors.New("eks: casUpdateMeta empty name")
 	}
 	for range maxClusterStateCASRetries {
 		entry, err := kv.Get(ClusterMetaKey(name))
@@ -117,10 +119,9 @@ func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error
 		if err := json.Unmarshal(entry.Value(), &meta); err != nil {
 			return fmt.Errorf("unmarshal cluster meta %s: %w", name, err)
 		}
-		if meta.Status == status {
+		if !mutate(&meta) {
 			return nil
 		}
-		meta.Status = status
 		data, err := json.Marshal(&meta)
 		if err != nil {
 			return fmt.Errorf("marshal cluster meta %s: %w", name, err)
@@ -134,15 +135,47 @@ func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error
 		}
 		return fmt.Errorf("kv update %s: %w", ClusterMetaKey(name), err)
 	}
-	return fmt.Errorf("eks: SetClusterStatus %s exhausted CAS retries", name)
+	return fmt.Errorf("eks: casUpdateMeta %s exhausted CAS retries", name)
+}
+
+// SetClusterStatus does a revision-checked update of the meta.Status field.
+// Returns ErrClusterNotFound if the meta record was deleted underneath us.
+func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error {
+	if name == "" {
+		return errors.New("eks: SetClusterStatus empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.Status == status {
+			return false
+		}
+		m.Status = status
+		return true
+	})
+}
+
+// MarkClusterFailed transitions a cluster to FAILED with a human-readable
+// reason, but only from CREATING — a cluster already DELETING/ACTIVE/FAILED is
+// left untouched so a late bootstrap error cannot clobber a concurrent delete
+// or an already-healthy cluster. Returns ErrClusterNotFound if the meta record
+// was deleted underneath us.
+func MarkClusterFailed(kv nats.KeyValue, name, reason string) error {
+	if name == "" {
+		return errors.New("eks: MarkClusterFailed empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.Status != ClusterStatusCreating {
+			return false
+		}
+		m.Status = ClusterStatusFailed
+		m.StatusReason = reason
+		return true
+	})
 }
 
 // SetClusterCertificateAuthority does a revision-checked update of the
 // meta.CertificateAuthorityB64 field. The NATS bootstrap subscriber calls
-// this once the K3s server VM publishes its CA on the bootstrap bus. Retries
-// on KV CAS conflict (concurrent reconciler write) up to
-// maxClusterStateCASRetries. Returns ErrClusterNotFound if the meta record
-// was deleted underneath us.
+// this once the K3s server VM publishes its CA on the bootstrap bus. Returns
+// ErrClusterNotFound if the meta record was deleted underneath us.
 func SetClusterCertificateAuthority(kv nats.KeyValue, name, caB64 string) error {
 	if name == "" {
 		return errors.New("eks: SetClusterCertificateAuthority empty name")
@@ -150,36 +183,13 @@ func SetClusterCertificateAuthority(kv nats.KeyValue, name, caB64 string) error 
 	if caB64 == "" {
 		return errors.New("eks: SetClusterCertificateAuthority empty CA")
 	}
-	for range maxClusterStateCASRetries {
-		entry, err := kv.Get(ClusterMetaKey(name))
-		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
-				return ErrClusterNotFound
-			}
-			return fmt.Errorf("kv get %s: %w", ClusterMetaKey(name), err)
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.CertificateAuthorityB64 == caB64 {
+			return false
 		}
-		var meta ClusterMeta
-		if err := json.Unmarshal(entry.Value(), &meta); err != nil {
-			return fmt.Errorf("unmarshal cluster meta %s: %w", name, err)
-		}
-		if meta.CertificateAuthorityB64 == caB64 {
-			return nil
-		}
-		meta.CertificateAuthorityB64 = caB64
-		data, err := json.Marshal(&meta)
-		if err != nil {
-			return fmt.Errorf("marshal cluster meta %s: %w", name, err)
-		}
-		_, err = kv.Update(ClusterMetaKey(name), data, entry.Revision())
-		if err == nil {
-			return nil
-		}
-		if errors.Is(err, nats.ErrKeyExists) {
-			continue
-		}
-		return fmt.Errorf("kv update %s: %w", ClusterMetaKey(name), err)
-	}
-	return fmt.Errorf("eks: SetClusterCertificateAuthority %s exhausted CAS retries", name)
+		m.CertificateAuthorityB64 = caB64
+		return true
+	})
 }
 
 // DeleteClusterPrefix removes every KV key under clusters/{name}/. Called

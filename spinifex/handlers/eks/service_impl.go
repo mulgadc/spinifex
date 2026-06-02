@@ -612,8 +612,17 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 		return
 	}
 	go func() {
-		if err := boot.Run(s.bgCtx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("NATSBootstrap exited", "cluster", clusterName, "err", err)
+		err := boot.Run(s.bgCtx)
+		if err == nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		// Bootstrap died without collecting all four artifacts. Without this
+		// the cluster sits in CREATING forever — fail it so DescribeCluster
+		// surfaces the cause and DeleteCluster can reclaim the resources.
+		slog.Warn("NATSBootstrap exited; marking cluster FAILED", "cluster", clusterName, "err", err)
+		if markErr := MarkClusterFailed(kv, clusterName, "bootstrap failed: "+err.Error()); markErr != nil &&
+			!errors.Is(markErr, ErrClusterNotFound) {
+			slog.Error("spawnBootstrap: MarkClusterFailed", "cluster", clusterName, "err", markErr)
 		}
 	}()
 }

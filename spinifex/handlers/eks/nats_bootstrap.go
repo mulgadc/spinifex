@@ -8,10 +8,45 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
+
+// errBootstrapPermanent marks a bootstrap persist failure that no amount of
+// retrying will fix — a malformed envelope, a non-base64 CA, or a JWKS whose
+// kid does not match the controller-generated keypair. Transient failures
+// (KV write blips, JWKS-not-yet-propagated) are NOT wrapped with this, so
+// persistWithRetry keeps retrying them. A permanent error fails the cluster.
+var errBootstrapPermanent = errors.New("bootstrap permanent error")
+
+const (
+	// bootstrapPersistAttempts bounds inline retries of a single subject's
+	// persist op on transient errors. A core-NATS publication is delivered
+	// once, so a transient KV blip must be ridden out in-handler rather than
+	// by tearing down the subscription and waiting for a re-publish that
+	// never comes.
+	bootstrapPersistAttempts = 3
+	bootstrapPersistBackoff  = 200 * time.Millisecond
+)
+
+// persistWithRetry runs op, retrying on transient errors up to
+// bootstrapPersistAttempts. A nil result or an errBootstrapPermanent result
+// returns immediately (no retry).
+func persistWithRetry(op func() error) error {
+	var err error
+	for attempt := 1; attempt <= bootstrapPersistAttempts; attempt++ {
+		err = op()
+		if err == nil || errors.Is(err, errBootstrapPermanent) {
+			return err
+		}
+		if attempt < bootstrapPersistAttempts {
+			time.Sleep(bootstrapPersistBackoff)
+		}
+	}
+	return err
+}
 
 // Bootstrap subject kinds. Full subject is
 // "eks.bus.{accountID}.{clusterName}.{kind}" — see BootstrapSubject.
@@ -130,7 +165,7 @@ func (b *NATSBootstrap) Run(ctx context.Context) error {
 				return
 			}
 			mu.Unlock()
-			if err := s.handler(m.Data); err != nil {
+			if err := persistWithRetry(func() error { return s.handler(m.Data) }); err != nil {
 				errCh <- fmt.Errorf("persist %s: %w", s.kind, err)
 				return
 			}
@@ -171,7 +206,7 @@ func (b *NATSBootstrap) persistToken(data []byte) error {
 		return err
 	}
 	if env.Token == "" {
-		return errors.New("token envelope empty")
+		return fmt.Errorf("%w: token envelope empty", errBootstrapPermanent)
 	}
 	ct, err := handlers_iam.EncryptSecret(env.Token, b.masterKey)
 	if err != nil {
@@ -189,7 +224,7 @@ func (b *NATSBootstrap) persistKubeconfig(data []byte) error {
 		return err
 	}
 	if env.AdminKubeconfig == "" {
-		return errors.New("adminKubeconfig envelope empty")
+		return fmt.Errorf("%w: adminKubeconfig envelope empty", errBootstrapPermanent)
 	}
 	ct, err := handlers_iam.EncryptSecret(env.AdminKubeconfig, b.masterKey)
 	if err != nil {
@@ -207,7 +242,7 @@ func (b *NATSBootstrap) persistJWKS(data []byte) error {
 		return err
 	}
 	if env.JWKS == "" {
-		return errors.New("jwks envelope empty")
+		return fmt.Errorf("%w: jwks envelope empty", errBootstrapPermanent)
 	}
 	existing, err := b.kv.Get(OIDCJWKSKey(b.clusterName))
 	if err != nil {
@@ -225,10 +260,10 @@ func (b *NATSBootstrap) persistCA(data []byte) error {
 		return err
 	}
 	if env.CertificateAuthority == "" {
-		return errors.New("CA envelope empty")
+		return fmt.Errorf("%w: CA envelope empty", errBootstrapPermanent)
 	}
 	if _, err := base64.StdEncoding.DecodeString(env.CertificateAuthority); err != nil {
-		return fmt.Errorf("CA not base64: %w", err)
+		return fmt.Errorf("%w: CA not base64: %v", errBootstrapPermanent, err)
 	}
 	return SetClusterCertificateAuthority(b.kv, b.clusterName, env.CertificateAuthority)
 }
@@ -236,7 +271,7 @@ func (b *NATSBootstrap) persistCA(data []byte) error {
 func unmarshalBootstrapEnvelope(data []byte) (BootstrapEnvelope, error) {
 	var env BootstrapEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return env, fmt.Errorf("unmarshal envelope: %w", err)
+		return env, fmt.Errorf("%w: unmarshal envelope: %v", errBootstrapPermanent, err)
 	}
 	return env, nil
 }
@@ -251,10 +286,10 @@ func assertJWKSMatch(existing, incoming []byte) error {
 		return fmt.Errorf("unmarshal existing JWKS: %w", err)
 	}
 	if err := json.Unmarshal(incoming, &in); err != nil {
-		return fmt.Errorf("unmarshal incoming JWKS: %w", err)
+		return fmt.Errorf("%w: unmarshal incoming JWKS: %v", errBootstrapPermanent, err)
 	}
 	if len(in.Keys) == 0 {
-		return errors.New("incoming JWKS has no keys")
+		return fmt.Errorf("%w: incoming JWKS has no keys", errBootstrapPermanent)
 	}
 	have := map[string]struct{}{}
 	for _, k := range ex.Keys {
@@ -262,7 +297,7 @@ func assertJWKSMatch(existing, incoming []byte) error {
 	}
 	for _, k := range in.Keys {
 		if _, ok := have[k.Kid]; !ok {
-			return fmt.Errorf("eks: bootstrap JWKS kid %q does not match generated keypair", k.Kid)
+			return fmt.Errorf("%w: bootstrap JWKS kid %q does not match generated keypair", errBootstrapPermanent, k.Kid)
 		}
 	}
 	return nil

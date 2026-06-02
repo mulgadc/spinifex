@@ -147,6 +147,40 @@ func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
 	assert.Equal(t, "1.32-bumped", got.Version)
 }
 
+func TestMarkClusterFailed_FromCreatingSetsStatusAndReason(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))
+
+	require.NoError(t, MarkClusterFailed(kv, "alpha", "bootstrap failed: boom"))
+	got, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusFailed, got.Status)
+	assert.Equal(t, "bootstrap failed: boom", got.StatusReason)
+}
+
+func TestMarkClusterFailed_NoopFromNonCreating(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+
+	for _, from := range []ClusterStatus{ClusterStatusActive, ClusterStatusDeleting, ClusterStatusFailed} {
+		meta := sampleClusterMeta("alpha")
+		meta.Status = from
+		require.NoError(t, PutClusterMeta(kv, meta))
+
+		require.NoError(t, MarkClusterFailed(kv, "alpha", "late bootstrap error"))
+		got, err := GetClusterMeta(kv, "alpha")
+		require.NoError(t, err)
+		assert.Equal(t, from, got.Status, "from=%s must be untouched", from)
+		assert.Empty(t, got.StatusReason, "from=%s reason must not be set", from)
+	}
+}
+
+func TestMarkClusterFailed_MissingReturnsErrClusterNotFound(t *testing.T) {
+	kv := newClusterStateTestKV(t)
+
+	err := MarkClusterFailed(kv, "ghost", "boom")
+	require.ErrorIs(t, err, ErrClusterNotFound)
+}
+
 func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutClusterMeta(kv, sampleClusterMeta("alpha")))

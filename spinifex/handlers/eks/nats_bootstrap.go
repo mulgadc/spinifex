@@ -55,8 +55,6 @@ const (
 	BootstrapSubjectKubeconfig = "k3s-admin-kubeconfig"
 	BootstrapSubjectJWKS       = "k3s-oidc-jwks"
 	BootstrapSubjectCA         = "k3s-ca"
-
-	bootstrapSubjectsTotal = 4
 )
 
 // BootstrapSubject returns the per-cluster bootstrap subject for one kind.
@@ -123,31 +121,96 @@ func NewNATSBootstrap(nc *nats.Conn, kv nats.KeyValue, masterKey []byte, account
 	}, nil
 }
 
-// Run subscribes to the four bootstrap subjects and returns when:
-//   - all four have arrived and persisted successfully (nil),
+// BootstrapPendingKinds reports which bootstrap subjects still lack their
+// persisted artifact for a cluster, so a daemon-restart resume re-subscribes
+// only to what is missing. The K3s VM publishes each subject once over core
+// NATS and never republishes, so re-waiting on an already-arrived subject
+// would deadlock.
+//
+// JWKS is deliberately excluded: it persists no artifact (it only cross-checks
+// the VM's published JWKS against the controller key written at create time),
+// so there is no way to tell from KV whether it arrived, and re-waiting on it
+// after a restart would hang forever. The cross-check is therefore best-effort
+// across a restart — losing it degrades a defense-in-depth validation, not the
+// cluster's ability to reach ACTIVE.
+func BootstrapPendingKinds(kv nats.KeyValue, clusterName string, meta *ClusterMeta) []string {
+	var pending []string
+	if _, err := kv.Get(NodeTokenKey(clusterName)); err != nil {
+		pending = append(pending, BootstrapSubjectToken)
+	}
+	if _, err := kv.Get(AdminKubeconfigKey(clusterName)); err != nil {
+		pending = append(pending, BootstrapSubjectKubeconfig)
+	}
+	if meta == nil || meta.CertificateAuthorityB64 == "" {
+		pending = append(pending, BootstrapSubjectCA)
+	}
+	return pending
+}
+
+type bootstrapSubjectHandler struct {
+	subject string
+	kind    string
+	handler func([]byte) error
+}
+
+// subjectHandlers returns the subject/handler entry for each requested kind.
+// An unknown kind is an error — callers pass kinds from BootstrapSubject*
+// constants. A nil/empty kinds slice means all four.
+func (b *NATSBootstrap) subjectHandlers(kinds []string) ([]bootstrapSubjectHandler, error) {
+	all := map[string]func([]byte) error{
+		BootstrapSubjectToken:      b.persistToken,
+		BootstrapSubjectKubeconfig: b.persistKubeconfig,
+		BootstrapSubjectJWKS:       b.persistJWKS,
+		BootstrapSubjectCA:         b.persistCA,
+	}
+	if len(kinds) == 0 {
+		kinds = []string{BootstrapSubjectToken, BootstrapSubjectKubeconfig, BootstrapSubjectJWKS, BootstrapSubjectCA}
+	}
+	out := make([]bootstrapSubjectHandler, 0, len(kinds))
+	for _, kind := range kinds {
+		handler, ok := all[kind]
+		if !ok {
+			return nil, fmt.Errorf("eks: unknown bootstrap kind %q", kind)
+		}
+		out = append(out, bootstrapSubjectHandler{
+			subject: BootstrapSubject(b.accountID, b.clusterName, kind),
+			kind:    kind,
+			handler: handler,
+		})
+	}
+	return out, nil
+}
+
+// Run subscribes to all four bootstrap subjects and returns when all four have
+// arrived, ctx is cancelled, or a handler errors. See RunForKinds.
+func (b *NATSBootstrap) Run(ctx context.Context) error {
+	return b.RunForKinds(ctx, nil)
+}
+
+// RunForKinds subscribes only to the requested bootstrap subjects (nil = all
+// four) and returns when:
+//   - every requested subject has arrived and persisted successfully (nil),
 //   - ctx is cancelled (ctx.Err()),
 //   - one of the persistence handlers returns an error (first error).
 //
+// The subset form drives daemon-restart recovery: a cluster that already has
+// some artifacts in KV re-subscribes only to the missing ones, since the K3s
+// VM published each subject once over core NATS and will not republish.
+//
 // Each subject is consumed at most once; subsequent publications on the same
 // subject are dropped. Subscriptions are always cleaned up before return.
-func (b *NATSBootstrap) Run(ctx context.Context) error {
-	type subjectHandler struct {
-		subject string
-		kind    string
-		handler func([]byte) error
+func (b *NATSBootstrap) RunForKinds(ctx context.Context, kinds []string) error {
+	subs, err := b.subjectHandlers(kinds)
+	if err != nil {
+		return err
 	}
-	subs := []subjectHandler{
-		{BootstrapSubject(b.accountID, b.clusterName, BootstrapSubjectToken), BootstrapSubjectToken, b.persistToken},
-		{BootstrapSubject(b.accountID, b.clusterName, BootstrapSubjectKubeconfig), BootstrapSubjectKubeconfig, b.persistKubeconfig},
-		{BootstrapSubject(b.accountID, b.clusterName, BootstrapSubjectJWKS), BootstrapSubjectJWKS, b.persistJWKS},
-		{BootstrapSubject(b.accountID, b.clusterName, BootstrapSubjectCA), BootstrapSubjectCA, b.persistCA},
-	}
+	want := len(subs)
 
-	errCh := make(chan error, bootstrapSubjectsTotal)
+	errCh := make(chan error, want)
 	doneCh := make(chan struct{}, 1)
 	var (
 		mu   sync.Mutex
-		done = make(map[string]struct{}, bootstrapSubjectsTotal)
+		done = make(map[string]struct{}, want)
 	)
 
 	var subscriptions []*nats.Subscription
@@ -171,7 +234,7 @@ func (b *NATSBootstrap) Run(ctx context.Context) error {
 			}
 			mu.Lock()
 			done[s.kind] = struct{}{}
-			full := len(done) == bootstrapSubjectsTotal
+			full := len(done) == want
 			mu.Unlock()
 			if full {
 				select {
@@ -193,8 +256,8 @@ func (b *NATSBootstrap) Run(ctx context.Context) error {
 		case err := <-errCh:
 			return err
 		case <-doneCh:
-			slog.Info("NATSBootstrap: all four bootstrap messages received",
-				"accountID", b.accountID, "cluster", b.clusterName)
+			slog.Info("NATSBootstrap: all requested bootstrap messages received",
+				"accountID", b.accountID, "cluster", b.clusterName, "kinds", want)
 			return nil
 		}
 	}

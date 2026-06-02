@@ -290,6 +290,67 @@ func TestPersistWithRetry(t *testing.T) {
 	})
 }
 
+func TestBootstrapPendingKinds(t *testing.T) {
+	h := newBootstrapHarness(t)
+
+	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
+	require.NoError(t, err)
+
+	// Fresh cluster: none of the three artifacts present.
+	assert.Equal(t,
+		[]string{BootstrapSubjectToken, BootstrapSubjectKubeconfig, BootstrapSubjectCA},
+		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+
+	// Persist token only -> token drops out of pending.
+	ct, err := handlers_iam.EncryptSecret("tok", bootstrapTestMasterKey)
+	require.NoError(t, err)
+	_, err = h.kv.Put(NodeTokenKey(bootstrapTestCluster), []byte(ct))
+	require.NoError(t, err)
+	assert.Equal(t,
+		[]string{BootstrapSubjectKubeconfig, BootstrapSubjectCA},
+		BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+
+	// Persist kubeconfig + CA-on-meta -> nothing pending.
+	_, err = h.kv.Put(AdminKubeconfigKey(bootstrapTestCluster), []byte(ct))
+	require.NoError(t, err)
+	meta.CertificateAuthorityB64 = "ca-b64"
+	assert.Empty(t, BootstrapPendingKinds(h.kv, bootstrapTestCluster, meta))
+}
+
+func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
+	h := newBootstrapHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	caB64 := base64.StdEncoding.EncodeToString([]byte("ca-pem"))
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- h.subscriber.RunForKinds(ctx, []string{BootstrapSubjectCA}) }()
+	time.Sleep(50 * time.Millisecond)
+
+	// Only publish CA; the subset subscriber must complete without token,
+	// kubeconfig, or JWKS ever arriving (they were consumed pre-restart).
+	h.publish(BootstrapSubjectCA, BootstrapEnvelope{CertificateAuthority: caB64})
+
+	select {
+	case err := <-runErr:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunForKinds did not return after CA-only publication")
+	}
+
+	meta, err := GetClusterMeta(h.kv, bootstrapTestCluster)
+	require.NoError(t, err)
+	assert.Equal(t, caB64, meta.CertificateAuthorityB64)
+}
+
+func TestNATSBootstrap_RunForKindsRejectsUnknownKind(t *testing.T) {
+	h := newBootstrapHarness(t)
+	err := h.subscriber.RunForKinds(context.Background(), []string{"bogus-kind"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown bootstrap kind")
+}
+
 func TestBootstrapSubject_Shape(t *testing.T) {
 	got := BootstrapSubject("111122223333", "alpha", BootstrapSubjectToken)
 	assert.Equal(t, "eks.bus.111122223333.alpha.k3s-bootstrap-token", got)

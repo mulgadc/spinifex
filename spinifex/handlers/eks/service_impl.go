@@ -163,6 +163,17 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
+			// A restart mid-CREATING lost the bootstrap subscriptions; the K3s
+			// VM publishes its one-shot core-NATS messages once and to nobody.
+			// Re-subscribe to whichever artifacts are still missing so the
+			// cluster can still reach ACTIVE instead of hanging in CREATING.
+			if meta.Status == ClusterStatusCreating {
+				if pending := BootstrapPendingKinds(acctKV, cluster, meta); len(pending) > 0 {
+					slog.Info("SpawnRegisteredReconcilers: resuming bootstrap",
+						"cluster", cluster, "pending", pending)
+					s.spawnBootstrap(accountID, cluster, acctKV, pending)
+				}
+			}
 			s.spawnReconciler(accountID, cluster, meta)
 		}
 	}
@@ -291,7 +302,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		return nil, err
 	}
 
-	s.spawnBootstrap(accountID, name, acctKV)
+	s.spawnBootstrap(accountID, name, acctKV, nil)
 	s.spawnReconciler(accountID, name, meta)
 
 	return &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
@@ -605,20 +616,24 @@ func (s *EKSServiceImpl) loadOIDCPrivateKeyPEM(kv nats.KeyValue, name string) (s
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})), nil
 }
 
-func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.KeyValue) {
+// spawnBootstrap launches the one-shot NATS bootstrap subscriber for a cluster.
+// kinds nil means a fresh CreateCluster (wait on all four subjects); a non-nil
+// subset is a daemon-restart resume that waits only on the missing artifacts.
+func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.KeyValue, kinds []string) {
 	boot, err := NewNATSBootstrap(s.deps.NATSConn, kv, s.deps.MasterKey, accountID, clusterName)
 	if err != nil {
 		slog.Error("spawnBootstrap: NewNATSBootstrap failed", "cluster", clusterName, "err", err)
 		return
 	}
 	go func() {
-		err := boot.Run(s.bgCtx)
+		err := boot.RunForKinds(s.bgCtx, kinds)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return
 		}
-		// Bootstrap died without collecting all four artifacts. Without this
-		// the cluster sits in CREATING forever — fail it so DescribeCluster
-		// surfaces the cause and DeleteCluster can reclaim the resources.
+		// Bootstrap died without collecting all requested artifacts. Without
+		// this the cluster sits in CREATING forever — fail it so
+		// DescribeCluster surfaces the cause and DeleteCluster can reclaim the
+		// resources.
 		slog.Warn("NATSBootstrap exited; marking cluster FAILED", "cluster", clusterName, "err", err)
 		if markErr := MarkClusterFailed(kv, clusterName, "bootstrap failed: "+err.Error()); markErr != nil &&
 			!errors.Is(markErr, ErrClusterNotFound) {

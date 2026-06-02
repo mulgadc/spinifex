@@ -1,13 +1,13 @@
 package handlers_eks
 
 import (
-	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,35 +50,30 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 }
 
 type fakeK3sInst struct {
-	runCalls       []*ec2.RunInstancesInput
-	terminateCalls []*ec2.TerminateInstancesInput
+	launchCalls    []*sysinstance.SystemInstanceInput
+	terminateCalls []string
 
-	runOut       *ec2.Reservation
-	runErr       error
+	launchOut    *sysinstance.SystemInstanceOutput
+	launchErr    error
 	terminateErr error
 }
 
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
 
-func (f *fakeK3sInst) RunInstances(input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
-	f.runCalls = append(f.runCalls, input)
-	if f.runErr != nil {
-		return nil, f.runErr
+func (f *fakeK3sInst) LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+	f.launchCalls = append(f.launchCalls, input)
+	if f.launchErr != nil {
+		return nil, f.launchErr
 	}
-	if f.runOut != nil {
-		return f.runOut, nil
+	if f.launchOut != nil {
+		return f.launchOut, nil
 	}
-	return &ec2.Reservation{
-		Instances: []*ec2.Instance{{InstanceId: aws.String("i-aaa111")}},
-	}, nil
+	return &sysinstance.SystemInstanceOutput{InstanceID: "i-aaa111"}, nil
 }
 
-func (f *fakeK3sInst) TerminateInstances(input *ec2.TerminateInstancesInput, _ string) (*ec2.TerminateInstancesOutput, error) {
-	f.terminateCalls = append(f.terminateCalls, input)
-	if f.terminateErr != nil {
-		return nil, f.terminateErr
-	}
-	return &ec2.TerminateInstancesOutput{}, nil
+func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
+	f.terminateCalls = append(f.terminateCalls, instanceID)
+	return f.terminateErr
 }
 
 type fakeK3sAMI struct {
@@ -153,7 +148,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 			_, err := LaunchK3sServerVM(vpc, inst, ami, tc.in)
 			require.Error(t, err)
 			assert.Empty(t, vpc.createCalls)
-			assert.Empty(t, inst.runCalls)
+			assert.Empty(t, inst.launchCalls)
 			assert.Empty(t, ami.describeCalls)
 		})
 	}
@@ -167,7 +162,7 @@ func TestLaunchK3sServerVM_AMINotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrEKSServerAMINotFound)
 	assert.Contains(t, err.Error(), "spinifex:managed-by=eks")
 	assert.Empty(t, vpc.createCalls, "no ENI created when AMI lookup fails")
-	assert.Empty(t, inst.runCalls)
+	assert.Empty(t, inst.launchCalls)
 }
 
 func TestLaunchK3sServerVM_AMILookupErrorPropagated(t *testing.T) {
@@ -178,7 +173,7 @@ func TestLaunchK3sServerVM_AMILookupErrorPropagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "describe eks AMI")
 	assert.Empty(t, vpc.createCalls)
-	assert.Empty(t, inst.runCalls)
+	assert.Empty(t, inst.launchCalls)
 }
 
 func TestLaunchK3sServerVM_ENICreateFailureNoRunInstances(t *testing.T) {
@@ -188,13 +183,13 @@ func TestLaunchK3sServerVM_ENICreateFailureNoRunInstances(t *testing.T) {
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create K3s ENI in subnet subnet-aaa")
-	assert.Empty(t, inst.runCalls)
+	assert.Empty(t, inst.launchCalls)
 	assert.Empty(t, vpc.deleteCalls, "no ENI to roll back when create itself failed")
 }
 
 func TestLaunchK3sServerVM_RunInstancesFailureRollsBackENI(t *testing.T) {
 	vpc := &fakeK3sVPC{}
-	inst := &fakeK3sInst{runErr: errors.New("InsufficientInstanceCapacity")}
+	inst := &fakeK3sInst{launchErr: errors.New("InsufficientInstanceCapacity")}
 	ami := &fakeK3sAMI{}
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
@@ -221,17 +216,15 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 	require.Len(t, eniIn.TagSpecifications, 1)
 	assertEC2TaggedAsEKSControlPlane(t, eniIn.TagSpecifications[0].Tags, "alpha")
 
-	require.Len(t, inst.runCalls, 1)
-	runIn := inst.runCalls[0]
-	assert.Equal(t, "ami-eks-server-001", aws.StringValue(runIn.ImageId))
-	assert.Equal(t, defaultK3sServerInstanceType, aws.StringValue(runIn.InstanceType))
-	assert.Equal(t, int64(1), aws.Int64Value(runIn.MinCount))
-	assert.Equal(t, int64(1), aws.Int64Value(runIn.MaxCount))
-	require.Len(t, runIn.NetworkInterfaces, 1)
-	assert.Equal(t, "eni-aaa111", aws.StringValue(runIn.NetworkInterfaces[0].NetworkInterfaceId))
-	assert.Equal(t, int64(0), aws.Int64Value(runIn.NetworkInterfaces[0].DeviceIndex))
-	require.Len(t, runIn.TagSpecifications, 1)
-	assertEC2TaggedAsEKSControlPlane(t, runIn.TagSpecifications[0].Tags, "alpha")
+	require.Len(t, inst.launchCalls, 1)
+	runIn := inst.launchCalls[0]
+	assert.Equal(t, sysinstance.BootAMI, runIn.BootMode)
+	assert.Equal(t, tags.ManagedByEKS, runIn.ManagedBy)
+	assert.Equal(t, "ami-eks-server-001", runIn.ImageID)
+	assert.Equal(t, defaultK3sServerInstanceType, runIn.InstanceType)
+	assert.Equal(t, "111122223333", runIn.AccountID)
+	assert.Equal(t, "eni-aaa111", runIn.ENIID)
+	assert.Equal(t, "10.0.1.42", runIn.ENIIP)
 
 	assert.Empty(t, vpc.deleteCalls, "no rollback on success")
 }
@@ -243,8 +236,8 @@ func TestLaunchK3sServerVM_HonorsCustomInstanceType(t *testing.T) {
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
 	require.NoError(t, err)
-	require.Len(t, inst.runCalls, 1)
-	assert.Equal(t, "t3.large", aws.StringValue(inst.runCalls[0].InstanceType))
+	require.Len(t, inst.launchCalls, 1)
+	assert.Equal(t, "t3.large", inst.launchCalls[0].InstanceType)
 }
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
@@ -252,11 +245,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.NoError(t, err)
-	require.Len(t, inst.runCalls, 1)
+	require.Len(t, inst.launchCalls, 1)
 
-	decoded, decodeErr := base64.StdEncoding.DecodeString(aws.StringValue(inst.runCalls[0].UserData))
-	require.NoError(t, decodeErr)
-	udata := string(decoded)
+	udata := inst.launchCalls[0].UserData
 
 	assert.True(t, strings.HasPrefix(udata, "#cloud-config\n"))
 	assert.Contains(t, udata, "write_files:")
@@ -289,11 +280,11 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {
 	vpc, ami := &fakeK3sVPC{}, &fakeK3sAMI{}
-	inst := &fakeK3sInst{runOut: &ec2.Reservation{}}
+	inst := &fakeK3sInst{launchOut: &sysinstance.SystemInstanceOutput{}}
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "RunInstances returned no instance")
+	assert.Contains(t, err.Error(), "LaunchSystemInstance returned no instance")
 	require.Len(t, vpc.deleteCalls, 1, "must roll back ENI when reservation empty")
 }
 
@@ -322,7 +313,7 @@ func TestTerminateK3sServerVM_TerminatesInstanceAndDeletesENI(t *testing.T) {
 
 	require.NoError(t, TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111"))
 	require.Len(t, inst.terminateCalls, 1)
-	assert.Equal(t, []string{"i-aaa111"}, aws.StringValueSlice(inst.terminateCalls[0].InstanceIds))
+	assert.Equal(t, "i-aaa111", inst.terminateCalls[0])
 	require.Len(t, vpc.deleteCalls, 1)
 	assert.Equal(t, "eni-aaa111", aws.StringValue(vpc.deleteCalls[0].NetworkInterfaceId))
 }

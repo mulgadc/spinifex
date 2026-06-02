@@ -31,7 +31,7 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 
 	// Force the K3s VM launch to fail — this is after EnsureClusterNLB and the
 	// NLB-arn persist checkpoint, but before the final PutClusterMeta.
-	f.inst.runErr = errors.New("no capacity")
+	f.inst.launchErr = errors.New("no capacity")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
 	require.Error(t, err)
@@ -47,7 +47,7 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 // NLB resources. The persisted ARNs from the partial create drive teardown.
 func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	f := newEKSServiceFixture(t)
-	f.inst.runErr = errors.New("no capacity")
+	f.inst.launchErr = errors.New("no capacity")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
 	require.Error(t, err)
@@ -82,7 +82,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
-	f.inst.runErr = errors.New("no capacity")
+	f.inst.launchErr = errors.New("no capacity")
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
 	require.Error(t, err)
 	failed, err := GetClusterMeta(f.kv, "alpha")
@@ -91,7 +91,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 
 	// Retry now succeeds: the reclaim path purges the failed attempt's NLB and
 	// the create starts clean.
-	f.inst.runErr = nil
+	f.inst.launchErr = nil
 	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID)
 	require.NoError(t, err)
 

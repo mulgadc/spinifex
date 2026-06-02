@@ -1,7 +1,6 @@
 package handlers_eks
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -28,14 +28,14 @@ type k3sVPCProvisioner interface {
 	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 }
 
-// k3sInstanceLauncher is the subset of handlers_ec2_instance.InstanceService
-// the launcher needs. RunInstances is the customer-path entry that the prior
-// commit (feat(ec2): RunInstances honors pre-created NetworkInterfaceId)
-// taught to attach an existing ENI when NetworkInterfaces[0].NetworkInterfaceId
-// is set.
+// k3sInstanceLauncher is the system-instance launch surface the K3s control-plane
+// VM needs. The VM boots from the eks-server AMI (BootAMI) and must get a
+// management-bridge NIC so it can reach the daemon's NATS endpoint off its
+// tenant VPC subnet — which only the system-instance path provides.
+// *daemon.Daemon satisfies this interface.
 type k3sInstanceLauncher interface {
-	RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
-	TerminateInstances(input *ec2.TerminateInstancesInput, accountID string) (*ec2.TerminateInstancesOutput, error)
+	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	TerminateSystemInstance(instanceID string) error
 }
 
 // k3sAMIResolver is the subset of handlers_ec2_image.ImageService the launcher
@@ -150,36 +150,26 @@ func LaunchK3sServerVM(
 
 	userData := buildK3sUserData(in)
 
-	runInput := &ec2.RunInstancesInput{
-		ImageId:      aws.String(amiID),
-		InstanceType: aws.String(instanceType),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
-			NetworkInterfaceId: aws.String(eniID),
-			DeviceIndex:        aws.Int64(0),
-		}},
-		UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(userData))),
-		TagSpecifications: []*ec2.TagSpecification{{
-			ResourceType: aws.String("instance"),
-			Tags: []*ec2.Tag{
-				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
-				{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(in.ClusterName)},
-				{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String(clusterEKSRoleControlPlane)},
-			},
-		}},
-	}
-	reservation, err := instSvc.RunInstances(runInput, in.AccountID)
+	sysOut, err := instSvc.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
+		BootMode:     sysinstance.BootAMI,
+		ManagedBy:    tags.ManagedByEKS,
+		InstanceType: instanceType,
+		ImageID:      amiID,
+		AccountID:    in.AccountID,
+		ENIID:        eniID,
+		ENIMac:       aws.StringValue(eniOut.NetworkInterface.MacAddress),
+		ENIIP:        eniIP,
+		UserData:     userData,
+	})
 	if err != nil {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
 		return nil, fmt.Errorf("run K3s server instance for cluster %s: %w", in.ClusterName, err)
 	}
-	if reservation == nil || len(reservation.Instances) == 0 || reservation.Instances[0] == nil ||
-		aws.StringValue(reservation.Instances[0].InstanceId) == "" {
+	if sysOut == nil || sysOut.InstanceID == "" {
 		rollbackK3sENI(vpcSvc, in.AccountID, eniID)
-		return nil, fmt.Errorf("eks: RunInstances returned no instance for cluster %s", in.ClusterName)
+		return nil, fmt.Errorf("eks: LaunchSystemInstance returned no instance for cluster %s", in.ClusterName)
 	}
-	instanceID := aws.StringValue(reservation.Instances[0].InstanceId)
+	instanceID := sysOut.InstanceID
 
 	slog.Info("LaunchK3sServerVM completed",
 		"clusterName", in.ClusterName,
@@ -210,9 +200,7 @@ func TerminateK3sServerVM(
 	}
 	var firstErr error
 	if instanceID != "" {
-		if _, err := instSvc.TerminateInstances(&ec2.TerminateInstancesInput{
-			InstanceIds: aws.StringSlice([]string{instanceID}),
-		}, accountID); err != nil {
+		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
 			slog.Warn("TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)
 			firstErr = fmt.Errorf("terminate instance %s: %w", instanceID, err)
 		}

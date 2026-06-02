@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -27,6 +30,9 @@ var _ handlers_elbv2.SystemInstanceLauncher = (*Daemon)(nil)
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
+	if input.BootMode == sysinstance.BootAMI {
+		return d.launchAMISystemInstance(input)
+	}
 	accountID := utils.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
 	// the caller's account, so lookups/updates must use that account ID.
@@ -363,6 +369,123 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		PublicIP:   publicIP,
 		HostfwdMap: instance.ExtraHostfwd,
 	}, nil
+}
+
+// launchAMISystemInstance is the BootAMI branch of LaunchSystemInstance: a full
+// AMI boot (root volume cloned from an AMI, cloud-init user-data + network
+// config seed) for a system-managed VM, with a management-bridge NIC so the
+// guest can reach the daemon (NATS/AWSGW) off its tenant VPC subnet.
+//
+// It mirrors the daemon RunInstances handler's Prepare → Insert → Launch split,
+// allocating the mgmt NIC on the VM record between Insert and Launch so the
+// cloud-init network-config rendered during Launch carries a static mgmt0
+// interface. The instance is owned by input.AccountID (the account its
+// pre-created ENI lives in) and tagged input.ManagedBy so customer listings
+// hide it.
+func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+	if d.instanceService == nil {
+		return nil, errors.New("sysinstance: instance service not initialized")
+	}
+	if input.ImageID == "" {
+		return nil, errors.New("sysinstance: BootAMI requires ImageID")
+	}
+	if input.AccountID == "" {
+		return nil, errors.New("sysinstance: BootAMI requires AccountID")
+	}
+	if input.ENIID == "" {
+		return nil, errors.New("sysinstance: BootAMI requires a pre-created ENI")
+	}
+
+	runInput := &ec2.RunInstancesInput{
+		ImageId:      aws.String(input.ImageID),
+		InstanceType: aws.String(input.InstanceType),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String(input.ENIID),
+			DeviceIndex:        aws.Int64(0),
+		}},
+	}
+	if input.UserData != "" {
+		runInput.UserData = aws.String(base64.StdEncoding.EncodeToString([]byte(input.UserData)))
+	}
+	if input.ManagedBy != "" {
+		runInput.TagSpecifications = []*ec2.TagSpecification{{
+			ResourceType: aws.String("instance"),
+			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(input.ManagedBy)}},
+		}}
+	}
+
+	_, instances, instanceType, err := d.instanceService.PrepareRunInstances(runInput, input.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	if len(instances) == 0 {
+		return nil, errors.New("sysinstance: PrepareRunInstances returned no instance")
+	}
+	inst := instances[0]
+	inst.ManagedBy = input.ManagedBy
+
+	for _, instance := range instances {
+		d.vmMgr.Insert(instance)
+	}
+
+	// Management NIC must be set before LaunchRunInstances so the cloud-init
+	// network-config (built during launch) renders a static mgmt0 interface.
+	if err := d.attachSystemMgmtNIC(inst); err != nil {
+		d.vmMgr.MarkFailed(inst, "mgmt_nic_setup_failed")
+		return nil, err
+	}
+
+	d.instanceService.LaunchRunInstances(instances, runInput, instanceType)
+
+	privateIP := input.ENIIP
+	if privateIP == "" && inst.Instance != nil {
+		privateIP = aws.StringValue(inst.Instance.PrivateIpAddress)
+	}
+	slog.Info("LaunchSystemInstance (AMI) completed",
+		"instanceId", inst.ID,
+		"managedBy", input.ManagedBy,
+		"imageId", input.ImageID,
+		"mgmtIP", inst.MgmtIP,
+		"privateIp", privateIP,
+	)
+	return &sysinstance.SystemInstanceOutput{
+		InstanceID: inst.ID,
+		PrivateIP:  privateIP,
+	}, nil
+}
+
+// attachSystemMgmtNIC allocates a management-bridge IP + MAC for a system VM and
+// creates the host-side tap on br-mgmt. The mgmt NIC is mandatory for system
+// instances that boot from an AMI: their VPC ENI has no route off the tenant
+// subnet, so the mgmt NIC is the only path to the daemon (NATS/AWSGW). On
+// failure it releases the IP and returns an error so the caller can fail the
+// launch.
+func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
+	if d.mgmtIPAllocator == nil || d.mgmtBridgeIP == "" {
+		return errors.New("sysinstance: management bridge unavailable; system VM would have no route to the daemon")
+	}
+	mgmtBridge := "br-mgmt"
+	if d.config.Daemon.MgmtBridge != "" {
+		mgmtBridge = d.config.Daemon.MgmtBridge
+	}
+	mgmtIP, err := d.mgmtIPAllocator.Allocate(inst.ID)
+	if err != nil {
+		return fmt.Errorf("allocate mgmt IP: %w", err)
+	}
+	inst.MgmtMAC = vm.GenerateMgmtMAC(inst.ID)
+	inst.MgmtIP = mgmtIP
+	tapName := vm.MgmtTapName(inst.ID)
+	if err := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge}); err != nil {
+		d.mgmtIPAllocator.Release(inst.ID)
+		inst.MgmtMAC = ""
+		inst.MgmtIP = ""
+		return fmt.Errorf("setup mgmt tap: %w", err)
+	}
+	slog.Info("System instance mgmt NIC configured",
+		"instanceId", inst.ID, "mgmtIP", mgmtIP, "mgmtMAC", inst.MgmtMAC, "mgmtTap", tapName)
+	return nil
 }
 
 // TerminateSystemInstance stops and cleans up a system-managed VM.

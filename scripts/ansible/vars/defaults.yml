@@ -128,3 +128,10 @@ spinifex_smoketest_distro: debian
 spinifex_smoketest_version: "13"
 # Local image file path (if present, imported directly; otherwise fall back to --name).
 spinifex_smoketest_local_image: "~/images/{{ spinifex_smoketest_distro }}-{{ spinifex_smoketest_version }}.img"
+
+# Multi-node cluster bootstrap (cluster-bootstrap.yml).
+# cluster_env, cluster_init_host, spinifex_node_count come from inventory/tofu.py.
+cluster_external_pool: ""               # "<start>-<end>" or empty for DHCP fallback
+cluster_join_token_path: /etc/spinifex/join-token
+cluster_formation_port: 4432
+cluster_formation_timeout: 60           # seconds (uri retries = value // 2)

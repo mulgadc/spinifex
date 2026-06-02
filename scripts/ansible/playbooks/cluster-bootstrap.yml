@@ -1,0 +1,330 @@
+---
+# cluster-bootstrap.yml — multi-node Spinifex cluster bootstrap against a
+# tofu-provisioned env. Inventory comes from inventory/tofu.py which parses
+# scripts/tofu-cluster/envs/<env>.tfvars.
+#
+# Usage:
+#   cd spinifex/scripts/ansible
+#   ansible-playbook -i inventory/tofu.py playbooks/cluster-bootstrap.yml \
+#     -e cluster_env=env1 -e cluster_external_pool=192.168.1.150-192.168.1.159
+#
+# Or via the make wrapper:
+#   make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
+#
+# Behaviour:
+#   - all hosts: preflight + install (setup.sh) — production layout
+#   - init host: spx admin init (backgrounded) + CA install + spinifex.target
+#   - join hosts: spx admin join + CA install + spinifex.target (parallel)
+#   - init host: import ssh key + ubuntu AMI (idempotent)
+
+- name: Cluster bootstrap — build artifact once on runner
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: assert cluster_env supplied
+      ansible.builtin.assert:
+        that: cluster_env | default('') | length > 0
+        fail_msg: "Pass -e cluster_env=<env> (matches scripts/tofu-cluster/envs/<env>.tfvars)"
+  roles:
+    - build
+
+- name: Cluster bootstrap — install (all nodes, parallel)
+  hosts: "{{ cluster_env }}"
+  gather_facts: true
+  serial: 100%
+  vars:
+    install_run_ovn: false   # we drive setup-ovn ourselves with role-aware args
+    cluster_bootstrap_purge: true   # wipe stale single-node predastore.toml + raft data
+  vars_files:
+    - ../vars/defaults.yml
+  pre_tasks:
+    - name: copy build tarball to each node
+      ansible.builtin.copy:
+        src: "{{ build_tarball_path }}"
+        dest: "{{ build_tarball_path }}"
+        mode: "0644"
+
+    - name: stop dev-layout services if running (migration from ~/spinifex/)
+      become: true
+      # Bracket trick on the first letter prevents the pattern literal in the
+      # shell command line from matching the running shell itself (pkill -f
+      # against literal patterns is otherwise self-killing — rc=-9).
+      # `spx [a]dmin` catches lingering formation servers from prior bootstrap
+      # attempts that own port 4432 and steal joins from the new init.
+      ansible.builtin.shell:
+        cmd: |
+          pkill -9 -f "[b]in/spx service" 2>/dev/null || true
+          pkill -9 -f "spx [a]dmin" 2>/dev/null || true
+          pkill -9 -f "spinifex-[u]i" 2>/dev/null || true
+          pkill -9 -f "[n]ats-server" 2>/dev/null || true
+          pkill -9 -f "[p]redastore" 2>/dev/null || true
+          pkill -9 -f "[v]iperblock" 2>/dev/null || true
+          sleep 2
+          rm -rf "{{ ansible_env.HOME }}/spinifex" 2>/dev/null || true
+          exit 0
+      changed_when: false
+  roles:
+    - install
+
+# Wipe OVN/OVS state before setup-ovn runs. Without this, re-bootstrapping a
+# previously-built cluster leaves stale chassis rows in the SB DB, stale
+# external_ids on Open_vSwitch, stale br-int flows + ports, stale
+# systemd-networkd unit files, and stale ovs-monitor-ipsec strongSwan certs.
+# Symptom: ovn-controller flows reference dead encap endpoints; IPsec SAs
+# fail AUTHENTICATION_FAILED; new joins shadow ghosts under the same
+# node-name.
+- name: Cluster bootstrap — OVN/OVS state reset (all nodes, parallel)
+  hosts: "{{ cluster_env }}"
+  gather_facts: false
+  serial: 100%
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: reset — stop OVN/OVS services
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - ovn-controller
+        - ovn-central
+        - openvswitch-ipsec
+        - openvswitch-switch
+      failed_when: false
+
+    - name: reset — delete OVN NB/SB databases
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ovn_nb_db }}"
+        - "{{ ovn_sb_db }}"
+
+    - name: reset — delete OVS conf.db + system-id (force fresh ovsdb)
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/openvswitch/conf.db
+        - /etc/openvswitch/.conf.db.~lock~
+        - /etc/openvswitch/system-id.conf
+
+    - name: reset — drop spinifex-managed systemd-networkd unit files
+      become: true
+      ansible.builtin.shell: |
+        rm -f /etc/systemd/network/14-spinifex-*.netdev \
+              /etc/systemd/network/15-spinifex-*.netdev \
+              /etc/systemd/network/15-spinifex-*.network \
+              /etc/systemd/network/16-spinifex-*.network
+        networkctl reload 2>/dev/null || true
+      changed_when: true
+
+    - name: reset — enumerate stale spinifex veth/tap netdevs
+      ansible.builtin.shell: |
+        ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | \
+          grep -E '^(veth-wan-br|veth-wan-ovs|spx-ext-|spx-tap-|spx-)' || true
+      register: reset_links
+      changed_when: false
+
+    - name: reset — delete stale netdevs
+      become: true
+      ansible.builtin.command: "ip link delete {{ item }}"
+      loop: "{{ reset_links.stdout_lines }}"
+      changed_when: true
+      failed_when: false
+
+    - name: reset — clear ovs-monitor-ipsec strongSwan state
+      become: true
+      ansible.builtin.shell: |
+        rm -rf /var/lib/openvswitch/pki 2>/dev/null || true
+        rm -f /etc/ipsec.d/certs/ovs-* /etc/ipsec.d/private/ovs-* 2>/dev/null || true
+        rm -f /etc/ipsec.conf.d/ovs-* 2>/dev/null || true
+      changed_when: true
+
+    - name: reset — start openvswitch-switch with fresh conf.db
+      become: true
+      ansible.builtin.systemd:
+        name: openvswitch-switch
+        state: started
+        daemon_reload: true
+
+- name: Cluster bootstrap — OVN central (init host only)
+  hosts: init
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: setup-ovn --management on init host
+      become: true
+      ansible.builtin.command:
+        cmd: >-
+          /usr/local/share/spinifex/setup-ovn.sh
+          --management
+          --encap-ip={{ spinifex_wan_ip }}
+          --node-name={{ hostvars[inventory_hostname]['spinifex_node_name'] }}
+      changed_when: true
+
+- name: Cluster bootstrap — OVN chassis (join hosts, parallel)
+  hosts: join
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: setup-ovn --ovn-remote on join hosts
+      become: true
+      ansible.builtin.command:
+        cmd: >-
+          /usr/local/share/spinifex/setup-ovn.sh
+          --ovn-remote=tcp:{{ cluster_init_host }}:6642
+          --encap-ip={{ spinifex_wan_ip }}
+          --node-name={{ hostvars[inventory_hostname]['spinifex_node_name'] }}
+      changed_when: true
+
+- name: Cluster bootstrap — init host (start formation server)
+  hosts: init
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  roles:
+    - cluster-init
+
+- name: Cluster bootstrap — join hosts run spx admin join (parallel)
+  hosts: join
+  gather_facts: false
+  serial: 100%
+  vars_files:
+    - ../vars/defaults.yml
+  roles:
+    - cluster-join
+
+- name: Cluster bootstrap — wait for init to finish writing multi-node configs
+  hosts: init
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: wait for spx admin init async job to complete
+      become: true
+      ansible.builtin.async_status:
+        jid: "{{ cluster_init_async.ansible_job_id }}"
+      register: cluster_init_done
+      until: cluster_init_done.finished
+      retries: 60
+      delay: 5
+
+    - name: dump init log on failure
+      ansible.builtin.command: tail -100 /tmp/spx-admin-init.log
+      register: cluster_init_log
+      changed_when: false
+      when: cluster_init_done.rc | default(1) != 0
+
+    - name: assert init exited cleanly
+      ansible.builtin.assert:
+        that: cluster_init_done.rc == 0
+        fail_msg: |
+          spx admin init failed (rc={{ cluster_init_done.rc }})
+          {{ cluster_init_log.stdout | default('(log not captured)') }}
+
+    - name: confirm multi-node predastore.toml written
+      become: true
+      ansible.builtin.shell: |
+        if grep -q '127\.0\.0\.1' {{ spinifex_etc_dir }}/predastore/predastore.toml 2>/dev/null; then
+          echo "ERROR: predastore.toml still references loopback — multi-node config not written"
+          exit 1
+        fi
+        grep -c '^\[\[nodes\]\]' {{ spinifex_etc_dir }}/predastore/predastore.toml 2>/dev/null || echo 0
+      register: predastore_node_count
+      changed_when: false
+
+- name: Cluster bootstrap — install CA on all nodes (before service start)
+  hosts: "{{ cluster_env }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: install CA into system trust
+      become: true
+      ansible.builtin.copy:
+        src: "{{ spinifex_ca_src }}"
+        dest: "{{ spinifex_ca_trust_path }}"
+        mode: "0644"
+        remote_src: true
+
+    - name: rebuild CA bundle
+      become: true
+      ansible.builtin.command: update-ca-certificates
+      changed_when: true
+
+    # spinifex-ui reverse-proxies localhost:9999 (awsgw) and localhost:8443
+    # (predastore) — hardcoded in spinifex/services/spinifexui/spinifexui.go.
+    # spx admin init binds those services to BindIP only, so the loopback
+    # connection fails (BadGateway in UI). Patch to wildcard bind; cert
+    # already includes 127.0.0.1 in IP SANs.
+    - name: patch awsgw bind to 0.0.0.0 (UI proxies via localhost)
+      become: true
+      ansible.builtin.replace:
+        path: "{{ spinifex_config_file }}"
+        regexp: '^(\s*host\s*=\s*")[^"]+(:9999")'
+        replace: '\g<1>0.0.0.0\g<2>'
+
+    - name: patch predastore bind to 0.0.0.0 (UI proxies via localhost)
+      become: true
+      ansible.builtin.replace:
+        path: "{{ spinifex_config_file }}"
+        regexp: '^(\s*host\s*=\s*")[^"]+(:8443")'
+        replace: '\g<1>0.0.0.0\g<2>'
+
+- name: Cluster bootstrap — start services (init first, then joins)
+  hosts: init
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: start spinifex.target on init
+      become: true
+      ansible.builtin.systemd:
+        name: spinifex.target
+        state: started
+
+- name: Cluster bootstrap — start services on join hosts
+  hosts: join
+  gather_facts: false
+  serial: 100%
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: start spinifex.target on joiners
+      become: true
+      ansible.builtin.systemd:
+        name: spinifex.target
+        state: started
+
+- name: Cluster bootstrap — readiness check (all nodes)
+  hosts: "{{ cluster_env }}"
+  gather_facts: false
+  vars_files:
+    - ../vars/defaults.yml
+  tasks:
+    - name: wait for awsgw responsiveness
+      ansible.builtin.uri:
+        url: "https://{{ spinifex_wan_ip }}:{{ cluster_formation_port }}/health"
+        validate_certs: false
+        return_content: true
+      register: cluster_health
+      until:
+        - cluster_health.status == 200
+        - cluster_health.json.service_health.awsgw == "ok"
+      retries: 30
+      delay: 5
+
+- name: Cluster bootstrap — post-bootstrap fixtures (init host only)
+  hosts: init
+  gather_facts: true
+  vars_files:
+    - ../vars/defaults.yml
+  roles:
+    - cluster-post

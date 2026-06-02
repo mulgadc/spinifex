@@ -161,3 +161,62 @@ entirely.
 
 `roles/teardown/README.md` tracks every known state source. When teardown
 misses something, add it there and in `roles/teardown/tasks/main.yml`.
+
+## Multi-node cluster bootstrap
+
+`playbooks/cluster-bootstrap.yml` provisions a 2+ node Spinifex cluster
+across a long-running tofu env (`env1`, `env2`, `bryn`, etc). Inventory
+is generated dynamically from `scripts/tofu-cluster/envs/<env>.tfvars`
+via `inventory/tofu.py` — first node in `nodes = [...]` is the init host,
+the rest are joins.
+
+```bash
+make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
+```
+
+`POOL` is optional; omit for DHCP fallback. Equivalent without make:
+
+```bash
+cd scripts/ansible
+CLUSTER_ENV=env1 ansible-playbook -i inventory/tofu.py \
+    playbooks/cluster-bootstrap.yml \
+    -e cluster_env=env1 \
+    -e cluster_external_pool=192.168.1.150-192.168.1.159
+```
+
+Plays sequence:
+
+1. **runner (localhost)** — `build` role produces `/tmp/spinifex-local.tar.gz`.
+2. **all env hosts (parallel)** — copies tarball, stops any dev-layout
+   services (`~/spinifex/`), runs `preflight` + `install` roles. `setup.sh`
+   creates `/etc/spinifex`, the `spinifex` user/group, systemd units, and
+   installs `/usr/local/bin/spx`.
+3. **init host only** — `cluster-init` role runs `spx admin init` in the
+   background, waits for the formation server, captures the join token.
+   CA is then copied into `/usr/local/share/ca-certificates/spinifex-ca.crt`
+   **before** `spinifex.target` starts (required — predastore enforces
+   strict TLS verify against the system trust store).
+4. **join hosts (parallel)** — `cluster-join` role runs `spx admin join`
+   against the formation server, then installs CA, then starts
+   `spinifex.target`.
+5. **all hosts** — polls `https://<ip>:4432/health` until `awsgw=ok`.
+6. **init host only** — `cluster-post` role imports the SSH key + Ubuntu
+   AMI (both idempotent: skip if already present).
+
+Re-running the playbook against an already-bootstrapped env is safe —
+`setup.sh`, `spx admin init --force`, CA copy, key/AMI import are all
+idempotent.
+
+### Migration from `bootstrap.sh`
+
+`scripts/tofu-cluster/bootstrap.sh` ran services under `~/spinifex/` as
+`tf-user` via `start-dev.sh` with no systemd supervision, and installed
+the cluster CA *after* services started — predastore would crash with
+`x509: certificate signed by unknown authority` on every first boot.
+`cluster-bootstrap.yml` replaces that flow with production-layout
+(`/etc/spinifex/` + systemd) and correct CA-before-services ordering.
+The first run on an env previously bootstrapped by `bootstrap.sh` will
+stop the dev-layout services, install the prod layout, and re-init the
+cluster from scratch via `spx admin init --force`.
+
+`bootstrap.sh` stays in-tree for CI and pseudo-multinode envs.

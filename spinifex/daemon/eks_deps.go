@@ -61,11 +61,22 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	}
 }
 
-// resolveGatewayHost mirrors the LB-agent host precedence that startCluster
-// applies later for ELBv2 (advertise → mgmt → AWSGW bind → dev-shim).
-// Centralized so EKS OIDC issuers and the EKS NATS URL come from the same
-// off-host-reachable source as the LB agent target. Returns "" if no
-// reachable host can be derived.
+// resolveGatewayHost is the single source of truth for the off-host-reachable
+// address LB VMs, EKS OIDC issuers, and the EKS NATS URL all dial. startCluster
+// and buildEKSServiceDeps both call it so the OIDC issuer host can never
+// diverge from the host the lb-agent actually reaches (M7). Precedence:
+//
+//  1. br-mgmt present + AWSGW on a dedicated non-loopback IP distinct from
+//     AdvertiseIP (multi-node: AWSGW on a mgmt-only IP, VPC path can't reach
+//     it) → the AWSGW bind IP. startCluster additionally adds a bootcmd host
+//     route via br-mgmt for this case only.
+//  2. AdvertiseIP set → AdvertiseIP (single-node, or multi-node where AWSGW
+//     binds the advertised IP; VMs reach it via VPC → external).
+//  3. br-mgmt present + AWSGW on 0.0.0.0, no AdvertiseIP → the br-mgmt IP.
+//  4. DevNetworking shim → 10.0.2.2.
+//  5. AWSGW bound to a specific IP (no br-mgmt, no advertise) → that IP.
+//
+// Returns "" if no reachable host can be derived.
 func (d *Daemon) resolveGatewayHost() string {
 	awsgwBindIP := ""
 	if d.config.AWSGW.Host != "" {

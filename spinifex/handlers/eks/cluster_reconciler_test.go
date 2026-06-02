@@ -132,6 +132,18 @@ func TestClusterReconciler_RefreshLeaseFailsWhenKeyDeleted(t *testing.T) {
 	assert.False(t, r.RefreshLease())
 }
 
+// freshenClusterCreatedAt re-stamps the cluster meta's CreatedAt to now so the
+// reconciler's CREATING deadline is far from expiry. sampleClusterMeta uses a
+// fixed past date, which would otherwise trip the create-timeout in tests that
+// assert the cluster stays CREATING.
+func freshenClusterCreatedAt(t *testing.T, kv nats.KeyValue) {
+	t.Helper()
+	meta, err := GetClusterMeta(kv, "alpha")
+	require.NoError(t, err)
+	meta.CreatedAt = time.Now().UTC()
+	require.NoError(t, PutClusterMeta(kv, meta))
+}
+
 func seedBootstrapState(t *testing.T, kv nats.KeyValue) {
 	t.Helper()
 	_, err := kv.Put(NodeTokenKey("alpha"), []byte("enc-token"))
@@ -193,6 +205,8 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 	require.True(t, ok)
 	defer release()
 
+	freshenClusterCreatedAt(t, acctKV)
+
 	// Only seed two of the three KV keys (no CA, no JWKS).
 	_, err := acctKV.Put(NodeTokenKey("alpha"), []byte("enc-token"))
 	require.NoError(t, err)
@@ -220,6 +234,7 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 	require.True(t, ok)
 	defer release()
 
+	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -229,6 +244,62 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 	meta, err := GetClusterMeta(acctKV, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusCreating, meta.Status, "must remain CREATING when /healthz fails")
+}
+
+func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
+	stub := &stubHTTPDoer{err: errors.New("connection refused")}
+	r, _, acctKV := newReconcilerHarness(t,
+		"https://nlb.example/healthz",
+		WithHTTPClient(stub),
+		WithReconcileInterval(10*time.Millisecond),
+		WithLeaseRefresh(10*time.Second),
+		WithCreateTimeout(1*time.Millisecond),
+	)
+	release, ok := r.AcquireLease()
+	require.True(t, ok)
+	defer release()
+
+	// Stamp CreatedAt in the past so the 1ms deadline is already exceeded; the
+	// cluster never becomes ready, so the reconciler must mark it FAILED.
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	meta.CreatedAt = time.Now().Add(-time.Hour).UTC()
+	require.NoError(t, PutClusterMeta(acctKV, meta))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err = r.Run(ctx)
+	assert.ErrorIs(t, err, ErrReconcilerClusterFailed)
+
+	got, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusFailed, got.Status)
+	assert.Contains(t, got.StatusReason, "did not become ACTIVE")
+}
+
+func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
+	stub := &stubHTTPDoer{err: errors.New("connection refused")}
+	r, _, acctKV := newReconcilerHarness(t,
+		"https://nlb.example/healthz",
+		WithHTTPClient(stub),
+		WithReconcileInterval(10*time.Millisecond),
+		WithLeaseRefresh(10*time.Second),
+		WithCreateTimeout(time.Hour),
+	)
+	release, ok := r.AcquireLease()
+	require.True(t, ok)
+	defer release()
+
+	freshenClusterCreatedAt(t, acctKV)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = r.Run(ctx)
+
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusCreating, meta.Status, "within deadline must stay CREATING")
 }
 
 func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {

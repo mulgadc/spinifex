@@ -16,6 +16,11 @@ const (
 	defaultReconcileLeaseRefresh = 20 * time.Second
 	defaultReconcileInterval     = 30 * time.Second
 	defaultHealthzTimeout        = 5 * time.Second
+	// defaultCreateTimeout bounds how long a cluster may sit in CREATING before
+	// the reconciler gives up and marks it FAILED. Measured from meta.CreatedAt
+	// (absolute), so a VM that never boots reaches a terminal state even across
+	// daemon restarts. Plan Risk #1.
+	defaultCreateTimeout = 15 * time.Minute
 )
 
 // ErrReconcilerLeaseLost is returned by Run when the leader lease was lost
@@ -51,6 +56,7 @@ type ClusterReconciler struct {
 	leaseRefresh  time.Duration
 	interval      time.Duration
 	healthTimeout time.Duration
+	createTimeout time.Duration
 	httpClient    HTTPDoer
 }
 
@@ -72,6 +78,12 @@ func WithLeaseRefresh(d time.Duration) ReconcilerOption {
 // WithHealthzTimeout overrides the per-probe HTTP timeout.
 func WithHealthzTimeout(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.healthTimeout = d }
+}
+
+// WithCreateTimeout overrides how long a cluster may remain CREATING before the
+// reconciler marks it FAILED.
+func WithCreateTimeout(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.createTimeout = d }
 }
 
 // WithHTTPClient injects a stub HTTPDoer (tests).
@@ -108,6 +120,7 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		leaseRefresh:  defaultReconcileLeaseRefresh,
 		interval:      defaultReconcileInterval,
 		healthTimeout: defaultHealthzTimeout,
+		createTimeout: defaultCreateTimeout,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -223,12 +236,12 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		if !ready {
 			slog.Debug("ClusterReconciler: bootstrap not ready",
 				"cluster", r.clusterName, "reason", reason)
-			return nil
+			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
 		}
 		if err := r.probeHealthz(ctx); err != nil {
 			slog.Debug("ClusterReconciler: /healthz still failing",
 				"cluster", r.clusterName, "err", err)
-			return nil
+			return r.failIfCreateTimedOut(meta, "healthz not ready: "+err.Error())
 		}
 		if err := SetClusterStatus(r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
 			return err
@@ -246,6 +259,30 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		return ErrReconcilerClusterFailed
 	}
 	return nil
+}
+
+// failIfCreateTimedOut transitions a still-CREATING cluster to FAILED once it
+// has exceeded createTimeout since meta.CreatedAt, and returns
+// ErrReconcilerClusterFailed so Run exits the loop. While still within the
+// window it returns nil so the next tick retries. A zero or absent CreatedAt
+// disables the deadline (no false-positive fail on a malformed record).
+func (r *ClusterReconciler) failIfCreateTimedOut(meta *ClusterMeta, reason string) error {
+	if r.createTimeout <= 0 || meta.CreatedAt.IsZero() {
+		return nil
+	}
+	if time.Since(meta.CreatedAt) < r.createTimeout {
+		return nil
+	}
+	failReason := fmt.Sprintf("cluster did not become ACTIVE within %s: %s", r.createTimeout, reason)
+	if err := MarkClusterFailed(r.acctKV, r.clusterName, failReason); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return ErrClusterNotFound
+		}
+		return fmt.Errorf("mark create-timeout failed: %w", err)
+	}
+	slog.Warn("ClusterReconciler: CREATING timed out, marked FAILED",
+		"cluster", r.clusterName, "timeout", r.createTimeout, "reason", reason)
+	return ErrReconcilerClusterFailed
 }
 
 // bootstrapReady returns true once the four NATS bootstrap KV artifacts are

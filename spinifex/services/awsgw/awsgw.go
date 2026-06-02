@@ -3,7 +3,6 @@ package awsgw
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,9 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
@@ -149,23 +146,17 @@ func launchService(config *config.ClusterConfig) error {
 	defer cancelJanitor()
 	go stsService.RunJanitor(janitorCtx)
 
-	// IMDS serves 169.254.169.254 to local guest VMs over per-VPC veths. It
-	// mints role credentials by calling stsService.AssumeRoleForInstance
-	// in-process, resolves profiles via iamService, and owns its own per-VPC
-	// listener stack (not part of the HTTPS gateway dispatch surface). The host
-	// veth hooks are injected here because network/host transitively imports
-	// handlers/imds, so the service package cannot import host itself.
-	imdsCtx, cancelIMDS := context.WithCancel(context.Background())
-	defer cancelIMDS()
-	imdsService, err := handlers_imds.NewIMDSServiceImpl(natsConn, stsService, iamService, len(config.Nodes), host.EnsureIMDSVeth, host.RemoveIMDSVeth)
-	if err != nil {
-		return fmt.Errorf("initialize IMDS service: %w", err)
+	// IMDS serves 169.254.169.254 to local guest VMs and runs in vpcd, which
+	// holds the network capabilities the listener stack needs (the hardened
+	// awsgw sandbox cannot grant them). awsgw stays the home of STS + IAM and
+	// answers the IMDS handler's two control-plane RPCs — credential minting and
+	// profile/role resolution — over internal, ACL-gated NATS subjects.
+	if _, err := stsService.SubscribeIMDSResponder(natsConn); err != nil {
+		return fmt.Errorf("subscribe IMDS STS responder: %w", err)
 	}
-	go func() {
-		if err := imdsService.Run(imdsCtx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("IMDS service exited", "err", err)
-		}
-	}()
+	if _, err := iamService.SubscribeIMDSResponders(natsConn); err != nil {
+		return fmt.Errorf("subscribe IMDS IAM responders: %w", err)
+	}
 
 	// First boot: consume bootstrap.json → seed IAM users into NATS KV → delete file.
 	// Check data directory first (production: /var/lib/spinifex/awsgw/), then

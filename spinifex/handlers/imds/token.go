@@ -26,8 +26,8 @@ type tokenEntry struct {
 }
 
 // tokenStore holds outstanding IMDSv2 tokens in memory, per process. Tokens are
-// a CSRF defence, not a security artefact, so they are never persisted; an
-// awsgw restart drops them and SDKs reissue transparently.
+// a CSRF defence, not a security artefact, so they are never persisted; a
+// vpcd restart drops them and SDKs reissue transparently.
 type tokenStore struct {
 	mu     sync.Mutex
 	tokens map[string]tokenEntry

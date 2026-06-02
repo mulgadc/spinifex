@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -532,6 +533,31 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IMDS topology manager: %w", err)
 	}
+
+	// IMDS host-served datapath. vpcd holds the capabilities the listener stack
+	// needs (CAP_NET_ADMIN/RAW/BIND_SERVICE + sudo for veth creation) that the
+	// hardened awsgw sandbox cannot grant. STS credential minting and IAM
+	// profile resolution stay in awsgw, reached over internal NATS RPCs. The
+	// host veth hooks are injected because network/host transitively imports
+	// handlers/imds. Run blocks, so it goes on its own goroutine; an initial
+	// sync failure is logged-and-continued (SDKs retry while it converges).
+	imdsCtx, cancelIMDS := context.WithCancel(ctx)
+	defer cancelIMDS()
+	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+		nc,
+		handlers_imds.NewNATSSTSAssumer(nc),
+		handlers_imds.NewNATSProfileLookup(nc),
+		max(len(chassisNames), 1),
+		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
+	)
+	if err != nil {
+		return fmt.Errorf("construct IMDS service: %w", err)
+	}
+	go func() {
+		if err := imdsSvc.Run(imdsCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("vpcd: IMDS service exited", "err", err)
+		}
+	}()
 
 	dhcpMgr, dhcpSubs, err := startDHCPManagerIfNeeded(ctx, nc, js, cfg)
 	if err != nil {

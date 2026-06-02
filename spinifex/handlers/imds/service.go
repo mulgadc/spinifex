@@ -25,7 +25,7 @@ type profileLookup interface {
 }
 
 // IMDSService is the host-served EC2 Instance Metadata Service. It runs in
-// awsgw on every chassis, serving 169.254.169.254 to local guest VMs over
+// vpcd on every chassis, serving 169.254.169.254 to local guest VMs over
 // per-VPC veths. Run owns the listener lifecycle and blocks until ctx is done.
 type IMDSService interface {
 	Run(ctx context.Context) error
@@ -59,7 +59,7 @@ type IMDSServiceImpl struct {
 //
 // ensureVeth / removeVeth are injected rather than imported: the host helpers
 // (host.EnsureIMDSVeth / host.RemoveIMDSVeth) live in network/host, which
-// transitively imports this package, so awsgw — which can import both — passes
+// transitively imports this package, so vpcd — which can import both — passes
 // them in. Tests inject fakes.
 func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
@@ -133,7 +133,7 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 
 // Run starts the bind manager (sync + watch) and the token-sweep ticker, then
 // blocks until ctx is cancelled. The initial sync failing is logged but not
-// fatal — other awsgw services must not have their readiness gated on IMDS
+// fatal — other vpcd services must not have their readiness gated on IMDS
 // plumbing, and SDKs retry while it converges.
 func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 	if err := s.bind.sync(ctx); err != nil {

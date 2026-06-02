@@ -19,7 +19,7 @@ import (
 // ensureVethFunc / removeVethFunc are the per-VPC host veth lifecycle hooks. They
 // are injected (not imported) because network/host transitively imports
 // network/topology, which imports this package — importing host back would close
-// a cycle. The awsgw wiring (which may import host) passes host.EnsureIMDSVeth /
+// a cycle. The vpcd wiring (which may import host) passes host.EnsureIMDSVeth /
 // host.RemoveIMDSVeth; tests pass fakes that need no root, OVS, or interfaces.
 type ensureVethFunc func(ctx context.Context, vpcID string) (hostEnd string, err error)
 type removeVethFunc func(ctx context.Context, vpcID string) error
@@ -193,7 +193,7 @@ func (b *bindManager) unbind(ctx context.Context, vpcID string) {
 
 // shutdown closes every active listener. The host veths are intentionally left
 // in place: they are cheap, idempotent to re-ensure on the next start, and
-// tearing them down on a clean awsgw restart would needlessly disrupt any other
+// tearing them down on a clean vpcd restart would needlessly disrupt any other
 // chassis-local consumer.
 func (b *bindManager) shutdown() {
 	b.mu.Lock()
@@ -211,7 +211,7 @@ func (b *bindManager) shutdown() {
 // on: it scopes receipt to the one veth (so VPC A's request never matches VPC
 // B's listener despite the shared IP:port) and forces replies back out the same
 // veth regardless of the host routing table. SO_REUSEADDR lets a restarting
-// awsgw rebind before the old socket's TIME_WAIT drains.
+// vpcd rebind before the old socket's TIME_WAIT drains.
 func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(_, _ string, c syscall.RawConn) error {

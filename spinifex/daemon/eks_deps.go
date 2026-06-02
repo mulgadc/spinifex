@@ -15,11 +15,13 @@ import (
 // Daemon.startCluster after VPC, ELBv2, Instance, and Image services are
 // ready.
 //
-// MasterKey is loaded best-effort from BaseDir/config/master.key. A missing
-// key disables OIDC envelope encryption, which in turn fails CreateCluster
-// at the depsReadyForOrchestration gate — the daemon logs and continues.
+// MasterKey is loaded best-effort from the config dir (the directory holding
+// spinifex.toml — same place admin init writes master.key, and the same
+// resolution daemon TLS + predastore config use). A missing key disables OIDC
+// envelope encryption, which in turn fails CreateCluster at the
+// depsReadyForOrchestration gate — the daemon logs and continues.
 func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
-	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(d.config.BaseDir, "config", "master.key"))
+	masterKey, err := handlers_iam.LoadMasterKey(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 	if err != nil {
 		slog.Warn("EKS: LoadMasterKey failed; CreateCluster + DeleteCluster will reject until key is provisioned",
 			"err", err)

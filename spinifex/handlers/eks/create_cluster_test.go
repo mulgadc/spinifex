@@ -119,6 +119,39 @@ func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 	assert.Contains(t, aws.StringValueSlice(list.Clusters), "alpha")
 }
 
+// An ACTIVE cluster whose reconciler recorded a /healthz failure must surface
+// that as a ClusterHealth issue in describe-cluster, so a dead control plane is
+// visible behind the still-ACTIVE status (bead 165.13).
+func TestDescribeCluster_SurfacesHealthIssueForActiveCluster(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	meta := sampleClusterMeta("alpha")
+	meta.Status = ClusterStatusActive
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+	require.NoError(t, SetClusterHealth(f.kv, "alpha", "healthz request: connection refused"))
+
+	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.ClusterStatusActive, aws.StringValue(desc.Cluster.Status))
+	require.NotNil(t, desc.Cluster.Health)
+	require.Len(t, desc.Cluster.Health.Issues, 1)
+	assert.Equal(t, eks.ClusterIssueCodeClusterUnreachable, aws.StringValue(desc.Cluster.Health.Issues[0].Code))
+	assert.Contains(t, aws.StringValue(desc.Cluster.Health.Issues[0].Message), "connection refused")
+}
+
+// A healthy ACTIVE cluster carries no health issue in describe-cluster.
+func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	meta := sampleClusterMeta("alpha")
+	meta.Status = ClusterStatusActive
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+
+	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, desc.Cluster.Health, "healthy cluster must not report a ClusterHealth issue")
+}
+
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	f := newEKSServiceFixture(t)
 

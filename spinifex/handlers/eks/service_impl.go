@@ -747,6 +747,14 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 			VpcId:            aws.String(meta.ResourcesVpcConfig.VpcId),
 		}
 	}
+	if meta.HealthIssue != "" {
+		out.Health = &eks.ClusterHealth{
+			Issues: []*eks.ClusterIssue{{
+				Code:    aws.String(eks.ClusterIssueCodeClusterUnreachable),
+				Message: aws.String(meta.HealthIssue),
+			}},
+		}
+	}
 	return out
 }
 

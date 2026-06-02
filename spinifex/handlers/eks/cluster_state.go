@@ -50,6 +50,12 @@ type ClusterMeta struct {
 	NLBArn                  string            `json:"nlbArn,omitempty"`
 	NLBTargetGroupArn       string            `json:"nlbTargetGroupArn,omitempty"`
 	CreatedAt               time.Time         `json:"createdAt"`
+	// HealthIssue is the last /healthz probe failure reason for an ACTIVE
+	// cluster; empty means healthy. DescribeCluster surfaces a non-empty value
+	// as a ClusterHealth issue so a dead control plane is visible behind the
+	// still-ACTIVE status. LastHealthProbe stamps when the health state changed.
+	HealthIssue     string    `json:"healthIssue,omitempty"`
+	LastHealthProbe time.Time `json:"lastHealthProbe,omitzero"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /
@@ -188,6 +194,26 @@ func SetClusterCertificateAuthority(kv nats.KeyValue, name, caB64 string) error 
 			return false
 		}
 		m.CertificateAuthorityB64 = caB64
+		return true
+	})
+}
+
+// SetClusterHealth records the latest /healthz probe outcome for a cluster:
+// issue is the failure reason (empty clears it / marks healthy). Writes only
+// when the health state changes, stamping LastHealthProbe at the transition so
+// a persistently-unhealthy cluster carries the time it first went bad rather
+// than churning the KV every probe interval. Returns ErrClusterNotFound if the
+// meta record was deleted underneath us.
+func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
+	if name == "" {
+		return errors.New("eks: SetClusterHealth empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.HealthIssue == issue {
+			return false
+		}
+		m.HealthIssue = issue
+		m.LastHealthProbe = time.Now().UTC()
 		return true
 	})
 }

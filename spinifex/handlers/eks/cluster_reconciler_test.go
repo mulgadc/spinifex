@@ -380,6 +380,37 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusActive, meta.Status, "ACTIVE must not flip on healthz fail in this PR")
 	assert.Positive(t, stub.calls.Load())
+	assert.NotEmpty(t, meta.HealthIssue, "failing /healthz must be recorded on meta")
+	assert.False(t, meta.LastHealthProbe.IsZero(), "health probe time must be stamped")
+}
+
+func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
+	stub := &stubHTTPDoer{status: http.StatusServiceUnavailable}
+	r, _, acctKV := newReconcilerHarness(t,
+		"https://nlb.example/healthz",
+		WithHTTPClient(stub),
+		WithReconcileInterval(10*time.Millisecond),
+		WithLeaseRefresh(10*time.Second),
+	)
+	release, ok := r.AcquireLease()
+	require.True(t, ok)
+	defer release()
+
+	require.NoError(t, SetClusterStatus(acctKV, "alpha", ClusterStatusActive))
+
+	// First probe fails and records the issue.
+	require.Error(t, r.probeHealthz(context.Background()))
+	require.NoError(t, r.reconcileOnce(context.Background()))
+	meta, err := GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	require.NotEmpty(t, meta.HealthIssue)
+
+	// Probe recovers: the issue must be cleared.
+	stub.setResponse(http.StatusOK, nil)
+	require.NoError(t, r.reconcileOnce(context.Background()))
+	meta, err = GetClusterMeta(acctKV, "alpha")
+	require.NoError(t, err)
+	assert.Empty(t, meta.HealthIssue, "recovered /healthz must clear the recorded issue")
 }
 
 func TestClusterReconciler_ProbeHealthzEmptyURLNoop(t *testing.T) {

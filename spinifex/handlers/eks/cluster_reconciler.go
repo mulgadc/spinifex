@@ -249,9 +249,17 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
 			"cluster", r.clusterName)
 	case ClusterStatusActive:
+		issue := ""
 		if err := r.probeHealthz(ctx); err != nil {
 			slog.Warn("ClusterReconciler: /healthz failing for ACTIVE cluster",
 				"cluster", r.clusterName, "err", err)
+			issue = err.Error()
+		}
+		if err := SetClusterHealth(r.acctKV, r.clusterName, issue); err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return ErrClusterNotFound
+			}
+			return fmt.Errorf("record cluster health: %w", err)
 		}
 	case ClusterStatusDeleting:
 		return ErrReconcilerClusterDeleting

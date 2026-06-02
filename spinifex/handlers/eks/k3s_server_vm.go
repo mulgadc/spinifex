@@ -14,6 +14,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
+// ErrEKSServerAMINotFound is returned by the launcher when no AMI carrying the
+// EKS managed-by tag exists in the account. CreateCluster maps it to a precise
+// client error: it signals an operator/config gap (the eks-server image was
+// never built/imported), not an unrecoverable internal fault.
+var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
+
 // k3sVPCProvisioner is the subset of handlers_ec2_vpc.VPCService that the K3s
 // server VM launcher needs. Narrow so tests can fake it without implementing
 // the full VPC surface.
@@ -257,7 +263,7 @@ func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error)
 		}
 	}
 	if newestID == "" {
-		return "", fmt.Errorf("eks: no AMI tagged %s=%s found in account %s", tags.ManagedByKey, tags.ManagedByEKS, accountID)
+		return "", fmt.Errorf("%w (tag:%s=%s, account %s)", ErrEKSServerAMINotFound, tags.ManagedByKey, tags.ManagedByEKS, accountID)
 	}
 	if matches > 1 {
 		slog.Warn("eks: multiple AMIs match managed-by=eks; using newest",

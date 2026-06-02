@@ -179,16 +179,64 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 }
 
 func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
-	return s.deps.VPCSG != nil && s.deps.VPCK3s != nil && s.deps.VPCSubnet != nil &&
-		s.deps.NLB != nil && s.deps.Instance != nil && s.deps.Image != nil &&
-		len(s.deps.MasterKey) > 0 && s.deps.GatewayBaseURL != "" && s.deps.Region != "" && s.deps.HolderID != ""
+	return len(s.missingOrchestrationDeps()) == 0
+}
+
+// requireOrchestrationDeps returns a client-facing ServiceUnavailable (with the
+// specific unmet deps logged at ERROR) when the daemon is missing orchestration
+// wiring, so the failure is diagnosable instead of a bare ServerInternal.
+func (s *EKSServiceImpl) requireOrchestrationDeps(op string) error {
+	missing := s.missingOrchestrationDeps()
+	if len(missing) == 0 {
+		return nil
+	}
+	slog.Error("EKS orchestration deps not ready", "op", op, "missing", missing)
+	return errors.New(awserrors.ErrorServiceUnavailable)
+}
+
+// missingOrchestrationDeps names the deps required for cluster orchestration
+// that are unset, so a "deps not ready" rejection can log the precise cause
+// instead of an opaque ServerInternal whose only hint is a one-time boot WARN.
+func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
+	var missing []string
+	if s.deps.VPCSG == nil {
+		missing = append(missing, "VPCSG")
+	}
+	if s.deps.VPCK3s == nil {
+		missing = append(missing, "VPCK3s")
+	}
+	if s.deps.VPCSubnet == nil {
+		missing = append(missing, "VPCSubnet")
+	}
+	if s.deps.NLB == nil {
+		missing = append(missing, "NLB")
+	}
+	if s.deps.Instance == nil {
+		missing = append(missing, "Instance")
+	}
+	if s.deps.Image == nil {
+		missing = append(missing, "Image")
+	}
+	if len(s.deps.MasterKey) == 0 {
+		missing = append(missing, "MasterKey")
+	}
+	if s.deps.GatewayBaseURL == "" {
+		missing = append(missing, "GatewayBaseURL")
+	}
+	if s.deps.Region == "" {
+		missing = append(missing, "Region")
+	}
+	if s.deps.HolderID == "" {
+		missing = append(missing, "HolderID")
+	}
+	return missing
 }
 
 // --- Cluster ---
 
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID string) (*eks.CreateClusterOutput, error) {
-	if !s.depsReadyForOrchestration() {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
+		return nil, err
 	}
 	if err := validateCreateClusterInput(input); err != nil {
 		return nil, err
@@ -304,6 +352,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)
+		if errors.Is(err, ErrEKSServerAMINotFound) {
+			slog.Error("CreateCluster: eks-server AMI not found; cannot launch control plane",
+				"cluster", name, "accountID", accountID, "err", err)
+			return nil, errors.New(awserrors.ErrorServiceUnavailable)
+		}
+		slog.Error("CreateCluster: K3s control-plane VM launch failed",
+			"cluster", name, "accountID", accountID, "err", err)
 		return nil, fmt.Errorf("launch K3s VM: %w", err)
 	}
 	meta.ControlPlaneInstanceID = k3sOut.InstanceID
@@ -396,8 +451,8 @@ func (s *EKSServiceImpl) ListClusters(input *eks.ListClustersInput, accountID st
 }
 
 func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error) {
-	if !s.depsReadyForOrchestration() {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	if err := s.requireOrchestrationDeps("DeleteCluster"); err != nil {
+		return nil, err
 	}
 	name := aws.StringValue(input.Name)
 	if name == "" {

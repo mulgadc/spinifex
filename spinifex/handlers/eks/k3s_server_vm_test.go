@@ -164,8 +164,8 @@ func TestLaunchK3sServerVM_AMINotFound(t *testing.T) {
 	ami := &fakeK3sAMI{describeOut: &ec2.DescribeImagesOutput{}}
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no AMI tagged spinifex:managed-by=eks")
+	require.ErrorIs(t, err, ErrEKSServerAMINotFound)
+	assert.Contains(t, err.Error(), "spinifex:managed-by=eks")
 	assert.Empty(t, vpc.createCalls, "no ENI created when AMI lookup fails")
 	assert.Empty(t, inst.runCalls)
 }

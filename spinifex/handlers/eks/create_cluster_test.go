@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
@@ -150,6 +151,21 @@ func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
 	desc, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
 	require.NoError(t, err)
 	assert.Nil(t, desc.Cluster.Health, "healthy cluster must not report a ClusterHealth issue")
+}
+
+// A missing eks-server AMI is an operator/config gap, not an unrecoverable
+// internal fault: CreateCluster must surface ServiceUnavailable (not a generic
+// ServerInternal) and mark the half-built cluster FAILED (bead 165.4).
+func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, ClusterStatusFailed, meta.Status)
 }
 
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {

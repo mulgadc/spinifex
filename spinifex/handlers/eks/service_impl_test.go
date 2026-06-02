@@ -24,15 +24,16 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 // TestEKSServiceImpl_ClusterLifecycleShimMode covers the four lifecycle
 // methods when the service is constructed via NewEKSServiceImplWithNATS
 // (the shim path the daemon-handler routing test uses): orchestration deps
-// are absent so CreateCluster/DeleteCluster short-circuit to ServerInternal,
-// DescribeCluster hits an empty per-account bucket and surfaces
-// ResourceNotFoundException, and ListClusters returns an empty list. The
-// UpdateClusterConfig + UpdateClusterVersion paths stay NotImplemented.
+// are absent so CreateCluster/DeleteCluster short-circuit to ServiceUnavailable
+// (the missing deps are logged at ERROR), DescribeCluster hits an empty
+// per-account bucket and surfaces ResourceNotFoundException, and ListClusters
+// returns an empty list. The UpdateClusterConfig + UpdateClusterVersion paths
+// stay NotImplemented.
 func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	svc := setupTestService(t)
 
 	_, err := svc.CreateCluster(&eks.CreateClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
@@ -49,7 +50,7 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 }
 
 // EKS only supports the API authentication mode here; CONFIG_MAP (and the

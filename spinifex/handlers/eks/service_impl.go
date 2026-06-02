@@ -401,13 +401,21 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	}
 	meta.Status = ClusterStatusDeleting
 
-	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
-		slog.Warn("DeleteCluster: ZeroizeClusterOIDCKey failed", "cluster", name, "err", err)
-	}
-
 	s.registry.Stop(accountID, name)
 
+	// Blocking teardown. Zeroize is a security guarantee (no recoverable key
+	// material after delete) and NLB/VM are billable resources whose only
+	// owning record is the meta blob — if any of these fail we must NOT sweep
+	// KV (that erases the ARNs/IDs a retry needs) and must NOT report success.
+	var teardownErrs []error
+
+	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
+		teardownErrs = append(teardownErrs, fmt.Errorf("zeroize OIDC key: %w", err))
+	}
+
 	if meta.NLBArn != "" {
+		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
+		// + target group, so a stale target registration cannot leak past it.
 		if meta.NLBTargetGroupArn != "" && meta.ControlPlaneENIIP != "" {
 			if err := DeregisterClusterTarget(s.deps.NLB, accountID, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
 				slog.Warn("DeleteCluster: deregister NLB target failed",
@@ -415,25 +423,35 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 			}
 		}
 		if err := DeleteClusterNLB(s.deps.NLB, accountID, name); err != nil {
-			slog.Warn("DeleteCluster: DeleteClusterNLB failed", "cluster", name, "err", err)
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete NLB: %w", err))
 		}
 	}
 
 	if meta.ControlPlaneInstanceID != "" || meta.ControlPlaneENIID != "" {
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
 			accountID, meta.ControlPlaneInstanceID, meta.ControlPlaneENIID); err != nil {
-			slog.Warn("DeleteCluster: TerminateK3sServerVM failed",
-				"cluster", name, "err", err)
+			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM: %w", err))
 		}
 	}
 
+	if len(teardownErrs) > 0 {
+		joined := errors.Join(teardownErrs...)
+		slog.Error("DeleteCluster: teardown incomplete; leaving cluster DELETING for retry",
+			"cluster", name, "err", joined)
+		return nil, fmt.Errorf("eks: DeleteCluster %s teardown incomplete: %w", name, joined)
+	}
+
+	// SG cleanup is best-effort per plan step 5 — a leaked SG strands no owning
+	// record and must not block the KV sweep.
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			slog.Warn("DeleteCluster: DeleteClusterSGs failed", "cluster", name, "err", err)
 		}
 	}
 
+	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
 	if err := DeleteClusterPrefix(acctKV, name); err != nil {
+		slog.Error("DeleteCluster: KV prefix sweep incomplete", "cluster", name, "err", err)
 		return nil, fmt.Errorf("delete cluster prefix: %w", err)
 	}
 

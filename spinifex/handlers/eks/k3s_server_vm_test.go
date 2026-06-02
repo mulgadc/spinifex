@@ -100,8 +100,12 @@ func (f *fakeK3sAMI) DescribeImages(input *ec2.DescribeImagesInput, _ string) (*
 	}
 	return &ec2.DescribeImagesOutput{
 		Images: []*ec2.Image{{
-			ImageId: aws.String("ami-eks-server-001"),
-			Name:    aws.String(EKSServerAMIName),
+			ImageId:      aws.String("ami-eks-server-001"),
+			Name:         aws.String("spinifex-eks-server"),
+			CreationDate: aws.String("2026-06-01T00:00:00.000Z"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+			},
 		}},
 	}, nil
 }
@@ -157,7 +161,7 @@ func TestLaunchK3sServerVM_AMINotFound(t *testing.T) {
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `AMI "eks-server" not found`)
+	assert.Contains(t, err.Error(), "no AMI tagged spinifex:managed-by=eks")
 	assert.Empty(t, vpc.createCalls, "no ENI created when AMI lookup fails")
 	assert.Empty(t, inst.runCalls)
 }
@@ -168,7 +172,7 @@ func TestLaunchK3sServerVM_AMILookupErrorPropagated(t *testing.T) {
 
 	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "describe eks-server AMI")
+	assert.Contains(t, err.Error(), "describe eks AMI")
 	assert.Empty(t, vpc.createCalls)
 	assert.Empty(t, inst.runCalls)
 }
@@ -311,8 +315,8 @@ func TestLaunchK3sServerVM_AMIFilterShape(t *testing.T) {
 	require.Len(t, ami.describeCalls, 1)
 	filters := ami.describeCalls[0].Filters
 	require.Len(t, filters, 1)
-	assert.Equal(t, "name", aws.StringValue(filters[0].Name))
-	assert.Equal(t, []string{EKSServerAMIName}, aws.StringValueSlice(filters[0].Values))
+	assert.Equal(t, "tag:"+tags.ManagedByKey, aws.StringValue(filters[0].Name))
+	assert.Equal(t, []string{tags.ManagedByEKS}, aws.StringValueSlice(filters[0].Values))
 }
 
 func TestTerminateK3sServerVM_BothNoopOnEmpty(t *testing.T) {

@@ -39,11 +39,6 @@ type k3sAMIResolver interface {
 }
 
 const (
-	// EKSServerAMIName is the AMI name (matched via DescribeImages name
-	// filter) the launcher resolves to find the eks-server image baked by
-	// the cs-eks-6b-amis sprint.
-	EKSServerAMIName = "eks-server"
-
 	// defaultK3sServerInstanceType is the spinifex instance type closest to
 	// the AWS EKS minimum control-plane footprint (2 vCPU / 8 GB / 40 GB).
 	// Callers can override via K3sServerInput.InstanceType.
@@ -227,21 +222,46 @@ func TerminateK3sServerVM(
 	return firstErr
 }
 
+// lookupEKSServerAMI resolves the EKS control-plane AMI by the
+// spinifex:managed-by=eks tag the build pipeline stamps on it, rather than a
+// brittle exact name. This survives the planned server+agent → single EKS AMI
+// unify untouched (the unified AMI keeps the tag; role is chosen per-instance
+// at launch). If more than one AMI carries the tag (e.g. server + agent both
+// imported pre-unify), the newest by CreationDate wins.
 func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error) {
 	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
-			{Name: aws.String("name"), Values: aws.StringSlice([]string{EKSServerAMIName})},
+			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByEKS})},
 		},
 	}, accountID)
 	if err != nil {
-		return "", fmt.Errorf("describe %s AMI: %w", EKSServerAMIName, err)
+		return "", fmt.Errorf("describe eks AMI (tag:%s=%s): %w", tags.ManagedByKey, tags.ManagedByEKS, err)
 	}
+
+	var (
+		newestID      string
+		newestCreated string
+		matches       int
+	)
 	for _, img := range out.Images {
-		if img != nil && img.ImageId != nil && *img.ImageId != "" {
-			return *img.ImageId, nil
+		if img == nil || img.ImageId == nil || *img.ImageId == "" {
+			continue
+		}
+		matches++
+		// CreationDate is a fixed-width RFC3339 timestamp, so lexicographic
+		// comparison orders it correctly without parsing.
+		if created := aws.StringValue(img.CreationDate); newestID == "" || created > newestCreated {
+			newestID, newestCreated = *img.ImageId, created
 		}
 	}
-	return "", fmt.Errorf("eks: AMI %q not found in account %s", EKSServerAMIName, accountID)
+	if newestID == "" {
+		return "", fmt.Errorf("eks: no AMI tagged %s=%s found in account %s", tags.ManagedByKey, tags.ManagedByEKS, accountID)
+	}
+	if matches > 1 {
+		slog.Warn("eks: multiple AMIs match managed-by=eks; using newest",
+			"count", matches, "imageId", newestID, "created", newestCreated)
+	}
+	return newestID, nil
 }
 
 func rollbackK3sENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {

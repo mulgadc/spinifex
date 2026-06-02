@@ -1,18 +1,24 @@
 import {
   type Action,
+  type RuleCondition,
+  type RulePriorityPair,
   type Tag,
   type TargetDescription,
   CreateListenerCommand,
   CreateLoadBalancerCommand,
+  CreateRuleCommand,
   CreateTargetGroupCommand,
   DeleteListenerCommand,
   DeleteLoadBalancerCommand,
+  DeleteRuleCommand,
   DeleteTargetGroupCommand,
   DeregisterTargetsCommand,
   ModifyListenerCommand,
   ModifyLoadBalancerAttributesCommand,
+  ModifyRuleCommand,
   ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
+  SetRulePrioritiesCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
@@ -414,6 +420,176 @@ export function useDeregisterTargets() {
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({
         queryKey: ["elbv2", "targetGroups", variables.targetGroupArn, "health"],
+      })
+    },
+  })
+}
+
+export interface RuleCondInput {
+  field: string
+  values: string[]
+  httpHeaderName?: string
+  queryStringPairs?: { key?: string; value: string }[]
+}
+
+export interface CreateRuleParams {
+  listenerArn: string
+  priority: number
+  conditions: RuleCondInput[]
+  forwardTargetGroupArn: string
+}
+
+function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
+  return conds.map((c): RuleCondition => {
+    switch (c.field) {
+      case "host-header": {
+        return {
+          Field: c.field,
+          HostHeaderConfig: { Values: c.values },
+        }
+      }
+      case "path-pattern": {
+        return {
+          Field: c.field,
+          PathPatternConfig: { Values: c.values },
+        }
+      }
+      case "http-header": {
+        return {
+          Field: c.field,
+          HttpHeaderConfig: {
+            HttpHeaderName: c.httpHeaderName ?? "",
+            Values: c.values,
+          },
+        }
+      }
+      case "http-request-method": {
+        return {
+          Field: c.field,
+          HttpRequestMethodConfig: { Values: c.values },
+        }
+      }
+      case "source-ip": {
+        return {
+          Field: c.field,
+          SourceIpConfig: { Values: c.values },
+        }
+      }
+      case "query-string": {
+        return {
+          Field: c.field,
+          QueryStringConfig: {
+            Values: (c.queryStringPairs ?? []).map((p) => ({
+              Key: p.key && p.key.length > 0 ? p.key : undefined,
+              Value: p.value,
+            })),
+          },
+        }
+      }
+      default: {
+        return { Field: c.field, Values: c.values }
+      }
+    }
+  })
+}
+
+export function useCreateRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateRuleParams) => {
+      const actions: Action[] = [
+        { Type: "forward", TargetGroupArn: params.forwardTargetGroupArn },
+      ]
+      const command = new CreateRuleCommand({
+        ListenerArn: params.listenerArn,
+        Priority: params.priority,
+        Conditions: toSDKConditions(params.conditions),
+        Actions: actions,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "listeners", variables.listenerArn, "rules"],
+      })
+    },
+  })
+}
+
+export interface ModifyRuleParams {
+  ruleArn: string
+  listenerArn: string
+  conditions?: RuleCondInput[]
+  forwardTargetGroupArn?: string
+}
+
+export function useModifyRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: ModifyRuleParams) => {
+      const command = new ModifyRuleCommand({
+        RuleArn: params.ruleArn,
+        Conditions: params.conditions
+          ? toSDKConditions(params.conditions)
+          : undefined,
+        Actions: params.forwardTargetGroupArn
+          ? [
+              {
+                Type: "forward",
+                TargetGroupArn: params.forwardTargetGroupArn,
+              },
+            ]
+          : undefined,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "listeners", variables.listenerArn, "rules"],
+      })
+    },
+  })
+}
+
+export interface DeleteRuleParams {
+  ruleArn: string
+  listenerArn: string
+}
+
+export function useDeleteRule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: DeleteRuleParams) => {
+      const command = new DeleteRuleCommand({ RuleArn: params.ruleArn })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "listeners", variables.listenerArn, "rules"],
+      })
+    },
+  })
+}
+
+export interface SetRulePrioritiesParams {
+  listenerArn: string
+  priorities: { ruleArn: string; priority: number }[]
+}
+
+export function useSetRulePriorities() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: SetRulePrioritiesParams) => {
+      const pairs: RulePriorityPair[] = params.priorities.map((p) => ({
+        RuleArn: p.ruleArn,
+        Priority: p.priority,
+      }))
+      const command = new SetRulePrioritiesCommand({ RulePriorities: pairs })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "listeners", variables.listenerArn, "rules"],
       })
     },
   })

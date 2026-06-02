@@ -47,6 +47,10 @@ func (s *NATSELBv2Service) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	return utils.NATSRequest[elbv2.CreateTargetGroupOutput](s.natsConn, "elbv2.CreateTargetGroup", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+	return utils.NATSRequest[elbv2.ModifyTargetGroupOutput](s.natsConn, "elbv2.ModifyTargetGroup", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
 	return utils.NATSRequest[elbv2.DeleteTargetGroupOutput](s.natsConn, "elbv2.DeleteTargetGroup", input, defaultTimeout, accountID)
 }
@@ -81,6 +85,26 @@ func (s *NATSELBv2Service) ModifyListener(input *elbv2.ModifyListenerInput, acco
 
 func (s *NATSELBv2Service) DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
 	return utils.NATSRequest[elbv2.DescribeListenersOutput](s.natsConn, "elbv2.DescribeListeners", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) CreateRule(input *elbv2.CreateRuleInput, accountID string) (*elbv2.CreateRuleOutput, error) {
+	return utils.NATSRequest[elbv2.CreateRuleOutput](s.natsConn, "elbv2.CreateRule", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) ModifyRule(input *elbv2.ModifyRuleInput, accountID string) (*elbv2.ModifyRuleOutput, error) {
+	return utils.NATSRequest[elbv2.ModifyRuleOutput](s.natsConn, "elbv2.ModifyRule", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) DeleteRule(input *elbv2.DeleteRuleInput, accountID string) (*elbv2.DeleteRuleOutput, error) {
+	return utils.NATSRequest[elbv2.DeleteRuleOutput](s.natsConn, "elbv2.DeleteRule", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) DescribeRules(input *elbv2.DescribeRulesInput, accountID string) (*elbv2.DescribeRulesOutput, error) {
+	return utils.NATSRequest[elbv2.DescribeRulesOutput](s.natsConn, "elbv2.DescribeRules", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) SetRulePriorities(input *elbv2.SetRulePrioritiesInput, accountID string) (*elbv2.SetRulePrioritiesOutput, error) {
+	return utils.NATSRequest[elbv2.SetRulePrioritiesOutput](s.natsConn, "elbv2.SetRulePriorities", input, defaultTimeout, accountID)
 }
 
 func (s *NATSELBv2Service) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {

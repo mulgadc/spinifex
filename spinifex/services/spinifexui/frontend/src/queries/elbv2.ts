@@ -2,6 +2,7 @@ import {
   DescribeListenersCommand,
   DescribeLoadBalancerAttributesCommand,
   DescribeLoadBalancersCommand,
+  DescribeRulesCommand,
   DescribeTagsCommand,
   DescribeTargetGroupAttributesCommand,
   DescribeTargetGroupsCommand,
@@ -89,6 +90,15 @@ export const elbv2ListenersQueryOptions = (loadBalancerArn: string) =>
       const command = new DescribeListenersCommand({
         LoadBalancerArn: loadBalancerArn,
       })
+      return await getElbv2Client().send(command)
+    },
+  })
+
+export const elbv2ListenerRulesQueryOptions = (listenerArn: string) =>
+  queryOptions({
+    queryKey: ["elbv2", "listeners", listenerArn, "rules"],
+    queryFn: async () => {
+      const command = new DescribeRulesCommand({ ListenerArn: listenerArn })
       return await getElbv2Client().send(command)
     },
   })

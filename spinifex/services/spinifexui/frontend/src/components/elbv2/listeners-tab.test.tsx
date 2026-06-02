@@ -191,7 +191,7 @@ describe("ListenersTab", () => {
     await expect(
       screen.findByRole("alertdialog", { name: /edit listener/i }),
     ).resolves.toBeInTheDocument()
-    const portInput = screen.getByLabelText(/^port$/i) as HTMLInputElement
+    const portInput = screen.getByLabelText<HTMLInputElement>(/^port$/i)
     expect(portInput.value).toBe("80")
     await user.clear(portInput)
     await user.type(portInput, "8080")

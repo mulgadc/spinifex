@@ -214,6 +214,28 @@ func TestErrorHandler_UnknownError(t *testing.T) {
 	assert.Contains(t, xmlStr, "<Errors>")
 }
 
+func TestErrorHandler_ELBv2Service(t *testing.T) {
+	gw := &GatewayConfig{DisableLogging: true}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), ctxService, "elasticloadbalancing")
+		r = r.WithContext(ctx)
+		gw.ErrorHandler(w, r, errors.New(awserrors.ErrorInvalidAction))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	resp := doRequest(handler, req)
+	assert.Equal(t, 400, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	xmlStr := string(body)
+	// ELBv2 uses the IAM-style Query envelope; EC2 shape breaks SDK Code parsing.
+	assert.Contains(t, xmlStr, "<ErrorResponse>")
+	assert.Contains(t, xmlStr, "<Type>Sender</Type>")
+	assert.Contains(t, xmlStr, "<Code>InvalidAction</Code>")
+	assert.NotContains(t, xmlStr, "<Errors>")
+}
+
 func TestErrorHandler_EC2Service(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 

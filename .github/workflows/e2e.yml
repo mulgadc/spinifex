@@ -153,6 +153,8 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true
@@ -276,6 +278,8 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true
@@ -412,6 +416,8 @@ jobs:
           sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
           sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
           sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
           sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
           sudo ip -d link > ip-link.txt 2>&1 || true
           sudo ip addr > ip-addr.txt 2>&1 || true

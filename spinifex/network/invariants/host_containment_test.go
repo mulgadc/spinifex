@@ -23,10 +23,11 @@ func TestS2_BridgeModeContainedInL0(t *testing.T) {
 		`above receive a typed enum at init time."`
 
 	hostTools := map[string]struct{}{
-		"ovs-vsctl": {},
-		"ovs-ofctl": {},
-		"ovn-nbctl": {},
-		"ovn-sbctl": {},
+		"ovs-vsctl":  {},
+		"ovs-ofctl":  {},
+		"ovn-nbctl":  {},
+		"ovn-sbctl":  {},
+		"ovn-appctl": {},
 	}
 
 	roots := []string{

@@ -22,6 +22,7 @@ func TestFullDatabaseModel(t *testing.T) {
 		"DHCP_Options",
 		"NAT",
 		"Logical_Router_Static_Route",
+		"Logical_Router_Policy",
 		"Gateway_Chassis",
 		"Port_Group",
 		"ACL",

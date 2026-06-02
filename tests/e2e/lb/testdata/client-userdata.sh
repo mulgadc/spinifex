@@ -29,6 +29,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             outfile = body["outfile"]
             tcp_port = int(body.get("tcp_port", 9000))
             http_port = int(body.get("http_port", 80))
+            http_path = body.get("http_path", "/") or "/"
+            if not http_path.startswith("/"):
+                http_path = "/" + http_path
+            host_header = body.get("host", "")
         except Exception as exc:
             self.send_response(400); self.end_headers()
             self.wfile.write(f"bad request: {exc}".encode())
@@ -38,9 +42,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with open(path, "w") as fh:
             for _ in range(count):
                 if proto == "http":
-                    r = subprocess.run(
-                        ["curl", "-s", "--max-time", "5", f"http://{ip}:{http_port}/"],
-                        capture_output=True, text=True)
+                    cmd = ["curl", "-s", "--max-time", "5"]
+                    if host_header:
+                        cmd += ["-H", f"Host: {host_header}"]
+                    cmd.append(f"http://{ip}:{http_port}{http_path}")
+                    r = subprocess.run(cmd, capture_output=True, text=True)
                     fh.write(r.stdout.strip() + "\n")
                 else:
                     r = subprocess.run(

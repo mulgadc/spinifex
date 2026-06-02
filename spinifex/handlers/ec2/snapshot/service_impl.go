@@ -280,7 +280,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 		State:            "completed",
 		Progress:         "100%",
 		StartTime:        now,
-		Encrypted:        volumeConfig.VolumeMetadata.IsEncrypted,
+		Encrypted:        volumeState.EncryptionEnabled,
 		OwnerID:          accountID,
 		AvailabilityZone: volumeConfig.VolumeMetadata.AvailabilityZone,
 		Tags:             utils.ExtractTags(input.TagSpecifications, "snapshot"),

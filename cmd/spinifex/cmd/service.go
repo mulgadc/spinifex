@@ -283,19 +283,25 @@ var viperblockStartCmd = &cobra.Command{
 			shardWAL = *nodeConfig.Viperblock.ShardWAL
 		}
 
+		encryptionKeyFile := nodeConfig.Viperblock.EncryptionKeyFile
+		if envKey := viper.GetString("viperblock-encryption-key-file"); envKey != "" {
+			encryptionKeyFile = envKey
+		}
+
 		service, err := service.New("viperblock", &viperblockd.Config{
-			NatsHost:   nodeConfig.NATS.Host,
-			NatsToken:  nodeConfig.NATS.ACL.Token,
-			NatsCACert: nodeConfig.NATS.CACert,
-			PluginPath: pluginPath,
-			S3Host:     nodeConfig.Predastore.Host,
-			Bucket:     nodeConfig.Predastore.Bucket,
-			Region:     nodeConfig.Predastore.Region,
-			AccessKey:  nodeConfig.Predastore.AccessKey,
-			SecretKey:  nodeConfig.Predastore.SecretKey,
-			BaseDir:    nodeConfig.Predastore.BaseDir,
-			NodeName:   clusterConfig.Node,
-			ShardWAL:   shardWAL,
+			NatsHost:          nodeConfig.NATS.Host,
+			NatsToken:         nodeConfig.NATS.ACL.Token,
+			NatsCACert:        nodeConfig.NATS.CACert,
+			PluginPath:        pluginPath,
+			S3Host:            nodeConfig.Predastore.Host,
+			Bucket:            nodeConfig.Predastore.Bucket,
+			Region:            nodeConfig.Predastore.Region,
+			AccessKey:         nodeConfig.Predastore.AccessKey,
+			SecretKey:         nodeConfig.Predastore.SecretKey,
+			BaseDir:           nodeConfig.Predastore.BaseDir,
+			NodeName:          clusterConfig.Node,
+			ShardWAL:          shardWAL,
+			EncryptionKeyFile: encryptionKeyFile,
 		})
 
 		if err != nil {
@@ -910,6 +916,14 @@ func init() {
 	viperblockCmd.PersistentFlags().String("plugin-path", "/opt/spinifex/lib/nbdkit-viperblock-plugin.so", "Pathname to the nbdkit viperblockplugin")
 	viper.BindEnv("plugin-path", "SPINIFEX_VIPERBLOCK_PLUGIN_PATH")
 	viper.BindPFlag("plugin-path", predastoreCmd.PersistentFlags().Lookup("plugin-path"))
+
+	// Viperblock at-rest encryption master key (shared with other on-node
+	// services via group ownership; mode 0640 or stricter). Distinct viper
+	// key from predastore's encryption-key-file so the two BindPFlag calls
+	// don't collide globally.
+	viperblockCmd.PersistentFlags().String("encryption-key-file", "", "Path to the 32-byte AES-256 master key file for at-rest encryption (empty disables encryption)")
+	viper.BindEnv("viperblock-encryption-key-file", "SPINIFEX_VIPERBLOCK_ENCRYPTION_KEY_FILE")
+	viper.BindPFlag("viperblock-encryption-key-file", viperblockCmd.PersistentFlags().Lookup("encryption-key-file"))
 
 	viperblockCmd.AddCommand(viperblockStartCmd)
 	viperblockCmd.AddCommand(viperblockStopCmd)

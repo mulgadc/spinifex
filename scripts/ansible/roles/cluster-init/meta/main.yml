@@ -1,0 +1,9 @@
+---
+galaxy_info:
+  role_name: cluster-init
+  description: |
+    Run `spx admin init` on the cluster's init host, backgrounded so the
+    formation server accepts joins from the cluster-join role. Installs
+    cluster CA into the system trust store BEFORE starting spinifex.target
+    so predastore's strict TLS verify is satisfied at first start.
+dependencies: []

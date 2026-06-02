@@ -1597,6 +1597,14 @@ func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential
 	return want == wireToken
 }
 
+func (m *mockSTSService) AssumeRoleWithWebIdentity(_ *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
+func (m *mockSTSService) VerifyPresignedGetCallerIdentity(_, _ string) (*handlers_sts.PresignedCallerIdentity, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
 const (
 	testSessionAKID  = "ASIATESTSESSIONAAAAA"
 	testSessionToken = "wire-session-token-plain"

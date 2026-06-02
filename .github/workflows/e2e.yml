@@ -77,6 +77,37 @@ jobs:
             "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
             --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
 
+      - name: Start Packet Capture (siv-167)
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' <<'REMOTE'
+          set -x
+          sudo mkdir -p /tmp/spinifex-diag
+          sudo chmod 0777 /tmp/spinifex-diag
+          sudo rm -f /tmp/spinifex-diag/br-wan.pcap /tmp/spinifex-diag/tcpdump.pid /tmp/spinifex-diag/tcpdump.log
+          sudo bash -c '
+            nohup tcpdump -i br-wan -nn -s 0 -U \
+              -w /tmp/spinifex-diag/br-wan.pcap \
+              "(tcp port 22 or tcp port 80 or tcp port 443 or tcp port 9999) or arp" \
+              </dev/null >/tmp/spinifex-diag/tcpdump.log 2>&1 &
+            echo $! > /tmp/spinifex-diag/tcpdump.pid
+          '
+          sleep 2
+          PID=$(cat /tmp/spinifex-diag/tcpdump.pid 2>/dev/null || echo "")
+          if [ -n "$PID" ] && sudo kill -0 "$PID" 2>/dev/null; then
+            echo "tcpdump running PID=$PID"
+            ls -la /tmp/spinifex-diag/
+          else
+            echo "tcpdump failed to start"
+            cat /tmp/spinifex-diag/tcpdump.log 2>&1 || true
+            exit 1
+          fi
+          REMOTE
+
       - name: Run E2E Tests
         working-directory: mulga/scripts/tofu-cluster
         run: |
@@ -86,6 +117,73 @@ jobs:
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
           ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
             "cd ~/e2e-tests && ./run-e2e.sh && ./run-cert-e2e.sh && ENDPOINT=https://${WAN_IP}:9999 ./run-lb-e2e.sh"
+
+      - name: Collect Diagnostics
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          DIAG_DIR="${RUNNER_TEMP}/diag-single"
+          mkdir -p "$DIAG_DIR"
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' > "$DIAG_DIR/collect.log" 2>&1 <<'REMOTE' || true
+          set -x
+          DIAG=/tmp/spinifex-diag
+          sudo mkdir -p "$DIAG" && cd "$DIAG"
+          if [ -f tcpdump.pid ]; then
+            PID=$(cat tcpdump.pid)
+            sudo kill -INT "$PID" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do sudo kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+            sudo kill -KILL "$PID" 2>/dev/null || true
+          fi
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
+          sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
+          sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
+          sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
+          sudo ovs-vsctl show > ovs-vsctl-show.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-int > br-int-flows.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-ex > br-ex-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-flows > dpctl-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-conntrack -m > dpctl-conntrack.txt 2>&1 || true
+          sudo ovn-nbctl show > ovn-nbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl show > ovn-sbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl list Port_Binding > sbdb-port-binding.txt 2>&1 || true
+          sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
+          sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
+          sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
+          sudo ip -d link > ip-link.txt 2>&1 || true
+          sudo ip addr > ip-addr.txt 2>&1 || true
+          sudo ip route > ip-route.txt 2>&1 || true
+          sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
+          sudo iptables-save > iptables.txt 2>&1 || true
+          sudo nft list ruleset > nft.txt 2>&1 || true
+          sudo dmesg --ctime > dmesg.txt 2>&1 || true
+          sudo virsh list --all > virsh-list.txt 2>&1 || true
+          ls -la /var/lib/spinifex /var/log/spinifex 2>&1 > spinifex-dirs.txt || true
+          sudo chmod -R a+r /tmp/spinifex-diag
+          tar czf /tmp/spinifex-diag.tar.gz -C /tmp spinifex-diag
+          REMOTE
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" \
+            tf-user@${WAN_IP}:/tmp/spinifex-diag.tar.gz "$DIAG_DIR/spinifex-diag.tar.gz" || true
+
+      - name: Upload Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diag-single-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-single/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Teardown
         if: always()
@@ -150,6 +248,66 @@ jobs:
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
           ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
             "cd ~/Development/mulga/spinifex && SPX_EXTERNAL_POOL=\"${SPINIFEX_CI_POOL}\" ./tests/e2e/run-pseudo-multinode-e2e.sh"
+
+      - name: Collect Diagnostics
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          DIAG_DIR="${RUNNER_TEMP}/diag-pseudo"
+          mkdir -p "$DIAG_DIR"
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" tf-user@${WAN_IP} 'bash -s' > "$DIAG_DIR/collect.log" 2>&1 <<'REMOTE' || true
+          set -x
+          DIAG=/tmp/spinifex-diag
+          sudo rm -rf "$DIAG" && mkdir -p "$DIAG" && cd "$DIAG"
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
+          sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
+          sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
+          sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
+          sudo ovs-vsctl show > ovs-vsctl-show.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-int > br-int-flows.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-ex > br-ex-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-flows > dpctl-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-conntrack -m > dpctl-conntrack.txt 2>&1 || true
+          sudo ovn-nbctl show > ovn-nbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl show > ovn-sbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl list Port_Binding > sbdb-port-binding.txt 2>&1 || true
+          sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
+          sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
+          sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
+          sudo ip -d link > ip-link.txt 2>&1 || true
+          sudo ip addr > ip-addr.txt 2>&1 || true
+          sudo ip route > ip-route.txt 2>&1 || true
+          sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
+          sudo iptables-save > iptables.txt 2>&1 || true
+          sudo nft list ruleset > nft.txt 2>&1 || true
+          sudo dmesg --ctime > dmesg.txt 2>&1 || true
+          sudo virsh list --all > virsh-list.txt 2>&1 || true
+          ls -la /var/lib/spinifex /var/log/spinifex 2>&1 > spinifex-dirs.txt || true
+          tar czf /tmp/spinifex-diag.tar.gz -C /tmp spinifex-diag
+          REMOTE
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" \
+            tf-user@${WAN_IP}:/tmp/spinifex-diag.tar.gz "$DIAG_DIR/spinifex-diag.tar.gz" || true
+
+      - name: Upload Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diag-pseudo-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-pseudo/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Teardown
         if: always()
@@ -229,6 +387,72 @@ jobs:
 
           ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
             "cd ~/e2e-tests && ./run-multinode-e2e.sh ${NODE_IPS} && ./run-cert-e2e.sh --multinode ${NODE_IPS} && ENDPOINT=https://${NODE1_IP}:9999 ./run-lb-e2e.sh --nodes ${NODE_IPS}"
+
+      - name: Collect Diagnostics
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          DIAG_DIR="${RUNNER_TEMP}/diag-multi"
+          mkdir -p "$DIAG_DIR"
+          cat > "${RUNNER_TEMP}/collect-diag.sh" <<'REMOTE'
+          set -x
+          DIAG=/tmp/spinifex-diag
+          sudo rm -rf "$DIAG" && mkdir -p "$DIAG" && cd "$DIAG"
+          sudo journalctl -u 'spinifex-*' --no-pager > journal-spinifex-full.log 2>&1 || true
+          sudo journalctl -u 'spinifex-*' --no-pager -n 10000 > journal-spinifex.log 2>&1 || true
+          sudo journalctl -u 'ovn-*' --no-pager -n 5000 > journal-ovn.log 2>&1 || true
+          sudo journalctl -u 'openvswitch-*' --no-pager -n 2000 > journal-ovs.log 2>&1 || true
+          sudo ovs-vsctl show > ovs-vsctl-show.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-int > br-int-flows.txt 2>&1 || true
+          sudo ovs-ofctl dump-flows br-ex > br-ex-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-flows > dpctl-flows.txt 2>&1 || true
+          sudo ovs-appctl dpctl/dump-conntrack -m > dpctl-conntrack.txt 2>&1 || true
+          sudo ovn-nbctl show > ovn-nbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl show > ovn-sbctl-show.txt 2>&1 || true
+          sudo ovn-sbctl list Port_Binding > sbdb-port-binding.txt 2>&1 || true
+          sudo ovn-sbctl list Chassis > sbdb-chassis.txt 2>&1 || true
+          sudo ovn-nbctl list NAT > nbdb-nat.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router > nbdb-lr.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Policy > nbdb-lr-policy.txt 2>&1 || true
+          sudo ovn-nbctl list Logical_Router_Static_Route > nbdb-lr-static-route.txt 2>&1 || true
+          sudo ovn-appctl -t ovn-controller ct-zone-list > ovn-ctzones.txt 2>&1 || true
+          sudo ip -d link > ip-link.txt 2>&1 || true
+          sudo ip addr > ip-addr.txt 2>&1 || true
+          sudo ip route > ip-route.txt 2>&1 || true
+          sudo ip neigh > ip-neigh.txt 2>&1 || true
+          sudo bridge fdb show > bridge-fdb.txt 2>&1 || true
+          sudo bridge link > bridge-link.txt 2>&1 || true
+          for f in /sys/class/net/br-wan/brif/*/hairpin_mode /sys/class/net/br-wan/brif/*/learning /sys/class/net/br-wan/brif/*/flood; do
+            [ -e "$f" ] && echo "$f $(cat $f)"
+          done > hairpin-modes.txt 2>&1 || true
+          sudo iptables-save > iptables.txt 2>&1 || true
+          sudo nft list ruleset > nft.txt 2>&1 || true
+          sudo dmesg --ctime > dmesg.txt 2>&1 || true
+          sudo virsh list --all > virsh-list.txt 2>&1 || true
+          ls -la /var/lib/spinifex /var/log/spinifex 2>&1 > spinifex-dirs.txt || true
+          tar czf /tmp/spinifex-diag.tar.gz -C /tmp spinifex-diag
+          REMOTE
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            NODE_IP=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            NODE_DIR="$DIAG_DIR/node${i}-${NODE_IP}"
+            mkdir -p "$NODE_DIR"
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" tf-user@${NODE_IP} 'bash -s' < "${RUNNER_TEMP}/collect-diag.sh" > "$NODE_DIR/collect.log" 2>&1 || true
+            scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" \
+              tf-user@${NODE_IP}:/tmp/spinifex-diag.tar.gz "$NODE_DIR/spinifex-diag.tar.gz" || true
+          done
+
+      - name: Upload Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diag-multi-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-multi/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Teardown
         if: always()

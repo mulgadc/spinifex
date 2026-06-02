@@ -167,6 +167,9 @@ var (
 	ErrorInvalidIPAddressInUse                                 = "InvalidIPAddress.InUse"
 	ErrorInvalidIamInstanceProfileArnMalformed                 = "InvalidIamInstanceProfileArn.Malformed"
 	ErrorInvalidIamInstanceProfileNotFound                     = "InvalidIamInstanceProfile.NotFound"
+	ErrorInvalidIdentityToken                                  = "InvalidIdentityToken"
+	ErrorIDPRejectedClaim                                      = "IDPRejectedClaim"
+	ErrorIDPCommunicationError                                 = "IDPCommunicationError"
 	ErrorIamInstanceProfileAlreadyAssociated                   = "IamInstanceProfileAlreadyAssociated"
 	ErrorNoSuchAssociation                                     = "NoSuchAssociation"
 	ErrorInvalidInput                                          = "InvalidInput"
@@ -339,6 +342,7 @@ var (
 	ErrorNoSuchVersion                                         = "NoSuchVersion"
 	ErrorNonEBSInstance                                        = "NonEBSInstance"
 	ErrorNotExportable                                         = "NotExportable"
+	ErrorNotImplemented                                        = "NotImplemented"
 	ErrorOperationNotPermitted                                 = "OperationNotPermitted"
 	ErrorOptInRequired                                         = "OptInRequired"
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded          = "OutstandingVpcPeeringConnectionLimitExceeded"
@@ -459,6 +463,12 @@ var (
 	ErrorELBv2SubnetNotFound               = "SubnetNotFound"
 	ErrorELBv2AvailabilityZoneNotSupported = "AvailabilityZoneNotSupported"
 	ErrorELBv2InvalidConfigurationRequest  = "InvalidConfigurationRequest"
+	ErrorELBv2RuleNotFound                 = "RuleNotFound"
+	ErrorELBv2PriorityInUse                = "PriorityInUse"
+	ErrorELBv2TooManyRules                 = "TooManyRules"
+	ErrorELBv2TooManyActions               = "TooManyActions"
+	ErrorELBv2InvalidRulePriority          = "InvalidRulePriority"
+	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -633,6 +643,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidIPAddressInUse:                                 {HTTPCode: 409, Message: "The specified IP address is already in use. If you are trying to release an address, you must first disassociate it from the instance."},
 	ErrorInvalidIamInstanceProfileArnMalformed:                 {HTTPCode: 400, Message: "The specified IAM instance profile ARN is not valid. For more information about valid ARN formats, see Amazon Resource Names (ARNs)."},
 	ErrorInvalidIamInstanceProfileNotFound:                     {HTTPCode: 404, Message: "The specified IAM instance profile name or ARN does not exist."},
+	ErrorInvalidIdentityToken:                                  {HTTPCode: 400, Message: "The web identity token that was passed is invalid or expired."},
+	ErrorIDPRejectedClaim:                                      {HTTPCode: 403, Message: "The identity provider (IdP) reported that authentication failed."},
+	ErrorIDPCommunicationError:                                 {HTTPCode: 400, Message: "The request could not be fulfilled because the identity provider (IdP) that was asked to verify the incoming identity token could not be reached."},
 	ErrorIamInstanceProfileAlreadyAssociated:                   {HTTPCode: 400, Message: "There is an existing association for the specified instance."},
 	ErrorNoSuchAssociation:                                     {HTTPCode: 404, Message: "The specified IAM instance profile association does not exist."},
 	ErrorInvalidInput:                                          {HTTPCode: 400, Message: "An input parameter in the request is not valid. For example, you may have specified an incorrect Reserved Instance listing ID in the request or the Reserved Instance you tried to list cannot be sold in the Reserved Instances Marketplace (for example, if it has a scope of Region, or is a Convertible Reserved Instance)."},
@@ -805,6 +818,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorNoSuchVersion:                                         {HTTPCode: 404, Message: "The specified API version does not exist."},
 	ErrorNonEBSInstance:                                        {HTTPCode: 400, Message: "The specified instance does not support Amazon EBS. Restart the instance and try again, to ensure that the code is run on an instance with updated code."},
 	ErrorNotExportable:                                         {HTTPCode: 400, Message: "The specified instance cannot be exported. You can only export certain instances. For more information, see Considerations for instance export."},
+	ErrorNotImplemented:                                        {HTTPCode: 501, Message: "Operation not implemented"},
 	ErrorOperationNotPermitted:                                 {HTTPCode: 400, Message: "The specified operation is not allowed. This error can occur for a number of reasons; for example, you might be trying to terminate an instance that has termination protection enabled, or trying to detach the primary network interface (eth0) from an instance."},
 	ErrorOptInRequired:                                         {HTTPCode: 403, Message: "You are not authorized to use the requested service. Ensure that you have subscribed to the service you are trying to use. If you are new to AWS, your account might take some time to be activated while your credit card details are being verified."},
 	ErrorOutstandingVpcPeeringConnectionLimitExceeded:          {HTTPCode: 400, Message: "You've reached the limit on the number of VPC peering connection requests that you can create for the specified VPC."},
@@ -924,4 +938,10 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2SubnetNotFound:               {HTTPCode: 400, Message: "The specified subnet does not exist."},
 	ErrorELBv2AvailabilityZoneNotSupported: {HTTPCode: 400, Message: "The specified Availability Zone is not supported."},
 	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "Security groups are not supported for load balancers with type 'network'."},
+	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found."},
+	ErrorELBv2PriorityInUse:                {HTTPCode: 400, Message: "The specified priority is in use."},
+	ErrorELBv2TooManyRules:                 {HTTPCode: 400, Message: "You've reached the limit on the number of rules per load balancer."},
+	ErrorELBv2TooManyActions:               {HTTPCode: 400, Message: "You've reached the limit on the number of actions per rule."},
+	ErrorELBv2InvalidRulePriority:          {HTTPCode: 400, Message: "The specified rule priority is not valid. Priority must be between 1 and 50000."},
+	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
 }

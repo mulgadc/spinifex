@@ -54,16 +54,11 @@ describe("ListenersTab", () => {
     mockSend.mockReset()
   })
 
-  it("renders empty state and delete-note when no listeners", () => {
+  it("renders empty state when no listeners", () => {
     const queryClient = seedClient({})
     render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
       wrapper: createWrapper(queryClient),
     })
-    expect(
-      screen.getByText(
-        /listeners cannot be edited\. delete and re-add to change/i,
-      ),
-    ).toBeInTheDocument()
     expect(screen.getByText("No listeners configured.")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Add listener" }),
@@ -160,6 +155,58 @@ describe("ListenersTab", () => {
     await user.click(screen.getByLabelText("Default target group"))
     await expect(screen.findByText(/tg-in-vpc/)).resolves.toBeInTheDocument()
     expect(screen.queryByText(/tg-other-vpc/)).not.toBeInTheDocument()
+  })
+
+  it("opens edit dialog pre-filled and calls ModifyListenerCommand", async () => {
+    const queryClient = seedClient({
+      listeners: {
+        Listeners: [
+          {
+            ListenerArn: "arn:listener/1",
+            LoadBalancerArn: LB_ARN,
+            Protocol: "HTTP",
+            Port: 80,
+            DefaultActions: [{ Type: "forward", TargetGroupArn: TG_ARN_A }],
+          },
+        ],
+      },
+      targetGroups: {
+        TargetGroups: [
+          {
+            TargetGroupArn: TG_ARN_A,
+            TargetGroupName: "tg-a",
+            Protocol: "HTTP",
+            Port: 80,
+            VpcId: "vpc-aaa",
+          },
+        ],
+      },
+    })
+    mockSend.mockResolvedValue({})
+    const user = userEvent.setup()
+    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
+      wrapper: createWrapper(queryClient),
+    })
+    await user.click(screen.getByLabelText("Edit listener HTTP:80"))
+    await expect(
+      screen.findByRole("alertdialog", { name: /edit listener/i }),
+    ).resolves.toBeInTheDocument()
+    const portInput = screen.getByLabelText<HTMLInputElement>(/^port$/i)
+    expect(portInput.value).toBe("80")
+    await user.clear(portInput)
+    await user.type(portInput, "8080")
+    const before = mockSend.mock.calls.length
+    await user.click(screen.getByRole("button", { name: /save changes/i }))
+    await waitFor(() =>
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
+    )
+    const call = mockSend.mock.calls[before]?.[0]
+    expect(call.input).toStrictEqual({
+      ListenerArn: "arn:listener/1",
+      Protocol: "HTTP",
+      Port: 8080,
+      DefaultActions: [{ Type: "forward", TargetGroupArn: TG_ARN_A }],
+    })
   })
 
   it("submits add-listener form and calls CreateListenerCommand", async () => {

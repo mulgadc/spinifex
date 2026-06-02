@@ -5,8 +5,8 @@
 sudo apt update
 sudo apt install -y make gcc git
 
-wget https://go.dev/dl/go1.26.3.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.26.3.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.26.4.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.4.linux-amd64.tar.gz
 
 echo "export PATH=$PATH:/usr/local/go/bin" >> $HOME/.bashrc
 source $HOME/.bashrc

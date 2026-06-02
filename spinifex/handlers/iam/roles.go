@@ -420,17 +420,30 @@ func roleToSDK(r *Role) *iam.Role {
 	return out
 }
 
+// STSActionAssumeRoleWithWebIdentity is the only Action that may carry a
+// Condition block in v1 (IRSA `{iss}:sub` / `{iss}:aud` checks). Lives in
+// this package so the validator and the STS-side evaluator agree on the
+// exact spelling without a cross-package constant chase.
+const STSActionAssumeRoleWithWebIdentity = "sts:AssumeRoleWithWebIdentity"
+
 // ValidateTrustPolicyDocument parses and validates an AssumeRolePolicyDocument
 // JSON string. Trust-policy evaluation (Principal semantics, Action being
 // sts:AssumeRole, etc.) is deferred to STS — this layer only checks the
 // document shape.
 //
-// Three categories of fields are rejected at write time rather than silently
-// accepted-then-ignored at evaluation time: Condition blocks, NotPrincipal,
-// and NotAction. Each would otherwise let an author write a policy whose
-// runtime behaviour silently diverges from its stated intent (e.g. an
-// ExternalId-protected role that ignores ExternalId, or a NotPrincipal-Allow
-// that grants the universe). Loud failure here beats silent allow there.
+// Categories of fields rejected at write time rather than silently
+// accepted-then-ignored at evaluation time: NotPrincipal and NotAction —
+// each would otherwise let an author write a policy whose runtime behaviour
+// silently diverges from its stated intent (NotPrincipal-Allow grants the
+// universe; NotAction is unimplemented).
+//
+// Condition blocks are accepted only for the narrow IRSA case: the statement
+// Action must be exactly `["sts:AssumeRoleWithWebIdentity"]` (no wildcards,
+// no co-listed actions) and the only operator key allowed is StringEquals.
+// Any wider acceptance would let an author write an ExternalId-protected
+// sts:AssumeRole policy that evalTrustPolicy silently ignores at runtime —
+// the same "loud-fail-here-or-silent-allow-there" trade-off the original
+// blanket rejection guarded.
 func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	if len(docJSON) > maxTrustPolicyDocumentSize {
 		return nil, fmt.Errorf("trust policy exceeds maximum size of %d bytes", maxTrustPolicyDocumentSize)
@@ -465,7 +478,9 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 			}
 		}
 		if isRawJSONNonEmpty(stmt.Condition) {
-			return nil, fmt.Errorf("statement %d: trust policy Condition blocks are not supported in this release; remove the Condition field or wait for v1.1", i)
+			if err := validateWebIdentityCondition(i, stmt); err != nil {
+				return nil, err
+			}
 		}
 		if isRawJSONNonEmpty(stmt.NotPrincipal) {
 			return nil, fmt.Errorf("statement %d: trust policy NotPrincipal blocks are not supported in this release; use Principal with an explicit allow-list instead", i)
@@ -476,6 +491,27 @@ func ValidateTrustPolicyDocument(docJSON string) (*TrustPolicyDocument, error) {
 	}
 
 	return &doc, nil
+}
+
+// validateWebIdentityCondition gates the narrow IRSA Condition allowance:
+// Action must be exactly `["sts:AssumeRoleWithWebIdentity"]` (no other entry,
+// no wildcard) and the Condition operator must be exclusively StringEquals.
+// Any wider shape would re-open the "silently-accepted Condition on
+// sts:AssumeRole" hole the original blanket rejection closed.
+func validateWebIdentityCondition(i int, stmt TrustStatement) error {
+	if len(stmt.Action) != 1 || stmt.Action[0] != STSActionAssumeRoleWithWebIdentity {
+		return fmt.Errorf("statement %d: trust policy Condition blocks are only supported on statements whose Action is exactly [%q]; v1 does not evaluate conditions for other actions", i, STSActionAssumeRoleWithWebIdentity)
+	}
+	var ops map[string]json.RawMessage
+	if err := json.Unmarshal(stmt.Condition, &ops); err != nil {
+		return fmt.Errorf("statement %d: Condition must be a JSON object: %w", i, err)
+	}
+	for op := range ops {
+		if op != "StringEquals" {
+			return fmt.Errorf("statement %d: Condition operator %q is not supported in this release; only StringEquals is supported", i, op)
+		}
+	}
+	return nil
 }
 
 // isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful

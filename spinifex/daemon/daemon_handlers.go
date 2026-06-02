@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/gpu"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -197,6 +198,11 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		gpuModelNames = append(gpuModelNames, dev.Model)
 	}
 
+	var gpuInventory []types.GPUInfo
+	if d.gpuManager != nil {
+		gpuInventory = buildGPUInventory(d.gpuManager.Snapshot())
+	}
+
 	resp := types.NodeStatusResponse{
 		Node:           d.node,
 		Status:         "Ready",
@@ -216,6 +222,7 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) {
 		GPUCapable:     d.gpuProbe.Capable,
 		GPUPassthrough: d.gpuManager != nil,
 		GPUModels:      gpuModelNames,
+		GPUs:           gpuInventory,
 		VMCount:        vmCount,
 		InstanceTypes:  caps,
 	}
@@ -297,6 +304,93 @@ func fetchNATSRole(url string, client *http.Client) string {
 	return roleFollower
 }
 
+// buildGPUInventory converts a pool snapshot into per-physical-GPU GPUInfo
+// records suitable for the NodeStatusResponse. Entries are ordered by first
+// appearance of each PCI address in the snapshot.
+func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
+	byPCI := make(map[string]*types.GPUInfo, len(snapshot))
+	var order []string
+
+	for _, e := range snapshot {
+		pci := e.Device.PCIAddress
+		if _, ok := byPCI[pci]; !ok {
+			byPCI[pci] = &types.GPUInfo{
+				PCIAddress: pci,
+				Model:      e.Device.Model,
+				VRAMMiB:    e.Device.MemoryMiB,
+			}
+			order = append(order, pci)
+		}
+		g := byPCI[pci]
+		if e.MIGInstance != nil {
+			g.MIGEnabled = true
+			g.MIGProfile = e.MIGInstance.Profile.Name
+			g.Slices = append(g.Slices, types.GPUSliceInfo{
+				GIID:       e.MIGInstance.GIID,
+				Profile:    e.MIGInstance.Profile.Name,
+				VRAMMiB:    e.MIGInstance.Profile.MemoryMiB,
+				MdevPath:   e.MIGInstance.MdevPath,
+				InstanceID: e.InstanceID,
+			})
+		} else if g.InstanceID == "" {
+			g.InstanceID = e.InstanceID
+		}
+	}
+
+	gpus := make([]types.GPUInfo, 0, len(order))
+	for _, pci := range order {
+		gpus = append(gpus, *byPCI[pci])
+	}
+	return gpus
+}
+
+// buildPoolLookup snapshots the GPU manager and returns two lookup maps:
+// mdev path → PoolEntry (for MIG slices) and PCI address → PoolEntry (for
+// whole-GPU entries). Both maps are nil when manager is nil.
+func buildPoolLookup(mgr *gpu.Manager) (byMdev, byPCI map[string]gpu.PoolEntry) {
+	if mgr == nil {
+		return nil, nil
+	}
+	snap := mgr.Snapshot()
+	byMdev = make(map[string]gpu.PoolEntry, len(snap))
+	byPCI = make(map[string]gpu.PoolEntry, len(snap))
+	for _, e := range snap {
+		if e.MIGInstance != nil {
+			byMdev[e.MIGInstance.MdevPath] = e
+		} else {
+			byPCI[e.Device.PCIAddress] = e
+		}
+	}
+	return byMdev, byPCI
+}
+
+// resolveVMGPU maps a single GPUAttachment to a VMGPUInfo using the pool
+// lookup tables built by buildPoolLookup. Returns nil if the attachment cannot
+// be matched (e.g. daemon restart before pool is fully restored).
+func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) *types.VMGPUInfo {
+	if att.MdevPath != "" {
+		if e, ok := byMdev[att.MdevPath]; ok && e.MIGInstance != nil {
+			return &types.VMGPUInfo{
+				Model:    e.Device.Model,
+				VRAMMiB:  e.MIGInstance.Profile.MemoryMiB,
+				Profile:  e.MIGInstance.Profile.Name,
+				MdevPath: att.MdevPath,
+			}
+		}
+		return nil
+	}
+	if att.PCIAddress != "" {
+		if e, ok := byPCI[att.PCIAddress]; ok {
+			return &types.VMGPUInfo{
+				Model:      e.Device.Model,
+				VRAMMiB:    e.Device.MemoryMiB,
+				PCIAddress: att.PCIAddress,
+			}
+		}
+	}
+	return nil
+}
+
 // fetchPredastoreRole queries a Predastore /status endpoint and returns "leader", "follower", or "".
 func fetchPredastoreRole(url string, client *http.Client) string {
 	resp, err := client.Get(url) //nolint:noctx // internal monitoring call
@@ -323,6 +417,8 @@ func fetchPredastoreRole(url string, client *http.Client) string {
 // handleNodeVMs responds with the list of VMs running on this node.
 // Used by the CLI: spx get vms.
 func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
+	poolByMdev, poolByPCI := buildPoolLookup(d.gpuManager)
+
 	vms := make([]types.VMInfo, 0, d.vmMgr.Count())
 	d.vmMgr.ForEach(func(v *vm.VM) {
 		info := types.VMInfo{
@@ -331,13 +427,15 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) {
 			InstanceType: v.InstanceType,
 			ManagedBy:    v.ManagedBy,
 		}
-		// Get vCPU/memory from the resource manager's instance type info
 		if it, ok := d.resourceMgr.instanceTypes[v.InstanceType]; ok {
 			info.VCPU = int(instanceTypeVCPUs(it))
 			info.MemoryGB = float64(instanceTypeMemoryMiB(it)) / 1024.0
 		}
 		if v.Instance != nil && v.Instance.LaunchTime != nil {
 			info.LaunchTime = v.Instance.LaunchTime.Unix()
+		}
+		if len(v.GPUAttachments) > 0 {
+			info.GPU = resolveVMGPU(v.GPUAttachments[0], poolByMdev, poolByPCI)
 		}
 		vms = append(vms, info)
 	})

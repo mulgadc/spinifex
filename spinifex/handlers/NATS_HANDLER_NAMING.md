@@ -158,3 +158,43 @@ handleIAMCreateRole     → iam.CreateRole
 ```
 
 This pattern scales consistently across all AWS services.
+
+## EKS (Elastic Kubernetes Service)
+
+EKS uses two layers of NATS subjects.
+
+### Layer 1 — AWS API surface
+
+The gateway translates EKS REST-JSON requests into `eks.<AWSAction>` NATS
+requests, using the existing `spinifex-workers` queue group. The handler
+name follows the same `handleEKS<AWSAction>` convention.
+
+```
+eks.CreateCluster, eks.DescribeCluster, eks.ListClusters,
+eks.UpdateClusterConfig, eks.UpdateClusterVersion, eks.DeleteCluster
+eks.CreateNodegroup, eks.DescribeNodegroup, eks.ListNodegroups,
+eks.UpdateNodegroupConfig, eks.UpdateNodegroupVersion, eks.DeleteNodegroup
+eks.CreateAccessEntry, eks.DescribeAccessEntry, eks.ListAccessEntries,
+eks.UpdateAccessEntry, eks.DeleteAccessEntry,
+eks.AssociateAccessPolicy, eks.DisassociateAccessPolicy,
+eks.ListAssociatedAccessPolicies, eks.ListAccessPolicies
+eks.ListAddons, eks.DescribeAddonVersions,
+eks.CreateAddon, eks.DeleteAddon, eks.DescribeAddon, eks.UpdateAddon
+eks.AssociateIdentityProviderConfig, eks.DescribeIdentityProviderConfig,
+eks.ListIdentityProviderConfigs, eks.DisassociateIdentityProviderConfig
+eks.TagResource, eks.UntagResource, eks.ListTagsForResource
+```
+
+### Layer 2 — internal reconciler bus
+
+The cluster + nodegroup reconcilers communicate with K3s VMs and each
+other on `eks.bus.<accountID>.<clusterName>.*`. This layer lands with the
+reconciler bodies; only Layer 1 is registered today. See
+`docs/development/feature/eks-v1.md` Q11 for the full subject list.
+
+### Cross-service calls
+
+EKS reconcilers also publish on existing namespaces when interacting with
+other services (no `eks.` prefix): `ec2.RunInstances`,
+`ec2.CreateNetworkInterface`, `elbv2.CreateLoadBalancer`,
+`elbv2.RegisterTargets`, `route53.ChangeResourceRecordSets`, etc.

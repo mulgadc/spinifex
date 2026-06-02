@@ -505,7 +505,10 @@ func launchService(cfg *Config) error {
 	topoMgr := topology.NewLiveManager(liveClient, topoOpts...)
 
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
-	natMgr, err := policy.NewNATManager(liveClient, natMode, policy.WithFlowsBarrier(waitForFlowsHV))
+	natMgr, err := policy.NewNATManager(liveClient, natMode,
+		policy.WithFlowsBarrier(waitForFlowsHV),
+		policy.WithGARPEmitter(injectGARPEmitter()),
+	)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
 	}
@@ -791,6 +794,28 @@ func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
 		bridgeMode = detectBridgeMode(externalIface)
 	}
 	return bridgeMode, "br-wan"
+}
+
+// injectGARPEmitter builds the post-AddEIP GARP hook. Picks the right OVN
+// port for inject-garp based on whether the EIP was installed with a
+// distributed-NAT logical_port:
+//
+//   - distributed (eip.PortName set): inject-garp on the LSP itself. OVN
+//     fires GARP from the LSP-binding chassis with the external_mac, which
+//     is the MAC upstream should learn for the EIP.
+//   - centralized (no PortName): inject-garp on "cr-gw-<vpcID>" — the
+//     chassisredirect port for the VPC's gateway LRP. OVN fires GARP from
+//     the gw chassis with the LRP MAC.
+func injectGARPEmitter() policy.GARPEmitter {
+	return func(spec policy.EIPSpec) error {
+		port := spec.PortName
+		if port == "" {
+			port = "cr-" + topology.GatewayRouterPort(spec.VPCID)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return host.InjectGARP(ctx, nil, port)
+	}
 }
 
 // ifaceExists returns true when the kernel reports the named link.

@@ -75,8 +75,26 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"DeleteListener": elbv2Handler(func(input *elbv2.DeleteListenerInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DeleteListener(input, gw.NATSConn, accountID)
 	}),
+	"ModifyListener": elbv2Handler(func(input *elbv2.ModifyListenerInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyListener(input, gw.NATSConn, accountID)
+	}),
 	"DescribeListeners": elbv2Handler(func(input *elbv2.DescribeListenersInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListeners(input, gw.NATSConn, accountID)
+	}),
+	"CreateRule": elbv2Handler(func(input *elbv2.CreateRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.CreateRule(input, gw.NATSConn, accountID)
+	}),
+	"ModifyRule": elbv2Handler(func(input *elbv2.ModifyRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyRule(input, gw.NATSConn, accountID)
+	}),
+	"DeleteRule": elbv2Handler(func(input *elbv2.DeleteRuleInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DeleteRule(input, gw.NATSConn, accountID)
+	}),
+	"DescribeRules": elbv2Handler(func(input *elbv2.DescribeRulesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeRules(input, gw.NATSConn, accountID)
+	}),
+	"SetRulePriorities": elbv2Handler(func(input *elbv2.SetRulePrioritiesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetRulePriorities(input, gw.NATSConn, accountID)
 	}),
 	"DescribeTags": elbv2Handler(func(input *elbv2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeTags(input, gw.NATSConn, accountID)
@@ -86,6 +104,9 @@ var elbv2Actions = map[string]ELBv2Handler{
 	}),
 	"GetLBConfig": elbv2Handler(func(input *handlers_elbv2.GetLBConfigInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.GetLBConfig(input, gw.NATSConn, accountID)
+	}),
+	"ModifyTargetGroup": elbv2Handler(func(input *elbv2.ModifyTargetGroupInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyTargetGroup(input, gw.NATSConn, accountID)
 	}),
 	"ModifyTargetGroupAttributes": elbv2Handler(func(input *elbv2.ModifyTargetGroupAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.ModifyTargetGroupAttributes(input, gw.NATSConn, accountID)
@@ -98,6 +119,12 @@ var elbv2Actions = map[string]ELBv2Handler{
 	}),
 	"DescribeLoadBalancerAttributes": elbv2Handler(func(input *elbv2.DescribeLoadBalancerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeLoadBalancerAttributes(input, gw.NATSConn, accountID)
+	}),
+	"DescribeListenerAttributes": elbv2Handler(func(input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeListenerAttributes(input, accountID)
+	}),
+	"ModifyListenerAttributes": elbv2Handler(func(input *gateway_elbv2.ModifyListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.ModifyListenerAttributes(input, accountID)
 	}),
 }
 

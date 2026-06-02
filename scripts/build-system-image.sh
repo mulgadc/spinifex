@@ -134,7 +134,7 @@ if ! command -v qemu-img &>/dev/null; then
     exit 1
 fi
 
-if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null; then
+if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null && ! [[ -x /usr/sbin/parted ]]; then
     echo "ERROR: parted not found. Install parted."
     exit 1
 fi
@@ -326,7 +326,65 @@ apt-get install -y --no-install-recommends ${APT_PACKAGES}
 "
 fi
 
-# Enable services
+# Step 5: Copy binaries into the image (before setup script, which may reference them)
+if [[ -n "${INSTALL_BINARIES:-}" ]]; then
+    echo "Installing binaries..."
+    IFS=' ' read -ra BINARY_PAIRS <<< "$INSTALL_BINARIES"
+    for pair in "${BINARY_PAIRS[@]}"; do
+        src="${pair%%:*}"
+        dst="${pair#*:}"
+        src_path="${PROJECT_DIR}/${src}"
+        echo "  ${src} -> ${dst}"
+        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
+        sudo chmod 755 "${MOUNT_DIR}${dst}"
+    done
+fi
+
+# Copy auxiliary files (systemd units, OpenRC initd scripts, cron entries, configs).
+# Same src:dst pair grammar as INSTALL_BINARIES; mode 0644, parent dirs auto-created.
+# Optional — manifests without INSTALL_FILES (e.g. existing GPU images) skip this step.
+if [[ -n "${INSTALL_FILES:-}" ]]; then
+    echo "Installing files..."
+    IFS=' ' read -ra FILE_PAIRS <<< "$INSTALL_FILES"
+    for pair in "${FILE_PAIRS[@]}"; do
+        src="${pair%%:*}"
+        dst="${pair#*:}"
+        src_path="${PROJECT_DIR}/${src}"
+        if [[ ! -f "$src_path" ]]; then
+            echo "ERROR: INSTALL_FILES source not found: $src_path"
+            exit 1
+        fi
+        echo "  ${src} -> ${dst}"
+        sudo mkdir -p "${MOUNT_DIR}$(dirname "$dst")"
+        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
+        sudo chmod 0644 "${MOUNT_DIR}${dst}"
+    done
+fi
+
+# Run custom setup script inside chroot (after binaries are installed)
+if [[ -n "${SETUP_SCRIPT:-}" ]]; then
+    setup_path="${PROJECT_DIR}/${SETUP_SCRIPT}"
+    if [[ ! -f "$setup_path" ]]; then
+        echo "ERROR: Setup script not found: $setup_path"
+        exit 1
+    fi
+    echo "Running setup script: ${SETUP_SCRIPT}..."
+    sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
+    sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        if [[ ! -x "${MOUNT_DIR}/bin/bash" ]]; then
+            echo "ERROR: /bin/bash not found or not executable in chroot"
+            exit 1
+        fi
+        sudo chroot "$MOUNT_DIR" /bin/bash -x /tmp/setup.sh
+    else
+        sudo chroot "$MOUNT_DIR" /tmp/setup.sh
+    fi
+    sudo rm -f "${MOUNT_DIR}/tmp/setup.sh"
+fi
+
+# Enable services (runs after INSTALL_FILES + SETUP_SCRIPT so init scripts the
+# manifest references are already on disk).
 if [[ -n "${ENABLE_SERVICES:-}" ]]; then
     echo "Enabling services: ${ENABLE_SERVICES}..."
     IFS=' ' read -ra SERVICES <<< "$ENABLE_SERVICES"
@@ -343,38 +401,6 @@ if [[ -n "${ENABLE_SERVICES:-}" ]]; then
             fi
         fi
     done
-fi
-
-# Step 5: Copy binaries into the image (before setup script, which may reference them)
-if [[ -n "${INSTALL_BINARIES:-}" ]]; then
-    echo "Installing binaries..."
-    IFS=' ' read -ra BINARY_PAIRS <<< "$INSTALL_BINARIES"
-    for pair in "${BINARY_PAIRS[@]}"; do
-        src="${pair%%:*}"
-        dst="${pair#*:}"
-        src_path="${PROJECT_DIR}/${src}"
-        echo "  ${src} -> ${dst}"
-        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
-        sudo chmod 755 "${MOUNT_DIR}${dst}"
-    done
-fi
-
-# Run custom setup script inside chroot (after binaries are installed)
-if [[ -n "${SETUP_SCRIPT:-}" ]]; then
-    setup_path="${PROJECT_DIR}/${SETUP_SCRIPT}"
-    if [[ ! -f "$setup_path" ]]; then
-        echo "ERROR: Setup script not found: $setup_path"
-        exit 1
-    fi
-    echo "Running setup script: ${SETUP_SCRIPT}..."
-    sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
-    sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
-    if [[ "$DISTRO" == "ubuntu" ]]; then
-        sudo chroot "$MOUNT_DIR" /bin/bash /tmp/setup.sh
-    else
-        sudo chroot "$MOUNT_DIR" /tmp/setup.sh
-    fi
-    sudo rm -f "${MOUNT_DIR}/tmp/setup.sh"
 fi
 
 # Step 6: Clean up and unmount
@@ -426,6 +452,9 @@ if [[ "$DO_IMPORT" == true ]]; then
     echo "Importing as AMI..."
     rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        IMPORT_ARGS+=(--name "$AMI_NAME")
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
     fi
@@ -434,10 +463,14 @@ else
     echo "To import as AMI, run:"
     echo "  spx admin images import \\"
     echo "    --file $OUTPUT_RAW \\"
+    NAME_HINT=""
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        NAME_HINT=" \\\n    --name ${AMI_NAME}"
+    fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE} \\"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"
         echo "    --tag ${SYSTEM_TAG}"
     else
-        echo "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}"
+        echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT}"
     fi
 fi

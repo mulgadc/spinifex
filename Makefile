@@ -73,11 +73,24 @@ build-lb-agent:
 	@echo -e "\n....Building lb-agent (static)"
 	CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
 
-build-system-image: ## Build a system image from manifest (use IMAGE=lb)
+build-system-image: ## Build a system image from manifest (use IMAGE=lb or IMAGE=eks-server)
 ifndef IMAGE
 	$(error IMAGE is required. Usage: make build-system-image IMAGE=lb)
 endif
-	./scripts/build-system-image.sh scripts/images/$(IMAGE).conf
+	@if [ -f scripts/images/$(IMAGE).conf ]; then \
+		./scripts/build-system-image.sh scripts/images/$(IMAGE).conf; \
+	elif [ -f scripts/images/$(IMAGE)/manifest.conf ]; then \
+		./scripts/build-system-image.sh scripts/images/$(IMAGE)/manifest.conf; \
+	else \
+		echo "ERROR: no manifest at scripts/images/$(IMAGE).conf or scripts/images/$(IMAGE)/manifest.conf"; \
+		exit 1; \
+	fi
+
+build-eks-server-image: ## Build the eks-server AMI (K3s control-plane variant)
+	$(MAKE) build-system-image IMAGE=eks-server
+
+build-eks-agent-image: ## Build the eks-agent AMI (K3s worker variant)
+	$(MAKE) build-system-image IMAGE=eks-agent
 
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
@@ -196,9 +209,9 @@ install-system:
 		ovn-central ovn-host openvswitch-switch dhcpcd-base
 
 install-go:
-	@echo -e "\n....Installing Go 1.26.3 for $(ARCH) ($(GO_ARCH))...."
+	@echo -e "\n....Installing Go 1.26.4 for $(ARCH) ($(GO_ARCH))...."
 	@if [ ! -d "/usr/local/go" ]; then \
-		curl -L https://go.dev/dl/go1.26.3.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
+		curl -L https://go.dev/dl/go1.26.4.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
 	else \
 		echo "Go already installed in /usr/local/go"; \
 	fi
@@ -325,7 +338,7 @@ ansible-dev-version:
 ansible-dev-vpc:
 	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-server-image build-eks-agent-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

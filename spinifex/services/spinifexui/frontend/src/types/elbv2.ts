@@ -75,6 +75,74 @@ export const createListenerSchema = z.object({
 
 export type CreateListenerFormData = z.infer<typeof createListenerSchema>
 
+// printable non-whitespace ASCII
+const RULE_VALUE_REGEX = /^[!-~]+$/
+
+export const ruleConditionSchema = z
+  .object({
+    field: z.enum([
+      "host-header",
+      "path-pattern",
+      "http-header",
+      "http-request-method",
+      "source-ip",
+      "query-string",
+    ]),
+    httpHeaderName: z.string().max(40).optional(),
+    rawValues: z
+      .string()
+      .min(1, "At least one value is required")
+      .max(640, "Too many values"),
+  })
+  .superRefine((data, ctx) => {
+    if (data.field === "http-header" && !data.httpHeaderName) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["httpHeaderName"],
+        message: "Header name is required",
+      })
+    }
+    const values = data.rawValues
+      .split(/[\n,]/)
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+    if (values.length === 0 || values.length > 5) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["rawValues"],
+        message: "Enter 1 to 5 values, comma or newline separated",
+      })
+      return
+    }
+    for (const v of values) {
+      if (!RULE_VALUE_REGEX.test(v)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rawValues"],
+          message: `Value "${v}" contains whitespace or non-ASCII characters`,
+        })
+        return
+      }
+    }
+  })
+
+export type RuleConditionFormData = z.infer<typeof ruleConditionSchema>
+
+export const createRuleSchema = z.object({
+  priority: z
+    .number()
+    .int("Priority must be a whole number")
+    .min(1, "Priority must be at least 1")
+    .max(50_000, "Priority must be at most 50000"),
+  conditions: z
+    .array(ruleConditionSchema)
+    .min(1, "At least one condition is required")
+    .max(5, "Up to 5 conditions per rule"),
+  forwardTargetGroupArn: z.string().min(1, "Target group is required"),
+})
+
+export type CreateRuleFormData = z.infer<typeof createRuleSchema>
+
 // LB wizard form. The inline "new target group" option is driven by a separate
 // `useForm<CreateTargetGroupFormData>` instance at the route level, so this
 // schema only validates the existing-TG branch. See create-load-balancer.tsx.

@@ -61,6 +61,14 @@ func (s *stubSTSService) VerifySessionToken(_ *handlers_sts.SessionCredential, _
 	return true
 }
 
+func (s *stubSTSService) AssumeRoleWithWebIdentity(_ *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
+func (s *stubSTSService) VerifyPresignedGetCallerIdentity(_, _ string) (*handlers_sts.PresignedCallerIdentity, error) {
+	return nil, errors.New(awserrors.ErrorNotImplemented)
+}
+
 // stubIAMService satisfies the IAM interface to the extent needed by
 // GetCallerIdentity (only GetUser is exercised). Every other method panics so
 // a test that triggers an unexpected call fails loudly instead of silently

@@ -43,7 +43,6 @@ func createTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volume
 		VolumeConfig: viperblock.VolumeConfig{
 			VolumeMetadata: viperblock.VolumeMetadata{
 				SizeGiB:          uint64(sizeGiB),
-				IsEncrypted:      false,
 				AvailabilityZone: "us-east-1a",
 			},
 		},

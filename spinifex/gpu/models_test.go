@@ -12,6 +12,16 @@ func TestLookupModel_KnownNVIDIA(t *testing.T) {
 	}
 }
 
+func TestLookupModel_RTXPro6000BlackwellSE(t *testing.T) {
+	name, mem := lookupModel("10de", "2bb5")
+	if name != "NVIDIA RTX Pro 6000 Blackwell Server Edition" {
+		t.Errorf("name = %q, want NVIDIA RTX Pro 6000 Blackwell Server Edition", name)
+	}
+	if mem != 98304 {
+		t.Errorf("memoryMiB = %d, want 98304 (96 GiB)", mem)
+	}
+}
+
 func TestLookupModel_KnownAMD(t *testing.T) {
 	name, mem := lookupModel("1002", "744c")
 	if name != "AMD Radeon RX 7900 XTX" {

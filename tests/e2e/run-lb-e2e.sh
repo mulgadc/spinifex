@@ -296,6 +296,15 @@ IGW_ID=$(echo "$IGW_OUTPUT" | jq -r '.InternetGateway.InternetGatewayId')
 $AWS_EC2 attach-internet-gateway --internet-gateway-id "$IGW_ID" --vpc-id "$VPC_ID" || { fail "attach-internet-gateway"; exit 1; }
 pass "internet gateway: $IGW_ID (attached)"
 
+echo "Adding default route to IGW..."
+MAIN_RTB=$($AWS_EC2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query 'RouteTables[0].RouteTableId' --output text)
+$AWS_EC2 create-route --route-table-id "$MAIN_RTB" \
+    --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW_ID" > /dev/null \
+    || { fail "create-route default -> IGW"; exit 1; }
+pass "default route: 0.0.0.0/0 -> $IGW_ID"
+
 echo "Creating subnet..."
 SUBNET_OUTPUT=$($AWS_EC2 create-subnet --vpc-id "$VPC_ID" --cidr-block 10.200.1.0/24 --output json) || { fail "create-subnet"; exit 1; }
 SUBNET_ID=$(echo "$SUBNET_OUTPUT" | jq -r '.Subnet.SubnetId')

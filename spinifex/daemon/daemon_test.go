@@ -486,14 +486,22 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		initialCount := len(initialOutput.InstanceTypes)
 		t.Logf("Initial supported instance types: %d", initialCount)
 
+		schedulableMem := daemon.resourceMgr.hostMemGB - daemon.resourceMgr.reservedMem
 		var instanceType2CPU *ec2.InstanceTypeInfo
 		for _, it := range initialOutput.InstanceTypes {
-			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 {
-				instanceType2CPU = it
-				break
+			if it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil || *it.VCpuInfo.DefaultVCpus != 2 {
+				continue
 			}
+			if it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil {
+				continue
+			}
+			if float64(*it.MemoryInfo.SizeInMiB)/1024.0 > schedulableMem {
+				continue
+			}
+			instanceType2CPU = it
+			break
 		}
-		require.NotNil(t, instanceType2CPU, "Should find an instance type with 2 vCPUs")
+		require.NotNil(t, instanceType2CPU, "Should find a 2 vCPU instance type that fits schedulable memory")
 
 		err = daemon.resourceMgr.allocate(instanceType2CPU)
 		require.NoError(t, err, "Should be able to allocate 2 vCPU instance")
@@ -1296,7 +1304,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Count how many types actually fit on this machine (excluding system types)
 		fittableTypes := 0
@@ -1330,7 +1338,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
 		require.Greater(t, initialCount, 0)
@@ -1355,7 +1363,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		expectedCount := len(rm.instanceSubs)
 
@@ -1386,7 +1394,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Leave only 2 vCPUs and 1 GB schedulable — enough for nano/micro but not larger types.
 		rm.mu.Lock()
@@ -1415,7 +1423,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		initialCount := len(rm.instanceSubs)
 		require.Greater(t, initialCount, 0)
@@ -1459,7 +1467,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		defer nc.Close()
 
 		handler := func(msg *nats.Msg) {}
-		rm.initSubscriptions(nc, handler, "test-node")
+		rm.initSubscriptions(nc, handler, nil, "test-node")
 
 		// Fill the node completely
 		rm.mu.Lock()

@@ -192,7 +192,7 @@ spinifex-daemon ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl set NB_Global . ipsec=tr
 # Spinifex VPC daemon: OVN and OVS read/write, OVN controller status check and DHCP
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/sbin/dhcpcd
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovs-vsctl, /usr/bin/ovs-appctl
-spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl, /usr/bin/ovn-sbctl
+spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/ovn-nbctl, /usr/bin/ovn-sbctl, /usr/bin/ovn-appctl
 spinifex-vpcd ALL=(root) NOPASSWD: /usr/bin/systemctl is-active --quiet ovn-controller
 spinifex-vpcd ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip
 SUDOERS
@@ -216,7 +216,7 @@ install_apt_deps() {
 
         DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
             nbdkit \
-            $QEMU_PACKAGES qemu-utils qemu-kvm ovmf qemu-efi-aarch64 less \
+            $QEMU_PACKAGES qemu-utils gdisk qemu-kvm ovmf qemu-efi-aarch64 less \
             libvirt-daemon-system libvirt-clients \
             pciutils \
             jq curl iproute2 netcat-openbsd wget unzip xz-utils file \

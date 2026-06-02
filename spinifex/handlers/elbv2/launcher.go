@@ -23,63 +23,67 @@ type SystemInstanceLauncher interface {
 // ELBv2 load balancer. There is no AMI or cloud-init path — kernel and
 // initrd come from the bundled spinifex package and per-VM config is
 // delivered via QEMU fw_cfg blobs.
+//
+// JSON tags are explicit because this struct crosses the
+// system.LaunchInstance.* NATS subject root when ELBv2 hands a launch off
+// to the cluster — see daemon/daemon_system_dispatch.go.
 type SystemInstanceInput struct {
-	InstanceType string // e.g. "sys.micro"
-	SubnetID     string // VPC subnet for networking
+	InstanceType string `json:"instance_type"` // e.g. "sys.micro"
+	SubnetID     string `json:"subnet_id"`     // VPC subnet for networking
 
 	// ENI fields — the VM always uses a pre-created ENI (the ALB's primary ENI).
-	ENIID  string
-	ENIMac string
-	ENIIP  string
+	ENIID  string `json:"eni_id"`
+	ENIMac string `json:"eni_mac"`
+	ENIIP  string `json:"eni_ip"`
 
 	// ExtraENIs lists additional pre-created ENIs that should be attached to
 	// the VM alongside the primary ENI. Used for multi-subnet ALBs so the VM
 	// has a NIC (and tap on br-int) in every subnet the LB spans.
-	ExtraENIs []ExtraENIInput
+	ExtraENIs []ExtraENIInput `json:"extra_enis,omitempty"`
 
 	// Scheme is the ALB scheme ("internet-facing" or "internal").
 	// Internet-facing ALBs get a public IP and NAT rules; internal ALBs do not.
-	Scheme string
+	Scheme string `json:"scheme"`
 
 	// AccountID is the owner account of the ALB's ENI. Required so the daemon
 	// can look up and update the ENI record (which is keyed by account).
-	AccountID string
+	AccountID string `json:"account_id"`
 
 	// HostfwdPorts specifies additional guest ports to forward from the host
 	// via the QEMU user-mode dev NIC (dev_networking mode only).
 	// Each entry is a guest port (e.g. 80, 443). The host port is auto-assigned.
-	HostfwdPorts []int
+	HostfwdPorts []int `json:"hostfwd_ports,omitempty"`
 
 	// NICs defines the network interfaces for the microVM.
 	// Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
-	NICs []NICConfig
+	NICs []NICConfig `json:"nics,omitempty"`
 
 	// LBAgentEnv is a KEY=value blob written to /etc/conf.d/lb-agent inside
 	// the guest via fw_cfg.
-	LBAgentEnv string
+	LBAgentEnv string `json:"lb_agent_env"`
 
 	// CACert holds PEM-encoded CA certificate bytes delivered to the guest via fw_cfg.
-	CACert string
+	CACert string `json:"ca_cert"`
 }
 
 // ExtraENIInput describes an additional pre-created ENI to attach to a
 // system instance. The primary ENI is still passed via ENIID/ENIMac/ENIIP.
 type ExtraENIInput struct {
-	ENIID    string
-	ENIMac   string
-	ENIIP    string
-	SubnetID string
+	ENIID    string `json:"eni_id"`
+	ENIMac   string `json:"eni_mac"`
+	ENIIP    string `json:"eni_ip"`
+	SubnetID string `json:"subnet_id"`
 }
 
 // NICConfig describes a single network interface for a microVM direct-boot launch.
 // Index 0 is the primary VPC ENI, index 1 is the management NIC, index 2+ are extra ENIs.
 type NICConfig struct {
-	MAC       string // e.g. "02:0a:01:23:45:67"
-	CIDR      string // e.g. "10.0.1.5/24"
-	Gateway   string // e.g. "10.0.1.1"; empty for mgmt NIC
-	IsDefault bool   // true for exactly one NIC (primary VPC ENI)
-	RouteDst  string // specific host route dst, e.g. "10.20.0.5/32"
-	RouteVia  string // next-hop for RouteDst
+	MAC       string `json:"mac"`                 // e.g. "02:0a:01:23:45:67"
+	CIDR      string `json:"cidr"`                // e.g. "10.0.1.5/24"
+	Gateway   string `json:"gateway,omitempty"`   // e.g. "10.0.1.1"; empty for mgmt NIC
+	IsDefault bool   `json:"is_default"`          // true for exactly one NIC (primary VPC ENI)
+	RouteDst  string `json:"route_dst,omitempty"` // specific host route dst, e.g. "10.20.0.5/32"
+	RouteVia  string `json:"route_via,omitempty"` // next-hop for RouteDst
 }
 
 // RecoveryContext carries the per-VM fields the ELBv2 service needs to
@@ -98,11 +102,11 @@ type RecoveryContext struct {
 
 // SystemInstanceOutput contains the result of a successful launch.
 type SystemInstanceOutput struct {
-	InstanceID string // e.g. "i-xxxxx"
-	PrivateIP  string // VPC private IP
-	PublicIP   string // Public IP (only for internet-facing scheme)
+	InstanceID string `json:"instance_id"`         // e.g. "i-xxxxx"
+	PrivateIP  string `json:"private_ip"`          // VPC private IP
+	PublicIP   string `json:"public_ip,omitempty"` // Public IP (only for internet-facing scheme)
 
 	// HostfwdMap maps guest port → host port for any forwarded ports.
 	// Only populated when dev_networking is enabled and HostfwdPorts were requested.
-	HostfwdMap map[int]int
+	HostfwdMap map[int]int `json:"hostfwd_map,omitempty"`
 }

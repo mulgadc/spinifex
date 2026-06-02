@@ -322,6 +322,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 
 	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
 		Name:                       aws.String("custom-hc"),
+		HealthCheckEnabled:         aws.Bool(false),
 		HealthCheckPath:            aws.String("/healthz"),
 		HealthCheckIntervalSeconds: aws.Int64(10),
 		HealthyThresholdCount:      aws.Int64(2),
@@ -330,6 +331,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 
 	require.NoError(t, err)
 	tg := out.TargetGroups[0]
+	assert.False(t, *tg.HealthCheckEnabled)
 	assert.Equal(t, "/healthz", *tg.HealthCheckPath)
 	assert.Equal(t, int64(10), *tg.HealthCheckIntervalSeconds)
 	assert.Equal(t, int64(2), *tg.HealthyThresholdCount)
@@ -520,6 +522,144 @@ func TestCreateTargetGroup_DuplicateName(t *testing.T) {
 	}, testAccountID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DuplicateTargetGroupName")
+}
+
+func TestModifyTargetGroup(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("modify-tg"),
+		Protocol: aws.String("HTTP"),
+		Port:     aws.Int64(8080),
+		VpcId:    aws.String("vpc-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := created.TargetGroups[0].TargetGroupArn
+
+	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:             arn,
+		HealthCheckEnabled:         aws.Bool(true),
+		HealthCheckPath:            aws.String("/healthz"),
+		HealthCheckIntervalSeconds: aws.Int64(15),
+		HealthyThresholdCount:      aws.Int64(2),
+		Matcher:                    &elbv2.Matcher{HttpCode: aws.String("200-299")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TargetGroups, 1)
+	tg := out.TargetGroups[0]
+	assert.True(t, *tg.HealthCheckEnabled)
+	assert.Equal(t, "/healthz", *tg.HealthCheckPath)
+	assert.Equal(t, int64(15), *tg.HealthCheckIntervalSeconds)
+	assert.Equal(t, int64(2), *tg.HealthyThresholdCount)
+	assert.Equal(t, "200-299", *tg.Matcher.HttpCode)
+
+	described, err := svc.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: []*string{arn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.TargetGroups, 1)
+	assert.Equal(t, "/healthz", *described.TargetGroups[0].HealthCheckPath)
+}
+
+func TestModifyTargetGroup_NotFound(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:ap-southeast-2:000000000001:targetgroup/missing/tg-doesnotexist"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
+}
+
+func TestModifyTargetGroup_MissingArn(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("modify-all-tg"),
+		Protocol: aws.String("HTTP"),
+		Port:     aws.Int64(8080),
+		VpcId:    aws.String("vpc-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := created.TargetGroups[0].TargetGroupArn
+
+	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:             arn,
+		HealthCheckEnabled:         aws.Bool(false),
+		HealthCheckProtocol:        aws.String("HTTPS"),
+		HealthCheckPort:            aws.String("8443"),
+		HealthCheckPath:            aws.String("/status"),
+		HealthCheckIntervalSeconds: aws.Int64(20),
+		HealthCheckTimeoutSeconds:  aws.Int64(8),
+		HealthyThresholdCount:      aws.Int64(4),
+		UnhealthyThresholdCount:    aws.Int64(5),
+		Matcher:                    &elbv2.Matcher{HttpCode: aws.String("200")},
+	}, testAccountID)
+	require.NoError(t, err)
+	tg := out.TargetGroups[0]
+	assert.False(t, *tg.HealthCheckEnabled)
+	assert.Equal(t, "HTTPS", *tg.HealthCheckProtocol)
+	assert.Equal(t, "8443", *tg.HealthCheckPort)
+	assert.Equal(t, "/status", *tg.HealthCheckPath)
+	assert.Equal(t, int64(20), *tg.HealthCheckIntervalSeconds)
+	assert.Equal(t, int64(8), *tg.HealthCheckTimeoutSeconds)
+	assert.Equal(t, int64(4), *tg.HealthyThresholdCount)
+	assert.Equal(t, int64(5), *tg.UnhealthyThresholdCount)
+	assert.Equal(t, "200", *tg.Matcher.HttpCode)
+}
+
+func TestModifyTargetGroup_InvalidPath(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-bad-path"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  created.TargetGroups[0].TargetGroupArn,
+		HealthCheckPath: aws.String(""),
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-bad-matcher"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn: created.TargetGroups[0].TargetGroupArn,
+		Matcher:        &elbv2.Matcher{HttpCode: aws.String("")},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestModifyTargetGroup_WrongAccount(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-wrong-acct"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:     created.TargetGroups[0].TargetGroupArn,
+		HealthCheckEnabled: aws.Bool(false),
+	}, "999999999999")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
 }
 
 func TestDeleteTargetGroup(t *testing.T) {
@@ -792,6 +932,375 @@ func TestDeleteListener_NotFound(t *testing.T) {
 	}, testAccountID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "ListenerNotFound")
+}
+
+func TestModifyListener_Port(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-tg")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Port:        aws.Int64(8080),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Listeners, 1)
+	assert.Equal(t, int64(8080), *out.Listeners[0].Port)
+	assert.Equal(t, "HTTP", *out.Listeners[0].Protocol)
+	require.Len(t, out.Listeners[0].DefaultActions, 1)
+	assert.Equal(t, *tgOut.TargetGroups[0].TargetGroupArn, *out.Listeners[0].DefaultActions[0].TargetGroupArn)
+
+	desc, _ := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.Len(t, desc.Listeners, 1)
+	assert.Equal(t, int64(8080), *desc.Listeners[0].Port)
+}
+
+func TestModifyListener_Protocol(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-proto-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-proto-tg")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Protocol:    aws.String("HTTPS"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "HTTPS", *out.Listeners[0].Protocol)
+}
+
+func TestModifyListener_DefaultActions(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-act-lb")}, testAccountID)
+	tg1, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg1")}, testAccountID)
+	tg2, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-act-tg2")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg1.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: tg2.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Listeners[0].DefaultActions, 1)
+	assert.Equal(t, *tg2.TargetGroups[0].TargetGroupArn, *out.Listeners[0].DefaultActions[0].TargetGroupArn)
+}
+
+func TestModifyListener_DuplicatePort(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-dup-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-dup-tg")}, testAccountID)
+	actions := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}}
+
+	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Port:            aws.Int64(80),
+		DefaultActions:  actions,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lst443, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Port:            aws.Int64(443),
+		DefaultActions:  actions,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lst443.Listeners[0].ListenerArn,
+		Port:        aws.Int64(80),
+	}, testAccountID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DuplicateListener")
+}
+
+func TestModifyListener_SamePortNoConflict(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-same-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-same-tg")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Setting same port should not trigger dup check against self.
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Port:        aws.Int64(80),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(80), *out.Listeners[0].Port)
+}
+
+func TestModifyListener_NotFound(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: aws.String("arn:nonexistent"),
+		Port:        aws.Int64(80),
+	}, testAccountID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ListenerNotFound")
+}
+
+func TestModifyListener_WrongAccount(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-acct-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-acct-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Port:        aws.Int64(8080),
+	}, "999999999999")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ListenerNotFound")
+}
+
+func TestModifyListener_TargetGroupNotFound(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-tgnf-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-tgnf-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: aws.String("arn:nonexistent")},
+		},
+	}, testAccountID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "TargetGroupNotFound")
+}
+
+func TestModifyListener_NoOp(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-noop-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-noop-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Port:            aws.Int64(8080),
+		Protocol:        aws.String("HTTP"),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Listeners, 1)
+	assert.Equal(t, int64(8080), *out.Listeners[0].Port)
+	assert.Equal(t, "HTTP", *out.Listeners[0].Protocol)
+}
+
+func TestModifyListener_InvalidProtocolForLBType(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-bad-proto-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-bad-proto-tg")}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Protocol:    aws.String("TCP"),
+	}, testAccountID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
+func TestModifyListener_NilInput(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyListener(nil, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MissingParameter")
+}
+
+func TestModifyListener_EmptyArn(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: aws.String(""),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MissingParameter")
+
+	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MissingParameter")
+}
+
+func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
+	cases := []struct {
+		listenerProto string
+		tgProto       string
+	}{
+		{"TCP", "TCP"},
+		{"UDP", "UDP"},
+		{"TLS", "TCP"},
+		{"TCP_UDP", "TCP_UDP"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.listenerProto, func(t *testing.T) {
+			svc := setupTestService(t)
+
+			lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+				Name: aws.String("nlb-mod-" + tc.listenerProto),
+				Type: aws.String("network"),
+			}, testAccountID)
+			tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+				Name:     aws.String("tg-nlb-mod-" + tc.listenerProto),
+				Protocol: aws.String(tc.tgProto),
+				Port:     aws.Int64(8080),
+			}, testAccountID)
+
+			lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+				LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+				Protocol:        aws.String(tc.tgProto),
+				Port:            aws.Int64(8080),
+				DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+			}, testAccountID)
+			require.NoError(t, err)
+
+			out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+				ListenerArn: lstOut.Listeners[0].ListenerArn,
+				Protocol:    aws.String(tc.listenerProto),
+			}, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.listenerProto, *out.Listeners[0].Protocol)
+		})
+	}
+}
+
+func TestModifyListener_NLB_RejectsHTTP(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("nlb-mod-rej-http"),
+		Type: aws.String("network"),
+	}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("tg-nlb-rej"),
+		Protocol: aws.String("TCP"),
+		Port:     aws.Int64(8080),
+	}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("TCP"),
+		Port:            aws.Int64(8080),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Protocol:    aws.String("HTTP"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
+func TestModifyListener_ProtocolOnlyChange_TGIncompatible(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("nlb-mod-incompat"),
+		Type: aws.String("network"),
+	}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("tg-udp-incompat"),
+		Protocol: aws.String("UDP"),
+		Port:     aws.Int64(8080),
+	}, testAccountID)
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("UDP"),
+		Port:            aws.Int64(8080),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Protocol:    aws.String("TCP"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
+func TestModifyListener_DefaultActions_IncompatibleProtocol(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name: aws.String("nlb-da-incompat"),
+		Type: aws.String("network"),
+	}, testAccountID)
+	tcpTG, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("tg-tcp-da"),
+		Protocol: aws.String("TCP"),
+		Port:     aws.Int64(8080),
+	}, testAccountID)
+	udpTG, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("tg-udp-da"),
+		Protocol: aws.String("UDP"),
+		Port:     aws.Int64(8080),
+	}, testAccountID)
+
+	lstOut, _ := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("TCP"),
+		Port:            aws.Int64(8080),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tcpTG.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+
+	_, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: udpTG.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
 }
 
 func TestDescribeListeners_FilterByLBArn(t *testing.T) {

@@ -116,6 +116,14 @@ type Client interface {
 	DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error
 	FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error)
 
+	// Logical Router Policies (per-subnet egress steering). Identity is the
+	// (router, priority, match) triple — same triple replaces, missing rows
+	// on delete return nil (mirrors AddStaticRoute / DeleteStaticRoute).
+	AddLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error
+	DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error
+	FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error)
+	ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error)
+
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error
 	// EnsurePortGroup is the wait-op-protected create-or-get analogue of
@@ -149,6 +157,16 @@ type Client interface {
 	// single SG can carry up to 60 ingress + 60 egress rules.
 	AddACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 	ClearACLs(ctx context.Context, portGroupName string) error
+
+	// ReplaceACLs atomically swaps the port group's ACL set: detach + delete
+	// the existing rows and attach freshly-created rows in ONE OVSDB
+	// transaction. SG mutations must use this instead of ClearACLs followed
+	// by AddACLs — the latter leaves the port group with zero ACLs between
+	// transactions, and a no-ACL port group on a tenant LSP path defaults
+	// to drop, producing observable mid-flight egress drops on connectionless
+	// traffic (ICMP) and on TCP SYNs that don't match an existing conntrack
+	// entry.
+	ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
 
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error

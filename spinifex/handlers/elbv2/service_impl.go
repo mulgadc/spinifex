@@ -542,26 +542,45 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 
 	bindAddr := s.resolveENIBindAddr(lb)
 
-	// Collect target groups referenced by listeners
+	// Collect rules per listener and target groups referenced by listeners + rules.
+	rulesByListener := make(map[string][]*RuleRecord)
 	tgByArn := make(map[string]*TargetGroupRecord)
+
+	loadTG := func(tgArn string) {
+		if tgArn == "" {
+			return
+		}
+		if _, ok := tgByArn[tgArn]; ok {
+			return
+		}
+		tg, tgErr := s.store.GetTargetGroupByArn(tgArn)
+		if tgErr != nil || tg == nil {
+			slog.Debug("updateStoredConfig: target group not found", "tgArn", tgArn)
+			return
+		}
+		tgByArn[tgArn] = tg
+	}
+
 	for _, l := range listeners {
 		for _, a := range l.DefaultActions {
-			if a.TargetGroupArn == "" {
-				continue
+			loadTG(a.TargetGroupArn)
+		}
+		rules, rErr := s.store.ListRulesByListener(l.ListenerArn)
+		if rErr != nil {
+			slog.Error("updateStoredConfig: failed to list rules", "listenerArn", l.ListenerArn, "err", rErr)
+			return fmt.Errorf("list rules: %w", rErr)
+		}
+		if len(rules) > 0 {
+			rulesByListener[l.ListenerArn] = rules
+		}
+		for _, r := range rules {
+			for _, a := range r.Actions {
+				loadTG(a.TargetGroupArn)
 			}
-			if _, ok := tgByArn[a.TargetGroupArn]; ok {
-				continue
-			}
-			tg, tgErr := s.store.GetTargetGroupByArn(a.TargetGroupArn)
-			if tgErr != nil || tg == nil {
-				slog.Debug("updateStoredConfig: target group not found", "tgArn", a.TargetGroupArn)
-				continue
-			}
-			tgByArn[a.TargetGroupArn] = tg
 		}
 	}
 
-	configContent, err := GenerateHAProxyConfig(lb, listeners, tgByArn, bindAddr)
+	configContent, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr)
 	if err != nil {
 		slog.Error("updateStoredConfig: failed to generate config", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("generate config: %w", err)
@@ -595,6 +614,27 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 		for _, a := range l.DefaultActions {
 			if a.TargetGroupArn == tgArn {
 				lbArns[l.LoadBalancerArn] = true
+			}
+		}
+	}
+
+	// Rules can independently forward to a TG even if the listener default does not.
+	allRules, rulesErr := s.store.ListRules()
+	if rulesErr != nil {
+		slog.Error("updateStoredConfigForTargetGroup: failed to list rules", "err", rulesErr)
+		return fmt.Errorf("list rules: %w", rulesErr)
+	}
+	listenerLB := make(map[string]string, len(allListeners))
+	for _, l := range allListeners {
+		listenerLB[l.ListenerArn] = l.LoadBalancerArn
+	}
+	for _, r := range allRules {
+		for _, a := range r.Actions {
+			if a.TargetGroupArn != tgArn {
+				continue
+			}
+			if lbArn, ok := listenerLB[r.ListenerArn]; ok {
+				lbArns[lbArn] = true
 			}
 		}
 	}
@@ -1181,6 +1221,9 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	default:
 		hc = DefaultHealthCheck()
 	}
+	if input.HealthCheckEnabled != nil {
+		hc.Enabled = *input.HealthCheckEnabled
+	}
 	if input.HealthCheckProtocol != nil {
 		hc.Protocol = *input.HealthCheckProtocol
 	}
@@ -1248,6 +1291,68 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	}, nil
 }
 
+func (s *ELBv2ServiceImpl) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
+	if err != nil {
+		slog.Error("ModifyTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if tg == nil || tg.AccountID != accountID {
+		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	}
+
+	hc := tg.HealthCheck
+	if input.HealthCheckEnabled != nil {
+		hc.Enabled = *input.HealthCheckEnabled
+	}
+	if input.HealthCheckProtocol != nil {
+		hc.Protocol = *input.HealthCheckProtocol
+	}
+	if input.HealthCheckPort != nil {
+		hc.Port = *input.HealthCheckPort
+	}
+	if input.HealthCheckPath != nil {
+		if err := validateHealthCheckPath(*input.HealthCheckPath); err != nil {
+			return nil, err
+		}
+		hc.Path = *input.HealthCheckPath
+	}
+	if input.HealthCheckIntervalSeconds != nil {
+		hc.IntervalSeconds = *input.HealthCheckIntervalSeconds
+	}
+	if input.HealthCheckTimeoutSeconds != nil {
+		hc.TimeoutSeconds = *input.HealthCheckTimeoutSeconds
+	}
+	if input.HealthyThresholdCount != nil {
+		hc.HealthyThreshold = *input.HealthyThresholdCount
+	}
+	if input.UnhealthyThresholdCount != nil {
+		hc.UnhealthyThreshold = *input.UnhealthyThresholdCount
+	}
+	if input.Matcher != nil && input.Matcher.HttpCode != nil {
+		if err := validateHealthCheckMatcher(*input.Matcher.HttpCode); err != nil {
+			return nil, err
+		}
+		hc.Matcher = *input.Matcher.HttpCode
+	}
+	tg.HealthCheck = hc
+
+	if err := s.store.PutTargetGroup(tg); err != nil {
+		slog.Error("ModifyTargetGroup: failed to persist record", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
+
+	return &elbv2.ModifyTargetGroupOutput{
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
+	}, nil
+}
+
 func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1270,6 +1375,20 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 	}
 	for _, l := range listeners {
 		for _, action := range l.DefaultActions {
+			if action.TargetGroupArn == tg.TargetGroupArn {
+				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+			}
+		}
+	}
+
+	// Block deletion when a rule still forwards to the target group.
+	allRules, err := s.store.ListRules()
+	if err != nil {
+		slog.Error("DeleteTargetGroup: failed to list rules for in-use check", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, r := range allRules {
+		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
 			}
@@ -1639,6 +1758,19 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
 	}
 
+	// Cascade-delete rules so a recreated listener doesn't inherit orphans.
+	rules, ruleErr := s.store.ListRulesByListener(listener.ListenerArn)
+	if ruleErr != nil {
+		slog.Error("DeleteListener: failed to list rules", "listenerArn", listener.ListenerArn, "err", ruleErr)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, r := range rules {
+		if err := s.store.DeleteRule(r.RuleID); err != nil {
+			slog.Error("DeleteListener: failed to delete rule", "ruleId", r.RuleID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	if err := s.store.DeleteListener(listener.ListenerID); err != nil {
 		slog.Error("DeleteListener: failed to delete record", "listenerId", listener.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1656,6 +1788,132 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	slog.Info("DeleteListener completed", "listenerArn", *input.ListenerArn, "accountID", accountID)
 
 	return &elbv2.DeleteListenerOutput{}, nil
+}
+
+func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error) {
+	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	listener, err := s.store.GetListenerByArn(*input.ListenerArn)
+	if err != nil {
+		slog.Error("ModifyListener: failed to get listener", "arn", *input.ListenerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if listener == nil || listener.AccountID != accountID {
+		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
+	}
+
+	lb, err := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
+	if err != nil {
+		slog.Error("ModifyListener: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if lb == nil {
+		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
+	}
+
+	updated := *listener
+
+	if input.Protocol != nil && *input.Protocol != "" {
+		proto := *input.Protocol
+		switch lb.Type {
+		case LoadBalancerTypeNetwork:
+			switch proto {
+			case ProtocolTCP, ProtocolUDP, ProtocolTLS, ProtocolTCPUDP:
+			default:
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		default:
+			switch proto {
+			case ProtocolHTTP, ProtocolHTTPS:
+			default:
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+		updated.Protocol = proto
+	}
+
+	if input.Port != nil {
+		newPort := *input.Port
+		if newPort != updated.Port {
+			existingListeners, listErr := s.store.ListListenersByLB(lb.LoadBalancerArn)
+			if listErr != nil {
+				slog.Error("ModifyListener: failed to list existing listeners", "lbArn", lb.LoadBalancerArn, "err", listErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			for _, l := range existingListeners {
+				if l.ListenerID == updated.ListenerID {
+					continue
+				}
+				if l.Port == newPort {
+					return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+				}
+			}
+			updated.Port = newPort
+		}
+	}
+
+	if len(input.DefaultActions) > 0 {
+		var actions []ListenerAction
+		for _, a := range input.DefaultActions {
+			action := ListenerAction{}
+			if a.Type != nil {
+				action.Type = *a.Type
+			}
+			if a.TargetGroupArn != nil {
+				action.TargetGroupArn = *a.TargetGroupArn
+			}
+			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
+				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
+				if tgErr != nil {
+					slog.Error("ModifyListener: failed to get target group", "arn", action.TargetGroupArn, "err", tgErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
+				if tg == nil {
+					return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+				}
+				if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {
+					return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+				}
+			}
+			actions = append(actions, action)
+		}
+		updated.DefaultActions = actions
+	} else if input.Protocol != nil && updated.Protocol != listener.Protocol {
+		for _, a := range updated.DefaultActions {
+			if a.Type != ActionTypeForward || a.TargetGroupArn == "" {
+				continue
+			}
+			tg, tgErr := s.store.GetTargetGroupByArn(a.TargetGroupArn)
+			if tgErr != nil {
+				slog.Error("ModifyListener: failed to get target group", "arn", a.TargetGroupArn, "err", tgErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if tg == nil {
+				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+			}
+			if !isCompatibleProtocol(updated.Protocol, tg.Protocol) {
+				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			}
+		}
+	}
+
+	if err := s.store.PutListener(&updated); err != nil {
+		slog.Error("ModifyListener: failed to persist record", "listenerId", updated.ListenerID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := s.updateStoredConfig(lb); err != nil {
+		slog.Error("ModifyListener: failed to update config", "listenerArn", updated.ListenerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("ModifyListener completed", "listenerArn", updated.ListenerArn, "lbArn", lb.LoadBalancerArn, "port", updated.Port, "protocol", updated.Protocol, "accountID", accountID)
+
+	return &elbv2.ModifyListenerOutput{
+		Listeners: []*elbv2.Listener{s.listenerRecordToSDK(&updated)},
+	}, nil
 }
 
 func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error) {
@@ -2076,6 +2334,7 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGrou
 		Port:                       aws.Int64(r.Port),
 		VpcId:                      aws.String(r.VpcId),
 		TargetType:                 aws.String(r.TargetType),
+		HealthCheckEnabled:         aws.Bool(r.HealthCheck.Enabled),
 		HealthCheckProtocol:        aws.String(r.HealthCheck.Protocol),
 		HealthCheckPort:            aws.String(r.HealthCheck.Port),
 		HealthCheckPath:            aws.String(r.HealthCheck.Path),

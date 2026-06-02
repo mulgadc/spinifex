@@ -46,7 +46,7 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "10.0.1.5")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.1.5")
 	require.NoError(t, err)
 
 	// Verify global section
@@ -99,7 +99,7 @@ func TestGenerateHAProxyConfig_MultipleListeners(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "bind *:80")
@@ -131,7 +131,7 @@ func TestGenerateHAProxyConfig_SkipsDrainingTargets(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "10.0.0.1:80")
@@ -156,7 +156,7 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	// Backend should only appear once
@@ -165,7 +165,7 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 
 func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty"}
-	config, err := GenerateHAProxyConfig(lb, nil, nil, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, nil, nil, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	// Should still produce a valid config (global + defaults, no frontends/backends)
@@ -388,7 +388,7 @@ func TestGenerateNLBConfig_TCPHealthCheck(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "10.0.1.5")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.1.5")
 	require.NoError(t, err)
 
 	// Verify TCP mode
@@ -451,7 +451,7 @@ func TestGenerateNLBConfig_HTTPHealthCheckOnTCPTargetGroup(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "10.0.2.1")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.2.1")
 	require.NoError(t, err)
 
 	// TCP mode but HTTP health check
@@ -522,7 +522,7 @@ func TestGenerateNLBConfig_MixedBackends(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "10.0.3.1")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "10.0.3.1")
 	require.NoError(t, err)
 
 	// Overall TCP mode
@@ -546,7 +546,7 @@ func TestGenerateNLBConfig_NoListeners(t *testing.T) {
 		Type:           LoadBalancerTypeNetwork,
 	}
 
-	config, err := GenerateHAProxyConfig(lb, nil, nil, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, nil, nil, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "mode tcp")
@@ -583,7 +583,7 @@ func TestGenerateNLBConfig_SkipsDrainingTargets(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "10.0.0.1:3306")
@@ -627,7 +627,7 @@ func TestGenerateALBConfig_StillWorks(t *testing.T) {
 		},
 	}
 
-	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, "0.0.0.0")
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, nil, "0.0.0.0")
 	require.NoError(t, err)
 
 	assert.Contains(t, config, "mode http")

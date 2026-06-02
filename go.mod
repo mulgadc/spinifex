@@ -1,6 +1,6 @@
 module github.com/mulgadc/spinifex
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/aws/aws-sdk-go v1.55.8
@@ -8,12 +8,13 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/go-chi/chi/v5 v5.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20260407060928-11b94ed970f2
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/klauspost/cpuid/v2 v2.3.0
-	github.com/mulgadc/predastore v1.5.0
-	github.com/mulgadc/viperblock v1.5.0
+	github.com/mulgadc/predastore v1.6.0
+	github.com/mulgadc/viperblock v1.6.0
 	github.com/nats-io/nats-server/v2 v2.14.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/ovn-kubernetes/libovsdb v0.8.1
@@ -25,6 +26,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/sys v0.45.0
 	gopkg.in/ini.v1 v1.67.2
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -36,8 +38,8 @@ require (
 	github.com/antithesishq/antithesis-sdk-go v0.7.0 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
-	github.com/aws/smithy-go v1.25.1 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.41.9 // indirect
+	github.com/aws/smithy-go v1.26.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
@@ -126,7 +128,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

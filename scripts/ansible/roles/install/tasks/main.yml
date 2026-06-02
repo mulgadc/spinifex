@@ -40,6 +40,19 @@
     path: "{{ spinifex_data_dir }}/config"
     state: absent
 
+- name: install — purge stale cluster state (configs + raft + NATS KV) on bootstrap
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ spinifex_etc_dir }}/predastore/predastore.toml"
+    - "{{ spinifex_etc_dir }}/spinifex.toml"
+    - "{{ spinifex_data_dir }}/predastore"
+    - "{{ spinifex_data_dir }}/nats"
+    - "{{ spinifex_data_dir }}/awsgw"
+  when: cluster_bootstrap_purge | default(false) | bool
+
 - name: install — run setup.sh (creates users, dirs, systemd units)
   become: true
   ansible.builtin.command:
@@ -59,6 +72,7 @@
   ansible.builtin.command:
     cmd: "/usr/local/share/spinifex/setup-ovn.sh --management --node-name={{ spinifex_node_name }}"
   changed_when: true
+  when: install_run_ovn | default(true) | bool
 
 - name: install — summary
   ansible.builtin.debug:

@@ -254,9 +254,9 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	}
 
 	var xmlErr []byte
-	if svc == "iam" || svc == "sts" {
+	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" {
 		xmlErr = GenerateIAMErrorResponse(errorCode, errorMsg.Message, requestID)
-	} else { // ec2, elasticloadbalancing, account, spinifex
+	} else { // ec2, account, spinifex
 		xmlErr = GenerateEC2ErrorResponse(errorCode, errorMsg.Message, requestID)
 	}
 
@@ -469,7 +469,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	}
 
 	var xmlError []byte
-	if svc == "iam" || svc == "sts" {
+	if svc == "iam" || svc == "sts" || svc == "elasticloadbalancing" {
 		xmlError = GenerateIAMErrorResponse(err.Error(), errorMsg.Message, requestId)
 	} else {
 		xmlError = GenerateEC2ErrorResponse(err.Error(), errorMsg.Message, requestId)

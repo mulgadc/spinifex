@@ -522,6 +522,61 @@ func TestCreateTargetGroup_DuplicateName(t *testing.T) {
 	assert.Contains(t, err.Error(), "DuplicateTargetGroupName")
 }
 
+func TestModifyTargetGroup(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("modify-tg"),
+		Protocol: aws.String("HTTP"),
+		Port:     aws.Int64(8080),
+		VpcId:    aws.String("vpc-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := created.TargetGroups[0].TargetGroupArn
+
+	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:             arn,
+		HealthCheckEnabled:         aws.Bool(true),
+		HealthCheckPath:            aws.String("/healthz"),
+		HealthCheckIntervalSeconds: aws.Int64(15),
+		HealthyThresholdCount:      aws.Int64(2),
+		Matcher:                    &elbv2.Matcher{HttpCode: aws.String("200-299")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TargetGroups, 1)
+	tg := out.TargetGroups[0]
+	assert.True(t, *tg.HealthCheckEnabled)
+	assert.Equal(t, "/healthz", *tg.HealthCheckPath)
+	assert.Equal(t, int64(15), *tg.HealthCheckIntervalSeconds)
+	assert.Equal(t, int64(2), *tg.HealthyThresholdCount)
+	assert.Equal(t, "200-299", *tg.Matcher.HttpCode)
+
+	described, err := svc.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: []*string{arn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.TargetGroups, 1)
+	assert.Equal(t, "/healthz", *described.TargetGroups[0].HealthCheckPath)
+}
+
+func TestModifyTargetGroup_NotFound(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:ap-southeast-2:000000000001:targetgroup/missing/tg-doesnotexist"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
+}
+
+func TestModifyTargetGroup_MissingArn(t *testing.T) {
+	svc := setupTestService(t)
+
+	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
 func TestDeleteTargetGroup(t *testing.T) {
 	svc := setupTestService(t)
 

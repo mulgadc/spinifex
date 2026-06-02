@@ -1221,6 +1221,9 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	default:
 		hc = DefaultHealthCheck()
 	}
+	if input.HealthCheckEnabled != nil {
+		hc.Enabled = *input.HealthCheckEnabled
+	}
 	if input.HealthCheckProtocol != nil {
 		hc.Protocol = *input.HealthCheckProtocol
 	}
@@ -1285,6 +1288,68 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 
 	return &elbv2.CreateTargetGroupOutput{
 		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(record)},
+	}, nil
+}
+
+func (s *ELBv2ServiceImpl) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
+	if err != nil {
+		slog.Error("ModifyTargetGroup: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if tg == nil || tg.AccountID != accountID {
+		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+	}
+
+	hc := tg.HealthCheck
+	if input.HealthCheckEnabled != nil {
+		hc.Enabled = *input.HealthCheckEnabled
+	}
+	if input.HealthCheckProtocol != nil {
+		hc.Protocol = *input.HealthCheckProtocol
+	}
+	if input.HealthCheckPort != nil {
+		hc.Port = *input.HealthCheckPort
+	}
+	if input.HealthCheckPath != nil {
+		if err := validateHealthCheckPath(*input.HealthCheckPath); err != nil {
+			return nil, err
+		}
+		hc.Path = *input.HealthCheckPath
+	}
+	if input.HealthCheckIntervalSeconds != nil {
+		hc.IntervalSeconds = *input.HealthCheckIntervalSeconds
+	}
+	if input.HealthCheckTimeoutSeconds != nil {
+		hc.TimeoutSeconds = *input.HealthCheckTimeoutSeconds
+	}
+	if input.HealthyThresholdCount != nil {
+		hc.HealthyThreshold = *input.HealthyThresholdCount
+	}
+	if input.UnhealthyThresholdCount != nil {
+		hc.UnhealthyThreshold = *input.UnhealthyThresholdCount
+	}
+	if input.Matcher != nil && input.Matcher.HttpCode != nil {
+		if err := validateHealthCheckMatcher(*input.Matcher.HttpCode); err != nil {
+			return nil, err
+		}
+		hc.Matcher = *input.Matcher.HttpCode
+	}
+	tg.HealthCheck = hc
+
+	if err := s.store.PutTargetGroup(tg); err != nil {
+		slog.Error("ModifyTargetGroup: failed to persist record", "arn", tg.TargetGroupArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.Info("ModifyTargetGroup completed", "arn", tg.TargetGroupArn, "accountID", accountID)
+
+	return &elbv2.ModifyTargetGroupOutput{
+		TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(tg)},
 	}, nil
 }
 
@@ -2269,6 +2334,7 @@ func (s *ELBv2ServiceImpl) tgRecordToSDK(r *TargetGroupRecord) *elbv2.TargetGrou
 		Port:                       aws.Int64(r.Port),
 		VpcId:                      aws.String(r.VpcId),
 		TargetType:                 aws.String(r.TargetType),
+		HealthCheckEnabled:         aws.Bool(r.HealthCheck.Enabled),
 		HealthCheckProtocol:        aws.String(r.HealthCheck.Protocol),
 		HealthCheckPort:            aws.String(r.HealthCheck.Port),
 		HealthCheckPath:            aws.String(r.HealthCheck.Path),

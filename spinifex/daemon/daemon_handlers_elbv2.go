@@ -18,6 +18,10 @@ func (d *Daemon) handleELBv2CreateTargetGroup(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.CreateTargetGroup)
 }
 
+func (d *Daemon) handleELBv2ModifyTargetGroup(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.ModifyTargetGroup)
+}
+
 func (d *Daemon) handleELBv2DeleteTargetGroup(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.DeleteTargetGroup)
 }

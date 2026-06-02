@@ -47,6 +47,10 @@ func (s *NATSELBv2Service) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	return utils.NATSRequest[elbv2.CreateTargetGroupOutput](s.natsConn, "elbv2.CreateTargetGroup", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error) {
+	return utils.NATSRequest[elbv2.ModifyTargetGroupOutput](s.natsConn, "elbv2.ModifyTargetGroup", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error) {
 	return utils.NATSRequest[elbv2.DeleteTargetGroupOutput](s.natsConn, "elbv2.DeleteTargetGroup", input, defaultTimeout, accountID)
 }

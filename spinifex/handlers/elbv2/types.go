@@ -133,6 +133,7 @@ type TargetGroupRecord struct {
 
 // HealthCheckConfig defines health check parameters for a target group.
 type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled"`
 	Protocol           string `json:"protocol"`
 	Port               string `json:"port"` // Port number or "traffic-port"
 	Path               string `json:"path"`
@@ -146,6 +147,7 @@ type HealthCheckConfig struct {
 // DefaultHealthCheck returns a HealthCheckConfig with ALB default values.
 func DefaultHealthCheck() HealthCheckConfig {
 	return HealthCheckConfig{
+		Enabled:            true,
 		Protocol:           DefaultHealthCheckProtocol,
 		Port:               DefaultHealthCheckPort,
 		Path:               DefaultHealthCheckPath,
@@ -161,6 +163,7 @@ func DefaultHealthCheck() HealthCheckConfig {
 // NLB uses TCP health checks by default (no path or matcher).
 func DefaultNLBHealthCheck() HealthCheckConfig {
 	return HealthCheckConfig{
+		Enabled:            true,
 		Protocol:           DefaultNLBHealthCheckProtocol,
 		Port:               DefaultNLBHealthCheckPort,
 		IntervalSeconds:    DefaultNLBHealthCheckInterval,

@@ -322,6 +322,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 
 	out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
 		Name:                       aws.String("custom-hc"),
+		HealthCheckEnabled:         aws.Bool(false),
 		HealthCheckPath:            aws.String("/healthz"),
 		HealthCheckIntervalSeconds: aws.Int64(10),
 		HealthyThresholdCount:      aws.Int64(2),
@@ -330,6 +331,7 @@ func TestCreateTargetGroup_CustomHealthCheck(t *testing.T) {
 
 	require.NoError(t, err)
 	tg := out.TargetGroups[0]
+	assert.False(t, *tg.HealthCheckEnabled)
 	assert.Equal(t, "/healthz", *tg.HealthCheckPath)
 	assert.Equal(t, int64(10), *tg.HealthCheckIntervalSeconds)
 	assert.Equal(t, int64(2), *tg.HealthyThresholdCount)
@@ -575,6 +577,89 @@ func TestModifyTargetGroup_MissingArn(t *testing.T) {
 	_, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestModifyTargetGroup_AllHealthCheckFields(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:     aws.String("modify-all-tg"),
+		Protocol: aws.String("HTTP"),
+		Port:     aws.Int64(8080),
+		VpcId:    aws.String("vpc-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := created.TargetGroups[0].TargetGroupArn
+
+	out, err := svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:             arn,
+		HealthCheckEnabled:         aws.Bool(false),
+		HealthCheckProtocol:        aws.String("HTTPS"),
+		HealthCheckPort:            aws.String("8443"),
+		HealthCheckPath:            aws.String("/status"),
+		HealthCheckIntervalSeconds: aws.Int64(20),
+		HealthCheckTimeoutSeconds:  aws.Int64(8),
+		HealthyThresholdCount:      aws.Int64(4),
+		UnhealthyThresholdCount:    aws.Int64(5),
+		Matcher:                    &elbv2.Matcher{HttpCode: aws.String("200")},
+	}, testAccountID)
+	require.NoError(t, err)
+	tg := out.TargetGroups[0]
+	assert.False(t, *tg.HealthCheckEnabled)
+	assert.Equal(t, "HTTPS", *tg.HealthCheckProtocol)
+	assert.Equal(t, "8443", *tg.HealthCheckPort)
+	assert.Equal(t, "/status", *tg.HealthCheckPath)
+	assert.Equal(t, int64(20), *tg.HealthCheckIntervalSeconds)
+	assert.Equal(t, int64(8), *tg.HealthCheckTimeoutSeconds)
+	assert.Equal(t, int64(4), *tg.HealthyThresholdCount)
+	assert.Equal(t, int64(5), *tg.UnhealthyThresholdCount)
+	assert.Equal(t, "200", *tg.Matcher.HttpCode)
+}
+
+func TestModifyTargetGroup_InvalidPath(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-bad-path"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:  created.TargetGroups[0].TargetGroupArn,
+		HealthCheckPath: aws.String(""),
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestModifyTargetGroup_InvalidMatcher(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-bad-matcher"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn: created.TargetGroups[0].TargetGroupArn,
+		Matcher:        &elbv2.Matcher{HttpCode: aws.String("")},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestModifyTargetGroup_WrongAccount(t *testing.T) {
+	svc := setupTestService(t)
+
+	created, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("modify-wrong-acct"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.ModifyTargetGroup(&elbv2.ModifyTargetGroupInput{
+		TargetGroupArn:     created.TargetGroups[0].TargetGroupArn,
+		HealthCheckEnabled: aws.Bool(false),
+	}, "999999999999")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, err.Error())
 }
 
 func TestDeleteTargetGroup(t *testing.T) {

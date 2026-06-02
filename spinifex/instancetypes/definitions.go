@@ -17,18 +17,18 @@ type GPUModel struct {
 
 var (
 	// NVIDIA GPU models
-	NVIDIAa10g      = GPUModel{"10de", "2236", "g5", "NVIDIA", "A10G", 24576}
-	NVIDIAt4        = GPUModel{"10de", "1eb8", "g4dn", "NVIDIA", "T4", 16384}
-	NVIDIAl4        = GPUModel{"10de", "27b8", "g6", "NVIDIA", "L4", 24576} // gr6 uses identical hardware; requires operator config
-	NVIDIAl40s      = GPUModel{"10de", "26b9", "g6e", "NVIDIA", "L40S", 49152}
-	NVIDIAv100sxm16 = GPUModel{"10de", "1db1", "p3", "NVIDIA", "V100", 16384}   // SXM2 16 GiB
-	NVIDIAv100sxm32 = GPUModel{"10de", "1db3", "p3dn", "NVIDIA", "V100", 32768} // SXM2 32 GiB
-	NVIDIAv100pcie  = GPUModel{"10de", "1dba", "p3", "NVIDIA", "V100", 16384}   // PCIe 16 GiB
-	NVIDIAa100sxm40 = GPUModel{"10de", "20b0", "p4d", "NVIDIA", "A100", 40960}  // SXM4 40 GiB
-	NVIDIAa100sxm80 = GPUModel{"10de", "20b5", "p4de", "NVIDIA", "A100", 81920} // SXM4 80 GiB
-	NVIDIAh100sxm   = GPUModel{"10de", "2330", "p5", "NVIDIA", "H100", 81920}   // SXM5 80 GiB
-	NVIDIAh100pcie  = GPUModel{"10de", "2331", "p5", "NVIDIA", "H100", 81920}   // PCIe 80 GiB
-	NVIDIAh200sxm              = GPUModel{"10de", "2335", "p5e", "NVIDIA", "H200", 144384}                                   // SXM5 141 GiB
+	NVIDIAa10g                  = GPUModel{"10de", "2236", "g5", "NVIDIA", "A10G", 24576}
+	NVIDIAt4                    = GPUModel{"10de", "1eb8", "g4dn", "NVIDIA", "T4", 16384}
+	NVIDIAl4                    = GPUModel{"10de", "27b8", "g6", "NVIDIA", "L4", 24576} // gr6 uses identical hardware; requires operator config
+	NVIDIAl40s                  = GPUModel{"10de", "26b9", "g6e", "NVIDIA", "L40S", 49152}
+	NVIDIAv100sxm16             = GPUModel{"10de", "1db1", "p3", "NVIDIA", "V100", 16384}                                   // SXM2 16 GiB
+	NVIDIAv100sxm32             = GPUModel{"10de", "1db3", "p3dn", "NVIDIA", "V100", 32768}                                 // SXM2 32 GiB
+	NVIDIAv100pcie              = GPUModel{"10de", "1dba", "p3", "NVIDIA", "V100", 16384}                                   // PCIe 16 GiB
+	NVIDIAa100sxm40             = GPUModel{"10de", "20b0", "p4d", "NVIDIA", "A100", 40960}                                  // SXM4 40 GiB
+	NVIDIAa100sxm80             = GPUModel{"10de", "20b5", "p4de", "NVIDIA", "A100", 81920}                                 // SXM4 80 GiB
+	NVIDIAh100sxm               = GPUModel{"10de", "2330", "p5", "NVIDIA", "H100", 81920}                                   // SXM5 80 GiB
+	NVIDIAh100pcie              = GPUModel{"10de", "2331", "p5", "NVIDIA", "H100", 81920}                                   // PCIe 80 GiB
+	NVIDIAh200sxm               = GPUModel{"10de", "2335", "p5e", "NVIDIA", "H200", 144384}                                 // SXM5 141 GiB
 	NVIDIArtxPro6000BlackwellSE = GPUModel{"10de", "2bb5", "g7e", "NVIDIA", "RTX Pro 6000 Blackwell Server Edition", 98304} // 96 GiB GDDR7
 
 	// AMD GPU models
@@ -403,7 +403,7 @@ var migHostResources = map[string]struct {
 	"4g.71gb":  {16, 128},
 	"7g.141gb": {28, 224},
 	// A30 24 GiB (4-way MIG)
-	"1g.6gb": {4, 32},
+	"1g.6gb":  {4, 32},
 	"2g.12gb": {8, 64},
 	"4g.24gb": {16, 128},
 	// RTX Pro 6000 Blackwell Server Edition 96 GiB (4-way MIG)

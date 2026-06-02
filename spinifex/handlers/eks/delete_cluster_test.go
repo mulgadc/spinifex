@@ -23,10 +23,54 @@ func deleteInput(name string) *eks.DeleteClusterInput {
 	return &eks.DeleteClusterInput{Name: aws.String(name)}
 }
 
-// deleteClusterFixture stands up an EKSServiceImpl with fake orchestration
-// deps, an embedded JetStream KV, and a CREATING cluster meta whose NLB/VM/SG
-// resource references are all populated so DeleteCluster exercises every
-// teardown branch.
+// eksServiceFixture stands up an EKSServiceImpl with fake orchestration deps
+// and an embedded JetStream KV. Tests poke the fakes' *Err fields to force
+// failures at specific lifecycle steps.
+type eksServiceFixture struct {
+	svc  *EKSServiceImpl
+	kv   nats.KeyValue
+	nlb  *fakeNLBProvisioner
+	inst *fakeK3sInst
+	vpc  *fakeK3sVPC
+	ami  *fakeK3sAMI
+}
+
+func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
+
+	nlb := newFakeNLBProvisioner()
+	inst := &fakeK3sInst{}
+	vpc := &fakeK3sVPC{}
+	ami := &fakeK3sAMI{}
+
+	svc, err := NewEKSServiceImpl(EKSServiceDeps{
+		NATSConn:       nc,
+		MasterKey:      bootstrapTestMasterKey,
+		GatewayBaseURL: "https://gw.local:9999",
+		Region:         "us-east-1",
+		HolderID:       "node-1",
+		NATSURL:        "nats://gw.local:4222",
+		NATSToken:      "s3cr3t-token",
+		NATSCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		VPCSG:          newFakeSGProvisioner(),
+		VPCK3s:         vpc,
+		VPCSubnet:      fakeSubnetResolver{},
+		NLB:            nlb,
+		Instance:       inst,
+		Image:          ami,
+	})
+	require.NoError(t, err)
+	t.Cleanup(svc.Shutdown)
+
+	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami}
+}
+
+// deleteClusterFixture is an eksServiceFixture pre-seeded with a CREATING
+// cluster meta whose NLB/VM/SG resource references are all populated so
+// DeleteCluster exercises every teardown branch.
 type deleteClusterFixture struct {
 	svc  *EKSServiceImpl
 	kv   nats.KeyValue
@@ -37,29 +81,8 @@ type deleteClusterFixture struct {
 
 func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFixture {
 	t.Helper()
-	_, nc, js := testutil.StartTestJetStream(t)
-	kv, err := GetOrCreateAccountBucket(js, testAccountID)
-	require.NoError(t, err)
-
-	nlb := newFakeNLBProvisioner()
-	inst := &fakeK3sInst{}
-	vpc := &fakeK3sVPC{}
-
-	svc, err := NewEKSServiceImpl(EKSServiceDeps{
-		NATSConn:       nc,
-		MasterKey:      bootstrapTestMasterKey,
-		GatewayBaseURL: "https://gw.local:9999",
-		Region:         "us-east-1",
-		HolderID:       "node-1",
-		VPCSG:          newFakeSGProvisioner(),
-		VPCK3s:         vpc,
-		VPCSubnet:      fakeSubnetResolver{},
-		NLB:            nlb,
-		Instance:       inst,
-		Image:          &fakeK3sAMI{},
-	})
-	require.NoError(t, err)
-	t.Cleanup(svc.Shutdown)
+	f := newEKSServiceFixture(t)
+	kv := f.kv
 
 	meta := sampleClusterMeta(clusterName)
 	meta.NLBArn = "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/" + ClusterNLBName(clusterName) + "/lb-001"
@@ -71,10 +94,10 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	require.NoError(t, PutClusterMeta(kv, meta))
 
 	// Real OIDC key so ZeroizeClusterOIDCKey has material to wipe.
-	_, err = GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
+	_, err := GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
-	return &deleteClusterFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc}
+	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc}
 }
 
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {

@@ -254,6 +254,16 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
+	// Persist the NLB ARNs now, before any further fallible step. Without this
+	// a failure between here and the final PutClusterMeta would leave the NLB +
+	// target group + listener + backing LB VM created but unrecorded, so
+	// DeleteCluster (which keys teardown off the persisted ARNs) could not
+	// reclaim them.
+	if err := PutClusterMeta(acctKV, meta); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, fmt.Errorf("persist NLB arns: %w", err)
+	}
+
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
 		s.markFailed(acctKV, name)
@@ -292,6 +302,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	meta.ControlPlaneInstanceID = k3sOut.InstanceID
 	meta.ControlPlaneENIID = k3sOut.ENIID
 	meta.ControlPlaneENIIP = k3sOut.ENIIP
+
+	// Record the VM + ENI before registering the target so a failed register
+	// (or anything after) leaves them recoverable by DeleteCluster.
+	if err := PutClusterMeta(acctKV, meta); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, fmt.Errorf("persist control-plane ids: %w", err)
+	}
 
 	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, k3sOut.ENIIP); err != nil {
 		s.markFailed(acctKV, name)

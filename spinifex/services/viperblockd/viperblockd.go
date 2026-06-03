@@ -17,7 +17,6 @@ import (
 
 	"github.com/mulgadc/predastore/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/nbd"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -770,23 +769,22 @@ func launchService(cfg *Config) (err error) {
 		}
 
 		nbdConfig := nbd.NBDKitConfig{
-			Port:       nbdPort,
-			Socket:     nbdSocket,
-			UseTCP:     useTCP,
-			PidFile:    nbdPidFile,
-			PluginPath: cfg.PluginPath,
-			BaseDir:    cfg.BaseDir,
-			Host:       admin.DialTarget(cfg.S3Host),
-			Verbose:    false,
-			Size:       utils.SafeUint64ToInt64(vb.GetVolumeSize()),
-			Volume:     ebsRequest.Name,
-			Bucket:     cfg.Bucket,
-			Region:     cfg.Region,
-			AccessKey:  cfg.AccessKey,
-			SecretKey:  cfg.SecretKey,
-			CacheSize:  nbdCacheSize,
-			ShardWAL:   cfg.ShardWAL,
-
+			Port:              nbdPort,
+			Socket:            nbdSocket,
+			UseTCP:            useTCP,
+			PidFile:           nbdPidFile,
+			PluginPath:        cfg.PluginPath,
+			BaseDir:           cfg.BaseDir,
+			Host:              admin.DialTarget(cfg.S3Host),
+			Verbose:           false,
+			Size:              utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+			Volume:            ebsRequest.Name,
+			Bucket:            cfg.Bucket,
+			Region:            cfg.Region,
+			AccessKey:         cfg.AccessKey,
+			SecretKey:         cfg.SecretKey,
+			CacheSize:         nbdCacheSize,
+			ShardWAL:          cfg.ShardWAL,
 			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 
@@ -873,8 +871,8 @@ func launchService(cfg *Config) (err error) {
 			NBDURI:    nbdURI,
 			PID:       pid,
 			VB:        vb,
-			ConfigSub: configSub,		})
-		cfg.mu.Unlock()
+			ConfigSub: configSub,
+		})		cfg.mu.Unlock()
 
 		respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
 		slog.Debug("Sent ebs.mount response")

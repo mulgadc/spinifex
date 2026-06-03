@@ -33,4 +33,17 @@ start_pre() {
             return 1
         fi
     fi
+
+    # The apiserver is configured with --authentication-token-webhook-config-file
+    # pointing at the kubeconfig eks-token-webhook writes at startup. `before k3s`
+    # orders the webhook's start but it backgrounds, so wait (bounded) for the
+    # kubeconfig to land before letting the apiserver load a missing file.
+    i=0
+    while [ ! -f /etc/spinifex-eks/token-webhook.kubeconfig ] && [ "${i}" -lt 30 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ ! -f /etc/spinifex-eks/token-webhook.kubeconfig ]; then
+        ewarn "eks-token-webhook kubeconfig absent after ${i}s; IAM token auth will be unavailable until the webhook starts"
+    fi
 }

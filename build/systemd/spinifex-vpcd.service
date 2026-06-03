@@ -30,8 +30,10 @@ LockPersonality=yes
 RestrictRealtime=yes
 # IMDS binds one listener per VPC inside a per-VPC network namespace; the handler
 # enters it in-process via setns(CLONE_NEWNET), which RestrictNamespaces=yes would
-# block. Allow only the net namespace type (still denies user/mnt/pid/etc.).
-RestrictNamespaces=net
+# block. The `ip -n <netns>` / `ip netns exec` plumbing also unshares a mount
+# namespace (CLONE_NEWNS, to give the netns its own /sys), so `mnt` must be
+# allowlisted alongside `net` or the first in-netns command fails with EPERM.
+RestrictNamespaces=net mnt
 ProtectClock=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

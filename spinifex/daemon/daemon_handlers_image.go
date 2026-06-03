@@ -85,9 +85,34 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) {
 	})
 
 	if !ok {
-		slog.Warn("CreateImage: instance not found", "instanceId", instanceID)
-		respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
-		return
+		// Stopped instances are migrated out of the local map into the
+		// cluster-shared KV bucket when they stop — check there too.
+		var stopped *vm.VM
+		if d.stateStore != nil {
+			var err error
+			stopped, err = d.stateStore.LoadStoppedInstance(instanceID)
+			if err != nil {
+				slog.Warn("CreateImage: error loading stopped instance", "instanceId", instanceID, "err", err)
+			}
+		}
+		if stopped == nil {
+			slog.Warn("CreateImage: instance not found", "instanceId", instanceID)
+			respondWithError(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+			return
+		}
+		instance = stopped
+		status = stopped.Status
+		if stopped.Instance != nil {
+			for _, bdm := range stopped.Instance.BlockDeviceMappings {
+				if bdm.Ebs != nil && bdm.Ebs.VolumeId != nil {
+					rootVolumeID = *bdm.Ebs.VolumeId
+					break
+				}
+			}
+			if stopped.Instance.ImageId != nil {
+				sourceImageID = *stopped.Instance.ImageId
+			}
+		}
 	}
 
 	// Verify the caller owns this instance

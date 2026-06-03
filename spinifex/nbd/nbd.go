@@ -70,7 +70,6 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 		fmt.Sprintf("cache_size=%d", cfg.CacheSize),
 		fmt.Sprintf("shardwal=%t", cfg.ShardWAL),
 	}
-
 	// Only forward the key when configured; an empty value would explicitly
 	// set the plugin to cleartext and override its ENCRYPTION_KEY_FILE fallback.
 	if cfg.EncryptionKeyFile != "" {

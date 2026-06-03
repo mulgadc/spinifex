@@ -452,6 +452,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
+		Distro:          sourceAMI.Distro,
+		DistroFamily:    sourceAMI.DistroFamily,
 	}
 
 	if err := s.putAMIConfig(amiID, meta); err != nil {
@@ -549,8 +551,13 @@ func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID string) er
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if _, err := vb.LoadStateRequest(""); err != nil {
+	if err := vb.LoadState(); err != nil {
 		slog.Error("snapshotStoppedVolume: failed to load state", "volumeId", volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := vb.LoadBlockState(); err != nil {
+		slog.Error("snapshotStoppedVolume: failed to load block state", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1143,6 +1150,7 @@ func (s *ImageServiceImpl) RegisterImage(input *ec2.RegisterImageInput, accountI
 		ImageOwnerAlias: accountID,
 		CreationDate:    time.Now(),
 		Tags:            tags,
+		BootMode:        aws.StringValue(input.BootMode),
 	}
 
 	if err := s.putAMIConfig(amiID, meta); err != nil {

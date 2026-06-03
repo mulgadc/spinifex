@@ -17,14 +17,18 @@ import (
 //   - OVN realisation: is imds-port-<vpc> bound/up on this chassis, is the
 //     169.254.169.254/32 static route installed on the VPC LR, is the localport
 //     LSP defined as expected.
-//   - Host realisation: the imds-h-<short> veth's address/route/neighbour state
-//     and the listener socket — the load-bearing question is whether the host
-//     has any L3 path back to guestIP (the SO_BINDTODEVICE reply path), since a
-//     veth with no address/route can accept the SYN but never return the
-//     SYN-ACK.
-//   - In-flight evidence: conntrack for 169.254.169.254 (a stuck SYN_RECV is the
-//     smoking gun that the host received the SYN and replied but the ACK never
-//     came back) and the br-int flows touching the IMDS / guest addresses.
+//   - Host realisation (inside the per-VPC netns imds-<short>): the imds-h-<short>
+//     veth's address/route/neighbour state and the listener socket — the
+//     load-bearing question is whether the netns has a real L3 path back to
+//     guestIP. After the per-VPC-netns fix the veth carries 169.254.169.254/30
+//     with a default route via the .253 LRP, so a healthy dump shows the IPv4
+//     address, a neighbour entry for .253, and a reply route via .253; the
+//     pre-fix failure showed an addressless veth that accepted the SYN but never
+//     returned the SYN-ACK.
+//   - In-flight evidence: conntrack (per-netns) for 169.254.169.254 (a stuck
+//     SYN_RECV is the smoking gun that the host received the SYN and replied but
+//     the ACK never came back) and the br-int flows touching the IMDS / guest
+//     addresses.
 //
 // Non-fatal — runs purely for log/artifact signal so the test's own Fatal still
 // wins. Skips silently when OVN tooling / passwordless sudo aren't available, so
@@ -47,8 +51,15 @@ func DumpIMDSDatapathDiagnostics(t *testing.T, vpcID, guestIP, artifactDir strin
 	imdsPort := "imds-port-" + vpcID
 	hostEnd := host.IMDSHostVethName(vpcID)
 	ovsEnd := host.IMDSOVSPortName(vpcID)
+	netns := host.IMDSNetnsName(vpcID)
 	vpcRouter := "vpc-" + vpcID
 	const imdsIP = "169.254.169.254"
+
+	// nsExec wraps an argv to run inside the per-VPC netns, where the host veth
+	// end and the IMDS listener now live.
+	nsExec := func(argv ...string) []string {
+		return append([]string{"ip", "netns", "exec", netns}, argv...)
+	}
 
 	runHostCaptures(t, artifactDir, []hostCapture{
 		{
@@ -70,30 +81,36 @@ func DumpIMDSDatapathDiagnostics(t *testing.T, vpcID, guestIP, artifactDir strin
 			grepFor:  []string{imdsIP},
 		},
 		{
+			filename: "imds-netns.txt",
+			label:    "ip netns list (per-VPC IMDS netns present?)",
+			argv:     []string{"ip", "netns", "list"},
+			grepFor:  []string{netns},
+		},
+		{
 			filename: "imds-host-veth-addr.txt",
-			label:    "ip -d addr show imds-h (host veth — expect NO address)",
-			argv:     []string{"ip", "-d", "addr", "show", "dev", hostEnd},
+			label:    "ip -d addr show imds-h in netns (expect 169.254.169.254/30)",
+			argv:     nsExec("ip", "-d", "addr", "show", "dev", hostEnd),
 		},
 		{
 			filename: "imds-host-route-to-guest.txt",
-			label:    "ip route get <guest> oif imds-h (reply-path route?)",
-			argv:     []string{"ip", "route", "get", guestIP, "oif", hostEnd},
+			label:    "ip route get <guest> in netns (expect via 169.254.169.253)",
+			argv:     nsExec("ip", "route", "get", guestIP),
 		},
 		{
 			filename: "imds-host-neigh.txt",
-			label:    "ip neigh show dev imds-h (host ARP cache)",
-			argv:     []string{"ip", "neigh", "show", "dev", hostEnd},
+			label:    "ip neigh show in netns (expect .253 LRP entry)",
+			argv:     nsExec("ip", "neigh", "show"),
 		},
 		{
 			filename: "imds-listener.txt",
-			label:    "ss -ltnp sport :80 (IMDS listener bound?)",
-			argv:     []string{"ss", "-ltnp"},
+			label:    "ss -ltnp in netns (IMDS listener bound?)",
+			argv:     nsExec("ss", "-ltnp"),
 			grepFor:  []string{imdsIP, ":80"},
 		},
 		{
 			filename: "imds-conntrack.txt",
-			label:    "conntrack -L (169.254.169.254 — SYN_RECV = reply lost)",
-			argv:     []string{"conntrack", "-L"},
+			label:    "conntrack -L in netns (169.254.169.254 — SYN_RECV = reply lost)",
+			argv:     nsExec("conntrack", "-L"),
 			grepFor:  []string{imdsIP},
 		},
 		{

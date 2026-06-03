@@ -36,9 +36,12 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 		return nil
 	})
 
-	hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
 	if err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
+	}
+	if netns != "imds-89abcdef" {
+		t.Errorf("netns = %q, want imds-89abcdef", netns)
 	}
 	if hostEnd != "imds-h-89abcdef" {
 		t.Errorf("hostEnd = %q, want imds-h-89abcdef", hostEnd)
@@ -46,9 +49,14 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 
 	want := [][]string{
 		{"ovs-vsctl", "port-to-br", "imds-o-89abcdef"},
+		{"ip", "netns", "add", "imds-89abcdef"},
 		{"ip", "link", "add", "imds-o-89abcdef", "type", "veth", "peer", "name", "imds-h-89abcdef"},
 		{"ip", "link", "set", "imds-o-89abcdef", "up"},
-		{"ip", "link", "set", "imds-h-89abcdef", "up"},
+		{"ip", "link", "set", "imds-h-89abcdef", "netns", "imds-89abcdef"},
+		{"ip", "-n", "imds-89abcdef", "link", "set", "lo", "up"},
+		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "up"},
+		{"ip", "-n", "imds-89abcdef", "addr", "add", "169.254.169.254/30", "dev", "imds-h-89abcdef"},
+		{"ip", "-n", "imds-89abcdef", "route", "add", "default", "via", "169.254.169.253"},
 		{"ovs-vsctl", "add-port", "br-int", "imds-o-89abcdef",
 			"--", "set", "Interface", "imds-o-89abcdef",
 			"external_ids:iface-id=imds-port-" + testVPCID},
@@ -72,15 +80,36 @@ func TestEnsureIMDSVeth_Idempotent(t *testing.T) {
 		return nil
 	})
 
-	hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
 	if err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
+	}
+	if netns != "imds-89abcdef" {
+		t.Errorf("netns = %q, want imds-89abcdef", netns)
 	}
 	if hostEnd != "imds-h-89abcdef" {
 		t.Errorf("hostEnd = %q, want imds-h-89abcdef", hostEnd)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected only the probe call, got %v", *calls)
+	}
+}
+
+// TestEnsureIMDSVeth_NetnsExistsTolerated guards idempotent re-runs after a
+// partial prior attempt: `ip netns add` reporting "File exists" must not abort.
+func TestEnsureIMDSVeth_NetnsExistsTolerated(t *testing.T) {
+	recordSudo(t, func(name string, args []string) *exec.Cmd {
+		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
+			return exec.Command("/bin/false")
+		}
+		if name == "ip" && len(args) >= 2 && args[0] == "netns" && args[1] == "add" {
+			return exec.Command("sh", "-c", "echo 'Cannot create namespace file: File exists' >&2; exit 1")
+		}
+		return nil
+	})
+
+	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+		t.Fatalf("expected nil for pre-existing netns, got %v", err)
 	}
 }
 
@@ -95,22 +124,25 @@ func TestEnsureIMDSVeth_AddPortFailureCleansUp(t *testing.T) {
 		return nil
 	})
 
-	_, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
 	if err == nil || !strings.Contains(err.Error(), "add IMDS veth") {
 		t.Fatalf("expected add-port error, got %v", err)
 	}
-	// Cleanup must have run: del-port then link del.
-	var sawDelPort, sawLinkDel bool
+	// Cleanup must have run: del-port, netns del, then link del.
+	var sawDelPort, sawNetnsDel, sawLinkDel bool
 	for _, c := range *calls {
 		if c[0] == "ovs-vsctl" && slices.Contains(c, "del-port") {
 			sawDelPort = true
+		}
+		if c[0] == "ip" && len(c) >= 3 && c[1] == "netns" && c[2] == "del" {
+			sawNetnsDel = true
 		}
 		if c[0] == "ip" && len(c) >= 3 && c[1] == "link" && c[2] == "del" {
 			sawLinkDel = true
 		}
 	}
-	if !sawDelPort || !sawLinkDel {
-		t.Errorf("expected cleanup (del-port=%v, link del=%v); calls=%v", sawDelPort, sawLinkDel, *calls)
+	if !sawDelPort || !sawNetnsDel || !sawLinkDel {
+		t.Errorf("expected cleanup (del-port=%v, netns del=%v, link del=%v); calls=%v", sawDelPort, sawNetnsDel, sawLinkDel, *calls)
 	}
 }
 
@@ -125,9 +157,37 @@ func TestEnsureIMDSVeth_LinkAddFailureSurfaces(t *testing.T) {
 		return nil
 	})
 
-	_, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
 	if err == nil || !strings.Contains(err.Error(), "create IMDS veth pair") {
 		t.Fatalf("expected create error, got %v", err)
+	}
+}
+
+// TestEnsureIMDSVeth_AddrFailureCleansUp asserts a failure assigning the IMDS
+// address inside the netns surfaces and tears the half-built plumbing down.
+func TestEnsureIMDSVeth_AddrFailureCleansUp(t *testing.T) {
+	calls := recordSudo(t, func(name string, args []string) *exec.Cmd {
+		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
+			return exec.Command("/bin/false")
+		}
+		if name == "ip" && len(args) >= 4 && args[0] == "-n" && args[2] == "addr" && args[3] == "add" {
+			return exec.Command("/bin/false")
+		}
+		return nil
+	})
+
+	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	if err == nil || !strings.Contains(err.Error(), "addr add") {
+		t.Fatalf("expected addr-add error, got %v", err)
+	}
+	var sawNetnsDel bool
+	for _, c := range *calls {
+		if c[0] == "ip" && len(c) >= 3 && c[1] == "netns" && c[2] == "del" {
+			sawNetnsDel = true
+		}
+	}
+	if !sawNetnsDel {
+		t.Errorf("expected netns cleanup after addr failure; calls=%v", *calls)
 	}
 }
 
@@ -140,7 +200,8 @@ func TestRemoveIMDSVeth(t *testing.T) {
 
 	want := [][]string{
 		{"ovs-vsctl", "--if-exists", "del-port", "imds-o-89abcdef"},
-		{"ip", "link", "del", "imds-h-89abcdef"},
+		{"ip", "netns", "del", "imds-89abcdef"},
+		{"ip", "link", "del", "imds-o-89abcdef"},
 	}
 	if len(*calls) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(*calls), len(want), *calls)
@@ -154,9 +215,12 @@ func TestRemoveIMDSVeth(t *testing.T) {
 
 func TestRemoveIMDSVeth_MissingDeviceIsNotError(t *testing.T) {
 	recordSudo(t, func(name string, args []string) *exec.Cmd {
+		if name == "ip" && len(args) >= 2 && args[0] == "netns" && args[1] == "del" {
+			return exec.Command("sh", "-c", "echo 'Cannot remove namespace file \"/var/run/netns/imds-89abcdef\": No such file or directory' >&2; exit 1")
+		}
 		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" {
 			// Emit the kernel's "absent device" message on stderr and fail.
-			return exec.Command("sh", "-c", "echo 'Cannot find device \"imds-h-89abcdef\"' >&2; exit 1")
+			return exec.Command("sh", "-c", "echo 'Cannot find device \"imds-o-89abcdef\"' >&2; exit 1")
 		}
 		return nil
 	})

@@ -21,7 +21,7 @@ import (
 // per-listener BaseContext) without root or the link-local address. It records
 // the bound address per host-end so the test can dial it.
 func loopbackListen(addrs *sync.Map) listenFunc {
-	return func(ctx context.Context, hostEnd string) (net.Listener, error) {
+	return func(ctx context.Context, netnsName, hostEnd string) (net.Listener, error) {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, err
@@ -34,9 +34,9 @@ func loopbackListen(addrs *sync.Map) listenFunc {
 func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 	const hostEnd = "imds-h-abc12345"
 	var ensured, removed atomic.Int32
-	ensure := func(_ context.Context, _ string) (string, error) {
+	ensure := func(_ context.Context, _ string) (string, string, error) {
 		ensured.Add(1)
-		return hostEnd, nil
+		return "", hostEnd, nil
 	}
 	remove := func(_ context.Context, _ string) error {
 		removed.Add(1)
@@ -82,8 +82,8 @@ func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 }
 
 func TestBindManager_BindPropagatesVethError(t *testing.T) {
-	ensure := func(_ context.Context, _ string) (string, error) {
-		return "", errEnsureFailed
+	ensure := func(_ context.Context, _ string) (string, string, error) {
+		return "", "", errEnsureFailed
 	}
 	bm := newBindManager(nil, http.NewServeMux(), ensure, func(context.Context, string) error { return nil }, loopbackListen(&sync.Map{}))
 	err := bm.bind(context.Background(), "vpc-x")
@@ -105,9 +105,9 @@ func TestBindManager_SyncSkipsVersionKey(t *testing.T) {
 	require.NoError(t, err)
 
 	var bound sync.Map
-	ensure := func(_ context.Context, vpcID string) (string, error) {
+	ensure := func(_ context.Context, vpcID string) (string, string, error) {
 		bound.Store(vpcID, true)
-		return "imds-h-" + vpcID, nil
+		return "imds-" + vpcID, "imds-h-" + vpcID, nil
 	}
 	remove := func(context.Context, string) error { return nil }
 	bm := newBindManager(vpcVeth, http.NewServeMux(), ensure, remove, loopbackListen(&sync.Map{}))

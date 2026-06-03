@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -18,14 +20,16 @@ import (
 
 // ensureVethFunc / removeVethFunc are the per-VPC host veth lifecycle hooks,
 // injected (not imported) to avoid an import cycle via network/host. vpcd passes
-// host.EnsureIMDSVeth / host.RemoveIMDSVeth; tests pass root-free fakes.
-type ensureVethFunc func(ctx context.Context, vpcID string) (hostEnd string, err error)
+// host.EnsureIMDSVeth / host.RemoveIMDSVeth; tests pass root-free fakes. ensure
+// returns the per-VPC netns the listener must be created in plus the host-end
+// veth name (now living inside that netns).
+type ensureVethFunc func(ctx context.Context, vpcID string) (netnsName, hostEnd string, err error)
 type removeVethFunc func(ctx context.Context, vpcID string) error
 
-// listenFunc binds a TCP listener on 169.254.169.254:80 scoped to a host veth.
-// Swappable in tests so bind-manager logic runs without CAP_NET_RAW or the
-// link-local address actually being present.
-type listenFunc func(ctx context.Context, hostEnd string) (net.Listener, error)
+// listenFunc binds a TCP listener on 169.254.169.254:80 inside the VPC's netns,
+// scoped to its host veth. Swappable in tests so bind-manager logic runs without
+// CAP_NET_ADMIN or a real netns. An empty netnsName binds in the current netns.
+type listenFunc func(ctx context.Context, netnsName, hostEnd string) (net.Listener, error)
 
 // activeBinding is the per-VPC realised state: a listener bound to the VPC's
 // host veth and the http.Server serving it.
@@ -129,14 +133,14 @@ func (b *bindManager) bind(ctx context.Context, vpcID string) error {
 	}
 	b.mu.Unlock()
 
-	hostEnd, err := b.ensureVeth(ctx, vpcID)
+	netnsName, hostEnd, err := b.ensureVeth(ctx, vpcID)
 	if err != nil {
 		return fmt.Errorf("ensure veth: %w", err)
 	}
 
-	listener, err := b.listen(ctx, hostEnd)
+	listener, err := b.listen(ctx, netnsName, hostEnd)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", hostEnd, err)
+		return fmt.Errorf("listen on %s in netns %s: %w", hostEnd, netnsName, err)
 	}
 
 	server := &http.Server{
@@ -202,13 +206,16 @@ func (b *bindManager) shutdown() {
 	}
 }
 
-// bindLocalListener opens a TCP listener on 169.254.169.254:80 pinned to a host
-// veth via SO_BINDTODEVICE, so receipt and replies stay scoped to that one veth
-// despite the shared IP:port. SO_REUSEADDR lets a restarting vpcd rebind fast.
-// IP_FREEBIND lets the bind succeed even though the link-local IMDS address is
-// never assigned to the host-end veth (it lives on the OVN side); without it the
-// bind fails with EADDRNOTAVAIL on hosts where net.ipv4.ip_nonlocal_bind=0.
-func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error) {
+// bindLocalListener opens a TCP listener on 169.254.169.254:80 inside the VPC's
+// netns, where the host-end veth carries 169.254.169.254/30 with a default route
+// via the .253 LRP — so the host-served reply has a real L3 next-hop back to the
+// guest (SO_BINDTODEVICE alone in the root netns could not route the SYN-ACK).
+// The netns also isolates VPCs whose CIDRs overlap, since each is its own routing
+// domain. The socket must be *created* in the netns, so we enter it on a locked
+// thread for the socket call and restore the root netns before serving.
+// SO_BINDTODEVICE (belt-and-braces — there is only one veth in the netns) and
+// SO_REUSEADDR (fast rebind on vpcd restart) are still set on the fd.
+func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(_, _ string, c syscall.RawConn) error {
 			var sockErr error
@@ -216,15 +223,81 @@ func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error
 				if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, hostEnd); sockErr != nil {
 					return
 				}
-				if sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); sockErr != nil {
-					return
-				}
-				sockErr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
+				sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 			}); err != nil {
 				return err
 			}
 			return sockErr
 		},
 	}
-	return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))
+
+	bind := func() (net.Listener, error) {
+		return lc.Listen(ctx, "tcp4", net.JoinHostPort(MetaDataServerIP, "80"))
+	}
+
+	if netnsName == "" {
+		// No netns (tests, or a degraded host): bind in the current netns.
+		return bind()
+	}
+
+	var ln net.Listener
+	err := inNetns(netnsName, func() error {
+		var e error
+		ln, e = bind()
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ln, nil
+}
+
+// inNetns runs fn on a dedicated OS thread switched into the named network
+// namespace, then restores the root netns. fn's socket-creating syscalls happen
+// in the target netns, so the listener fd belongs to it; once created, the fd is
+// served normally from any thread. If the root netns cannot be restored the
+// thread is poisoned, so the goroutine returns while still locked and the Go
+// runtime retires the thread rather than returning it to the pool.
+func inNetns(netnsName string, fn func() error) error {
+	const netnsDir = "/var/run/netns/"
+	errCh := make(chan error, 1)
+
+	go func() {
+		runtime.LockOSThread()
+
+		orig, err := os.Open("/proc/thread-self/ns/net")
+		if err != nil {
+			runtime.UnlockOSThread()
+			errCh <- fmt.Errorf("open current netns: %w", err)
+			return
+		}
+		defer func() { _ = orig.Close() }()
+
+		target, err := os.Open(netnsDir + netnsName)
+		if err != nil {
+			runtime.UnlockOSThread()
+			errCh <- fmt.Errorf("open netns %s: %w", netnsName, err)
+			return
+		}
+		defer func() { _ = target.Close() }()
+
+		if err := unix.Setns(int(target.Fd()), unix.CLONE_NEWNET); err != nil {
+			runtime.UnlockOSThread()
+			errCh <- fmt.Errorf("setns into %s: %w", netnsName, err)
+			return
+		}
+
+		fnErr := fn()
+
+		if err := unix.Setns(int(orig.Fd()), unix.CLONE_NEWNET); err != nil {
+			// Cannot return to the root netns — leave the thread locked so the
+			// runtime destroys it when this goroutine exits.
+			errCh <- errors.Join(fnErr, fmt.Errorf("restore root netns: %w", err))
+			return
+		}
+		runtime.UnlockOSThread()
+		errCh <- fnErr
+	}()
+
+	return <-errCh
 }

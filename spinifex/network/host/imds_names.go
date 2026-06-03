@@ -19,7 +19,16 @@ func IMDSShortVPCID(vpcID string) string {
 // 8-char short VPC ID at exactly IFNAMSIZ-1 (15); longer fails `ip link add`.
 func IMDSOVSPortName(vpcID string) string { return "imds-o-" + IMDSShortVPCID(vpcID) }
 
-// IMDSHostVethName is the root-netns side of the per-VPC IMDS veth pair — the
+// IMDSHostVethName is the host-end side of the per-VPC IMDS veth pair — the
 // device the IMDS listener binds to via SO_BINDTODEVICE. Same 7-char prefix
-// budget as IMDSOVSPortName: "imds-h-" + 8-char short VPC ID = 15 chars.
+// budget as IMDSOVSPortName: "imds-h-" + 8-char short VPC ID = 15 chars. It
+// lives inside the VPC's netns (see IMDSNetnsName), not the root netns.
 func IMDSHostVethName(vpcID string) string { return "imds-h-" + IMDSShortVPCID(vpcID) }
+
+// IMDSNetnsName is the per-VPC network namespace the IMDS host-end veth and its
+// listener live in. The netns gives the reply path a real L3 next-hop — the
+// host end carries 169.254.169.254/30 with a default route via the .253 LRP —
+// and structurally isolates VPCs with overlapping CIDRs, since each netns is its
+// own routing domain. Netns names are filesystem-scoped, not IFNAMSIZ-bound, so
+// "imds-" + 8-char short VPC ID (13 chars) is comfortably within budget.
+func IMDSNetnsName(vpcID string) string { return "imds-" + IMDSShortVPCID(vpcID) }

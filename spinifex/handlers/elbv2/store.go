@@ -92,9 +92,9 @@ func (s *Store) ListLoadBalancers() ([]*LoadBalancerRecord, error) {
 }
 
 // GetLoadBalancerByArn finds a load balancer by its ARN via a direct KV lookup
-// on the short ID embedded in the ARN's final path segment. Falls back to a
-// linear scan only if the ARN can't be parsed. Terraform hits Describe*Attributes
-// on every plan/refresh so this must be O(1), not O(n).
+// on the short ID embedded in the ARN's final path segment. Returns (nil, nil)
+// if the ARN can't be parsed or no record matches. Terraform hits
+// Describe*Attributes on every plan/refresh so this must be O(1), not O(n).
 func (s *Store) GetLoadBalancerByArn(arn string) (*LoadBalancerRecord, error) {
 	// ELBv2 LB ARN: arn:aws:elasticloadbalancing:{region}:{account}:loadbalancer/{app,net}/{name}/{lbID}
 	idx := strings.LastIndex(arn, "/")
@@ -106,11 +106,16 @@ func (s *Store) GetLoadBalancerByArn(arn string) (*LoadBalancerRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	if lb == nil {
+		return nil, nil
+	}
 	// Defence-in-depth: ensure the record actually belongs to this ARN.
 	// Short IDs are random hex, so collisions are effectively impossible, but
 	// a mismatch here would indicate KV corruption and must not be silently
 	// served as a successful lookup.
-	if lb == nil || lb.LoadBalancerArn != arn {
+	if lb.LoadBalancerArn != arn {
+		slog.Error("load balancer KV record ARN mismatch",
+			"requested_arn", arn, "stored_arn", lb.LoadBalancerArn, "lb_id", lbID)
 		return nil, nil
 	}
 	return lb, nil
@@ -187,7 +192,12 @@ func (s *Store) GetTargetGroupByArn(arn string) (*TargetGroupRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	if tg == nil || tg.TargetGroupArn != arn {
+	if tg == nil {
+		return nil, nil
+	}
+	if tg.TargetGroupArn != arn {
+		slog.Error("target group KV record ARN mismatch",
+			"requested_arn", arn, "stored_arn", tg.TargetGroupArn, "tg_id", tgID)
 		return nil, nil
 	}
 	return tg, nil

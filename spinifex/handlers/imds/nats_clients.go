@@ -17,17 +17,14 @@ const (
 	// imdsRPCTimeout bounds each internal control-plane round-trip to awsgw.
 	imdsRPCTimeout = 10 * time.Second
 
-	// profileCacheTTL memoises profile/role lookups. Both mappings
-	// (profile→role, role→ARN) are effectively static, so a short TTL keeps the
-	// iam/info and security-credentials/ GETs off a NATS round-trip per request
-	// without risking meaningfully stale data.
+	// profileCacheTTL memoises profile/role lookups. Both mappings are effectively
+	// static, so a short TTL keeps the iam/* GETs off a NATS round-trip per request.
 	profileCacheTTL = 5 * time.Minute
 )
 
-// NATSSTSAssumer is the NATS-backed stsAssumer. It mints instance-role
-// credentials via awsgw's SubjectAssumeRoleForInstance responder. It keeps no
-// local cache — credCache already memoises minted credentials until the refresh
-// window, so STS stays off the hot path.
+// NATSSTSAssumer is the NATS-backed stsAssumer. It mints instance-role credentials
+// via awsgw's SubjectAssumeRoleForInstance responder, keeping no local cache —
+// credCache already memoises minted credentials, so STS stays off the hot path.
 type NATSSTSAssumer struct {
 	nc *nats.Conn
 }

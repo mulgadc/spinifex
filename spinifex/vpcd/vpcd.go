@@ -537,13 +537,9 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("construct IMDS topology manager: %w", err)
 	}
 
-	// IMDS host-served datapath. vpcd holds the capabilities the listener stack
-	// needs (CAP_NET_ADMIN/RAW/BIND_SERVICE + sudo for veth creation) that the
-	// hardened awsgw sandbox cannot grant. STS credential minting and IAM
-	// profile resolution stay in awsgw, reached over internal NATS RPCs. The
-	// host veth hooks are injected because network/host transitively imports
-	// handlers/imds. Run blocks, so it goes on its own goroutine; an initial
-	// sync failure is logged-and-continued (SDKs retry while it converges).
+	// IMDS host-served datapath. vpcd holds the network capabilities the listener
+	// stack needs (the awsgw sandbox can't grant them); STS/IAM stay in awsgw over
+	// NATS RPCs. Run blocks, so it gets its own goroutine.
 	imdsCtx, cancelIMDS := context.WithCancel(ctx)
 	defer cancelIMDS()
 	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(

@@ -9,11 +9,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// kvBucketENIs is the ENI source-of-truth bucket (handlers_ec2_vpc.KVBucketENIs).
-// It is duplicated as a literal rather than imported because handlers/ec2/vpc
-// transitively imports network/external and network/topology, both of which
-// import this package — importing it back would close a cycle. The veth_store
-// record type lives here for the same reason.
+// kvBucketENIs is the ENI source-of-truth bucket (handlers_ec2_vpc.KVBucketENIs),
+// duplicated as a literal rather than imported because importing handlers/ec2/vpc
+// back would close an import cycle (the veth_store record type does likewise).
 const kvBucketENIs = "spinifex-vpc-enis"
 
 // kvBucketSecurityGroups is the security-group source-of-truth bucket
@@ -93,11 +91,8 @@ type eniRecord struct {
 //	(account, eniID) → ENIRecord       via a direct KV Get
 //	(account, instanceID) → facts      via the account-scoped DescribeInstances fan-out
 //
-// The reverse index carries the ENI's immutable identity (ID + owning account)
-// so the account — needed both to key the ENI bucket Get and to scope the
-// instance fan-out — resolves in a single Get. Every mutable field (instance
-// ID, IPs, MAC, profile ARN) is still read live off the ENI/instance record, so
-// there is no staleness class.
+// The index carries the ENI's immutable identity so the account resolves in one
+// Get; every mutable field is read live off the record, so there's no staleness.
 type metadataResolver struct {
 	index  nats.KeyValue // spinifex-network-eni-by-vpc-ip
 	eniKV  nats.KeyValue // spinifex-vpc-enis
@@ -162,11 +157,9 @@ func (r *metadataResolver) resolveInstance(eni *eniFacts) (*instanceFacts, error
 	return r.lookup.describe(eni.accountID, eni.instanceID)
 }
 
-// resolveSGNames maps security-group IDs to their group names, since AWS serves
-// names (not sg-* IDs) at /latest/meta-data/security-groups. Best-effort: a
-// group whose record is missing or unreadable falls back to its own ID rather
-// than failing the whole request, and a nil sgKV (bucket unavailable at start)
-// degrades the endpoint to IDs. Order is preserved.
+// resolveSGNames maps security-group IDs to the group names AWS serves at
+// /latest/meta-data/security-groups. Best-effort and order-preserving: a missing
+// record or nil sgKV falls back to the raw ID rather than failing the request.
 func (r *metadataResolver) resolveSGNames(accountID string, sgIDs []string) []string {
 	names := make([]string, len(sgIDs))
 	for i, id := range sgIDs {

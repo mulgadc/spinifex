@@ -43,9 +43,8 @@ type IMDSVPCSpec struct {
 }
 
 // IMDSTopologyManager installs and removes the per-VPC OVN topology that makes
-// 169.254.169.254 routable to the host-owned IMDS localport. Idempotent. Lives
-// in external (not policy): like IGW, it composes L2 object creation with L3
-// route attachment, which ADR-0006 S5 forbids in the policy layer.
+// 169.254.169.254 routable to the host-owned IMDS localport. Idempotent. Lives in
+// external (not policy): it composes L2 creation with L3 routing (ADR-0006 S5).
 type IMDSTopologyManager interface {
 	EnsureForVPC(ctx context.Context, vpcID string) (IMDSVPCSpec, error)
 	RemoveForVPC(ctx context.Context, vpcID string) error
@@ -90,10 +89,9 @@ func IMDSSpecForVPC(vpcID string) IMDSVPCSpec {
 	}
 }
 
-// EnsureForVPC installs the IMDS OVN topology for vpcID and publishes the
-// vpc-veth record. Idempotent: a present bucket record short-circuits to the
-// resolved spec; each OVN object is created only when absent so a lost bucket
-// record still converges. The VPC's logical router must already exist.
+// EnsureForVPC installs the IMDS OVN topology for vpcID and publishes the vpc-veth
+// record. Idempotent: a present record short-circuits, and each OVN object is created
+// only when absent so a lost record still converges. The VPC router must already exist.
 func (m *imdsTopologyManager) EnsureForVPC(ctx context.Context, vpcID string) (IMDSVPCSpec, error) {
 	if vpcID == "" {
 		return IMDSVPCSpec{}, errors.New("EnsureForVPC: vpcID required")
@@ -178,10 +176,8 @@ func (m *imdsTopologyManager) EnsureForVPC(ctx context.Context, vpcID string) (I
 }
 
 // RemoveForVPC tears down the IMDS OVN topology and the vpc-veth record.
-// Idempotent and drift-tolerant: missing OVN objects are logged and skipped so
-// the record delete (the authoritative teardown signal) always runs. Must be
-// called before the VPC router is deleted, since the LRP + static route live
-// on it.
+// Idempotent and drift-tolerant: missing OVN objects are logged and skipped so the
+// record delete always runs. Must run before the VPC router (it holds the LRP/route).
 func (m *imdsTopologyManager) RemoveForVPC(ctx context.Context, vpcID string) error {
 	if vpcID == "" {
 		return errors.New("RemoveForVPC: vpcID required")

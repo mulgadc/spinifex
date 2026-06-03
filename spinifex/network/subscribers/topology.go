@@ -37,9 +37,8 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	// IMDS topology rides on every VPC (not just IGW-attached ones): private
-	// instances still need instance metadata + role credentials. Install is
-	// best-effort — the reconciler re-ensures it idempotently as drift repair,
+	// IMDS topology rides on every VPC (private instances still need metadata +
+	// role creds). Install is best-effort — the reconciler re-ensures it idempotently,
 	// so a transient OVN failure here must not fail CreateVpc.
 	if s.imds != nil {
 		if _, err := s.imds.EnsureForVPC(ctx, evt.VpcId); err != nil {

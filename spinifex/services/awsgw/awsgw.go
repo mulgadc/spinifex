@@ -146,11 +146,9 @@ func launchService(config *config.ClusterConfig) error {
 	defer cancelJanitor()
 	go stsService.RunJanitor(janitorCtx)
 
-	// IMDS serves 169.254.169.254 to local guest VMs and runs in vpcd, which
-	// holds the network capabilities the listener stack needs (the hardened
-	// awsgw sandbox cannot grant them). awsgw stays the home of STS + IAM and
-	// answers the IMDS handler's two control-plane RPCs — credential minting and
-	// profile/role resolution — over internal, ACL-gated NATS subjects.
+	// IMDS serves 169.254.169.254 to guest VMs from vpcd, which holds the network
+	// capabilities the hardened awsgw sandbox can't grant. awsgw stays the home of
+	// STS + IAM, answering the IMDS handler's control-plane RPCs over NATS.
 	if _, err := stsService.SubscribeIMDSResponder(natsConn); err != nil {
 		return fmt.Errorf("subscribe IMDS STS responder: %w", err)
 	}

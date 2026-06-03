@@ -11,9 +11,8 @@ import (
 const imdsResponderQueue = "spinifex-workers"
 
 // SubjectResolveInstanceProfile and SubjectGetRole are the internal, ACL-gated
-// request/reply subjects the IMDS handler (hosted in vpcd) calls to resolve an
-// instance profile and its role. IAM runs in-process inside awsgw; only these
-// two narrow read RPCs are surfaced. Neither is reachable from a guest.
+// subjects the IMDS handler (in vpcd) calls to resolve an instance profile and its
+// role from awsgw's in-process IAM. Only these two read RPCs are surfaced.
 const (
 	SubjectResolveInstanceProfile = "imds.iam.resolve_instance_profile"
 	SubjectGetRole                = "imds.iam.get_role"

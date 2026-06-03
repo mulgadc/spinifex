@@ -16,11 +16,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ensureVethFunc / removeVethFunc are the per-VPC host veth lifecycle hooks. They
-// are injected (not imported) because network/host transitively imports
-// network/topology, which imports this package — importing host back would close
-// a cycle. The vpcd wiring (which may import host) passes host.EnsureIMDSVeth /
-// host.RemoveIMDSVeth; tests pass fakes that need no root, OVS, or interfaces.
+// ensureVethFunc / removeVethFunc are the per-VPC host veth lifecycle hooks,
+// injected (not imported) to avoid an import cycle via network/host. vpcd passes
+// host.EnsureIMDSVeth / host.RemoveIMDSVeth; tests pass root-free fakes.
 type ensureVethFunc func(ctx context.Context, vpcID string) (hostEnd string, err error)
 type removeVethFunc func(ctx context.Context, vpcID string) error
 
@@ -37,10 +35,8 @@ type activeBinding struct {
 }
 
 // bindManager realises the per-chassis IMDS listener stack. It runs on every
-// chassis (load-bearing for the localport design) and eagerly materialises a
-// veth + OVS port + listener for every VPC entry in the vpc-veth bucket, not
-// only VPCs whose VMs currently run on this chassis. The lifecycle is purely
-// "watch the bucket, ensure local state" — no per-VM signalling.
+// chassis and eagerly materialises a veth + OVS port + listener for every VPC in
+// the vpc-veth bucket — lifecycle is "watch the bucket, ensure local state".
 type bindManager struct {
 	kv         nats.KeyValue // spinifex-network-imds-vpc-veth
 	handler    http.Handler
@@ -207,11 +203,8 @@ func (b *bindManager) shutdown() {
 }
 
 // bindLocalListener opens a TCP listener on 169.254.169.254:80 pinned to a host
-// veth via SO_BINDTODEVICE. That pinning does the two things the design relies
-// on: it scopes receipt to the one veth (so VPC A's request never matches VPC
-// B's listener despite the shared IP:port) and forces replies back out the same
-// veth regardless of the host routing table. SO_REUSEADDR lets a restarting
-// vpcd rebind before the old socket's TIME_WAIT drains.
+// veth via SO_BINDTODEVICE, so receipt and replies stay scoped to that one veth
+// despite the shared IP:port. SO_REUSEADDR lets a restarting vpcd rebind fast.
 func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(_, _ string, c syscall.RawConn) error {

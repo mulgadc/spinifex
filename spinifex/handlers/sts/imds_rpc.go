@@ -10,10 +10,9 @@ import (
 // awsgw in the cluster, matching the cluster-wide worker convention.
 const imdsResponderQueue = "spinifex-workers"
 
-// SubjectAssumeRoleForInstance is the internal, ACL-gated request/reply subject
-// the IMDS handler (hosted in vpcd) calls to mint instance-role credentials.
-// STS keeps the IAM master key in-process inside awsgw; only this narrow RPC is
-// surfaced. It is never reachable from a guest.
+// SubjectAssumeRoleForInstance is the internal, ACL-gated subject the IMDS handler
+// (in vpcd) calls to mint instance-role credentials. STS keeps the IAM master key
+// in-process inside awsgw; only this narrow RPC is surfaced, never to a guest.
 const SubjectAssumeRoleForInstance = "imds.sts.assume_role_for_instance"
 
 // AssumeRoleForInstanceRequest is the SubjectAssumeRoleForInstance payload. The

@@ -8,13 +8,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// VPCVethRecord is the persisted per-VPC IMDS plumbing record stored in
-// KVBucketIMDSVPCVeth, keyed by VPC ID. It is the canonical signal that a VPC
-// has its IMDS OVN topology installed; every chassis's BindManager replays the
-// record to materialise the local host veth + listener. The record carries
-// only what the host side cannot re-derive from the VPC ID alone — the LSP MAC
-// and the LRP /30 — since the veth and OVN object names are all deterministic
-// functions of the VPC ID.
+// VPCVethRecord is the persisted per-VPC IMDS plumbing record (KVBucketIMDSVPCVeth,
+// keyed by VPC ID): the signal that a VPC's IMDS OVN topology is installed, replayed
+// by each chassis's BindManager. It carries only the LSP MAC and LRP /30 the host can't re-derive.
 type VPCVethRecord struct {
 	VPCID       string `json:"vpc_id"`
 	ShortVPCID  string `json:"short_vpc_id"`

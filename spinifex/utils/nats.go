@@ -271,11 +271,9 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	return &output, nil
 }
 
-// ServeNATSRequest is the responder-side counterpart to NATSRequest: it
-// unmarshals the request payload into *I, invokes fn, and replies with either
-// the JSON-marshalled result or an awserrors error envelope. Used by internal
-// request/reply responders that carry their own context in the payload (the
-// X-Account-ID header is not consulted).
+// ServeNATSRequest is the responder-side counterpart to NATSRequest: it unmarshals
+// the request payload into *I, invokes fn, and replies with the JSON result or an
+// awserrors envelope. The payload carries its own context; no X-Account-ID header.
 func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {

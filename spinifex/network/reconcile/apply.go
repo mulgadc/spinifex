@@ -110,9 +110,8 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			}
 		} else if existing.Options["arp_proxy"] != handlers_imds.MetaDataServerIP {
 			// Drift convergence: a subnet router LSP created before IMDS proxy-ARP
-			// landed will not gain arp_proxy from a redeploy alone (the create
-			// branch above only fires when the LSP is absent). Patch it in place so
-			// existing subnets become IMDS-reachable for link-local guests.
+			// landed won't gain arp_proxy from a redeploy alone (the create branch
+			// only fires when absent), so patch it in place to make it IMDS-reachable.
 			if existing.Options == nil {
 				existing.Options = map[string]string{}
 			}

@@ -28,10 +28,9 @@ const (
 	stsActionWildcard   = "sts:*"
 	globalWildcard      = "*"
 
-	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance.
-	// It is the only service principal that matches a trust policy in v1; the
-	// HTTPS AssumeRole path always supplies an empty principalSource, so service
-	// principals never match there.
+	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance — the
+	// only service principal that matches a trust policy in v1. The HTTPS AssumeRole
+	// path supplies an empty principalSource, so service principals never match there.
 	ec2ServicePrincipal = "ec2.amazonaws.com"
 
 	minDurationSeconds     int64 = 900
@@ -102,13 +101,9 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	return out, nil
 }
 
-// AssumeRoleForInstance is the EC2-instance-metadata internal entry point. It is
-// not reachable over HTTPS: the IMDS handler calls it in-process after resolving
-// an instance's IamInstanceProfileArn to a role. The caller is synthesised as
-// the EC2 service principal (principalSource = ec2.amazonaws.com), which is the
-// only way a Principal: {"Service": "ec2.amazonaws.com"} trust statement matches.
-// The assumed-role session name is the instance ID, so the resulting ARN is
-// arn:aws:sts::<accountID>:assumed-role/<roleName>/<instanceID> — matching AWS.
+// AssumeRoleForInstance is the in-process IMDS entry point, not reachable over HTTPS.
+// The caller is synthesised as the EC2 service principal (principalSource =
+// ec2.amazonaws.com); the session name is the instanceID, yielding an AWS-style ARN.
 func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
 	if accountID == "" || roleARN == "" || instanceID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -133,13 +128,9 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 	return out, nil
 }
 
-// assumeRoleForCaller is the shared core of AssumeRole (HTTPS) and
-// AssumeRoleForInstance (in-process IMDS): it resolves the role, validates the
-// requested duration (0 → default), evaluates the trust policy against the
-// supplied caller, and mints session credentials. principalSource is "" on the
-// HTTPS path — where the caller is an IAM user or assumed-role session named by
-// callerARN — and "ec2.amazonaws.com" on the instance path, where callerARN is
-// empty and only a service-principal statement can match.
+// assumeRoleForCaller is the shared core of AssumeRole (HTTPS) and AssumeRoleForInstance
+// (IMDS): resolves the role, validates the duration (0 → default), evaluates the trust
+// policy, and mints credentials. principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
 func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, roleName, err := parseRoleARN(roleARN)
 	if err != nil {
@@ -282,11 +273,9 @@ func matchTrustAction(actions []string) bool {
 	return false
 }
 
-// matchTrustPrincipal evaluates each top-level Principal key independently —
-// AWS semantics treat the map as an OR across keys. The AWS key matches against
-// callerARN; the Service key matches against principalSource (only ever set by
-// the in-process AssumeRoleForInstance path). Unsupported keys (Federated) skip
-// at the entry level rather than failing the whole statement.
+// matchTrustPrincipal evaluates each top-level Principal key independently (AWS
+// treats the map as an OR). AWS matches callerARN, Service matches principalSource
+// (set only by the IMDS path); unsupported keys (Federated) skip, not fail.
 func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
@@ -322,19 +311,16 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string)
 	return false, nil
 }
 
-// allowedServicePrincipals is the v1 whitelist of service principals that may
-// match a Principal: {"Service": ...} trust statement. Expanding this (e.g.
-// ecs-tasks.amazonaws.com, lambda.amazonaws.com) is a one-line change per
-// follow-on plan.
+// allowedServicePrincipals is the v1 whitelist of service principals that may match
+// a Principal: {"Service": ...} trust statement. Expanding it (ecs-tasks, lambda) is
+// a one-line change.
 var allowedServicePrincipals = map[string]bool{
 	ec2ServicePrincipal: true,
 }
 
-// matchServicePrincipal matches a Service principal against the synthesised
-// caller. An empty principalSource (the HTTPS AssumeRole path) never matches, so
-// service-principal trust statements are unreachable over HTTPS. The clause must
-// also be in the v1 whitelist, so an unsupported service principal is denied
-// even if a future caller synthesised it.
+// matchServicePrincipal matches a Service principal against the synthesised caller.
+// An empty principalSource (the HTTPS path) never matches, and the principal must be
+// in the v1 whitelist, so unsupported service principals are denied.
 func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, error) {
 	if principalSource == "" {
 		return false, nil

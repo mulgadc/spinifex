@@ -12,11 +12,8 @@ import (
 )
 
 // natsInstanceLookup resolves the instance-only metadata fields via the same
-// account-scoped NATS fan-out the gateway's DescribeInstances path uses. The
-// running-instance record lives in each daemon's in-memory manager, so there is
-// no central KV to Get; the fan-out aggregates the (single) owning daemon's
-// reply. Reusing gateway_ec2_instance keeps the fan-out/aggregation logic in one
-// place rather than duplicating the inbox plumbing here.
+// account-scoped NATS fan-out the gateway's DescribeInstances path uses, since
+// the instance record lives in each daemon's in-memory manager, not a central KV.
 type natsInstanceLookup struct {
 	nc            *nats.Conn
 	expectedNodes int

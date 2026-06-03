@@ -10,18 +10,13 @@ import (
 )
 
 // imdsPortLSPName is the OVN logical-switch-port the OVS-side veth binds to via
-// external_ids:iface-id. It mirrors topology.IMDSPort but is duplicated here:
-// the IMDS BindManager (handlers/imds) imports host, and topology imports
-// handlers/imds, so importing topology from host would close an import cycle.
+// external_ids:iface-id. It mirrors topology.IMDSPort but is duplicated here to
+// avoid an import cycle (host ← handlers/imds ← topology).
 func imdsPortLSPName(vpcID string) string { return "imds-port-" + vpcID }
 
-// EnsureIMDSVeth creates (idempotently) the per-VPC IMDS veth pair and attaches
-// the OVS end to br-int with external_ids:iface-id set to the imds-port LSP, so
-// ovn-controller binds the localport on this chassis. It returns the host-end
-// name (the device the IMDS listener binds to via SO_BINDTODEVICE).
-//
-// Mirrors OVSPlumber.SetupTap: shells out via utils.SudoCommand (ip, ovs-vsctl);
-// no netlink dependency. A veth pair is just one more `ip` invocation.
+// EnsureIMDSVeth idempotently creates the per-VPC IMDS veth pair and attaches the OVS
+// end to br-int with external_ids:iface-id set to the imds-port LSP, so ovn-controller
+// binds the localport here. Returns the host-end name the listener SO_BINDTODEVICEs to.
 func EnsureIMDSVeth(ctx context.Context, vpcID string) (hostEndName string, err error) {
 	ovsEnd := IMDSOVSPortName(vpcID)
 	hostEnd := IMDSHostVethName(vpcID)

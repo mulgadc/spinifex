@@ -8,26 +8,17 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// eniByIPValue is the stored shape of a spinifex-network-eni-by-vpc-ip row. It
-// carries the composite identity the IMDS handler needs to locate the ENI's
-// source-of-truth record — the ENI ID plus its owning account, since the ENI
-// bucket is keyed "{accountID}.{eniID}". Both fields are immutable for the
-// ENI's lifetime, so this is identity, not staleness-prone denormalisation: the
-// handler still reads the live ENIRecord + instance record for every mutable
-// field (IPs, MAC, instance ID, profile ARN). Storing account_id lets the
-// handler resolve the account in a single Get instead of scanning the ENI
-// bucket's keys for the matching "{accountID}.{eniID}" suffix.
+// eniByIPValue is the stored shape of a spinifex-network-eni-by-vpc-ip row: the ENI
+// ID plus its owning account (the ENI bucket is keyed "{accountID}.{eniID}"). Both are
+// immutable identity, letting the handler resolve the ENI's account in a single Get.
 type eniByIPValue struct {
 	ENIId     string `json:"eni_id"`
 	AccountID string `json:"account_id"`
 }
 
 // ENIByIPIndex maintains the spinifex-network-eni-by-vpc-ip reverse index
-// (vpcID/ip → eniID). It lets the IMDS handler resolve a request's
-// datapath-attested source IP to an ENI in one KV read instead of an O(N) scan
-// of the ENI bucket. The IP↔ENI binding is fixed for the ENI's lifetime, so
-// the index is written on CreateNetworkInterface and deleted on
-// DeleteNetworkInterface — those are the only two write sites.
+// (vpcID/ip → eniID), so the IMDS handler resolves a source IP to an ENI in one
+// KV read. Written on CreateNetworkInterface, deleted on DeleteNetworkInterface.
 type ENIByIPIndex struct {
 	kv nats.KeyValue
 }

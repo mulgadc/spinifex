@@ -33,11 +33,8 @@ const (
 )
 
 // rejectForwarded enforces AWS IMDS's SSRF defence: any request carrying an
-// X-Forwarded-For header is refused with 403, before token or identity checks.
-// A reverse proxy or request-forwarding app on the instance stamps that header,
-// so rejecting it stops the classic "trick a server-side app into relaying a
-// metadata request" attack. Applies to every path including the token PUT,
-// matching AWS.
+// X-Forwarded-For header is refused with 403 before token or identity checks,
+// blocking the classic "trick a server-side app into relaying metadata" attack.
 func rejectForwarded(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(hdrForwardedFor) != "" {
@@ -226,11 +223,8 @@ func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
 }
 
 // serveSecurityCredentialsList writes the role name(s) under the profile, one
-// per line. An instance with genuinely no profile/role returns an empty 200
-// body, exactly as AWS does (the SDK then concludes there is no instance role).
-// A backend failure resolving the profile is a 500, never an empty 200 — the
-// latter would make a transient hiccup indistinguishable from "no role" and
-// silently strip the instance's credentials.
+// per line. No profile/role is an empty 200 (matching AWS); a backend failure is
+// a 500, never an empty 200 that would silently strip the instance's creds.
 func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, eni *eniFacts) {
 	profile, err := s.profileFor(eni)
 	if err != nil {
@@ -299,15 +293,9 @@ func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *ins
 	return inst
 }
 
-// profileFor resolves the instance's IAM instance profile. It returns:
-//   - (profile, nil) when the instance has a resolvable profile,
-//   - (nil, nil) when the instance genuinely has no profile (no attached
-//     instance, no profile ARN, or the ARN references a deleted profile),
-//   - (nil, err) when a backend lookup fails.
-//
-// Callers must distinguish the last case (500) from the middle one (404 /
-// empty body): collapsing a backend error into "no profile" would make a
-// transient failure look like a roleless instance and silently drop creds.
+// profileFor resolves the instance's IAM instance profile. Returns (profile, nil)
+// when resolvable, (nil, nil) when genuinely absent (404/empty), (nil, err) on
+// backend failure (500) — collapsing err into absent would silently drop creds.
 func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	inst, err := s.resolver.resolveInstance(eni)
 	if err != nil {
@@ -320,10 +308,9 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	profile, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn)
 	if err != nil {
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
-			// The instance references a profile that was deleted out from under
-			// it. AWS treats this as "no instance role" (iam/info 404,
-			// security-credentials/ empty 200), not a backend fault — NoSuchEntity
-			// is raised only for a genuinely absent record, never a transient.
+			// The profile was deleted out from under the instance. AWS treats this
+			// as "no instance role", not a backend fault — NoSuchEntity is raised
+			// only for a genuinely absent record, never a transient.
 			return nil, nil
 		}
 		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)

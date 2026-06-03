@@ -53,14 +53,9 @@ type IMDSServiceImpl struct {
 	now      func() time.Time
 }
 
-// NewIMDSServiceImpl wires the IMDS service. natsConn backs both the KV reads
-// (eni-by-vpc-ip index, ENI bucket, vpc-veth bucket) and the account-scoped
-// instance fan-out; expectedNodes sizes that fan-out's response collection.
-//
-// ensureVeth / removeVeth are injected rather than imported: the host helpers
-// (host.EnsureIMDSVeth / host.RemoveIMDSVeth) live in network/host, which
-// transitively imports this package, so vpcd — which can import both — passes
-// them in. Tests inject fakes.
+// NewIMDSServiceImpl wires the IMDS service. natsConn backs the KV reads and the
+// account-scoped instance fan-out (sized by expectedNodes); ensureVeth/removeVeth
+// are injected rather than imported to avoid an import cycle via network/host.
 func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")

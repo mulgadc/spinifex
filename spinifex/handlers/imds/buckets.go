@@ -22,13 +22,8 @@ const (
 )
 
 // InitBuckets opens (or creates) both IMDS KV buckets and runs any pending
-// migrations. The IMDS service needs both handles, so they are initialised
-// together.
-//
-// History is fixed at 1: both buckets are write-once-per-key (a VPC's plumbing
-// record and an ENI's IP binding are fixed for their lifetime, deleted on
-// teardown), so retained revisions waste storage and lengthen tombstone
-// lifetime with no recovery benefit.
+// migrations. History is fixed at 1: both are write-once-per-key, so retained
+// revisions only waste storage and lengthen tombstone lifetime.
 func InitBuckets(js nats.JetStreamContext, replicas int) (vpcVeth, eniByIP nats.KeyValue, err error) {
 	vpcVeth, err = initIMDSBucket(js, KVBucketIMDSVPCVeth, KVBucketIMDSVPCVethVersion, replicas)
 	if err != nil {
@@ -44,10 +39,8 @@ func InitBuckets(js nats.JetStreamContext, replicas int) (vpcVeth, eniByIP nats.
 }
 
 // InitENIByIPBucket opens (or creates) just the eni-by-vpc-ip reverse-index
-// bucket. The ENI controller (VPC service) is its writer and runs in the
-// daemon, which may start before the IMDS service on a fresh cluster, so it
-// needs an init path independent of InitBuckets. Idempotent — both callers
-// converge on the same history-1 config.
+// bucket, for the ENI controller (in the daemon), which may start before the
+// IMDS service and so needs an init path independent of InitBuckets. Idempotent.
 func InitENIByIPBucket(js nats.JetStreamContext, replicas int) (nats.KeyValue, error) {
 	return initIMDSBucket(js, KVBucketENIByVPCIP, KVBucketENIByVPCIPVersion, replicas)
 }

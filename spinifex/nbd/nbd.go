@@ -25,6 +25,9 @@ type NBDKitConfig struct {
 	CacheSize  int    `json:"cache_size"`
 	ShardWAL   bool   `json:"shardwal"` // Enable sharded WAL (default false)
 	UseTCP     bool   `json:"use_tcp"`  // If true, use TCP transport; otherwise use Unix socket
+	NatsURL    string `json:"nats_url"`
+	NatsToken  string `json:"nats_token"`
+	NatsCACert string `json:"nats_ca_cert"`
 }
 
 // buildArgs constructs the nbdkit command-line arguments from the config.
@@ -64,6 +67,15 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 		fmt.Sprintf("host=%s", cfg.Host),
 		fmt.Sprintf("cache_size=%d", cfg.CacheSize),
 		fmt.Sprintf("shardwal=%t", cfg.ShardWAL),
+	}
+	if cfg.NatsURL != "" {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_url=%s", cfg.NatsURL))
+	}
+	if cfg.NatsToken != "" {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_token=%s", cfg.NatsToken))
+	}
+	if cfg.NatsCACert != "" {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_ca_cert=%s", cfg.NatsCACert))
 	}
 
 	args = append(args, pluginArgs...)

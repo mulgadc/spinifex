@@ -612,6 +612,9 @@ func launchService(cfg *Config) (err error) {
 			SecretKey:  cfg.SecretKey,
 			CacheSize:  nbdCacheSize,
 			ShardWAL:   cfg.ShardWAL,
+			NatsURL:    admin.DialTarget(cfg.NatsHost),
+			NatsToken:  cfg.NatsToken,
+			NatsCACert: cfg.NatsCACert,
 		}
 
 		// Create a unique error channel for this specific mount request
@@ -683,21 +686,17 @@ func launchService(cfg *Config) (err error) {
 		ebsResponse.Mounted = true
 		ebsResponse.URI = nbdURI
 
-		// Subscribe to volume-specific snapshot topic so requests route to this node
-		snapSub, err := nc.Subscribe(fmt.Sprintf("ebs.snapshot.%s", ebsRequest.Name), makeSnapshotHandler(vb, ebsRequest.Name))
-		if err != nil {
-			slog.Error("Failed to subscribe to volume snapshot topic", "volume", ebsRequest.Name, "err", err)
-		}
-
+		// Snapshot requests for running volumes are handled by the nbdkit
+		// plugin process (which owns the WAL). SnapshotSub is nil here;
+		// unmount/shutdown nil-guards the unsubscribe call.
 		cfg.mu.Lock()
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-			Name:        ebsRequest.Name,
-			Port:        nbdPort,
-			Socket:      nbdSocket,
-			NBDURI:      nbdURI,
-			PID:         pid,
-			VB:          vb,
-			SnapshotSub: snapSub,
+			Name:   ebsRequest.Name,
+			Port:   nbdPort,
+			Socket: nbdSocket,
+			NBDURI: nbdURI,
+			PID:    pid,
+			VB:     vb,
 		})
 		cfg.mu.Unlock()
 

@@ -11,8 +11,10 @@ import "github.com/aws/aws-sdk-go/service/eks"
 // (PascalCase). Signatures use the aws-sdk-go input/output types verbatim so
 // downstream callers can pass straight through from generated SDK code.
 type EKSService interface {
-	// Cluster
-	CreateCluster(input *eks.CreateClusterInput, accountID string) (*eks.CreateClusterOutput, error)
+	// Cluster. CreateCluster also takes the caller's resolved IAM principal ARN
+	// (from the X-Principal-ARN header) so it can mint the bootstrap
+	// cluster-creator-admin AccessEntry; "" skips that step.
+	CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error)
 	DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error)
 	ListClusters(input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error)
 	UpdateClusterConfig(input *eks.UpdateClusterConfigInput, accountID string) (*eks.UpdateClusterConfigOutput, error)

@@ -9,13 +9,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// CreateCluster — POST /clusters
-func CreateCluster(natsConn *nats.Conn, accountID string, body []byte) (*eks.CreateClusterOutput, error) {
+// CreateCluster — POST /clusters. callerPrincipalARN is the resolved caller IAM
+// principal ARN, plumbed through so the control plane can mint the
+// bootstrap-creator-admin AccessEntry for the caller.
+func CreateCluster(natsConn *nats.Conn, accountID, callerPrincipalARN string, body []byte) (*eks.CreateClusterOutput, error) {
 	input := new(eks.CreateClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
 		return nil, err
 	}
-	return handlers_eks.NewNATSEKSService(natsConn).CreateCluster(input, accountID)
+	return handlers_eks.NewNATSEKSService(natsConn).CreateCluster(input, accountID, callerPrincipalARN)
 }
 
 // DescribeCluster — GET /clusters/{name}

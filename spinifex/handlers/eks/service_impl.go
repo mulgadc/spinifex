@@ -250,7 +250,7 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 
 // --- Cluster ---
 
-func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID string) (*eks.CreateClusterOutput, error) {
+func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
 	}
@@ -421,10 +421,35 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 		return nil, err
 	}
 
+	// bootstrapClusterCreatorAdminPermissions (default true): grant the caller
+	// system:masters via an AccessEntry so the cluster creator can immediately
+	// authenticate through the token webhook (Q9). Keyed by the caller's exact
+	// principal ARN — the webhook looks the entry up by the same ARN STS returns.
+	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
+		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
+			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
+		if err := PutAccessEntryRecord(acctKV, rec); err != nil {
+			s.markFailed(acctKV, name)
+			return nil, fmt.Errorf("seed cluster-creator admin access entry: %w", err)
+		}
+	} else if bootstrapCreatorAdmin(input) {
+		slog.Warn("CreateCluster: bootstrapClusterCreatorAdminPermissions set but caller principal ARN unknown; skipping creator-admin AccessEntry",
+			"cluster", name, "accountID", accountID)
+	}
+
 	s.spawnBootstrap(accountID, name, acctKV, nil)
 	s.spawnReconciler(accountID, name, meta)
 
 	return &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+}
+
+// bootstrapCreatorAdmin reports whether the cluster-creator-admin AccessEntry
+// should be minted. AWS defaults this to true when unspecified.
+func bootstrapCreatorAdmin(input *eks.CreateClusterInput) bool {
+	if input.AccessConfig == nil || input.AccessConfig.BootstrapClusterCreatorAdminPermissions == nil {
+		return true
+	}
+	return *input.AccessConfig.BootstrapClusterCreatorAdminPermissions
 }
 
 // systemEgressEvent is the wire shape for vpc.add-system-egress /

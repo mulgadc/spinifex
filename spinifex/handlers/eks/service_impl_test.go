@@ -32,7 +32,7 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.CreateCluster(&eks.CreateClusterInput{Name: aws.String("c1")}, testAccountID)
+	_, err := svc.CreateCluster(&eks.CreateClusterInput{Name: aws.String("c1")}, testAccountID, "")
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)

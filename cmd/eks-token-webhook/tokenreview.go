@@ -7,7 +7,7 @@ package main
 type tokenReview struct {
 	APIVersion string            `json:"apiVersion"`
 	Kind       string            `json:"kind"`
-	Spec       tokenReviewSpec   `json:"spec"`
+	Spec       tokenReviewSpec   `json:"spec,omitzero"`
 	Status     tokenReviewStatus `json:"status"`
 }
 

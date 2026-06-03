@@ -1116,13 +1116,15 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		}()
 	}
 
-	// Delete all listeners for this LB
+	// Delete all listeners (and their rules) for this LB. Cascade through the
+	// shared helper, not store.DeleteListener directly, so rules don't survive
+	// and pin their target groups as ResourceInUse after the LB is gone.
 	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
 	if err != nil {
 		slog.Warn("Failed to list listeners for cleanup", "lbArn", lb.LoadBalancerArn, "err", err)
 	}
 	for _, l := range listeners {
-		if err := s.store.DeleteListener(l.ListenerID); err != nil {
+		if err := s.deleteListenerCascade(l); err != nil {
 			slog.Warn("Failed to delete listener during LB cleanup", "listenerID", l.ListenerID, "err", err)
 		}
 	}
@@ -1868,6 +1870,25 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	}, nil
 }
 
+// deleteListenerCascade removes a listener and all of its rules. Shared by
+// DeleteListener and DeleteLoadBalancer so LB teardown never bypasses the rule
+// cascade and leaves orphan rules that pin a target group as ResourceInUse.
+func (s *ELBv2ServiceImpl) deleteListenerCascade(listener *ListenerRecord) error {
+	rules, err := s.store.ListRulesByListener(listener.ListenerArn)
+	if err != nil {
+		return fmt.Errorf("list rules for listener %s: %w", listener.ListenerArn, err)
+	}
+	for _, r := range rules {
+		if err := s.store.DeleteRule(r.RuleID); err != nil {
+			return fmt.Errorf("delete rule %s: %w", r.RuleID, err)
+		}
+	}
+	if err := s.store.DeleteListener(listener.ListenerID); err != nil {
+		return fmt.Errorf("delete listener %s: %w", listener.ListenerID, err)
+	}
+	return nil
+}
+
 func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, accountID string) (*elbv2.DeleteListenerOutput, error) {
 	if input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1885,20 +1906,8 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	}
 
 	// Cascade-delete rules so a recreated listener doesn't inherit orphans.
-	rules, ruleErr := s.store.ListRulesByListener(listener.ListenerArn)
-	if ruleErr != nil {
-		slog.Error("DeleteListener: failed to list rules", "listenerArn", listener.ListenerArn, "err", ruleErr)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	for _, r := range rules {
-		if err := s.store.DeleteRule(r.RuleID); err != nil {
-			slog.Error("DeleteListener: failed to delete rule", "ruleId", r.RuleID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	if err := s.store.DeleteListener(listener.ListenerID); err != nil {
-		slog.Error("DeleteListener: failed to delete record", "listenerId", listener.ListenerID, "err", err)
+	if err := s.deleteListenerCascade(listener); err != nil {
+		slog.Error("DeleteListener: failed to cascade-delete listener", "listenerArn", listener.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 

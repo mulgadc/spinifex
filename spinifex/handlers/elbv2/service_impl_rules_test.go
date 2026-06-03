@@ -70,6 +70,46 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
+// TestDeleteLoadBalancer_CascadesRuleDeletion is the mulga-siv-172 regression:
+// DeleteLoadBalancer must cascade through listener rule deletion. Previously it
+// called store.DeleteListener directly, bypassing the rule cascade, so a rule's
+// target group stayed pinned as ResourceInUse and was permanently undeletable.
+func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
+	env := newRuleTestEnv(t, "del-cascade")
+
+	// Rule on the listener forwards to the alt TG.
+	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(10),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgAltArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Tear down the LB.
+	_, err = env.svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(env.lbArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// LB deletion must cascade rule deletion — no rule may survive.
+	rules, err := env.svc.store.ListRules()
+	require.NoError(t, err)
+	assert.Empty(t, rules, "LB deletion must cascade rule deletion")
+
+	// Both target groups must now be deletable: neither an orphan rule nor a
+	// stale listener default action may pin them as ResourceInUse.
+	_, err = env.svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+		TargetGroupArn: aws.String(env.tgAltArn),
+	}, testAccountID)
+	require.NoError(t, err, "rule target group must not be pinned after LB deletion")
+
+	_, err = env.svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+		TargetGroupArn: aws.String(env.tgArn),
+	}, testAccountID)
+	require.NoError(t, err, "listener default-action target group must not be pinned after LB deletion")
+}
+
 func TestCreateRule_PriorityInUse(t *testing.T) {
 	env := newRuleTestEnv(t, "cr-pri")
 

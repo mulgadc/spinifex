@@ -1,14 +1,20 @@
 package lbagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mulgadc/predastore/auth"
 )
 
 func TestNew(t *testing.T) {
@@ -65,6 +71,53 @@ func TestNew_SocketPath(t *testing.T) {
 	expected := "/tmp/spinifex-haproxy/lb-lb-sock123.sock"
 	if agent.socketPath != expected {
 		t.Errorf("socketPath = %q, want %q", agent.socketPath, expected)
+	}
+}
+
+// TestSignedPost_ProducesVerifiableSignature confirms the migrated signing path
+// (predastore/auth.SignReq over aws-sdk-go-v2) produces a request the gateway's
+// SigV4 verifier accepts, including a body-hash that matches X-Amz-Content-Sha256.
+func TestSignedPost_ProducesVerifiableSignature(t *testing.T) {
+	const (
+		accessKey = "AKIAIOSFODNN7EXAMPLE"
+		secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		region    = "us-east-1"
+	)
+
+	var parsed bool
+	var verifyErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sum := sha256.Sum256(body)
+		req, err := auth.ParseReq(r)
+		if err != nil {
+			verifyErr = err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		parsed = true
+		verifyErr = req.Verify(secretKey, "elasticloadbalancing", region,
+			auth.WithBodyHash(hex.EncodeToString(sum[:])))
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	agent, err := New("lb-sig", srv.URL, accessKey, secretKey, region)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := agent.signedPost(url.Values{
+		"Action":         {"LBAgentHeartbeat"},
+		"LoadBalancerId": {"lb-sig"},
+	}); err != nil {
+		t.Fatalf("signedPost: %v", err)
+	}
+	if !parsed {
+		t.Fatal("gateway did not parse a SigV4 Authorization header")
+	}
+	if verifyErr != nil {
+		t.Fatalf("signed request failed server-side verification: %v", verifyErr)
 	}
 }
 

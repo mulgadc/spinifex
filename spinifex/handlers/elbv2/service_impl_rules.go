@@ -176,7 +176,9 @@ func (s *ELBv2ServiceImpl) DeleteRule(input *elbv2.DeleteRuleInput, accountID st
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if rule == nil || rule.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2RuleNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) rule, so tofu destroy retries converge.
+		return &elbv2.DeleteRuleOutput{}, nil
 	}
 
 	listener, _ := s.store.GetListenerByArn(rule.ListenerArn)

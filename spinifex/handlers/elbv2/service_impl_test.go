@@ -229,15 +229,16 @@ func TestDeleteLoadBalancer(t *testing.T) {
 	assert.Empty(t, desc.LoadBalancers)
 }
 
-func TestDeleteLoadBalancer_NotFound(t *testing.T) {
+func TestDeleteLoadBalancer_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	out, err := svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/nope/xyz"),
 	}, testAccountID)
 
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "LoadBalancerNotFound")
+	// AWS ELBv2 delete is idempotent: absent LB -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
@@ -696,14 +697,15 @@ func TestDeleteTargetGroup_InUse(t *testing.T) {
 	assert.Contains(t, err.Error(), "ResourceInUse")
 }
 
-func TestDeleteTargetGroup_NotFound(t *testing.T) {
+func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	out, err := svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/nope/xyz"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "TargetGroupNotFound")
+	// AWS ELBv2 delete is idempotent: absent TG -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
@@ -924,14 +926,15 @@ func TestDeleteListener(t *testing.T) {
 	assert.Empty(t, desc.Listeners)
 }
 
-func TestDeleteListener_NotFound(t *testing.T) {
+func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteListener(&elbv2.DeleteListenerInput{
+	out, err := svc.DeleteListener(&elbv2.DeleteListenerInput{
 		ListenerArn: aws.String("arn:nonexistent"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ListenerNotFound")
+	// AWS ELBv2 delete is idempotent: absent listener -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestModifyListener_Port(t *testing.T) {

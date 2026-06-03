@@ -1078,7 +1078,9 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) load balancer, so tofu destroy retries converge.
+		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
 
 	// Terminate ALB VM in background (VM termination also cleans up tap device).
@@ -1366,7 +1368,9 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) target group, so tofu destroy retries converge.
+		return &elbv2.DeleteTargetGroupOutput{}, nil
 	}
 
 	// Check if any listener references this target group
@@ -1778,7 +1782,9 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) listener, so tofu destroy retries converge.
+		return &elbv2.DeleteListenerOutput{}, nil
 	}
 
 	// Cascade-delete rules so a recreated listener doesn't inherit orphans.

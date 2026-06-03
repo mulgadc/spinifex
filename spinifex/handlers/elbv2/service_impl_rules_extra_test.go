@@ -87,9 +87,10 @@ func TestDeleteRule_InputValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
 
-	_, err = env.svc.DeleteRule(&elbv2.DeleteRuleInput{RuleArn: aws.String("arn:none")}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "RuleNotFound")
+	// AWS ELBv2 delete is idempotent: absent rule -> success, not NotFound.
+	out, err := env.svc.DeleteRule(&elbv2.DeleteRuleInput{RuleArn: aws.String("arn:none")}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDescribeRules_InputValidation(t *testing.T) {

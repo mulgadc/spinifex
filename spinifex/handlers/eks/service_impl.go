@@ -674,40 +674,298 @@ func (s *EKSServiceImpl) DeleteNodegroup(_ *eks.DeleteNodegroupInput, _ string) 
 
 // --- AccessEntry + AccessPolicy ---
 
-func (s *EKSServiceImpl) CreateAccessEntry(_ *eks.CreateAccessEntryInput, _ string) (*eks.CreateAccessEntryOutput, error) {
-	return nil, notImpl()
+// acctKVForCluster opens the per-account bucket and verifies the cluster exists,
+// translating absence to the AWS ResourceNotFoundException shape. The
+// AccessEntry handlers all need both.
+func (s *EKSServiceImpl) acctKVForCluster(accountID, cluster string) (nats.KeyValue, error) {
+	if cluster == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	js, err := s.deps.NATSConn.JetStream()
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	acctKV, err := GetOrCreateAccountBucket(js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	if _, err := GetClusterMeta(acctKV, cluster); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return acctKV, nil
 }
 
-func (s *EKSServiceImpl) DescribeAccessEntry(_ *eks.DescribeAccessEntryInput, _ string) (*eks.DescribeAccessEntryOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) CreateAccessEntry(input *eks.CreateAccessEntryInput, accountID string) (*eks.CreateAccessEntryOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	if principalARN == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	entryType := aws.StringValue(input.Type)
+	if entryType == "" {
+		entryType = AccessEntryTypeStandard
+	}
+	if entryType != AccessEntryTypeStandard {
+		// Node-type entries (EC2_LINUX/etc.) need the nodegroup join path; reject
+		// until Sprint 6d wires them.
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := GetAccessEntryRecord(acctKV, cluster, principalARN); err == nil {
+		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+	} else if !errors.Is(err, ErrAccessEntryNotFound) {
+		return nil, err
+	}
+	rec := newAccessEntryRecord(s.deps.Region, accountID, cluster, principalARN,
+		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups),
+		entryType, aws.StringValueMap(input.Tags), time.Now().UTC())
+	if err := PutAccessEntryRecord(acctKV, rec); err != nil {
+		return nil, err
+	}
+	return &eks.CreateAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
 }
 
-func (s *EKSServiceImpl) ListAccessEntries(_ *eks.ListAccessEntriesInput, _ string) (*eks.ListAccessEntriesOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DescribeAccessEntry(input *eks.DescribeAccessEntryInput, accountID string) (*eks.DescribeAccessEntryOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := GetAccessEntryRecord(acctKV, cluster, principalARN)
+	if err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return &eks.DescribeAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
 }
 
-func (s *EKSServiceImpl) UpdateAccessEntry(_ *eks.UpdateAccessEntryInput, _ string) (*eks.UpdateAccessEntryOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) ListAccessEntries(input *eks.ListAccessEntriesInput, accountID string) (*eks.ListAccessEntriesOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := ListAccessEntryRecords(acctKV, cluster)
+	if err != nil {
+		return nil, err
+	}
+	filter := aws.StringValue(input.AssociatedPolicyArn)
+	arns := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		if filter != "" && !hasAssociatedPolicy(rec, filter) {
+			continue
+		}
+		arns = append(arns, rec.PrincipalARN)
+	}
+	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(arns)}, nil
 }
 
-func (s *EKSServiceImpl) DeleteAccessEntry(_ *eks.DeleteAccessEntryInput, _ string) (*eks.DeleteAccessEntryOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UpdateAccessEntry(input *eks.UpdateAccessEntryInput, accountID string) (*eks.UpdateAccessEntryOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	rec, err := casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+		if input.KubernetesGroups != nil {
+			r.KubernetesGroups = aws.StringValueSlice(input.KubernetesGroups)
+		}
+		if u := aws.StringValue(input.Username); u != "" {
+			r.KubernetesUsername = u
+		}
+		r.ModifiedAt = now
+		return true
+	})
+	if err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return &eks.UpdateAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
 }
 
-func (s *EKSServiceImpl) AssociateAccessPolicy(_ *eks.AssociateAccessPolicyInput, _ string) (*eks.AssociateAccessPolicyOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DeleteAccessEntry(input *eks.DeleteAccessEntryInput, accountID string) (*eks.DeleteAccessEntryOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	if err := DeleteAccessEntryRecord(acctKV, cluster, principalARN); err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return &eks.DeleteAccessEntryOutput{}, nil
 }
 
-func (s *EKSServiceImpl) DisassociateAccessPolicy(_ *eks.DisassociateAccessPolicyInput, _ string) (*eks.DisassociateAccessPolicyOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) AssociateAccessPolicy(input *eks.AssociateAccessPolicyInput, accountID string) (*eks.AssociateAccessPolicyOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	policyARN := aws.StringValue(input.PolicyArn)
+	if _, ok := supportedAccessPolicies[policyARN]; !ok {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	scope, err := validateAccessScope(input.AccessScope)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	var assoc AssociatedAccessPolicy
+	_, err = casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+		assoc = AssociatedAccessPolicy{PolicyARN: policyARN, AccessScope: scope, AssociatedAt: now, ModifiedAt: now}
+		for i := range r.AssociatedPolicies {
+			if r.AssociatedPolicies[i].PolicyARN == policyARN {
+				assoc.AssociatedAt = r.AssociatedPolicies[i].AssociatedAt
+				r.AssociatedPolicies[i] = assoc
+				r.ModifiedAt = now
+				return true
+			}
+		}
+		r.AssociatedPolicies = append(r.AssociatedPolicies, assoc)
+		r.ModifiedAt = now
+		return true
+	})
+	if err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return &eks.AssociateAccessPolicyOutput{
+		ClusterName:            aws.String(cluster),
+		PrincipalArn:           aws.String(principalARN),
+		AssociatedAccessPolicy: associatedPolicyToAWS(assoc),
+	}, nil
 }
 
-func (s *EKSServiceImpl) ListAssociatedAccessPolicies(_ *eks.ListAssociatedAccessPoliciesInput, _ string) (*eks.ListAssociatedAccessPoliciesOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DisassociateAccessPolicy(input *eks.DisassociateAccessPolicyInput, accountID string) (*eks.DisassociateAccessPolicyOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	policyARN := aws.StringValue(input.PolicyArn)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	_, err = casUpdateAccessEntry(acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
+		for i := range r.AssociatedPolicies {
+			if r.AssociatedPolicies[i].PolicyARN == policyARN {
+				r.AssociatedPolicies = append(r.AssociatedPolicies[:i], r.AssociatedPolicies[i+1:]...)
+				r.ModifiedAt = now
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	return &eks.DisassociateAccessPolicyOutput{}, nil
+}
+
+func (s *EKSServiceImpl) ListAssociatedAccessPolicies(input *eks.ListAssociatedAccessPoliciesInput, accountID string) (*eks.ListAssociatedAccessPoliciesOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	cluster := aws.StringValue(input.ClusterName)
+	principalARN := aws.StringValue(input.PrincipalArn)
+	acctKV, err := s.acctKVForCluster(accountID, cluster)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := GetAccessEntryRecord(acctKV, cluster, principalARN)
+	if err != nil {
+		if errors.Is(err, ErrAccessEntryNotFound) {
+			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+		}
+		return nil, err
+	}
+	policies := make([]*eks.AssociatedAccessPolicy, 0, len(rec.AssociatedPolicies))
+	for _, p := range rec.AssociatedPolicies {
+		policies = append(policies, associatedPolicyToAWS(p))
+	}
+	return &eks.ListAssociatedAccessPoliciesOutput{
+		ClusterName:              aws.String(cluster),
+		PrincipalArn:             aws.String(principalARN),
+		AssociatedAccessPolicies: policies,
+	}, nil
 }
 
 func (s *EKSServiceImpl) ListAccessPolicies(_ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	return nil, notImpl()
+	arns := make([]string, 0, len(supportedAccessPolicies))
+	for arn := range supportedAccessPolicies {
+		arns = append(arns, arn)
+	}
+	sort.Strings(arns)
+	policies := make([]*eks.AccessPolicy, 0, len(arns))
+	for _, arn := range arns {
+		policies = append(policies, &eks.AccessPolicy{
+			Arn:  aws.String(arn),
+			Name: aws.String(accessPolicyName(arn)),
+		})
+	}
+	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies}, nil
+}
+
+// hasAssociatedPolicy reports whether the entry has the given policy ARN bound.
+func hasAssociatedPolicy(rec *AccessEntryRecord, policyARN string) bool {
+	for _, p := range rec.AssociatedPolicies {
+		if p.PolicyARN == policyARN {
+			return true
+		}
+	}
+	return false
+}
+
+// accessPolicyName extracts the policy short name from its ARN
+// (…/cluster-access-policy/AmazonEKSViewPolicy → AmazonEKSViewPolicy).
+func accessPolicyName(arn string) string {
+	if i := strings.LastIndex(arn, "/"); i >= 0 {
+		return arn[i+1:]
+	}
+	return arn
 }
 
 // --- Addons ---

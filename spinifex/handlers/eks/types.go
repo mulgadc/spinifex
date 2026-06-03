@@ -40,12 +40,33 @@ type NodegroupRecord struct {
 // AccessEntryRecord is the persisted-state envelope for an EKS API-mode
 // AccessEntry (Q9).
 type AccessEntryRecord struct {
-	ClusterName        string    `json:"clusterName"`
-	PrincipalARN       string    `json:"principalARN"`
-	KubernetesUsername string    `json:"kubernetesUsername"`
-	KubernetesGroups   []string  `json:"kubernetesGroups,omitempty"`
-	Type               string    `json:"type"`
-	CreatedAt          time.Time `json:"createdAt"`
+	ARN                string                   `json:"arn"`
+	ClusterName        string                   `json:"clusterName"`
+	PrincipalARN       string                   `json:"principalARN"`
+	KubernetesUsername string                   `json:"kubernetesUsername"`
+	KubernetesGroups   []string                 `json:"kubernetesGroups,omitempty"`
+	Type               string                   `json:"type"`
+	Tags               map[string]string        `json:"tags,omitempty"`
+	AssociatedPolicies []AssociatedAccessPolicy `json:"associatedPolicies,omitempty"`
+	CreatedAt          time.Time                `json:"createdAt"`
+	ModifiedAt         time.Time                `json:"modifiedAt"`
+}
+
+// AssociatedAccessPolicy is a managed access policy bound to an AccessEntry
+// with a cluster- or namespace-scoped grant (Q9).
+type AssociatedAccessPolicy struct {
+	PolicyARN    string      `json:"policyARN"`
+	AccessScope  AccessScope `json:"accessScope"`
+	AssociatedAt time.Time   `json:"associatedAt"`
+	ModifiedAt   time.Time   `json:"modifiedAt"`
+}
+
+// AccessScope restricts an associated access policy to the whole cluster or a
+// set of namespaces. Type is "cluster" or "namespace"; Namespaces is required
+// (and only meaningful) when Type is "namespace".
+type AccessScope struct {
+	Type       string   `json:"type"`
+	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 // OIDCProviderConfigRecord captures the minimum needed to register an OIDC

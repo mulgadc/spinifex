@@ -133,35 +133,169 @@ func TestEKSServiceImpl_NodegroupMethodsReturnNotImplemented(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }
 
-func TestEKSServiceImpl_AccessMethodsReturnNotImplemented(t *testing.T) {
+// seedTestCluster lays down a minimal ACTIVE cluster meta in the per-account
+// bucket so the AccessEntry handlers (which gate on cluster existence) can run.
+func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
+	t.Helper()
+	js, err := svc.deps.NATSConn.JetStream()
+	require.NoError(t, err)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, PutClusterMeta(kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
+}
+
+const testPrincipalARN = "arn:aws:iam::111122223333:role/dev"
+
+func TestAccessEntry_UnknownClusterIsNotFound(t *testing.T) {
 	svc := setupTestService(t)
+	_, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName: aws.String("missing"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
 
-	_, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{ClusterName: aws.String("c1"), PrincipalArn: aws.String("arn:aws:iam::111122223333:user/dev")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
 
-	_, err = svc.DescribeAccessEntry(&eks.DescribeAccessEntryInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	out, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName:      aws.String("c1"),
+		PrincipalArn:     aws.String(testPrincipalARN),
+		KubernetesGroups: aws.StringSlice([]string{"system:masters"}),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.AccessEntry)
+	// Username defaults to the principal ARN; type defaults to STANDARD.
+	assert.Equal(t, testPrincipalARN, aws.StringValue(out.AccessEntry.Username))
+	assert.Equal(t, AccessEntryTypeStandard, aws.StringValue(out.AccessEntry.Type))
+	assert.Contains(t, aws.StringValue(out.AccessEntry.AccessEntryArn), ":access-entry/c1/")
 
-	_, err = svc.ListAccessEntries(&eks.ListAccessEntriesInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	// Duplicate Create → ResourceInUseException.
+	_, err = svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 
-	_, err = svc.UpdateAccessEntry(&eks.UpdateAccessEntryInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	desc, err := svc.DescribeAccessEntry(&eks.DescribeAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"system:masters"}, aws.StringValueSlice(desc.AccessEntry.KubernetesGroups))
 
-	_, err = svc.DeleteAccessEntry(&eks.DeleteAccessEntryInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	list, err := svc.ListAccessEntries(&eks.ListAccessEntriesInput{ClusterName: aws.String("c1")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{testPrincipalARN}, aws.StringValueSlice(list.AccessEntries))
 
-	_, err = svc.AssociateAccessPolicy(&eks.AssociateAccessPolicyInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	_, err = svc.DeleteAccessEntry(&eks.DeleteAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
 
-	_, err = svc.DisassociateAccessPolicy(&eks.DisassociateAccessPolicyInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+	_, err = svc.DescribeAccessEntry(&eks.DescribeAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
 
-	_, err = svc.ListAssociatedAccessPolicies(&eks.ListAssociatedAccessPoliciesInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+func TestAccessEntry_RejectsNodeType(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN), Type: aws.String("EC2_LINUX"),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
 
-	_, err = svc.ListAccessPolicies(&eks.ListAccessPoliciesInput{}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+func TestAccessEntry_DescribeDeleteMissingIsNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.DescribeAccessEntry(&eks.DescribeAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	_, err = svc.DeleteAccessEntry(&eks.DeleteAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestAccessPolicy_AssociateListDisassociate(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	const viewPolicy = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+	assoc, err := svc.AssociateAccessPolicy(&eks.AssociateAccessPolicyInput{
+		ClusterName:  aws.String("c1"),
+		PrincipalArn: aws.String(testPrincipalARN),
+		PolicyArn:    aws.String(viewPolicy),
+		AccessScope:  &eks.AccessScope{Type: aws.String("cluster")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, viewPolicy, aws.StringValue(assoc.AssociatedAccessPolicy.PolicyArn))
+
+	listed, err := svc.ListAssociatedAccessPolicies(&eks.ListAssociatedAccessPoliciesInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.AssociatedAccessPolicies, 1)
+
+	// Entry now discoverable by the associated-policy filter.
+	filtered, err := svc.ListAccessEntries(&eks.ListAccessEntriesInput{
+		ClusterName: aws.String("c1"), AssociatedPolicyArn: aws.String(viewPolicy),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{testPrincipalARN}, aws.StringValueSlice(filtered.AccessEntries))
+
+	_, err = svc.DisassociateAccessPolicy(&eks.DisassociateAccessPolicyInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN), PolicyArn: aws.String(viewPolicy),
+	}, testAccountID)
+	require.NoError(t, err)
+	listed, err = svc.ListAssociatedAccessPolicies(&eks.ListAssociatedAccessPoliciesInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, listed.AssociatedAccessPolicies)
+}
+
+func TestAccessPolicy_AssociateRejectsUnsupportedPolicyAndScope(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	_, err := svc.CreateAccessEntry(&eks.CreateAccessEntryInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Unsupported policy ARN.
+	_, err = svc.AssociateAccessPolicy(&eks.AssociateAccessPolicyInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+		PolicyArn:   aws.String("arn:aws:eks::aws:cluster-access-policy/MadeUpPolicy"),
+		AccessScope: &eks.AccessScope{Type: aws.String("cluster")},
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+
+	// namespace scope without namespaces.
+	_, err = svc.AssociateAccessPolicy(&eks.AssociateAccessPolicyInput{
+		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
+		PolicyArn:   aws.String("arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"),
+		AccessScope: &eks.AccessScope{Type: aws.String("namespace")},
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
+	svc := setupTestService(t)
+	out, err := svc.ListAccessPolicies(&eks.ListAccessPoliciesInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.AccessPolicies, len(supportedAccessPolicies))
+	for _, p := range out.AccessPolicies {
+		_, ok := supportedAccessPolicies[aws.StringValue(p.Arn)]
+		assert.True(t, ok, "unexpected policy %s", aws.StringValue(p.Arn))
+		assert.NotEmpty(t, aws.StringValue(p.Name))
+	}
 }
 
 func TestEKSServiceImpl_AddonsMethodsReturnNotImplemented(t *testing.T) {

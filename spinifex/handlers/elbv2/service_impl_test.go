@@ -2492,8 +2492,8 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 }
 
 // TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey is a regression
-// guard for mulga-931: terraform sends connection_logs.s3.enabled on every
-// aws_lb apply and the handler must accept it.
+// guard: terraform sends connection_logs.s3.enabled on every aws_lb apply and
+// the handler must accept it.
 func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{

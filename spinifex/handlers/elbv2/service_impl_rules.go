@@ -189,7 +189,11 @@ func (s *ELBv2ServiceImpl) DeleteRule(input *elbv2.DeleteRuleInput, accountID st
 		return &elbv2.DeleteRuleOutput{}, nil
 	}
 
-	listener, _ := s.store.GetListenerByArn(rule.ListenerArn)
+	listener, err := s.store.GetListenerByArn(rule.ListenerArn)
+	if err != nil {
+		slog.Error("DeleteRule: failed to get listener for reload", "listenerArn", rule.ListenerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 
 	if err := s.store.DeleteRule(rule.RuleID); err != nil {
 		slog.Error("DeleteRule: failed to delete", "ruleId", rule.RuleID, "err", err)

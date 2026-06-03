@@ -70,7 +70,7 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
-// TestDeleteLoadBalancer_CascadesRuleDeletion is the mulga-siv-172 regression:
+// TestDeleteLoadBalancer_CascadesRuleDeletion is a regression guard:
 // DeleteLoadBalancer must cascade through listener rule deletion. Previously it
 // called store.DeleteListener directly, bypassing the rule cascade, so a rule's
 // target group stayed pinned as ResourceInUse and was permanently undeletable.

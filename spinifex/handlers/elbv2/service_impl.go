@@ -182,8 +182,6 @@ func (s *ELBv2ServiceImpl) Close() {
 // heartbeat re-converges. Acceptable trade-off — heartbeats arrive within
 // one health-check interval (default 5-30s) and round-robin transiently
 // excluding a backend is safer than serving traffic to a dead one.
-//
-// Refs mulga-siv-119.
 func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -1104,6 +1102,24 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
 
+	// Delete all listeners (and their rules) for this LB before tearing down
+	// backing artifacts. Cascade through the shared helper, not
+	// store.DeleteListener directly, so rules don't survive and pin their
+	// target groups as ResourceInUse after the LB is gone. A list or cascade
+	// failure aborts the delete with the record intact, so tofu retries
+	// converge instead of leaving orphaned rules behind.
+	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
+	if err != nil {
+		slog.Error("DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, l := range listeners {
+		if err := s.deleteListenerCascade(l); err != nil {
+			slog.Error("DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Terminate ALB VM in background (VM termination also cleans up tap device).
 	// Must be async because VM shutdown can take seconds (QMP powerdown + QEMU exit)
 	// and we don't want to block the NATS request handler.
@@ -1114,19 +1130,6 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 				slog.Warn("Failed to terminate ALB VM during LB deletion", "lbId", lb.LoadBalancerID, "instanceId", instanceID, "err", err)
 			}
 		}()
-	}
-
-	// Delete all listeners (and their rules) for this LB. Cascade through the
-	// shared helper, not store.DeleteListener directly, so rules don't survive
-	// and pin their target groups as ResourceInUse after the LB is gone.
-	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
-	if err != nil {
-		slog.Warn("Failed to list listeners for cleanup", "lbArn", lb.LoadBalancerArn, "err", err)
-	}
-	for _, l := range listeners {
-		if err := s.deleteListenerCascade(l); err != nil {
-			slog.Warn("Failed to delete listener during LB cleanup", "listenerID", l.ListenerID, "err", err)
-		}
 	}
 
 	// Delete system-managed ENIs. Detach first to clear in-use status.
@@ -1400,13 +1403,32 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		return &elbv2.DeleteTargetGroupOutput{}, nil
 	}
 
-	// Check if any listener references this target group
+	// Only a *live* listener or rule pins the target group. A listener (or
+	// rule) whose owning load balancer no longer exists is treated as already
+	// torn down, not a live reference, so an orphan left by a partial teardown
+	// can never pin this target group as ResourceInUse permanently.
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		slog.Error("DeleteTargetGroup: failed to list load balancers for in-use check", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	liveLB := make(map[string]bool, len(lbs))
+	for _, lb := range lbs {
+		liveLB[lb.LoadBalancerArn] = true
+	}
+
+	// Check if any live listener references this target group.
 	listeners, err := s.store.ListListeners()
 	if err != nil {
 		slog.Error("DeleteTargetGroup: failed to list listeners for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	liveListener := make(map[string]bool, len(listeners))
 	for _, l := range listeners {
+		if !liveLB[l.LoadBalancerArn] {
+			continue
+		}
+		liveListener[l.ListenerArn] = true
 		for _, action := range l.DefaultActions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
@@ -1414,13 +1436,16 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		}
 	}
 
-	// Block deletion when a rule still forwards to the target group.
+	// Block deletion when a live rule still forwards to the target group.
 	allRules, err := s.store.ListRules()
 	if err != nil {
 		slog.Error("DeleteTargetGroup: failed to list rules for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, r := range allRules {
+		if !liveListener[r.ListenerArn] {
+			continue
+		}
 		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)

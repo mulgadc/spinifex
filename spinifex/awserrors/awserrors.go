@@ -937,7 +937,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2InvalidScheme:                {HTTPCode: 400, Message: "The specified scheme is not valid. Specify 'internet-facing' or 'internal'."},
 	ErrorELBv2SubnetNotFound:               {HTTPCode: 400, Message: "The specified subnet does not exist."},
 	ErrorELBv2AvailabilityZoneNotSupported: {HTTPCode: 400, Message: "The specified Availability Zone is not supported."},
-	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "Security groups are not supported for load balancers with type 'network'."},
+	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "The requested configuration change is not valid."},
 	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found."},
 	ErrorELBv2PriorityInUse:                {HTTPCode: 400, Message: "The specified priority is in use."},
 	ErrorELBv2TooManyRules:                 {HTTPCode: 400, Message: "You've reached the limit on the number of rules per load balancer."},

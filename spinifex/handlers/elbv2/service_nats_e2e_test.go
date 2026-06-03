@@ -38,6 +38,20 @@ func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 		"elbv2.DeleteListener":        func(msg *nats.Msg) { handleNATSMsg(msg, backend.DeleteListener) },
 		"elbv2.ModifyListener":        func(msg *nats.Msg) { handleNATSMsg(msg, backend.ModifyListener) },
 		"elbv2.DescribeListeners":     func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeListeners) },
+		"elbv2.CreateRule":            func(msg *nats.Msg) { handleNATSMsg(msg, backend.CreateRule) },
+		"elbv2.DescribeRules":         func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeRules) },
+		"elbv2.AddTags":               func(msg *nats.Msg) { handleNATSMsg(msg, backend.AddTags) },
+		"elbv2.RemoveTags":            func(msg *nats.Msg) { handleNATSMsg(msg, backend.RemoveTags) },
+		"elbv2.DescribeTags":          func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeTags) },
+		"elbv2.SetSecurityGroups":     func(msg *nats.Msg) { handleNATSMsg(msg, backend.SetSecurityGroups) },
+		"elbv2.SetIpAddressType":      func(msg *nats.Msg) { handleNATSMsg(msg, backend.SetIpAddressType) },
+
+		"elbv2.ModifyTargetGroupAttributes":   func(msg *nats.Msg) { handleNATSMsg(msg, backend.ModifyTargetGroupAttributes) },
+		"elbv2.DescribeTargetGroupAttributes": func(msg *nats.Msg) { handleNATSMsg(msg, backend.DescribeTargetGroupAttributes) },
+		"elbv2.ModifyLoadBalancerAttributes":  func(msg *nats.Msg) { handleNATSMsg(msg, backend.ModifyLoadBalancerAttributes) },
+		"elbv2.DescribeLoadBalancerAttributes": func(msg *nats.Msg) {
+			handleNATSMsg(msg, backend.DescribeLoadBalancerAttributes)
+		},
 	}
 
 	for topic, handler := range topics {
@@ -280,4 +294,193 @@ func TestNATSE2E_TargetGroupInUseProtection(t *testing.T) {
 		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
 	}, testAccountID)
 	require.Error(t, err)
+}
+
+func TestNATSE2E_TagsLifecycle(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-tags-lb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = client.AddTags(&elbv2.AddTagsInput{
+		ResourceArns: []*string{lbArn},
+		Tags: []*elbv2.Tag{
+			{Key: aws.String("App"), Value: aws.String("nginx")},
+			{Key: aws.String("Env"), Value: aws.String("prod")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := client.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.TagDescriptions, 1)
+	got := map[string]string{}
+	for _, tag := range desc.TagDescriptions[0].Tags {
+		got[*tag.Key] = *tag.Value
+	}
+	assert.Equal(t, map[string]string{"App": "nginx", "Env": "prod"}, got)
+
+	_, err = client.RemoveTags(&elbv2.RemoveTagsInput{
+		ResourceArns: []*string{lbArn},
+		TagKeys:      []*string{aws.String("Env")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc2, err := client.DescribeTags(&elbv2.DescribeTagsInput{ResourceArns: []*string{lbArn}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc2.TagDescriptions, 1)
+	got2 := map[string]string{}
+	for _, tag := range desc2.TagDescriptions[0].Tags {
+		got2[*tag.Key] = *tag.Value
+	}
+	assert.Equal(t, map[string]string{"App": "nginx"}, got2)
+}
+
+func TestNATSE2E_AttributeRoundTrip(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	tgOut, err := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("e2e-attr-tg")}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	_, err = client.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+		TargetGroupArn: tgArn,
+		Attributes: []*elbv2.TargetGroupAttribute{
+			{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("120")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	tgAttrs, err := client.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{TargetGroupArn: tgArn}, testAccountID)
+	require.NoError(t, err)
+	tgGot := map[string]string{}
+	for _, a := range tgAttrs.Attributes {
+		tgGot[*a.Key] = *a.Value
+	}
+	assert.Equal(t, "120", tgGot["deregistration_delay.timeout_seconds"])
+
+	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-attr-lb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = client.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+		LoadBalancerArn: lbArn,
+		Attributes: []*elbv2.LoadBalancerAttribute{
+			{Key: aws.String("deletion_protection.enabled"), Value: aws.String("true")},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	lbAttrs, err := client.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+	lbGot := map[string]string{}
+	for _, a := range lbAttrs.Attributes {
+		lbGot[*a.Key] = *a.Value
+	}
+	assert.Equal(t, "true", lbGot["deletion_protection.enabled"])
+}
+
+func TestNATSE2E_RedirectListener(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("e2e-redir-lb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = client.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				Port:       aws.String("443"),
+				StatusCode: aws.String("HTTP_301"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := client.DescribeListeners(&elbv2.DescribeListenersInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Listeners, 1)
+	require.Len(t, desc.Listeners[0].DefaultActions, 1)
+	action := desc.Listeners[0].DefaultActions[0]
+	assert.Equal(t, "redirect", *action.Type)
+	require.NotNil(t, action.RedirectConfig, "redirect action config must survive the NATS round-trip")
+	assert.Equal(t, "HTTP_301", *action.RedirectConfig.StatusCode)
+	assert.Equal(t, "HTTPS", *action.RedirectConfig.Protocol)
+}
+
+func TestNATSE2E_IPTargetType(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	tgOut, err := client.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("e2e-ip-tg"),
+		TargetType: aws.String("ip"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "ip", *tgOut.TargetGroups[0].TargetType)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+
+	_, err = client.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets: []*elbv2.TargetDescription{
+			{Id: aws.String("10.0.1.20")},
+			{Id: aws.String("10.0.1.21"), Port: aws.Int64(8080)},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	health, err := client.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{TargetGroupArn: tgArn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, health.TargetHealthDescriptions, 2)
+
+	// A non-IP id must be rejected for an ip target group, end-to-end.
+	_, err = client.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-notanip")}},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestNATSE2E_SetSecurityGroupsAndIpAddressType(t *testing.T) {
+	client, _ := setupNATSELBv2Test(t)
+
+	lbOut, err := client.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("e2e-net-lb"),
+		SecurityGroups: []*string{aws.String("sg-aaa")},
+	}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = client.SetSecurityGroups(&elbv2.SetSecurityGroupsInput{
+		LoadBalancerArn: lbArn,
+		SecurityGroups:  []*string{aws.String("sg-bbb"), aws.String("sg-ccc")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Spinifex ALBs are IPv4-only; "ipv4" is the only accepted value.
+	_, err = client.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+		LoadBalancerArn: lbArn,
+		IpAddressType:   aws.String("ipv4"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// A dualstack request must be rejected end-to-end.
+	_, err = client.SetIpAddressType(&elbv2.SetIpAddressTypeInput{
+		LoadBalancerArn: lbArn,
+		IpAddressType:   aws.String("dualstack"),
+	}, testAccountID)
+	require.Error(t, err)
+
+	desc, err := client.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: []*string{lbArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.LoadBalancers, 1)
+	assert.ElementsMatch(t, []string{"sg-bbb", "sg-ccc"}, aws.StringValueSlice(desc.LoadBalancers[0].SecurityGroups))
+	assert.Equal(t, "ipv4", *desc.LoadBalancers[0].IpAddressType)
 }

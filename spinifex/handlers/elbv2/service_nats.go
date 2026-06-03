@@ -111,6 +111,14 @@ func (s *NATSELBv2Service) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 	return utils.NATSRequest[elbv2.DescribeTagsOutput](s.natsConn, "elbv2.DescribeTags", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) AddTags(input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error) {
+	return utils.NATSRequest[elbv2.AddTagsOutput](s.natsConn, "elbv2.AddTags", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) RemoveTags(input *elbv2.RemoveTagsInput, accountID string) (*elbv2.RemoveTagsOutput, error) {
+	return utils.NATSRequest[elbv2.RemoveTagsOutput](s.natsConn, "elbv2.RemoveTags", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) ModifyTargetGroupAttributes(input *elbv2.ModifyTargetGroupAttributesInput, accountID string) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
 	return utils.NATSRequest[elbv2.ModifyTargetGroupAttributesOutput](s.natsConn, "elbv2.ModifyTargetGroupAttributes", input, defaultTimeout, accountID)
 }
@@ -125,6 +133,14 @@ func (s *NATSELBv2Service) ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadB
 
 func (s *NATSELBv2Service) DescribeLoadBalancerAttributes(input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
 	return utils.NATSRequest[elbv2.DescribeLoadBalancerAttributesOutput](s.natsConn, "elbv2.DescribeLoadBalancerAttributes", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, accountID string) (*elbv2.SetSecurityGroupsOutput, error) {
+	return utils.NATSRequest[elbv2.SetSecurityGroupsOutput](s.natsConn, "elbv2.SetSecurityGroups", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error) {
+	return utils.NATSRequest[elbv2.SetIpAddressTypeOutput](s.natsConn, "elbv2.SetIpAddressType", input, defaultTimeout, accountID)
 }
 
 func (s *NATSELBv2Service) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {

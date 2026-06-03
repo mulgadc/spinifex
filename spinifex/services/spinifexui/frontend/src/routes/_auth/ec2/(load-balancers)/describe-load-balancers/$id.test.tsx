@@ -105,6 +105,11 @@ describe("load-balancer detail route", () => {
     qc.setQueryData(["ec2", "subnets"], {
       Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
     })
+    qc.setQueryData(["ec2", "securityGroups"], {
+      SecurityGroups: [
+        { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-aaa" },
+      ],
+    })
     return qc
   }
 
@@ -126,6 +131,7 @@ describe("load-balancer detail route", () => {
     })
     qc.setQueryData(["elbv2", "tags", LB_ARN], { TagDescriptions: [] })
     qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
+    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
 
     renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, qc)
 

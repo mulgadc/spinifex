@@ -416,7 +416,7 @@ func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, vpcID, gu
 			return strings.TrimSpace(out)
 		}
 		if time.Now().After(deadline) {
-			harness.DumpIMDSDatapathDiagnostics(t, vpcID, guestIP, fix.Artifacts)
+			harness.DumpIMDSDatapathDiagnostics(t, vpcID, guestIP, fix.ArtifactDir(t))
 			t.Fatalf("imdsAwaitToken: token never minted within 90s (vpc=%s guest=%s): %v "+
 				"(see IMDS datapath diagnostics above)", vpcID, guestIP, lastErr)
 		}

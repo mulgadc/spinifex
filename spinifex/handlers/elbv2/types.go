@@ -34,7 +34,8 @@ const (
 	ProtocolTCPUDP = "TCP_UDP"
 
 	// Listener action types
-	ActionTypeForward = "forward"
+	ActionTypeForward       = "forward"
+	ActionTypeFixedResponse = "fixed-response"
 
 	// Rule condition fields
 	RuleFieldHostHeader        = "host-header"
@@ -196,8 +197,17 @@ type ListenerRecord struct {
 
 // ListenerAction defines a listener's default action.
 type ListenerAction struct {
-	Type           string `json:"type"` // "forward"
+	Type           string `json:"type"` // "forward" or "fixed-response"
 	TargetGroupArn string `json:"target_group_arn"`
+	// FixedResponse is populated when Type == "fixed-response" (no target group).
+	FixedResponse *FixedResponseAction `json:"fixed_response,omitempty"`
+}
+
+// FixedResponseAction holds the canned reply for a "fixed-response" action.
+type FixedResponseAction struct {
+	StatusCode  string `json:"status_code"`
+	ContentType string `json:"content_type,omitempty"`
+	MessageBody string `json:"message_body,omitempty"`
 }
 
 // RuleRecord represents a stored listener rule.

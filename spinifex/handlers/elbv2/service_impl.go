@@ -761,6 +761,28 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(instanceID, accountID string) string 
 	return ""
 }
 
+// resolveRegisteredTargetIP returns the private IP to route to for a target
+// being registered, based on the target group's target type. For ip targets the
+// supplied ID is the IP itself; for instance targets it is resolved via the
+// instance's primary ENI. Returns an error when the ID's shape does not match
+// the target type.
+func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(targetType, id, accountID string) (string, error) {
+	switch targetType {
+	case TargetTypeIP:
+		if net.ParseIP(id) == nil {
+			slog.Warn("RegisterTargets: ip target id is not a valid IP", "id", id)
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return id, nil
+	default: // instance
+		if net.ParseIP(id) != nil {
+			slog.Warn("RegisterTargets: instance target group given an IP address", "id", id)
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return s.resolveTargetIP(id, accountID), nil
+	}
+}
+
 // buildTGArn constructs a target group ARN from components.
 func buildTGArn(region, accountID, name, tgID string) string {
 	return fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:targetgroup/%s/%s", region, accountID, name, tgID)
@@ -1211,9 +1233,13 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 		return nil, errors.New(awserrors.ErrorELBv2DuplicateTargetGroup)
 	}
 
-	targetType := "instance"
+	targetType := TargetTypeInstance
 	if input.TargetType != nil && *input.TargetType != "" {
 		targetType = *input.TargetType
+	}
+	if targetType != TargetTypeInstance && targetType != TargetTypeIP {
+		slog.Warn("CreateTargetGroup: unsupported target type", "targetType", targetType)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	// Use NLB health check defaults for NLB protocols.
@@ -1501,8 +1527,11 @@ func (s *ELBv2ServiceImpl) RegisterTargets(input *elbv2.RegisterTargetsInput, ac
 			continue // Already registered
 		}
 
-		// Resolve instance ID → private IP via ENI lookup
-		privateIP := s.resolveTargetIP(*td.Id, accountID)
+		// Resolve target ID → private IP (instance ENI lookup, or raw IP for ip-type TGs)
+		privateIP, err := s.resolveRegisteredTargetIP(tg.TargetType, *td.Id, accountID)
+		if err != nil {
+			return nil, err
+		}
 
 		tg.Targets = append(tg.Targets, Target{
 			Id:          *td.Id,

@@ -769,6 +769,93 @@ func TestRegisterTargets(t *testing.T) {
 	assert.Equal(t, int64(8080), *health.TargetHealthDescriptions[1].Target.Port)
 }
 
+func TestRegisterTargets_IPType(t *testing.T) {
+	svc := setupTestService(t)
+
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("ip-tg"),
+		Port:       aws.Int64(80),
+		TargetType: aws.String("ip"),
+	}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+	assert.Equal(t, "ip", *tgOut.TargetGroups[0].TargetType)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets: []*elbv2.TargetDescription{
+			{Id: aws.String("10.0.1.20")},
+			{Id: aws.String("10.0.1.21"), Port: aws.Int64(8080)},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// ip targets must carry the supplied IP as PrivateIP, not an empty
+	// ENI-resolution result — otherwise HAProxy/health-check silently drop them.
+	tg, err := svc.store.GetTargetGroupByArn(*tgArn)
+	require.NoError(t, err)
+	require.Len(t, tg.Targets, 2)
+	ipByID := make(map[string]string)
+	for _, target := range tg.Targets {
+		ipByID[target.Id] = target.PrivateIP
+	}
+	assert.Equal(t, "10.0.1.20", ipByID["10.0.1.20"])
+	assert.Equal(t, "10.0.1.21", ipByID["10.0.1.21"])
+
+	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+		TargetGroupArn: tgArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, health.TargetHealthDescriptions, 2)
+}
+
+func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("ip-tg-bad"),
+		TargetType: aws.String("ip"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-notanip")}},
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("inst-tg-badid"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("10.0.0.5")}},
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("lambda-tg"),
+		TargetType: aws.String("lambda"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("default-tt"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "instance", *tgOut.TargetGroups[0].TargetType)
+}
+
 func TestRegisterTargets_Idempotent(t *testing.T) {
 	svc := setupTestService(t)
 

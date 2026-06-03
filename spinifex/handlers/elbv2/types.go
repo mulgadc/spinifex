@@ -19,6 +19,10 @@ const (
 	StateActive       = "active"
 	StateFailed       = "failed"
 
+	// Target group target types (v1 supports instance and ip)
+	TargetTypeInstance = "instance"
+	TargetTypeIP       = "ip"
+
 	// Target health states
 	TargetHealthInitial   = "initial"
 	TargetHealthHealthy   = "healthy"
@@ -127,7 +131,7 @@ type TargetGroupRecord struct {
 	Protocol       string            `json:"protocol"` // "HTTP" or "HTTPS"
 	Port           int64             `json:"port"`     // Default target port
 	VpcId          string            `json:"vpc_id"`
-	TargetType     string            `json:"target_type"` // "instance" for v1
+	TargetType     string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
 	HealthCheck    HealthCheckConfig `json:"health_check"`
 	Targets        []Target          `json:"targets"`
 	Attributes     map[string]string `json:"attributes,omitempty"`
@@ -180,11 +184,11 @@ func DefaultNLBHealthCheck() HealthCheckConfig {
 
 // Target represents a registered target in a target group.
 type Target struct {
-	Id          string `json:"id"`           // Instance ID (e.g. i-xxxxx)
+	Id          string `json:"id"`           // Instance ID (i-xxxxx) or IP for ip-type TGs
 	Port        int64  `json:"port"`         // Override port (0 = use TG default)
 	HealthState string `json:"health_state"` // "initial", "healthy", "unhealthy", "draining"
 	HealthDesc  string `json:"health_desc"`  // Reason for current state
-	PrivateIP   string `json:"private_ip"`   // Resolved from instance ENI
+	PrivateIP   string `json:"private_ip"`   // Instance ENI IP, or the target IP for ip-type TGs
 }
 
 // ListenerRecord represents a stored Listener.

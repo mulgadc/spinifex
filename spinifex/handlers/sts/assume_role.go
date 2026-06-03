@@ -311,30 +311,25 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string)
 	return false, nil
 }
 
-// allowedServicePrincipals is the v1 whitelist of service principals that may match
-// a Principal: {"Service": ...} trust statement. Expanding it (ecs-tasks, lambda) is
-// a one-line change.
-var allowedServicePrincipals = map[string]bool{
-	ec2ServicePrincipal: true,
-}
-
 // matchServicePrincipal matches a Service principal against the synthesised caller.
-// An empty principalSource (the HTTPS path) never matches, and the principal must be
-// in the v1 whitelist, so unsupported service principals are denied.
+// v1 trusts only the EC2 service principal: any other principalSource (including
+// the empty one used by the HTTPS path) is rejected up front, so unsupported
+// service principals are denied even if a future caller synthesised one.
+// Expanding the whitelist (ecs-tasks, lambda) is a one-line change to this guard.
 func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, error) {
-	if principalSource == "" {
+	if principalSource != ec2ServicePrincipal {
 		return false, nil
 	}
 	var single string
 	if err := json.Unmarshal(raw, &single); err == nil {
-		return allowedServicePrincipals[single] && single == principalSource, nil
+		return single == principalSource, nil
 	}
 	var arr []string
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
 	}
 	for _, entry := range arr {
-		if allowedServicePrincipals[entry] && entry == principalSource {
+		if entry == principalSource {
 			return true, nil
 		}
 	}

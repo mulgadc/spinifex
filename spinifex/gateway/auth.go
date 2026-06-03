@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Maximum request body size for signature validation (10 MB).
@@ -36,7 +37,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			clientIP := extractClientIP(r)
+			clientIP := utils.ClientIP(r.RemoteAddr)
 			if errCode := gw.RateLimiter.CheckIP(clientIP); errCode != "" {
 				gw.writeSigV4Error(w, r, errCode)
 				return

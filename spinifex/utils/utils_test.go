@@ -1686,3 +1686,22 @@ func TestDistroFamily(t *testing.T) {
 		})
 	}
 }
+
+func TestClientIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		expected   string
+	}{
+		{"IPv4 with port", "192.168.1.1:12345", "192.168.1.1"},
+		{"IPv6 with port", "[::1]:12345", "::1"},
+		{"IPv4 bare", "192.168.1.1", "192.168.1.1"},
+		{"IPv6 full with port", "[2001:db8::1]:443", "2001:db8::1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, ClientIP(tt.remoteAddr))
+		})
+	}
+}

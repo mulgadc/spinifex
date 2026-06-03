@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // HTTP paths. IMDSv2 token issuance is a PUT; everything else is a token-gated
@@ -111,7 +111,7 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 // AWS's opaque "eventually available" boot posture.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 	vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
-	srcIP := clientIP(r.RemoteAddr)
+	srcIP := utils.ClientIP(r.RemoteAddr)
 	if vpcID == "" || srcIP == "" {
 		slog.Warn("IMDS: request missing VPC context or source IP", "vpc_id", vpcID, "remote_addr", r.RemoteAddr)
 		return nil
@@ -341,15 +341,6 @@ func parseTokenTTL(raw string) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(n) * time.Second, true
-}
-
-// clientIP strips the port from a RemoteAddr ("10.0.1.5:54321" → "10.0.1.5").
-func clientIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return remoteAddr
-	}
-	return host
 }
 
 // regionFromAZ derives the region from an availability-zone name by stripping

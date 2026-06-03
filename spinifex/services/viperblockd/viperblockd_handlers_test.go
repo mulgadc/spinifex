@@ -354,9 +354,6 @@ func startTestSnapshotSocket(t *testing.T, socketPath string, response types.EBS
 
 func TestIntegration_SnapshotHandler_Success(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
@@ -386,9 +383,6 @@ func TestIntegration_SnapshotHandler_Success(t *testing.T) {
 
 func TestIntegration_SnapshotHandler_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
@@ -415,9 +409,6 @@ func TestIntegration_SnapshotHandler_InvalidJSON(t *testing.T) {
 
 func TestIntegration_SnapshotHandler_CreateSnapshotFailure(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()

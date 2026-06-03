@@ -205,6 +205,9 @@ func (b *bindManager) shutdown() {
 // bindLocalListener opens a TCP listener on 169.254.169.254:80 pinned to a host
 // veth via SO_BINDTODEVICE, so receipt and replies stay scoped to that one veth
 // despite the shared IP:port. SO_REUSEADDR lets a restarting vpcd rebind fast.
+// IP_FREEBIND lets the bind succeed even though the link-local IMDS address is
+// never assigned to the host-end veth (it lives on the OVN side); without it the
+// bind fails with EADDRNOTAVAIL on hosts where net.ipv4.ip_nonlocal_bind=0.
 func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(_, _ string, c syscall.RawConn) error {
@@ -213,7 +216,10 @@ func bindLocalListener(ctx context.Context, hostEnd string) (net.Listener, error
 				if sockErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, hostEnd); sockErr != nil {
 					return
 				}
-				sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				if sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); sockErr != nil {
+					return
+				}
+				sockErr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
 			}); err != nil {
 				return err
 			}

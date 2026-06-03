@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -328,12 +329,7 @@ func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, e
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
 	}
-	for _, entry := range arr {
-		if entry == principalSource {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.Contains(arr, principalSource), nil
 }
 
 func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {

@@ -140,15 +140,17 @@ func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 		slog.Warn("IMDS: initial bind sync failed, continuing", "err", err)
 	}
 	go s.bind.watch(ctx)
-	go s.sweepTokens(ctx)
+	go s.sweepExpired(ctx)
 
 	<-ctx.Done()
 	s.bind.shutdown()
 	return ctx.Err()
 }
 
-// sweepTokens evicts expired tokens on a ticker for the life of ctx.
-func (s *IMDSServiceImpl) sweepTokens(ctx context.Context) {
+// sweepExpired evicts expired IMDSv2 tokens and stale credential-cache entries
+// on a ticker for the life of ctx. Both stores are in-memory and accrete on VM
+// churn, so a single sweep keeps them bounded without a per-store goroutine.
+func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
 	ticker := time.NewTicker(tokenSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -156,7 +158,9 @@ func (s *IMDSServiceImpl) sweepTokens(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.tokens.sweep(s.now())
+			now := s.now()
+			s.tokens.sweep(now)
+			s.creds.sweep(now)
 		}
 	}
 }

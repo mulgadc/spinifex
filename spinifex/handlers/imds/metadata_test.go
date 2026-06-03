@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -334,6 +335,38 @@ func TestHTTP_SecurityCredentialsListBackendError500(t *testing.T) {
 	token := issueToken(t, h)
 	rec := get(t, h, pathSecurityCredsDir, token)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// A profile deleted out from under a running instance (the ARN dereferences to
+// NoSuchEntity) is "no instance role", not a backend fault: iam/info 404s, the
+// creds list is an empty 200, and the role path 404s — matching AWS. Only a
+// genuine backend error (TestHTTP_*BackendError500) is a 500.
+func TestHTTP_IAMInfoDeletedProfile404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
+	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixMetaData+"iam/info", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHTTP_SecurityCredentialsListDeletedProfileEmpty(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
+	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, pathSecurityCredsDir, token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Body.String())
+}
+
+func TestHTTP_RoleCredentialsDeletedProfile404(t *testing.T) {
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/gone"}}
+	svc, _ := newTestService(res, &fakeIAM{profileErr: errors.New(awserrors.ErrorIAMNoSuchEntity)}, &fakeAssumer{})
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixSecurityCreds+"app-role", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestHTTP_IAMInfoBackendError500(t *testing.T) {

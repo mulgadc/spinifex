@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// IMDS-datapath invariant (imds-v1 plan, Step 9).
+// IMDS-datapath invariant.
 
 // TestI4_ENIIndexBucketShape asserts the spinifex-network-eni-by-vpc-ip reverse
 // index keeps its contract: keys parse as "vpcID/ip" with a valid IP, values

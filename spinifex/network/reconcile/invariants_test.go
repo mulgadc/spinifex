@@ -11,7 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// IMDS-datapath invariants (imds-v1 plan, Step 9). A guest LSP is created by two
+// IMDS-datapath invariants. A guest LSP is created by two
 // independent paths — the live topology manager (EnsurePort) and the reconciler
 // (applyPorts) — and the per-subnet DHCPOptions row likewise. Both paths are
 // exercised here so neither can drift away from the contract the IMDS handler

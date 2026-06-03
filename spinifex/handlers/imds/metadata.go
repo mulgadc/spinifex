@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // HTTP paths. IMDSv2 token issuance is a PUT; everything else is a token-gated
@@ -301,7 +302,7 @@ func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *ins
 // profileFor resolves the instance's IAM instance profile. It returns:
 //   - (profile, nil) when the instance has a resolvable profile,
 //   - (nil, nil) when the instance genuinely has no profile (no attached
-//     instance, no profile ARN, or the ARN dereferences to nothing),
+//     instance, no profile ARN, or the ARN references a deleted profile),
 //   - (nil, err) when a backend lookup fails.
 //
 // Callers must distinguish the last case (500) from the middle one (404 /
@@ -318,6 +319,13 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	}
 	profile, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn)
 	if err != nil {
+		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+			// The instance references a profile that was deleted out from under
+			// it. AWS treats this as "no instance role" (iam/info 404,
+			// security-credentials/ empty 200), not a backend fault — NoSuchEntity
+			// is raised only for a genuinely absent record, never a transient.
+			return nil, nil
+		}
 		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)
 		return nil, err
 	}

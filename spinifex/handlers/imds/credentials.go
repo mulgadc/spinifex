@@ -104,3 +104,17 @@ func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) 
 
 	return body, nil
 }
+
+// sweep drops fully-expired entries (past refreshAt + the refresh window, i.e.
+// past the credential's actual expiry), bounding the cache against ENI churn:
+// a terminated instance's entry is never overwritten and would otherwise leak.
+// Evicting a live entry would only force a re-mint, so this is always safe.
+func (c *credCache) sweep(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		if now.After(entry.refreshAt.Add(credRefreshWindow)) {
+			delete(c.entries, key)
+		}
+	}
+}

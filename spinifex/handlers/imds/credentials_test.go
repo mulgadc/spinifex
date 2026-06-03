@@ -97,6 +97,34 @@ func TestCredCache_PropagatesAssumeError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCredCache_SweepEvictsExpiredOnly(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	assumer := &fakeAssumer{out: assumeOutput("ASIAEXAMPLE", now.Add(time.Hour))}
+	cache := newCredCache(assumer)
+
+	stale := &eniFacts{eniID: "eni-gone", accountID: "111122223333", instanceID: "i-old"}
+	live := &eniFacts{eniID: "eni-live", accountID: "111122223333", instanceID: "i-new"}
+	_, err := cache.get(stale, "app-role", "arn:aws:iam::111122223333:role/app-role", now)
+	require.NoError(t, err)
+
+	// Mint the live entry an hour later so its expiry is still in the future
+	// when we sweep at the original expiry boundary.
+	assumer.out = assumeOutput("ASIALIVE", now.Add(2*time.Hour))
+	_, err = cache.get(live, "app-role", "arn:aws:iam::111122223333:role/app-role", now.Add(time.Hour))
+	require.NoError(t, err)
+
+	// Sweep just past the stale entry's full expiry (mint + 1h). The live entry
+	// expires at mint + 2h, so it must survive.
+	cache.sweep(now.Add(time.Hour).Add(time.Second))
+
+	cache.mu.Lock()
+	_, staleExists := cache.entries[stale.eniID+"\x00"+"app-role"]
+	_, liveExists := cache.entries[live.eniID+"\x00"+"app-role"]
+	cache.mu.Unlock()
+	assert.False(t, staleExists, "expired entry must be swept")
+	assert.True(t, liveExists, "still-valid entry must survive the sweep")
+}
+
 func TestCredCache_PerENIPerRoleKeying(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	exp := now.Add(time.Hour)

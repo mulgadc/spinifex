@@ -225,8 +225,8 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	runSTS(t, requireSingleNodeFixture(t))
 }
 
-// TestIMDS exercises the host-served IMDSv2 surface end-to-end (imds-v1.md
-// Step 11): token issuance, the v2-only stance, the metadata surface, the
+// TestIMDS exercises the host-served IMDSv2 surface end-to-end: token
+// issuance, the v2-only stance, the metadata surface, the
 // instance-role credential path + wire round-trip, DHCP option 121, the
 // per-VPC localport datapath, and cross-VPC source-IP isolation. Owns its own
 // role/profile + a second VPC, but sequential: it launches profile-bound VMs

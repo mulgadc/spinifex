@@ -11,7 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
 )
 
-// IMDS-datapath invariants (imds-v1 plan, Step 9). These guard the OVN topology
+// IMDS-datapath invariants. These guard the OVN topology
 // the IMDS handler trusts as a security + availability boundary. A regression
 // in either is a privilege-escalation or single-point-of-failure vector, so the
 // failure messages quote the offending design clause verbatim.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -198,6 +199,12 @@ var eksRoutes = []eksRoute{
 // lookupEKSAction walks eksRoutes in declaration order, returning the matched
 // route's action name + path params, or ("", nil, false) when nothing matches.
 // Used by EKS_Request and unit tests to verify routing.
+//
+// path must be the *escaped* request path (r.URL.EscapedPath()): IAM principal
+// ARNs are passed as a path segment and the CLI percent-encodes the embedded
+// `/` (`user%2Fadmin`). Matching the decoded path would split that ARN across
+// the `([^/]+)` capture and no route would match. Captured params are
+// PathUnescape'd here so handlers receive the real value.
 func lookupEKSAction(method, path string) (string, []string, eksRouteHandler, bool) {
 	for _, route := range eksRoutes {
 		if route.method != method {
@@ -209,7 +216,15 @@ func lookupEKSAction(method, path string) (string, []string, eksRouteHandler, bo
 		}
 		var params []string
 		if len(m) > 1 {
-			params = m[1:]
+			params = make([]string, 0, len(m)-1)
+			for _, raw := range m[1:] {
+				decoded, err := url.PathUnescape(raw)
+				if err != nil {
+					slog.Debug("EKS: bad percent-encoding in path param", "param", raw, "err", err)
+					decoded = raw
+				}
+				params = append(params, decoded)
+			}
 		}
 		return route.action, params, route.handler, true
 	}
@@ -222,7 +237,7 @@ func lookupEKSAction(method, path string) (string, []string, eksRouteHandler, bo
 // are returned as plain awserrors codes; the caller (gateway.Request) routes
 // them through the shared ErrorHandler, which now emits EKS REST-JSON.
 func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) error {
-	action, params, handler, ok := lookupEKSAction(r.Method, r.URL.Path)
+	action, params, handler, ok := lookupEKSAction(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.Debug("EKS: no route for request", "method", r.Method, "path", r.URL.Path)
 		return errors.New(awserrors.ErrorInvalidAction)

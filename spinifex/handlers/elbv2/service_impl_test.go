@@ -2971,9 +2971,9 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Listeners don't store tags yet — must still return a TagDescription
-	// (with an empty Tags slice), not an error. This is the case the
-	// Terraform AWS provider hits during post-create refresh.
+	// Listener created without tags must still return a TagDescription (with an
+	// empty Tags slice), not an error. This is the case the Terraform AWS
+	// provider hits during post-create refresh.
 	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lstOut.Listeners[0].ListenerArn},
 	}, testAccountID)
@@ -3009,7 +3009,7 @@ func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Rules don't store tags yet — must still return a TagDescription (with an
+	// Rule created without tags must still return a TagDescription (with an
 	// empty Tags slice), not an error. This is the case the Terraform AWS
 	// provider hits during post-create refresh of aws_lb_listener_rule.
 	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{

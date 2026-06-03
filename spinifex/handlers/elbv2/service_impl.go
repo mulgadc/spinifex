@@ -1742,6 +1742,13 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		actions = append(actions, listenerActionFromSDK(a))
 	}
 
+	tags := make(map[string]string)
+	for _, tag := range input.Tags {
+		if tag.Key != nil && tag.Value != nil {
+			tags[*tag.Key] = *tag.Value
+		}
+	}
+
 	record := &ListenerRecord{
 		ListenerArn:     listenerArn,
 		ListenerID:      listenerID,
@@ -1751,6 +1758,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		DefaultActions:  actions,
 		AccountID:       accountID,
 		CreatedAt:       time.Now().UTC(),
+		Tags:            tags,
 	}
 
 	if err := s.store.PutListener(record); err != nil {
@@ -1981,10 +1989,9 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 
 // DescribeTags returns tags for one or more ELBv2 resources (load balancers,
 // target groups, listeners, listener rules). Tag data is read from the existing
-// record stores — Spinifex doesn't have a separate tag KV. Listeners and rules
-// currently never store tags, so they always return an empty Tags slice
-// (matches AWS behaviour for untagged resources). Cross-account or unknown ARNs
-// return the per-resource not-found error so existence isn't leaked across
+// record stores — Spinifex doesn't have a separate tag KV. Untagged resources
+// return an empty Tags slice (matches AWS behaviour). Cross-account or unknown
+// ARNs return the per-resource not-found error so existence isn't leaked across
 // accounts.
 func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 {
@@ -2043,8 +2050,8 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			}
 			if l != nil {
 				found = true
+				tags = l.Tags
 				ownerAccount = l.AccountID
-				// Listeners don't store tags yet — leave map nil.
 			}
 		case elbv2ResourceListenerRule:
 			notFoundError = awserrors.ErrorELBv2RuleNotFound
@@ -2055,8 +2062,8 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			}
 			if r != nil {
 				found = true
+				tags = r.Tags
 				ownerAccount = r.AccountID
-				// Rules don't store tags yet — leave map nil.
 			}
 		}
 

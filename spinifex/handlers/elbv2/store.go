@@ -322,18 +322,26 @@ func (s *Store) ListListenersByLB(lbArn string) ([]*ListenerRecord, error) {
 	return result, nil
 }
 
-// GetListenerByArn finds a listener by its ARN.
+// GetListenerByArn finds a listener by its ARN via a direct KV lookup on the
+// short ID embedded in the ARN's final path segment. See GetLoadBalancerByArn
+// for the motivation — Terraform calls DescribeTags on every aws_lb_listener
+// on every plan, and DescribeTags can carry many ARNs per call, so this must
+// be O(1) per ARN, not an O(n) listener-KV scan.
 func (s *Store) GetListenerByArn(arn string) (*ListenerRecord, error) {
-	listeners, err := s.ListListeners()
+	// ELBv2 listener ARN: arn:aws:elasticloadbalancing:{region}:{account}:listener/{app,net}/{name}/{lbID}/{listenerID}
+	idx := strings.LastIndex(arn, "/")
+	if idx < 0 || idx == len(arn)-1 {
+		return nil, nil
+	}
+	listenerID := arn[idx+1:]
+	l, err := s.GetListener(listenerID)
 	if err != nil {
 		return nil, err
 	}
-	for _, l := range listeners {
-		if l.ListenerArn == arn {
-			return l, nil
-		}
+	if l == nil || l.ListenerArn != arn {
+		return nil, nil
 	}
-	return nil, nil
+	return l, nil
 }
 
 // --- Rule CRUD ---

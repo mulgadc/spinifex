@@ -86,6 +86,13 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	tags := make(map[string]string)
+	for _, tag := range input.Tags {
+		if tag.Key != nil && tag.Value != nil {
+			tags[*tag.Key] = *tag.Value
+		}
+	}
+
 	record := &RuleRecord{
 		RuleArn:     ruleArn,
 		RuleID:      ruleID,
@@ -95,6 +102,7 @@ func (s *ELBv2ServiceImpl) CreateRule(input *elbv2.CreateRuleInput, accountID st
 		Actions:     actions,
 		AccountID:   accountID,
 		CreatedAt:   time.Now().UTC(),
+		Tags:        tags,
 	}
 
 	if err := s.store.PutRule(record); err != nil {

@@ -193,6 +193,8 @@ type ListenerRecord struct {
 	DefaultActions  []ListenerAction `json:"default_actions"`
 	AccountID       string           `json:"account_id"`
 	CreatedAt       time.Time        `json:"created_at"`
+
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // ListenerAction defines a listener's default action.
@@ -220,6 +222,8 @@ type RuleRecord struct {
 	Actions     []ListenerAction `json:"actions"`
 	AccountID   string           `json:"account_id"`
 	CreatedAt   time.Time        `json:"created_at"`
+
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // RuleCondition is one routing predicate on a rule. Only the field block

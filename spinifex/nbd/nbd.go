@@ -8,26 +8,24 @@ import (
 )
 
 type NBDKitConfig struct {
-	Port       int    `json:"port"`   // TCP port (when using TCP transport)
-	Socket     string `json:"socket"` // Unix socket path (when using socket transport)
-	PidFile    string `json:"pid_file"`
-	PluginPath string `json:"plugin_path"`
-	Verbose    bool   `json:"verbose"`
-	Foreground bool   `json:"foreground"`
-	Size       int64  `json:"size"`
-	Volume     string `json:"volume"`
-	Bucket     string `json:"bucket"`
-	Region     string `json:"region"`
-	AccessKey  string `json:"access_key"`
-	SecretKey  string `json:"secret_key"`
-	BaseDir    string `json:"base_dir"`
-	Host       string `json:"host"`
-	CacheSize  int    `json:"cache_size"`
-	ShardWAL   bool   `json:"shardwal"` // Enable sharded WAL (default false)
-	UseTCP     bool   `json:"use_tcp"`  // If true, use TCP transport; otherwise use Unix socket
-	NatsURL    string `json:"nats_url"`
-	NatsToken  string `json:"nats_token"`
-	NatsCACert string `json:"nats_ca_cert"`
+	Port           int    `json:"port"`   // TCP port (when using TCP transport)
+	Socket         string `json:"socket"` // Unix socket path (when using socket transport)
+	PidFile        string `json:"pid_file"`
+	PluginPath     string `json:"plugin_path"`
+	Verbose        bool   `json:"verbose"`
+	Foreground     bool   `json:"foreground"`
+	Size           int64  `json:"size"`
+	Volume         string `json:"volume"`
+	Bucket         string `json:"bucket"`
+	Region         string `json:"region"`
+	AccessKey      string `json:"access_key"`
+	SecretKey      string `json:"secret_key"`
+	BaseDir        string `json:"base_dir"`
+	Host           string `json:"host"`
+	CacheSize      int    `json:"cache_size"`
+	ShardWAL       bool   `json:"shardwal"`        // Enable sharded WAL (default false)
+	UseTCP         bool   `json:"use_tcp"`         // If true, use TCP transport; otherwise use Unix socket
+	SnapshotSocket string `json:"snapshot_socket"` // Unix socket path for snapshot IPC with viperblockd
 }
 
 // buildArgs constructs the nbdkit command-line arguments from the config.
@@ -68,14 +66,8 @@ func (cfg *NBDKitConfig) buildArgs() ([]string, error) {
 		fmt.Sprintf("cache_size=%d", cfg.CacheSize),
 		fmt.Sprintf("shardwal=%t", cfg.ShardWAL),
 	}
-	if cfg.NatsURL != "" {
-		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_url=%s", cfg.NatsURL))
-	}
-	if cfg.NatsToken != "" {
-		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_token=%s", cfg.NatsToken))
-	}
-	if cfg.NatsCACert != "" {
-		pluginArgs = append(pluginArgs, fmt.Sprintf("nats_ca_cert=%s", cfg.NatsCACert))
+	if cfg.SnapshotSocket != "" {
+		pluginArgs = append(pluginArgs, fmt.Sprintf("snapshot_socket=%s", cfg.SnapshotSocket))
 	}
 
 	args = append(args, pluginArgs...)

@@ -233,15 +233,13 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_NatsFields(t *testing.T) {
+func TestBuildArgs_SnapshotSocket(t *testing.T) {
 	cfg := &NBDKitConfig{
-		Socket:     "/tmp/nbd.sock",
-		PidFile:    "/tmp/nbd.pid",
-		PluginPath: "/plugin.so",
-		Volume:     "vol-test",
-		NatsURL:    "nats://127.0.0.1:4222",
-		NatsToken:  "secret",
-		NatsCACert: "/etc/ca.crt",
+		Socket:         "/tmp/nbd.sock",
+		PidFile:        "/tmp/nbd.pid",
+		PluginPath:     "/plugin.so",
+		Volume:         "vol-test",
+		SnapshotSocket: "/run/spinifex/nbd/snapshot-vol-test.sock",
 	}
 
 	args, err := cfg.buildArgs()
@@ -249,14 +247,13 @@ func TestBuildArgs_NatsFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, want := range []string{"nats_url=nats://127.0.0.1:4222", "nats_token=secret", "nats_ca_cert=/etc/ca.crt"} {
-		if indexOf(args, want) < 0 {
-			t.Errorf("expected arg %q not found in %v", want, args)
-		}
+	want := "snapshot_socket=/run/spinifex/nbd/snapshot-vol-test.sock"
+	if indexOf(args, want) < 0 {
+		t.Errorf("expected arg %q not found in %v", want, args)
 	}
 }
 
-func TestBuildArgs_NatsFieldsOmittedWhenEmpty(t *testing.T) {
+func TestBuildArgs_SnapshotSocketOmittedWhenEmpty(t *testing.T) {
 	cfg := &NBDKitConfig{
 		Socket:     "/tmp/nbd.sock",
 		PidFile:    "/tmp/nbd.pid",
@@ -269,11 +266,9 @@ func TestBuildArgs_NatsFieldsOmittedWhenEmpty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, unwanted := range []string{"nats_url", "nats_token", "nats_ca_cert"} {
-		for _, a := range args {
-			if len(a) >= len(unwanted) && a[:len(unwanted)] == unwanted {
-				t.Errorf("unexpected NATS arg %q in args when fields are empty", a)
-			}
+	for _, a := range args {
+		if len(a) > len("snapshot_socket") && a[:len("snapshot_socket")] == "snapshot_socket" {
+			t.Errorf("unexpected snapshot_socket arg %q when SnapshotSocket is empty", a)
 		}
 	}
 }

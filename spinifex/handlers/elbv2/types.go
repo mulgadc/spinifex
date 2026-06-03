@@ -1,6 +1,9 @@
 package handlers_elbv2
 
-import "time"
+import (
+	"maps"
+	"time"
+)
 
 const (
 	// LoadBalancer types
@@ -15,6 +18,10 @@ const (
 	StateProvisioning = "provisioning"
 	StateActive       = "active"
 	StateFailed       = "failed"
+
+	// Target group target types (v1 supports instance and ip)
+	TargetTypeInstance = "instance"
+	TargetTypeIP       = "ip"
 
 	// Target health states
 	TargetHealthInitial   = "initial"
@@ -34,7 +41,9 @@ const (
 	ProtocolTCPUDP = "TCP_UDP"
 
 	// Listener action types
-	ActionTypeForward = "forward"
+	ActionTypeForward       = "forward"
+	ActionTypeFixedResponse = "fixed-response"
+	ActionTypeRedirect      = "redirect"
 
 	// Rule condition fields
 	RuleFieldHostHeader        = "host-header"
@@ -52,7 +61,7 @@ const (
 	MaxRulesPerListener   = 100
 	MaxConditionsPerRule  = 5
 	MaxValuesPerCondition = 5
-	MaxActionsPerRule     = 1 // forward only; mulga-951 may bump
+	MaxActionsPerRule     = 1 // single terminal action: forward, redirect, or fixed-response
 	MaxConditionValueLen  = 128
 	MaxHTTPHeaderNameLen  = 40
 
@@ -122,7 +131,7 @@ type TargetGroupRecord struct {
 	Protocol       string            `json:"protocol"` // "HTTP" or "HTTPS"
 	Port           int64             `json:"port"`     // Default target port
 	VpcId          string            `json:"vpc_id"`
-	TargetType     string            `json:"target_type"` // "instance" for v1
+	TargetType     string            `json:"target_type"` // TargetTypeInstance or TargetTypeIP
 	HealthCheck    HealthCheckConfig `json:"health_check"`
 	Targets        []Target          `json:"targets"`
 	Attributes     map[string]string `json:"attributes,omitempty"`
@@ -175,11 +184,11 @@ func DefaultNLBHealthCheck() HealthCheckConfig {
 
 // Target represents a registered target in a target group.
 type Target struct {
-	Id          string `json:"id"`           // Instance ID (e.g. i-xxxxx)
+	Id          string `json:"id"`           // Instance ID (i-xxxxx) or IP for ip-type TGs
 	Port        int64  `json:"port"`         // Override port (0 = use TG default)
 	HealthState string `json:"health_state"` // "initial", "healthy", "unhealthy", "draining"
 	HealthDesc  string `json:"health_desc"`  // Reason for current state
-	PrivateIP   string `json:"private_ip"`   // Resolved from instance ENI
+	PrivateIP   string `json:"private_ip"`   // Instance ENI IP, or the target IP for ip-type TGs
 }
 
 // ListenerRecord represents a stored Listener.
@@ -192,12 +201,37 @@ type ListenerRecord struct {
 	DefaultActions  []ListenerAction `json:"default_actions"`
 	AccountID       string           `json:"account_id"`
 	CreatedAt       time.Time        `json:"created_at"`
+
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
-// ListenerAction defines a listener's default action.
+// ListenerAction defines a listener default action or a rule action.
 type ListenerAction struct {
-	Type           string `json:"type"` // "forward"
+	Type           string `json:"type"` // "forward", "redirect", or "fixed-response"
 	TargetGroupArn string `json:"target_group_arn"`
+	// FixedResponse is populated when Type == "fixed-response" (no target group).
+	FixedResponse *FixedResponseAction `json:"fixed_response,omitempty"`
+	// Redirect is populated when Type == "redirect".
+	Redirect *RedirectAction `json:"redirect,omitempty"`
+}
+
+// FixedResponseAction holds the canned reply for a "fixed-response" action.
+type FixedResponseAction struct {
+	StatusCode  string `json:"status_code"`
+	ContentType string `json:"content_type,omitempty"`
+	MessageBody string `json:"message_body,omitempty"`
+}
+
+// RedirectAction holds the target for a "redirect" action. Fields mirror the
+// AWS RedirectActionConfig and may contain the `#{protocol}`, `#{host}`,
+// `#{port}`, `#{path}`, and `#{query}` placeholders.
+type RedirectAction struct {
+	Protocol   string `json:"protocol,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       string `json:"port,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Query      string `json:"query,omitempty"`
+	StatusCode string `json:"status_code"` // "HTTP_301" or "HTTP_302"
 }
 
 // RuleRecord represents a stored listener rule.
@@ -210,6 +244,8 @@ type RuleRecord struct {
 	Actions     []ListenerAction `json:"actions"`
 	AccountID   string           `json:"account_id"`
 	CreatedAt   time.Time        `json:"created_at"`
+
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // RuleCondition is one routing predicate on a rule. Only the field block
@@ -240,50 +276,71 @@ type RuleQueryStringKV struct {
 // provider sends every attribute it knows about, and any key missing here
 // gets rejected with ValidationError, surfacing as "UnknownError" in tofu.
 func DefaultLoadBalancerAttributes(lbType string) map[string]string {
-	// Common to all load balancer types.
-	attrs := map[string]string{
-		"deletion_protection.enabled":       "false",
-		"load_balancing.cross_zone.enabled": "false",
-	}
-
 	switch lbType {
 	case LoadBalancerTypeApplication:
-		// ALB-specific attributes. Defaults match real AWS values as of the
-		// aws-sdk-go 1.55 elbv2 API documentation.
-		attrs["load_balancing.cross_zone.enabled"] = "true"
-		attrs["access_logs.s3.enabled"] = "false"
-		attrs["access_logs.s3.bucket"] = ""
-		attrs["access_logs.s3.prefix"] = ""
-		attrs["connection_logs.s3.enabled"] = "false"
-		attrs["connection_logs.s3.bucket"] = ""
-		attrs["connection_logs.s3.prefix"] = ""
-		attrs["idle_timeout.timeout_seconds"] = "60"
-		attrs["client_keep_alive.seconds"] = "3600"
-		attrs["routing.http.desync_mitigation_mode"] = "defensive"
-		attrs["routing.http.drop_invalid_header_fields.enabled"] = "false"
-		attrs["routing.http.preserve_host_header.enabled"] = "false"
-		attrs["routing.http.x_amzn_tls_version_and_cipher_suite.enabled"] = "false"
-		attrs["routing.http.xff_client_port.enabled"] = "false"
-		attrs["routing.http.xff_header_processing.mode"] = "append"
-		attrs["routing.http2.enabled"] = "true"
-		attrs["waf.fail_open.enabled"] = "false"
-		attrs["zonal_shift.config.enabled"] = "false"
+		return maps.Clone(albAttributeDefaults)
 	case LoadBalancerTypeNetwork:
-		// NLB-specific attributes.
-		attrs["access_logs.s3.enabled"] = "false"
-		attrs["access_logs.s3.bucket"] = ""
-		attrs["access_logs.s3.prefix"] = ""
-		attrs["dns_record.client_routing_policy"] = "any_availability_zone"
-		attrs["ipv6.deny_all_igw_traffic"] = "false"
-		attrs["zonal_shift.config.enabled"] = "false"
+		return maps.Clone(nlbAttributeDefaults)
+	default:
+		return maps.Clone(lbBaseAttributeDefaults)
 	}
-
-	return attrs
 }
 
 // DefaultTargetGroupAttributes returns the default attribute set for target groups.
 func DefaultTargetGroupAttributes() map[string]string {
-	return map[string]string{
+	return maps.Clone(targetGroupAttributeDefaults)
+}
+
+// Default attribute sets are package-level so Describe calls clone a prebuilt
+// map instead of rebuilding it on every request. Callers receive a clone, never
+// the shared map, so mutation cannot leak back into the defaults.
+//
+// access_logs.s3.bucket / .prefix (and the connection_logs equivalents) default
+// to empty strings: that matches real AWS, where logging is disabled by default
+// and the bucket/prefix are unset until the operator opts in. Terraform sends
+// these empty strings on every apply, so they must be present as known keys.
+var (
+	// Common to all load balancer types; also the fallback for unknown types.
+	lbBaseAttributeDefaults = map[string]string{
+		"deletion_protection.enabled":       "false",
+		"load_balancing.cross_zone.enabled": "false",
+	}
+
+	// ALB defaults match real AWS values as of the aws-sdk-go 1.55 elbv2 API.
+	albAttributeDefaults = map[string]string{
+		"deletion_protection.enabled":                              "false",
+		"load_balancing.cross_zone.enabled":                        "true",
+		"access_logs.s3.enabled":                                   "false",
+		"access_logs.s3.bucket":                                    "",
+		"access_logs.s3.prefix":                                    "",
+		"connection_logs.s3.enabled":                               "false",
+		"connection_logs.s3.bucket":                                "",
+		"connection_logs.s3.prefix":                                "",
+		"idle_timeout.timeout_seconds":                             "60",
+		"client_keep_alive.seconds":                                "3600",
+		"routing.http.desync_mitigation_mode":                      "defensive",
+		"routing.http.drop_invalid_header_fields.enabled":          "false",
+		"routing.http.preserve_host_header.enabled":                "false",
+		"routing.http.x_amzn_tls_version_and_cipher_suite.enabled": "false",
+		"routing.http.xff_client_port.enabled":                     "false",
+		"routing.http.xff_header_processing.mode":                  "append",
+		"routing.http2.enabled":                                    "true",
+		"waf.fail_open.enabled":                                    "false",
+		"zonal_shift.config.enabled":                               "false",
+	}
+
+	nlbAttributeDefaults = map[string]string{
+		"deletion_protection.enabled":       "false",
+		"load_balancing.cross_zone.enabled": "false",
+		"access_logs.s3.enabled":            "false",
+		"access_logs.s3.bucket":             "",
+		"access_logs.s3.prefix":             "",
+		"dns_record.client_routing_policy":  "any_availability_zone",
+		"ipv6.deny_all_igw_traffic":         "false",
+		"zonal_shift.config.enabled":        "false",
+	}
+
+	targetGroupAttributeDefaults = map[string]string{
 		"deregistration_delay.timeout_seconds":  "300",
 		"stickiness.enabled":                    "false",
 		"stickiness.type":                       "lb_cookie",
@@ -292,4 +349,4 @@ func DefaultTargetGroupAttributes() map[string]string {
 		"load_balancing.algorithm.type":         "round_robin",
 		"slow_start.duration_seconds":           "0",
 	}
-}
+)

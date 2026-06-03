@@ -74,6 +74,15 @@ func OIDCJWKSKey(cluster string) string {
 	return fmt.Sprintf("clusters/%s/oidc-jwks.json", cluster)
 }
 
+// OIDCJWKSVerifiedKey returns the KV key marking that the K3s-VM-published JWKS
+// passed the controller cross-check (kid + kty match the controller-generated
+// keypair). The reconciler gates the ACTIVE transition on this marker, NOT on
+// OIDCJWKSKey — the controller pre-seeds OIDCJWKSKey at create time, so its
+// presence proves nothing about the running cluster's actual signing key.
+func OIDCJWKSVerifiedKey(cluster string) string {
+	return fmt.Sprintf("clusters/%s/oidc-jwks-verified", cluster)
+}
+
 // AdminKubeconfigKey returns the KV key for a cluster's encrypted admin
 // kubeconfig (used by the spinifex-side nodegroup reconciler).
 func AdminKubeconfigKey(cluster string) string {

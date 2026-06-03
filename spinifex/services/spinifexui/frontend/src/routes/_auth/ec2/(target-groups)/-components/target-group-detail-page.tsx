@@ -1,4 +1,3 @@
-import type { Tag } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
@@ -12,6 +11,7 @@ import {
   AttributesEditor,
   targetGroupAttributeSpecs,
 } from "@/components/elbv2/attributes-editor"
+import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { TargetsTab } from "@/components/elbv2/targets-tab"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
@@ -20,6 +20,7 @@ import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import {
   useDeleteTargetGroup,
   useModifyTargetGroupAttributes,
+  useUpdateTags,
 } from "@/mutations/elbv2"
 import {
   elbv2TagsQueryOptions,
@@ -41,6 +42,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
 
   const deleteMutation = useDeleteTargetGroup()
   const modifyAttrsMutation = useModifyTargetGroupAttributes()
+  const updateTagsMutation = useUpdateTags()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
 
@@ -195,22 +197,21 @@ export function TargetGroupDetailPage({ arn }: Props) {
           </TabsPanel>
 
           <TabsPanel value="tags">
-            {tgTags.length > 0 ? (
-              <DetailCard>
-                <DetailCard.Header>Tags</DetailCard.Header>
-                <DetailCard.Content>
-                  {tgTags.map((tag: Tag) => (
-                    <DetailRow
-                      key={tag.Key ?? ""}
-                      label={tag.Key ?? ""}
-                      value={tag.Value}
-                    />
-                  ))}
-                </DetailCard.Content>
-              </DetailCard>
-            ) : (
-              <p className="text-muted-foreground">No tags.</p>
-            )}
+            <TagsEditor
+              error={updateTagsMutation.error}
+              isPending={updateTagsMutation.isPending}
+              isSuccess={updateTagsMutation.isSuccess}
+              onSubmit={(tags) =>
+                updateTagsMutation.mutate({
+                  resourceArn: arn,
+                  tags,
+                  initialKeys: tgTags
+                    .map((t) => t.Key ?? "")
+                    .filter((k) => k.length > 0),
+                })
+              }
+              tags={tgTags}
+            />
           </TabsPanel>
         </Tabs>
       </div>

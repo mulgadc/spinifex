@@ -5,7 +5,9 @@ package lbagent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -20,8 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
 )
 
@@ -43,8 +44,9 @@ type Agent struct {
 	pidPath    string
 	socketPath string // HAProxy stats socket
 
-	signer *v4.Signer
-	client *http.Client
+	accessKey string
+	secretKey string
+	client    *http.Client
 
 	localConfigHash string
 	stopCh          chan struct{}
@@ -70,9 +72,6 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		return nil, fmt.Errorf("region is required")
 	}
 
-	creds := credentials.NewStaticCredentials(accessKey, secretKey, "")
-	signer := v4.NewSigner(creds)
-
 	// Use system CA trust store (CA cert injected via cloud-init ca_certs).
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -93,7 +92,8 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		configPath: DefaultConfigPath,
 		pidPath:    DefaultPIDPath,
 		socketPath: fmt.Sprintf("/tmp/spinifex-haproxy/lb-%s.sock", lbID),
-		signer:     signer,
+		accessKey:  accessKey,
+		secretKey:  secretKey,
 		client:     client,
 		stopCh:     make(chan struct{}),
 		reloadFn:   reloadHAProxy,
@@ -238,8 +238,9 @@ func (a *Agent) signedPost(params url.Values) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	_, err = a.signer.Sign(req, bytes.NewReader([]byte(body)), "elasticloadbalancing", a.region, time.Now())
-	if err != nil {
+	sum := sha256.Sum256([]byte(body))
+	payloadHash := hex.EncodeToString(sum[:])
+	if err := auth.SignReq(req, a.accessKey, a.secretKey, payloadHash, "elasticloadbalancing", a.region); err != nil {
 		return nil, fmt.Errorf("sign request: %w", err)
 	}
 

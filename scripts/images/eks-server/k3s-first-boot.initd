@@ -4,11 +4,18 @@
 # once the sentinel file is gone.
 
 description="K3s first-boot publisher (node-token + admin kubeconfig)"
+# Backgrounded: the publisher waits up to 5min for K3s /healthz before it can
+# read the node-token + kubeconfig, so it must not block the default runlevel.
+# command_background is also required for output_log/error_log — start-stop-daemon
+# rejects --stdout/--stderr without --background ("Failed to start k3s-first-boot").
 command="/usr/local/sbin/k3s-first-boot"
-command_background="no"
+command_background="yes"
 pidfile="/run/k3s-first-boot.pid"
-output_log="/var/log/k3s-first-boot.log"
-error_log="/var/log/k3s-first-boot.log"
+# Route to the serial console so the bootstrap publisher's progress (healthz
+# wait, token/kubeconfig publish, errors) is visible in the orchestrator's
+# host-side console capture — the VM has no operator login. Low volume.
+output_log="/dev/console"
+error_log="/dev/console"
 
 depend() {
     need k3s

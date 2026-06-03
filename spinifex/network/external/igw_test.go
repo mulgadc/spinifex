@@ -375,6 +375,114 @@ func TestRemoveNATGatewaySubnetEgress_PropagatesDeleteError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestEnsureSystemInstanceEgress installs the /32 reroute plus the snat-only
+// NAT, and asserts no inbound dnat_and_snat row exists (egress-only).
+func TestEnsureSystemInstanceEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Equal(t, policy.SystemInstanceEgressPriority, policies[0].Priority)
+	assert.Contains(t, policies[0].Match, "ip4.src == 10.0.4.10/32")
+
+	var snat, dnat *nbdb.NAT
+	for _, n := range m.NATs {
+		switch n.Type {
+		case "snat":
+			snat = n
+		case "dnat_and_snat":
+			dnat = n
+		}
+	}
+	require.NotNil(t, snat, "egress snat must be installed")
+	assert.Equal(t, "203.0.113.7", snat.ExternalIP)
+	assert.Equal(t, "10.0.4.10/32", snat.LogicalIP)
+	assert.Nil(t, dnat, "egress-only: no inbound dnat_and_snat may be installed")
+}
+
+// TestEnsureSystemInstanceEgress_IsIdempotent re-runs install; row counts stay 1.
+func TestEnsureSystemInstanceEgress_IsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, nil)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+	require.NoError(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Len(t, policies, 1)
+	snatCount := 0
+	for _, n := range m.NATs {
+		if n.Type == "snat" {
+			snatCount++
+		}
+	}
+	assert.Equal(t, 1, snatCount)
+}
+
+// TestRemoveSystemInstanceEgress tears down both the reroute and the snat and
+// is idempotent on a second call.
+func TestRemoveSystemInstanceEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, nil)
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	require.NoError(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+	require.NoError(t, mgr.RemoveSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+	for _, n := range m.NATs {
+		assert.NotEqual(t, "snat", n.Type, "snat must be removed")
+	}
+
+	require.NoError(t, mgr.RemoveSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+}
+
+// TestSystemInstanceEgress_RejectsBadArgs guards validation for malformed events.
+func TestSystemInstanceEgress_RejectsBadArgs(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, nil)
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	require.Error(t, mgr.EnsureSystemInstanceEgress(ctx, "", "subnet-k3s", "10.0.4.10", "203.0.113.7"))
+	require.Error(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "", "10.0.4.10", "203.0.113.7"))
+	require.Error(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "not-an-ip", "203.0.113.7"))
+	require.Error(t, mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", ""))
+}
+
+// TestEnsureSystemInstanceEgress_RequiresAttachedIGW asserts a clear error when
+// no gateway nexthop exists — without it the reroute would be unreachable.
+func TestEnsureSystemInstanceEgress_RequiresAttachedIGW(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", PrefixLen: 24} // no Gateway → no centralized nexthop
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeCentralized, pool, failingAllocator{}, nil)
+
+	err := mgr.EnsureSystemInstanceEgress(ctx, "vpc-1", "subnet-k3s", "10.0.4.10", "203.0.113.7")
+	require.Error(t, err)
+}
+
 // TestRemoveSubnetEgress_RejectsEmptyArgs covers the IGW-priority sibling of
 // the NATGW empty-arg guard. Both vpcID and subnetID are mandatory.
 func TestRemoveSubnetEgress_RejectsEmptyArgs(t *testing.T) {

@@ -329,6 +329,41 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 		"natgw_id", evt.NatGatewayId)
 }
 
+func (s *Subscriber) handleAddSystemEgress(msg *nats.Msg) {
+	var evt SystemEgressEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.add-system-egress event", "err", err)
+		return
+	}
+	ctx := context.Background()
+	if err := s.igw.EnsureSystemInstanceEgress(ctx, evt.VpcId, evt.SubnetId, evt.InstanceIp, evt.ExternalIp); err != nil {
+		slog.Error("subscribers: EnsureSystemInstanceEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+			"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp, "err", err)
+		return
+	}
+	slog.Info("subscribers: system instance egress installed",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+		"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp)
+}
+
+func (s *Subscriber) handleDeleteSystemEgress(msg *nats.Msg) {
+	var evt SystemEgressEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.delete-system-egress event", "err", err)
+		return
+	}
+	ctx := context.Background()
+	if err := s.igw.RemoveSystemInstanceEgress(ctx, evt.VpcId, evt.SubnetId, evt.InstanceIp, evt.ExternalIp); err != nil {
+		slog.Error("subscribers: RemoveSystemInstanceEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+			"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp, "err", err)
+		return
+	}
+	slog.Info("subscribers: system instance egress removed",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "instance_ip", evt.InstanceIp)
+}
+
 func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 	var evt NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {

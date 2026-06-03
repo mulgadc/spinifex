@@ -4,6 +4,7 @@ import {
   type RulePriorityPair,
   type Tag,
   type TargetDescription,
+  AddTagsCommand,
   CreateListenerCommand,
   CreateLoadBalancerCommand,
   CreateRuleCommand,
@@ -18,7 +19,9 @@ import {
   ModifyRuleCommand,
   ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
+  RemoveTagsCommand,
   SetRulePrioritiesCommand,
+  SetSecurityGroupsCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
@@ -71,6 +74,76 @@ export function useModifyLoadBalancerAttributes() {
           variables.loadBalancerArn,
           "attributes",
         ],
+      })
+    },
+  })
+}
+
+export interface UpdateTagsParams {
+  // ARN of any taggable ELBv2 resource (load balancer, target group, listener,
+  // listener rule).
+  resourceArn: string
+  // Desired final tag set after the edit.
+  tags: { key: string; value: string }[]
+  // Tag keys present before the edit, used to compute removals.
+  initialKeys: string[]
+}
+
+// useUpdateTags reconciles a resource's tags to the desired set by diffing
+// against the prior keys: it overwrites the final tags via AddTags and deletes
+// any dropped keys via RemoveTags. Either call is skipped when it has no work.
+export function useUpdateTags() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: UpdateTagsParams) => {
+      const finalKeys = new Set(params.tags.map((t) => t.key))
+      const toRemove = params.initialKeys.filter((k) => !finalKeys.has(k))
+      const client = getElbv2Client()
+
+      if (params.tags.length > 0) {
+        await client.send(
+          new AddTagsCommand({
+            ResourceArns: [params.resourceArn],
+            Tags: params.tags.map((t) => ({ Key: t.key, Value: t.value })),
+          }),
+        )
+      }
+      if (toRemove.length > 0) {
+        await client.send(
+          new RemoveTagsCommand({
+            ResourceArns: [params.resourceArn],
+            TagKeys: toRemove,
+          }),
+        )
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["elbv2", "tags"] })
+    },
+  })
+}
+
+export interface SetSecurityGroupsParams {
+  loadBalancerArn: string
+  securityGroupIds: string[]
+}
+
+// useSetSecurityGroups replaces the security groups associated with a load
+// balancer (SetSecurityGroups). The new set takes effect on the live data plane
+// server-side; the LB query is invalidated so the detail page reflects it.
+export function useSetSecurityGroups() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: SetSecurityGroupsParams) => {
+      const command = new SetSecurityGroupsCommand({
+        LoadBalancerArn: params.loadBalancerArn,
+        SecurityGroups: params.securityGroupIds,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "loadBalancers", variables.loadBalancerArn],
       })
     },
   })

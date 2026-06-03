@@ -56,8 +56,8 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 		Y: base64.RawURLEncoding.EncodeToString(priv.Y.Bytes()),
 	}}}
 
-	issuer := fmt.Sprintf("https://oidc.eks.%s.%s/%s/%s",
-		testWebRegion, testWebSuffix, accountID, testWebClusterName)
+	issuer := fmt.Sprintf("https://gw.%s/oidc/eks/%s/%s/%s",
+		testWebSuffix, testWebRegion, accountID, testWebClusterName)
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
 	federatedARN := handlers_iam.OIDCProviderARN(accountID, issuerHostPath)
 
@@ -346,8 +346,8 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	const kid = "unregistered"
-	issuer := fmt.Sprintf("https://oidc.eks.%s.%s/%s/%s",
-		testWebRegion, testWebSuffix, testCallerAccountID, "unregistered-cluster")
+	issuer := fmt.Sprintf("https://gw.%s/oidc/eks/%s/%s/%s",
+		testWebSuffix, testWebRegion, testCallerAccountID, "unregistered-cluster")
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
 	federatedARN := handlers_iam.OIDCProviderARN(testCallerAccountID, issuerHostPath)
 

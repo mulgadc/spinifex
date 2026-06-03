@@ -12,7 +12,20 @@ import (
 )
 
 func TestParseEKSIssuerURL_Valid(t *testing.T) {
-	accountID, clusterName, err := ParseEKSIssuerURL("https://oidc.eks.au-mel-1.mulga.local/123456789012/my-cluster")
+	accountID, clusterName, err := ParseEKSIssuerURL("https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/my-cluster")
+	require.NoError(t, err)
+	assert.Equal(t, "123456789012", accountID)
+	assert.Equal(t, "my-cluster", clusterName)
+}
+
+// Cross-component contract: a token whose iss is built by ClusterOIDCIssuer
+// must parse cleanly via ParseEKSIssuerURL and resolve to the same
+// (accountID, clusterName). This is the collision that bead 165.11 fixes.
+func TestParseEKSIssuerURL_RoundTripsClusterOIDCIssuer(t *testing.T) {
+	issuer, err := handlers_eks.ClusterOIDCIssuer("https://10.0.0.1:9999", "au-mel-1", "123456789012", "my-cluster")
+	require.NoError(t, err)
+
+	accountID, clusterName, err := ParseEKSIssuerURL(issuer)
 	require.NoError(t, err)
 	assert.Equal(t, "123456789012", accountID)
 	assert.Equal(t, "my-cluster", clusterName)
@@ -23,13 +36,15 @@ func TestParseEKSIssuerURL_Invalid(t *testing.T) {
 		name   string
 		issuer string
 	}{
-		{"http scheme", "http://oidc.eks.au-mel-1.mulga.local/123456789012/c1"},
-		{"wrong host prefix", "https://attacker.example.com/123456789012/c1"},
-		{"single segment", "https://oidc.eks.au-mel-1.mulga.local/123456789012"},
-		{"three segments", "https://oidc.eks.au-mel-1.mulga.local/123/c/extra"},
-		{"empty cluster segment", "https://oidc.eks.au-mel-1.mulga.local/123456789012/"},
-		{"empty account segment", "https://oidc.eks.au-mel-1.mulga.local//c1"},
-		{"empty path", "https://oidc.eks.au-mel-1.mulga.local"},
+		{"http scheme", "http://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/c1"},
+		{"missing host", "https:///oidc/eks/au-mel-1/123456789012/c1"},
+		{"wrong path prefix", "https://10.0.0.1:9999/foo/eks/au-mel-1/123456789012/c1"},
+		{"too few segments", "https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012"},
+		{"too many segments", "https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/c1/extra"},
+		{"empty account segment", "https://10.0.0.1:9999/oidc/eks/au-mel-1//c1"},
+		{"empty cluster segment", "https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/"},
+		{"empty path", "https://10.0.0.1:9999"},
+		{"legacy aws two-segment shape", "https://oidc.eks.au-mel-1.mulga.local/123456789012/c1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

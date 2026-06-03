@@ -1,5 +1,7 @@
 package awserrors
 
+import "strings"
+
 type ErrorMessage struct {
 	HTTPCode int
 	Message  string
@@ -366,6 +368,9 @@ var (
 	ErrorResourceCountExceeded                                 = "ResourceCountExceeded"
 	ErrorResourceCountLimitExceeded                            = "ResourceCountLimitExceeded"
 	ErrorResourceLimitExceeded                                 = "ResourceLimitExceeded"
+	ErrorResourceNotFound                                      = "ResourceNotFound"
+	ErrorEKSResourceInUse                                      = "ResourceInUseException"
+	ErrorEKSResourceNotFound                                   = "ResourceNotFoundException"
 	ErrorRetryableError                                        = "RetryableError"
 	ErrorRouteAlreadyExists                                    = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                                    = "RouteLimitExceeded"
@@ -479,6 +484,15 @@ func ValidErrorCode(code string) string {
 		return code
 	}
 	return ErrorServerInternal
+}
+
+// IsErrorCode reports whether err carries the named AWS error code. Service
+// handlers return these codes as plain strings (errors.New(code)), commonly
+// wrapped with %w by orchestration callers, so the match is a substring test
+// against err.Error() rather than equality. Use it to classify a delete error
+// as idempotent (already-gone) or retryable (still-in-use) in teardown paths.
+func IsErrorCode(err error, code string) bool {
+	return err != nil && strings.Contains(err.Error(), code)
 }
 
 var ErrorLookup = map[string]ErrorMessage{
@@ -842,6 +856,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceCountExceeded:                                 {HTTPCode: 400, Message: "You have exceeded the number of resources allowed for this request; for example, if you try to launch more instances than AWS allows in a single request. This limit is separate from your individual resource limit. If you get this error, break up your request into smaller requests; for example, if you are launching 15 instances, try launching 5 instances in 3 separate requests."},
 	ErrorResourceCountLimitExceeded:                            {HTTPCode: 400, Message: "You have exceeded a resource limit for creating routes."},
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
+	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
+	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
+	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},
@@ -937,7 +954,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2InvalidScheme:                {HTTPCode: 400, Message: "The specified scheme is not valid. Specify 'internet-facing' or 'internal'."},
 	ErrorELBv2SubnetNotFound:               {HTTPCode: 400, Message: "The specified subnet does not exist."},
 	ErrorELBv2AvailabilityZoneNotSupported: {HTTPCode: 400, Message: "The specified Availability Zone is not supported."},
-	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "Security groups are not supported for load balancers with type 'network'."},
+	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "The requested configuration change is not valid."},
 	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found."},
 	ErrorELBv2PriorityInUse:                {HTTPCode: 400, Message: "The specified priority is in use."},
 	ErrorELBv2TooManyRules:                 {HTTPCode: 400, Message: "You've reached the limit on the number of rules per load balancer."},

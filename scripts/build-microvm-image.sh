@@ -26,7 +26,11 @@ echo "[build-microvm-image] build dir: $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 # --- Verify non-negotiable tools ---
-for tool in cpio gzip find; do
+# fakeroot is mandatory: device nodes are written into the cpio archive inside a
+# faked-root environment so no real device node is ever created on the host
+# filesystem (which previously required sudo mknod and risked clobbering host
+# /dev/null on cleanup).
+for tool in cpio gzip find fakeroot; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required tool not found: $tool" >&2
         exit 1
@@ -35,6 +39,13 @@ done
 
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
+# Guard: every destructive op below targets "$CHROOT_DIR/...". An empty or
+# unexpected value would aim rm -rf at the host (e.g. /dev). Refuse anything that
+# is not a freshly-created temp dir.
+case "${CHROOT_DIR:?mktemp -d returned empty}" in
+    /tmp/*|/var/tmp/*|"${TMPDIR:-/nonexistent}"/*) ;;
+    *) echo "ERROR: refusing to use unexpected CHROOT_DIR: $CHROOT_DIR" >&2; exit 1 ;;
+esac
 CONTAINER_TOOL=""
 CONTAINER_CID=""
 cleanup() {
@@ -93,16 +104,14 @@ else
     $CONTAINER_TOOL export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
 fi
 
-# --- Fix /dev device nodes ---
+# --- /dev: empty mountpoint only ---
 # tar extraction without root silently creates 0-byte regular files for device
-# nodes (mknod requires CAP_MKNOD). The kernel opens /dev/console to wire
-# init's stdio to the serial console; a regular file there causes all init
-# output to be silently discarded. Recreate the two nodes needed before
-# devtmpfs mounts (which provides the rest at runtime).
-rm -rf "$CHROOT_DIR/dev"
+# nodes. Drop them and leave an empty /dev mountpoint. The two static nodes the
+# kernel needs (/dev/console to wire init's stdio, /dev/null) are written into
+# the cpio archive under fakeroot at pack time — NOT created on the host. init
+# mounts devtmpfs over /dev as its first action for everything else at runtime.
+rm -rf "${CHROOT_DIR:?}/dev"
 mkdir "$CHROOT_DIR/dev"
-sudo mknod -m 600 "$CHROOT_DIR/dev/console" c 5 1
-sudo mknod -m 666 "$CHROOT_DIR/dev/null"    c 1 3
 
 # --- Place init script ---
 echo "[build-microvm-image] installing init.sh as /init..."
@@ -238,10 +247,15 @@ rm -rf "$CHROOT_DIR/boot"
 # --- Build initramfs ---
 INITRAMFS_OUT="$BUILD_DIR/initramfs.cpio.gz"
 echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
-(
-    cd "$CHROOT_DIR"
-    find . | cpio --quiet -o -H newc | gzip -9 > "$INITRAMFS_OUT"
-)
+# Create the static device nodes and pack the archive inside a single fakeroot
+# session: mknod/cpio see faked device entries and write real char-device
+# records into the cpio, while the host filesystem never gets an actual node.
+fakeroot sh -c '
+    cd "$1" || exit 1
+    mknod -m 600 dev/console c 5 1
+    mknod -m 666 dev/null    c 1 3
+    find . | cpio --quiet -o -H newc | gzip -9 > "$2"
+' _ "$CHROOT_DIR" "$INITRAMFS_OUT"
 
 # --- Log artifact sizes ---
 echo ""

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
@@ -47,15 +48,34 @@ func (s *JWKS) FindByKID(kid string) *JWK {
 	return nil
 }
 
-// ParseEKSIssuerURL extracts the (accountID, clusterName) pair encoded in an
-// EKS OIDC issuer URL of the form:
+// eksIssuerPathSegments is the fixed path layout of a spinifex EKS OIDC issuer:
 //
-//	https://oidc.eks.{region}.{suffix}/{accountID}/{clusterName}
+//	oidc / eks / {region} / {accountID} / {clusterName}
+const (
+	eksIssuerPathSegments = 5
+	eksIssuerSegOIDC      = 0
+	eksIssuerSegEKS       = 1
+	eksIssuerSegRegion    = 2
+	eksIssuerSegAccountID = 3
+	eksIssuerSegCluster   = 4
+)
+
+// ParseEKSIssuerURL extracts the (accountID, clusterName) pair encoded in a
+// spinifex EKS OIDC issuer URL of the form:
 //
-// Returns an error for any URL that does not match that exact two-segment
-// path structure under an `oidc.eks.` host prefix — defensive parsing prevents
-// a maliciously crafted `iss` claim from steering the JWKS lookup at an
-// attacker-controlled cluster bucket.
+//	https://{gateway-host}/oidc/eks/{region}/{accountID}/{clusterName}
+//
+// This matches the URL ClusterOIDCIssuer (handlers/eks) emits and that awsgw
+// serves /.well-known/openid-configuration + /keys under. The host is the
+// awsgw gateway (an IP:port on bare-metal/on-prem, not an `oidc.eks.*` vhost),
+// so host trust is established by the IAM OIDC-provider registration — the full
+// issuer string is the registry key in verifyOIDCProviderRegistered — and by
+// the JWKS signature check, not by a host name pattern.
+//
+// Returns an error for any URL that does not match this exact 5-segment path
+// structure: defensive parsing pins accountID and clusterName at fixed
+// positions so a maliciously crafted `iss` claim cannot steer the JWKS lookup
+// at a different cluster bucket.
 func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error) {
 	u, err := url.Parse(issuer)
 	if err != nil {
@@ -64,14 +84,18 @@ func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error)
 	if u.Scheme != "https" {
 		return "", "", errors.New("issuer URL must use https scheme")
 	}
-	if !strings.HasPrefix(u.Host, "oidc.eks.") {
-		return "", "", errors.New("issuer host must start with oidc.eks")
+	if u.Host == "" {
+		return "", "", errors.New("issuer URL missing host")
 	}
 	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(segments) != 2 || segments[0] == "" || segments[1] == "" {
-		return "", "", errors.New("issuer path must be /{accountID}/{clusterName}")
+	if len(segments) != eksIssuerPathSegments ||
+		segments[eksIssuerSegOIDC] != "oidc" || segments[eksIssuerSegEKS] != "eks" {
+		return "", "", errors.New("issuer path must be /oidc/eks/{region}/{accountID}/{clusterName}")
 	}
-	return segments[0], segments[1], nil
+	if slices.Contains(segments, "") {
+		return "", "", errors.New("issuer path has empty segment")
+	}
+	return segments[eksIssuerSegAccountID], segments[eksIssuerSegCluster], nil
 }
 
 // FetchClusterJWKS reads the JWKS document for an EKS cluster from the

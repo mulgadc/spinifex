@@ -1195,8 +1195,9 @@ func TestModifyListener_Protocol(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
-		ListenerArn: lstOut.Listeners[0].ListenerArn,
-		Protocol:    aws.String("HTTPS"),
+		ListenerArn:  lstOut.Listeners[0].ListenerArn,
+		Protocol:     aws.String("HTTPS"),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "HTTPS", *out.Listeners[0].Protocol)
@@ -1419,10 +1420,14 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 			}, testAccountID)
 			require.NoError(t, err)
 
-			out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+			modIn := &elbv2.ModifyListenerInput{
 				ListenerArn: lstOut.Listeners[0].ListenerArn,
 				Protocol:    aws.String(tc.listenerProto),
-			}, testAccountID)
+			}
+			if protocolRequiresCert(tc.listenerProto) {
+				modIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
+			}
+			out, err := svc.ModifyListener(modIn, testAccountID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.listenerProto, *out.Listeners[0].Protocol)
 		})
@@ -1604,14 +1609,18 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 				Port:     aws.Int64(8080),
 			}, testAccountID)
 
-			out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+			createIn := &elbv2.CreateListenerInput{
 				LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 				Protocol:        aws.String(proto),
 				Port:            aws.Int64(8080),
 				DefaultActions: []*elbv2.Action{
 					{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
 				},
-			}, testAccountID)
+			}
+			if protocolRequiresCert(proto) {
+				createIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
+			}
+			out, err := svc.CreateListener(createIn, testAccountID)
 
 			require.NoError(t, err)
 			assert.Equal(t, proto, *out.Listeners[0].Protocol)
@@ -1707,6 +1716,7 @@ func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TLS"),
 		Port:            aws.Int64(443),
+		Certificates:    []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
 		},

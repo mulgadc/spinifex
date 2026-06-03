@@ -474,6 +474,8 @@ var (
 	ErrorELBv2TooManyActions               = "TooManyActions"
 	ErrorELBv2InvalidRulePriority          = "InvalidRulePriority"
 	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
+	ErrorELBv2CertificateNotFound          = "CertificateNotFound"
+	ErrorELBv2SSLPolicyNotFound            = "SSLPolicyNotFound"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -961,4 +963,6 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2TooManyActions:               {HTTPCode: 400, Message: "You've reached the limit on the number of actions per rule."},
 	ErrorELBv2InvalidRulePriority:          {HTTPCode: 400, Message: "The specified rule priority is not valid. Priority must be between 1 and 50000."},
 	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
+	ErrorELBv2CertificateNotFound:          {HTTPCode: 400, Message: "One or more specified certificates do not exist."},
+	ErrorELBv2SSLPolicyNotFound:            {HTTPCode: 400, Message: "The specified SSL policy does not exist."},
 }

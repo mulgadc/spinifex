@@ -22,9 +22,7 @@ describe("SecurityGroupsEditor", () => {
       />,
     )
 
-    expect(
-      screen.getByLabelText("Security group sg-1 (default)"),
-    ).toBeChecked()
+    expect(screen.getByLabelText("Security group sg-1 (default)")).toBeChecked()
     expect(screen.getByLabelText("Security group sg-2 (web)")).not.toBeChecked()
     expect(screen.getByText("No changes")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled()
@@ -63,9 +61,7 @@ describe("SecurityGroupsEditor", () => {
     await user.click(screen.getByLabelText("Security group sg-1 (default)"))
 
     expect(screen.getByText(/at least one security group/i)).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: /save changes/i }),
-    ).toBeDisabled()
+    expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 

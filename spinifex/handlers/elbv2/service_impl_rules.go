@@ -559,25 +559,35 @@ func (s *ELBv2ServiceImpl) validateAndConvertRuleActions(in []*elbv2.Action, lis
 		if a == nil || a.Type == nil {
 			return nil, errors.New(awserrors.ErrorMissingParameter)
 		}
-		if *a.Type != ActionTypeForward {
-			// redirect / fixed-response / authenticate-* deferred to mulga-951.
+		action := listenerActionFromSDK(a)
+		switch action.Type {
+		case ActionTypeForward:
+			if action.TargetGroupArn == "" {
+				return nil, errors.New(awserrors.ErrorMissingParameter)
+			}
+			tg, err := s.store.GetTargetGroupByArn(action.TargetGroupArn)
+			if err != nil {
+				slog.Error("rule action: failed to get target group", "arn", action.TargetGroupArn, "err", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if tg == nil {
+				return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+			}
+			if !isCompatibleProtocol(listenerProto, tg.Protocol) {
+				return nil, errors.New(awserrors.ErrorELBv2IncompatibleProtocols)
+			}
+		case ActionTypeRedirect:
+			if err := validateRedirectAction(action.Redirect); err != nil {
+				return nil, err
+			}
+		case ActionTypeFixedResponse:
+			if action.FixedResponse == nil {
+				return nil, errors.New(awserrors.ErrorMissingParameter)
+			}
+		default:
 			return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 		}
-		if a.TargetGroupArn == nil || *a.TargetGroupArn == "" {
-			return nil, errors.New(awserrors.ErrorMissingParameter)
-		}
-		tg, err := s.store.GetTargetGroupByArn(*a.TargetGroupArn)
-		if err != nil {
-			slog.Error("rule action: failed to get target group", "arn", *a.TargetGroupArn, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		if tg == nil {
-			return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
-		}
-		if !isCompatibleProtocol(listenerProto, tg.Protocol) {
-			return nil, errors.New(awserrors.ErrorELBv2IncompatibleProtocols)
-		}
-		out = append(out, ListenerAction{Type: *a.Type, TargetGroupArn: *a.TargetGroupArn})
+		out = append(out, action)
 	}
 	return out, nil
 }
@@ -606,10 +616,7 @@ func ruleRecordToSDK(r *RuleRecord) *elbv2.Rule {
 		rule.Conditions = append(rule.Conditions, ruleConditionToSDK(c))
 	}
 	for _, a := range r.Actions {
-		rule.Actions = append(rule.Actions, &elbv2.Action{
-			Type:           aws.String(a.Type),
-			TargetGroupArn: aws.String(a.TargetGroupArn),
-		})
+		rule.Actions = append(rule.Actions, listenerActionToSDK(a))
 	}
 	return rule
 }
@@ -657,10 +664,7 @@ func defaultRuleFromListener(l *ListenerRecord) *elbv2.Rule {
 		IsDefault: aws.Bool(true),
 	}
 	for _, a := range l.DefaultActions {
-		rule.Actions = append(rule.Actions, &elbv2.Action{
-			Type:           aws.String(a.Type),
-			TargetGroupArn: aws.String(a.TargetGroupArn),
-		})
+		rule.Actions = append(rule.Actions, listenerActionToSDK(a))
 	}
 	return rule
 }

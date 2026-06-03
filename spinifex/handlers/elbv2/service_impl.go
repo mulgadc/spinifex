@@ -1657,7 +1657,64 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 		}
 		action.FixedResponse = fr
 	}
+	if a.RedirectConfig != nil {
+		rd := &RedirectAction{}
+		if a.RedirectConfig.Protocol != nil {
+			rd.Protocol = *a.RedirectConfig.Protocol
+		}
+		if a.RedirectConfig.Host != nil {
+			rd.Host = *a.RedirectConfig.Host
+		}
+		if a.RedirectConfig.Port != nil {
+			rd.Port = *a.RedirectConfig.Port
+		}
+		if a.RedirectConfig.Path != nil {
+			rd.Path = *a.RedirectConfig.Path
+		}
+		if a.RedirectConfig.Query != nil {
+			rd.Query = *a.RedirectConfig.Query
+		}
+		if a.RedirectConfig.StatusCode != nil {
+			rd.StatusCode = *a.RedirectConfig.StatusCode
+		}
+		action.Redirect = rd
+	}
 	return action
+}
+
+// validateListenerAction enforces the per-type action contract for listener
+// default actions and rule actions. Forward actions are validated against the
+// target group elsewhere; this covers redirect (status code + render-safe
+// fields) so invalid input fails at the API instead of being silently
+// defaulted by the renderer.
+func validateListenerAction(a ListenerAction) error {
+	if a.Type == ActionTypeRedirect {
+		if a.Redirect == nil {
+			return errors.New(awserrors.ErrorMissingParameter)
+		}
+		return validateRedirectAction(a.Redirect)
+	}
+	return nil
+}
+
+// validateRedirectAction rejects an unsupported status code or any field that
+// would break the HAProxy redirect directive once the known AWS placeholders
+// are stripped.
+func validateRedirectAction(rd *RedirectAction) error {
+	if rd == nil {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	switch rd.StatusCode {
+	case "HTTP_301", "HTTP_302":
+	default:
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	for _, f := range []string{rd.Protocol, rd.Host, rd.Port, rd.Path, rd.Query} {
+		if !validRedirectField(f) {
+			return errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+	return nil
 }
 
 func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
@@ -1739,7 +1796,11 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 
 	var actions []ListenerAction
 	for _, a := range input.DefaultActions {
-		actions = append(actions, listenerActionFromSDK(a))
+		action := listenerActionFromSDK(a)
+		if err := validateListenerAction(action); err != nil {
+			return nil, err
+		}
+		actions = append(actions, action)
 	}
 
 	tags := make(map[string]string)
@@ -1895,6 +1956,9 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 		var actions []ListenerAction
 		for _, a := range input.DefaultActions {
 			action := listenerActionFromSDK(a)
+			if err := validateListenerAction(action); err != nil {
+				return nil, err
+			}
 			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
 				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
 				if tgErr != nil {
@@ -2400,24 +2464,52 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 	}
 
 	for _, a := range r.DefaultActions {
-		action := &elbv2.Action{Type: aws.String(a.Type)}
-		if a.TargetGroupArn != "" {
-			action.TargetGroupArn = aws.String(a.TargetGroupArn)
-		}
-		if a.FixedResponse != nil {
-			fr := &elbv2.FixedResponseActionConfig{
-				StatusCode: aws.String(a.FixedResponse.StatusCode),
-			}
-			if a.FixedResponse.ContentType != "" {
-				fr.ContentType = aws.String(a.FixedResponse.ContentType)
-			}
-			if a.FixedResponse.MessageBody != "" {
-				fr.MessageBody = aws.String(a.FixedResponse.MessageBody)
-			}
-			action.FixedResponseConfig = fr
-		}
-		listener.DefaultActions = append(listener.DefaultActions, action)
+		listener.DefaultActions = append(listener.DefaultActions, listenerActionToSDK(a))
 	}
 
 	return listener
+}
+
+// listenerActionToSDK converts a stored action into the AWS SDK shape,
+// preserving forward / fixed-response / redirect detail so DescribeListeners
+// and DescribeRules round-trip cleanly. Shared by listeners and rules.
+func listenerActionToSDK(a ListenerAction) *elbv2.Action {
+	action := &elbv2.Action{Type: aws.String(a.Type)}
+	if a.TargetGroupArn != "" {
+		action.TargetGroupArn = aws.String(a.TargetGroupArn)
+	}
+	if a.FixedResponse != nil {
+		fr := &elbv2.FixedResponseActionConfig{
+			StatusCode: aws.String(a.FixedResponse.StatusCode),
+		}
+		if a.FixedResponse.ContentType != "" {
+			fr.ContentType = aws.String(a.FixedResponse.ContentType)
+		}
+		if a.FixedResponse.MessageBody != "" {
+			fr.MessageBody = aws.String(a.FixedResponse.MessageBody)
+		}
+		action.FixedResponseConfig = fr
+	}
+	if a.Redirect != nil {
+		rd := &elbv2.RedirectActionConfig{
+			StatusCode: aws.String(a.Redirect.StatusCode),
+		}
+		if a.Redirect.Protocol != "" {
+			rd.Protocol = aws.String(a.Redirect.Protocol)
+		}
+		if a.Redirect.Host != "" {
+			rd.Host = aws.String(a.Redirect.Host)
+		}
+		if a.Redirect.Port != "" {
+			rd.Port = aws.String(a.Redirect.Port)
+		}
+		if a.Redirect.Path != "" {
+			rd.Path = aws.String(a.Redirect.Path)
+		}
+		if a.Redirect.Query != "" {
+			rd.Query = aws.String(a.Redirect.Query)
+		}
+		action.RedirectConfig = rd
+	}
+	return action
 }

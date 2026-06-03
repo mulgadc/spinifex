@@ -45,7 +45,9 @@ frontend {{.Name}}
 {{end}}
 {{range .Backends}}
 backend {{.Name}}
-{{- if .FixedResponse}}
+{{- if .Redirect}}
+    http-request redirect {{if .Redirect.Scheme}}scheme {{.Redirect.Scheme}}{{else}}location {{.Redirect.Location}}{{end}} code {{.Redirect.Code}}
+{{- else if .FixedResponse}}
     http-request return status {{.FixedResponse.StatusCode}}{{if .FixedResponse.ContentType}} content-type "{{.FixedResponse.ContentType}}"{{end}}{{if .FixedResponse.Body}} string "{{.FixedResponse.Body}}"{{end}}
 {{- else}}
     balance roundrobin{{if .HealthCheckPath}}
@@ -129,7 +131,8 @@ type HAProxyACL struct {
 }
 
 // HAProxyBackend represents a target group backend, or a synthetic backend that
-// emits a fixed response (when FixedResponse is set, the server fields are unused).
+// emits a fixed response or a redirect (when FixedResponse / Redirect is set,
+// the server fields are unused).
 type HAProxyBackend struct {
 	Name               string
 	HealthCheckPath    string
@@ -138,6 +141,7 @@ type HAProxyBackend struct {
 	HTTPCheck          bool
 	Servers            []HAProxyServer
 	FixedResponse      *HAProxyFixedResponse
+	Redirect           *HAProxyRedirect
 }
 
 // HAProxyFixedResponse renders an `http-request return` directive for a
@@ -146,6 +150,15 @@ type HAProxyFixedResponse struct {
 	StatusCode  string
 	ContentType string
 	Body        string
+}
+
+// HAProxyRedirect renders an `http-request redirect` directive. Exactly one of
+// Scheme (the scheme-only fast path, e.g. HTTP→HTTPS) or Location (a full
+// rebuilt URL with HAProxy log-format fetches) is set.
+type HAProxyRedirect struct {
+	Scheme   string
+	Location string
+	Code     string
 }
 
 // HAProxyServer represents a single target server.
@@ -273,6 +286,14 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 		backendAdded[name] = struct{}{}
 	}
 
+	addRedirectBackend := func(name string, rd *HAProxyRedirect) {
+		if _, ok := backendAdded[name]; ok {
+			return
+		}
+		cfg.Backends = append(cfg.Backends, HAProxyBackend{Name: name, Redirect: rd})
+		backendAdded[name] = struct{}{}
+	}
+
 	for _, l := range listeners {
 		if len(l.DefaultActions) == 0 {
 			continue
@@ -285,9 +306,9 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 		if isForwardDefault {
 			defaultBackendName = sanitizeName("bk", da.TargetGroupArn)
 		} else {
-			// fixed-response (or any non-forward default, e.g. the shared-ingress
-			// 404): synthesize a backend that returns the canned reply so HAProxy
-			// has a valid default_backend instead of a dangling reference.
+			// redirect / fixed-response (or any non-forward default, e.g. the
+			// shared-ingress 404): synthesize a backend so HAProxy has a valid
+			// default_backend instead of a dangling reference.
 			defaultBackendName = sanitizeName("bkdefault", l.ListenerArn)
 		}
 
@@ -299,25 +320,30 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 		}
 
 		if !isTCP {
-			rules := rulesByListener[l.ListenerArn]
-			for _, r := range rules {
-				rule, err := buildHAProxyRule(r)
+			for _, r := range rulesByListener[l.ListenerArn] {
+				backendName, err := registerRuleBackend(r, l, addBackend, addFixedResponseBackend, addRedirectBackend)
+				if err != nil {
+					return HAProxyConfig{}, err
+				}
+				rule, err := buildHAProxyRule(r, backendName)
 				if err != nil {
 					return HAProxyConfig{}, err
 				}
 				frontend.Rules = append(frontend.Rules, rule)
-				for _, a := range r.Actions {
-					if a.Type == ActionTypeForward && a.TargetGroupArn != "" {
-						addBackend(a.TargetGroupArn)
-					}
-				}
 			}
 		}
 
 		cfg.Frontends = append(cfg.Frontends, frontend)
-		if isForwardDefault {
+		switch {
+		case isForwardDefault:
 			addBackend(da.TargetGroupArn)
-		} else {
+		case da.Type == ActionTypeRedirect:
+			rd, err := buildRedirect(da.Redirect, l)
+			if err != nil {
+				return HAProxyConfig{}, err
+			}
+			addRedirectBackend(defaultBackendName, rd)
+		default:
 			addFixedResponseBackend(defaultBackendName, da.FixedResponse)
 		}
 	}
@@ -325,15 +351,50 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 	return cfg, nil
 }
 
-// buildHAProxyRule converts a RuleRecord into the rendered ACL+use_backend
-// shape. Returns an error if any condition value fails the defence-in-depth
-// re-validation (HAProxy meta-character rejection).
-func buildHAProxyRule(r *RuleRecord) (HAProxyRule, error) {
-	if len(r.Actions) == 0 || r.Actions[0].Type != ActionTypeForward {
-		return HAProxyRule{}, fmt.Errorf("rule %s has no forward action", r.RuleID)
+// registerRuleBackend resolves the HAProxy backend a rule's single action
+// routes to, registering a synthetic backend for redirect / fixed-response
+// rule actions, and returns its name.
+func registerRuleBackend(
+	r *RuleRecord,
+	l *ListenerRecord,
+	addBackend func(string),
+	addFixedResponseBackend func(string, *FixedResponseAction),
+	addRedirectBackend func(string, *HAProxyRedirect),
+) (string, error) {
+	if len(r.Actions) == 0 {
+		return "", fmt.Errorf("rule %s has no action", r.RuleID)
 	}
+	a := r.Actions[0]
+	switch a.Type {
+	case ActionTypeForward:
+		if a.TargetGroupArn == "" {
+			return "", fmt.Errorf("rule %s forward action has no target group", r.RuleID)
+		}
+		addBackend(a.TargetGroupArn)
+		return sanitizeName("bk", a.TargetGroupArn), nil
+	case ActionTypeFixedResponse:
+		name := sanitizeName("bkrule", r.RuleID)
+		addFixedResponseBackend(name, a.FixedResponse)
+		return name, nil
+	case ActionTypeRedirect:
+		rd, err := buildRedirect(a.Redirect, l)
+		if err != nil {
+			return "", err
+		}
+		name := sanitizeName("bkrule", r.RuleID)
+		addRedirectBackend(name, rd)
+		return name, nil
+	default:
+		return "", fmt.Errorf("rule %s has unsupported action %q", r.RuleID, a.Type)
+	}
+}
 
-	rule := HAProxyRule{Backend: sanitizeName("bk", r.Actions[0].TargetGroupArn)}
+// buildHAProxyRule converts a RuleRecord's conditions into the rendered
+// ACL+use_backend shape, routing to backendName (already resolved/registered
+// by registerRuleBackend). Returns an error if any condition value fails the
+// defence-in-depth re-validation (HAProxy meta-character rejection).
+func buildHAProxyRule(r *RuleRecord, backendName string) (HAProxyRule, error) {
+	rule := HAProxyRule{Backend: backendName}
 
 	for ci, c := range r.Conditions {
 		aclName := fmt.Sprintf("r%s_c%d", sanitizeACLToken(r.RuleID), ci)
@@ -475,6 +536,118 @@ func validFixedResponseBody(s string) bool {
 	}
 	for _, r := range s {
 		if r == '\n' || r == '\r' || r == '"' || r == '\\' || r == '#' {
+			return false
+		}
+	}
+	return true
+}
+
+// buildRedirect translates a stored RedirectAction into an HAProxy redirect
+// directive in the context of listener l (which resolves the `#{protocol}` and
+// `#{port}` placeholders). The common scheme-only redirect (e.g. HTTP→HTTPS
+// with every other field left at its AWS default) renders as `redirect scheme`
+// so HAProxy preserves host/path/query; anything else rebuilds a `location`.
+func buildRedirect(rd *RedirectAction, l *ListenerRecord) (*HAProxyRedirect, error) {
+	if rd == nil {
+		return nil, fmt.Errorf("redirect action missing config")
+	}
+
+	var code string
+	switch rd.StatusCode {
+	case "HTTP_301":
+		code = "301"
+	case "HTTP_302":
+		code = "302"
+	default:
+		return nil, fmt.Errorf("redirect has invalid status code %q", rd.StatusCode)
+	}
+
+	for _, f := range []string{rd.Protocol, rd.Host, rd.Port, rd.Path, rd.Query} {
+		if !validRedirectField(f) {
+			return nil, fmt.Errorf("redirect field contains forbidden characters")
+		}
+	}
+
+	defaultHost := rd.Host == "" || rd.Host == "#{host}"
+	defaultPort := rd.Port == "" || rd.Port == "#{port}"
+	defaultPath := rd.Path == "" || rd.Path == "#{path}" || rd.Path == "/#{path}"
+	defaultQuery := rd.Query == "" || rd.Query == "#{query}"
+	explicitScheme := rd.Protocol == ProtocolHTTP || rd.Protocol == ProtocolHTTPS
+
+	if explicitScheme && defaultHost && defaultPort && defaultPath && defaultQuery {
+		return &HAProxyRedirect{Scheme: strings.ToLower(rd.Protocol), Code: code}, nil
+	}
+
+	scheme := redirectScheme(rd.Protocol, l)
+	host := redirectPlaceholders(orDefault(rd.Host, "#{host}"), l)
+
+	port := ""
+	if rd.Port != "" && rd.Port != "#{port}" {
+		port = ":" + redirectPlaceholders(rd.Port, l)
+	}
+
+	path := "%[path]"
+	if !defaultPath {
+		path = redirectPlaceholders(rd.Path, l)
+	}
+
+	query := ""
+	if !defaultQuery {
+		query = "?" + redirectPlaceholders(rd.Query, l)
+	} else if rd.Query == "#{query}" {
+		query = "?%[query]"
+	}
+
+	return &HAProxyRedirect{Location: scheme + "://" + host + port + path + query, Code: code}, nil
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// redirectScheme resolves the redirect scheme literal, mapping the `#{protocol}`
+// placeholder (or an empty protocol) to the listener's own protocol.
+func redirectScheme(proto string, l *ListenerRecord) string {
+	switch proto {
+	case ProtocolHTTP, ProtocolHTTPS:
+		return strings.ToLower(proto)
+	default:
+		return strings.ToLower(l.Protocol)
+	}
+}
+
+// redirectPlaceholders substitutes the AWS redirect placeholders with HAProxy
+// log-format fetches. `#{protocol}` and `#{port}` resolve from the listener.
+func redirectPlaceholders(s string, l *ListenerRecord) string {
+	r := strings.NewReplacer(
+		"#{protocol}", strings.ToLower(l.Protocol),
+		"#{host}", "%[req.hdr(host)]",
+		"#{port}", strconv.FormatInt(l.Port, 10),
+		"#{path}", "%[path]",
+		"#{query}", "%[query]",
+	)
+	return r.Replace(s)
+}
+
+// validRedirectField rejects bytes that would break the HAProxy redirect
+// directive. The known `#{...}` placeholders are stripped first, so any
+// remaining `#`, `%`, bracket, quote, backslash, whitespace, or control byte
+// (which would indicate an unknown placeholder or an injection attempt) fails.
+func validRedirectField(s string) bool {
+	known := []string{"#{protocol}", "#{host}", "#{port}", "#{path}", "#{query}"}
+	tmp := s
+	for _, k := range known {
+		tmp = strings.ReplaceAll(tmp, k, "")
+	}
+	for _, r := range tmp {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		switch r {
+		case ' ', '"', '#', '%', '[', ']', '\\':
 			return false
 		}
 	}

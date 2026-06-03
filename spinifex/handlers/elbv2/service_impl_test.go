@@ -867,6 +867,127 @@ func TestCreateListener(t *testing.T) {
 	assert.Equal(t, "forward", *l.DefaultActions[0].Type)
 }
 
+func TestCreateListener_RedirectDefault(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redir-lb")}, testAccountID)
+
+	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				Port:       aws.String("443"),
+				StatusCode: aws.String("HTTP_301"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Listeners, 1)
+	require.Len(t, out.Listeners[0].DefaultActions, 1)
+	a := out.Listeners[0].DefaultActions[0]
+	assert.Equal(t, "redirect", *a.Type)
+	require.NotNil(t, a.RedirectConfig)
+	assert.Equal(t, "HTTPS", *a.RedirectConfig.Protocol)
+	assert.Equal(t, "HTTP_301", *a.RedirectConfig.StatusCode)
+}
+
+func TestCreateListener_RedirectFullFields(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redirfull-lb")}, testAccountID)
+
+	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				Host:       aws.String("new.example.com"),
+				Port:       aws.String("8443"),
+				Path:       aws.String("/moved"),
+				Query:      aws.String("ref=1"),
+				StatusCode: aws.String("HTTP_302"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rc := out.Listeners[0].DefaultActions[0].RedirectConfig
+	require.NotNil(t, rc)
+	assert.Equal(t, "new.example.com", *rc.Host)
+	assert.Equal(t, "8443", *rc.Port)
+	assert.Equal(t, "/moved", *rc.Path)
+	assert.Equal(t, "ref=1", *rc.Query)
+	assert.Equal(t, "HTTP_302", *rc.StatusCode)
+
+	// Read back through Describe to exercise the stored→SDK path.
+	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Listeners, 1)
+	assert.Equal(t, "new.example.com", *desc.Listeners[0].DefaultActions[0].RedirectConfig.Host)
+}
+
+func TestModifyListener_ToRedirect(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-redir-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-redir-tg")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{Protocol: aws.String("HTTPS"), StatusCode: aws.String("HTTP_301")},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "redirect", *out.Listeners[0].DefaultActions[0].Type)
+
+	// A bad redirect on modify is rejected.
+	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{StatusCode: aws.String("HTTP_999")},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestCreateListener_RejectsBadRedirect(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("badredir-lb")}, testAccountID)
+
+	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{StatusCode: aws.String("HTTP_500")},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
 func TestCreateListener_DuplicatePort(t *testing.T) {
 	svc := setupTestService(t)
 

@@ -36,6 +36,7 @@ const (
 	// Listener action types
 	ActionTypeForward       = "forward"
 	ActionTypeFixedResponse = "fixed-response"
+	ActionTypeRedirect      = "redirect"
 
 	// Rule condition fields
 	RuleFieldHostHeader        = "host-header"
@@ -53,7 +54,7 @@ const (
 	MaxRulesPerListener   = 100
 	MaxConditionsPerRule  = 5
 	MaxValuesPerCondition = 5
-	MaxActionsPerRule     = 1 // forward only; mulga-951 may bump
+	MaxActionsPerRule     = 1 // single terminal action: forward, redirect, or fixed-response
 	MaxConditionValueLen  = 128
 	MaxHTTPHeaderNameLen  = 40
 
@@ -197,12 +198,14 @@ type ListenerRecord struct {
 	Tags map[string]string `json:"tags,omitempty"`
 }
 
-// ListenerAction defines a listener's default action.
+// ListenerAction defines a listener default action or a rule action.
 type ListenerAction struct {
-	Type           string `json:"type"` // "forward" or "fixed-response"
+	Type           string `json:"type"` // "forward", "redirect", or "fixed-response"
 	TargetGroupArn string `json:"target_group_arn"`
 	// FixedResponse is populated when Type == "fixed-response" (no target group).
 	FixedResponse *FixedResponseAction `json:"fixed_response,omitempty"`
+	// Redirect is populated when Type == "redirect".
+	Redirect *RedirectAction `json:"redirect,omitempty"`
 }
 
 // FixedResponseAction holds the canned reply for a "fixed-response" action.
@@ -210,6 +213,18 @@ type FixedResponseAction struct {
 	StatusCode  string `json:"status_code"`
 	ContentType string `json:"content_type,omitempty"`
 	MessageBody string `json:"message_body,omitempty"`
+}
+
+// RedirectAction holds the target for a "redirect" action. Fields mirror the
+// AWS RedirectActionConfig and may contain the `#{protocol}`, `#{host}`,
+// `#{port}`, `#{path}`, and `#{query}` placeholders.
+type RedirectAction struct {
+	Protocol   string `json:"protocol,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       string `json:"port,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Query      string `json:"query,omitempty"`
+	StatusCode string `json:"status_code"` // "HTTP_301" or "HTTP_302"
 }
 
 // RuleRecord represents a stored listener rule.

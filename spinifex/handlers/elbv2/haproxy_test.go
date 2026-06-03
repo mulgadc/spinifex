@@ -248,6 +248,159 @@ func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
 	assert.NotContains(t, config, `string "evil`)
 }
 
+// TestGenerateHAProxyConfig_RedirectSchemeDefault renders the canonical
+// HTTP→HTTPS redirect (scheme-only change, all other fields default) as a
+// `redirect scheme https` directive so HAProxy preserves host/path/query.
+func TestGenerateHAProxyConfig_RedirectSchemeDefault(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir"}
+	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir/lst-aa"
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: listenerArn,
+			Port:        80,
+			Protocol:    ProtocolHTTP,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeRedirect, Redirect: &RedirectAction{
+					Protocol:   "HTTPS",
+					Host:       "#{host}",
+					Path:       "/#{path}",
+					Query:      "#{query}",
+					StatusCode: "HTTP_301",
+				}},
+			},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "default_backend bkdefault_lst-aa")
+	assert.Contains(t, config, "http-request redirect scheme https code 301")
+	assert.NotContains(t, config, "location")
+}
+
+// TestGenerateHAProxyConfig_RedirectLocation renders a redirect that changes
+// the host as a rebuilt `location` with HAProxy placeholders preserved.
+func TestGenerateHAProxyConfig_RedirectLocation(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir2"}
+	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir2/lst-bb"
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: listenerArn,
+			Port:        80,
+			Protocol:    ProtocolHTTP,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeRedirect, Redirect: &RedirectAction{
+					Protocol:   "HTTPS",
+					Host:       "www.example.com",
+					Path:       "/#{path}",
+					Query:      "#{query}",
+					StatusCode: "HTTP_302",
+				}},
+			},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "http-request redirect location https://www.example.com%[path]?%[query] code 302")
+}
+
+// TestGenerateHAProxyConfig_RedirectCustomAll exercises the location form with
+// a placeholder protocol (resolved from the listener), an explicit port, and a
+// custom literal path + query.
+func TestGenerateHAProxyConfig_RedirectCustomAll(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-redir3"}
+	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-redir3/lst-dd"
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: listenerArn,
+			Port:        80,
+			Protocol:    ProtocolHTTPS,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeRedirect, Redirect: &RedirectAction{
+					Protocol:   "#{protocol}",
+					Host:       "alt.example.com",
+					Port:       "8443",
+					Path:       "/moved",
+					Query:      "ref=1",
+					StatusCode: "HTTP_302",
+				}},
+			},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "http-request redirect location https://alt.example.com:8443/moved?ref=1 code 302")
+}
+
+// TestGenerateHAProxyConfig_RedirectRule renders a per-rule redirect action via
+// a synthetic backend reached by use_backend.
+func TestGenerateHAProxyConfig_RedirectRule(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-rr"}
+	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/r/lb-rr/lst-cc"
+	appTG := "arn:aws:elasticloadbalancing:ap-southeast-2:1:targetgroup/app/tg-app"
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: listenerArn,
+			Port:        80,
+			Protocol:    ProtocolHTTP,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeForward, TargetGroupArn: appTG},
+			},
+		},
+	}
+	rulesByListener := map[string][]*RuleRecord{
+		listenerArn: {
+			{
+				RuleID:      "ruleR",
+				ListenerArn: listenerArn,
+				Priority:    1,
+				Conditions:  []RuleCondition{{Field: RuleFieldPathPattern, Values: []string{"/old/*"}}},
+				Actions: []ListenerAction{{Type: ActionTypeRedirect, Redirect: &RedirectAction{
+					Protocol:   "HTTPS",
+					StatusCode: "HTTP_301",
+				}}},
+			},
+		},
+	}
+	tgByArn := map[string]*TargetGroupRecord{
+		appTG: {TargetGroupArn: appTG, HealthCheck: DefaultHealthCheck()},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, "0.0.0.0")
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "use_backend bkrule_ruleR if")
+	assert.Contains(t, config, "backend bkrule_ruleR")
+	assert.Contains(t, config, "http-request redirect scheme https code 301")
+}
+
+// TestGenerateHAProxyConfig_RedirectRejectsInjection fails the render when a
+// redirect field carries HAProxy meta-characters that survived to the store.
+func TestGenerateHAProxyConfig_RedirectRejectsInjection(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-evil2"}
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: "arn:lst-evil2",
+			Port:        80,
+			Protocol:    ProtocolHTTP,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeRedirect, Redirect: &RedirectAction{
+					Host:       "evil\"\n  acl x always_true",
+					StatusCode: "HTTP_301",
+				}},
+			},
+		},
+	}
+
+	_, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	require.Error(t, err)
+}
+
 func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty"}
 	config, err := GenerateHAProxyConfig(lb, nil, nil, nil, "0.0.0.0")

@@ -85,7 +85,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 
 	// Two VPCs, identical subnet CIDR → the first VM in each gets the same IP.
 	vpcX, subX, sgX := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
-	_, subY, sgY := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
+	vpcY, subY, sgY := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
 
 	// VM X — profile-bound + user-data; drives the full surface.
 	idX, privX, tgtX := imdsProbe(t, fix, keyPath, imdsVMSpec{
@@ -128,7 +128,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 
 	// --- IMDSv2 token issuance ----------------------------------------------
 	harness.Step(t, "PUT /latest/api/token (IMDSv2)")
-	tokenX := imdsAwaitToken(t, tgtX)
+	tokenX := imdsAwaitToken(t, fix, tgtX, vpcX, privX)
 	harness.Detail(t, "token_len", len(tokenX))
 
 	// --- v2-only stance: tokenless + garbage-token GET → 401 -----------------
@@ -197,7 +197,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	// different VPCs. Each must get its own instance-id; a leak here means the
 	// per-VPC SO_BINDTODEVICE veth / (VPC-ID, source-IP) → ENI mapping is broken.
 	harness.Step(t, "cross-VPC isolation: shared IP %s, distinct identities", privX)
-	tokenY := imdsAwaitToken(t, tgtY)
+	tokenY := imdsAwaitToken(t, fix, tgtY, vpcY, privY)
 	gotY := imdsGet(t, tgtY, tokenY, "/latest/meta-data/instance-id")
 	require.Equalf(t, idY, gotY, "VM Y IMDS must return VM Y's instance-id (got %q)", gotY)
 	require.NotEqualf(t, idX, gotY,
@@ -395,24 +395,33 @@ func imdsEnsureRoleProfile(t *testing.T, fix *Fixture, adminAccount string) {
 
 // imdsAwaitToken PUTs an IMDSv2 token from inside the guest, retrying to ride
 // out the cold-start window before BindManager.Sync + the ENI reverse-index
-// land. Returns the token.
-func imdsAwaitToken(t *testing.T, tgt harness.SSHTarget) string {
+// land. Returns the token. On timeout it dumps the per-VPC IMDS datapath
+// (OVN realisation + host veth route/neigh + conntrack) before failing, so a
+// reachability timeout (exit 28) is triaged as request-path vs reply-path
+// rather than a bare "condition not met".
+func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, vpcID, guestIP string) string {
 	t.Helper()
-	var token string
-	harness.EventuallyErr(t, func() error {
+	deadline := time.Now().Add(90 * time.Second)
+	var lastErr error
+	for {
 		cmd := fmt.Sprintf(
 			`curl -sf -X PUT "%s/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 120"`, metaURL)
 		out, err := runSSHCombined(tgt, cmd)
-		if err != nil {
-			return fmt.Errorf("token PUT failed: %w (out=%q)", err, out)
+		switch {
+		case err != nil:
+			lastErr = fmt.Errorf("token PUT failed: %w (out=%q)", err, out)
+		case strings.TrimSpace(out) == "":
+			lastErr = fmt.Errorf("token PUT returned empty body")
+		default:
+			return strings.TrimSpace(out)
 		}
-		token = strings.TrimSpace(out)
-		if token == "" {
-			return fmt.Errorf("token PUT returned empty body")
+		if time.Now().After(deadline) {
+			harness.DumpIMDSDatapathDiagnostics(t, vpcID, guestIP, fix.Artifacts)
+			t.Fatalf("imdsAwaitToken: token never minted within 90s (vpc=%s guest=%s): %v "+
+				"(see IMDS datapath diagnostics above)", vpcID, guestIP, lastErr)
 		}
-		return nil
-	}, 90*time.Second, 3*time.Second)
-	return token
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // imdsGet fetches a token-gated path from inside the guest and returns the

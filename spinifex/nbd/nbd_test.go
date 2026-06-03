@@ -269,6 +269,15 @@ func TestBuildArgs_EncryptionKeyFileOmittedWhenEmpty(t *testing.T) {
 		}	}
 }
 
+func indexOf(args []string, s string) int {
+	for i, a := range args {
+		if a == s {
+			return i
+		}
+	}
+	return -1
+}
+
 func assertArgs(t *testing.T, expected, got []string) {
 	t.Helper()
 	if len(expected) != len(got) {
@@ -279,13 +288,4 @@ func assertArgs(t *testing.T, expected, got []string) {
 			t.Errorf("args[%d] = %q, want %q", i, got[i], expected[i])
 		}
 	}
-}
-
-func indexOf(args []string, val string) int {
-	for i, a := range args {
-		if a == val {
-			return i
-		}
-	}
-	return -1
 }

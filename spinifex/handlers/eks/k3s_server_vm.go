@@ -360,8 +360,18 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
 	}, "\n")
 
+	// Omitting cluster-init selects the embedded SQLite (kine) datastore, not
+	// embedded etcd. etcd's per-commit fsync stalls past apiserver's 5s deadline
+	// on the viperblock-backed root volume, so it never reaches /healthz; kine
+	// tolerates the deferred-durability block path. Trade-off: no multi-server
+	// HA (that needs etcd) — acceptable for single-node v1.
+	//
+	// anonymous-auth=true: k3s hardens it off by default, which makes the
+	// apiserver answer 401 to an unauthenticated /healthz. The cluster reconciler
+	// probes https://<NLB>/healthz anonymously to gate ACTIVE, so it must be
+	// reachable; the default RBAC binds only the health/version non-resource
+	// paths to system:unauthenticated, so this exposes nothing else.
 	k3sConfig := strings.Join([]string{
-		"cluster-init: true",
 		"tls-san:",
 		"  - " + in.NLBDNS,
 		"kube-apiserver-arg:",
@@ -369,6 +379,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - service-account-signing-key-file=" + k3sOIDCSigningKeyPath,
 		"  - service-account-issuer=" + in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
+		"  - anonymous-auth=true",
 	}, "\n")
 
 	files := []userDataFile{

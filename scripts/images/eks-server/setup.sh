@@ -68,7 +68,7 @@ mkdir -p /etc/rancher/k3s
 cat > /etc/rancher/k3s/config.yaml.skel <<'EOF'
 # Populated at first boot by cloud-init user-data via k3s-first-boot.sh.
 # Fields documented at https://docs.k3s.io/installation/configuration.
-cluster-init: true
+# No cluster-init: single-node v1 uses the embedded SQLite datastore, not etcd.
 disable:
   - traefik
   - servicelb

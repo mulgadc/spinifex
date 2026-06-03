@@ -4146,3 +4146,74 @@ func TestRespondWithJSON_RespondFailureLogs(t *testing.T) {
 	assert.Contains(t, logged, "Failed to respond to NATS request")
 	assert.NotContains(t, logged, "Failed to marshal response")
 }
+
+// --- handleEC2CreateImage stopped-instance KV fallback tests ---
+
+func TestHandleEC2CreateImage_StoppedInstanceFoundInKV(t *testing.T) {
+	natsURL := sharedJSNATSURL
+
+	daemon := createFullTestDaemonWithJetStream(t, natsURL)
+
+	stoppedVM := &vm.VM{
+		ID:        "i-stopped-kv001",
+		Status:    vm.StateStopped,
+		AccountID: testAccountID,
+		Instance: &ec2.Instance{
+			InstanceId: aws.String("i-stopped-kv001"),
+			ImageId:    aws.String("ami-source-stopped"),
+			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
+				{
+					Ebs: &ec2.EbsInstanceBlockDevice{
+						VolumeId: aws.String("vol-stopped001"),
+					},
+				},
+			},
+		},
+	}
+	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = daemon.jsManager.DeleteStoppedInstance(stoppedVM.ID) })
+
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.CreateImageInput{
+		InstanceId: aws.String("i-stopped-kv001"),
+		Name:       aws.String("test-stopped-image"),
+	}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequest(daemon.natsConn, "ec2.CreateImage", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	err = json.Unmarshal(reply.Data, &errResp)
+	require.NoError(t, err)
+	// Handler found the stopped instance in KV and proceeded past the lookup —
+	// any error code other than InvalidInstanceIDNotFound is acceptable.
+	assert.NotEqual(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"],
+		"stopped instance found in KV must not return InvalidInstanceIDNotFound")
+}
+
+func TestHandleEC2CreateImage_StoppedInstanceNotInKV(t *testing.T) {
+	natsURL := sharedJSNATSURL
+
+	daemon := createFullTestDaemonWithJetStream(t, natsURL)
+
+	sub, err := daemon.natsConn.Subscribe("ec2.CreateImage", daemon.handleEC2CreateImage)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	input := &ec2.CreateImageInput{
+		InstanceId: aws.String("i-nowhere-to-be-found"),
+		Name:       aws.String("test-missing-image"),
+	}
+	reqData, _ := json.Marshal(input)
+	reply, err := natsRequest(daemon.natsConn, "ec2.CreateImage", reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var errResp map[string]any
+	err = json.Unmarshal(reply.Data, &errResp)
+	require.NoError(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
+}

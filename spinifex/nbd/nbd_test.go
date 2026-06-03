@@ -233,6 +233,51 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_NatsFields(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		Volume:     "vol-test",
+		NatsURL:    "nats://127.0.0.1:4222",
+		NatsToken:  "secret",
+		NatsCACert: "/etc/ca.crt",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, want := range []string{"nats_url=nats://127.0.0.1:4222", "nats_token=secret", "nats_ca_cert=/etc/ca.crt"} {
+		if indexOf(args, want) < 0 {
+			t.Errorf("expected arg %q not found in %v", want, args)
+		}
+	}
+}
+
+func TestBuildArgs_NatsFieldsOmittedWhenEmpty(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+		Volume:     "vol-test",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, unwanted := range []string{"nats_url", "nats_token", "nats_ca_cert"} {
+		for _, a := range args {
+			if len(a) >= len(unwanted) && a[:len(unwanted)] == unwanted {
+				t.Errorf("unexpected NATS arg %q in args when fields are empty", a)
+			}
+		}
+	}
+}
+
 func assertArgs(t *testing.T, expected, got []string) {
 	t.Helper()
 	if len(expected) != len(got) {

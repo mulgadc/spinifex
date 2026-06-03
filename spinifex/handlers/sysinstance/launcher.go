@@ -148,6 +148,7 @@ type SystemInstanceOutput struct {
 	InstanceID string `json:"instance_id"`         // e.g. "i-xxxxx"
 	PrivateIP  string `json:"private_ip"`          // VPC private IP
 	PublicIP   string `json:"public_ip,omitempty"` // only for internet-facing scheme
+	MgmtIP     string `json:"mgmt_ip,omitempty"`   // br-mgmt NIC IP, reachable from the host
 
 	// HostfwdMap maps guest port → host port for any forwarded ports.
 	HostfwdMap map[int]int `json:"hostfwd_map,omitempty"`

@@ -453,6 +453,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 	return &sysinstance.SystemInstanceOutput{
 		InstanceID: inst.ID,
 		PrivateIP:  privateIP,
+		MgmtIP:     inst.MgmtIP,
 	}, nil
 }
 

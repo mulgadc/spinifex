@@ -47,6 +47,11 @@ type ClusterMeta struct {
 	ControlPlaneInstanceID  string            `json:"controlPlaneInstanceId,omitempty"`
 	ControlPlaneENIID       string            `json:"controlPlaneEniId,omitempty"`
 	ControlPlaneENIIP       string            `json:"controlPlaneEniIp,omitempty"`
+	// ControlPlaneMgmtIP is the control-plane VM's br-mgmt NIC address. Until
+	// authoritative DNS (Eclipso/Route53) lands, the host-side reconciler cannot
+	// resolve or route to the VPC-internal NLB DNS endpoint, so it probes
+	// /healthz on this host-reachable address instead.
+	ControlPlaneMgmtIP string `json:"controlPlaneMgmtIp,omitempty"`
 	// EgressEIPAllocationID / EgressEIPPublicIP track the hidden pool address
 	// SNAT'd to the control-plane VM for egress-only internet (image pulls).
 	// Released + the snat removed on DeleteCluster.

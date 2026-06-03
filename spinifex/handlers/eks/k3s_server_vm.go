@@ -115,6 +115,7 @@ type K3sServerOutput struct {
 	InstanceID string
 	ENIID      string
 	ENIIP      string
+	MgmtIP     string
 }
 
 // LaunchK3sServerVM provisions the K3s control-plane VM for an EKS cluster.
@@ -204,6 +205,7 @@ func LaunchK3sServerVM(
 		InstanceID: instanceID,
 		ENIID:      eniID,
 		ENIIP:      eniIP,
+		MgmtIP:     sysOut.MgmtIP,
 	}, nil
 }
 

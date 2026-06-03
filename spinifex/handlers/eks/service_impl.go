@@ -386,6 +386,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID 
 	meta.ControlPlaneInstanceID = k3sOut.InstanceID
 	meta.ControlPlaneENIID = k3sOut.ENIID
 	meta.ControlPlaneENIIP = k3sOut.ENIIP
+	meta.ControlPlaneMgmtIP = k3sOut.MgmtIP
 
 	// Egress: the control-plane VM must pull container images. Allocate a
 	// hidden pool address and wire an egress-only SNAT for its /32 (no DNAT —
@@ -829,7 +830,17 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 
 func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *ClusterMeta) {
 	healthURL := ""
-	if meta.Endpoint != "" {
+	switch {
+	case meta.ControlPlaneMgmtIP != "":
+		// Workaround until authoritative DNS (Eclipso/Route53) lands: the
+		// reconciler runs on the host, outside the VPC overlay, and can neither
+		// resolve the NLB DNS name nor route to the VPC-internal NLB front-end.
+		// The control-plane VM's br-mgmt NIC is the one apiserver address
+		// reachable from the daemon, so probe :6443/healthz there directly. The
+		// probe client sets InsecureSkipVerify, so the mgmt IP need not be in the
+		// apiserver cert SAN.
+		healthURL = "https://" + net.JoinHostPort(meta.ControlPlaneMgmtIP, "6443") + "/healthz"
+	case meta.Endpoint != "":
 		healthURL = strings.TrimRight(meta.Endpoint, "/") + "/healthz"
 	}
 	js, err := s.deps.NATSConn.JetStream()

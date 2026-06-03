@@ -34,6 +34,16 @@ RestrictRealtime=yes
 # namespace (CLONE_NEWNS, to give the netns its own /sys), so `mnt` must be
 # allowlisted alongside `net` or the first in-netns command fails with EPERM.
 RestrictNamespaces=net mnt
+# The sandbox directives above (ProtectSystem/ProtectHome/PrivateTmp) give vpcd a
+# private mount namespace. Without shared propagation, the /run/netns/<vpc>
+# bind-mount that `ip netns add` creates lives only inside vpcd's mount ns: it is
+# invisible to the host (every `ip netns exec` from outside fails setns EINVAL,
+# blinding diagnostics) and — worse — it dies on a vpcd restart, leaving a stale
+# /run/netns/<vpc> handle that fails setns EINVAL so the IMDS listener can never
+# rebind. MountFlags=shared propagates the netns mounts to the host mount ns so
+# they survive restart and are observable. vpcd already runs with CAP_SYS_ADMIN +
+# CAP_NET_ADMIN, so the propagation does not widen its effective privilege.
+MountFlags=shared
 ProtectClock=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

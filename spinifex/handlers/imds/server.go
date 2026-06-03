@@ -169,7 +169,7 @@ func (b *bindManager) bind(ctx context.Context, vpcID string) error {
 		}
 	}()
 
-	slog.Info("IMDS: listener bound", "vpc_id", vpcID, "host_end", hostEnd)
+	slog.Info("IMDS: listener bound", "vpc_id", vpcID, "netns", netnsName, "host_end", hostEnd, "addr", listener.Addr().String())
 	return nil
 }
 

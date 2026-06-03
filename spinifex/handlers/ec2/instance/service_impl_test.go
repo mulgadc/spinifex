@@ -2451,7 +2451,10 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 type fakeENICreator struct {
 	defaultSubnet *SubnetInfo
 	subnet        *SubnetInfo
+	getENIByID    map[string]*ENIInfo
+	getENIErr     error
 	createOut     *ec2.CreateNetworkInterfaceOutput
+	createCalls   int
 	createErr     error
 	attachErr     error
 	attachCalls   int
@@ -2474,7 +2477,22 @@ func (f *fakeENICreator) GetSubnet(_, _ string) (*SubnetInfo, error) {
 	return f.subnet, nil
 }
 
+func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
+	if f.getENIErr != nil {
+		return nil, f.getENIErr
+	}
+	if f.getENIByID == nil {
+		return nil, errors.New("no ENI configured")
+	}
+	info, ok := f.getENIByID[eniID]
+	if !ok {
+		return nil, errors.New("eni not found")
+	}
+	return info, nil
+}
+
 func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	f.createCalls++
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -3187,4 +3205,116 @@ func TestInstanceArchitecture(t *testing.T) {
 			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
 		})
 	}
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				Status:             "available",
+				SecurityGroupIDs:   []string{"sg-pre"},
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+			DeviceIndex:        aws.Int64(0),
+		}},
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-pre", instances[0].ENIId)
+	assert.Equal(t, "aa:bb:cc:dd:ee:01", instances[0].ENIMac)
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-busy": {
+				NetworkInterfaceID: "eni-busy",
+				Status:             "in-use",
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-busy"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceInUse, err.Error())
+	assert.Equal(t, 0, eni.attachCalls, "in-use ENI must not be attached")
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENILookupErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-ghost"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, err.Error())
+	assert.Equal(t, 0, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				Status:             "available",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+			},
+		},
+		attachErr: errors.New(awserrors.ErrorServerInternal),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
 }

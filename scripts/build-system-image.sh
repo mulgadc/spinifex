@@ -192,6 +192,9 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
         echo "Importing as AMI..."
         rm -f "$OUTPUT_IMAGE"
         IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
+        if [[ -n "${AMI_NAME:-}" ]]; then
+            IMPORT_ARGS+=(--ami-name "$AMI_NAME")
+        fi
         if [[ -n "${SYSTEM_TAG:-}" ]]; then
             IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
         fi
@@ -453,7 +456,7 @@ if [[ "$DO_IMPORT" == true ]]; then
     rm -f "$OUTPUT_IMAGE"
     IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
     if [[ -n "${AMI_NAME:-}" ]]; then
-        IMPORT_ARGS+=(--name "$AMI_NAME")
+        IMPORT_ARGS+=(--ami-name "$AMI_NAME")
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
@@ -465,7 +468,7 @@ else
     echo "    --file $OUTPUT_RAW \\"
     NAME_HINT=""
     if [[ -n "${AMI_NAME:-}" ]]; then
-        NAME_HINT=" \\\n    --name ${AMI_NAME}"
+        NAME_HINT=" \\\n    --ami-name ${AMI_NAME}"
     fi
     if [[ -n "${SYSTEM_TAG:-}" ]]; then
         echo -e "    --distro ${DISTRO} --version ${DISTRO_VERSION} --arch x86_64 --boot-mode ${BOOT_MODE}${NAME_HINT} \\"

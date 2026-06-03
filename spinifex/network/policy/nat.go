@@ -51,6 +51,16 @@ type NATManager interface {
 
 	// DeleteSNAT removes the IGW default-outbound snat for vpcCIDR.
 	DeleteSNAT(ctx context.Context, vpcID, vpcCIDR string) error
+
+	// AddSystemInstanceSNAT installs an egress-only snat rewriting a single
+	// system instance's /32 (logicalIP) to externalIP. Unlike AddEIP it is a
+	// plain snat, not dnat_and_snat, so there is no inbound path to the
+	// instance. Idempotent; tagged role=system-instance-egress.
+	AddSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP, externalIP string) error
+
+	// DeleteSystemInstanceSNAT removes the egress-only snat by logicalIP;
+	// idempotent.
+	DeleteSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP string) error
 }
 
 // FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
@@ -243,6 +253,51 @@ func (m *natManager) DeleteSNAT(ctx context.Context, vpcID, vpcCIDR string) erro
 			return nil
 		}
 		return fmt.Errorf("delete IGW snat %s on %s: %w", vpcCIDR, router, err)
+	}
+	return nil
+}
+
+func (m *natManager) AddSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP, externalIP string) error {
+	router := topology.VPCRouter(vpcID)
+	snatRule := &nbdb.NAT{
+		Type:       "snat",
+		ExternalIP: externalIP,
+		LogicalIP:  logicalIP,
+		ExternalIDs: map[string]string{
+			"spinifex:vpc_id":    vpcID,
+			"spinifex:public_ip": externalIP,
+			"spinifex:role":      "system-instance-egress",
+		},
+	}
+	// Skip when the existing row already matches; avoids the duplicate-append
+	// on a re-published add (the snat is keyed by its unique pool external IP).
+	if existing, err := m.ovn.FindNATByExternalIP(ctx, "snat", externalIP); err != nil {
+		slog.Warn("policy: AddSystemInstanceSNAT idempotency lookup failed", "external_ip", externalIP, "err", err)
+	} else if existing != nil && existing.LogicalIP == logicalIP {
+		slog.Info("policy: AddSystemInstanceSNAT idempotent skip — rule already current",
+			"router", router, "external_ip", externalIP, "logical_ip", logicalIP)
+		return nil
+	}
+
+	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
+		return fmt.Errorf("add system-instance snat %s -> %s on %s: %w", logicalIP, externalIP, router, err)
+	}
+	// Block until SB + chassis have the SNAT flow; otherwise first egress
+	// packets from the instance drop.
+	if err := m.barrier(); err != nil {
+		slog.Warn("policy: AddSystemInstanceSNAT flows barrier failed",
+			"logical_ip", logicalIP, "external_ip", externalIP, "err", err)
+	}
+	return nil
+}
+
+func (m *natManager) DeleteSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP string) error {
+	router := topology.VPCRouter(vpcID)
+	if err := m.ovn.DeleteNAT(ctx, router, "snat", logicalIP); err != nil {
+		if errors.Is(err, ovn.ErrNATNotFound) {
+			return nil
+		}
+		return fmt.Errorf("delete system-instance snat %s on %s: %w", logicalIP, router, err)
 	}
 	return nil
 }

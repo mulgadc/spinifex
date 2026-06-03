@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,6 +42,64 @@ func TestWriteJSONResponse_SerializesObject(t *testing.T) {
 	var got map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "bar", got["foo"])
+}
+
+// TestWriteJSONResponse_RestJSONWireShape guards against regressing to
+// encoding/json, which ignores aws-sdk-go's locationName tags and emits Go
+// PascalCase keys the AWS SDK cannot parse. The body must carry the lowercase
+// restjson field names, nested all the way down.
+func TestWriteJSONResponse_RestJSONWireShape(t *testing.T) {
+	w := httptest.NewRecorder()
+	out := &eks.DescribeClusterOutput{
+		Cluster: &eks.Cluster{
+			Name:     aws.String("smoke"),
+			Status:   aws.String("ACTIVE"),
+			Endpoint: aws.String("https://internal-eks-smoke:443"),
+			Identity: &eks.Identity{
+				Oidc: &eks.OIDC{Issuer: aws.String("https://gw/oidc/eks/x")},
+			},
+		},
+	}
+	WriteJSONResponse(w, out)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	body := w.Body.String()
+	for _, k := range []string{`"cluster"`, `"name"`, `"status"`, `"endpoint"`, `"identity"`, `"oidc"`, `"issuer"`} {
+		assert.Contains(t, body, k, "restjson body missing lowercase key %s", k)
+	}
+	for _, k := range []string{`"Cluster"`, `"Status"`, `"Endpoint"`, `"Identity"`, `"Issuer"`} {
+		assert.NotContains(t, body, k, "restjson body leaked PascalCase key %s — encoding/json regression", k)
+	}
+
+	// The AWS SDK round-trips through the same restjson nested keys.
+	var got struct {
+		Cluster struct {
+			Status   string `json:"status"`
+			Endpoint string `json:"endpoint"`
+			Identity struct {
+				Oidc struct {
+					Issuer string `json:"issuer"`
+				} `json:"oidc"`
+			} `json:"identity"`
+		} `json:"cluster"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "ACTIVE", got.Cluster.Status)
+	assert.Equal(t, "https://internal-eks-smoke:443", got.Cluster.Endpoint)
+	assert.Equal(t, "https://gw/oidc/eks/x", got.Cluster.Identity.Oidc.Issuer)
+}
+
+func TestWriteJSONResponse_ListClustersWireShape(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteJSONResponse(w, &eks.ListClustersOutput{
+		Clusters:  aws.StringSlice([]string{"alpha", "beta"}),
+		NextToken: aws.String("tok"),
+	})
+	body := w.Body.String()
+	assert.Contains(t, body, `"clusters"`)
+	assert.Contains(t, body, `"nextToken"`)
+	assert.NotContains(t, body, `"Clusters"`)
+	assert.NotContains(t, body, `"NextToken"`)
 }
 
 type sampleInput struct {

@@ -1,0 +1,353 @@
+package handlers_eks
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/tags"
+)
+
+// nlbProvisioner is the subset of handlers_elbv2.ELBv2Service that the
+// cluster NLB helpers need. Narrow so tests can fake with hand-rolled
+// recorders without implementing the full ELBv2 surface.
+type nlbProvisioner interface {
+	CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
+	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
+	DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
+
+	CreateTargetGroup(input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error)
+	DescribeTargetGroups(input *elbv2.DescribeTargetGroupsInput, accountID string) (*elbv2.DescribeTargetGroupsOutput, error)
+	DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput, accountID string) (*elbv2.DeleteTargetGroupOutput, error)
+
+	CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error)
+	DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error)
+
+	RegisterTargets(input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error)
+	DeregisterTargets(input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error)
+}
+
+// AWS load-balancer + target-group names are bounded to 32 alphanumeric or
+// hyphen characters. EnsureClusterNLB rejects clusters whose derived name
+// would exceed this before issuing the create call so callers see a clear
+// error instead of a generic ELBv2 InvalidParameterValue.
+const maxELBv2NameLen = 32
+
+// k3sAPIServerPort is the in-VM K3s api-server bind port. The NLB target
+// group sends traffic to this port on the K3s server VM's ENI.
+const k3sAPIServerPort int64 = 6443
+
+// clusterNLBListenPort is the customer-facing port the cluster NLB exposes.
+// kubectl + the AWS SDK both expect TLS on 443.
+const clusterNLBListenPort int64 = 443
+
+// ClusterNLB is the in-process tuple produced by EnsureClusterNLB. Each ARN
+// is persisted into ClusterMeta so the reconciler + DeleteCluster can act on
+// the resources without re-resolving by name.
+type ClusterNLB struct {
+	LoadBalancerArn string
+	TargetGroupArn  string
+	ListenerArn     string
+	DNSName         string
+}
+
+// ClusterNLBName returns the deterministic NLB name for a cluster. Stable so
+// DeleteCluster can locate the NLB from clusterName alone after a daemon
+// restart that lost the in-memory ARN.
+func ClusterNLBName(clusterName string) string {
+	return "eks-" + clusterName
+}
+
+// ClusterTargetGroupName returns the deterministic target-group name for a
+// cluster's control-plane TG.
+func ClusterTargetGroupName(clusterName string) string {
+	return "eks-" + clusterName + "-cp"
+}
+
+// EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +
+// :443→:6443 TCP listener. Idempotent on clusterName: existing resources are
+// reused so DeleteCluster failure-retry and reconciler crash-recovery both
+// converge without duplicate creates.
+//
+// The K3s server VM ENI IP is NOT registered here — Stage 4
+// (k3s_server_vm.go) calls RegisterClusterTarget once the VM has its ENI IP.
+func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string) (*ClusterNLB, error) {
+	if clusterName == "" {
+		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
+	}
+	if len(subnetIDs) == 0 {
+		return nil, errors.New("eks: EnsureClusterNLB empty subnet list")
+	}
+	lbName := ClusterNLBName(clusterName)
+	tgName := ClusterTargetGroupName(clusterName)
+	if len(lbName) > maxELBv2NameLen {
+		return nil, fmt.Errorf("eks: NLB name %q exceeds %d chars (cluster name too long)", lbName, maxELBv2NameLen)
+	}
+	if len(tgName) > maxELBv2NameLen {
+		return nil, fmt.Errorf("eks: TG name %q exceeds %d chars (cluster name too long)", tgName, maxELBv2NameLen)
+	}
+
+	out := &ClusterNLB{}
+
+	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, out); err != nil {
+		return nil, err
+	}
+	if err := ensureClusterTG(nlbp, accountID, clusterName, tgName, out); err != nil {
+		return nil, err
+	}
+	if err := ensureClusterListener(nlbp, accountID, lbName, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RegisterClusterTarget attaches the K3s server ENI IP to the cluster TG so
+// the NLB starts forwarding :443 traffic to :6443 on the VM. The ELBv2
+// RegisterTargets impl already dedupes on (id, port), so re-invocation by
+// the reconciler is idempotent.
+func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
+	if tgArn == "" {
+		return errors.New("eks: RegisterClusterTarget empty TG arn")
+	}
+	if eniIP == "" {
+		return errors.New("eks: RegisterClusterTarget empty ENI IP")
+	}
+	if _, err := nlbp.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: aws.String(tgArn),
+		Targets: []*elbv2.TargetDescription{{
+			Id:   aws.String(eniIP),
+			Port: aws.Int64(k3sAPIServerPort),
+		}},
+	}, accountID); err != nil {
+		return fmt.Errorf("register target %s on TG %s: %w", eniIP, tgArn, err)
+	}
+	return nil
+}
+
+// DeregisterClusterTarget removes the K3s server ENI IP from the cluster TG.
+// Called by DeleteCluster before VM termination so health checks stop hitting
+// a dying target.
+func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
+	if tgArn == "" {
+		return errors.New("eks: DeregisterClusterTarget empty TG arn")
+	}
+	if eniIP == "" {
+		return errors.New("eks: DeregisterClusterTarget empty ENI IP")
+	}
+	if _, err := nlbp.DeregisterTargets(&elbv2.DeregisterTargetsInput{
+		TargetGroupArn: aws.String(tgArn),
+		Targets: []*elbv2.TargetDescription{{
+			Id:   aws.String(eniIP),
+			Port: aws.Int64(k3sAPIServerPort),
+		}},
+	}, accountID); err != nil {
+		return fmt.Errorf("deregister target %s on TG %s: %w", eniIP, tgArn, err)
+	}
+	return nil
+}
+
+// DeleteClusterNLB tears down the cluster NLB + TG. DeleteLoadBalancer
+// cascades listener cleanup inside the ELBv2 impl, so listeners do not need
+// an explicit delete pass. Missing resources are no-ops to keep DeleteCluster
+// retries safe. Both sub-sweeps always run; LB delete error takes precedence
+// over TG delete error when both fail.
+func DeleteClusterNLB(nlbp nlbProvisioner, accountID, clusterName string) error {
+	if clusterName == "" {
+		return errors.New("eks: DeleteClusterNLB empty cluster name")
+	}
+	lbErr := deleteClusterLB(nlbp, accountID, ClusterNLBName(clusterName))
+	tgErr := deleteClusterTG(nlbp, accountID, ClusterTargetGroupName(clusterName))
+	if lbErr != nil {
+		return lbErr
+	}
+	return tgErr
+}
+
+func deleteClusterLB(nlbp nlbProvisioner, accountID, lbName string) error {
+	lb, err := lookupLBByName(nlbp, accountID, lbName)
+	if err != nil {
+		slog.Warn("DeleteClusterNLB: LB lookup failed", "name", lbName, "err", err)
+		return err
+	}
+	if lb == nil || lb.LoadBalancerArn == nil {
+		return nil
+	}
+	if _, err := nlbp.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lb.LoadBalancerArn}, accountID); err != nil {
+		slog.Warn("DeleteClusterNLB: delete NLB failed", "name", lbName, "err", err)
+		return fmt.Errorf("delete NLB %s: %w", lbName, err)
+	}
+	return nil
+}
+
+func deleteClusterTG(nlbp nlbProvisioner, accountID, tgName string) error {
+	tg, err := lookupTGByName(nlbp, accountID, tgName)
+	if err != nil {
+		slog.Warn("DeleteClusterNLB: TG lookup failed", "name", tgName, "err", err)
+		return err
+	}
+	if tg == nil || tg.TargetGroupArn == nil {
+		return nil
+	}
+	if _, err := nlbp.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: tg.TargetGroupArn}, accountID); err != nil {
+		slog.Warn("DeleteClusterNLB: delete TG failed", "name", tgName, "err", err)
+		return fmt.Errorf("delete TG %s: %w", tgName, err)
+	}
+	return nil
+}
+
+func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, out *ClusterNLB) error {
+	if lb, err := lookupLBByName(nlbp, accountID, lbName); err != nil {
+		return err
+	} else if lb != nil {
+		out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
+		out.DNSName = aws.StringValue(lb.DNSName)
+		if out.LoadBalancerArn == "" || out.DNSName == "" {
+			return fmt.Errorf("eks: existing NLB %s missing arn or DNS name", lbName)
+		}
+		return nil
+	}
+
+	created, err := nlbp.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String(lbName),
+		Type:    aws.String(elbv2.LoadBalancerTypeEnumNetwork),
+		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternal),
+		Subnets: aws.StringSlice(subnetIDs),
+		Tags: []*elbv2.Tag{
+			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+			{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
+		},
+	}, accountID)
+	if err != nil {
+		return fmt.Errorf("create NLB %s: %w", lbName, err)
+	}
+	if created == nil || len(created.LoadBalancers) == 0 || created.LoadBalancers[0] == nil {
+		return fmt.Errorf("eks: CreateLoadBalancer returned no LB for %s", lbName)
+	}
+	lb := created.LoadBalancers[0]
+	out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
+	out.DNSName = aws.StringValue(lb.DNSName)
+	if out.LoadBalancerArn == "" || out.DNSName == "" {
+		return fmt.Errorf("eks: CreateLoadBalancer returned empty arn or DNS name for %s", lbName)
+	}
+	return nil
+}
+
+func ensureClusterTG(nlbp nlbProvisioner, accountID, clusterName, tgName string, out *ClusterNLB) error {
+	if tg, err := lookupTGByName(nlbp, accountID, tgName); err != nil {
+		return err
+	} else if tg != nil {
+		out.TargetGroupArn = aws.StringValue(tg.TargetGroupArn)
+		if out.TargetGroupArn == "" {
+			return fmt.Errorf("eks: existing TG %s missing arn", tgName)
+		}
+		return nil
+	}
+
+	created, err := nlbp.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String(tgName),
+		Protocol:   aws.String(elbv2.ProtocolEnumTcp),
+		Port:       aws.Int64(k3sAPIServerPort),
+		TargetType: aws.String(elbv2.TargetTypeEnumIp),
+		Tags: []*elbv2.Tag{
+			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
+			{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
+		},
+	}, accountID)
+	if err != nil {
+		return fmt.Errorf("create TG %s: %w", tgName, err)
+	}
+	if created == nil || len(created.TargetGroups) == 0 || created.TargetGroups[0] == nil {
+		return fmt.Errorf("eks: CreateTargetGroup returned no TG for %s", tgName)
+	}
+	out.TargetGroupArn = aws.StringValue(created.TargetGroups[0].TargetGroupArn)
+	if out.TargetGroupArn == "" {
+		return fmt.Errorf("eks: CreateTargetGroup returned empty arn for %s", tgName)
+	}
+	return nil
+}
+
+func ensureClusterListener(nlbp nlbProvisioner, accountID, lbName string, out *ClusterNLB) error {
+	if l, err := lookupListenerByPort(nlbp, accountID, out.LoadBalancerArn, clusterNLBListenPort); err != nil {
+		return err
+	} else if l != nil {
+		out.ListenerArn = aws.StringValue(l.ListenerArn)
+		if out.ListenerArn == "" {
+			return fmt.Errorf("eks: existing listener for %s:%d missing arn", lbName, clusterNLBListenPort)
+		}
+		return nil
+	}
+
+	created, err := nlbp.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: aws.String(out.LoadBalancerArn),
+		Protocol:        aws.String(elbv2.ProtocolEnumTcp),
+		Port:            aws.Int64(clusterNLBListenPort),
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String(elbv2.ActionTypeEnumForward),
+			TargetGroupArn: aws.String(out.TargetGroupArn),
+		}},
+	}, accountID)
+	if err != nil {
+		return fmt.Errorf("create listener %s:%d: %w", lbName, clusterNLBListenPort, err)
+	}
+	if created == nil || len(created.Listeners) == 0 || created.Listeners[0] == nil {
+		return fmt.Errorf("eks: CreateListener returned no listener for %s:%d", lbName, clusterNLBListenPort)
+	}
+	out.ListenerArn = aws.StringValue(created.Listeners[0].ListenerArn)
+	if out.ListenerArn == "" {
+		return fmt.Errorf("eks: CreateListener returned empty arn for %s:%d", lbName, clusterNLBListenPort)
+	}
+	return nil
+}
+
+func lookupLBByName(nlbp nlbProvisioner, accountID, name string) (*elbv2.LoadBalancer, error) {
+	out, err := nlbp.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{
+		Names: aws.StringSlice([]string{name}),
+	}, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("describe NLB %s: %w", name, err)
+	}
+	for _, lb := range out.LoadBalancers {
+		if lb != nil {
+			return lb, nil
+		}
+	}
+	return nil, nil
+}
+
+func lookupTGByName(nlbp nlbProvisioner, accountID, name string) (*elbv2.TargetGroup, error) {
+	out, err := nlbp.DescribeTargetGroups(&elbv2.DescribeTargetGroupsInput{
+		Names: aws.StringSlice([]string{name}),
+	}, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("describe TG %s: %w", name, err)
+	}
+	for _, tg := range out.TargetGroups {
+		if tg != nil {
+			return tg, nil
+		}
+	}
+	return nil, nil
+}
+
+func lookupListenerByPort(nlbp nlbProvisioner, accountID, lbArn string, port int64) (*elbv2.Listener, error) {
+	if lbArn == "" {
+		return nil, errors.New("eks: lookupListenerByPort empty LB arn")
+	}
+	out, err := nlbp.DescribeListeners(&elbv2.DescribeListenersInput{
+		LoadBalancerArn: aws.String(lbArn),
+	}, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("describe listeners on %s: %w", lbArn, err)
+	}
+	for _, l := range out.Listeners {
+		if l == nil || l.Port == nil {
+			continue
+		}
+		if *l.Port == port {
+			return l, nil
+		}
+	}
+	return nil, nil
+}

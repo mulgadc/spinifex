@@ -24,6 +24,13 @@ const (
 	SubnetEgressPriorityDrop  = 1100
 	SubnetEgressPriorityIGW   = 1000
 	SubnetEgressPriorityNATGW = 900
+
+	// SystemInstanceEgressPriority sits above the drop gate (1100) so a single
+	// system instance (e.g. an EKS K3s server VM) egresses even when its subnet
+	// is otherwise drop-gated. The policy is scoped to the instance's /32
+	// source, so peer instances in the same subnet are unaffected — they still
+	// hit the 1100 drop (or the subnet's own 1000 reroute where one exists).
+	SystemInstanceEgressPriority = 1200
 )
 
 // RouteSpec is a static route on a VPC's LogicalRouter. OutputPort is
@@ -52,6 +59,20 @@ type SubnetEgressSpec struct {
 	ExcludeCIDRs []netip.Prefix
 }
 
+// SystemInstanceEgressSpec describes a per-instance egress override installed
+// as an OVN Logical_Router_Policy at SystemInstanceEgressPriority. The match
+// adds an `ip4.src == <SrcIP>/32` clause to the subnet-egress shape so the
+// reroute is confined to a single system instance; peer instances in the same
+// subnet are untouched. Action is "reroute" via Nexthop out OutputPort.
+type SystemInstanceEgressSpec struct {
+	SubnetID     string
+	SrcIP        netip.Addr
+	Prefix       netip.Prefix
+	Nexthop      string
+	OutputPort   string
+	ExcludeCIDRs []netip.Prefix
+}
+
 // RouteManager owns static routes on VPC LogicalRouters. Adds are
 // idempotent (no-op on match, delete-then-add on drift) so the reconciler
 // can replay safely.
@@ -64,6 +85,8 @@ type RouteManager interface {
 	DeleteSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
 	AddSubnetEgressDrop(ctx context.Context, vpcID string, spec SubnetEgressDropSpec) error
 	DeleteSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
+	AddSystemInstanceEgress(ctx context.Context, vpcID string, spec SystemInstanceEgressSpec) error
+	DeleteSystemInstanceEgress(ctx context.Context, vpcID, subnetID string, srcIP netip.Addr, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error
 }
 
 // SubnetEgressDropSpec describes a per-subnet egress DROP override installed
@@ -263,8 +286,76 @@ func (m *routeManager) DeleteSubnetEgressDrop(ctx context.Context, vpcID, subnet
 	return nil
 }
 
+func (m *routeManager) AddSystemInstanceEgress(ctx context.Context, vpcID string, spec SystemInstanceEgressSpec) error {
+	if spec.SubnetID == "" {
+		return fmt.Errorf("system instance egress: SubnetID required")
+	}
+	if !spec.SrcIP.IsValid() {
+		return fmt.Errorf("system instance egress: SrcIP required")
+	}
+	if spec.OutputPort == "" {
+		return fmt.Errorf("system instance egress: OutputPort required (ovn-northd drops policy reroute otherwise)")
+	}
+	router := topology.VPCRouter(vpcID)
+	match := systemInstanceEgressMatch(spec.SubnetID, spec.SrcIP, spec.Prefix, spec.ExcludeCIDRs)
+
+	existing, err := m.ovn.FindLogicalRouterPolicy(ctx, router, SystemInstanceEgressPriority, match)
+	if err != nil {
+		return fmt.Errorf("find LR policy %q on %s: %w", match, router, err)
+	}
+	if existing != nil {
+		if existing.Action == "reroute" && existing.Nexthop != nil && *existing.Nexthop == spec.Nexthop &&
+			existing.ExternalIDs["spinifex:output_port"] == spec.OutputPort {
+			return nil
+		}
+		if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, SystemInstanceEgressPriority, match); err != nil {
+			return fmt.Errorf("delete drifted LR policy %q on %s: %w", match, router, err)
+		}
+	}
+
+	nexthop := spec.Nexthop
+	row := &nbdb.LogicalRouterPolicy{
+		Priority: SystemInstanceEgressPriority,
+		Match:    match,
+		Action:   "reroute",
+		Nexthop:  &nexthop,
+		Options:  map[string]string{},
+		ExternalIDs: map[string]string{
+			"spinifex:subnet":      spec.SubnetID,
+			"spinifex:src_ip":      spec.SrcIP.String(),
+			"spinifex:output_port": spec.OutputPort,
+			"spinifex:role":        "system-instance-egress",
+		},
+	}
+	if err := m.ovn.AddLogicalRouterPolicy(ctx, router, row); err != nil {
+		return fmt.Errorf("add LR policy %q -> %s on %s: %w", match, spec.Nexthop, router, err)
+	}
+	return nil
+}
+
+func (m *routeManager) DeleteSystemInstanceEgress(ctx context.Context, vpcID, subnetID string, srcIP netip.Addr, prefix netip.Prefix, excludeCIDRs []netip.Prefix) error {
+	router := topology.VPCRouter(vpcID)
+	match := systemInstanceEgressMatch(subnetID, srcIP, prefix, excludeCIDRs)
+	if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, SystemInstanceEgressPriority, match); err != nil {
+		return fmt.Errorf("delete system instance egress LR policy %q on %s: %w", match, router, err)
+	}
+	return nil
+}
+
 func subnetEgressMatch(subnetID string, prefix netip.Prefix, excludeCIDRs []netip.Prefix) string {
 	match := fmt.Sprintf(`inport == %q && ip4.dst == %s`, topology.SubnetRouterPort(subnetID), prefix.String())
+	for _, ex := range excludeCIDRs {
+		if !ex.IsValid() {
+			continue
+		}
+		match += fmt.Sprintf(` && ip4.dst != %s`, ex.String())
+	}
+	return match
+}
+
+func systemInstanceEgressMatch(subnetID string, srcIP netip.Addr, prefix netip.Prefix, excludeCIDRs []netip.Prefix) string {
+	match := fmt.Sprintf(`inport == %q && ip4.src == %s/32 && ip4.dst == %s`,
+		topology.SubnetRouterPort(subnetID), srcIP.String(), prefix.String())
 	for _, ex := range excludeCIDRs {
 		if !ex.IsValid() {
 			continue

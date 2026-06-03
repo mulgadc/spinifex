@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -631,7 +630,7 @@ func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) {
 	if _, eniErr := a.d.vpcService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: &instance.ENIId,
 	}, instance.AccountID); eniErr != nil {
-		if strings.Contains(eniErr.Error(), awserrors.ErrorInvalidNetworkInterfaceIDNotFound) {
+		if awserrors.IsErrorCode(eniErr, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) {
 			slog.Debug("ENI already cleaned up on termination", "eni", instance.ENIId)
 		} else {
 			slog.Error("Failed to delete ENI on termination",

@@ -26,8 +26,10 @@ func setupEKSDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 }
 
 // requestEKS publishes a request on the given subject and returns the response
-// payload. Every EKS handler in this branch returns NotImplemented, so the
-// payload always decodes to that error code.
+// payload. The non-lifecycle EKS handlers all return NotImplemented so the
+// payload always decodes to that error code; CreateCluster / DescribeCluster
+// / ListClusters / DeleteCluster have real bodies and are covered by their
+// own handlers/eks unit tests.
 func requestEKS(t *testing.T, nc *nats.Conn, subject string) []byte {
 	t.Helper()
 	msg := nats.NewMsg(subject)
@@ -55,12 +57,8 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		subject string
 		handler nats.MsgHandler
 	}{
-		{"eks.CreateCluster", d.handleEKSCreateCluster},
-		{"eks.DescribeCluster", d.handleEKSDescribeCluster},
-		{"eks.ListClusters", d.handleEKSListClusters},
 		{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig},
 		{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion},
-		{"eks.DeleteCluster", d.handleEKSDeleteCluster},
 		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup},
 		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup},
 		{"eks.ListNodegroups", d.handleEKSListNodegroups},
@@ -90,7 +88,7 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		{"eks.UntagResource", d.handleEKSUntagResource},
 		{"eks.ListTagsForResource", d.handleEKSListTagsForResource},
 	}
-	require.Equal(t, 34, len(cases), "expected exactly one handler per AWS EKS action")
+	require.Equal(t, 30, len(cases), "expected exactly one handler per non-lifecycle AWS EKS action")
 
 	for _, c := range cases {
 		t.Run(c.subject, func(t *testing.T) {

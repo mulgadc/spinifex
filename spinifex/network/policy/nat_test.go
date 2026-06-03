@@ -370,3 +370,23 @@ func TestNATManager_AddSNAT_AndDelete(t *testing.T) {
 	assert.Nil(t, findNAT(m, "snat", "10.0.0.0/16"))
 	require.NoError(t, nm.DeleteSNAT(ctx, "vpc-1", "10.0.0.0/16"))
 }
+
+func TestNATManager_AddSystemInstanceSNAT_AndDelete(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, _ := NewNATManager(m, NATModeDistributed)
+
+	require.NoError(t, nm.AddSystemInstanceSNAT(ctx, "vpc-1", "172.31.4.10/32", "1.2.3.4"))
+	got := findNAT(m, "snat", "172.31.4.10/32")
+	require.NotNil(t, got)
+	assert.Equal(t, "1.2.3.4", got.ExternalIP)
+	assert.Equal(t, "system-instance-egress", got.ExternalIDs["spinifex:role"])
+	// snat-only: no dnat_and_snat row, so the instance stays unreachable inbound.
+	assert.Nil(t, findNAT(m, "dnat_and_snat", "172.31.4.10/32"))
+
+	require.NoError(t, nm.DeleteSystemInstanceSNAT(ctx, "vpc-1", "172.31.4.10/32"))
+	assert.Nil(t, findNAT(m, "snat", "172.31.4.10/32"))
+	// Idempotent on a missing rule.
+	require.NoError(t, nm.DeleteSystemInstanceSNAT(ctx, "vpc-1", "172.31.4.10/32"))
+}

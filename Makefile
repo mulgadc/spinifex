@@ -78,16 +78,19 @@ ifndef IMAGE
 	$(error IMAGE is required. Usage: make build-system-image IMAGE=lb)
 endif
 	@if [ -f scripts/images/$(IMAGE).conf ]; then \
-		./scripts/build-system-image.sh scripts/images/$(IMAGE).conf; \
+		./scripts/build-system-image.sh scripts/images/$(IMAGE).conf $(if $(IMPORT),--import); \
 	elif [ -f scripts/images/$(IMAGE)/manifest.conf ]; then \
-		./scripts/build-system-image.sh scripts/images/$(IMAGE)/manifest.conf; \
+		./scripts/build-system-image.sh scripts/images/$(IMAGE)/manifest.conf $(if $(IMPORT),--import); \
 	else \
 		echo "ERROR: no manifest at scripts/images/$(IMAGE).conf or scripts/images/$(IMAGE)/manifest.conf"; \
 		exit 1; \
 	fi
 
-build-eks-server-image: ## Build the eks-server AMI (K3s control-plane variant)
+build-eks-server-image: ## Build the eks-server AMI (K3s control-plane variant; IMPORT=1 to register it)
 	$(MAKE) build-system-image IMAGE=eks-server
+
+import-eks-server-image: ## Build + register the eks-server AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=eks-server IMPORT=1
 
 build-eks-agent-image: ## Build the eks-agent AMI (K3s worker variant)
 	$(MAKE) build-system-image IMAGE=eks-agent
@@ -338,9 +341,22 @@ ansible-dev-version:
 ansible-dev-vpc:
 	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-server-image build-eks-agent-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
+# Multi-node cluster bootstrap against a tofu env (env1, env2, bryn, etc).
+# Inventory is generated from scripts/tofu-cluster/envs/<env>.tfvars.
+#   make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
+ENV ?=
+POOL ?=
+ansible-cluster-bootstrap:
+	@test -n "$(ENV)" || { echo "ENV=<env> required (e.g. env1, env2)"; exit 64; }
+	cd scripts/ansible && CLUSTER_ENV=$(ENV) ansible-playbook -i inventory/tofu.py playbooks/cluster-bootstrap.yml \
+		-e cluster_env=$(ENV) \
+		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
+		$(_ANSIBLE_EXTRA)
+
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-server-image import-eks-server-image build-eks-agent-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \
 	distro distro-amd64 distro-arm64 distro-clean \
-	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore ansible-dev-version ansible-dev-vpc
+	ansible-dev-preflight ansible-dev-teardown ansible-dev-install ansible-dev-reset ansible-dev-deploy ansible-dev-status ansible-dev-logs ansible-dev-snapshot ansible-dev-restore ansible-dev-version ansible-dev-vpc \
+	ansible-cluster-bootstrap

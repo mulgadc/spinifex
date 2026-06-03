@@ -68,7 +68,7 @@ mkdir -p /etc/rancher/k3s
 cat > /etc/rancher/k3s/config.yaml.skel <<'EOF'
 # Populated at first boot by cloud-init user-data via k3s-first-boot.sh.
 # Fields documented at https://docs.k3s.io/installation/configuration.
-cluster-init: true
+# No cluster-init: single-node v1 uses the embedded SQLite datastore, not etcd.
 disable:
   - traefik
   - servicelb
@@ -81,5 +81,16 @@ touch /var/lib/spinifex-eks/first-boot.pending 2>/dev/null || {
     mkdir -p /var/lib/spinifex-eks
     touch /var/lib/spinifex-eks/first-boot.pending
 }
+
+# Bind /dev/console to the serial port so userspace boot output — OpenRC
+# service starts, cloud-init, and k3s-first-boot diagnostics — reaches ttyS0,
+# which the orchestrator captures to a host-side log. The stock Alpine cloud
+# image lists `console=tty0` LAST in default_kernel_opts; Linux makes the last
+# console= the controlling /dev/console, so userspace logs to the framebuffer
+# and the serial capture sees only kernel dmesg. Reorder so ttyS0 is last in
+# both the generator config and the already-rendered extlinux.conf.
+sed -i \
+    's|console=ttyS0,115200n8 console=ttyAMA0,115200n8 console=tty0|console=tty0 console=ttyAMA0,115200n8 console=ttyS0,115200n8|' \
+    /etc/update-extlinux.conf /boot/extlinux.conf
 
 echo "[eks-server-setup] done"

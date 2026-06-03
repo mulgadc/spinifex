@@ -47,6 +47,15 @@ type IGWManager interface {
 	EnsureSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 	// RemoveSubnetEgressDrop is the inverse. Idempotent.
 	RemoveSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
+	// EnsureSystemInstanceEgress wires egress-only internet access for a
+	// single system instance (e.g. an EKS K3s server VM) sourced from
+	// instanceIP in subnetID, SNAT'd to externalIP. Installs a /32 reroute
+	// policy at SystemInstanceEgressPriority (above the drop gate so it works
+	// even on a drop-gated subnet) plus a plain snat (no DNAT, no inbound).
+	// Requires AttachIGW to have run first. Idempotent.
+	EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
+	// RemoveSystemInstanceEgress is the inverse. Idempotent.
+	RemoveSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -356,12 +365,75 @@ func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, su
 	})
 }
 
+// EnsureSystemInstanceEgress installs an egress-only path for one system
+// instance: a /32 reroute policy out the gateway port plus a plain snat
+// (instanceIP -> externalIP). The reroute sits above the subnet drop gate so
+// it works even where the instance's subnet is otherwise private; where the
+// subnet already has a 1000 reroute it is harmless (same nexthop). The snat is
+// not dnat_and_snat, so the instance is never reachable inbound.
+func (m *igwManager) EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("EnsureSystemInstanceEgress: vpcID and subnetID required")
+	}
+	srcIP, err := netip.ParseAddr(instanceIP)
+	if err != nil {
+		return fmt.Errorf("EnsureSystemInstanceEgress: parse instance IP %q: %w", instanceIP, err)
+	}
+	if externalIP == "" {
+		return errors.New("EnsureSystemInstanceEgress: externalIP required")
+	}
+
+	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
+	if err != nil {
+		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
+	}
+	if nexthop == "" {
+		return fmt.Errorf("EnsureSystemInstanceEgress: no gateway nexthop for %s (IGW not attached?)", vpcID)
+	}
+
+	if err := m.routes.AddSystemInstanceEgress(ctx, vpcID, policy.SystemInstanceEgressSpec{
+		SubnetID:     subnetID,
+		SrcIP:        srcIP,
+		Prefix:       defaultRoutePrefix,
+		Nexthop:      nexthop,
+		OutputPort:   topology.GatewayRouterPort(vpcID),
+		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
+	}); err != nil {
+		return fmt.Errorf("add system instance egress reroute: %w", err)
+	}
+	if err := m.nat.AddSystemInstanceSNAT(ctx, vpcID, instanceIP+"/32", externalIP); err != nil {
+		return fmt.Errorf("add system instance egress snat: %w", err)
+	}
+	return nil
+}
+
+// RemoveSystemInstanceEgress deletes the policy + snat installed by
+// EnsureSystemInstanceEgress. Idempotent.
+func (m *igwManager) RemoveSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("RemoveSystemInstanceEgress: vpcID and subnetID required")
+	}
+	srcIP, err := netip.ParseAddr(instanceIP)
+	if err != nil {
+		return fmt.Errorf("RemoveSystemInstanceEgress: parse instance IP %q: %w", instanceIP, err)
+	}
+	var firstErr error
+	if err := m.routes.DeleteSystemInstanceEgress(ctx, vpcID, subnetID, srcIP, defaultRoutePrefix, m.vpcExcludeCIDRs(ctx, vpcID)); err != nil {
+		firstErr = fmt.Errorf("delete system instance egress reroute: %w", err)
+	}
+	if err := m.nat.DeleteSystemInstanceSNAT(ctx, vpcID, instanceIP+"/32"); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("delete system instance egress snat: %w", err)
+	}
+	return firstErr
+}
+
 // linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so
 // link-local (DHCP, metadata, 169.254.169.254) and multicast destinations
 // are not killed by the per-subnet gate.
 var (
-	linkLocalCIDR = netip.MustParsePrefix("169.254.0.0/16")
-	multicastCIDR = netip.MustParsePrefix("224.0.0.0/4")
+	linkLocalCIDR      = netip.MustParsePrefix("169.254.0.0/16")
+	multicastCIDR      = netip.MustParsePrefix("224.0.0.0/4")
+	defaultRoutePrefix = netip.MustParsePrefix("0.0.0.0/0")
 )
 
 // dropExcludeCIDRs returns the exclusion list for a per-subnet drop policy:

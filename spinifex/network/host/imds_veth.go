@@ -35,13 +35,22 @@ func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName s
 	hostEnd := IMDSHostVethName(vpcID)
 	netns := IMDSNetnsName(vpcID)
 
-	// Idempotency probe: if the OVS end is already a port on br-int, the full
-	// plumbing (veth pair, netns, host-end address + route) exists from a prior
-	// boot — nothing to do.
-	if out, probeErr := utils.SudoCommand("ovs-vsctl", "port-to-br", ovsEnd).CombinedOutput(); probeErr == nil {
-		if strings.TrimSpace(string(out)) == "br-int" {
+	// Idempotency probe: the full plumbing (veth pair, netns, host-end address +
+	// route) exists from a prior boot only when the OVS end is a port on br-int
+	// AND the netns is enterable. A live OVS port over a stale netns (name
+	// present but setns(2) fails EINVAL — e.g. a crash between umount and unlink,
+	// or a tmpfs remount across reboot) leaves the listener permanently
+	// unbindable, so that case must NOT short-circuit: tear the inconsistent
+	// plumbing down and rebuild it below.
+	if imdsOVSPortOnBrInt(ovsEnd) {
+		if netnsEnterable(netns) {
 			slog.Debug("IMDS veth already present", "vpc", vpcID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns)
 			return netns, hostEnd, nil
+		}
+		slog.Warn("IMDS netns unenterable behind a live OVS port (stale handle), rebuilding plumbing",
+			"vpc", vpcID, "netns", netns, "ovs_end", ovsEnd)
+		if err := removeIMDSPlumbing(ovsEnd, hostEnd, netns); err != nil {
+			slog.Warn("Failed to tear down stale IMDS plumbing before rebuild", "vpc", vpcID, "err", err)
 		}
 	}
 
@@ -99,15 +108,47 @@ func configureIMDSNetns(netns, hostEnd, ovsEnd string) error {
 	return ipNetnsTolerate(netns, "File exists", "route", "add", "default", "via", imdsNetnsGateway)
 }
 
-// ensureNetns creates the netns, treating "already exists" as success.
+// ensureNetns creates the netns, treating "already exists" as success — but
+// only when the pre-existing handle is actually enterable. A stale
+// /run/netns/<ns> bind-mount (name resolves yet setns(2) fails EINVAL) returns
+// "File exists" from `ip netns add` while being unusable, which would leave the
+// IMDS listener permanently unbindable; that handle is torn down and recreated.
 func ensureNetns(netns string) error {
-	if out, err := utils.SudoCommand("ip", "netns", "add", netns).CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "File exists") {
-			return nil
-		}
+	out, err := utils.SudoCommand("ip", "netns", "add", netns).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(string(out), "File exists") {
 		return fmt.Errorf("create IMDS netns %s: %s: %w", netns, strings.TrimSpace(string(out)), err)
 	}
+	if netnsEnterable(netns) {
+		return nil
+	}
+	slog.Warn("IMDS netns present but unenterable (stale handle), recreating", "netns", netns)
+	if out, err := utils.SudoCommand("ip", "netns", "del", netns).CombinedOutput(); err != nil {
+		if msg := strings.TrimSpace(string(out)); !strings.Contains(msg, "No such file") {
+			return fmt.Errorf("delete stale IMDS netns %s: %s: %w", netns, msg, err)
+		}
+	}
+	if out, err := utils.SudoCommand("ip", "netns", "add", netns).CombinedOutput(); err != nil {
+		return fmt.Errorf("recreate IMDS netns %s: %s: %w", netns, strings.TrimSpace(string(out)), err)
+	}
 	return nil
+}
+
+// imdsOVSPortOnBrInt reports whether the IMDS OVS-end veth is currently a port
+// on br-int — the cheap signal that prior plumbing exists.
+func imdsOVSPortOnBrInt(ovsEnd string) bool {
+	out, err := utils.SudoCommand("ovs-vsctl", "port-to-br", ovsEnd).CombinedOutput()
+	return err == nil && strings.TrimSpace(string(out)) == "br-int"
+}
+
+// netnsEnterable reports whether netns can be entered via setns(2). A stale
+// bind-mount resolves by name but fails EINVAL; `ip -n <netns> link show lo`
+// performs the setns and surfaces it. A truly-absent netns also reports false,
+// which is the correct signal for both callers (recreate / rebuild).
+func netnsEnterable(netns string) bool {
+	return utils.SudoCommand("ip", "-n", netns, "link", "show", "lo").Run() == nil
 }
 
 // ipNetnsTolerate runs `ip -n <netns> <args...>`, treating output containing

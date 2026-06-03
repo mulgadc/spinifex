@@ -72,7 +72,8 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 }
 
 func TestEnsureIMDSVeth_Idempotent(t *testing.T) {
-	// Probe reports the OVS end is already on br-int → early return, no mutation.
+	// Probe reports the OVS end is already on br-int and the netns is enterable
+	// (default mock = /bin/true) → early return, no mutation.
 	calls := recordSudo(t, func(name string, args []string) *exec.Cmd {
 		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
 			return exec.Command("echo", "br-int")
@@ -90,8 +91,106 @@ func TestEnsureIMDSVeth_Idempotent(t *testing.T) {
 	if hostEnd != "imds-h-89abcdef" {
 		t.Errorf("hostEnd = %q, want imds-h-89abcdef", hostEnd)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("expected only the probe call, got %v", *calls)
+	want := [][]string{
+		{"ovs-vsctl", "port-to-br", "imds-o-89abcdef"},
+		{"ip", "-n", "imds-89abcdef", "link", "show", "lo"},
+	}
+	if len(*calls) != len(want) {
+		t.Fatalf("expected only the two probe calls, got %v", *calls)
+	}
+	for i := range want {
+		if !slices.Equal((*calls)[i], want[i]) {
+			t.Errorf("call %d = %v, want %v", i, (*calls)[i], want[i])
+		}
+	}
+}
+
+// TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds guards Fix #2: a live
+// OVS port over an unenterable netns (stale /run/netns handle, setns EINVAL)
+// must NOT short-circuit. The inconsistent plumbing is torn down and rebuilt so
+// the IMDS listener becomes bindable again, rather than wedging forever.
+func TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds(t *testing.T) {
+	calls := recordSudo(t, func(name string, args []string) *exec.Cmd {
+		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
+			return exec.Command("echo", "br-int")
+		}
+		// Netns enterability probe fails with the kernel's EINVAL message.
+		if name == "ip" && len(args) >= 5 && args[0] == "-n" && args[2] == "link" && args[3] == "show" {
+			return exec.Command("sh", "-c", `echo 'setting the network namespace "imds-89abcdef" failed: Invalid argument' >&2; exit 1`)
+		}
+		return nil
+	})
+
+	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+		t.Fatalf("EnsureIMDSVeth: %v", err)
+	}
+
+	// Teardown (removeIMDSPlumbing) must run before the rebuild, and the rebuild
+	// must re-add the OVS port — proving we did not short-circuit.
+	var sawDelPort, sawNetnsDel, sawAddPort bool
+	for _, c := range *calls {
+		if c[0] == "ovs-vsctl" && slices.Contains(c, "del-port") {
+			sawDelPort = true
+		}
+		if c[0] == "ip" && len(c) >= 3 && c[1] == "netns" && c[2] == "del" {
+			sawNetnsDel = true
+		}
+		if c[0] == "ovs-vsctl" && slices.Contains(c, "add-port") {
+			sawAddPort = true
+		}
+	}
+	if !sawDelPort || !sawNetnsDel || !sawAddPort {
+		t.Errorf("expected stale plumbing torn down and rebuilt (del-port=%v, netns del=%v, add-port=%v); calls=%v",
+			sawDelPort, sawNetnsDel, sawAddPort, *calls)
+	}
+}
+
+// TestEnsureIMDSVeth_StaleNetnsRecreated guards Fix #1: when `ip netns add`
+// reports "File exists" but the handle is unenterable, ensureNetns deletes the
+// stale handle and recreates it, then plumbing proceeds to completion.
+func TestEnsureIMDSVeth_StaleNetnsRecreated(t *testing.T) {
+	netnsAdds := 0
+	calls := recordSudo(t, func(name string, args []string) *exec.Cmd {
+		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
+			return exec.Command("/bin/false")
+		}
+		if name == "ip" && len(args) >= 2 && args[0] == "netns" && args[1] == "add" {
+			netnsAdds++
+			if netnsAdds == 1 {
+				// First add: name already present as a stale handle.
+				return exec.Command("sh", "-c", "echo 'Cannot create namespace file: File exists' >&2; exit 1")
+			}
+			return nil // recreate succeeds
+		}
+		// Enterability probe fails → stale handle detected.
+		if name == "ip" && len(args) >= 5 && args[0] == "-n" && args[2] == "link" && args[3] == "show" {
+			return exec.Command("sh", "-c", `echo 'setting the network namespace "imds-89abcdef" failed: Invalid argument' >&2; exit 1`)
+		}
+		return nil
+	})
+
+	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+		t.Fatalf("EnsureIMDSVeth: %v", err)
+	}
+
+	// Stale handle deleted then re-added, and the rebuild ran to the add-port.
+	var sawNetnsDel, sawAddPort bool
+	for _, c := range *calls {
+		if c[0] == "ip" && len(c) >= 3 && c[1] == "netns" && c[2] == "del" {
+			sawNetnsDel = true
+		}
+		if c[0] == "ovs-vsctl" && slices.Contains(c, "add-port") {
+			sawAddPort = true
+		}
+	}
+	if !sawNetnsDel {
+		t.Errorf("expected stale netns to be deleted before recreate; calls=%v", *calls)
+	}
+	if !sawAddPort {
+		t.Errorf("expected plumbing to complete after recreate; calls=%v", *calls)
+	}
+	if netnsAdds != 2 {
+		t.Errorf("expected two netns add attempts (stale + recreate), got %d", netnsAdds)
 	}
 }
 

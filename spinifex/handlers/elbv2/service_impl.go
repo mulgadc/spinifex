@@ -777,13 +777,15 @@ const (
 	elbv2ResourceLoadBalancer = "loadbalancer"
 	elbv2ResourceTargetGroup  = "targetgroup"
 	elbv2ResourceListener     = "listener"
+	elbv2ResourceListenerRule = "listener-rule"
 )
 
 // elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN.
 // ELBv2 ARNs have the form
 // "arn:aws:elasticloadbalancing:{region}:{account}:{type}/...". Returns one
-// of "loadbalancer", "targetgroup", "listener" — anything else yields
-// ErrorInvalidParameterValue so callers can surface a proper API error.
+// of "loadbalancer", "targetgroup", "listener", "listener-rule" — anything
+// else yields ErrorInvalidParameterValue so callers can surface a proper API
+// error.
 func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	parts := strings.SplitN(arn, ":", 6)
 	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "elasticloadbalancing" {
@@ -796,7 +798,7 @@ func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	}
 	resourceType := resourceSegment[:slash]
 	switch resourceType {
-	case elbv2ResourceLoadBalancer, elbv2ResourceTargetGroup, elbv2ResourceListener:
+	case elbv2ResourceLoadBalancer, elbv2ResourceTargetGroup, elbv2ResourceListener, elbv2ResourceListenerRule:
 		return resourceType, nil
 	default:
 		return "", errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1626,6 +1628,34 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 
 // --- Listener operations ---
 
+// listenerActionFromSDK converts an SDK listener action into the stored form,
+// preserving fixed-response config so HAProxy generation and tofu read-back see
+// the full action (a forward-only conversion drops the fixed-response default
+// and produces a dangling backend + perpetual plan diff).
+func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
+	action := ListenerAction{}
+	if a.Type != nil {
+		action.Type = *a.Type
+	}
+	if a.TargetGroupArn != nil {
+		action.TargetGroupArn = *a.TargetGroupArn
+	}
+	if a.FixedResponseConfig != nil {
+		fr := &FixedResponseAction{}
+		if a.FixedResponseConfig.StatusCode != nil {
+			fr.StatusCode = *a.FixedResponseConfig.StatusCode
+		}
+		if a.FixedResponseConfig.ContentType != nil {
+			fr.ContentType = *a.FixedResponseConfig.ContentType
+		}
+		if a.FixedResponseConfig.MessageBody != nil {
+			fr.MessageBody = *a.FixedResponseConfig.MessageBody
+		}
+		action.FixedResponse = fr
+	}
+	return action
+}
+
 func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1705,14 +1735,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 
 	var actions []ListenerAction
 	for _, a := range input.DefaultActions {
-		action := ListenerAction{}
-		if a.Type != nil {
-			action.Type = *a.Type
-		}
-		if a.TargetGroupArn != nil {
-			action.TargetGroupArn = *a.TargetGroupArn
-		}
-		actions = append(actions, action)
+		actions = append(actions, listenerActionFromSDK(a))
 	}
 
 	record := &ListenerRecord{
@@ -1857,13 +1880,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 	if len(input.DefaultActions) > 0 {
 		var actions []ListenerAction
 		for _, a := range input.DefaultActions {
-			action := ListenerAction{}
-			if a.Type != nil {
-				action.Type = *a.Type
-			}
-			if a.TargetGroupArn != nil {
-				action.TargetGroupArn = *a.TargetGroupArn
-			}
+			action := listenerActionFromSDK(a)
 			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
 				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
 				if tgErr != nil {
@@ -1957,11 +1974,12 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 // --- Tag operations ---
 
 // DescribeTags returns tags for one or more ELBv2 resources (load balancers,
-// target groups, listeners). Tag data is read from the existing record stores
-// — Spinifex doesn't have a separate tag KV. Listeners currently never store
-// tags, so they always return an empty Tags slice (matches AWS behaviour for
-// untagged resources). Cross-account or unknown ARNs return the per-resource
-// not-found error so existence isn't leaked across accounts.
+// target groups, listeners, listener rules). Tag data is read from the existing
+// record stores — Spinifex doesn't have a separate tag KV. Listeners and rules
+// currently never store tags, so they always return an empty Tags slice
+// (matches AWS behaviour for untagged resources). Cross-account or unknown ARNs
+// return the per-resource not-found error so existence isn't leaked across
+// accounts.
 func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2021,6 +2039,18 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 				found = true
 				ownerAccount = l.AccountID
 				// Listeners don't store tags yet — leave map nil.
+			}
+		case elbv2ResourceListenerRule:
+			notFoundError = awserrors.ErrorELBv2RuleNotFound
+			r, rErr := s.store.GetRuleByArn(arn)
+			if rErr != nil {
+				slog.Error("DescribeTags: failed to get rule", "arn", arn, "err", rErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if r != nil {
+				found = true
+				ownerAccount = r.AccountID
+				// Rules don't store tags yet — leave map nil.
 			}
 		}
 
@@ -2357,9 +2387,21 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 	}
 
 	for _, a := range r.DefaultActions {
-		action := &elbv2.Action{
-			Type:           aws.String(a.Type),
-			TargetGroupArn: aws.String(a.TargetGroupArn),
+		action := &elbv2.Action{Type: aws.String(a.Type)}
+		if a.TargetGroupArn != "" {
+			action.TargetGroupArn = aws.String(a.TargetGroupArn)
+		}
+		if a.FixedResponse != nil {
+			fr := &elbv2.FixedResponseActionConfig{
+				StatusCode: aws.String(a.FixedResponse.StatusCode),
+			}
+			if a.FixedResponse.ContentType != "" {
+				fr.ContentType = aws.String(a.FixedResponse.ContentType)
+			}
+			if a.FixedResponse.MessageBody != "" {
+				fr.MessageBody = aws.String(a.FixedResponse.MessageBody)
+			}
+			action.FixedResponseConfig = fr
 		}
 		listener.DefaultActions = append(listener.DefaultActions, action)
 	}

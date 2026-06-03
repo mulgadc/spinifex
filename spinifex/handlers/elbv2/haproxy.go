@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,11 +45,15 @@ frontend {{.Name}}
 {{end}}
 {{range .Backends}}
 backend {{.Name}}
+{{- if .FixedResponse}}
+    http-request return status {{.FixedResponse.StatusCode}}{{if .FixedResponse.ContentType}} content-type "{{.FixedResponse.ContentType}}"{{end}}{{if .FixedResponse.Body}} string "{{.FixedResponse.Body}}"{{end}}
+{{- else}}
     balance roundrobin{{if .HealthCheckPath}}
     option httpchk GET {{.HealthCheckPath}}
     http-check expect status {{.HealthCheckMatcher}}{{end}}
 {{- range .Servers}}
     server {{.Name}} {{.Addr}}:{{.Port}} check inter {{.CheckInterval}}s fall {{.Fall}} rise {{.Rise}}
+{{- end}}
 {{- end}}
 {{end}}
 `
@@ -123,7 +128,8 @@ type HAProxyACL struct {
 	Expr string
 }
 
-// HAProxyBackend represents a target group backend.
+// HAProxyBackend represents a target group backend, or a synthetic backend that
+// emits a fixed response (when FixedResponse is set, the server fields are unused).
 type HAProxyBackend struct {
 	Name               string
 	HealthCheckPath    string
@@ -131,6 +137,15 @@ type HAProxyBackend struct {
 	TCPCheck           bool
 	HTTPCheck          bool
 	Servers            []HAProxyServer
+	FixedResponse      *HAProxyFixedResponse
+}
+
+// HAProxyFixedResponse renders an `http-request return` directive for a
+// fixed-response listener default action. All fields are validated before use.
+type HAProxyFixedResponse struct {
+	StatusCode  string
+	ContentType string
+	Body        string
 }
 
 // HAProxyServer represents a single target server.
@@ -238,13 +253,43 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 		backendAdded[backendName] = struct{}{}
 	}
 
+	addFixedResponseBackend := func(name string, fr *FixedResponseAction) {
+		if _, ok := backendAdded[name]; ok {
+			return
+		}
+		hf := &HAProxyFixedResponse{StatusCode: "503"}
+		if fr != nil {
+			if validHTTPStatusCode(fr.StatusCode) {
+				hf.StatusCode = fr.StatusCode
+			}
+			if validContentType(fr.ContentType) {
+				hf.ContentType = fr.ContentType
+			}
+			if validFixedResponseBody(fr.MessageBody) {
+				hf.Body = fr.MessageBody
+			}
+		}
+		cfg.Backends = append(cfg.Backends, HAProxyBackend{Name: name, FixedResponse: hf})
+		backendAdded[name] = struct{}{}
+	}
+
 	for _, l := range listeners {
 		if len(l.DefaultActions) == 0 {
 			continue
 		}
 
-		tgArn := l.DefaultActions[0].TargetGroupArn
-		defaultBackendName := sanitizeName("bk", tgArn)
+		da := l.DefaultActions[0]
+		isForwardDefault := da.Type == ActionTypeForward && da.TargetGroupArn != ""
+
+		var defaultBackendName string
+		if isForwardDefault {
+			defaultBackendName = sanitizeName("bk", da.TargetGroupArn)
+		} else {
+			// fixed-response (or any non-forward default, e.g. the shared-ingress
+			// 404): synthesize a backend that returns the canned reply so HAProxy
+			// has a valid default_backend instead of a dangling reference.
+			defaultBackendName = sanitizeName("bkdefault", l.ListenerArn)
+		}
 
 		frontend := HAProxyFrontend{
 			Name:           sanitizeName("ft", l.ListenerArn),
@@ -270,7 +315,11 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 		}
 
 		cfg.Frontends = append(cfg.Frontends, frontend)
-		addBackend(tgArn)
+		if isForwardDefault {
+			addBackend(da.TargetGroupArn)
+		} else {
+			addFixedResponseBackend(defaultBackendName, da.FixedResponse)
+		}
 	}
 
 	return cfg, nil
@@ -393,6 +442,43 @@ func wildcardMatch(v string) (flag, literal string) {
 	default:
 		return "str", v
 	}
+}
+
+// contentTypeRegex matches a conservative MIME type (type/subtype) for the
+// fixed-response content-type header rendered into the HAProxy config.
+var contentTypeRegex = regexp.MustCompile(`^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$`)
+
+// validHTTPStatusCode accepts a 3-digit 2xx–5xx HTTP status.
+func validHTTPStatusCode(s string) bool {
+	if len(s) != 3 || s[0] < '2' || s[0] > '5' {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validContentType accepts a conservative type/subtype MIME string.
+func validContentType(s string) bool {
+	return contentTypeRegex.MatchString(s)
+}
+
+// validFixedResponseBody rejects bytes that would terminate the quoted HAProxy
+// string or inject a directive. Spaces are allowed (the body renders inside
+// double quotes).
+func validFixedResponseBody(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '"' || r == '\\' || r == '#' {
+			return false
+		}
+	}
+	return true
 }
 
 // validateRenderSafe rejects bytes that could break ACL parsing or inject new

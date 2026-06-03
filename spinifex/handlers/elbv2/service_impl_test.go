@@ -2980,6 +2980,55 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	assert.Empty(t, out.TagDescriptions[0].Tags)
 }
 
+func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
+	svc := setupTestService(t)
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("tags-rule-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tags-rule-tg")}, testAccountID)
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	ruleOut, err := svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Priority:    aws.Int64(10),
+		Conditions: []*elbv2.RuleCondition{
+			{Field: aws.String("host-header"), Values: aws.StringSlice([]string{"app.example.com"})},
+		},
+		Actions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Rules don't store tags yet — must still return a TagDescription (with an
+	// empty Tags slice), not an error. This is the case the Terraform AWS
+	// provider hits during post-create refresh of aws_lb_listener_rule.
+	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{ruleOut.Rules[0].RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TagDescriptions, 1)
+	assert.Equal(t, *ruleOut.Rules[0].RuleArn, *out.TagDescriptions[0].ResourceArn)
+	assert.Empty(t, out.TagDescriptions[0].Tags)
+}
+
+func TestDescribeTags_RuleNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{
+			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/missing/lb-x/lst-y/rule-deadbeef"),
+		},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2RuleNotFound)
+}
+
 func TestDescribeTags_MultipleArns(t *testing.T) {
 	svc := setupTestService(t)
 	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{

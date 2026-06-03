@@ -163,6 +163,91 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(config, "balance roundrobin"))
 }
 
+// TestGenerateHAProxyConfig_FixedResponseDefault mirrors the shared-ingress
+// shape: a listener whose default action is fixed-response (no target group),
+// with host-header rules forwarding to per-app target groups. The generator
+// must synthesize a default backend instead of emitting a dangling
+// `default_backend bk_`, which makes HAProxy fail to start.
+func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-ingress"}
+	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/wd-ingress/lb-ingress/lst-616760baf6a3031c3"
+	appTG := "arn:aws:elasticloadbalancing:ap-southeast-2:1:targetgroup/wd-identity/tg-app1"
+
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: listenerArn,
+			Port:        80,
+			Protocol:    ProtocolHTTP,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeFixedResponse, FixedResponse: &FixedResponseAction{
+					StatusCode:  "404",
+					ContentType: "text/plain",
+					MessageBody: "no route",
+				}},
+			},
+		},
+	}
+
+	rulesByListener := map[string][]*RuleRecord{
+		listenerArn: {
+			{
+				RuleID:      "rule1",
+				ListenerArn: listenerArn,
+				Priority:    1,
+				Conditions:  []RuleCondition{{Field: RuleFieldHostHeader, Values: []string{"identity.toc.spinifex.local"}}},
+				Actions:     []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: appTG}},
+			},
+		},
+	}
+
+	tgByArn := map[string]*TargetGroupRecord{
+		appTG: {
+			TargetGroupArn: appTG,
+			HealthCheck:    DefaultHealthCheck(),
+			Targets:        []Target{{Id: "i-app1", Port: 8080, PrivateIP: "10.42.0.9", HealthState: TargetHealthHealthy}},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, "10.42.0.13")
+	require.NoError(t, err)
+
+	// No dangling default backend.
+	assert.NotContains(t, config, "default_backend bk_\n")
+	// Synthetic default backend named off the listener ARN, returning the fixed response.
+	assert.Contains(t, config, "default_backend bkdefault_lst-616760baf6a3031c3")
+	assert.Contains(t, config, "backend bkdefault_lst-616760baf6a3031c3")
+	assert.Contains(t, config, `http-request return status 404 content-type "text/plain" string "no route"`)
+	// Host-header rule still routes to the app backend.
+	assert.Contains(t, config, "use_backend bk_tg-app1 if")
+	assert.Contains(t, config, "10.42.0.9:8080")
+}
+
+// TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody falls back to a bare
+// status when the body or content-type contains injection bytes.
+func TestGenerateHAProxyConfig_FixedResponseRejectsUnsafeBody(t *testing.T) {
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-evil"}
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: "arn:lst-evil",
+			Port:        80,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeFixedResponse, FixedResponse: &FixedResponseAction{
+					StatusCode:  "200",
+					ContentType: "text/plain",
+					MessageBody: "evil\"\n  acl x always_true",
+				}},
+			},
+		},
+	}
+
+	config, err := GenerateHAProxyConfig(lb, listeners, nil, nil, "0.0.0.0")
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "http-request return status 200")
+	assert.NotContains(t, config, "always_true")
+	assert.NotContains(t, config, `string "evil`)
+}
+
 func TestGenerateHAProxyConfig_NoListeners(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-empty"}
 	config, err := GenerateHAProxyConfig(lb, nil, nil, nil, "0.0.0.0")

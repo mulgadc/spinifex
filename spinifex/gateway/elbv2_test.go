@@ -69,6 +69,10 @@ func TestELBv2ActionsMap_AllActionsRegistered(t *testing.T) {
 		"DeleteRule",
 		"DescribeRules",
 		"SetRulePriorities",
+		"AddListenerCertificates",
+		"RemoveListenerCertificates",
+		"DescribeListenerCertificates",
+		"DescribeSSLPolicies",
 	}
 
 	for _, action := range expectedActions {

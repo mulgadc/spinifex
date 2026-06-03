@@ -40,6 +40,10 @@ const (
 	ProtocolTLS    = "TLS"
 	ProtocolTCPUDP = "TCP_UDP"
 
+	// DefaultSslPolicy is applied to a secure listener when the caller does
+	// not specify an SslPolicy.
+	DefaultSslPolicy = "ELBSecurityPolicy-2016-08"
+
 	// Listener action types
 	ActionTypeForward       = "forward"
 	ActionTypeFixedResponse = "fixed-response"
@@ -202,7 +206,20 @@ type ListenerRecord struct {
 	AccountID       string           `json:"account_id"`
 	CreatedAt       time.Time        `json:"created_at"`
 
+	// Certificates holds the listener's TLS certificates for a secure
+	// protocol (ALB HTTPS / NLB TLS). The first IsDefault entry is the
+	// default cert; the rest are additional SNI certs. Empty for non-secure
+	// listeners. SslPolicy is the negotiated security policy name.
+	Certificates []ListenerCertificate `json:"certificates,omitempty"`
+	SslPolicy    string                `json:"ssl_policy,omitempty"`
+
 	Tags map[string]string `json:"tags,omitempty"`
+}
+
+// ListenerCertificate is a TLS certificate reference attached to a listener.
+type ListenerCertificate struct {
+	CertificateArn string `json:"certificate_arn"`
+	IsDefault      bool   `json:"is_default"`
 }
 
 // ListenerAction defines a listener default action or a rule action.

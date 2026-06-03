@@ -143,6 +143,22 @@ func (s *NATSELBv2Service) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 	return utils.NATSRequest[elbv2.SetIpAddressTypeOutput](s.natsConn, "elbv2.SetIpAddressType", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
+	return utils.NATSRequest[elbv2.AddListenerCertificatesOutput](s.natsConn, "elbv2.AddListenerCertificates", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) RemoveListenerCertificates(input *elbv2.RemoveListenerCertificatesInput, accountID string) (*elbv2.RemoveListenerCertificatesOutput, error) {
+	return utils.NATSRequest[elbv2.RemoveListenerCertificatesOutput](s.natsConn, "elbv2.RemoveListenerCertificates", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) DescribeListenerCertificates(input *elbv2.DescribeListenerCertificatesInput, accountID string) (*elbv2.DescribeListenerCertificatesOutput, error) {
+	return utils.NATSRequest[elbv2.DescribeListenerCertificatesOutput](s.natsConn, "elbv2.DescribeListenerCertificates", input, defaultTimeout, accountID)
+}
+
+func (s *NATSELBv2Service) DescribeSSLPolicies(input *elbv2.DescribeSSLPoliciesInput, accountID string) (*elbv2.DescribeSSLPoliciesOutput, error) {
+	return utils.NATSRequest[elbv2.DescribeSSLPoliciesOutput](s.natsConn, "elbv2.DescribeSSLPolicies", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {
 	return utils.NATSRequest[LBAgentHeartbeatOutput](s.natsConn, "elbv2.LBAgentHeartbeat", input, defaultTimeout, accountID)
 }

@@ -95,6 +95,10 @@ services:
       - "elbv2.CreateListener"
       - "elbv2.DeleteListener"
       - "elbv2.DescribeListeners"
+      - "elbv2.AddListenerCertificates"
+      - "elbv2.RemoveListenerCertificates"
+      - "elbv2.DescribeListenerCertificates"
+      - "elbv2.DescribeSSLPolicies"
     publishes:
       # → vpcd
       - "vpc.create"

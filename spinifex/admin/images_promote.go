@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -41,7 +42,7 @@ type PromoteImageResult struct {
 //   - config.json must exist and parse cleanly
 //   - AMI must currently be account-owned; already-system AMIs are rejected
 func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts PromoteImageOpts) (*PromoteImageResult, error) {
-	if !hasAMIPrefix(opts.ImageID) {
+	if !strings.HasPrefix(opts.ImageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
@@ -109,8 +110,4 @@ func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (vipe
 	default:
 		return viperblock.AMIMetadata{}, errors.New(awserrors.ErrorServerInternal)
 	}
-}
-
-func hasAMIPrefix(id string) bool {
-	return len(id) > 4 && id[:4] == "ami-"
 }

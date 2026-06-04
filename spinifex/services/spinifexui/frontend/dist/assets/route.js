@@ -1,1 +1,1 @@
-import{Oo as e,So as t,xo as n}from"./index.js";var r=n(),i=e(),a=()=>{let e=(0,r.c)(1),n;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(n=(0,i.jsx)(t,{}),e[0]=n):n=e[0],n};export{a as component};
+import{Eo as e,bo as t,yo as n}from"./index.js";var r=n(),i=e(),a=()=>{let e=(0,r.c)(1),n;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(n=(0,i.jsx)(t,{}),e[0]=n):n=e[0],n};export{a as component};

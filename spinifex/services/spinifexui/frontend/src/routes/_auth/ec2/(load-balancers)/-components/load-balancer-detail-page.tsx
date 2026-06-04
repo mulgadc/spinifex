@@ -99,6 +99,8 @@ export function LoadBalancerDetailPage({ arn }: Props) {
   const vpcSecurityGroups = (sgsData.SecurityGroups ?? []).filter(
     (sg) => sg.VpcId === lb.VpcId,
   )
+  // NLBs carry no security groups, so the editor tab is hidden for them.
+  const isNlb = lb.Type === "network"
 
   return (
     <>
@@ -136,7 +138,9 @@ export function LoadBalancerDetailPage({ arn }: Props) {
           <TabsList>
             <TabsTab value="overview">Overview</TabsTab>
             <TabsTab value="listeners">Listeners</TabsTab>
-            <TabsTab value="security-groups">Security groups</TabsTab>
+            {!isNlb && (
+              <TabsTab value="security-groups">Security groups</TabsTab>
+            )}
             <TabsTab value="attributes">Attributes</TabsTab>
             <TabsTab value="tags">Tags</TabsTab>
           </TabsList>
@@ -195,21 +199,23 @@ export function LoadBalancerDetailPage({ arn }: Props) {
             <ListenersTab loadBalancerArn={arn} vpcId={lb.VpcId} />
           </TabsPanel>
 
-          <TabsPanel value="security-groups">
-            <SecurityGroupsEditor
-              available={vpcSecurityGroups}
-              current={currentSecurityGroups}
-              error={setSecurityGroupsMutation.error}
-              isPending={setSecurityGroupsMutation.isPending}
-              isSuccess={setSecurityGroupsMutation.isSuccess}
-              onSubmit={(securityGroupIds) =>
-                setSecurityGroupsMutation.mutate({
-                  loadBalancerArn: arn,
-                  securityGroupIds,
-                })
-              }
-            />
-          </TabsPanel>
+          {!isNlb && (
+            <TabsPanel value="security-groups">
+              <SecurityGroupsEditor
+                available={vpcSecurityGroups}
+                current={currentSecurityGroups}
+                error={setSecurityGroupsMutation.error}
+                isPending={setSecurityGroupsMutation.isPending}
+                isSuccess={setSecurityGroupsMutation.isSuccess}
+                onSubmit={(securityGroupIds) =>
+                  setSecurityGroupsMutation.mutate({
+                    loadBalancerArn: arn,
+                    securityGroupIds,
+                  })
+                }
+              />
+            </TabsPanel>
+          )}
 
           <TabsPanel value="attributes">
             <AttributesEditor

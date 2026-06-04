@@ -12,6 +12,7 @@ import {
   type CliCommand,
   type CommandPart,
 } from "@/components/cli-command-panel"
+import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -31,17 +32,28 @@ import {
   type LbWizardResult,
   useCreateLoadBalancerWizard,
 } from "@/mutations/elbv2"
+import { acmCertificatesQueryOptions } from "@/queries/acm"
 import {
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
-import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
+import {
+  elbv2SslPoliciesQueryOptions,
+  elbv2TargetGroupsQueryOptions,
+} from "@/queries/elbv2"
 import {
   type CreateLoadBalancerFormData,
   type CreateTargetGroupFormData,
+  type LbType,
+  type ListenerProtocolValue,
+  type TargetGroupProtocol,
   createLoadBalancerSchema,
   createTargetGroupSchema,
+  DEFAULT_SSL_POLICY,
+  defaultProtocolForType,
+  isSecureProtocol,
+  protocolsForType,
 } from "@/types/elbv2"
 
 function vpcLabel(vpc: Vpc): string {
@@ -63,6 +75,24 @@ interface GroupedSubnets {
   subnets: Subnet[]
 }
 
+// The target-group protocol the wizard creates for a given listener protocol.
+// HTTP and HTTPS both forward to an HTTP target group; secure NLB (TLS) and TCP
+// terminate at a TCP one.
+function targetGroupProtocolFor(
+  protocol: ListenerProtocolValue,
+): TargetGroupProtocol {
+  if (protocol === "TLS" || protocol === "TCP") {
+    return "TCP"
+  }
+  if (protocol === "UDP") {
+    return "UDP"
+  }
+  if (protocol === "TCP_UDP") {
+    return "TCP_UDP"
+  }
+  return "HTTP"
+}
+
 function groupSubnetsByAz(subnets: Subnet[]): GroupedSubnets[] {
   const byAz = new Map<string, Subnet[]>()
   for (const subnet of subnets) {
@@ -82,19 +112,27 @@ export function CreateLoadBalancerPage() {
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: tgsData } = useSuspenseQuery(elbv2TargetGroupsQueryOptions)
+  const { data: certsData } = useSuspenseQuery(acmCertificatesQueryOptions)
+  const { data: sslPoliciesData } = useSuspenseQuery(
+    elbv2SslPoliciesQueryOptions,
+  )
   const wizardMutation = useCreateLoadBalancerWizard()
 
   const [wizardResult, setWizardResult] = useState<LbWizardResult | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
 
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
   const allSgs = sgsData.SecurityGroups ?? []
   const allTgs = tgsData.TargetGroups ?? []
+  const certificates = certsData.CertificateSummaryList ?? []
+  const sslPolicies = sslPoliciesData.SslPolicies ?? []
 
   const lbForm = useForm<CreateLoadBalancerFormData>({
     resolver: zodResolver(createLoadBalancerSchema),
     defaultValues: {
       name: "",
+      type: "application",
       scheme: "internet-facing",
       vpcId: vpcs[0]?.VpcId ?? "",
       subnetIds: [],
@@ -105,6 +143,8 @@ export function CreateLoadBalancerPage() {
         port: 80,
         targetGroupMode: "new",
         existingTargetGroupArn: "",
+        certificateArn: undefined,
+        sslPolicy: undefined,
       },
     },
   })
@@ -143,12 +183,68 @@ export function CreateLoadBalancerPage() {
   const selectedVpc = watch("vpcId")
   const selectedSubnets = watch("subnetIds")
   const selectedSgs = watch("securityGroupIds")
+  const lbType = watch("type")
+  const listenerProtocol = watch("listener.protocol")
   const tgMode = watch("listener.targetGroupMode")
   const tags = watch("tags")
+
+  const isNlb = lbType === "network"
+  const isSecure = isSecureProtocol(listenerProtocol)
+  const listenerProtocols = protocolsForType(lbType)
+  // The default target group's protocol must match the listener's L4/L7 family;
+  // HTTPS terminates at an HTTP target group, secure NLB (TLS) at a TCP one.
+  const targetGroupProtocols = isNlb
+    ? ["TCP", "UDP", "TLS", "TCP_UDP"]
+    : ["HTTP", "HTTPS"]
 
   const vpcSubnets = allSubnets.filter((s) => s.VpcId === selectedVpc)
   const vpcSgs = allSgs.filter((g) => g.VpcId === selectedVpc)
   const vpcTgs = allTgs.filter((tg) => tg.VpcId === selectedVpc)
+
+  // Keep the inline target-group form's protocol + health-check protocol in step
+  // with the listener so the wizard submits a compatible pair.
+  const syncTargetGroupProtocol = (listenerProto: ListenerProtocolValue) => {
+    const tgProto = targetGroupProtocolFor(listenerProto)
+    tgForm.setValue("protocol", tgProto)
+    tgForm.setValue("healthCheck.protocol", tgProto === "HTTP" ? "HTTP" : "TCP")
+  }
+
+  const handleTypeChange = (next: LbType) => {
+    setValue("type", next)
+    const proto = defaultProtocolForType(next)
+    setValue("listener.protocol", proto)
+    setValue("listener.port", 80)
+    setValue("listener.certificateArn", undefined)
+    setValue("listener.sslPolicy", undefined)
+    if (next === "network") {
+      setValue("securityGroupIds", [])
+    }
+    syncTargetGroupProtocol(proto)
+  }
+
+  // Adjust port + secure fields on a listener-protocol switch, mirroring the
+  // standalone listener form: secure protocols default to 443 and seed the SSL
+  // policy; non-secure ones drop cert + policy so the server doesn't reject.
+  const SECURE_PORT = 443
+  const handleProtocolChange = (next: ListenerProtocolValue) => {
+    setValue("listener.protocol", next)
+    const current = getValues("listener.port")
+    if (isSecureProtocol(next)) {
+      if (current === 80) {
+        setValue("listener.port", SECURE_PORT)
+      }
+      if (next === "HTTPS" && !getValues("listener.sslPolicy")) {
+        setValue("listener.sslPolicy", DEFAULT_SSL_POLICY)
+      }
+    } else {
+      if (current === SECURE_PORT) {
+        setValue("listener.port", 80)
+      }
+      setValue("listener.certificateArn", undefined)
+      setValue("listener.sslPolicy", undefined)
+    }
+    syncTargetGroupProtocol(next)
+  }
 
   // When the VPC changes, any previously-selected subnets/SGs/TGs from the old
   // VPC must be cleared — they would fail backend validation on submit.
@@ -192,6 +288,7 @@ export function CreateLoadBalancerPage() {
     const result = await wizardMutation.mutateAsync({
       lb: {
         name: data.name,
+        type: data.type,
         scheme: data.scheme,
         vpcId: data.vpcId,
         subnetIds: data.subnetIds,
@@ -203,6 +300,8 @@ export function CreateLoadBalancerPage() {
         port: data.listener.port,
         targetGroupMode: data.listener.targetGroupMode,
         existingTargetGroupArn: data.listener.existingTargetGroupArn,
+        certificateArn: data.listener.certificateArn,
+        sslPolicy: data.listener.sslPolicy,
         newTargetGroup,
       },
     })
@@ -271,6 +370,38 @@ export function CreateLoadBalancerPage() {
             {...register("name")}
           />
           <FieldError errors={[errors.name]} />
+        </Field>
+
+        <Field>
+          <FieldTitle>Type</FieldTitle>
+          <Controller
+            control={control}
+            name="type"
+            render={({ field }) => (
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    aria-label="Application Load Balancer"
+                    checked={field.value === "application"}
+                    name="lb-type"
+                    onChange={() => handleTypeChange("application")}
+                    type="radio"
+                  />
+                  Application (ALB)
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    aria-label="Network Load Balancer"
+                    checked={field.value === "network"}
+                    name="lb-type"
+                    onChange={() => handleTypeChange("network")}
+                    type="radio"
+                  />
+                  Network (NLB)
+                </label>
+              </div>
+            )}
+          />
         </Field>
 
         <Field>
@@ -375,33 +506,35 @@ export function CreateLoadBalancerPage() {
           <FieldError errors={[errors.subnetIds]} />
         </Field>
 
-        <Field>
-          <FieldTitle>Security groups</FieldTitle>
-          {vpcSgs.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No security groups in the selected VPC.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {vpcSgs.map((sg) => (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  key={sg.GroupId}
-                >
-                  <input
-                    aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
-                    checked={selectedSgs.includes(sg.GroupId ?? "")}
-                    onChange={() => toggleSg(sg.GroupId ?? "")}
-                    type="checkbox"
-                  />
-                  <span className="font-mono">
-                    {sg.GroupId} ({sg.GroupName})
-                  </span>
-                </label>
-              ))}
-            </div>
-          )}
-        </Field>
+        {!isNlb && (
+          <Field>
+            <FieldTitle>Security groups</FieldTitle>
+            {vpcSgs.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No security groups in the selected VPC.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {vpcSgs.map((sg) => (
+                  <label
+                    className="flex items-center gap-2 text-xs"
+                    key={sg.GroupId}
+                  >
+                    <input
+                      aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                      checked={selectedSgs.includes(sg.GroupId ?? "")}
+                      onChange={() => toggleSg(sg.GroupId ?? "")}
+                      type="checkbox"
+                    />
+                    <span className="font-mono">
+                      {sg.GroupId} ({sg.GroupName})
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
 
         <Field>
           <FieldTitle>Tags</FieldTitle>
@@ -456,12 +589,23 @@ export function CreateLoadBalancerPage() {
               control={control}
               name="listener.protocol"
               render={({ field }) => (
-                <Select onValueChange={field.onChange} value={field.value}>
+                <Select
+                  onValueChange={(next: ListenerProtocolValue | null) => {
+                    if (next) {
+                      handleProtocolChange(next)
+                    }
+                  }}
+                  value={field.value}
+                >
                   <SelectTrigger className="w-full" id="listener-protocol">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="HTTP">HTTP</SelectItem>
+                    {listenerProtocols.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               )}
@@ -481,6 +625,97 @@ export function CreateLoadBalancerPage() {
             />
             <FieldError errors={[errors.listener?.port]} />
           </Field>
+
+          {isSecure && (
+            <>
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="listener-certificate">Certificate</label>
+                </FieldTitle>
+                <Controller
+                  control={control}
+                  name="listener.certificateArn"
+                  render={({ field }) => (
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value ?? ""}
+                    >
+                      <SelectTrigger
+                        aria-invalid={!!errors.listener?.certificateArn}
+                        className="w-full"
+                        id="listener-certificate"
+                      >
+                        <SelectValue placeholder="Select certificate" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {certificates.map((cert) => (
+                          <SelectItem
+                            key={cert.CertificateArn}
+                            value={cert.CertificateArn ?? ""}
+                          >
+                            {cert.DomainName ??
+                              cert.CertificateArn?.split("/").pop()}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <FieldError errors={[errors.listener?.certificateArn]} />
+                <div className="mt-1 flex items-center justify-between">
+                  {certificates.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      No certificates imported yet.
+                    </p>
+                  )}
+                  <Button
+                    className="ml-auto"
+                    onClick={() => setImportOpen(true)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    Import certificate…
+                  </Button>
+                </div>
+              </Field>
+
+              {listenerProtocol === "HTTPS" && (
+                <Field>
+                  <FieldTitle>
+                    <label htmlFor="listener-ssl-policy">Security policy</label>
+                  </FieldTitle>
+                  <Controller
+                    control={control}
+                    name="listener.sslPolicy"
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={field.onChange}
+                        value={field.value ?? DEFAULT_SSL_POLICY}
+                      >
+                        <SelectTrigger
+                          className="w-full"
+                          id="listener-ssl-policy"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {sslPolicies.map((policy) => (
+                            <SelectItem
+                              key={policy.Name}
+                              value={policy.Name ?? ""}
+                            >
+                              {policy.Name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </Field>
+              )}
+            </>
+          )}
 
           <Field>
             <FieldTitle>Default target group</FieldTitle>
@@ -559,10 +794,22 @@ export function CreateLoadBalancerPage() {
 
           {tgMode === "new" && (
             <div className="space-y-4 border-l-2 border-muted pl-4">
-              <TargetGroupForm form={tgForm} vpcs={vpcs} />
+              <TargetGroupForm
+                allowedProtocols={targetGroupProtocols}
+                form={tgForm}
+                vpcs={vpcs}
+              />
             </div>
           )}
         </div>
+
+        <CertificateImportDialog
+          onImported={(arn) =>
+            setValue("listener.certificateArn", arn, { shouldValidate: true })
+          }
+          onOpenChange={setImportOpen}
+          open={importOpen}
+        />
 
         <CliCommandPanel
           commands={buildCreateLbCommands(watch, tgForm.watch)}
@@ -603,18 +850,24 @@ function buildCreateLbCommands(
   }
 
   const name = asString("name") || "<Name>"
+  const lbTypeValue = asString("type") || "application"
   const scheme = asString("scheme") || "internet-facing"
   const subnets = asStringArray("subnetIds")
   const sgs = asStringArray("securityGroupIds")
   const listenerProtocol = asString("listener.protocol") || "HTTP"
   const listenerPort = asNumber("listener.port") ?? 80
+  const certificateArn = asString("listener.certificateArn")
+  const sslPolicy = asString("listener.sslPolicy")
   const tgMode = asString("listener.targetGroupMode")
   const existingTgArn = asString("listener.existingTargetGroupArn")
 
   const commands: CliCommand[] = []
   const comment: CommandPart = {
     type: "comment",
-    value: "# Create ALB with listener and default target group\n\n",
+    value:
+      lbTypeValue === "network"
+        ? "# Create NLB with listener and default target group\n\n"
+        : "# Create ALB with listener and default target group\n\n",
   }
 
   const tgAsString = (key: string): string => {
@@ -631,6 +884,7 @@ function buildCreateLbCommands(
     const tgName = tgAsString("name") || "<TG-Name>"
     const tgPort = tgAsNumber("port") ?? 80
     const tgVpc = tgAsString("vpcId")
+    const tgProtocol = tgAsString("protocol") || "HTTP"
     commands.push({
       label: "Create Target Group",
       parts: [
@@ -642,7 +896,9 @@ function buildCreateLbCommands(
         },
         { type: "flag", value: " \\\n  --name" },
         { type: "value", value: ` ${tgName}` },
-        { type: "flag", value: " \\\n  --protocol HTTP --port" },
+        { type: "flag", value: " \\\n  --protocol" },
+        { type: "value", value: ` ${tgProtocol}` },
+        { type: "flag", value: " --port" },
         { type: "value", value: ` ${tgPort}` },
         { type: "flag", value: " \\\n  --target-type instance --vpc-id" },
         { type: "value", value: ` ${tgVpc || "<vpc-id>"}` },
@@ -674,7 +930,8 @@ function buildCreateLbCommands(
     { type: "value", value: ` ${name}` },
     { type: "flag", value: " \\\n  --scheme" },
     { type: "value", value: ` ${scheme}` },
-    { type: "flag", value: " \\\n  --type application" },
+    { type: "flag", value: " \\\n  --type" },
+    { type: "value", value: ` ${lbTypeValue}` },
   ]
   if (subnets.length > 0) {
     lbParts.push(
@@ -697,20 +954,34 @@ function buildCreateLbCommands(
   commands.push({ label: "Create Load Balancer", parts: lbParts })
 
   // Create Listener
-  commands.push({
-    label: "Create Listener",
-    parts: [
-      { type: "bin", value: "AWS_PROFILE=spinifex aws elbv2 create-listener" },
-      { type: "flag", value: " \\\n  --load-balancer-arn" },
-      { type: "variable", value: ' "$LB_ARN"' },
-      { type: "flag", value: " \\\n  --protocol" },
-      { type: "value", value: ` ${listenerProtocol}` },
-      { type: "flag", value: " \\\n  --port" },
-      { type: "value", value: ` ${listenerPort}` },
-      { type: "flag", value: " \\\n  --default-actions" },
-      { type: "value", value: ' Type=forward,TargetGroupArn="$TG_ARN"' },
-    ],
-  })
+  const listenerParts: CommandPart[] = [
+    { type: "bin", value: "AWS_PROFILE=spinifex aws elbv2 create-listener" },
+    { type: "flag", value: " \\\n  --load-balancer-arn" },
+    { type: "variable", value: ' "$LB_ARN"' },
+    { type: "flag", value: " \\\n  --protocol" },
+    { type: "value", value: ` ${listenerProtocol}` },
+    { type: "flag", value: " \\\n  --port" },
+    { type: "value", value: ` ${listenerPort}` },
+  ]
+  const secureListener =
+    listenerProtocol === "HTTPS" || listenerProtocol === "TLS"
+  if (secureListener && certificateArn) {
+    listenerParts.push(
+      { type: "flag", value: " \\\n  --certificates" },
+      { type: "value", value: ` CertificateArn=${certificateArn}` },
+    )
+    if (listenerProtocol === "HTTPS" && sslPolicy) {
+      listenerParts.push(
+        { type: "flag", value: " \\\n  --ssl-policy" },
+        { type: "value", value: ` ${sslPolicy}` },
+      )
+    }
+  }
+  listenerParts.push(
+    { type: "flag", value: " \\\n  --default-actions" },
+    { type: "value", value: ' Type=forward,TargetGroupArn="$TG_ARN"' },
+  )
+  commands.push({ label: "Create Listener", parts: listenerParts })
 
   return commands
 }

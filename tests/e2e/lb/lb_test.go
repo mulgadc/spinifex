@@ -34,6 +34,7 @@ const (
 	lbKeyName    = "lb-e2e-key"
 	httpPort     = 80
 	tcpPort      = 9000
+	udpPort      = 9001
 	triggerPort  = 9090
 	probesPerRun = 20
 )
@@ -104,6 +105,10 @@ func TestLoadBalancer(t *testing.T) {
 		// Cheaper than cold-booting a fresh probe client per suite.
 		time.Sleep(15 * time.Second)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
+	})
+	t.Run("Internal_NLB_UDP", func(t *testing.T) {
+		time.Sleep(15 * time.Second)
+		runUDPNLBSuite(t, client, fixture)
 	})
 	t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
 		time.Sleep(15 * time.Second)
@@ -398,6 +403,22 @@ func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 			}
 		}
 	}
+
+	// UDP data plane for the NLB UDP suite (health-checked over TCP/9000).
+	if _, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(f.SecurityGroup),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("udp"),
+			FromPort:   aws.Int64(udpPort),
+			ToPort:     aws.Int64(udpPort),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}); err != nil {
+		var aerr awserr.Error
+		if !errors.As(err, &aerr) || aerr.Code() != "InvalidPermission.Duplicate" {
+			t.Fatalf("authorize udp/%d: %v", udpPort, err)
+		}
+	}
 }
 
 // --- App instances -------------------------------------------------------
@@ -507,6 +528,74 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	runInternalTrafficViaClient(t, c, f, kind, priv)
 }
 
+// runUDPNLBSuite exercises an internal NLB with a UDP listener end-to-end. This
+// is the regression gate for nginx NLB target health: nginx `stream` has no
+// active upstream probing, so the lb-agent actively probes the targets (here
+// over TCP/9000) and reports health — without it WaitForTargetsHealthy would
+// never pass for any NLB. Once healthy, a UDP datagram round-trip through the
+// VIP proves the L4 data plane (which HAProxy cannot serve for UDP).
+func runUDPNLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
+	t.Helper()
+	const label = "NLB internal UDP"
+
+	tgArn := createUDPTargetGroup(t, c, f, "lb-e2e-nlb-udp-tg")
+	t.Cleanup(func() { deleteTargetGroup(t, c, tgArn) })
+
+	registerTargets(t, c, tgArn, f.AppInstanceIDs)
+	t.Cleanup(func() { deregisterTargets(t, c, tgArn, f.AppInstanceIDs) })
+
+	lb := createLB(t, c, f, "lb-e2e-nlb-udp", "network", "internal")
+	t.Cleanup(func() { deleteLB(t, c, lb) })
+
+	listener := createListener(t, c, lb.ARN, "UDP", udpPort, tgArn)
+	t.Cleanup(func() { deleteListener(t, c, listener) })
+
+	assert.Equal(t, "network", lb.Type, label+" type")
+	assert.Contains(t, lb.ARN, "/net/", label+" ARN must contain /net/")
+
+	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	// The key assertion: NLB targets reach healthy via the agent's active
+	// prober. Pre-feature this timed out (nginx reported empty server lists).
+	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
+
+	eni := lbENI(t, c, "net", lb)
+	priv := privateIP(eni)
+	require.NotEmpty(t, priv, label+" needs private IP")
+
+	runInternalUDPViaClient(t, f, priv, label)
+}
+
+// runInternalUDPViaClient drives the shared client to send UDP datagrams at the
+// NLB VIP and asserts the echoed hostnames round-robin across both backends.
+func runInternalUDPViaClient(t *testing.T, f *sharedFixture, lbIP, label string) {
+	t.Helper()
+	resultsFile := fmt.Sprintf("nlb-udp-%d.txt", time.Now().UnixNano())
+	order := map[string]any{
+		"proto":    "udp",
+		"ip":       lbIP,
+		"count":    probesPerRun,
+		"outfile":  resultsFile,
+		"udp_port": udpPort,
+	}
+	body, err := json.Marshal(order)
+	require.NoError(t, err)
+
+	triggerURL := fmt.Sprintf("http://%s:%d/", f.ClientPublicIP, triggerPort)
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Post(triggerURL, "application/json", bytes.NewReader(body))
+	require.NoErrorf(t, err, "trigger %s probe", label)
+	resp.Body.Close()
+	require.Equalf(t, 200, resp.StatusCode, "trigger %s probe HTTP status", label)
+
+	results, err := plainHTTPGet(
+		fmt.Sprintf("http://%s:%d/%s", f.ClientPublicIP, httpPort, resultsFile),
+		10*time.Second)
+	require.NoErrorf(t, err, "fetch %s", resultsFile)
+	harness.AssertRoundRobin(t,
+		harness.VerifyResultsLines(results, "udp"),
+		1, probesPerRun/2, label)
+}
+
 // --- LB CRUD helpers -----------------------------------------------------
 
 func createTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, name, proto string, port int64, hcPath string) string {
@@ -530,6 +619,30 @@ func createTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, nam
 	require.NoErrorf(t, err, "create-target-group %s", name)
 	arn := aws.StringValue(out.TargetGroups[0].TargetGroupArn)
 	t.Logf("TG %s: %s", name, arn)
+	return arn
+}
+
+// createUDPTargetGroup creates a UDP target group. AWS (and spinifex) require a
+// UDP target group's health check to run over TCP/HTTP/HTTPS — UDP itself can't
+// be probed — so the check targets the app's TCP echo port (9000) while the
+// data plane forwards UDP on udpPort. This exercises the nginx agent's active
+// TCP prober, which is what advances NLB targets to healthy.
+func createUDPTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string) string {
+	t.Helper()
+	out, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:                       aws.String(name),
+		Protocol:                   aws.String("UDP"),
+		Port:                       aws.Int64(udpPort),
+		VpcId:                      aws.String(f.VPCID),
+		HealthCheckProtocol:        aws.String("TCP"),
+		HealthCheckPort:            aws.String(fmt.Sprintf("%d", tcpPort)),
+		HealthCheckIntervalSeconds: aws.Int64(10),
+		HealthyThresholdCount:      aws.Int64(2),
+		UnhealthyThresholdCount:    aws.Int64(2),
+	})
+	require.NoErrorf(t, err, "create-target-group %s (UDP)", name)
+	arn := aws.StringValue(out.TargetGroups[0].TargetGroupArn)
+	t.Logf("UDP TG %s: %s (HC TCP:%d)", name, arn, tcpPort)
 	return arn
 }
 

@@ -150,3 +150,39 @@ func TestGenerateNLBStream_EmptyUpstreamPlaceholder(t *testing.T) {
 	// nginx requires >=1 server per upstream; an empty TG renders a down placeholder.
 	assert.Contains(t, config, "server 127.0.0.1:1 down;")
 }
+
+func TestBuildNLBHealthTargets_Resolution(t *testing.T) {
+	tgArn := "arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/db/tg-db"
+	tgByArn := map[string]*TargetGroupRecord{
+		tgArn: nlbTG(tgArn,
+			Target{Id: "i-2", Port: 5432, PrivateIP: "10.0.1.11", HealthState: TargetHealthHealthy},
+			Target{Id: "i-1", Port: 5432, PrivateIP: "10.0.1.10", HealthState: TargetHealthHealthy},
+			Target{Id: "i-drain", Port: 5432, PrivateIP: "10.0.1.12", HealthState: TargetHealthDraining},
+			Target{Id: "i-no-ip", Port: 5432, PrivateIP: "", HealthState: TargetHealthInitial},
+		),
+	}
+
+	got := buildNLBHealthTargets(tgByArn)
+	require.Len(t, got, 2) // draining + no-IP excluded
+
+	// Sorted by server name for deterministic delivery.
+	assert.Equal(t, sanitizeName("srv", "i-1"), got[0].ServerName)
+	assert.Equal(t, sanitizeName("srv", "i-2"), got[1].ServerName)
+	assert.Equal(t, "10.0.1.10:5432", got[0].Address) // traffic-port -> target port
+	assert.Equal(t, ProtocolTCP, got[0].Protocol)
+}
+
+func TestBuildNLBHealthTargets_ExplicitHCPortAndHTTP(t *testing.T) {
+	tgArn := "arn:tg-http"
+	tg := nlbTG(tgArn, Target{Id: "i-1", Port: 8080, PrivateIP: "10.0.0.9", HealthState: TargetHealthHealthy})
+	tg.HealthCheck.Protocol = ProtocolHTTP
+	tg.HealthCheck.Port = "9000"
+	tg.HealthCheck.Path = "/healthz"
+	tgByArn := map[string]*TargetGroupRecord{tgArn: tg}
+
+	got := buildNLBHealthTargets(tgByArn)
+	require.Len(t, got, 1)
+	assert.Equal(t, "10.0.0.9:9000", got[0].Address) // explicit numeric HC port wins
+	assert.Equal(t, ProtocolHTTP, got[0].Protocol)
+	assert.Equal(t, "/healthz", got[0].Path)
+}

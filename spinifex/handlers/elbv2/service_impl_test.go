@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"encoding/xml"
 	"sort"
 	"strings"
 	"sync"
@@ -2046,6 +2047,91 @@ func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "global\n    log stdout\n", *out.ConfigText)
 	assert.Equal(t, "deadbeef", *out.ConfigHash)
+}
+
+func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/nlb-hc/lb-nlbhc",
+		LoadBalancerID:  "lb-nlbhc",
+		Name:            "nlb-hc",
+		Type:            LoadBalancerTypeNetwork,
+		State:           StateActive,
+		ConfigText:      "stream {}\n",
+		ConfigHash:      "hc1",
+		AccountID:       testAccountID,
+		HealthTargets: []HealthTargetSpec{
+			{ServerName: "srv_i-1", Address: "10.0.0.1:80", Protocol: ProtocolTCP},
+		},
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(lb))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-nlbhc")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, EngineNginx, *out.Engine)
+	require.Len(t, out.HealthTargets, 1)
+	assert.Equal(t, "srv_i-1", *out.HealthTargets[0].ServerName)
+	assert.Equal(t, "10.0.0.1:80", *out.HealthTargets[0].Address)
+	assert.Equal(t, ProtocolTCP, *out.HealthTargets[0].Protocol)
+}
+
+func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
+	svc := setupTestService(t)
+	require.NoError(t, svc.store.PutLoadBalancer(&LoadBalancerRecord{
+		LoadBalancerID: "lb-wire",
+		Type:           LoadBalancerTypeNetwork,
+		AccountID:      testAccountID,
+		ConfigText:     "stream {}\n",
+		ConfigHash:     "w1",
+		HealthTargets: []HealthTargetSpec{
+			{ServerName: "srv_i-1", Address: "10.0.0.1:80", Protocol: ProtocolHTTP, Path: "/healthz"},
+		},
+	}))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-wire")}, testAccountID)
+	require.NoError(t, err)
+
+	// Confirm the marshalled member shape matches what the lb-agent parses
+	// (GetLBConfigResult>HealthTargets>member>{ServerName,Address,Protocol,Path}).
+	payload := utils.GenerateIAMXMLPayload("GetLBConfig", *out)
+	xmlBytes, err := utils.MarshalToXML(payload)
+	require.NoError(t, err)
+	var parsed struct {
+		Members []struct {
+			ServerName string `xml:"ServerName"`
+			Address    string `xml:"Address"`
+			Protocol   string `xml:"Protocol"`
+			Path       string `xml:"Path"`
+		} `xml:"GetLBConfigResult>HealthTargets>member"`
+	}
+	require.NoError(t, xml.Unmarshal(xmlBytes, &parsed))
+	require.Len(t, parsed.Members, 1)
+	assert.Equal(t, "srv_i-1", parsed.Members[0].ServerName)
+	assert.Equal(t, "10.0.0.1:80", parsed.Members[0].Address)
+	assert.Equal(t, ProtocolHTTP, parsed.Members[0].Protocol)
+	assert.Equal(t, "/healthz", parsed.Members[0].Path)
+}
+
+func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-hc/lb-albhc",
+		LoadBalancerID:  "lb-albhc",
+		Name:            "alb-hc",
+		Type:            LoadBalancerTypeApplication,
+		State:           StateActive,
+		ConfigText:      "global\n",
+		ConfigHash:      "hc2",
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(lb))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-albhc")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, EngineHAProxy, *out.Engine)
+	assert.Empty(t, out.HealthTargets) // ALBs report health via HAProxy stats
 }
 
 func TestGetLBConfig_MissingLBID(t *testing.T) {

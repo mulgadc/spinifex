@@ -73,7 +73,8 @@ type Agent struct {
 	client    *http.Client
 
 	localConfigHash string
-	engine          string // data-plane engine of the last applied config
+	engine          string         // data-plane engine of the last applied config
+	healthTargets   []HealthTarget // active probe targets (nginx/NLB only)
 	stopCh          chan struct{}
 
 	// For testing: override the reload functions (HAProxy / nginx).
@@ -81,6 +82,8 @@ type Agent struct {
 	reloadNginxFn func(configPath, pidPath string) error
 	// For testing: override the stats query function.
 	statsFn func(socketPath string) ([]ServerStatus, error)
+	// For testing: override the active health prober (nginx/NLB).
+	probeFn func(targets []HealthTarget) []ServerStatus
 }
 
 // New creates a new LB agent for the given load balancer.
@@ -126,6 +129,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		reloadFn:      reloadHAProxy,
 		reloadNginxFn: reloadNginx,
 		statsFn:       queryHAProxyStats,
+		probeFn:       probeHealthTargets,
 	}, nil
 }
 
@@ -161,9 +165,12 @@ func (a *Agent) Stop() {
 
 // tick runs one heartbeat cycle: send health, check config hash, fetch if changed.
 func (a *Agent) tick() {
-	// nginx (NLB) has no per-server stats socket; only poll HAProxy stats.
+	// nginx (NLB) has no per-server stats socket — the agent actively probes
+	// the delivered health targets instead of reading HAProxy stats.
 	var servers []ServerStatus
-	if a.engine != EngineNginx {
+	if a.engine == EngineNginx {
+		servers = a.probeFn(a.healthTargets)
+	} else {
 		var statsErr error
 		servers, statsErr = a.statsFn(a.socketPath)
 		if statsErr != nil {
@@ -204,11 +211,12 @@ type certFile struct {
 
 // configResponse is the parsed XML response from GetLBConfig.
 type configResponse struct {
-	XMLName    xml.Name   `xml:"GetLBConfigResponse"`
-	ConfigText string     `xml:"GetLBConfigResult>ConfigText"`
-	ConfigHash string     `xml:"GetLBConfigResult>ConfigHash"`
-	Engine     string     `xml:"GetLBConfigResult>Engine"`
-	CertFiles  []certFile `xml:"GetLBConfigResult>CertFiles>member"`
+	XMLName       xml.Name       `xml:"GetLBConfigResponse"`
+	ConfigText    string         `xml:"GetLBConfigResult>ConfigText"`
+	ConfigHash    string         `xml:"GetLBConfigResult>ConfigHash"`
+	Engine        string         `xml:"GetLBConfigResult>Engine"`
+	CertFiles     []certFile     `xml:"GetLBConfigResult>CertFiles>member"`
+	HealthTargets []HealthTarget `xml:"GetLBConfigResult>HealthTargets>member"`
 }
 
 // enginePaths returns the data-plane file paths and reload function for the
@@ -289,8 +297,9 @@ func (a *Agent) fetchAndApplyConfig() error {
 	}
 
 	a.engine = engine
+	a.healthTargets = resp.HealthTargets
 	a.localConfigHash = resp.ConfigHash
-	slog.Info("Config applied", "engine", engine, "hash", resp.ConfigHash)
+	slog.Info("Config applied", "engine", engine, "hash", resp.ConfigHash, "healthTargets", len(resp.HealthTargets))
 	return nil
 }
 

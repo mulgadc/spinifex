@@ -3,6 +3,8 @@ package handlers_elbv2
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -183,4 +185,53 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 // agent's nginx cert dir. Daemon-rendered and agent-written paths must match.
 func nginxCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
 	return filepath.Join(lbagent.NginxCertDir, fmt.Sprintf("lb-%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+}
+
+// buildNLBHealthTargets computes the active health-check targets for an NLB's
+// backends. nginx `stream` has no active upstream probing, so the agent probes
+// these and reports the results via heartbeat. ServerName matches the health
+// checker's key (sanitizeName("srv", target.Id)); the probe port resolves
+// "traffic-port" to the target's port. Sorted by server name for deterministic
+// delivery. The tgByArn map is the same set used to render the upstreams.
+func buildNLBHealthTargets(tgByArn map[string]*TargetGroupRecord) []HealthTargetSpec {
+	var out []HealthTargetSpec
+	for _, tg := range tgByArn {
+		for _, t := range tg.Targets {
+			if t.PrivateIP == "" || t.HealthState == TargetHealthDraining {
+				continue
+			}
+			out = append(out, HealthTargetSpec{
+				ServerName: sanitizeName("srv", t.Id),
+				Address:    fmt.Sprintf("%s:%d", t.PrivateIP, nlbHealthCheckPort(tg, t)),
+				Protocol:   nlbHealthCheckProtocol(tg),
+				Path:       tg.HealthCheck.Path,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerName < out[j].ServerName })
+	return out
+}
+
+// nlbHealthCheckProtocol returns the target group's health-check protocol,
+// defaulting to the NLB default (TCP) when unset.
+func nlbHealthCheckProtocol(tg *TargetGroupRecord) string {
+	if tg.HealthCheck.Protocol != "" {
+		return tg.HealthCheck.Protocol
+	}
+	return DefaultNLBHealthCheckProtocol
+}
+
+// nlbHealthCheckPort resolves the probe port: an explicit numeric health-check
+// port wins, otherwise "traffic-port" maps to the target's port (or the target
+// group's default port when the target has none).
+func nlbHealthCheckPort(tg *TargetGroupRecord, t Target) int64 {
+	if p := tg.HealthCheck.Port; p != "" && p != DefaultHealthCheckPort {
+		if n, err := strconv.ParseInt(p, 10, 64); err == nil {
+			return n
+		}
+	}
+	if t.Port != 0 {
+		return t.Port
+	}
+	return tg.Port
 }

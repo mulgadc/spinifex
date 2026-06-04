@@ -428,8 +428,8 @@ func (m *igwManager) RemoveSystemInstanceEgress(ctx context.Context, vpcID, subn
 }
 
 // linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so
-// link-local (DHCP, metadata, 169.254.169.254) and multicast destinations
-// are not killed by the per-subnet gate.
+// link-local (DHCP and friends — traffic that should never egress the gateway)
+// and multicast destinations are not killed by the per-subnet gate.
 var (
 	linkLocalCIDR      = netip.MustParsePrefix("169.254.0.0/16")
 	multicastCIDR      = netip.MustParsePrefix("224.0.0.0/4")
@@ -450,13 +450,11 @@ func (m *igwManager) dropExcludeCIDRs(ctx context.Context, vpcID string) []netip
 
 // rerouteExcludeCIDRs returns the exclusion list for a per-subnet egress
 // reroute policy: VPC CIDR (if discoverable) plus link-local. The reroute
-// matches 0.0.0.0/0 — the widest possible scope — so it would otherwise
-// hijack 169.254.169.254 (IMDS) out the gateway and defeat the per-VPC IMDS
-// /32 static route, which fires earlier in lr_in_ip_routing but is overridden
-// by this lr_in_policy reroute. Excluding link-local lets IMDS fall through to
-// the /32. Multicast is not excluded here (unlike the drop policy): a reroute
-// only diverts traffic that already has somewhere to go, so leaking multicast
-// to the gateway is harmless, whereas the drop policy would kill it outright.
+// matches 0.0.0.0/0 — the widest possible scope — so it would otherwise divert
+// link-local (169.254.0.0/16) out the gateway, where it has no business going.
+// Multicast is not excluded here (unlike the drop policy): a reroute only
+// diverts traffic that already has somewhere to go, so leaking multicast to the
+// gateway is harmless, whereas the drop policy would kill it outright.
 func (m *igwManager) rerouteExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := m.vpcExcludeCIDRs(ctx, vpcID)
 	return append(excludes, linkLocalCIDR)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -30,13 +29,6 @@ func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual A
 			}
 			actual.Routers[routerName] = struct{}{}
 			slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
-		}
-		// Install IMDS topology for every intent VPC (idempotent via the
-		// vpc-veth bucket gate); the router must exist for the IMDS LRP.
-		if r.imds != nil {
-			if _, err := r.imds.EnsureForVPC(ctx, vpcID); err != nil {
-				slog.Error("reconcile/apply: IMDS EnsureForVPC failed", "vpc_id", vpcID, "err", err)
-			}
 		}
 	}
 }
@@ -90,14 +82,13 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			actual.RouterPorts[routerPortName] = struct{}{}
 		}
 
-		if existing, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
+		if _, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
 			lsp := &nbdb.LogicalSwitchPort{
 				Name:      switchRouterPortName,
 				Type:      "router",
 				Addresses: []string{"router"},
 				Options: map[string]string{
 					"router-port": routerPortName,
-					"arp_proxy":   handlers_imds.MetaDataServerIP,
 				},
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
@@ -108,18 +99,13 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 				slog.Error("reconcile/apply: create subnet router-LSP failed", "subnet_id", subnetID, "err", err)
 				continue
 			}
-		} else if existing.Options["arp_proxy"] != handlers_imds.MetaDataServerIP {
-			// Drift convergence: a subnet router LSP created before IMDS proxy-ARP
-			// landed won't gain arp_proxy from a redeploy alone (the create branch
-			// only fires when absent), so patch it in place to make it IMDS-reachable.
-			if existing.Options == nil {
-				existing.Options = map[string]string{}
-			}
-			existing.Options["arp_proxy"] = handlers_imds.MetaDataServerIP
-			if err := r.ovn.UpdateLogicalSwitchPort(ctx, existing); err != nil {
-				slog.Error("reconcile/apply: patch subnet router-LSP arp_proxy failed", "subnet_id", subnetID, "err", err)
-			} else {
-				slog.Info("reconcile/apply: patched subnet router-LSP with IMDS arp_proxy", "subnet_id", subnetID, "port", switchRouterPortName)
+		}
+
+		// The IMDS localport rides on the subnet switch (idempotent via the
+		// subnet-veth bucket gate); the switch must exist first.
+		if r.imds != nil {
+			if _, err := r.imds.EnsureForSubnet(ctx, subnetID, spec.CIDR); err != nil {
+				slog.Error("reconcile/apply: IMDS EnsureForSubnet failed", "subnet_id", subnetID, "err", err)
 			}
 		}
 

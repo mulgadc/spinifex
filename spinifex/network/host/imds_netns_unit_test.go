@@ -95,21 +95,3 @@ func mustContain(t *testing.T, name, body, want string) {
 		t.Errorf("%s: missing %q", name, want)
 	}
 }
-
-// mustOrderingRefs asserts the unit names the dependency in both After= and
-// Wants= so it is both ordered after and pulled in alongside.
-func mustOrderingRefs(t *testing.T, body, dep string) {
-	t.Helper()
-	for _, key := range []string{"After=", "Wants="} {
-		found := false
-		for line := range strings.SplitSeq(body, "\n") {
-			if strings.HasPrefix(line, key) && strings.Contains(line, dep) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("spinifex-vpcd.service: %s line must reference %s", key, dep)
-		}
-	}
-}

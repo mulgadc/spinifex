@@ -19,29 +19,103 @@ const keyNameField = z
 
 export const VOLUME_TYPES = ["gp3"] as const
 
-export const createInstanceSchema = z.object({
-  imageId: z.string("Please select an Image"),
-  instanceType: z.string("Please select an instance type"),
-  keyName: z.string("Please select a key pair").min(1, "Key pair is required"),
-  subnetId: z.string().optional(),
-  placementGroupName: z.string().optional(),
-  count: z
-    .int("Instance count must be a whole number")
-    .min(1, "Instance count must be at least 1"),
-  rootDeviceName: z.string().optional(),
-  rootVolumeSize: z
-    .number()
-    .int("Volume size must be a whole number")
-    .min(1, "Volume size must be at least 1 GiB")
-    .max(16_384, "Volume size must be at most 16384 GiB")
-    .optional(),
-  rootVolumeType: z.enum(VOLUME_TYPES).optional(),
-  rootDeleteOnTermination: z.boolean().optional(),
-})
+// Quick-create inbound rules offered by the launch wizard, mirroring the AWS
+// console's "Allow SSH/HTTP/HTTPS" tick boxes.
+export const LAUNCH_WIZARD_SG_PREFIX = "launch-wizard-"
+
+export const createInstanceSchema = z
+  .object({
+    imageId: z.string("Please select an Image"),
+    instanceType: z.string("Please select an instance type"),
+    keyName: z
+      .string("Please select a key pair")
+      .min(1, "Key pair is required"),
+    subnetId: z.string().optional(),
+    placementGroupName: z.string().optional(),
+    count: z
+      .int("Instance count must be a whole number")
+      .min(1, "Instance count must be at least 1"),
+    rootDeviceName: z.string().optional(),
+    rootVolumeSize: z
+      .number()
+      .int("Volume size must be a whole number")
+      .min(1, "Volume size must be at least 1 GiB")
+      .max(16_384, "Volume size must be at most 16384 GiB")
+      .optional(),
+    rootVolumeType: z.enum(VOLUME_TYPES).optional(),
+    rootDeleteOnTermination: z.boolean().optional(),
+    // Security groups: either create a new launch-wizard SG with tick-box
+    // rules, or attach existing SG(s). Mirrors the AWS launch wizard. All
+    // optional so non-UI callers keep today's no-SG behaviour; the form always
+    // sets a mode, and the mutation only creates an SG when mode === "create".
+    securityGroupMode: z.enum(["create", "existing"]).optional(),
+    securityGroupIds: z.array(z.string()).optional(),
+    newSgName: z.string().optional(),
+    newSgDescription: z.string().optional(),
+    allowSsh: z.boolean().optional(),
+    allowHttp: z.boolean().optional(),
+    allowHttps: z.boolean().optional(),
+    ruleSource: z.enum(["anywhere", "custom"]).optional(),
+    customCidr: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.securityGroupMode) {
+      return
+    }
+    if (data.securityGroupMode === "existing") {
+      if ((data.securityGroupIds ?? []).length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Select at least one security group",
+          path: ["securityGroupIds"],
+        })
+      }
+      return
+    }
+    if (!data.newSgName || data.newSgName.trim().length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Security group name is required",
+        path: ["newSgName"],
+      })
+    }
+    if (
+      data.ruleSource === "custom" &&
+      (!data.customCidr || !isValidCidr(data.customCidr))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Enter a valid CIDR (e.g. 203.0.113.0/24)",
+        path: ["customCidr"],
+      })
+    }
+  })
 
 export type CreateInstanceFormData = z.infer<typeof createInstanceSchema>
 
-export type CreateInstanceParams = CreateInstanceFormData
+export type CreateInstanceParams = CreateInstanceFormData & {
+  // VPC the chosen subnet belongs to (or the default VPC when none is
+  // selected). Resolved in the form so the mutation can create the SG in the
+  // right VPC.
+  resolvedVpcId?: string
+}
+
+// nextLaunchWizardName returns the next "launch-wizard-N" name not already
+// taken by an existing SG, matching the AWS console's auto-increment.
+export function nextLaunchWizardName(existingNames: string[]): string {
+  let max = 0
+  const re = new RegExp(`^${LAUNCH_WIZARD_SG_PREFIX}(\\d+)$`)
+  for (const name of existingNames) {
+    const m = re.exec(name)
+    if (m) {
+      const n = Number(m[1])
+      if (n > max) {
+        max = n
+      }
+    }
+  }
+  return `${LAUNCH_WIZARD_SG_PREFIX}${max + 1}`
+}
 
 export const createKeyPairSchema = z.object({
   keyName: keyNameField,

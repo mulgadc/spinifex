@@ -42,12 +42,15 @@ import {
   ec2InstanceTypesQueryOptions,
   ec2KeyPairsQueryOptions,
   ec2PlacementGroupsQueryOptions,
+  ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
+  ec2VpcsQueryOptions,
 } from "@/queries/ec2"
 import {
   type CreateInstanceFormData,
   VOLUME_TYPES,
   createInstanceSchema,
+  nextLaunchWizardName,
 } from "@/types/ec2"
 
 const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
@@ -63,6 +66,8 @@ export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
       context.queryClient.ensureQueryData(ec2InstanceTypesQueryOptions),
       context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
       context.queryClient.ensureQueryData(ec2PlacementGroupsQueryOptions),
+      context.queryClient.ensureQueryData(ec2VpcsQueryOptions),
+      context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
     ])
   },
   head: () => ({
@@ -84,11 +89,19 @@ function CreateInstance() {
   )
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
+  const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
+  const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const createMutation = useCreateInstance()
   const images = imagesData.Images ?? []
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []
+  const vpcs = vpcsData.Vpcs ?? []
+  const securityGroups = sgData.SecurityGroups ?? []
+  const defaultVpcId = (vpcs.find((v) => v.IsDefault) ?? vpcs[0])?.VpcId
+  const defaultSgName = nextLaunchWizardName(
+    securityGroups.map((sg) => sg.GroupName ?? ""),
+  )
   const instanceTypeCounts: Record<string, number> = {}
   const gpuInfoByType = new Map<string, { totalMiB: number; gpuName: string }>()
   for (const type of instanceTypesData.InstanceTypes ?? []) {
@@ -131,6 +144,7 @@ function CreateInstance() {
     handleSubmit,
     register,
     setValue,
+    getValues,
     watch,
     formState: { errors, isSubmitting },
   } = useForm({
@@ -166,6 +180,15 @@ function CreateInstance() {
       keyName: defaultKeyName ?? "",
       instanceType: defaultInstanceType ?? "",
       rootDeviceName: defaultRoot.deviceName,
+      securityGroupMode: "create",
+      securityGroupIds: [],
+      newSgName: defaultSgName,
+      newSgDescription: "Created by launch wizard",
+      allowSsh: true,
+      allowHttp: false,
+      allowHttps: false,
+      ruleSource: "anywhere",
+      customCidr: "",
     },
   })
 
@@ -181,6 +204,24 @@ function CreateInstance() {
     images.find((img) => img.ImageId === selectedImageId),
   )
 
+  const selectedSubnetId = watch("subnetId")
+  const sgMode = watch("securityGroupMode")
+  const ruleSource = watch("ruleSource")
+  const selectedSgIds = watch("securityGroupIds") ?? []
+  const effectiveVpcId =
+    subnets.find((s) => s.SubnetId === selectedSubnetId)?.VpcId ?? defaultVpcId
+  const vpcSecurityGroups = effectiveVpcId
+    ? securityGroups.filter((sg) => sg.VpcId === effectiveVpcId)
+    : securityGroups
+
+  const toggleSg = (sgId: string) => {
+    const current = getValues("securityGroupIds") ?? []
+    const next = current.includes(sgId)
+      ? current.filter((id) => id !== sgId)
+      : [...current, sgId]
+    setValue("securityGroupIds", next, { shouldValidate: true })
+  }
+
   // Re-prefill DeviceName when the user picks a different AMI. Size / type /
   // delete-on-termination stay blank by default so an unchanged form sends
   // no BlockDeviceMappings (preserves today's backend default).
@@ -189,7 +230,7 @@ function CreateInstance() {
   }, [selectedImageId, selectedRoot.deviceName, setValue])
 
   const onSubmit = async (data: CreateInstanceFormData) => {
-    await createMutation.mutateAsync(data)
+    await createMutation.mutateAsync({ ...data, resolvedVpcId: effectiveVpcId })
 
     navigate({ to: "/ec2/describe-instances" })
   }
@@ -393,6 +434,190 @@ function CreateInstance() {
           />
         </Field>
 
+        {/* Security Groups */}
+        <Field>
+          <FieldTitle>Security Group</FieldTitle>
+          <FieldDescription>
+            {effectiveVpcId
+              ? `Applies to VPC ${effectiveVpcId}`
+              : "No VPC resolved — select a subnet"}
+          </FieldDescription>
+          <Controller
+            control={control}
+            name="securityGroupMode"
+            render={({ field }) => (
+              <div className="flex gap-4 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    aria-label="Create new security group"
+                    checked={field.value === "create"}
+                    onChange={() => field.onChange("create")}
+                    type="radio"
+                  />
+                  Create new
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    aria-label="Select existing security group"
+                    checked={field.value === "existing"}
+                    onChange={() => field.onChange("existing")}
+                    type="radio"
+                  />
+                  Select existing
+                </label>
+              </div>
+            )}
+          />
+
+          {sgMode === "create" ? (
+            <div className="mt-3 space-y-4 rounded-md border border-border p-4">
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="newSgName">Name</label>
+                </FieldTitle>
+                <Input
+                  aria-invalid={!!errors.newSgName}
+                  id="newSgName"
+                  type="text"
+                  {...register("newSgName")}
+                />
+                <FieldError errors={[errors.newSgName]} />
+              </Field>
+
+              <Field>
+                <FieldTitle>
+                  <label htmlFor="newSgDescription">Description</label>
+                </FieldTitle>
+                <Input
+                  id="newSgDescription"
+                  type="text"
+                  {...register("newSgDescription")}
+                />
+              </Field>
+
+              <Field>
+                <FieldTitle>Inbound rules</FieldTitle>
+                <div className="space-y-1">
+                  <Controller
+                    control={control}
+                    name="allowSsh"
+                    render={({ field }) => (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          aria-label="Allow SSH"
+                          checked={field.value}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                          type="checkbox"
+                        />
+                        Allow SSH (tcp/22)
+                      </label>
+                    )}
+                  />
+                  <Controller
+                    control={control}
+                    name="allowHttp"
+                    render={({ field }) => (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          aria-label="Allow HTTP"
+                          checked={field.value}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                          type="checkbox"
+                        />
+                        Allow HTTP (tcp/80)
+                      </label>
+                    )}
+                  />
+                  <Controller
+                    control={control}
+                    name="allowHttps"
+                    render={({ field }) => (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          aria-label="Allow HTTPS"
+                          checked={field.value}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                          type="checkbox"
+                        />
+                        Allow HTTPS (tcp/443)
+                      </label>
+                    )}
+                  />
+                </div>
+              </Field>
+
+              <Field>
+                <FieldTitle>Source</FieldTitle>
+                <Controller
+                  control={control}
+                  name="ruleSource"
+                  render={({ field }) => (
+                    <div className="flex gap-4 text-sm">
+                      <label className="flex items-center gap-2">
+                        <input
+                          aria-label="Source anywhere"
+                          checked={field.value === "anywhere"}
+                          onChange={() => field.onChange("anywhere")}
+                          type="radio"
+                        />
+                        Anywhere (0.0.0.0/0)
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          aria-label="Source custom CIDR"
+                          checked={field.value === "custom"}
+                          onChange={() => field.onChange("custom")}
+                          type="radio"
+                        />
+                        Custom CIDR
+                      </label>
+                    </div>
+                  )}
+                />
+                {ruleSource === "custom" && (
+                  <div className="mt-2">
+                    <Input
+                      aria-invalid={!!errors.customCidr}
+                      placeholder="203.0.113.0/24"
+                      type="text"
+                      {...register("customCidr")}
+                    />
+                    <FieldError errors={[errors.customCidr]} />
+                  </div>
+                )}
+              </Field>
+            </div>
+          ) : (
+            <div className="mt-3">
+              {vpcSecurityGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No security groups in the resolved VPC.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {vpcSecurityGroups.map((sg) => (
+                    <label
+                      className="flex items-center gap-2 text-xs"
+                      key={sg.GroupId}
+                    >
+                      <input
+                        aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                        checked={selectedSgIds.includes(sg.GroupId ?? "")}
+                        onChange={() => toggleSg(sg.GroupId ?? "")}
+                        type="checkbox"
+                      />
+                      <span className="font-mono">
+                        {sg.GroupId} ({sg.GroupName})
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <FieldError errors={[errors.securityGroupIds]} />
+            </div>
+          )}
+        </Field>
+
         {/* Placement Group */}
         <Field>
           <FieldTitle>
@@ -553,7 +778,9 @@ function CreateInstance() {
           </CollapsibleContent>
         </Collapsible>
 
-        <CliCommandPanel commands={buildRunInstancesCommands(watch)} />
+        <CliCommandPanel
+          commands={buildRunInstancesCommands(watch, effectiveVpcId)}
+        />
 
         {/* Actions */}
         <div className="flex gap-2">
@@ -607,6 +834,7 @@ function getRootMapping(image: ImageLike | undefined): RootMappingDefaults {
 
 function buildRunInstancesCommands(
   watch: (name?: string) => unknown,
+  vpcId: string | undefined,
 ): CliCommand[] {
   const rawImageId = watch("imageId")
   const imageId = typeof rawImageId === "string" ? rawImageId : ""
@@ -669,6 +897,90 @@ function buildRunInstancesCommands(
     { type: "value" as const, value: ` ${count || 1}` },
   )
 
+  // Security groups — create-new emits create + authorize commands and feeds
+  // $SG_ID into run-instances; select-existing passes the chosen IDs.
+  const rawSgMode = watch("securityGroupMode")
+  const sgMode = typeof rawSgMode === "string" ? rawSgMode : "create"
+  const rawNewSgName = watch("newSgName")
+  const sgName = typeof rawNewSgName === "string" ? rawNewSgName : ""
+  const rawNewSgDesc = watch("newSgDescription")
+  const sgDesc = typeof rawNewSgDesc === "string" ? rawNewSgDesc : ""
+  const rawRuleSource = watch("ruleSource")
+  const ruleSource =
+    typeof rawRuleSource === "string" ? rawRuleSource : "anywhere"
+  const rawCustomCidr = watch("customCidr")
+  const customCidr = typeof rawCustomCidr === "string" ? rawCustomCidr : ""
+  const sgCommands: CliCommand[] = []
+  if (sgMode === "create") {
+    sgCommands.push({
+      label: "Create security group",
+      parts: [
+        {
+          type: "bin" as const,
+          value: "SG_ID=$(AWS_PROFILE=spinifex aws ec2 create-security-group",
+        },
+        { type: "flag" as const, value: " \\\n  --group-name" },
+        { type: "value" as const, value: ` ${sgName || "<name>"}` },
+        { type: "flag" as const, value: " \\\n  --description" },
+        {
+          type: "value" as const,
+          value: ` '${sgDesc || "Created by launch wizard"}'`,
+        },
+        { type: "flag" as const, value: " \\\n  --vpc-id" },
+        { type: "value" as const, value: ` ${vpcId ?? "<VpcId>"}` },
+        { type: "flag" as const, value: " \\\n  --query" },
+        { type: "value" as const, value: " 'GroupId' --output text)" },
+      ],
+    })
+
+    const cidr =
+      ruleSource === "custom" && customCidr ? customCidr : "0.0.0.0/0"
+    const ports = [
+      ...(watch("allowSsh") === true ? [22] : []),
+      ...(watch("allowHttp") === true ? [80] : []),
+      ...(watch("allowHttps") === true ? [443] : []),
+    ]
+    if (ports.length > 0) {
+      const ipPerms = JSON.stringify(
+        ports.map((port) => ({
+          IpProtocol: "tcp",
+          FromPort: port,
+          ToPort: port,
+          IpRanges: [{ CidrIp: cidr }],
+        })),
+      )
+      sgCommands.push({
+        label: "Authorize inbound rules",
+        parts: [
+          {
+            type: "bin" as const,
+            value:
+              "AWS_PROFILE=spinifex aws ec2 authorize-security-group-ingress",
+          },
+          { type: "flag" as const, value: " \\\n  --group-id" },
+          { type: "value" as const, value: " $SG_ID" },
+          { type: "flag" as const, value: " \\\n  --ip-permissions" },
+          { type: "value" as const, value: ` '${ipPerms}'` },
+        ],
+      })
+    }
+    parts.push(
+      { type: "flag" as const, value: " \\\n  --security-group-ids" },
+      { type: "value" as const, value: " $SG_ID" },
+    )
+  } else {
+    const rawSgIds = watch("securityGroupIds")
+    const sgIds = Array.isArray(rawSgIds)
+      ? rawSgIds.filter((id): id is string => typeof id === "string")
+      : []
+    if (sgIds.length > 0) {
+      parts.push(
+        { type: "flag" as const, value: " \\\n  --security-group-ids" },
+        { type: "value" as const, value: ` ${sgIds.join(" ")}` },
+      )
+    }
+  }
+
   const hasStorageOverride =
     rootVolumeSize !== undefined ||
     rawRootVolumeType !== undefined ||
@@ -696,5 +1008,5 @@ function buildRunInstancesCommands(
     )
   }
 
-  return [{ label: "Run Instances", parts }]
+  return [...sgCommands, { label: "Run Instances", parts }]
 }

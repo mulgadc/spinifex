@@ -134,6 +134,8 @@ export function useCreateInstance() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (params: CreateInstanceParams) => {
+      const client = getEc2Client()
+      const securityGroupIds = await resolveSecurityGroupIds(client, params)
       const command = new RunInstancesCommand({
         ImageId: params.imageId,
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
@@ -143,17 +145,75 @@ export function useCreateInstance() {
         MaxCount: params.count,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         SubnetId: params.subnetId || undefined,
+        SecurityGroupIds:
+          securityGroupIds.length > 0 ? securityGroupIds : undefined,
         Placement: params.placementGroupName
           ? { GroupName: params.placementGroupName }
           : undefined,
         BlockDeviceMappings: buildBlockDeviceMappings(params),
       })
-      return await getEc2Client().send(command)
+      return await client.send(command)
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "securityGroups"],
+      })
     },
   })
+}
+
+// resolveSecurityGroupIds returns the SG IDs to attach to the new instance.
+// In "existing" mode it passes the selected IDs through; in "create" mode it
+// creates a launch-wizard SG, authorizes the ticked inbound rules, and returns
+// the new group's ID.
+async function resolveSecurityGroupIds(
+  client: ReturnType<typeof getEc2Client>,
+  params: CreateInstanceParams,
+): Promise<string[]> {
+  // Only the explicit create path provisions an SG; existing / undefined modes
+  // pass through the selected IDs (none by default), preserving prior behaviour.
+  if (params.securityGroupMode !== "create") {
+    return params.securityGroupIds ?? []
+  }
+
+  const sg = await client.send(
+    new CreateSecurityGroupCommand({
+      GroupName: params.newSgName,
+      // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+      Description: params.newSgDescription || "Created by launch wizard",
+      VpcId: params.resolvedVpcId,
+    }),
+  )
+  const groupId = sg.GroupId
+  if (!groupId) {
+    throw new Error("Security group was created but no ID was returned")
+  }
+
+  const ports: number[] = [
+    ...(params.allowSsh ? [22] : []),
+    ...(params.allowHttp ? [80] : []),
+    ...(params.allowHttps ? [443] : []),
+  ]
+  if (ports.length > 0) {
+    const cidrIp =
+      params.ruleSource === "custom" && params.customCidr
+        ? params.customCidr
+        : "0.0.0.0/0"
+    await client.send(
+      new AuthorizeSecurityGroupIngressCommand({
+        GroupId: groupId,
+        IpPermissions: ports.map((port) => ({
+          IpProtocol: "tcp",
+          FromPort: port,
+          ToPort: port,
+          IpRanges: [{ CidrIp: cidrIp }],
+        })),
+      }),
+    )
+  }
+
+  return [groupId]
 }
 
 function buildBlockDeviceMappings(params: CreateInstanceParams) {

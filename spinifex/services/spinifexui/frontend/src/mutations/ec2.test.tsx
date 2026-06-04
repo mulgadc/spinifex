@@ -989,6 +989,8 @@ describe("useCreateVpcWizard", () => {
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (MapPublicIpOnLaunch) for the public subnet
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
       .mockResolvedValueOnce({
         InternetGateway: { InternetGatewayId: "igw-111" },
@@ -1018,7 +1020,7 @@ describe("useCreateVpcWizard", () => {
     })
 
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
-    expect(mockSend).toHaveBeenCalledTimes(10)
+    expect(mockSend).toHaveBeenCalledTimes(11)
     expect(result.current.data?.vpcId).toBe("vpc-111")
     expect(result.current.data?.created).toHaveLength(6)
     expect(result.current.data?.error).toBeUndefined()
@@ -1056,6 +1058,8 @@ describe("useCreateVpcWizard", () => {
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (MapPublicIpOnLaunch) for the public subnet
+      .mockResolvedValueOnce({})
       .mockRejectedValueOnce(new Error("CIDR conflict"))
 
     const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })

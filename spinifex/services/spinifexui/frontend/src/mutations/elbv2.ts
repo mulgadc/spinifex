@@ -230,22 +230,30 @@ export function useModifyTargetGroupAttributes() {
   })
 }
 
-export type ListenerProtocol = "HTTP" | "HTTPS"
+export type ListenerProtocol =
+  | "HTTP"
+  | "HTTPS"
+  | "TCP"
+  | "UDP"
+  | "TLS"
+  | "TCP_UDP"
 
-// tlsListenerFields returns the Certificates + SslPolicy command fields for an
-// HTTPS listener, or empty undefined fields for HTTP. The server rejects certs
-// on a non-secure protocol, so they are only emitted for HTTPS.
+// tlsListenerFields returns the Certificates + SslPolicy command fields for a
+// secure listener (HTTPS or NLB TLS), or empty undefined fields otherwise. The
+// server rejects certs on a non-secure protocol, so they are only emitted for
+// secure ones; SslPolicy is HTTPS-only (NLB TLS policies are not modelled).
 function tlsListenerFields(
   protocol: ListenerProtocol,
   certificateArn?: string,
   sslPolicy?: string,
 ): { Certificates?: { CertificateArn: string }[]; SslPolicy?: string } {
-  if (protocol !== "HTTPS" || !certificateArn) {
+  const secure = protocol === "HTTPS" || protocol === "TLS"
+  if (!secure || !certificateArn) {
     return {}
   }
   return {
     Certificates: [{ CertificateArn: certificateArn }],
-    SslPolicy: sslPolicy,
+    SslPolicy: protocol === "HTTPS" ? sslPolicy : undefined,
   }
 }
 
@@ -358,10 +366,12 @@ export interface LbWizardResult {
 export interface CreateLoadBalancerWizardParams {
   lb: Omit<CreateLoadBalancerFormData, "listener">
   listener: {
-    protocol: "HTTP"
+    protocol: ListenerProtocol
     port: number
     targetGroupMode: "new" | "existing"
     existingTargetGroupArn?: string
+    certificateArn?: string
+    sslPolicy?: string
     newTargetGroup?: CreateTargetGroupFormData
   }
 }
@@ -390,6 +400,8 @@ export function useCreateLoadBalancerWizard() {
           const tgTags: Tag[] = tg.tags
             .filter((t) => t.key.length > 0)
             .map((t) => ({ Key: t.key, Value: t.value }))
+          // Path + Matcher are HTTP-only; a TCP health check (NLB) rejects them.
+          const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
           const tgResult = await client.send(
             new CreateTargetGroupCommand({
               Name: tg.name,
@@ -398,13 +410,17 @@ export function useCreateLoadBalancerWizard() {
               VpcId: tg.vpcId,
               TargetType: "instance",
               HealthCheckProtocol: tg.healthCheck.protocol,
-              HealthCheckPath: tg.healthCheck.path,
+              HealthCheckPath: httpHealthCheck
+                ? tg.healthCheck.path
+                : undefined,
               HealthCheckPort: tg.healthCheck.port,
               HealthCheckIntervalSeconds: tg.healthCheck.intervalSeconds,
               HealthCheckTimeoutSeconds: tg.healthCheck.timeoutSeconds,
               HealthyThresholdCount: tg.healthCheck.healthyThresholdCount,
               UnhealthyThresholdCount: tg.healthCheck.unhealthyThresholdCount,
-              Matcher: { HttpCode: tg.healthCheck.matcher },
+              Matcher: httpHealthCheck
+                ? { HttpCode: tg.healthCheck.matcher }
+                : undefined,
               Tags: tgTags.length > 0 ? tgTags : undefined,
             }),
           )
@@ -430,7 +446,7 @@ export function useCreateLoadBalancerWizard() {
           new CreateLoadBalancerCommand({
             Name: params.lb.name,
             Scheme: params.lb.scheme,
-            Type: "application",
+            Type: params.lb.type,
             IpAddressType: "ipv4",
             Subnets: params.lb.subnetIds,
             SecurityGroups:
@@ -458,6 +474,11 @@ export function useCreateLoadBalancerWizard() {
             DefaultActions: [
               { Type: "forward", TargetGroupArn: targetGroupArn },
             ],
+            ...tlsListenerFields(
+              params.listener.protocol,
+              params.listener.certificateArn,
+              params.listener.sslPolicy,
+            ),
           }),
         )
         created.push({ type: "Listener", id: undefined })

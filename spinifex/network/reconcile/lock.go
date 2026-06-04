@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
@@ -32,11 +33,18 @@ func AcquireLeader(nc *nats.Conn, holder string) (func(), bool) {
 	)
 	deadline := time.Now().Add(leaderRetryFor)
 	for {
-		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket:  reconcileLeaderBucket,
-			History: 1,
-			TTL:     reconcileLeaderTTL,
-		})
+		// Get-or-create: CreateKeyValue alone returns "stream name already in
+		// use" once the bucket exists, so every reconcile after the first would
+		// hit the deadline and never elect. Attach to the existing bucket first,
+		// create only when it is genuinely absent.
+		kv, err = js.KeyValue(reconcileLeaderBucket)
+		if errors.Is(err, nats.ErrBucketNotFound) {
+			kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
+				Bucket:  reconcileLeaderBucket,
+				History: 1,
+				TTL:     reconcileLeaderTTL,
+			})
+		}
 		if err == nil {
 			break
 		}

@@ -64,8 +64,11 @@ type ClusterMeta struct {
 	// cluster; empty means healthy. DescribeCluster surfaces a non-empty value
 	// as a ClusterHealth issue so a dead control plane is visible behind the
 	// still-ACTIVE status. LastHealthProbe stamps when the health state changed.
-	HealthIssue     string    `json:"healthIssue,omitempty"`
-	LastHealthProbe time.Time `json:"lastHealthProbe,omitzero"`
+	HealthIssue string `json:"healthIssue,omitempty"`
+	// No omitempty/omitzero: stdlib encoding/json ignores omitzero (json/v2
+	// only) and never treats a time.Time struct as empty, so this field always
+	// serializes. The tag states that honestly rather than implying it elides.
+	LastHealthProbe time.Time `json:"lastHealthProbe"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /

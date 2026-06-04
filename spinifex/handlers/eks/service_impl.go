@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,7 +71,6 @@ type eipProvisioner interface {
 // other action is still NotImplemented pending follow-up sprints.
 type EKSServiceImpl struct {
 	deps     EKSServiceDeps
-	store    *Store
 	leaderKV nats.KeyValue
 	registry *ReconcilerRegistry
 
@@ -94,10 +92,6 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
 	}
-	store, err := NewStore(deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create EKS store: %w", err)
-	}
 	js, err := deps.NATSConn.JetStream()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
@@ -109,7 +103,6 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
 		deps:     deps,
-		store:    store,
 		leaderKV: leaderKV,
 		registry: NewReconcilerRegistry(),
 		bgCtx:    ctx,
@@ -1193,6 +1186,7 @@ func listClusterNames(kv nats.KeyValue) ([]string, error) {
 	}
 	suffix := "/meta"
 	names := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		if !strings.HasPrefix(k, "clusters/") || !strings.HasSuffix(k, suffix) {
 			continue
@@ -1201,9 +1195,11 @@ func listClusterNames(kv nats.KeyValue) ([]string, error) {
 		if name == "" || strings.Contains(name, "/") {
 			continue
 		}
-		if !slices.Contains(names, name) {
-			names = append(names, name)
+		if _, ok := seen[name]; ok {
+			continue
 		}
+		seen[name] = struct{}{}
+		names = append(names, name)
 	}
 	return names, nil
 }

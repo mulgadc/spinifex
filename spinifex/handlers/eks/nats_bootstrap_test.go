@@ -69,6 +69,17 @@ func (h *natsBootstrapHarness) loadControllerJWKS() []byte {
 	return entry.Value()
 }
 
+// waitSubsBound blocks until the subscriber goroutine has bound `want` new
+// subscriptions on the connection (base = NumSubscriptions captured before the
+// goroutine started). Polling the real subscription count replaces a fixed
+// sleep that raced the goroutine and went flaky under CI load.
+func (h *natsBootstrapHarness) waitSubsBound(base, want int) {
+	h.t.Helper()
+	require.Eventually(h.t, func() bool {
+		return h.nc.NumSubscriptions() >= base+want
+	}, 2*time.Second, 2*time.Millisecond, "bootstrap subscriptions never bound")
+}
+
 func TestNewNATSBootstrap_RejectsBadInputs(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := GetOrCreateAccountBucket(js, testAccountID)
@@ -94,16 +105,10 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 	jwks := string(h.loadControllerJWKS())
 	caB64 := base64.StdEncoding.EncodeToString([]byte("-----BEGIN CERTIFICATE-----\nfakeCA\n-----END CERTIFICATE-----\n"))
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-
-	// Give subscriptions time to bind before publishing.
-	require.Eventually(t, func() bool {
-		// Probe by sending a no-op flush — once Run is past Subscribe the
-		// subjects are live; we just need a small yield to the goroutine.
-		return true
-	}, 100*time.Millisecond, 10*time.Millisecond)
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	h.publish(BootstrapSubjectToken, BootstrapEnvelope{Token: "k3s::server-node-token::v1"})
 	h.publish(BootstrapSubjectKubeconfig, BootstrapEnvelope{AdminKubeconfig: "apiVersion: v1\nkind: Config\n"})
@@ -137,15 +142,20 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 	// reconciler gates ACTIVE on.
 	_, err = h.kv.Get(OIDCJWKSVerifiedKey(bootstrapTestCluster))
 	require.NoError(t, err, "persistJWKS must write the verified-marker on a passing cross-check")
+
+	// Run's deferred cleanup must tear down every subscription it bound, so the
+	// connection is back to its pre-Run count once Run returns.
+	assert.Equal(t, base, h.nc.NumSubscriptions(), "Run must unsubscribe all bootstrap subs on return")
 }
 
 func TestNATSBootstrap_ContextCancelReturnsErr(t *testing.T) {
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	cancel()
 
@@ -162,9 +172,10 @@ func TestNATSBootstrap_JWKSMismatchReturnsErr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	// kid mismatch — controller generated a real kid, we send a bogus one.
 	badJWKS := `{"keys":[{"kty":"EC","kid":"not-the-controller-kid","crv":"P-256","x":"AAA","y":"BBB"}]}`
@@ -202,9 +213,10 @@ func TestNATSBootstrap_EmptyEnvelopeFieldsRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	h.publish(BootstrapSubjectToken, BootstrapEnvelope{})
 
@@ -225,13 +237,19 @@ func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
 	jwks := string(h.loadControllerJWKS())
 	caB64 := base64.StdEncoding.EncodeToString([]byte("ca-pem"))
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	// First, send only token so subsequent token publications are dropped.
 	h.publish(BootstrapSubjectToken, BootstrapEnvelope{Token: "first-token"})
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the first token is persisted before racing in a second, so the
+	// one-shot drop is what's under test rather than publish ordering.
+	require.Eventually(t, func() bool {
+		_, err := h.kv.Get(NodeTokenKey(bootstrapTestCluster))
+		return err == nil
+	}, 2*time.Second, 5*time.Millisecond, "first token never persisted")
 	// Second token publication has a different value; persistToken should not
 	// re-encrypt/overwrite because the one-shot map prevents reprocess.
 	h.publish(BootstrapSubjectToken, BootstrapEnvelope{Token: "second-token"})
@@ -259,9 +277,10 @@ func TestNATSBootstrap_CANotBase64Rejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 4)
 
 	h.publish(BootstrapSubjectCA, BootstrapEnvelope{CertificateAuthority: "not!base64@@@"})
 
@@ -356,9 +375,10 @@ func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
 
 	caB64 := base64.StdEncoding.EncodeToString([]byte("ca-pem"))
 
+	base := h.nc.NumSubscriptions()
 	runErr := make(chan error, 1)
 	go func() { runErr <- h.subscriber.RunForKinds(ctx, []string{BootstrapSubjectCA}) }()
-	time.Sleep(50 * time.Millisecond)
+	h.waitSubsBound(base, 1)
 
 	// Only publish CA; the subset subscriber must complete without token,
 	// kubeconfig, or JWKS ever arriving (they were consumed pre-restart).

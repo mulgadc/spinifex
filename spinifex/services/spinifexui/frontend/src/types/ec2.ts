@@ -231,6 +231,14 @@ export const createNatGatewaySchema = z.object({
 
 export type CreateNatGatewayFormData = z.infer<typeof createNatGatewaySchema>
 
+export const createInternetGatewaySchema = z.object({
+  name: z.string().optional(),
+})
+
+export type CreateInternetGatewayFormData = z.infer<
+  typeof createInternetGatewaySchema
+>
+
 export const createVpcSchema = z.object({
   cidrBlock: z
     .string()

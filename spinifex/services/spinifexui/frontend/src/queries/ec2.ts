@@ -162,7 +162,20 @@ export const ec2InternetGatewaysQueryOptions = queryOptions({
     const command = new DescribeInternetGatewaysCommand({})
     return await getEc2Client().send(command)
   },
+  refetchInterval: 5000,
 })
+
+export const ec2InternetGatewayQueryOptions = (internetGatewayId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "internetGateways", internetGatewayId],
+    queryFn: async () => {
+      const command = new DescribeInternetGatewaysCommand({
+        InternetGatewayIds: [internetGatewayId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
 
 export const ec2RouteTablesQueryOptions = queryOptions({
   queryKey: ["ec2", "routeTables"],

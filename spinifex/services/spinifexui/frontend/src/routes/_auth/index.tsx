@@ -7,6 +7,7 @@ import {
   Key,
   Network,
   FolderOpen,
+  Router,
   Shield,
   Waypoints,
 } from "lucide-react"
@@ -27,6 +28,7 @@ import { getNameTag } from "@/lib/utils"
 import {
   ec2AddressesQueryOptions,
   ec2InstancesQueryOptions,
+  ec2InternetGatewaysQueryOptions,
   ec2KeyPairsQueryOptions,
   ec2NatGatewaysQueryOptions,
   ec2SecurityGroupsQueryOptions,
@@ -48,6 +50,7 @@ export const Route = createFileRoute("/_auth/")({
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
       context.queryClient.ensureQueryData(ec2NatGatewaysQueryOptions),
       context.queryClient.ensureQueryData(ec2AddressesQueryOptions),
+      context.queryClient.ensureQueryData(ec2InternetGatewaysQueryOptions),
     ])
   },
   head: () => ({
@@ -85,6 +88,9 @@ function Dashboard() {
         </Suspense>
         <Suspense fallback={<CardSkeleton />}>
           <ElasticIpsCard />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <InternetGatewaysCard />
         </Suspense>
       </div>
     </>
@@ -395,6 +401,37 @@ function NatGatewaysCard() {
             </ItemRow>
           ))}
           <Overflow total={natGateways.length} />
+        </div>
+      )}
+    </DashboardCard>
+  )
+}
+
+function InternetGatewaysCard() {
+  const { data } = useQuery(ec2InternetGatewaysQueryOptions)
+  const internetGateways = data?.InternetGateways ?? []
+  const display = internetGateways.slice(0, MAX_ITEMS)
+
+  return (
+    <DashboardCard
+      title="Internet Gateways"
+      icon={<Router className="size-3.5" />}
+      count={internetGateways.length}
+      to="/ec2/describe-internet-gateways"
+    >
+      {internetGateways.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No internet gateways</p>
+      ) : (
+        <div className="space-y-0.5">
+          {display.map((igw) => (
+            <ItemRow key={igw.InternetGatewayId}>
+              <span className="font-mono">{igw.InternetGatewayId}</span>
+              <span className="text-muted-foreground">
+                {igw.Attachments?.[0]?.VpcId ? "attached" : "detached"}
+              </span>
+            </ItemRow>
+          ))}
+          <Overflow total={internetGateways.length} />
         </div>
       )}
     </DashboardCard>

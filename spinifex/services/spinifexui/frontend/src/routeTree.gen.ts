@@ -29,6 +29,7 @@ import { Route as AuthEc2natGatewaysCreateNatGatewayRouteImport } from './routes
 import { Route as AuthEc2loadBalancersCreateLoadBalancerRouteImport } from './routes/_auth/ec2/(load-balancers)/create-load-balancer'
 import { Route as AuthEc2keyImportKeyPairRouteImport } from './routes/_auth/ec2/(key)/import-key-pair'
 import { Route as AuthEc2keyCreateKeyPairRouteImport } from './routes/_auth/ec2/(key)/create-key-pair'
+import { Route as AuthEc2internetGatewaysCreateInternetGatewayRouteImport } from './routes/_auth/ec2/(internet-gateways)/create-internet-gateway'
 import { Route as AuthEc2instancesRunInstancesRouteImport } from './routes/_auth/ec2/(instances)/run-instances'
 import { Route as AuthEc2elasticIpsAllocateAddressRouteImport } from './routes/_auth/ec2/(elastic-ips)/allocate-address'
 import { Route as AuthS3LsBucketRouteRouteImport } from './routes/_auth/s3/ls/$bucket/route'
@@ -45,6 +46,7 @@ import { Route as AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport 
 import { Route as AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/index'
 import { Route as AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/index'
 import { Route as AuthEc2keyDescribeKeyPairsIndexRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/index'
+import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/index'
 import { Route as AuthEc2instancesDescribeInstancesIndexRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/index'
 import { Route as AuthEc2imagesDescribeImagesIndexRouteImport } from './routes/_auth/ec2/(images)/describe-images/index'
 import { Route as AuthEc2elasticIpsDescribeAddressesIndexRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/index'
@@ -62,6 +64,7 @@ import { Route as AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport } f
 import { Route as AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
 import { Route as AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
 import { Route as AuthEc2keyDescribeKeyPairsIdRouteImport } from './routes/_auth/ec2/(key)/describe-key-pairs/$id'
+import { Route as AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport } from './routes/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
 import { Route as AuthEc2instancesDescribeInstancesIdRouteImport } from './routes/_auth/ec2/(instances)/describe-instances/$id'
 import { Route as AuthEc2imagesDescribeImagesIdRouteImport } from './routes/_auth/ec2/(images)/describe-images/$id'
 import { Route as AuthEc2elasticIpsDescribeAddressesIdRouteImport } from './routes/_auth/ec2/(elastic-ips)/describe-addresses/$id'
@@ -175,6 +178,12 @@ const AuthEc2keyCreateKeyPairRoute = AuthEc2keyCreateKeyPairRouteImport.update({
   path: '/ec2/create-key-pair',
   getParentRoute: () => AuthRouteRoute,
 } as any)
+const AuthEc2internetGatewaysCreateInternetGatewayRoute =
+  AuthEc2internetGatewaysCreateInternetGatewayRouteImport.update({
+    id: '/ec2/(internet-gateways)/create-internet-gateway',
+    path: '/ec2/create-internet-gateway',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2instancesRunInstancesRoute =
   AuthEc2instancesRunInstancesRouteImport.update({
     id: '/ec2/(instances)/run-instances',
@@ -267,6 +276,12 @@ const AuthEc2keyDescribeKeyPairsIndexRoute =
   AuthEc2keyDescribeKeyPairsIndexRouteImport.update({
     id: '/ec2/(key)/describe-key-pairs/',
     path: '/ec2/describe-key-pairs/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute =
+  AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport.update({
+    id: '/ec2/(internet-gateways)/describe-internet-gateways/',
+    path: '/ec2/describe-internet-gateways/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2instancesDescribeInstancesIndexRoute =
@@ -370,6 +385,12 @@ const AuthEc2keyDescribeKeyPairsIdRoute =
     path: '/ec2/describe-key-pairs/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute =
+  AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport.update({
+    id: '/ec2/(internet-gateways)/describe-internet-gateways/$id',
+    path: '/ec2/describe-internet-gateways/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2instancesDescribeInstancesIdRoute =
   AuthEc2instancesDescribeInstancesIdRouteImport.update({
     id: '/ec2/(instances)/describe-instances/$id',
@@ -397,6 +418,7 @@ export interface FileRoutesByFullPath {
   '/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
   '/ec2/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/ec2/run-instances': typeof AuthEc2instancesRunInstancesRoute
+  '/ec2/create-internet-gateway': typeof AuthEc2internetGatewaysCreateInternetGatewayRoute
   '/ec2/create-key-pair': typeof AuthEc2keyCreateKeyPairRoute
   '/ec2/import-key-pair': typeof AuthEc2keyImportKeyPairRoute
   '/ec2/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
@@ -415,6 +437,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/ec2/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/ec2/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
+  '/ec2/describe-internet-gateways/$id': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute
   '/ec2/describe-key-pairs/$id': typeof AuthEc2keyDescribeKeyPairsIdRoute
   '/ec2/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/ec2/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
@@ -432,6 +455,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/ec2/describe-images/': typeof AuthEc2imagesDescribeImagesIndexRoute
   '/ec2/describe-instances/': typeof AuthEc2instancesDescribeInstancesIndexRoute
+  '/ec2/describe-internet-gateways/': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute
   '/ec2/describe-key-pairs/': typeof AuthEc2keyDescribeKeyPairsIndexRoute
   '/ec2/describe-load-balancers/': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/ec2/describe-nat-gateways/': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
@@ -453,6 +477,7 @@ export interface FileRoutesByTo {
   '/s3/service-metrics': typeof AuthS3ServiceMetricsRoute
   '/ec2/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/ec2/run-instances': typeof AuthEc2instancesRunInstancesRoute
+  '/ec2/create-internet-gateway': typeof AuthEc2internetGatewaysCreateInternetGatewayRoute
   '/ec2/create-key-pair': typeof AuthEc2keyCreateKeyPairRoute
   '/ec2/import-key-pair': typeof AuthEc2keyImportKeyPairRoute
   '/ec2/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
@@ -471,6 +496,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/ec2/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/ec2/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
+  '/ec2/describe-internet-gateways/$id': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute
   '/ec2/describe-key-pairs/$id': typeof AuthEc2keyDescribeKeyPairsIdRoute
   '/ec2/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/ec2/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
@@ -488,6 +514,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-addresses': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/ec2/describe-images': typeof AuthEc2imagesDescribeImagesIndexRoute
   '/ec2/describe-instances': typeof AuthEc2instancesDescribeInstancesIndexRoute
+  '/ec2/describe-internet-gateways': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute
   '/ec2/describe-key-pairs': typeof AuthEc2keyDescribeKeyPairsIndexRoute
   '/ec2/describe-load-balancers': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/ec2/describe-nat-gateways': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
@@ -512,6 +539,7 @@ export interface FileRoutesById {
   '/_auth/s3/ls/$bucket': typeof AuthS3LsBucketRouteRouteWithChildren
   '/_auth/ec2/(elastic-ips)/allocate-address': typeof AuthEc2elasticIpsAllocateAddressRoute
   '/_auth/ec2/(instances)/run-instances': typeof AuthEc2instancesRunInstancesRoute
+  '/_auth/ec2/(internet-gateways)/create-internet-gateway': typeof AuthEc2internetGatewaysCreateInternetGatewayRoute
   '/_auth/ec2/(key)/create-key-pair': typeof AuthEc2keyCreateKeyPairRoute
   '/_auth/ec2/(key)/import-key-pair': typeof AuthEc2keyImportKeyPairRoute
   '/_auth/ec2/(load-balancers)/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
@@ -530,6 +558,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(elastic-ips)/describe-addresses/$id': typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   '/_auth/ec2/(images)/describe-images/$id': typeof AuthEc2imagesDescribeImagesIdRoute
   '/_auth/ec2/(instances)/describe-instances/$id': typeof AuthEc2instancesDescribeInstancesIdRoute
+  '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute
   '/_auth/ec2/(key)/describe-key-pairs/$id': typeof AuthEc2keyDescribeKeyPairsIdRoute
   '/_auth/ec2/(load-balancers)/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
@@ -547,6 +576,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(elastic-ips)/describe-addresses/': typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   '/_auth/ec2/(images)/describe-images/': typeof AuthEc2imagesDescribeImagesIndexRoute
   '/_auth/ec2/(instances)/describe-instances/': typeof AuthEc2instancesDescribeInstancesIndexRoute
+  '/_auth/ec2/(internet-gateways)/describe-internet-gateways/': typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute
   '/_auth/ec2/(key)/describe-key-pairs/': typeof AuthEc2keyDescribeKeyPairsIndexRoute
   '/_auth/ec2/(load-balancers)/describe-load-balancers/': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/_auth/ec2/(nat-gateways)/describe-nat-gateways/': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
@@ -571,6 +601,7 @@ export interface FileRouteTypes {
     | '/s3/ls/$bucket'
     | '/ec2/allocate-address'
     | '/ec2/run-instances'
+    | '/ec2/create-internet-gateway'
     | '/ec2/create-key-pair'
     | '/ec2/import-key-pair'
     | '/ec2/create-load-balancer'
@@ -589,6 +620,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-addresses/$id'
     | '/ec2/describe-images/$id'
     | '/ec2/describe-instances/$id'
+    | '/ec2/describe-internet-gateways/$id'
     | '/ec2/describe-key-pairs/$id'
     | '/ec2/describe-load-balancers/$id'
     | '/ec2/describe-nat-gateways/$id'
@@ -606,6 +638,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-addresses/'
     | '/ec2/describe-images/'
     | '/ec2/describe-instances/'
+    | '/ec2/describe-internet-gateways/'
     | '/ec2/describe-key-pairs/'
     | '/ec2/describe-load-balancers/'
     | '/ec2/describe-nat-gateways/'
@@ -627,6 +660,7 @@ export interface FileRouteTypes {
     | '/s3/service-metrics'
     | '/ec2/allocate-address'
     | '/ec2/run-instances'
+    | '/ec2/create-internet-gateway'
     | '/ec2/create-key-pair'
     | '/ec2/import-key-pair'
     | '/ec2/create-load-balancer'
@@ -645,6 +679,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-addresses/$id'
     | '/ec2/describe-images/$id'
     | '/ec2/describe-instances/$id'
+    | '/ec2/describe-internet-gateways/$id'
     | '/ec2/describe-key-pairs/$id'
     | '/ec2/describe-load-balancers/$id'
     | '/ec2/describe-nat-gateways/$id'
@@ -662,6 +697,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-addresses'
     | '/ec2/describe-images'
     | '/ec2/describe-instances'
+    | '/ec2/describe-internet-gateways'
     | '/ec2/describe-key-pairs'
     | '/ec2/describe-load-balancers'
     | '/ec2/describe-nat-gateways'
@@ -685,6 +721,7 @@ export interface FileRouteTypes {
     | '/_auth/s3/ls/$bucket'
     | '/_auth/ec2/(elastic-ips)/allocate-address'
     | '/_auth/ec2/(instances)/run-instances'
+    | '/_auth/ec2/(internet-gateways)/create-internet-gateway'
     | '/_auth/ec2/(key)/create-key-pair'
     | '/_auth/ec2/(key)/import-key-pair'
     | '/_auth/ec2/(load-balancers)/create-load-balancer'
@@ -703,6 +740,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(elastic-ips)/describe-addresses/$id'
     | '/_auth/ec2/(images)/describe-images/$id'
     | '/_auth/ec2/(instances)/describe-instances/$id'
+    | '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
     | '/_auth/ec2/(key)/describe-key-pairs/$id'
     | '/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
     | '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
@@ -720,6 +758,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(elastic-ips)/describe-addresses/'
     | '/_auth/ec2/(images)/describe-images/'
     | '/_auth/ec2/(instances)/describe-instances/'
+    | '/_auth/ec2/(internet-gateways)/describe-internet-gateways/'
     | '/_auth/ec2/(key)/describe-key-pairs/'
     | '/_auth/ec2/(load-balancers)/describe-load-balancers/'
     | '/_auth/ec2/(nat-gateways)/describe-nat-gateways/'
@@ -882,6 +921,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2keyCreateKeyPairRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(internet-gateways)/create-internet-gateway': {
+      id: '/_auth/ec2/(internet-gateways)/create-internet-gateway'
+      path: '/ec2/create-internet-gateway'
+      fullPath: '/ec2/create-internet-gateway'
+      preLoaderRoute: typeof AuthEc2internetGatewaysCreateInternetGatewayRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(instances)/run-instances': {
       id: '/_auth/ec2/(instances)/run-instances'
       path: '/ec2/run-instances'
@@ -992,6 +1038,13 @@ declare module '@tanstack/react-router' {
       path: '/ec2/describe-key-pairs'
       fullPath: '/ec2/describe-key-pairs/'
       preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/': {
+      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/'
+      path: '/ec2/describe-internet-gateways'
+      fullPath: '/ec2/describe-internet-gateways/'
+      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(instances)/describe-instances/': {
@@ -1113,6 +1166,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2keyDescribeKeyPairsIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id': {
+      id: '/_auth/ec2/(internet-gateways)/describe-internet-gateways/$id'
+      path: '/ec2/describe-internet-gateways/$id'
+      fullPath: '/ec2/describe-internet-gateways/$id'
+      preLoaderRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(instances)/describe-instances/$id': {
       id: '/_auth/ec2/(instances)/describe-instances/$id'
       path: '/ec2/describe-instances/$id'
@@ -1157,6 +1217,7 @@ interface AuthRouteRouteChildren {
   AuthS3LsBucketRouteRoute: typeof AuthS3LsBucketRouteRouteWithChildren
   AuthEc2elasticIpsAllocateAddressRoute: typeof AuthEc2elasticIpsAllocateAddressRoute
   AuthEc2instancesRunInstancesRoute: typeof AuthEc2instancesRunInstancesRoute
+  AuthEc2internetGatewaysCreateInternetGatewayRoute: typeof AuthEc2internetGatewaysCreateInternetGatewayRoute
   AuthEc2keyCreateKeyPairRoute: typeof AuthEc2keyCreateKeyPairRoute
   AuthEc2keyImportKeyPairRoute: typeof AuthEc2keyImportKeyPairRoute
   AuthEc2loadBalancersCreateLoadBalancerRoute: typeof AuthEc2loadBalancersCreateLoadBalancerRoute
@@ -1175,6 +1236,7 @@ interface AuthRouteRouteChildren {
   AuthEc2elasticIpsDescribeAddressesIdRoute: typeof AuthEc2elasticIpsDescribeAddressesIdRoute
   AuthEc2imagesDescribeImagesIdRoute: typeof AuthEc2imagesDescribeImagesIdRoute
   AuthEc2instancesDescribeInstancesIdRoute: typeof AuthEc2instancesDescribeInstancesIdRoute
+  AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute
   AuthEc2keyDescribeKeyPairsIdRoute: typeof AuthEc2keyDescribeKeyPairsIdRoute
   AuthEc2loadBalancersDescribeLoadBalancersIdRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   AuthEc2natGatewaysDescribeNatGatewaysIdRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
@@ -1191,6 +1253,7 @@ interface AuthRouteRouteChildren {
   AuthEc2elasticIpsDescribeAddressesIndexRoute: typeof AuthEc2elasticIpsDescribeAddressesIndexRoute
   AuthEc2imagesDescribeImagesIndexRoute: typeof AuthEc2imagesDescribeImagesIndexRoute
   AuthEc2instancesDescribeInstancesIndexRoute: typeof AuthEc2instancesDescribeInstancesIndexRoute
+  AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute: typeof AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute
   AuthEc2keyDescribeKeyPairsIndexRoute: typeof AuthEc2keyDescribeKeyPairsIndexRoute
   AuthEc2loadBalancersDescribeLoadBalancersIndexRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   AuthEc2natGatewaysDescribeNatGatewaysIndexRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
@@ -1212,6 +1275,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthS3LsBucketRouteRoute: AuthS3LsBucketRouteRouteWithChildren,
   AuthEc2elasticIpsAllocateAddressRoute: AuthEc2elasticIpsAllocateAddressRoute,
   AuthEc2instancesRunInstancesRoute: AuthEc2instancesRunInstancesRoute,
+  AuthEc2internetGatewaysCreateInternetGatewayRoute:
+    AuthEc2internetGatewaysCreateInternetGatewayRoute,
   AuthEc2keyCreateKeyPairRoute: AuthEc2keyCreateKeyPairRoute,
   AuthEc2keyImportKeyPairRoute: AuthEc2keyImportKeyPairRoute,
   AuthEc2loadBalancersCreateLoadBalancerRoute:
@@ -1237,6 +1302,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2imagesDescribeImagesIdRoute: AuthEc2imagesDescribeImagesIdRoute,
   AuthEc2instancesDescribeInstancesIdRoute:
     AuthEc2instancesDescribeInstancesIdRoute,
+  AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute:
+    AuthEc2internetGatewaysDescribeInternetGatewaysIdRoute,
   AuthEc2keyDescribeKeyPairsIdRoute: AuthEc2keyDescribeKeyPairsIdRoute,
   AuthEc2loadBalancersDescribeLoadBalancersIdRoute:
     AuthEc2loadBalancersDescribeLoadBalancersIdRoute,
@@ -1262,6 +1329,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2imagesDescribeImagesIndexRoute: AuthEc2imagesDescribeImagesIndexRoute,
   AuthEc2instancesDescribeInstancesIndexRoute:
     AuthEc2instancesDescribeInstancesIndexRoute,
+  AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute:
+    AuthEc2internetGatewaysDescribeInternetGatewaysIndexRoute,
   AuthEc2keyDescribeKeyPairsIndexRoute: AuthEc2keyDescribeKeyPairsIndexRoute,
   AuthEc2loadBalancersDescribeLoadBalancersIndexRoute:
     AuthEc2loadBalancersDescribeLoadBalancersIndexRoute,

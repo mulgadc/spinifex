@@ -24,6 +24,7 @@ import {
   CreateSubnetCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
+  DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
   DeleteNatGatewayCommand,
   DeletePlacementGroupCommand,
@@ -32,6 +33,7 @@ import {
   DeleteSubnetCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DetachInternetGatewayCommand,
   DisassociateAddressCommand,
   DetachVolumeCommand,
   ReleaseAddressCommand,
@@ -766,6 +768,86 @@ export function useRevokeSecurityGroupEgress() {
       })
       void queryClient.invalidateQueries({
         queryKey: ["ec2", "securityGroups", params.groupId],
+      })
+    },
+  })
+}
+
+export function useCreateInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params?: { name?: string }) => {
+      const command = new CreateInternetGatewayCommand({
+        TagSpecifications: buildTagSpec(
+          ResourceType.internet_gateway,
+          params?.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useDeleteInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (internetGatewayId: string) => {
+      const command = new DeleteInternetGatewayCommand({
+        InternetGatewayId: internetGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useAttachInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      internetGatewayId: string
+      vpcId: string
+    }) => {
+      const command = new AttachInternetGatewayCommand({
+        InternetGatewayId: params.internetGatewayId,
+        VpcId: params.vpcId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useDetachInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      internetGatewayId: string
+      vpcId: string
+    }) => {
+      const command = new DetachInternetGatewayCommand({
+        InternetGatewayId: params.internetGatewayId,
+        VpcId: params.vpcId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
       })
     },
   })

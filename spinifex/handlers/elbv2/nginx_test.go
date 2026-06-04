@@ -55,6 +55,7 @@ func TestGenerateNLBStream_TCP(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, certs)
 
+	assert.Contains(t, config, "load_module /usr/lib/nginx/modules/ngx_stream_module.so;") // stream is a separate Alpine module
 	assert.Contains(t, config, "stream {")
 	assert.NotContains(t, config, "mode tcp") // not HAProxy
 	assert.Contains(t, config, "listen 5432;")

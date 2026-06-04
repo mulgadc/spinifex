@@ -75,6 +75,7 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"acm":                  true,
 	"spinifex":             true,
 }
 
@@ -305,6 +306,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "acm":
+		err = gw.ACM_Request(w, r)
 	case "spinifex":
 		err = gw.Spinifex_Request(w, r)
 	default:
@@ -457,9 +460,12 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	if svc == "eks" {
+	// EKS and ACM both use the AWS JSON 1.1 error envelope
+	// ({"__type":"<Code>Exception","message":...}, Content-Type
+	// application/x-amz-json-1.1). Query/XML services fall through below.
+	if svc == "eks" || svc == "acm" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
-		slog.Debug("Generated EKS error response", "error", err.Error(), "json", string(body), "requestId", requestId)
+		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {

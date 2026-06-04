@@ -30,10 +30,12 @@ services:
     publishes:
       - "ec2.*"
       - "elbv2.*"
+      - "acm.*"
       - "iam.*"
     depends_on:
       - "ec2.*"
       - "elbv2.*"
+      - "acm.*"
       - "iam.*"
 
   spinifex_daemon:
@@ -50,6 +52,7 @@ services:
       - spinifex/daemon
       - spinifex/handlers/ec2
       - spinifex/handlers/elbv2
+      - spinifex/handlers/acm
       - spinifex/handlers/iam
     subscribes:
       # EC2 instance lifecycle.
@@ -95,6 +98,11 @@ services:
       - "elbv2.CreateListener"
       - "elbv2.DeleteListener"
       - "elbv2.DescribeListeners"
+      # ACM-alike certificate store (handlers/acm/service_nats.go topic map).
+      - "acm.ImportCertificate"
+      - "acm.DescribeCertificate"
+      - "acm.ListCertificates"
+      - "acm.DeleteCertificate"
       - "elbv2.AddListenerCertificates"
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"

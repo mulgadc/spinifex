@@ -56,7 +56,7 @@ func probeOne(t HealthTarget) bool {
 	default: // TCP and anything else falls back to a connect probe
 		conn, err := net.DialTimeout("tcp", t.Address, probeTimeout)
 		if err != nil {
-			slog.Debug("TCP probe failed", "addr", t.Address, "err", err)
+			slog.Warn("TCP probe failed", "addr", t.Address, "err", err)
 			return false
 		}
 		_ = conn.Close()
@@ -86,7 +86,7 @@ func probeHTTP(t HealthTarget) bool {
 	url := fmt.Sprintf("%s://%s%s", scheme, t.Address, path)
 	resp, err := client.Get(url) //nolint:noctx // short fixed-timeout probe
 	if err != nil {
-		slog.Debug("HTTP probe failed", "url", url, "err", err)
+		slog.Warn("HTTP probe failed", "url", url, "err", err)
 		return false
 	}
 	defer resp.Body.Close()

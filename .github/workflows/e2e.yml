@@ -270,6 +270,15 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
             > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null
           ok "journal: $(wc -l < "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || echo 0) lines"
+          # LB/system microVM serial consoles. The lb-agent logs its nginx (NLB)
+          # engine activation and any `nginx -t`/reload error + active-probe
+          # results to the guest serial console, which the host journal never
+          # captures. These files persist in /run/spinifex past VM teardown, so
+          # collecting them here makes an NLB "0/N healthy" timeout diagnosable.
+          mkdir -p "${ARTIFACT_DIR}/lb-console"
+          ssh "${SSH_OPTS[@]}" "$VM" 'sudo sh -c "cd /run/spinifex 2>/dev/null && tar -cf - console-*.log 2>/dev/null"' \
+            | tar -C "${ARTIFACT_DIR}/lb-console" -xf - 2>/dev/null
+          ok "lb-console: $(ls "${ARTIFACT_DIR}/lb-console" 2>/dev/null | wc -l) files"
 
       - name: Convert test logs to JUnit XML
         if: always()
@@ -656,6 +665,18 @@ jobs:
             ip="${NODE_LIST[$i]}"
             ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo journalctl -u openvswitch-ipsec.service --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/openvswitch-ipsec-node${idx}.log" 2>/dev/null
+          done
+          # LB/system microVM serial consoles, per node. The lb-agent logs its
+          # nginx (NLB) engine activation and any `nginx -t`/reload error +
+          # active-probe results to the guest serial console (never in the host
+          # journal). Files persist in /run/spinifex past VM teardown.
+          for i in "${!NODE_LIST[@]}"; do
+            idx=$((i + 1))
+            ip="${NODE_LIST[$i]}"
+            mkdir -p "${ARTIFACT_DIR}/lb-console/node${idx}"
+            ssh "${SSH_OPTS[@]}" tf-user@"$ip" 'sudo sh -c "cd /run/spinifex 2>/dev/null && tar -cf - console-*.log 2>/dev/null"' \
+              | tar -C "${ARTIFACT_DIR}/lb-console/node${idx}" -xf - 2>/dev/null
+            ok "lb-console node${idx}: $(ls "${ARTIFACT_DIR}/lb-console/node${idx}" 2>/dev/null | wc -l) files"
           done
 
       - name: Convert test logs to JUnit XML

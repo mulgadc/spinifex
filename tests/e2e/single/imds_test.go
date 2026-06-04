@@ -67,7 +67,9 @@ type imdsCredDoc struct {
 //     issuance, the v2-only stance (tokenless / garbage-token GET → 401), the
 //     metadata fields, the instance-role credential path + a wire round-trip
 //     proving the ASIA creds resolve to the instance assumed-role ARN, the
-//     /latest/user-data round-trip, and the DHCP option-121 guest route.
+//     /latest/user-data round-trip, and the on-link
+//     metadata route the guest's cloud-init network-config installs to reach the
+//     subnet localport.
 //   - The per-subnet L2 datapath invariant: imds-port-<subnetID> is a localport
 //     LSP on the guest's own subnet switch, and ovn-trace confirms the request
 //     and the established reply both resolve over a single L2 hop with no logical

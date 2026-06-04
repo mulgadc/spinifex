@@ -416,6 +416,18 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.NotContains(t, wf, "vpc1.nmconnection")
 		assert.Contains(t, wf, "vpc2.nmconnection")
 	})
+
+	t.Run("vpc0 carries on-link IMDS route, others do not", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"", "",
+			[]string{"02:00:00:00:00:02"},
+		)
+		assert.Contains(t, wf, "route1=169.254.169.254/32")
+		// Primary NIC only — not extra VPC NICs or the dev NIC.
+		assert.Equal(t, 1, strings.Count(wf, "route1=169.254.169.254/32"))
+	})
 }
 
 func TestCloudInitTemplate_FamilyBranching(t *testing.T) {

@@ -1,6 +1,7 @@
 package handlers_ec2_instance
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,6 +66,18 @@ func TestGenerateNetworkConfig_MgmtMACWithoutIP(t *testing.T) {
 func TestGenerateNetworkConfig_MgmtIPWithoutMAC(t *testing.T) {
 	cfg := generateNetworkConfig("02:00:00:aa:bb:cc", "02:de:00:dd:ee:ff", "", "10.15.8.101", nil)
 	assert.NotContains(t, cfg, "mgmt0:", "mgmt NIC should not appear without MAC")
+}
+
+func TestGenerateNetworkConfig_IMDSOnLinkRoute(t *testing.T) {
+	// The primary VPC NIC carries an on-link route to the IMDS metadata IP so the
+	// guest ARPs 169.254.169.254 directly; the per-subnet localport answers.
+	cfg := generateNetworkConfig("02:00:00:aa:bb:cc", "02:00:00:dd:ee:ff", "", "",
+		[]string{"02:00:00:bb:bb:bb"})
+	assert.Contains(t, cfg, "to: 169.254.169.254/32")
+	assert.Contains(t, cfg, "scope: link")
+	// Only the primary NIC (vpc0) gets it — not extra VPC NICs or the dev NIC,
+	// matching AWS (IMDS reached via the primary ENI).
+	assert.Equal(t, 1, strings.Count(cfg, "169.254.169.254/32"))
 }
 
 // Route for multi-node LB mgmt traffic is handled via the fw_cfg netcfg

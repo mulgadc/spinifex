@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -133,6 +134,14 @@ func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP 
 //
 // The dev NIC still gets an IP via DHCP (needed for hostfwd port forwarding)
 // but dhcp4-overrides prevents it from installing routes or DNS.
+//
+// The primary VPC NIC (vpc0) also carries an on-link route to the IMDS metadata
+// IP (169.254.169.254): under the L2 datapath the metadata localport lives on
+// the guest's subnet switch and answers ARP directly, so the guest must treat
+// the address as on-link rather than steering it via the default gateway. The
+// route is reached via the primary ENI, matching AWS; it is not delivered via
+// DHCP option 121 (which would force the default route into option 121 per
+// RFC 3442) and the default gateway stays option 3.
 func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
 	if eniMAC == "" {
 		return cloudInitNetworkConfigWildcard
@@ -145,7 +154,10 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
         macaddress: "%s"
       dhcp4: true
       dhcp-identifier: mac
-`, eniMAC)
+      routes:
+        - to: %s/32
+          scope: link
+`, eniMAC, handlers_imds.MetaDataServerIP)
 
 	for i, mac := range extraENIMACs {
 		if mac == "" {
@@ -215,9 +227,9 @@ type CloudInitData struct {
 // RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
 // non-VPC path) so NM's default autoconnect handles the interface.
 //
-// Mirrors generateNetworkConfig's per-interface structure: vpc0 + optional
-// vpc1..N for extra ENIs, dev0 (DHCP with route/DNS suppression), mgmt0
-// (static). Owning the keyfile bytes directly avoids relying on cloud-init's
+// Mirrors generateNetworkConfig's per-interface structure: vpc0 (DHCP + on-link
+// IMDS route) + optional vpc1..N for extra ENIs, dev0 (DHCP with route/DNS
+// suppression), mgmt0 (static). Owning the keyfile bytes directly avoids relying on cloud-init's
 // v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
 // which OVN's MAC-keyed DHCP requires.
 //
@@ -236,7 +248,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
 	rc.WriteString("  - [ nmcli, connection, reload ]\n")
 
-	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false, true)
 	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
 
 	for i, mac := range extraENIMACs {
@@ -244,12 +256,12 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 			continue
 		}
 		name := fmt.Sprintf("vpc%d", i+1)
-		appendRHELDHCPKeyfile(&wf, name, mac, false)
+		appendRHELDHCPKeyfile(&wf, name, mac, false, false)
 		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
 	}
 
 	if devMAC != "" {
-		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true, false)
 		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
 	}
 
@@ -264,7 +276,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
 }
 
-func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults, imdsRoute bool) {
 	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
 	b.WriteString("    owner: root:root\n")
 	b.WriteString("    permissions: '0600'\n")
@@ -282,6 +294,12 @@ func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefault
 		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
 		b.WriteString("      never-default=true\n")
 		b.WriteString("      ignore-auto-dns=true\n")
+	}
+	if imdsRoute {
+		// On-link route to the IMDS metadata IP so the guest ARPs 169.254.169.254
+		// directly on this NIC; the per-subnet localport answers. No next hop =
+		// link scope. Matches the netplan path in generateNetworkConfig.
+		fmt.Fprintf(b, "      route1=%s/32\n", handlers_imds.MetaDataServerIP)
 	}
 	b.WriteString("      [ipv6]\n")
 	b.WriteString("      method=disabled\n")

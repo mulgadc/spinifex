@@ -100,7 +100,7 @@ type EC2Errors struct {
 
 type ErrorDetail struct {
 	Code    string `xml:"Code"`
-	Message error  `xml:"Message"`
+	Message string `xml:"Message"`
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
@@ -532,7 +532,7 @@ func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
 		Errors: EC2Errors{
 			Error: ErrorDetail{
 				Code:    code,
-				Message: errors.New(message),
+				Message: message,
 			},
 		},
 		RequestID: requestID,

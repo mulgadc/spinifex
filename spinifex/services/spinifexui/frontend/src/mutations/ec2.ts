@@ -32,6 +32,7 @@ import {
   GetConsoleOutputCommand,
   ImportKeyPairCommand,
   ModifyInstanceAttributeCommand,
+  ModifySubnetAttributeCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
   ResourceType,
@@ -802,6 +803,16 @@ export function useCreateVpcWizard() {
           }
           publicSubnetIds.push(subnetId)
           created.push({ type: "Public Subnet", id: subnetId })
+
+          // Auto-assign public IPs on launch — CreateSubnet defaults this to
+          // false, so without it instances in a "public" subnet never get a
+          // routable public IP even though the IGW route is in place.
+          await client.send(
+            new ModifySubnetAttributeCommand({
+              SubnetId: subnetId,
+              MapPublicIpOnLaunch: { Value: true },
+            }),
+          )
         }
 
         // Step 3: Create private subnets

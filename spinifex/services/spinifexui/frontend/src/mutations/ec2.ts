@@ -4,6 +4,8 @@ import {
   type Tag,
   type TagSpecification,
   type Tenancy,
+  AllocateAddressCommand,
+  AssociateAddressCommand,
   AssociateRouteTableCommand,
   AttachInternetGatewayCommand,
   AttachVolumeCommand,
@@ -13,6 +15,7 @@ import {
   CreateImageCommand,
   CreateInternetGatewayCommand,
   CreateKeyPairCommand,
+  CreateNatGatewayCommand,
   CreatePlacementGroupCommand,
   CreateRouteCommand,
   CreateRouteTableCommand,
@@ -21,17 +24,26 @@ import {
   CreateSubnetCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
+  DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
+  DeleteNatGatewayCommand,
   DeletePlacementGroupCommand,
+  DeleteRouteCommand,
+  DeleteRouteTableCommand,
   DeleteSecurityGroupCommand,
   DeleteSnapshotCommand,
   DeleteSubnetCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DetachInternetGatewayCommand,
+  DisassociateAddressCommand,
+  DisassociateRouteTableCommand,
   DetachVolumeCommand,
+  ReleaseAddressCommand,
   GetConsoleOutputCommand,
   ImportKeyPairCommand,
   ModifyInstanceAttributeCommand,
+  ModifySubnetAttributeCommand,
   ModifyVolumeCommand,
   RebootInstancesCommand,
   ResourceType,
@@ -133,6 +145,8 @@ export function useCreateInstance() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (params: CreateInstanceParams) => {
+      const client = getEc2Client()
+      const securityGroupIds = await resolveSecurityGroupIds(client, params)
       const command = new RunInstancesCommand({
         ImageId: params.imageId,
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
@@ -142,17 +156,75 @@ export function useCreateInstance() {
         MaxCount: params.count,
         // oxlint-disable-next-line typescript/prefer-nullish-coalescing
         SubnetId: params.subnetId || undefined,
+        SecurityGroupIds:
+          securityGroupIds.length > 0 ? securityGroupIds : undefined,
         Placement: params.placementGroupName
           ? { GroupName: params.placementGroupName }
           : undefined,
         BlockDeviceMappings: buildBlockDeviceMappings(params),
       })
-      return await getEc2Client().send(command)
+      return await client.send(command)
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "securityGroups"],
+      })
     },
   })
+}
+
+// resolveSecurityGroupIds returns the SG IDs to attach to the new instance.
+// In "existing" mode it passes the selected IDs through; in "create" mode it
+// creates a launch-wizard SG, authorizes the ticked inbound rules, and returns
+// the new group's ID.
+async function resolveSecurityGroupIds(
+  client: ReturnType<typeof getEc2Client>,
+  params: CreateInstanceParams,
+): Promise<string[]> {
+  // Only the explicit create path provisions an SG; existing / undefined modes
+  // pass through the selected IDs (none by default), preserving prior behaviour.
+  if (params.securityGroupMode !== "create") {
+    return params.securityGroupIds ?? []
+  }
+
+  const sg = await client.send(
+    new CreateSecurityGroupCommand({
+      GroupName: params.newSgName,
+      // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+      Description: params.newSgDescription || "Created by launch wizard",
+      VpcId: params.resolvedVpcId,
+    }),
+  )
+  const groupId = sg.GroupId
+  if (!groupId) {
+    throw new Error("Security group was created but no ID was returned")
+  }
+
+  const ports: number[] = [
+    ...(params.allowSsh ? [22] : []),
+    ...(params.allowHttp ? [80] : []),
+    ...(params.allowHttps ? [443] : []),
+  ]
+  if (ports.length > 0) {
+    const cidrIp =
+      params.ruleSource === "custom" && params.customCidr
+        ? params.customCidr
+        : "0.0.0.0/0"
+    await client.send(
+      new AuthorizeSecurityGroupIngressCommand({
+        GroupId: groupId,
+        IpPermissions: ports.map((port) => ({
+          IpProtocol: "tcp",
+          FromPort: port,
+          ToPort: port,
+          IpRanges: [{ CidrIp: cidrIp }],
+        })),
+      }),
+    )
+  }
+
+  return [groupId]
 }
 
 function buildBlockDeviceMappings(params: CreateInstanceParams) {
@@ -466,13 +538,25 @@ export function useCreateSubnet() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (params: CreateSubnetFormData) => {
-      const command = new CreateSubnetCommand({
-        VpcId: params.vpcId,
-        CidrBlock: params.cidrBlock,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
-        AvailabilityZone: params.availabilityZone || undefined,
-      })
-      return await getEc2Client().send(command)
+      const client = getEc2Client()
+      const result = await client.send(
+        new CreateSubnetCommand({
+          VpcId: params.vpcId,
+          CidrBlock: params.cidrBlock,
+          // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+          AvailabilityZone: params.availabilityZone || undefined,
+        }),
+      )
+      const subnetId = result.Subnet?.SubnetId
+      if (params.mapPublicIpOnLaunch && subnetId) {
+        await client.send(
+          new ModifySubnetAttributeCommand({
+            SubnetId: subnetId,
+            MapPublicIpOnLaunch: { Value: true },
+          }),
+        )
+      }
+      return result
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })
@@ -627,22 +711,36 @@ export function useAuthorizeSecurityGroupEgress() {
   })
 }
 
+// RevokeSecurityGroupRuleParams identifies a single rule to revoke. The source
+// is either a CIDR (cidrIp) or a referenced security group (sourceGroupId) —
+// the latter is how AWS expresses the default SG's self-referencing rule.
+interface RevokeSecurityGroupRuleParams {
+  groupId: string
+  ipProtocol: string
+  fromPort: number
+  toPort: number
+  cidrIp?: string
+  sourceGroupId?: string
+}
+
+function revokeIpPermission(params: RevokeSecurityGroupRuleParams) {
+  return {
+    IpProtocol: params.ipProtocol,
+    FromPort: params.fromPort,
+    ToPort: params.toPort,
+    ...(params.sourceGroupId
+      ? { UserIdGroupPairs: [{ GroupId: params.sourceGroupId }] }
+      : { IpRanges: [{ CidrIp: params.cidrIp ?? "" }] }),
+  }
+}
+
 export function useRevokeSecurityGroupIngress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (
-      params: SecurityGroupRuleFormData & { groupId: string },
-    ) => {
+    mutationFn: async (params: RevokeSecurityGroupRuleParams) => {
       const command = new RevokeSecurityGroupIngressCommand({
         GroupId: params.groupId,
-        IpPermissions: [
-          {
-            IpProtocol: params.ipProtocol,
-            FromPort: params.fromPort,
-            ToPort: params.toPort,
-            IpRanges: [{ CidrIp: params.cidrIp }],
-          },
-        ],
+        IpPermissions: [revokeIpPermission(params)],
       })
       return await getEc2Client().send(command)
     },
@@ -660,19 +758,10 @@ export function useRevokeSecurityGroupIngress() {
 export function useRevokeSecurityGroupEgress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (
-      params: SecurityGroupRuleFormData & { groupId: string },
-    ) => {
+    mutationFn: async (params: RevokeSecurityGroupRuleParams) => {
       const command = new RevokeSecurityGroupEgressCommand({
         GroupId: params.groupId,
-        IpPermissions: [
-          {
-            IpProtocol: params.ipProtocol,
-            FromPort: params.fromPort,
-            ToPort: params.toPort,
-            IpRanges: [{ CidrIp: params.cidrIp }],
-          },
-        ],
+        IpPermissions: [revokeIpPermission(params)],
       })
       return await getEc2Client().send(command)
     },
@@ -683,6 +772,306 @@ export function useRevokeSecurityGroupEgress() {
       void queryClient.invalidateQueries({
         queryKey: ["ec2", "securityGroups", params.groupId],
       })
+    },
+  })
+}
+
+export function useCreateInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params?: { name?: string }) => {
+      const command = new CreateInternetGatewayCommand({
+        TagSpecifications: buildTagSpec(
+          ResourceType.internet_gateway,
+          params?.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useDeleteInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (internetGatewayId: string) => {
+      const command = new DeleteInternetGatewayCommand({
+        InternetGatewayId: internetGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useAttachInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      internetGatewayId: string
+      vpcId: string
+    }) => {
+      const command = new AttachInternetGatewayCommand({
+        InternetGatewayId: params.internetGatewayId,
+        VpcId: params.vpcId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useDetachInternetGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      internetGatewayId: string
+      vpcId: string
+    }) => {
+      const command = new DetachInternetGatewayCommand({
+        InternetGatewayId: params.internetGatewayId,
+        VpcId: params.vpcId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["ec2", "internetGateways"],
+      })
+    },
+  })
+}
+
+export function useAllocateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params?: { name?: string }) => {
+      const command = new AllocateAddressCommand({
+        Domain: "vpc",
+        TagSpecifications: buildTagSpec(
+          ResourceType.elastic_ip,
+          params?.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useReleaseAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (allocationId: string) => {
+      const command = new ReleaseAddressCommand({ AllocationId: allocationId })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useAssociateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      allocationId: string
+      instanceId?: string
+      networkInterfaceId?: string
+    }) => {
+      const command = new AssociateAddressCommand({
+        AllocationId: params.allocationId,
+        InstanceId: params.instanceId,
+        NetworkInterfaceId: params.networkInterfaceId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useDisassociateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (associationId: string) => {
+      const command = new DisassociateAddressCommand({
+        AssociationId: associationId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useCreateNatGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      subnetId: string
+      allocationId: string
+      name?: string
+    }) => {
+      const command = new CreateNatGatewayCommand({
+        SubnetId: params.subnetId,
+        AllocationId: params.allocationId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.natgateway,
+          params.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useDeleteNatGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (natGatewayId: string) => {
+      const command = new DeleteNatGatewayCommand({
+        NatGatewayId: natGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+    },
+  })
+}
+
+export function useCreateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: { vpcId: string; name?: string }) => {
+      const command = new CreateRouteTableCommand({
+        VpcId: params.vpcId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.route_table,
+          params.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDeleteRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (routeTableId: string) => {
+      const command = new DeleteRouteTableCommand({
+        RouteTableId: routeTableId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useCreateRoute() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      routeTableId: string
+      destinationCidrBlock: string
+      gatewayId?: string
+      natGatewayId?: string
+    }) => {
+      const command = new CreateRouteCommand({
+        RouteTableId: params.routeTableId,
+        DestinationCidrBlock: params.destinationCidrBlock,
+        GatewayId: params.gatewayId,
+        NatGatewayId: params.natGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDeleteRoute() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      routeTableId: string
+      destinationCidrBlock: string
+    }) => {
+      const command = new DeleteRouteCommand({
+        RouteTableId: params.routeTableId,
+        DestinationCidrBlock: params.destinationCidrBlock,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useAssociateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: { routeTableId: string; subnetId: string }) => {
+      const command = new AssociateRouteTableCommand({
+        RouteTableId: params.routeTableId,
+        SubnetId: params.subnetId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDisassociateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (associationId: string) => {
+      const command = new DisassociateRouteTableCommand({
+        AssociationId: associationId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
     },
   })
 }
@@ -802,6 +1191,16 @@ export function useCreateVpcWizard() {
           }
           publicSubnetIds.push(subnetId)
           created.push({ type: "Public Subnet", id: subnetId })
+
+          // Auto-assign public IPs on launch — CreateSubnet defaults this to
+          // false, so without it instances in a "public" subnet never get a
+          // routable public IP even though the IGW route is in place.
+          await client.send(
+            new ModifySubnetAttributeCommand({
+              SubnetId: subnetId,
+              MapPublicIpOnLaunch: { Value: true },
+            }),
+          )
         }
 
         // Step 3: Create private subnets
@@ -935,6 +1334,56 @@ export function useCreateVpcWizard() {
               }),
             )
           }
+
+          // Step 11: NAT gateway for private egress (optional). Needs a public
+          // subnet to live in and an Elastic IP; routes private 0.0.0.0/0 to it.
+          if (params.natGateway === "single" && publicSubnetIds[0]) {
+            currentStep = "allocating Elastic IP for NAT gateway"
+            const eipResult = await client.send(
+              new AllocateAddressCommand({
+                Domain: "vpc",
+                TagSpecifications: buildTagSpec(
+                  ResourceType.elastic_ip,
+                  prefix ? `${prefix}-eip-nat` : undefined,
+                  extraTags,
+                ),
+              }),
+            )
+            const allocationId = eipResult.AllocationId
+            if (!allocationId) {
+              throw new Error(
+                "Elastic IP was allocated but no allocation ID was returned",
+              )
+            }
+            created.push({ type: "Elastic IP", id: allocationId })
+
+            currentStep = "creating NAT gateway"
+            const natResult = await client.send(
+              new CreateNatGatewayCommand({
+                SubnetId: publicSubnetIds[0],
+                AllocationId: allocationId,
+                TagSpecifications: buildTagSpec(
+                  ResourceType.natgateway,
+                  prefix ? `${prefix}-nat` : undefined,
+                  extraTags,
+                ),
+              }),
+            )
+            const natGatewayId = natResult.NatGateway?.NatGatewayId
+            if (!natGatewayId) {
+              throw new Error("NAT gateway was created but no ID was returned")
+            }
+            created.push({ type: "NAT Gateway", id: natGatewayId })
+
+            currentStep = "creating default route to NAT gateway"
+            await client.send(
+              new CreateRouteCommand({
+                RouteTableId: privRtbId,
+                DestinationCidrBlock: "0.0.0.0/0",
+                NatGatewayId: natGatewayId,
+              }),
+            )
+          }
         }
 
         return { vpcId, created }
@@ -954,6 +1403,8 @@ export function useCreateVpcWizard() {
         queryKey: ["ec2", "internetGateways"],
       })
       void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
     },
   })
 }

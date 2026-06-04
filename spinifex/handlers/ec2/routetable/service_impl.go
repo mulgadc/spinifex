@@ -661,8 +661,11 @@ func (s *RouteTableServiceImpl) CreateRoute(input *ec2.CreateRouteInput, account
 		if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		// AWS rejects a route to an internet gateway that is not attached to the
+		// route table's VPC (unattached, or attached to a different VPC) with
+		// Gateway.NotAttached — not a bare InvalidParameterValue.
 		if igwRecord.VpcId != record.VpcId {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, errors.New(awserrors.ErrorGatewayNotAttached)
 		}
 		route = RouteRecord{
 			DestinationCidrBlock: destCidr,

@@ -5,6 +5,7 @@ import {
   BookOpen,
   Camera,
   Crosshair,
+  Globe,
   HardDrive,
   Home,
   Image,
@@ -12,7 +13,10 @@ import {
   Layers,
   LayoutGrid,
   LogOut,
+  MapPin,
   Network,
+  Route,
+  Router,
   Server,
   Shield,
   ShieldCheck,
@@ -133,6 +137,21 @@ export function SidebarLayout() {
                 >
                   <Key className="size-4" />
                   <span>Key Pairs</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/ec2/describe-addresses">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/ec2/describe-addresses") ||
+                    pathname.startsWith("/ec2/allocate-address")
+                  }
+                  tooltip="Elastic IPs"
+                >
+                  <MapPin className="size-4" />
+                  <span>Elastic IPs</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
@@ -263,11 +282,13 @@ export function SidebarLayout() {
               </Link>
             </SidebarMenuItem>
 
-            {/* uncomment when route pages are created
             <SidebarMenuItem>
               <Link to="/ec2/describe-route-tables">
                 <SidebarMenuButton
-                  isActive={pathname.startsWith("/ec2/describe-route-tables")}
+                  isActive={
+                    pathname.startsWith("/ec2/describe-route-tables") ||
+                    pathname.startsWith("/ec2/create-route-table")
+                  }
                   tooltip="Route Tables"
                 >
                   <Route className="size-4" />
@@ -289,7 +310,21 @@ export function SidebarLayout() {
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>
-            */}
+
+            <SidebarMenuItem>
+              <Link to="/ec2/describe-nat-gateways">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/ec2/describe-nat-gateways") ||
+                    pathname.startsWith("/ec2/create-nat-gateway")
+                  }
+                  tooltip="NAT Gateways"
+                >
+                  <Router className="size-4" />
+                  <span>NAT Gateways</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
 

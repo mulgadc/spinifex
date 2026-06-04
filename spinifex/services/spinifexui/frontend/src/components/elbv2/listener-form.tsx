@@ -5,7 +5,7 @@ import type {
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useState } from "react"
 import type { UseFormReturn } from "react-hook-form"
-import { Controller } from "react-hook-form"
+import { Controller, useWatch } from "react-hook-form"
 
 import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
 import { Button } from "@/components/ui/button"
@@ -44,7 +44,6 @@ export function ListenerForm({
   const {
     control,
     register,
-    watch,
     getValues,
     setValue,
     formState: { errors },
@@ -52,7 +51,7 @@ export function ListenerForm({
 
   const [importOpen, setImportOpen] = useState(false)
 
-  const protocol = watch("protocol")
+  const protocol = useWatch({ control, name: "protocol" })
   const isHttps = protocol === "HTTPS"
 
   // Side-effects of a protocol switch, applied after the field's own onChange:

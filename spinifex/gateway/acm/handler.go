@@ -9,15 +9,20 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // JSONContentType is the AWS JSON 1.1 content type ACM clients expect.
 const JSONContentType = "application/x-amz-json-1.1"
 
-// WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response.
+// WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response. obj is an
+// aws-sdk-go *Output struct whose time.Time fields must serialise as epoch
+// seconds (the AWS JSON 1.1 timestamp wire format); encoding/json would emit
+// RFC3339 strings the AWS SDKs reject with "Expected real number". jsonutil
+// is the marshaler the SDK itself uses for this protocol.
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
-	body, err := json.Marshal(obj)
+	body, err := jsonutil.BuildJSON(obj)
 	if err != nil {
 		slog.Error("ACM: failed to marshal response JSON", "err", err)
 		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)

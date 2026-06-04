@@ -1,7 +1,7 @@
 import type { Vpc } from "@aws-sdk/client-ec2"
 import { Plus, Trash2 } from "lucide-react"
 import type { UseFormReturn } from "react-hook-form"
-import { Controller } from "react-hook-form"
+import { Controller, useWatch } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -30,12 +30,11 @@ export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
   const {
     control,
     register,
-    watch,
     setValue,
     getValues,
     formState: { errors },
   } = form
-  const tags = watch("tags")
+  const tags = useWatch({ control, name: "tags" })
 
   return (
     <>

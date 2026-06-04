@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -55,7 +55,6 @@ function CreateSecurityGroup() {
     control,
     handleSubmit,
     register,
-    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreateSecurityGroupFormData>({
     resolver: zodResolver(createSecurityGroupSchema),
@@ -65,6 +64,10 @@ function CreateSecurityGroup() {
       vpcId: vpcs[0]?.VpcId ?? "",
     },
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSecurityGroupFormData) => {
     const result = await createMutation.mutateAsync(data)
@@ -158,7 +161,9 @@ function CreateSecurityGroup() {
           <FieldError errors={[errors.vpcId]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateSecurityGroupCommands(watch)} />
+        <CliCommandPanel
+          commands={buildCreateSecurityGroupCommands(cliWatch)}
+        />
 
         <FormActions
           isPending={createMutation.isPending}

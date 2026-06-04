@@ -198,8 +198,17 @@
 
 @layer base {
   * {
-    @apply overscroll-none border-border outline-ring/50;
+    @apply border-border outline-ring/50;
     scrollbar-width: thin;
+  }
+
+  /* overscroll-none belongs on the scroll boundary only. Applied to every
+     element it severs wheel scroll-chaining: hovering any nested scroll
+     container (sidebar, overflow-x tables, code blocks, dialogs) swallows the
+     wheel so the page won't scroll unless the cursor is over bare background. */
+  html,
+  body {
+    @apply overscroll-none;
   }
 
   body {

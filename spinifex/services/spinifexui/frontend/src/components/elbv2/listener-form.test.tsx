@@ -4,6 +4,7 @@ import type {
   TargetGroup,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { useForm } from "react-hook-form"
 import { describe, expect, it } from "vitest"
 
@@ -100,5 +101,48 @@ describe("ListenerForm", () => {
     expect(
       screen.getByRole("button", { name: /import certificate/i }),
     ).toBeInTheDocument()
+  })
+
+  // Guards the React Compiler regression: the TLS fields are gated on a
+  // watched value. A plain `watch("protocol")` read gets memoised once by the
+  // compiler and never updates, so switching protocol at runtime never reveals
+  // the fields. `useWatch` keeps the subscription reactive — this test fails if
+  // it regresses to `watch`.
+  it("reveals certificate fields when protocol switches HTTP -> HTTPS at runtime", async () => {
+    function ToggleHarness() {
+      const form = useForm<CreateListenerFormData>({
+        defaultValues: {
+          protocol: "HTTP",
+          port: 80,
+          defaultTargetGroupArn: "",
+        },
+      })
+      return (
+        <>
+          <button
+            onClick={() => form.setValue("protocol", "HTTPS")}
+            type="button"
+          >
+            go-https
+          </button>
+          <ListenerForm
+            certificates={CERTS}
+            form={form}
+            sslPolicies={POLICIES}
+            targetGroups={TGS}
+          />
+        </>
+      )
+    }
+
+    renderWithClient(<ToggleHarness />, createTestQueryClient())
+    expect(screen.queryByLabelText("Certificate")).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole("button", { name: "go-https" }))
+
+    await expect(
+      screen.findByLabelText("Certificate"),
+    ).resolves.toBeInTheDocument()
+    expect(screen.getByLabelText("Security policy")).toBeInTheDocument()
   })
 })

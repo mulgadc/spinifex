@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,20 +21,22 @@ import (
 // in either is a privilege-escalation or single-point-of-failure vector, so the
 // failure messages quote the offending design clause verbatim.
 
-// TestI2_IMDSLSPMustBeLocalportNoPortSecurity asserts the host-owned
-// imds-port-{vpcID} LSP is a localport with no port_security. The host — not a
-// guest — sources 169.254.169.254 frames on this port, so port_security would
-// be actively harmful (it pins the allowed src MAC to the LSP's claimed MAC,
-// and ovn-controller would drop reply frames egressing from the host veth's
-// MAC). A regular (non-localport) LSP would bind to a single chassis, defeating
-// the per-chassis self-serve design.
-func TestI2_IMDSLSPMustBeLocalportNoPortSecurity(t *testing.T) {
+// TestI2_IMDSLocalportOnSubnetSwitchNoPortSecurity asserts the host-owned
+// imds-port-{subnetID} LSP is a localport on the guest's subnet switch with no
+// port_security. The host — not a guest — sources 169.254.169.254 frames on this
+// port, so port_security would be actively harmful (it pins the allowed src MAC
+// to the LSP's claimed MAC, and ovn-controller would drop reply frames egressing
+// from the host veth's MAC). A regular (non-localport) LSP would bind to a single
+// chassis, defeating the per-chassis self-serve design. Living on the subnet
+// switch is the L2 datapath itself: the guest reaches metadata in one hop on its
+// own broadcast domain, with no router in the path to shadow it.
+func TestI2_IMDSLocalportOnSubnetSwitchNoPortSecurity(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
-	seedVPCRouter(t, m, "vpc-0a1b2c3d4e5f6789", "10.0.0.0/16")
+	seedSubnetSwitch(t, m, imdsTestSubnetID)
 	mgr, _ := newIMDSManager(t, m)
 
-	spec, err := mgr.EnsureForVPC(ctx, "vpc-0a1b2c3d4e5f6789")
+	spec, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, imdsTestVPCID, netip.MustParsePrefix(imdsTestCIDR))
 	require.NoError(t, err)
 
 	lsp, err := m.GetLogicalSwitchPort(ctx, spec.LSPName)
@@ -42,48 +45,33 @@ func TestI2_IMDSLSPMustBeLocalportNoPortSecurity(t *testing.T) {
 	if lsp.Type != "localport" {
 		t.Errorf("imds LSP %s Type = %q, want \"localport\": a regular LSP binds to "+
 			"one chassis only, forcing IMDS through Geneve and creating a single point "+
-			"of failure per VPC", spec.LSPName, lsp.Type)
+			"of failure per subnet", spec.LSPName, lsp.Type)
 	}
 	if len(lsp.PortSecurity) != 0 {
 		t.Errorf("imds LSP %s PortSecurity = %v, want empty: port_security set on the "+
 			"host-owned LSP would cause ovn-controller to drop reply frames from the "+
 			"host veth's MAC", spec.LSPName, lsp.PortSecurity)
 	}
-}
+	assert.Equal(t, []string{spec.LSPMAC + " " + handlers_imds.MetaDataServerIP}, lsp.Addresses,
+		"the localport must claim %s on the subnet switch", handlers_imds.MetaDataServerIP)
 
-// TestI3_IMDSStaticRouteShape asserts the static route on vpc-{vpcID} that
-// diverts 169.254.169.254 off the WAN default and out the IMDS LRP has the
-// exact shape the datapath depends on. A drifted prefix, nexthop, or output
-// port silently sends IMDS traffic to the WAN, where it disappears.
-func TestI3_IMDSStaticRouteShape(t *testing.T) {
-	ctx := context.Background()
-	m := mock.New()
-	seedVPCRouter(t, m, "vpc-0a1b2c3d4e5f6789", "10.0.0.0/16")
-	mgr, _ := newIMDSManager(t, m)
-
-	spec, err := mgr.EnsureForVPC(ctx, "vpc-0a1b2c3d4e5f6789")
+	// It must be a port on the subnet switch — that is what makes the datapath L2.
+	ls, err := m.GetLogicalSwitch(ctx, spec.LSName)
 	require.NoError(t, err)
-
-	route := findIMDSRoute(m, handlers_imds.MetaDataServerIP+"/32")
-	require.NotNil(t, route, "no static route for %s/32 on the VPC router — IMDS traffic "+
-		"falls through to the WAN default", handlers_imds.MetaDataServerIP)
-
-	assert.Equal(t, handlers_imds.MetaDataServerIP+"/32", route.IPPrefix)
-	assert.Equal(t, handlers_imds.MetaDataServerIP, route.Nexthop)
-	require.NotNil(t, route.OutputPort, "IMDS static route has no output port — OVN cannot "+
-		"resolve which LRP to send 169.254.169.254 traffic out of")
-	assert.Equal(t, spec.LRPName, *route.OutputPort)
+	if !slices.Contains(ls.Ports, lsp.UUID) {
+		t.Errorf("imds localport %s is not a port on subnet switch %s: the L2 datapath "+
+			"requires the localport on the guest's own broadcast domain, not a dedicated "+
+			"IMDS switch reached through the VPC router", spec.LSPName, spec.LSName)
+	}
 }
 
 // TestI4_SubnetEgressRerouteMustExcludeLinkLocal asserts every per-subnet
 // internet-egress reroute policy excludes 169.254.0.0/16. The reroute matches
-// 0.0.0.0/0 — the widest possible scope — and fires in lr_in_policy AFTER the
-// IMDS /32 static route matches in lr_in_ip_routing, so without this exclusion
-// it overrides the /32 and SNAT-reroutes 169.254.169.254 out the WAN, where
-// IMDS disappears (the guest's PUT for a token never reaches the per-VPC netns
-// listener). Both the IGW- and NATGW-priority reroutes carry the gate, so both
-// must spare link-local. A drifted exclude list silently breaks IMDS on any
-// VPC with internet egress.
+// 0.0.0.0/0 — the widest possible scope — so without this exclusion it would
+// SNAT-reroute link-local traffic out the WAN. Link-local is host-scoped by
+// definition and must never egress to the provider network. Both the IGW- and
+// NATGW-priority reroutes carry the gate, so both must spare link-local. A
+// drifted exclude list silently leaks 169.254.0.0/16 onto the internet.
 func TestI4_SubnetEgressRerouteMustExcludeLinkLocal(t *testing.T) {
 	linkLocal := fmt.Sprintf("ip4.dst != %s", linkLocalCIDR.String())
 
@@ -114,8 +102,8 @@ func TestI4_SubnetEgressRerouteMustExcludeLinkLocal(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, policies, 1)
 			assert.Contains(t, policies[0].Match, linkLocal,
-				"%s egress reroute %q does not exclude %s — it will hijack 169.254.169.254 "+
-					"out the WAN and override the IMDS /32 static route, making IMDS unreachable",
+				"%s egress reroute %q does not exclude %s — it will SNAT-reroute "+
+					"link-local traffic out the WAN; link-local must never egress",
 				tc.name, policies[0].Match, linkLocalCIDR)
 		})
 	}

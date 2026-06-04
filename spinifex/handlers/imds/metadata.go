@@ -105,25 +105,27 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller maps the request's (vpcID-from-context, source-IP) to the
-// owning ENI, or nil when no mapping exists (logged for operator triage). A
-// backend error is also surfaced as nil → the caller 404s, never 500s, matching
-// AWS's opaque "eventually available" boot posture.
+// resolveCaller maps the request's (vpcID-from-context, source-IP) to the owning
+// ENI, or nil when no mapping exists (logged for operator triage). The listener
+// identifies the subnet; its statically-resolved VPC is what keys the
+// eni-by-vpc-ip index. A backend error is also surfaced as nil → the caller
+// 404s, never 500s, matching AWS's opaque "eventually available" boot posture.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 	vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
+	subnetID, _ := r.Context().Value(ctxKeySubnetID).(string)
 	srcIP := utils.ClientIP(r.RemoteAddr)
 	if vpcID == "" || srcIP == "" {
-		slog.Warn("IMDS: request missing VPC context or source IP", "vpc_id", vpcID, "remote_addr", r.RemoteAddr)
+		slog.Warn("IMDS: request missing VPC context or source IP", "vpc_id", vpcID, "subnet_id", subnetID, "remote_addr", r.RemoteAddr)
 		return nil
 	}
 
 	eni, err := s.resolver.resolveENI(vpcID, srcIP)
 	if err != nil {
-		slog.Error("IMDS: ENI resolution failed", "vpc_id", vpcID, "src_ip", srcIP, "err", err)
+		slog.Error("IMDS: ENI resolution failed", "vpc_id", vpcID, "subnet_id", subnetID, "src_ip", srcIP, "err", err)
 		return nil
 	}
 	if eni == nil {
-		slog.Warn("IMDS: no ENI for source IP", "vpc_id", vpcID, "src_ip", srcIP)
+		slog.Warn("IMDS: no ENI for source IP", "vpc_id", vpcID, "subnet_id", subnetID, "src_ip", srcIP)
 		return nil
 	}
 	return eni
@@ -381,7 +383,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // ctxKey is the unexported context-key type for values the bind manager threads
-// into each request (the VPC ID the listener's veth maps to).
+// into each request: the subnet the listener serves and that subnet's
+// statically-resolved owning VPC (which keys the eni-by-vpc-ip index).
 type ctxKey int
 
-const ctxKeyVPCID ctxKey = iota
+const (
+	ctxKeyVPCID ctxKey = iota
+	ctxKeySubnetID
+)

@@ -16,36 +16,31 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// IMDS datapath contract — desk-speed pipeline oracle.
+// IMDS datapath contract — desk-speed oracle.
 //
-// Every IMDS datapath bug to date (the egress-reroute hijack of the /32, the
-// reply-path break) lived inside the VPC logical-router pipeline and was only
-// caught by a full VM-boot E2E run, one bug per deploy. This test makes the
-// load-bearing half of that pipeline assertable in `go test`: it builds the
-// REAL managers (IGW egress reroute + drop, IMDS topology) against the OVN mock
-// for two VPCs that share the *identical* CIDR — the overlapping-CIDR case that
-// is the whole point of per-VPC IMDS identity — then runs a faithful, minimal
-// simulation of OVN's two ingress stages (lr_in_policy, then lr_in_ip_routing)
-// and asserts a guest packet to 169.254.169.254 reaches the IMDS LRP rather
-// than being rerouted out the WAN or dropped.
+// Every IMDS datapath bug in the v1 grind (the egress-reroute hijack of the
+// /32, the multi-hop reply break) lived inside the VPC logical-router pipeline.
+// The L2 datapath takes IMDS off the router entirely: the localport that claims
+// 169.254.169.254 sits directly on the guest's subnet switch, so the request is
+// answered over a single L2 hop and never enters lr_in_*. This test asserts that
+// structural property — the localport is on the subnet LS and NO IMDS object
+// (LRP, /32 route, dedicated switch) exists on the VPC router — for two VPCs that
+// share the *identical* CIDR (the overlapping-CIDR case per-subnet identity is
+// built for).
 //
-// A true round-trip oracle is ovn-trace against a live SB DB; that belongs in
-// the e2e harness. This is its desk-speed counterpart over the same NB rows —
-// it runs on every `make preflight`, so a future broad lr_in_policy rule that
-// forgets to spare link-local fails here instead of in a deploy.
+// The LR-pipeline simulator below is retained for TestIMDSDatapathContract_OracleHasTeeth,
+// which proves a broad lr_in_policy reroute WOULD have hijacked IMDS had it ever
+// been routed — documenting exactly why moving IMDS to L2 removes the bug class.
 
-const (
-	imdsContractGuestIP = "10.211.0.5"
-	imdsContractCIDR    = "10.211.0.0/16"
-)
+const imdsContractCIDR = "10.211.0.0/16"
 
-func TestIMDSDatapathContract_SurvivesVPCPipeline_OverlappingCIDRs(t *testing.T) {
+func TestIMDSDatapathContract_AnsweredAtL2_OverlappingCIDRs(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 
-	// Two VPCs on the IDENTICAL CIDR, each with internet egress and a subnet
-	// whose first guest gets the same private IP. The OVN NB rows for the two
-	// must each independently route IMDS correctly.
+	// Two VPCs on the IDENTICAL CIDR, each with internet egress (the broad
+	// 0.0.0.0/0 reroute + drop that historically threatened IMDS) and a subnet
+	// switch carrying the IMDS localport.
 	vpcs := []struct{ vpcID, subnetID string }{
 		{"vpc-aaaa1111", "subnet-aaaa1111"},
 		{"vpc-bbbb2222", "subnet-bbbb2222"},
@@ -60,25 +55,27 @@ func TestIMDSDatapathContract_SurvivesVPCPipeline_OverlappingCIDRs(t *testing.T)
 
 	for _, v := range vpcs {
 		seedVPCRouter(t, m, v.vpcID, imdsContractCIDR)
+		seedSubnetSwitch(t, m, v.subnetID)
 		require.NoError(t, igwMgr.AttachIGW(ctx, IGWSpec{VPCID: v.vpcID, InternetGatewayID: "igw-" + v.vpcID}))
 		// The broad 0.0.0.0/0 egress reroute + drop — the pipeline stages that
-		// previously hijacked / killed the IMDS /32 before #19 excluded link-local.
+		// hijacked / killed the IMDS /32 in v1 before #19 excluded link-local.
 		require.NoError(t, igwMgr.EnsureSubnetEgress(ctx, v.vpcID, v.subnetID, defaultRoute))
 		require.NoError(t, igwMgr.EnsureSubnetEgressDrop(ctx, v.vpcID, v.subnetID, defaultRoute))
-		// The IMDS /32 static route + imds-lrp.
-		_, err := imdsMgr.EnsureForVPC(ctx, v.vpcID)
+		// The IMDS localport on the subnet switch.
+		_, err := imdsMgr.EnsureForSubnet(ctx, v.subnetID, v.vpcID, netip.MustParsePrefix(imdsContractCIDR))
 		require.NoError(t, err)
 	}
 
 	for _, v := range vpcs {
-		assertIMDSDatapathContract(t, m, v.vpcID, v.subnetID, imdsContractGuestIP)
+		assertIMDSAnsweredAtL2(t, m, v.vpcID, v.subnetID)
 	}
 }
 
-// TestIMDSDatapathContract_OracleHasTeeth proves the simulator actually detects
-// the regression it guards against: a 0.0.0.0/0 egress reroute that does NOT
-// exclude link-local (the pre-#19 bug) must be reported as diverting IMDS.
-// Without this, a vacuously-passing contract test would give false confidence.
+// TestIMDSDatapathContract_OracleHasTeeth proves the LR-pipeline simulator
+// actually detects the regression it documents: a 0.0.0.0/0 egress reroute that
+// does NOT exclude link-local (the pre-#19 bug) must be reported as diverting
+// IMDS. Under L2 this can no longer reach IMDS — but the simulator keeps the
+// historical hazard legible and the oracle non-vacuous.
 func TestIMDSDatapathContract_OracleHasTeeth(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -89,7 +86,7 @@ func TestIMDSDatapathContract_OracleHasTeeth(t *testing.T) {
 	gw := "169.254.0.2"
 	// Reroute excluding ONLY the VPC CIDR — link-local omitted, reproducing the
 	// bug #19 fixed. IMDS (169.254.169.254) is in 0.0.0.0/0 and not in the VPC
-	// CIDR, so this policy hijacks it.
+	// CIDR, so this policy would hijack it had IMDS ever been routed.
 	require.NoError(t, rm.AddSubnetEgress(ctx, vpcID, policy.SubnetEgressSpec{
 		SubnetID:     subnetID,
 		Prefix:       netip.MustParsePrefix("0.0.0.0/0"),
@@ -104,37 +101,34 @@ func TestIMDSDatapathContract_OracleHasTeeth(t *testing.T) {
 		"simulator must detect a link-local-unaware reroute as hijacking IMDS; if this fails the oracle is blind")
 }
 
-// assertIMDSDatapathContract is the contract: a guest packet to
-// 169.254.169.254 must reach the IMDS LRP, and the IMDS reply must not be
-// caught by any egress policy.
-func assertIMDSDatapathContract(t *testing.T, m *mock.Client, vpcID, subnetID, guestIP string) {
+// assertIMDSAnsweredAtL2 is the contract: 169.254.169.254 is claimed by a
+// localport on the guest's subnet switch (so it is answered over one L2 hop),
+// and NO IMDS object exists on the VPC router (so the LR pipeline cannot shadow
+// it — the entire v1 bug class is structurally impossible).
+func assertIMDSAnsweredAtL2(t *testing.T, m *mock.Client, vpcID, subnetID string) {
 	t.Helper()
-	imdsLRP := topology.IMDSRouterPort(vpcID)
+	spec := IMDSSpecForSubnet(subnetID)
 
-	// Request: guest -> 169.254.169.254, ingressing on the subnet LRP.
-	req := resolveEgress(t, m, vpcID, subnetID, handlers_imds.MetaDataServerIP)
-	assert.Falsef(t, req.diverted,
-		"IMDS contract (%s): an lr_in_policy reroute on 0.0.0.0/0 hijacks 169.254.169.254 out the WAN; "+
-			"every broad egress reroute MUST exclude 169.254.0.0/16 (see decision #19)", vpcID)
-	assert.Falsef(t, req.dropped,
-		"IMDS contract (%s): an lr_in_policy drop kills 169.254.169.254; "+
-			"the per-subnet drop policy MUST exclude 169.254.0.0/16", vpcID)
-	assert.Equalf(t, "169.254.169.254/32", req.routePrefix,
-		"IMDS contract (%s): 169.254.169.254 must be resolved by the /32 IMDS static route, not a broader route", vpcID)
-	assert.Equalf(t, imdsLRP, req.outputPort,
-		"IMDS contract (%s): the IMDS /32 must egress via %s", vpcID, imdsLRP)
+	lsp, err := m.GetLogicalSwitchPort(context.Background(), spec.LSPName)
+	require.NoErrorf(t, err, "IMDS contract (%s): no localport on the subnet switch %s", vpcID, spec.LSName)
+	assert.Equalf(t, "localport", lsp.Type,
+		"IMDS contract (%s): the IMDS port must be a localport so every chassis self-serves it over L2", vpcID)
+	assert.Emptyf(t, lsp.PortSecurity,
+		"IMDS contract (%s): the IMDS localport must carry no port_security (the host sources the frames)", vpcID)
+	assert.Equalf(t, []string{spec.LSPMAC + " " + handlers_imds.MetaDataServerIP}, lsp.Addresses,
+		"IMDS contract (%s): the localport must claim %s on the subnet switch", vpcID, handlers_imds.MetaDataServerIP)
 
-	// Reply: 169.254.169.254 -> guest, ingressing on the IMDS LRP. The egress
-	// policies are inport-scoped to the subnet LRP, so none may catch the reply;
-	// a future inport-less broad policy would break IMDS replies and fail here.
-	reply := resolveEgressFrom(t, m, vpcID, imdsLRP, guestIP)
-	assert.Falsef(t, reply.diverted,
-		"IMDS contract (%s): an lr_in_policy must not divert the IMDS reply to %s (policies must stay inport-scoped)", vpcID, guestIP)
-	assert.Falsef(t, reply.dropped,
-		"IMDS contract (%s): an lr_in_policy must not drop the IMDS reply to %s", vpcID, guestIP)
+	// No IMDS object on the router: the request never enters lr_in_*.
+	assert.Nilf(t, findIMDSRoute(m, handlers_imds.MetaDataServerIP+"/32"),
+		"IMDS contract (%s): no %s/32 static route may exist — IMDS must not transit the VPC router",
+		vpcID, handlers_imds.MetaDataServerIP)
+	for name := range m.RouterPorts {
+		assert.Falsef(t, strings.HasPrefix(name, "imds-"),
+			"IMDS contract (%s): found IMDS LRP %q — IMDS must not transit the VPC router", vpcID, name)
+	}
 }
 
-// --- minimal OVN LR ingress-pipeline model ------------------------------------
+// --- minimal OVN LR ingress-pipeline model (used by OracleHasTeeth) -----------
 
 type egressResult struct {
 	diverted    bool   // a reroute lr_in_policy matched

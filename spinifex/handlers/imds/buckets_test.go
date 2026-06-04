@@ -19,13 +19,13 @@ func TestInitENIByIPBucket(t *testing.T) {
 func TestInitBuckets_ReplicaClampAndIdempotent(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
-	vpcVeth, eniByIP, err := InitBuckets(js, 0)
+	subnetVeth, eniByIP, err := InitBuckets(js, 0)
 	require.NoError(t, err)
-	require.NotNil(t, vpcVeth)
+	require.NotNil(t, subnetVeth)
 	require.NotNil(t, eniByIP)
 
-	vpcVeth2, eniByIP2, err := InitBuckets(js, 1)
+	subnetVeth2, eniByIP2, err := InitBuckets(js, 1)
 	require.NoError(t, err)
-	require.NotNil(t, vpcVeth2)
+	require.NotNil(t, subnetVeth2)
 	require.NotNil(t, eniByIP2)
 }

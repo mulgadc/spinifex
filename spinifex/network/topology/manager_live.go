@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -206,7 +205,6 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 		Addresses: []string{"router"},
 		Options: map[string]string{
 			"router-port": routerPortName,
-			"arp_proxy":   handlers_imds.MetaDataServerIP,
 		},
 		ExternalIDs: map[string]string{
 			"spinifex:subnet_id": spec.SubnetID,

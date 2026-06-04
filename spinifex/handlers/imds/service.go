@@ -26,7 +26,7 @@ type profileLookup interface {
 
 // IMDSService is the host-served EC2 Instance Metadata Service. It runs in
 // vpcd on every chassis, serving 169.254.169.254 to local guest VMs over
-// per-VPC veths. Run owns the listener lifecycle and blocks until ctx is done.
+// per-subnet veths. Run owns the listener lifecycle and blocks until ctx is done.
 type IMDSService interface {
 	Run(ctx context.Context) error
 }
@@ -83,9 +83,9 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 	if err != nil {
 		return nil, fmt.Errorf("open %s bucket: %w", kvBucketENIs, err)
 	}
-	vethKV, err := js.KeyValue(KVBucketIMDSVPCVeth)
+	vethKV, err := js.KeyValue(KVBucketIMDSSubnetVeth)
 	if err != nil {
-		return nil, fmt.Errorf("open %s bucket: %w", KVBucketIMDSVPCVeth, err)
+		return nil, fmt.Errorf("open %s bucket: %w", KVBucketIMDSSubnetVeth, err)
 	}
 
 	// The SG bucket is owned by the VPC service and only feeds the non-critical
@@ -113,7 +113,7 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 
 	slog.Info("IMDS service initialized",
 		"index_bucket", KVBucketENIByVPCIP,
-		"veth_bucket", KVBucketIMDSVPCVeth)
+		"veth_bucket", KVBucketIMDSSubnetVeth)
 	return svc, nil
 }
 

@@ -8,65 +8,68 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// VPCVethRecord is the persisted per-VPC IMDS plumbing record (KVBucketIMDSVPCVeth,
-// keyed by VPC ID): the signal that a VPC's IMDS OVN topology is installed, replayed
-// by each chassis's BindManager. It carries only the LSP MAC and LRP /30 the host can't re-derive.
-type VPCVethRecord struct {
-	VPCID       string `json:"vpc_id"`
-	ShortVPCID  string `json:"short_vpc_id"`
-	IMDSPortMAC string `json:"imds_port_mac"`
-	LRPNetwork  string `json:"lrp_network"`
-	CreatedAt   string `json:"created_at"`
+// SubnetVethRecord is the persisted per-subnet IMDS plumbing record
+// (KVBucketIMDSSubnetVeth, keyed by subnet ID): the signal that a subnet's IMDS
+// localport is installed, replayed by each chassis's BindManager. It carries the
+// LSP MAC and the subnet CIDR the host can't re-derive, plus the owning VPC for
+// the subnet→VPC reverse lookup.
+type SubnetVethRecord struct {
+	SubnetID      string `json:"subnet_id"`
+	ShortSubnetID string `json:"short_subnet_id"`
+	VPCID         string `json:"vpc_id"`
+	IMDSPortMAC   string `json:"imds_port_mac"`
+	SubnetCIDR    string `json:"subnet_cidr"`
+	CreatedAt     string `json:"created_at"`
 }
 
-// VethStore is the persistence surface for VPCVethRecord rows in
-// KVBucketIMDSVPCVeth. Backed by a NATS JetStream KV bucket opened by
+// VethStore is the persistence surface for SubnetVethRecord rows in
+// KVBucketIMDSSubnetVeth. Backed by a NATS JetStream KV bucket opened by
 // InitBuckets in production; tests inject the handle via NewVethStore.
 type VethStore struct {
 	kv nats.KeyValue
 }
 
-// NewVethStore wraps an already-opened vpc-veth KV bucket.
+// NewVethStore wraps an already-opened subnet-veth KV bucket.
 func NewVethStore(kv nats.KeyValue) *VethStore { return &VethStore{kv: kv} }
 
-// Get returns the record for vpcID, or (nil, nil) when absent.
-func (s *VethStore) Get(vpcID string) (*VPCVethRecord, error) {
-	raw, err := s.kv.Get(vpcID)
+// Get returns the record for subnetID, or (nil, nil) when absent.
+func (s *VethStore) Get(subnetID string) (*SubnetVethRecord, error) {
+	raw, err := s.kv.Get(subnetID)
 	if err != nil {
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("get imds veth record %q: %w", vpcID, err)
+		return nil, fmt.Errorf("get imds veth record %q: %w", subnetID, err)
 	}
-	var rec VPCVethRecord
+	var rec SubnetVethRecord
 	if err := json.Unmarshal(raw.Value(), &rec); err != nil {
-		return nil, fmt.Errorf("unmarshal imds veth record %q: %w", vpcID, err)
+		return nil, fmt.Errorf("unmarshal imds veth record %q: %w", subnetID, err)
 	}
 	return &rec, nil
 }
 
-// Put writes the record keyed by its VPCID, overwriting any prior entry.
-func (s *VethStore) Put(rec VPCVethRecord) error {
-	if rec.VPCID == "" {
-		return errors.New("imds veth store put: vpc_id is empty")
+// Put writes the record keyed by its SubnetID, overwriting any prior entry.
+func (s *VethStore) Put(rec SubnetVethRecord) error {
+	if rec.SubnetID == "" {
+		return errors.New("imds veth store put: subnet_id is empty")
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("marshal imds veth record: %w", err)
 	}
-	if _, err := s.kv.Put(rec.VPCID, data); err != nil {
-		return fmt.Errorf("put imds veth record %q: %w", rec.VPCID, err)
+	if _, err := s.kv.Put(rec.SubnetID, data); err != nil {
+		return fmt.Errorf("put imds veth record %q: %w", rec.SubnetID, err)
 	}
 	return nil
 }
 
 // Delete removes the record. Idempotent: a missing key returns nil.
-func (s *VethStore) Delete(vpcID string) error {
-	if err := s.kv.Delete(vpcID); err != nil {
+func (s *VethStore) Delete(subnetID string) error {
+	if err := s.kv.Delete(subnetID); err != nil {
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			return nil
 		}
-		return fmt.Errorf("delete imds veth record %q: %w", vpcID, err)
+		return fmt.Errorf("delete imds veth record %q: %w", subnetID, err)
 	}
 	return nil
 }

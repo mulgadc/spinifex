@@ -37,14 +37,6 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	// IMDS topology rides on every VPC (private instances still need metadata +
-	// role creds). Install is best-effort — the reconciler re-ensures it idempotently,
-	// so a transient OVN failure here must not fail CreateVpc.
-	if s.imds != nil {
-		if _, err := s.imds.EnsureForVPC(ctx, evt.VpcId); err != nil {
-			slog.Warn("subscribers: IMDS EnsureForVPC failed; reconciler will converge", "vpc_id", evt.VpcId, "err", err)
-		}
-	}
 	respond(msg, nil)
 }
 
@@ -56,15 +48,6 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 		return
 	}
 	ctx := context.Background()
-	// Remove IMDS topology before the router goes away — the IMDS LRP and
-	// static route live on vpc-{vpcID}.
-	if s.imds != nil {
-		if err := s.imds.RemoveForVPC(ctx, evt.VpcId); err != nil {
-			slog.Error("subscribers: IMDS RemoveForVPC failed", "vpc_id", evt.VpcId, "err", err)
-			respond(msg, err)
-			return
-		}
-	}
 	if err := s.topology.DeleteVPC(ctx, evt.VpcId); err != nil {
 		slog.Error("subscribers: DeleteVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
@@ -104,6 +87,14 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
+	// The IMDS localport lives on every subnet switch (guests reach metadata over
+	// one L2 hop). Install is best-effort — the reconciler re-ensures it
+	// idempotently, so a transient OVN failure here must not fail CreateSubnet.
+	if s.imds != nil {
+		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, evt.VpcId, cidr); err != nil {
+			slog.Warn("subscribers: IMDS EnsureForSubnet failed; reconciler will converge", "subnet_id", evt.SubnetId, "err", err)
+		}
+	}
 	respond(msg, nil)
 }
 
@@ -120,7 +111,17 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 			spec.CIDR = cidr
 		}
 	}
-	if err := s.topology.DeleteSubnet(context.Background(), spec); err != nil {
+	ctx := context.Background()
+	// Remove the IMDS localport before the subnet switch goes away — the
+	// localport lives on subnet-{subnetID}.
+	if s.imds != nil {
+		if err := s.imds.RemoveForSubnet(ctx, evt.SubnetId); err != nil {
+			slog.Error("subscribers: IMDS RemoveForSubnet failed", "subnet_id", evt.SubnetId, "err", err)
+			respond(msg, err)
+			return
+		}
+	}
+	if err := s.topology.DeleteSubnet(ctx, spec); err != nil {
 		slog.Error("subscribers: DeleteSubnet failed", "subnet_id", evt.SubnetId, "err", err)
 		respond(msg, err)
 		return

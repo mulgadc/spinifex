@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	// KVBucketIMDSVPCVeth is the canonical record that a VPC has IMDS plumbing
-	// installed. Keyed by vpcID, the value carries the per-VPC veth/LSP spec the
-	// BindManager replays to materialise host-side state on every chassis.
-	KVBucketIMDSVPCVeth        = "spinifex-network-imds-vpc-veth"
-	KVBucketIMDSVPCVethVersion = 1
+	// KVBucketIMDSSubnetVeth is the canonical record that a subnet has an IMDS
+	// localport installed. Keyed by subnetID, the value carries the localport
+	// spec the BindManager replays to materialise host-side state on every chassis.
+	KVBucketIMDSSubnetVeth        = "spinifex-network-imds-subnet-veth"
+	KVBucketIMDSSubnetVethVersion = 1
 
 	// KVBucketENIByVPCIP is a pure reverse index (vpcID/ip → eniID) so the IMDS
 	// handler can resolve a request's datapath-attested source IP to an ENI in
@@ -24,8 +24,8 @@ const (
 // InitBuckets opens (or creates) both IMDS KV buckets and runs any pending
 // migrations. History is fixed at 1: both are write-once-per-key, so retained
 // revisions only waste storage and lengthen tombstone lifetime.
-func InitBuckets(js nats.JetStreamContext, replicas int) (vpcVeth, eniByIP nats.KeyValue, err error) {
-	vpcVeth, err = initIMDSBucket(js, KVBucketIMDSVPCVeth, KVBucketIMDSVPCVethVersion, replicas)
+func InitBuckets(js nats.JetStreamContext, replicas int) (subnetVeth, eniByIP nats.KeyValue, err error) {
+	subnetVeth, err = initIMDSBucket(js, KVBucketIMDSSubnetVeth, KVBucketIMDSSubnetVethVersion, replicas)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -35,7 +35,7 @@ func InitBuckets(js nats.JetStreamContext, replicas int) (vpcVeth, eniByIP nats.
 		return nil, nil, err
 	}
 
-	return vpcVeth, eniByIP, nil
+	return subnetVeth, eniByIP, nil
 }
 
 // InitENIByIPBucket opens (or creates) just the eni-by-vpc-ip reverse-index

@@ -383,6 +383,8 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.Contains(t, wf, "dhcp-client-id=mac")
 		assert.Contains(t, wf, "method=auto")
 		assert.NotContains(t, wf, "never-default")
+		// The IMDS on-link route rides vpc0 even with no dev NIC / extra ENIs.
+		assert.Contains(t, wf, "route1=169.254.169.254/32", "vpc0 must carry the IMDS on-link route")
 		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
@@ -415,6 +417,18 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
 		assert.NotContains(t, wf, "vpc1.nmconnection")
 		assert.Contains(t, wf, "vpc2.nmconnection")
+	})
+
+	t.Run("vpc0 carries on-link IMDS route, others do not", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"", "",
+			[]string{"02:00:00:00:00:02"},
+		)
+		assert.Contains(t, wf, "route1=169.254.169.254/32")
+		// Primary NIC only — not extra VPC NICs or the dev NIC.
+		assert.Equal(t, 1, strings.Count(wf, "route1=169.254.169.254/32"))
 	})
 }
 

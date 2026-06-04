@@ -525,14 +525,14 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	// IMDS per-VPC OVN topology installer. Replicas track the chassis count so
-	// the vpc-veth bucket survives a node loss (create-or-open: awsgw inits the
+	// IMDS per-subnet localport installer. Replicas track the chassis count so
+	// the subnet-veth bucket survives a node loss (create-or-open: awsgw inits the
 	// same bucket; first writer wins).
 	imdsVethKV, _, err := handlers_imds.InitBuckets(js, max(len(chassisNames), 1))
 	if err != nil {
 		return fmt.Errorf("init imds buckets: %w", err)
 	}
-	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, routeMgr, handlers_imds.NewVethStore(imdsVethKV))
+	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, handlers_imds.NewVethStore(imdsVethKV))
 	if err != nil {
 		return fmt.Errorf("construct IMDS topology manager: %w", err)
 	}

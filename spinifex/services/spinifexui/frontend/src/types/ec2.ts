@@ -217,6 +217,20 @@ export const createSubnetSchema = z.object({
 
 export type CreateSubnetFormData = z.infer<typeof createSubnetSchema>
 
+export const allocateAddressSchema = z.object({
+  name: z.string().optional(),
+})
+
+export type AllocateAddressFormData = z.infer<typeof allocateAddressSchema>
+
+export const createNatGatewaySchema = z.object({
+  subnetId: z.string().min(1, "Subnet is required"),
+  allocationId: z.string().min(1, "Elastic IP is required"),
+  name: z.string().optional(),
+})
+
+export type CreateNatGatewayFormData = z.infer<typeof createNatGatewaySchema>
+
 export const createVpcSchema = z.object({
   cidrBlock: z
     .string()
@@ -248,6 +262,10 @@ export const createVpcWizardSchema = z
         "CIDR has invalid octets or prefix length (must be /16 to /28)",
       ),
     tenancy: z.enum(["default", "dedicated"]),
+    // NAT gateway for private-subnet egress. Optional so existing callers/tests
+    // default to "none"; "single" provisions one NAT GW (+ Elastic IP) in the
+    // first public subnet and routes private 0.0.0.0/0 to it.
+    natGateway: z.enum(["none", "single"]).optional(),
     publicSubnetCount: z.number().int().min(0).max(1),
     privateSubnetCount: z.number().int().min(0).max(2),
     publicSubnetCidrs: z.array(z.string()),

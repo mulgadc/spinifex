@@ -1088,6 +1088,50 @@ describe("useCreateVpcWizard", () => {
     expect(result.current.data?.error).toBeUndefined()
   })
 
+  it("provisions a NAT gateway when natGateway is single", async () => {
+    createQueryClient()
+    mockSend
+      .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
+      // ModifySubnetAttribute (public)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
+      .mockResolvedValueOnce({
+        InternetGateway: { InternetGatewayId: "igw-111" },
+      })
+      // AttachInternetGateway
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ RouteTable: { RouteTableId: "rtb-pub-1" } })
+      // CreateRoute (igw) + AssociateRouteTable (public)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ RouteTable: { RouteTableId: "rtb-priv-1" } })
+      // AssociateRouteTable (private)
+      .mockResolvedValueOnce({})
+      // AllocateAddress -> CreateNatGateway -> CreateRoute (nat)
+      .mockResolvedValueOnce({ AllocationId: "eipalloc-1" })
+      .mockResolvedValueOnce({ NatGateway: { NatGatewayId: "nat-1" } })
+      .mockResolvedValueOnce({})
+
+    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+
+    result.current.mutate({
+      ...baseParams,
+      mode: "vpc-and-more",
+      publicSubnetCount: 1,
+      privateSubnetCount: 1,
+      natGateway: "single",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledTimes(14)
+    const types = result.current.data?.created.map((r) => r.type)
+    expect(types).toContain("Elastic IP")
+    expect(types).toContain("NAT Gateway")
+    expect(result.current.data?.created).toHaveLength(8)
+    expect(result.current.data?.error).toBeUndefined()
+  })
+
   it("skips IGW and public route table when publicSubnetCount is 0", async () => {
     createQueryClient()
     mockSend

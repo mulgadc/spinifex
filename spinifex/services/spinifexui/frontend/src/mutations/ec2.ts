@@ -4,6 +4,8 @@ import {
   type Tag,
   type TagSpecification,
   type Tenancy,
+  AllocateAddressCommand,
+  AssociateAddressCommand,
   AssociateRouteTableCommand,
   AttachInternetGatewayCommand,
   AttachVolumeCommand,
@@ -13,6 +15,7 @@ import {
   CreateImageCommand,
   CreateInternetGatewayCommand,
   CreateKeyPairCommand,
+  CreateNatGatewayCommand,
   CreatePlacementGroupCommand,
   CreateRouteCommand,
   CreateRouteTableCommand,
@@ -22,13 +25,16 @@ import {
   CreateVolumeCommand,
   CreateVpcCommand,
   DeleteKeyPairCommand,
+  DeleteNatGatewayCommand,
   DeletePlacementGroupCommand,
   DeleteSecurityGroupCommand,
   DeleteSnapshotCommand,
   DeleteSubnetCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DisassociateAddressCommand,
   DetachVolumeCommand,
+  ReleaseAddressCommand,
   GetConsoleOutputCommand,
   ImportKeyPairCommand,
   ModifyInstanceAttributeCommand,
@@ -765,6 +771,118 @@ export function useRevokeSecurityGroupEgress() {
   })
 }
 
+export function useAllocateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params?: { name?: string }) => {
+      const command = new AllocateAddressCommand({
+        Domain: "vpc",
+        TagSpecifications: buildTagSpec(
+          ResourceType.elastic_ip,
+          params?.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useReleaseAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (allocationId: string) => {
+      const command = new ReleaseAddressCommand({ AllocationId: allocationId })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useAssociateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      allocationId: string
+      instanceId?: string
+      networkInterfaceId?: string
+    }) => {
+      const command = new AssociateAddressCommand({
+        AllocationId: params.allocationId,
+        InstanceId: params.instanceId,
+        NetworkInterfaceId: params.networkInterfaceId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useDisassociateAddress() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (associationId: string) => {
+      const command = new DisassociateAddressCommand({
+        AssociationId: associationId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useCreateNatGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      subnetId: string
+      allocationId: string
+      name?: string
+    }) => {
+      const command = new CreateNatGatewayCommand({
+        SubnetId: params.subnetId,
+        AllocationId: params.allocationId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.natgateway,
+          params.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+    },
+  })
+}
+
+export function useDeleteNatGateway() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (natGatewayId: string) => {
+      const command = new DeleteNatGatewayCommand({
+        NatGatewayId: natGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+    },
+  })
+}
+
 function buildTags(name: string | undefined, extraTags: Tag[]): Tag[] {
   const tags: Tag[] = []
   if (name) {
@@ -1023,6 +1141,56 @@ export function useCreateVpcWizard() {
               }),
             )
           }
+
+          // Step 11: NAT gateway for private egress (optional). Needs a public
+          // subnet to live in and an Elastic IP; routes private 0.0.0.0/0 to it.
+          if (params.natGateway === "single" && publicSubnetIds[0]) {
+            currentStep = "allocating Elastic IP for NAT gateway"
+            const eipResult = await client.send(
+              new AllocateAddressCommand({
+                Domain: "vpc",
+                TagSpecifications: buildTagSpec(
+                  ResourceType.elastic_ip,
+                  prefix ? `${prefix}-eip-nat` : undefined,
+                  extraTags,
+                ),
+              }),
+            )
+            const allocationId = eipResult.AllocationId
+            if (!allocationId) {
+              throw new Error(
+                "Elastic IP was allocated but no allocation ID was returned",
+              )
+            }
+            created.push({ type: "Elastic IP", id: allocationId })
+
+            currentStep = "creating NAT gateway"
+            const natResult = await client.send(
+              new CreateNatGatewayCommand({
+                SubnetId: publicSubnetIds[0],
+                AllocationId: allocationId,
+                TagSpecifications: buildTagSpec(
+                  ResourceType.natgateway,
+                  prefix ? `${prefix}-nat` : undefined,
+                  extraTags,
+                ),
+              }),
+            )
+            const natGatewayId = natResult.NatGateway?.NatGatewayId
+            if (!natGatewayId) {
+              throw new Error("NAT gateway was created but no ID was returned")
+            }
+            created.push({ type: "NAT Gateway", id: natGatewayId })
+
+            currentStep = "creating default route to NAT gateway"
+            await client.send(
+              new CreateRouteCommand({
+                RouteTableId: privRtbId,
+                DestinationCidrBlock: "0.0.0.0/0",
+                NatGatewayId: natGatewayId,
+              }),
+            )
+          }
         }
 
         return { vpcId, created }
@@ -1042,6 +1210,8 @@ export function useCreateVpcWizard() {
         queryKey: ["ec2", "internetGateways"],
       })
       void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
     },
   })
 }

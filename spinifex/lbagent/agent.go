@@ -413,6 +413,15 @@ func reloadHAProxy(configPath, pidPath string) error {
 // `nginx -t` fails closed before any reload, mirroring HAProxy's
 // validate-before-bind guarantee (a bad config never replaces a good one).
 func reloadNginx(configPath, pidPath string) error {
+	// On a stripped Alpine microvm initramfs the nginx runtime prefix dirs may
+	// be absent, so `nginx -t`/start fails closed on a missing pid dir or temp
+	// path — and the agent never enters nginx mode, never probes, and reports
+	// empty health (NLB targets stuck at 0/N). Pre-create them, mirroring
+	// reloadHAProxy's socket-dir pre-create.
+	for _, dir := range []string{filepath.Dir(pidPath), "/var/lib/nginx", "/var/lib/nginx/tmp", "/var/log/nginx"} {
+		_ = os.MkdirAll(dir, 0o750)
+	}
+
 	test := exec.Command("nginx", "-t", "-c", configPath)
 	if out, err := test.CombinedOutput(); err != nil {
 		return fmt.Errorf("nginx -t: %s: %w", strings.TrimSpace(string(out)), err)

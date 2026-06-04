@@ -506,6 +506,9 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	}
 
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	if kind == kindNLB {
+		captureLBConsoleOnFailure(t, c, eniDescPrefix, lb)
+	}
 	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
 
 	eni := lbENI(t, c, eniDescPrefix, lb)
@@ -554,6 +557,7 @@ func runUDPNLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	assert.Contains(t, lb.ARN, "/net/", label+" ARN must contain /net/")
 
 	harness.WaitForLBActive(t, c, lb.ARN, label, 5*time.Minute)
+	captureLBConsoleOnFailure(t, c, "net", lb)
 	// The key assertion: NLB targets reach healthy via the agent's active
 	// prober. Pre-feature this timed out (nginx reported empty server lists).
 	harness.WaitForTargetsHealthy(t, c, tgArn, 2, label, 2*time.Minute)
@@ -1298,6 +1302,27 @@ func lbENI(t *testing.T, c *harness.AWSClient, prefix string, lb lbInfo) *ec2.Ne
 		return nil
 	}, 30*time.Second, 2*time.Second)
 	return eni
+}
+
+// captureLBConsoleOnFailure registers an on-failure dump of the NLB VM's serial
+// console to the subtest artifact dir. The lb-agent's nginx engine activation
+// (and any `reload nginx:` error) lands on the guest console, not in the host
+// daemon journal — so an NLB "0/N healthy" timeout is otherwise undiagnosable
+// from CI artifacts. Call after the LB is active (the VM/ENI exists by then).
+func captureLBConsoleOnFailure(t *testing.T, c *harness.AWSClient, eniDescPrefix string, lb lbInfo) {
+	t.Helper()
+	eni := lbENI(t, c, eniDescPrefix, lb)
+	if eni.Attachment == nil {
+		return
+	}
+	instanceID := aws.StringValue(eni.Attachment.InstanceId)
+	if instanceID == "" {
+		return
+	}
+	dir := harness.ArtifactDir(t, harness.LoadEnv(t))
+	harness.OnFailure(t, func() {
+		harness.DumpInstanceConsole(t, c, instanceID, dir, "lb-vm-console.log")
+	})
 }
 
 func publicIP(eni *ec2.NetworkInterface) string {

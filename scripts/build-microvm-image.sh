@@ -173,6 +173,21 @@ else
     echo "[build-microvm-image] fw_cfg: module found in lib/modules"
 fi
 
+# --- Assert nginx + stream module (NLB L4 data plane) ---
+# The lb-agent runs `nginx -c` with a config that `load_module`s the stream
+# module; if either the binary or the .so is missing the agent never enters
+# nginx mode, never probes, and NLB targets stay at 0/N healthy. Fail the build
+# loudly here rather than discover it as an opaque e2e health timeout.
+if [ ! -x "$CHROOT_DIR/usr/sbin/nginx" ] && [ ! -x "$CHROOT_DIR/usr/bin/nginx" ]; then
+    echo "ERROR: nginx binary missing from image — NLB data plane will not start" >&2
+    exit 1
+fi
+if ! find "$CHROOT_DIR/usr/lib/nginx/modules" -name "ngx_stream_module.so" 2>/dev/null | grep -q .; then
+    echo "ERROR: ngx_stream_module.so missing from image — NLB stream config fails to load" >&2
+    exit 1
+fi
+echo "[build-microvm-image] nginx: binary + stream module present"
+
 # --- Strip kernel modules (Phase 2 keep-list approach) ---
 # Only modules needed by a virtio-mmio microvm guest are kept:
 #   virtio*.ko*    — virtio bus, net, blk, rng, console, and helpers

@@ -92,6 +92,32 @@ func dumpConsoleOutput(t *testing.T, c *AWSClient, instanceID string) {
 	}
 }
 
+// DumpInstanceConsole writes an instance's full serial console (base64-decoded)
+// to <dir>/<name>. The lb-agent logs its data-plane engine activation and any
+// `reload nginx:` error to the guest console, which the host daemon journal
+// never sees — capturing it makes an NLB health-check timeout diagnosable from
+// CI artifacts alone. Best-effort: failures log, they don't fail the test.
+func DumpInstanceConsole(t *testing.T, c *AWSClient, instanceID, dir, name string) {
+	t.Helper()
+	out, err := c.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{
+		InstanceId: aws.String(instanceID),
+	})
+	if err != nil {
+		t.Logf("console capture: GetConsoleOutput(%s) failed: %v", instanceID, err)
+		return
+	}
+	encoded := aws.StringValue(out.Output)
+	if encoded == "" {
+		t.Logf("console capture: %s empty", instanceID)
+		return
+	}
+	raw, derr := base64.StdEncoding.DecodeString(encoded)
+	if derr != nil {
+		raw = []byte(encoded)
+	}
+	DumpFile(t, dir, name, raw)
+}
+
 func dumpOVNState(t *testing.T, instanceID string) {
 	t.Helper()
 	if _, err := exec.LookPath("ovn-nbctl"); err != nil {

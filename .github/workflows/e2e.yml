@@ -30,13 +30,6 @@ permissions:
   contents: read
   statuses: write
 
-# Pushes to the same ref stack on the single `ci-single` self-hosted runner,
-# and a cancelled run can leave orphan `tofu`/`go test -c` procs behind that
-# wedge the runner host. Auto-cancel keeps at most one in-flight run per ref.
-concurrency:
-  group: e2e-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
@@ -1004,7 +997,7 @@ jobs:
     name: Report E2E Status
     if: always()
     needs: [ e2e_single, e2e_real_multi, e2e_reboot ]
-    runs-on: [ self-hosted, ci-single ]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Report Status to PR

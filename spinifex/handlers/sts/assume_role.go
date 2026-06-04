@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,11 @@ const (
 	stsActionAssumeRole = "sts:AssumeRole"
 	stsActionWildcard   = "sts:*"
 	globalWildcard      = "*"
+
+	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance — the
+	// only service principal that matches a trust policy in v1. The HTTPS AssumeRole
+	// path supplies an empty principalSource, so service principals never match there.
+	ec2ServicePrincipal = "ec2.amazonaws.com"
 
 	minDurationSeconds     int64 = 900
 	maxDurationSeconds     int64 = 43200
@@ -72,7 +78,62 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	roleAccountID, roleName, err := parseRoleARN(*input.RoleArn)
+	duration := int64(0)
+	if input.DurationSeconds != nil {
+		duration = *input.DurationSeconds
+	}
+
+	out, err := s.assumeRoleForCaller(callerAccountID, callerARN, "", *input.RoleArn, sessionName, aws.StringValue(input.SourceIdentity), duration)
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("AssumeRole success",
+		"caller_arn", callerARN,
+		"caller_identity", callerIdentity,
+		"role_arn", aws.StringValue(input.RoleArn),
+		"session_name", sessionName,
+		"akid", aws.StringValue(out.Credentials.AccessKeyId),
+		"expires_at", aws.TimeValue(out.Credentials.Expiration),
+		"source_identity", aws.StringValue(input.SourceIdentity),
+		"external_id", aws.StringValue(input.ExternalId),
+	)
+
+	return out, nil
+}
+
+// AssumeRoleForInstance is the in-process IMDS entry point, not reachable over HTTPS.
+// The caller is synthesised as the EC2 service principal (principalSource =
+// ec2.amazonaws.com); the session name is the instanceID, yielding an AWS-style ARN.
+func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
+	if accountID == "" || roleARN == "" || instanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if !roleSessionNameRegex.MatchString(instanceID) {
+		return nil, errors.New(awserrors.ErrorValidationError)
+	}
+
+	out, err := s.assumeRoleForCaller(accountID, "", ec2ServicePrincipal, roleARN, instanceID, "", durationSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("AssumeRoleForInstance success",
+		"account_id", accountID,
+		"instance_id", instanceID,
+		"role_arn", roleARN,
+		"akid", aws.StringValue(out.Credentials.AccessKeyId),
+		"expires_at", aws.TimeValue(out.Credentials.Expiration),
+	)
+
+	return out, nil
+}
+
+// assumeRoleForCaller is the shared core of AssumeRole (HTTPS) and AssumeRoleForInstance
+// (IMDS): resolves the role, validates the duration (0 → default), evaluates the trust
+// policy, and mints credentials. principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
+func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
+	roleAccountID, roleName, err := parseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
@@ -90,9 +151,9 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	}
 	role := roleOut.Role
 
-	duration := defaultDurationSeconds
-	if input.DurationSeconds != nil {
-		duration = *input.DurationSeconds
+	duration := requestedDuration
+	if duration == 0 {
+		duration = defaultDurationSeconds
 	}
 	effectiveMax := aws.Int64Value(role.MaxSessionDuration)
 	if effectiveMax == 0 {
@@ -105,25 +166,14 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
 
-	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN); err != nil {
+	if err := evalTrustPolicy(aws.StringValue(role.AssumeRolePolicyDocument), callerARN, principalSource); err != nil {
 		return nil, err
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSessionCredential(role, roleAccountID, sessionName, aws.StringValue(input.SourceIdentity), duration)
+	cred, plainSecret, plainToken, err := s.mintSessionCredential(role, roleAccountID, sessionName, sourceIdentity, duration)
 	if err != nil {
 		return nil, err
 	}
-
-	slog.Info("AssumeRole success",
-		"caller_arn", callerARN,
-		"caller_identity", callerIdentity,
-		"role_arn", aws.StringValue(role.Arn),
-		"session_name", sessionName,
-		"akid", cred.AccessKeyID,
-		"expires_at", cred.ExpiresAt,
-		"source_identity", aws.StringValue(input.SourceIdentity),
-		"external_id", aws.StringValue(input.ExternalId),
-	)
 
 	return &sts.AssumeRoleOutput{
 		Credentials: &sts.Credentials{
@@ -172,7 +222,7 @@ func parseRoleARN(arnStr string) (accountID, name string, err error) {
 // pass scans every Allow statement (returning nil on the first match). A
 // single-pass "return on first Allow" loop would silently skip a later Deny
 // and is a real authorisation bug.
-func evalTrustPolicy(docJSON, callerARN string) error {
+func evalTrustPolicy(docJSON, callerARN, principalSource string) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
 		// Stored docs were validated at CreateRole / UpdateAssumeRolePolicy
@@ -187,7 +237,7 @@ func evalTrustPolicy(docJSON, callerARN string) error {
 		if !matchTrustAction(stmt.Action) {
 			continue
 		}
-		match, err := matchTrustPrincipal(stmt.Principal, callerARN)
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSource)
 		if err != nil {
 			return err
 		}
@@ -203,7 +253,7 @@ func evalTrustPolicy(docJSON, callerARN string) error {
 		if !matchTrustAction(stmt.Action) {
 			continue
 		}
-		match, err := matchTrustPrincipal(stmt.Principal, callerARN)
+		match, err := matchTrustPrincipal(stmt.Principal, callerARN, principalSource)
 		if err != nil {
 			return err
 		}
@@ -224,11 +274,10 @@ func matchTrustAction(actions []string) bool {
 	return false
 }
 
-// matchTrustPrincipal evaluates each top-level Principal key independently —
-// AWS semantics treat the map as an OR across keys, and unsupported keys
-// (Service, Federated) skip at the entry level rather than failing the whole
-// statement.
-func matchTrustPrincipal(raw json.RawMessage, callerARN string) (bool, error) {
+// matchTrustPrincipal evaluates each top-level Principal key independently (AWS
+// treats the map as an OR). AWS matches callerARN, Service matches principalSource
+// (set only by the IMDS path); unsupported keys (Federated) skip, not fail.
+func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
 	}
@@ -242,11 +291,45 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN string) (bool, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return false, fmt.Errorf("unmarshal Principal: %w", err)
 	}
-	awsRaw, ok := m["AWS"]
-	if !ok {
+	if awsRaw, ok := m["AWS"]; ok {
+		match, err := matchAWSPrincipal(awsRaw, callerARN)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			return true, nil
+		}
+	}
+	if svcRaw, ok := m["Service"]; ok {
+		match, err := matchServicePrincipal(svcRaw, principalSource)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// matchServicePrincipal matches a Service principal against the synthesised caller.
+// v1 trusts only the EC2 service principal: any other principalSource (including
+// the empty one used by the HTTPS path) is rejected up front, so unsupported
+// service principals are denied even if a future caller synthesised one.
+// Expanding the whitelist (ecs-tasks, lambda) is a one-line change to this guard.
+func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, error) {
+	if principalSource != ec2ServicePrincipal {
 		return false, nil
 	}
-	return matchAWSPrincipal(awsRaw, callerARN)
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return single == principalSource, nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return false, fmt.Errorf("Principal.Service must be string or array: %w", err)
+	}
+	return slices.Contains(arr, principalSource), nil
 }
 
 func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {

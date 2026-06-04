@@ -146,6 +146,16 @@ func launchService(config *config.ClusterConfig) error {
 	defer cancelJanitor()
 	go stsService.RunJanitor(janitorCtx)
 
+	// IMDS serves 169.254.169.254 to guest VMs from vpcd, which holds the network
+	// capabilities the hardened awsgw sandbox can't grant. awsgw stays the home of
+	// STS + IAM, answering the IMDS handler's control-plane RPCs over NATS.
+	if _, err := stsService.SubscribeIMDSResponder(natsConn); err != nil {
+		return fmt.Errorf("subscribe IMDS STS responder: %w", err)
+	}
+	if _, err := iamService.SubscribeIMDSResponders(natsConn); err != nil {
+		return fmt.Errorf("subscribe IMDS IAM responders: %w", err)
+	}
+
 	// Expose the in-process STS presigned-URL verify over NATS for the
 	// in-cluster eks-token-webhook (STS is gateway-local, not otherwise on the
 	// bus). Bound to the process lifetime via natsConn.Close on return.

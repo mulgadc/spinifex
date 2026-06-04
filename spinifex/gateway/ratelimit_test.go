@@ -311,29 +311,6 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-func TestExtractClientIP(t *testing.T) {
-	tests := []struct {
-		name       string
-		remoteAddr string
-		expected   string
-	}{
-		{"IPv4 with port", "192.168.1.1:12345", "192.168.1.1"},
-		{"IPv6 with port", "[::1]:12345", "::1"},
-		{"IPv4 bare", "192.168.1.1", "192.168.1.1"},
-		{"IPv6 full with port", "[2001:db8::1]:443", "2001:db8::1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &http.Request{RemoteAddr: tt.remoteAddr}
-			got := extractClientIP(r)
-			if got != tt.expected {
-				t.Errorf("extractClientIP(%q) = %q, want %q", tt.remoteAddr, got, tt.expected)
-			}
-		})
-	}
-}
-
 // setupTestAppWithRateLimiter creates a test HTTP handler with SigV4 auth and
 // the given rate limiter attached. A real NATS test connection is attached so
 // the SigV4 middleware's cluster-unavailable short-circuit (mulga-siv-23) does

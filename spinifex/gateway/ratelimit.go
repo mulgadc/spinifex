@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"log/slog"
-	"net"
-	"net/http"
 	"sync"
 	"time"
 
@@ -185,17 +183,6 @@ func (rl *AuthRateLimiter) cleanup() {
 			delete(rl.records, ip)
 		}
 	}
-}
-
-// extractClientIP returns the IP address from the request's RemoteAddr,
-// stripping the port. Handles both IPv4 and IPv6.
-func extractClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		// RemoteAddr might already be bare IP (no port).
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // pruneOldFailures returns only the failures within the sliding window.

@@ -557,6 +557,109 @@ func TestAssumeRole_ServicePrincipal_NeverMatchesInV1(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }
 
+// ----- AssumeRoleForInstance (IMDS in-process path) ----------------------
+
+const testInstanceID = "i-0123456789abcdef0"
+
+func trustPolicyAllowingEC2Service() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+}
+
+func TestAssumeRoleForInstance_EC2ServicePrincipal_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app-role", trustPolicyAllowingEC2Service())
+
+	out, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Credentials)
+
+	akid := aws.StringValue(out.Credentials.AccessKeyId)
+	assert.True(t, strings.HasPrefix(akid, SessionAccessKeyIDPrefix))
+	assert.Len(t, akid, 20)
+
+	// The session name is the instance ID, matching AWS.
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/app-role/%s", testCallerAccountID, testInstanceID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+
+	stored, err := svc.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, testInstanceID, stored.SessionName)
+	assert.Equal(t, testCallerAccountID, stored.AccountID)
+}
+
+// Service principals other than ec2.amazonaws.com are not whitelisted in v1, so
+// even though the caller is synthesised as the EC2 service principal, a
+// lambda.amazonaws.com trust statement must not match.
+func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "lambda-role", policy)
+
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// A role that only trusts an AWS principal (no Service entry) must not be
+// assumable by an instance — the synthesised EC2 caller has no ARN to match.
+func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "user-role", trustPolicyAllowingUser(testCallerARN()))
+
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// Regression: the EC2 service principal must remain unreachable over the HTTPS
+// AssumeRole path. A role trusting only ec2.amazonaws.com is never assumable by
+// a normal SigV4 caller, no matter what — the security boundary between the two
+// entry points.
+func TestAssumeRoleForInstance_EC2ServiceUnreachableViaHTTPS(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-only", trustPolicyAllowingEC2Service())
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "fields", trustPolicyAllowingEC2Service())
+
+	cases := []struct {
+		name       string
+		accountID  string
+		roleARN    string
+		instanceID string
+	}{
+		{"missing_account", "", *role.Arn, testInstanceID},
+		{"missing_role_arn", testCallerAccountID, "", testInstanceID},
+		{"missing_instance_id", testCallerAccountID, *role.Arn, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRoleForInstance(tc.accountID, tc.roleARN, tc.instanceID, defaultDurationSeconds)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+		})
+	}
+}
+
+func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	// Instance's account differs from the role's account and the role is
+	// missing — masked to AccessDenied to prevent cross-account enumeration.
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID,
+		fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID), testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
 func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
@@ -643,7 +746,7 @@ func TestEvalTrustPolicy_CorruptDocReturnsError(t *testing.T) {
 	// Stored docs are validated upstream; reaching evalTrustPolicy with a
 	// malformed doc indicates corruption — must fail closed and NOT collapse
 	// to AccessDenied (which would hide the corruption from operators).
-	err := evalTrustPolicy(`{not json`, testCallerARN())
+	err := evalTrustPolicy(`{not json`, testCallerARN(), "")
 	require.Error(t, err)
 	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error(),
 		"corrupt doc must not be reported as AccessDenied — operators need to see the corruption signal")

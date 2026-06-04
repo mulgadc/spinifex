@@ -298,7 +298,7 @@ func (m *igwManager) RemoveSubnetEgress(ctx context.Context, vpcID, subnetID str
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveSubnetEgress: vpcID and subnetID required")
 	}
-	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.vpcExcludeCIDRs(ctx, vpcID))
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.rerouteExcludeCIDRs(ctx, vpcID))
 }
 
 // EnsureNATGatewaySubnetEgress is the NATGW priority sibling of
@@ -315,7 +315,7 @@ func (m *igwManager) RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, su
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveNATGatewaySubnetEgress: vpcID and subnetID required")
 	}
-	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.vpcExcludeCIDRs(ctx, vpcID))
+	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.rerouteExcludeCIDRs(ctx, vpcID))
 }
 
 // EnsureSubnetEgressDrop installs a drop policy at SubnetEgressPriorityDrop
@@ -361,7 +361,7 @@ func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, su
 		Nexthop:      nexthop,
 		OutputPort:   topology.GatewayRouterPort(vpcID),
 		Priority:     priority,
-		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
+		ExcludeCIDRs: m.rerouteExcludeCIDRs(ctx, vpcID),
 	})
 }
 
@@ -437,16 +437,29 @@ var (
 )
 
 // dropExcludeCIDRs returns the exclusion list for a per-subnet drop policy:
-// VPC CIDR (if discoverable) plus link-local and multicast. Reroute policies
-// only need the VPC CIDR exclusion because their match scope is narrower; the
-// drop policy is a default-deny within the subnet's egress so it must spare
-// any class the platform legitimately uses outside the VPC.
+// VPC CIDR (if discoverable) plus link-local and multicast. The drop policy is
+// a default-deny within the subnet's egress so it must spare any class the
+// platform legitimately uses outside the VPC.
 func (m *igwManager) dropExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := []netip.Prefix{linkLocalCIDR, multicastCIDR}
 	if vpc := m.vpcExcludeCIDRs(ctx, vpcID); len(vpc) > 0 {
 		excludes = append(vpc, excludes...)
 	}
 	return excludes
+}
+
+// rerouteExcludeCIDRs returns the exclusion list for a per-subnet egress
+// reroute policy: VPC CIDR (if discoverable) plus link-local. The reroute
+// matches 0.0.0.0/0 — the widest possible scope — so it would otherwise
+// hijack 169.254.169.254 (IMDS) out the gateway and defeat the per-VPC IMDS
+// /32 static route, which fires earlier in lr_in_ip_routing but is overridden
+// by this lr_in_policy reroute. Excluding link-local lets IMDS fall through to
+// the /32. Multicast is not excluded here (unlike the drop policy): a reroute
+// only diverts traffic that already has somewhere to go, so leaking multicast
+// to the gateway is harmless, whereas the drop policy would kill it outright.
+func (m *igwManager) rerouteExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
+	excludes := m.vpcExcludeCIDRs(ctx, vpcID)
+	return append(excludes, linkLocalCIDR)
 }
 
 // vpcExcludeCIDRs fetches the VPC's primary CIDR from the LR ExternalIDs

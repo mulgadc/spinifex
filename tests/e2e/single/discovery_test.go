@@ -83,7 +83,7 @@ func runEnvironment(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "az", azName, "region", aws.StringValue(azOut.AvailabilityZones[0].RegionName))
 
 	harness.OnFailure(t, func() {
-		harness.DumpCmd(t, fix.Artifacts, "phase1-az.txt",
+		harness.DumpCmd(t, fix.ArtifactDir(t), "phase1-az.txt",
 			"aws", "ec2", "describe-availability-zones")
 	})
 }

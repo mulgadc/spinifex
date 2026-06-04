@@ -72,11 +72,10 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 			return
 		}
 		fix := &Fixture{
-			Env:       env,
-			AWS:       awsCli,
-			Harness:   h,
-			Artifacts: harness.ArtifactDir(t, env),
-			TmpDir:    tmpDir,
+			Env:     env,
+			AWS:     awsCli,
+			Harness: h,
+			TmpDir:  tmpDir,
 		}
 		fix.PoolMode = detectPoolMode(env)
 		// admin init leaves the default SG closed (AWS parity); the e2e suite
@@ -100,12 +99,21 @@ func requireSingleNodeFixture(t *testing.T) *Fixture {
 // memoized on Harness (harness.Fixture) and surfaced via the package-local
 // need* helpers / harness.Ensure* + harness.Discover*.
 type Fixture struct {
-	Env       *harness.Env
-	AWS       *harness.AWSClient
-	Harness   *harness.Fixture // memoized Ensure* fixture; spans the whole process.
-	Artifacts string
-	TmpDir    string // package-scoped scratch dir; survives every Test* in the package.
-	PoolMode  bool   // gates 8b / 8d
+	Env      *harness.Env
+	AWS      *harness.AWSClient
+	Harness  *harness.Fixture // memoized Ensure* fixture; spans the whole process.
+	TmpDir   string           // package-scoped scratch dir; survives every Test* in the package.
+	PoolMode bool             // gates 8b / 8d
+}
+
+// ArtifactDir returns the artifact directory for the *currently running* test.
+// It must be derived per-call from the live t (not memoized on the singleton
+// Fixture): the process fixture is built lazily during whichever test runs
+// first, so a stored dir would freeze to that test's name and every later test
+// would write into a stale — and, once that test passes, pruned — directory.
+func (f *Fixture) ArtifactDir(t *testing.T) string {
+	t.Helper()
+	return harness.ArtifactDir(t, f.Env)
 }
 
 // detectPoolMode reads external_mode from spinifex.toml. Defaults to false

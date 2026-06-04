@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -15,22 +16,28 @@ import (
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.VPCs {
 		routerName := topology.VPCRouter(vpcID)
-		if _, ok := actual.Routers[routerName]; ok {
-			continue
+		if _, ok := actual.Routers[routerName]; !ok {
+			lr := &nbdb.LogicalRouter{
+				Name: routerName,
+				ExternalIDs: map[string]string{
+					"spinifex:vpc_id": vpcID,
+					"spinifex:cidr":   spec.CIDR.String(),
+				},
+			}
+			if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
+				slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
+				continue
+			}
+			actual.Routers[routerName] = struct{}{}
+			slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 		}
-		lr := &nbdb.LogicalRouter{
-			Name: routerName,
-			ExternalIDs: map[string]string{
-				"spinifex:vpc_id": vpcID,
-				"spinifex:cidr":   spec.CIDR.String(),
-			},
+		// Install IMDS topology for every intent VPC (idempotent via the
+		// vpc-veth bucket gate); the router must exist for the IMDS LRP.
+		if r.imds != nil {
+			if _, err := r.imds.EnsureForVPC(ctx, vpcID); err != nil {
+				slog.Error("reconcile/apply: IMDS EnsureForVPC failed", "vpc_id", vpcID, "err", err)
+			}
 		}
-		if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
-			slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
-			continue
-		}
-		actual.Routers[routerName] = struct{}{}
-		slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 	}
 }
 
@@ -83,12 +90,15 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			actual.RouterPorts[routerPortName] = struct{}{}
 		}
 
-		if _, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
+		if existing, err := r.ovn.GetLogicalSwitchPort(ctx, switchRouterPortName); err != nil {
 			lsp := &nbdb.LogicalSwitchPort{
 				Name:      switchRouterPortName,
 				Type:      "router",
 				Addresses: []string{"router"},
-				Options:   map[string]string{"router-port": routerPortName},
+				Options: map[string]string{
+					"router-port": routerPortName,
+					"arp_proxy":   handlers_imds.MetaDataServerIP,
+				},
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,
@@ -97,6 +107,19 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			if err := r.ovn.CreateLogicalSwitchPort(ctx, switchName, lsp); err != nil {
 				slog.Error("reconcile/apply: create subnet router-LSP failed", "subnet_id", subnetID, "err", err)
 				continue
+			}
+		} else if existing.Options["arp_proxy"] != handlers_imds.MetaDataServerIP {
+			// Drift convergence: a subnet router LSP created before IMDS proxy-ARP
+			// landed won't gain arp_proxy from a redeploy alone (the create branch
+			// only fires when absent), so patch it in place to make it IMDS-reachable.
+			if existing.Options == nil {
+				existing.Options = map[string]string{}
+			}
+			existing.Options["arp_proxy"] = handlers_imds.MetaDataServerIP
+			if err := r.ovn.UpdateLogicalSwitchPort(ctx, existing); err != nil {
+				slog.Error("reconcile/apply: patch subnet router-LSP arp_proxy failed", "subnet_id", subnetID, "err", err)
+			} else {
+				slog.Info("reconcile/apply: patched subnet router-LSP with IMDS arp_proxy", "subnet_id", subnetID, "port", switchRouterPortName)
 			}
 		}
 

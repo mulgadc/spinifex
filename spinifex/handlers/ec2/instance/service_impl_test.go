@@ -1129,7 +1129,10 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 		ID:           id,
 		InstanceType: "t3.large",
 		AccountID:    owner,
-		UserData:     "raw-user-data",
+		RunInstancesInput: &ec2.RunInstancesInput{
+			// base64("raw-user-data") — DescribeInstanceAttribute returns user-data base64-encoded.
+			UserData: aws.String("cmF3LXVzZXItZGF0YQ=="),
+		},
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
@@ -1151,7 +1154,7 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 			attribute: ec2.InstanceAttributeNameUserData,
 			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
 				require.NotNil(t, out.UserData)
-				assert.Equal(t, "raw-user-data", *out.UserData.Value)
+				assert.Equal(t, "cmF3LXVzZXItZGF0YQ==", *out.UserData.Value)
 			},
 		},
 		{
@@ -1530,7 +1533,6 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 			ID:        id,
 			Status:    vm.StateStopped,
 			AccountID: "acc",
-			UserData:  "old",
 			RunInstancesInput: &ec2.RunInstancesInput{
 				UserData: aws.String("b2xk"),
 			},
@@ -1548,7 +1550,6 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 
 	updated := store.wroteStopped[id]
 	require.NotNil(t, updated)
-	assert.Equal(t, newContent, updated.UserData)
 	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
 }
 

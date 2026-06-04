@@ -31,10 +31,19 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		}
 		spec.CIDR = cidr
 	}
-	if err := s.topology.EnsureVPC(context.Background(), spec); err != nil {
+	ctx := context.Background()
+	if err := s.topology.EnsureVPC(ctx, spec); err != nil {
 		slog.Error("subscribers: EnsureVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
+	}
+	// IMDS topology rides on every VPC (private instances still need metadata +
+	// role creds). Install is best-effort — the reconciler re-ensures it idempotently,
+	// so a transient OVN failure here must not fail CreateVpc.
+	if s.imds != nil {
+		if _, err := s.imds.EnsureForVPC(ctx, evt.VpcId); err != nil {
+			slog.Warn("subscribers: IMDS EnsureForVPC failed; reconciler will converge", "vpc_id", evt.VpcId, "err", err)
+		}
 	}
 	respond(msg, nil)
 }
@@ -46,7 +55,17 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.topology.DeleteVPC(context.Background(), evt.VpcId); err != nil {
+	ctx := context.Background()
+	// Remove IMDS topology before the router goes away — the IMDS LRP and
+	// static route live on vpc-{vpcID}.
+	if s.imds != nil {
+		if err := s.imds.RemoveForVPC(ctx, evt.VpcId); err != nil {
+			slog.Error("subscribers: IMDS RemoveForVPC failed", "vpc_id", evt.VpcId, "err", err)
+			respond(msg, err)
+			return
+		}
+	}
+	if err := s.topology.DeleteVPC(ctx, evt.VpcId); err != nil {
 		slog.Error("subscribers: DeleteVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return

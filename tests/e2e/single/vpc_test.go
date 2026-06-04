@@ -254,7 +254,7 @@ func runVPCSubnetE2E(t *testing.T, fix *Fixture) {
 			harness.VPCDiagnosticsOpts{
 				ExternalIP:  pubIP,
 				LogicalIP:   privIP,
-				ArtifactDir: fix.Artifacts,
+				ArtifactDir: fix.ArtifactDir(t),
 			})
 		t.Fatalf("SSH handshake %s:22 never completed within 3min (see diagnostics above; tracking mulga-siv-111)", pubIP)
 	}

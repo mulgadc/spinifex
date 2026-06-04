@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -291,6 +292,34 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	}
 
 	return &output, nil
+}
+
+// ServeNATSRequest is the responder-side counterpart to NATSRequest: it unmarshals
+// the request payload into *I, invokes fn, and replies with the JSON result or an
+// awserrors envelope. The payload carries its own context; no X-Account-ID header.
+func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
+	input := new(I)
+	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		respondNATS(msg, errResp)
+		return
+	}
+	out, err := fn(input)
+	if err != nil {
+		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
+		return
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
+		return
+	}
+	respondNATS(msg, data)
+}
+
+func respondNATS(msg *nats.Msg, data []byte) {
+	if err := msg.Respond(data); err != nil {
+		slog.Error("failed to respond to NATS request", "subject", msg.Subject, "err", err)
+	}
 }
 
 const (

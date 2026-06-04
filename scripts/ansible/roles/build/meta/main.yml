@@ -1,7 +1,0 @@
----
-galaxy_info:
-  role_name: build
-  description: Build spinifex + viperblock-nbdkit, stage tarball for setup.sh consumption.
-  license: BSD-3-Clause
-  min_ansible_version: "2.14"
-dependencies: []

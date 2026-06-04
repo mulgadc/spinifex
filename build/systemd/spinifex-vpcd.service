@@ -1,8 +1,8 @@
 [Unit]
 Description=Spinifex VPC Daemon (OVN Networking)
 PartOf=spinifex.target
-After=spinifex-nats.service spinifex-daemon.service systemd-networkd.service openvswitch-switch.service ovn-controller.service
-Wants=spinifex-nats.service ovn-controller.service
+After=spinifex-nats.service spinifex-daemon.service systemd-networkd.service openvswitch-switch.service ovn-controller.service spinifex-netns.service
+Wants=spinifex-nats.service ovn-controller.service spinifex-netns.service
 
 [Service]
 Type=simple
@@ -43,6 +43,12 @@ RestrictNamespaces=net mnt
 # rebind. MountFlags=shared propagates the netns mounts to the host mount ns so
 # they survive restart and are observable. vpcd already runs with CAP_SYS_ADMIN +
 # CAP_NET_ADMIN, so the propagation does not widen its effective privilege.
+#
+# MountFlags=shared is necessary but NOT sufficient on its own: propagation only
+# crosses the host<->vpcd boundary when /run/netns is ALREADY a shared mount on
+# the host before vpcd unshares. spinifex-netns.service (ordered Before= this
+# unit) establishes that host-side shared mount; without it the netns bind-mount
+# lands in vpcd's own fresh peer group and host setns(2) still fails EINVAL.
 MountFlags=shared
 ProtectClock=yes
 ProtectKernelTunables=yes

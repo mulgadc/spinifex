@@ -233,7 +233,7 @@ func (mt policyMatch) applies(inport string, dst netip.Addr) bool {
 //	inport == "rtr-subnet-x" && ip4.dst == 0.0.0.0/0 && ip4.dst != 10.0.0.0/16 && ip4.dst != 169.254.0.0/16
 func parsePolicyMatch(match string) (policyMatch, bool) {
 	var mt policyMatch
-	for _, clause := range strings.Split(match, "&&") {
+	for clause := range strings.SplitSeq(match, "&&") {
 		clause = strings.TrimSpace(clause)
 		switch {
 		case strings.HasPrefix(clause, "inport =="):

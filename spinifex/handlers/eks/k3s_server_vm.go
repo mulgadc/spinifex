@@ -353,6 +353,10 @@ func buildK3sUserData(in K3sServerInput) string {
 	nlbEndpoint := "https://" + net.JoinHostPort(in.NLBDNS, strconv.FormatInt(clusterNLBListenPort, 10))
 
 	envBody := strings.Join([]string{
+		// Role the eks-node-role first-boot selector reads to enable the
+		// control-plane services (k3s server + token webhook + bootstrap
+		// publisher). Nodegroup workers seed "agent" through their own path.
+		"SPINIFEX_K3S_ROLE=server",
 		"SPINIFEX_NATS_URL=" + in.NATSURL,
 		"SPINIFEX_NATS_TOKEN=" + in.NATSToken,
 		"SPINIFEX_NATS_CA=" + k3sNATSCAPath,

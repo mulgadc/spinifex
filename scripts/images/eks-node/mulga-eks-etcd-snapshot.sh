@@ -12,6 +12,12 @@ set -eu
 # Retention: managed via S3 lifecycle policy on the bucket; this script does
 # not prune.
 
+# Worker nodes share the unified eks-node AMI but have no etcd/SQLite datastore
+# to snapshot. The role file is written once by eks-node-role at first boot.
+if [ "$(cat /etc/spinifex-eks/role 2>/dev/null)" = "agent" ]; then
+    exit 0
+fi
+
 ENVFILE=/etc/spinifex-eks/etcd-snapshot.env
 [ -f "${ENVFILE}" ] || { logger -t mulga-eks-etcd-snapshot "${ENVFILE} missing"; exit 0; }
 # shellcheck disable=SC1090

@@ -65,6 +65,7 @@ function CreateSubnet() {
       vpcId: vpcs[0]?.VpcId ?? "",
       cidrBlock: "10.0.1.0/24",
       availabilityZone: undefined,
+      mapPublicIpOnLaunch: false,
     },
   })
 
@@ -181,6 +182,25 @@ function CreateSubnet() {
           />
         </Field>
 
+        <Field>
+          <FieldTitle>Auto-assign public IPv4</FieldTitle>
+          <Controller
+            control={control}
+            name="mapPublicIpOnLaunch"
+            render={({ field }) => (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  aria-label="Enable auto-assign public IPv4 address"
+                  checked={field.value ?? false}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                  type="checkbox"
+                />
+                Enable auto-assign public IPv4 address
+              </label>
+            )}
+          />
+        </Field>
+
         <CliCommandPanel commands={buildCreateSubnetCommands(cliWatch)} />
 
         <FormActions
@@ -223,5 +243,22 @@ function buildCreateSubnetCommands(
     )
   }
 
-  return [{ label: "Create Subnet", parts }]
+  const commands: CliCommand[] = [{ label: "Create Subnet", parts }]
+
+  if (watch("mapPublicIpOnLaunch") === true) {
+    commands.push({
+      label: "Enable auto-assign public IPv4",
+      parts: [
+        {
+          type: "bin" as const,
+          value: "AWS_PROFILE=spinifex aws ec2 modify-subnet-attribute",
+        },
+        { type: "flag" as const, value: " \\\n  --subnet-id" },
+        { type: "value" as const, value: " <SubnetId>" },
+        { type: "flag" as const, value: " \\\n  --map-public-ip-on-launch" },
+      ],
+    })
+  }
+
+  return commands
 }

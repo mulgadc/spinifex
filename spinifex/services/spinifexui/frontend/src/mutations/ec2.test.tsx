@@ -634,6 +634,40 @@ describe("useCreateSubnet", () => {
       AvailabilityZone: "us-east-1a",
     })
   })
+
+  it("calls ModifySubnetAttribute when mapPublicIpOnLaunch is set", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
+    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+
+    result.current.mutate({
+      vpcId: "vpc-123",
+      cidrBlock: "10.0.1.0/24",
+      mapPublicIpOnLaunch: true,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockSend.mock.calls[1]?.[0].input).toStrictEqual({
+      SubnetId: "subnet-abc",
+      MapPublicIpOnLaunch: { Value: true },
+    })
+  })
+
+  it("skips ModifySubnetAttribute when mapPublicIpOnLaunch is false", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
+    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+
+    result.current.mutate({
+      vpcId: "vpc-123",
+      cidrBlock: "10.0.1.0/24",
+      mapPublicIpOnLaunch: false,
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend).toHaveBeenCalledOnce()
+  })
 })
 
 describe("useDeleteSubnet", () => {

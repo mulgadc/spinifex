@@ -210,6 +210,9 @@ export const createSubnetSchema = z.object({
     .min(1, "CIDR block is required")
     .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.1.0/24)"),
   availabilityZone: z.string().optional(),
+  // AWS subnet console "Auto-assign public IPv4 address". CreateSubnet
+  // defaults this off; a follow-up ModifySubnetAttribute turns it on.
+  mapPublicIpOnLaunch: z.boolean().optional(),
 })
 
 export type CreateSubnetFormData = z.infer<typeof createSubnetSchema>

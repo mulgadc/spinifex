@@ -527,13 +527,25 @@ export function useCreateSubnet() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (params: CreateSubnetFormData) => {
-      const command = new CreateSubnetCommand({
-        VpcId: params.vpcId,
-        CidrBlock: params.cidrBlock,
-        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
-        AvailabilityZone: params.availabilityZone || undefined,
-      })
-      return await getEc2Client().send(command)
+      const client = getEc2Client()
+      const result = await client.send(
+        new CreateSubnetCommand({
+          VpcId: params.vpcId,
+          CidrBlock: params.cidrBlock,
+          // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+          AvailabilityZone: params.availabilityZone || undefined,
+        }),
+      )
+      const subnetId = result.Subnet?.SubnetId
+      if (params.mapPublicIpOnLaunch && subnetId) {
+        await client.send(
+          new ModifySubnetAttributeCommand({
+            SubnetId: subnetId,
+            MapPublicIpOnLaunch: { Value: true },
+          }),
+        )
+      }
+      return result
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "subnets"] })

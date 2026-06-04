@@ -67,13 +67,11 @@ func TestI2_IMDSLocalportOnSubnetSwitchNoPortSecurity(t *testing.T) {
 
 // TestI4_SubnetEgressRerouteMustExcludeLinkLocal asserts every per-subnet
 // internet-egress reroute policy excludes 169.254.0.0/16. The reroute matches
-// 0.0.0.0/0 — the widest possible scope — and fires in lr_in_policy AFTER the
-// IMDS /32 static route matches in lr_in_ip_routing, so without this exclusion
-// it overrides the /32 and SNAT-reroutes 169.254.169.254 out the WAN, where
-// IMDS disappears (the guest's PUT for a token never reaches the per-VPC netns
-// listener). Both the IGW- and NATGW-priority reroutes carry the gate, so both
-// must spare link-local. A drifted exclude list silently breaks IMDS on any
-// VPC with internet egress.
+// 0.0.0.0/0 — the widest possible scope — so without this exclusion it would
+// SNAT-reroute link-local traffic out the WAN. Link-local is host-scoped by
+// definition and must never egress to the provider network. Both the IGW- and
+// NATGW-priority reroutes carry the gate, so both must spare link-local. A
+// drifted exclude list silently leaks 169.254.0.0/16 onto the internet.
 func TestI4_SubnetEgressRerouteMustExcludeLinkLocal(t *testing.T) {
 	linkLocal := fmt.Sprintf("ip4.dst != %s", linkLocalCIDR.String())
 
@@ -104,8 +102,8 @@ func TestI4_SubnetEgressRerouteMustExcludeLinkLocal(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, policies, 1)
 			assert.Contains(t, policies[0].Match, linkLocal,
-				"%s egress reroute %q does not exclude %s — it will hijack 169.254.169.254 "+
-					"out the WAN and override the IMDS /32 static route, making IMDS unreachable",
+				"%s egress reroute %q does not exclude %s — it will SNAT-reroute "+
+					"link-local traffic out the WAN; link-local must never egress",
 				tc.name, policies[0].Match, linkLocalCIDR)
 		})
 	}

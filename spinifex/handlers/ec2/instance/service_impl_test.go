@@ -383,6 +383,8 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.Contains(t, wf, "dhcp-client-id=mac")
 		assert.Contains(t, wf, "method=auto")
 		assert.NotContains(t, wf, "never-default")
+		// The IMDS on-link route rides vpc0 even with no dev NIC / extra ENIs.
+		assert.Contains(t, wf, "route1=169.254.169.254/32", "vpc0 must carry the IMDS on-link route")
 		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")

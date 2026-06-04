@@ -16,7 +16,7 @@ import (
 type SubnetVethRecord struct {
 	SubnetID      string `json:"subnet_id"`
 	ShortSubnetID string `json:"short_subnet_id"`
-	VPCID         string `json:"vpc_id,omitempty"`
+	VPCID         string `json:"vpc_id"`
 	IMDSPortMAC   string `json:"imds_port_mac"`
 	SubnetCIDR    string `json:"subnet_cidr"`
 	CreatedAt     string `json:"created_at"`

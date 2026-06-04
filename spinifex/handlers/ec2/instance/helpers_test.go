@@ -18,6 +18,9 @@ func TestGenerateNetworkConfig_OneEmpty(t *testing.T) {
 	cfg := generateNetworkConfig("02:00:00:aa:bb:cc", "", "", "", nil)
 	assert.Contains(t, cfg, "vpc0:", "eniMAC alone should produce per-interface config")
 	assert.NotContains(t, cfg, "dev0:", "no dev NIC without devMAC")
+	// The IMDS on-link route rides vpc0 even with no dev NIC / extra ENIs — the
+	// common production shape — so guard it here too, not only on the multi-NIC path.
+	assert.Contains(t, cfg, "to: 169.254.169.254/32", "vpc0 must carry the IMDS on-link route")
 
 	cfg = generateNetworkConfig("", "02:00:00:dd:ee:ff", "", "", nil)
 	assert.Equal(t, cloudInitNetworkConfigWildcard, cfg, "should fall back to wildcard if eniMAC empty")

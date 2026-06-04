@@ -256,14 +256,32 @@ function AddRuleDialog({
   )
 }
 
+// A rule's source/destination is either a CIDR or a referenced security group
+// (UserIdGroupPair). The AWS default SG uses a self-referencing group source.
+interface RuleSource {
+  kind: "cidr" | "group"
+  value: string
+}
+
+function ruleSources(rule: IpPermission): RuleSource[] {
+  return [
+    ...(rule.IpRanges ?? []).map(
+      (range): RuleSource => ({ kind: "cidr", value: range.CidrIp ?? "" }),
+    ),
+    ...(rule.UserIdGroupPairs ?? []).map(
+      (pair): RuleSource => ({ kind: "group", value: pair.GroupId ?? "" }),
+    ),
+  ]
+}
+
 interface RuleRowProps {
   rule: IpPermission
-  cidr: string
+  source: RuleSource
   groupId: string
   direction: "ingress" | "egress"
 }
 
-function RuleRow({ rule, cidr, groupId, direction }: RuleRowProps) {
+function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
   const revokeIngress = useRevokeSecurityGroupIngress()
   const revokeEgress = useRevokeSecurityGroupEgress()
   const mutation = direction === "ingress" ? revokeIngress : revokeEgress
@@ -275,12 +293,19 @@ function RuleRow({ rule, cidr, groupId, direction }: RuleRowProps) {
         ipProtocol: rule.IpProtocol ?? "-1",
         fromPort: rule.FromPort ?? -1,
         toPort: rule.ToPort ?? -1,
-        cidrIp: cidr,
+        ...(source.kind === "group"
+          ? { sourceGroupId: source.value }
+          : { cidrIp: source.value }),
       })
     } catch {
       // Error is stored in mutation.error and rendered below
     }
   }
+
+  const sourceLabel =
+    source.kind === "group" && source.value === groupId
+      ? `${source.value} (this security group)`
+      : source.value
 
   return (
     <div className="space-y-0">
@@ -298,7 +323,7 @@ function RuleRow({ rule, cidr, groupId, direction }: RuleRowProps) {
             <span className="text-muted-foreground">
               {direction === "ingress" ? "Source" : "Destination"}:{" "}
             </span>
-            {cidr}
+            {sourceLabel}
           </div>
         </div>
         <Button
@@ -425,14 +450,14 @@ function SecurityGroupDetail() {
           </div>
           {ingressRules.length > 0 ? (
             <div>
-              {ingressRules.map((rule) =>
-                (rule.IpRanges ?? []).map((range) => (
+              {ingressRules.flatMap((rule) =>
+                ruleSources(rule).map((source) => (
                   <RuleRow
-                    cidr={range.CidrIp ?? ""}
                     direction="ingress"
                     groupId={sg.GroupId ?? ""}
-                    key={`${rule.IpProtocol}-${rule.FromPort}-${rule.ToPort}-${range.CidrIp}`}
+                    key={`${rule.IpProtocol}-${rule.FromPort}-${rule.ToPort}-${source.kind}-${source.value}`}
                     rule={rule}
+                    source={source}
                   />
                 )),
               )}
@@ -460,14 +485,14 @@ function SecurityGroupDetail() {
           </div>
           {egressRules.length > 0 ? (
             <div>
-              {egressRules.map((rule) =>
-                (rule.IpRanges ?? []).map((range) => (
+              {egressRules.flatMap((rule) =>
+                ruleSources(rule).map((source) => (
                   <RuleRow
-                    cidr={range.CidrIp ?? ""}
                     direction="egress"
                     groupId={sg.GroupId ?? ""}
-                    key={`${rule.IpProtocol}-${rule.FromPort}-${rule.ToPort}-${range.CidrIp}`}
+                    key={`${rule.IpProtocol}-${rule.FromPort}-${rule.ToPort}-${source.kind}-${source.value}`}
                     rule={rule}
+                    source={source}
                   />
                 )),
               )}

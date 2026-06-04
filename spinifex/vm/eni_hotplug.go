@@ -41,10 +41,10 @@ type HotPlugENIResult struct {
 
 // HotPlugENI runs the 4-step attach pipeline against the live VM:
 //
-//  1. tap device creation     (placeholder — wired in Sprint 3c)
-//  2. ovs-vsctl add-port      (placeholder — wired in Sprint 3c)
-//  3. QMP netdev_add          (real)
-//  4. QMP device_add + poll   (real)
+//  1. tap device + OVS port   (NetworkPlumber.SetupTap — atomic tap+br-int)
+//  2. QMP netdev_add
+//  3. QMP device_add
+//  4. poll query-pci until materialized
 //
 // On step-N failure, steps 1..N-1 are rolled back in reverse order and
 // the slot is returned to ENIRequests.AvailableSlots. The instance must
@@ -92,22 +92,13 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 	tapName := TapDeviceName(eniID)
 	busID := fmt.Sprintf("hotplug-eni%d", slot)
 
-	// Step 1: tap device. Sprint 3c replaces this stub with a real call
-	// to NetworkPlumber (ip tuntap add).
-	if err := stubTapAdd(instance.ID, eniID, tapName); err != nil {
+	// Step 1: tap device + OVS port on br-int (carries OVN iface-id binding).
+	if err := m.setupENITap(instance.ID, eniID, mac); err != nil {
 		m.releaseSlotLocked(instance, eniID, slot)
-		return HotPlugENIResult{}, fmt.Errorf("tap add (stub): %w", err)
+		return HotPlugENIResult{}, fmt.Errorf("tap/ovs setup: %w", err)
 	}
 
-	// Step 2: OVS port. Sprint 3c replaces this stub with the real
-	// ovs-vsctl add-port invocation against br-int.
-	if err := stubOVSAddPort(instance.ID, eniID, tapName, mac); err != nil {
-		_ = stubTapDel(instance.ID, eniID, tapName)
-		m.releaseSlotLocked(instance, eniID, slot)
-		return HotPlugENIResult{}, fmt.Errorf("ovs add-port (stub): %w", err)
-	}
-
-	// Step 3: QMP netdev_add.
+	// Step 2: QMP netdev_add.
 	if err := dc.NetdevAdd(map[string]any{
 		"type":       "tap",
 		"id":         netdevID,
@@ -115,13 +106,12 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 		"script":     "no",
 		"downscript": "no",
 	}); err != nil {
-		_ = stubOVSDelPort(instance.ID, eniID, tapName)
-		_ = stubTapDel(instance.ID, eniID, tapName)
+		m.cleanupENITap(instance.ID, eniID, tapName)
 		m.releaseSlotLocked(instance, eniID, slot)
 		return HotPlugENIResult{}, fmt.Errorf("QMP netdev_add: %w", err)
 	}
 
-	// Step 4: QMP device_add then poll query-pci until materialized.
+	// Step 3: QMP device_add.
 	if err := dc.DeviceAdd(map[string]any{
 		"driver": "virtio-net-pci",
 		"id":     deviceID,
@@ -130,17 +120,16 @@ func (m *Manager) HotPlugENI(instance *VM, eniID, mac string) (HotPlugENIResult,
 		"mac":    mac,
 	}); err != nil {
 		_ = dc.NetdevDel(netdevID)
-		_ = stubOVSDelPort(instance.ID, eniID, tapName)
-		_ = stubTapDel(instance.ID, eniID, tapName)
+		m.cleanupENITap(instance.ID, eniID, tapName)
 		m.releaseSlotLocked(instance, eniID, slot)
 		return HotPlugENIResult{}, fmt.Errorf("QMP device_add: %w", err)
 	}
 
+	// Step 4: poll query-pci until the guest materializes the device.
 	if err := waitForPCIDevice(dc, deviceID, true); err != nil {
 		_ = dc.DeviceDel(deviceID)
 		_ = dc.NetdevDel(netdevID)
-		_ = stubOVSDelPort(instance.ID, eniID, tapName)
-		_ = stubTapDel(instance.ID, eniID, tapName)
+		m.cleanupENITap(instance.ID, eniID, tapName)
 		m.releaseSlotLocked(instance, eniID, slot)
 		return HotPlugENIResult{}, fmt.Errorf("query-pci wait (attach): %w", err)
 	}
@@ -204,9 +193,8 @@ func (m *Manager) HotUnplugENI(instance *VM, eniID string, force bool) error {
 			"instanceId", instance.ID, "eniId", eniID, "err", err)
 	}
 
-	// Step 4: OVS port + tap (stubs, real wiring in Sprint 3c).
-	_ = stubOVSDelPort(instance.ID, eniID, tapName)
-	_ = stubTapDel(instance.ID, eniID, tapName)
+	// Step 4: OVS port + tap teardown (idempotent).
+	m.cleanupENITap(instance.ID, eniID, tapName)
 
 	delete(instance.ENIRequests.AttachedByENIID, eniID)
 	instance.ENIRequests.AvailableSlots = append(instance.ENIRequests.AvailableSlots, slot)
@@ -259,32 +247,51 @@ func waitForPCIDevice(dc DeviceController, deviceID string, wantPresent bool) er
 // override it to drive poll cadence without burning wall-clock time.
 var eniPipelineSleep = time.Sleep
 
-// stubTapAdd / stubTapDel / stubOVSAddPort / stubOVSDelPort emit a debug
-// log and return nil. Sprint 3c replaces these with real
-// NetworkPlumber.SetupTap / TeardownTap + ovs-vsctl invocations. The
-// pipeline structure and rollback semantics are stable in 3b so 3c is a
-// drop-in replacement.
+// SetHotPlugTestSeams swaps the device-controller factory and the
+// query-pci poll sleep for the duration of a test, returning a restore
+// func that callers pass to t.Cleanup. Mirrors utils.SetSudoCommandForTest:
+// the indirection lets tests in other packages drive the hot-plug
+// pipeline against a StubDeviceController without reassigning
+// unexported vars (which the reassign linter forbids). Pass nil for
+// either argument to leave the corresponding seam untouched.
+func SetHotPlugTestSeams(factory func(*VM) DeviceController, sleep func(time.Duration)) (restore func()) {
+	origFactory := newDeviceController
+	origSleep := eniPipelineSleep
+	if factory != nil {
+		newDeviceController = factory
+	}
+	if sleep != nil {
+		eniPipelineSleep = sleep
+	}
+	return func() {
+		newDeviceController = origFactory
+		eniPipelineSleep = origSleep
+	}
+}
 
-func stubTapAdd(instanceID, eniID, tapName string) error {
-	slog.Debug("ENI hot-plug step 1 (tap add) — stubbed in Sprint 3b",
-		"instanceId", instanceID, "eniId", eniID, "tap", tapName)
+// setupENITap creates the tap on br-int and wires the OVS port carrying the
+// OVN binding (iface-id) and attached MAC, via the shared NetworkPlumber. A
+// nil plumber (unit-test managers) is a noop, mirroring setupExtraENINICs.
+func (m *Manager) setupENITap(instanceID, eniID, mac string) error {
+	if m.deps.NetworkPlumber == nil {
+		return nil
+	}
+	spec := VPCTapSpec(eniID, mac)
+	if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
+		return fmt.Errorf("setup tap %s for eni %s on instance %s: %w", spec.Name, eniID, instanceID, err)
+	}
 	return nil
 }
 
-func stubTapDel(instanceID, eniID, tapName string) error {
-	slog.Debug("ENI hot-plug rollback (tap del) — stubbed in Sprint 3b",
-		"instanceId", instanceID, "eniId", eniID, "tap", tapName)
-	return nil
-}
-
-func stubOVSAddPort(instanceID, eniID, tapName, mac string) error {
-	slog.Debug("ENI hot-plug step 2 (ovs add-port) — stubbed in Sprint 3b",
-		"instanceId", instanceID, "eniId", eniID, "tap", tapName, "mac", mac)
-	return nil
-}
-
-func stubOVSDelPort(instanceID, eniID, tapName string) error {
-	slog.Debug("ENI hot-plug rollback (ovs del-port) — stubbed in Sprint 3b",
-		"instanceId", instanceID, "eniId", eniID, "tap", tapName)
-	return nil
+// cleanupENITap removes the tap and its OVS port. Idempotent (CleanupTap
+// tolerates already-absent state); a nil plumber is a noop. Failures are
+// logged, not returned — rollback/detach must make best-effort progress.
+func (m *Manager) cleanupENITap(instanceID, eniID, tapName string) {
+	if m.deps.NetworkPlumber == nil {
+		return
+	}
+	if err := m.deps.NetworkPlumber.CleanupTap(tapName); err != nil {
+		slog.Warn("ENI hot-plug tap cleanup failed",
+			"instanceId", instanceID, "eniId", eniID, "tap", tapName, "err", err)
+	}
 }

@@ -3,6 +3,7 @@ package vm
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +20,16 @@ import (
 // test (cleanup restores the production factory).
 func newHotPlugTestVM(t *testing.T, slots int) (*Manager, *VM, *StubDeviceController) {
 	t.Helper()
-	mgr := NewManager()
+	mgr, v, stub, _ := newHotPlugTestVMWithPlumber(t, slots)
+	return mgr, v, stub
+}
+
+// newHotPlugTestVMWithPlumber is the variant that exposes the fake
+// NetworkPlumber so 3c tests can assert tap/OVS SetupTap / CleanupTap calls.
+func newHotPlugTestVMWithPlumber(t *testing.T, slots int) (*Manager, *VM, *StubDeviceController, *fakeNetworkPlumber) {
+	t.Helper()
+	plumber := &fakeNetworkPlumber{}
+	mgr := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
 	stub := NewStubDeviceController()
 	available := make([]int, 0, slots)
 	for i := 1; i <= slots; i++ {
@@ -44,7 +54,7 @@ func newHotPlugTestVM(t *testing.T, slots int) (*Manager, *VM, *StubDeviceContro
 		newDeviceController = origFactory
 		eniPipelineSleep = origSleep
 	})
-	return mgr, v, stub
+	return mgr, v, stub, plumber
 }
 
 func TestHotPlugENI_SuccessPath(t *testing.T) {
@@ -293,6 +303,68 @@ func TestHotPlugENI_ConcurrentAttachesSerialize(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Errorf("got %d distinct slots, want 3", len(seen))
+	}
+}
+
+func TestHotPlugENI_WiresTapOnBrInt(t *testing.T) {
+	mgr, v, _, plumber := newHotPlugTestVMWithPlumber(t, 2)
+
+	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+		t.Fatalf("HotPlugENI: %v", err)
+	}
+	if len(plumber.setupCalls) != 1 {
+		t.Fatalf("SetupTap calls = %d, want 1", len(plumber.setupCalls))
+	}
+	got := plumber.setupCalls[0]
+	want := VPCTapSpec("eni-abc123", "02:00:00:aa:bb:cc")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SetupTap spec = %+v, want %+v", got, want)
+	}
+	if len(plumber.cleanupCalls) != 0 {
+		t.Errorf("CleanupTap called %d times on success, want 0", len(plumber.cleanupCalls))
+	}
+}
+
+func TestHotPlugENI_TapSetupFailureAbortsBeforeQMP(t *testing.T) {
+	mgr, v, stub, plumber := newHotPlugTestVMWithPlumber(t, 1)
+	plumber.setupErr = errors.New("ovs add-port boom")
+
+	_, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc")
+	if err == nil || !strings.Contains(err.Error(), "tap/ovs setup") {
+		t.Fatalf("err = %v, want tap/ovs setup failure", err)
+	}
+	if len(stub.Calls()) != 0 {
+		t.Errorf("QMP calls issued after tap setup failure: %v", stub.Calls())
+	}
+	if !containsSlot(v.ENIRequests.AvailableSlots, 1) {
+		t.Errorf("slot 1 not returned to free-list: %v", v.ENIRequests.AvailableSlots)
+	}
+}
+
+func TestHotPlugENI_QMPFailureCleansUpTap(t *testing.T) {
+	mgr, v, stub, plumber := newHotPlugTestVMWithPlumber(t, 1)
+	stub.SetFailNext("netdev_add", errors.New("netdev boom"))
+
+	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err == nil {
+		t.Fatalf("HotPlugENI: want error, got nil")
+	}
+	wantTap := TapDeviceName("eni-abc123")
+	if len(plumber.cleanupCalls) != 1 || plumber.cleanupCalls[0] != wantTap {
+		t.Errorf("CleanupTap calls = %v, want [%s]", plumber.cleanupCalls, wantTap)
+	}
+}
+
+func TestHotUnplugENI_CleansUpTap(t *testing.T) {
+	mgr, v, _, plumber := newHotPlugTestVMWithPlumber(t, 1)
+	if _, err := mgr.HotPlugENI(v, "eni-abc123", "02:00:00:aa:bb:cc"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if err := mgr.HotUnplugENI(v, "eni-abc123", false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	wantTap := TapDeviceName("eni-abc123")
+	if len(plumber.cleanupCalls) != 1 || plumber.cleanupCalls[0] != wantTap {
+		t.Errorf("CleanupTap calls = %v, want [%s]", plumber.cleanupCalls, wantTap)
 	}
 }
 

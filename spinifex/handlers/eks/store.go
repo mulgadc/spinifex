@@ -1,6 +1,8 @@
 package handlers_eks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -52,9 +54,23 @@ func NodegroupKey(cluster, ng string) string {
 	return fmt.Sprintf("clusters/%s/nodegroups/%s", cluster, ng)
 }
 
+// AccessEntriesPrefix returns the KV key prefix under which all of a cluster's
+// AccessEntry records live. Used by ListAccessEntries to enumerate.
+func AccessEntriesPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/access-entries/", cluster)
+}
+
 // AccessEntryKey returns the KV key for an AccessEntry record under a cluster.
+// The principal ARN is hashed because IAM ARNs contain ':' which is not a legal
+// NATS JetStream KV key character; the record itself carries the plaintext ARN.
 func AccessEntryKey(cluster, principalARN string) string {
-	return fmt.Sprintf("clusters/%s/access-entries/%s", cluster, principalARN)
+	return AccessEntriesPrefix(cluster) + PrincipalARNHash(principalARN)
+}
+
+// PrincipalARNHash maps an IAM principal ARN to a KV-key-safe token.
+func PrincipalARNHash(principalARN string) string {
+	sum := sha256.Sum256([]byte(principalARN))
+	return hex.EncodeToString(sum[:])
 }
 
 // OIDCProviderKey returns the KV key for a registered OIDC provider config

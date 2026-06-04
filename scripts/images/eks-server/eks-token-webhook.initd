@@ -1,7 +1,10 @@
 #!/sbin/openrc-run
 # eks-token-webhook — K8s TokenReview authenticator for IAM-backed kubectl.
 # Binds 127.0.0.1:8443 only; kube-apiserver is the sole client (loopback path).
-# Stub binary returns 503 on every request until cs-eks-6c lands.
+# Decodes `aws eks get-token` presigned URLs, verifies them via Mulga STS over
+# NATS, and resolves the principal to a TokenReview via the cluster AccessEntry
+# KV. Ordered `before k3s` so its apiserver kubeconfig exists before k3s reads
+# --authentication-token-webhook-config-file.
 
 description="EKS Token Review webhook (Mulga)"
 command="/usr/local/bin/eks-token-webhook"
@@ -11,7 +14,23 @@ pidfile="/run/eks-token-webhook.pid"
 output_log="/var/log/eks-token-webhook.log"
 error_log="/var/log/eks-token-webhook.log"
 
+# NATS creds + cluster identity come from the cloud-init-seeded first-boot env.
+# Sourced here and exported so start-stop-daemon hands them to the binary, which
+# reads SPINIFEX_NATS_* / EKS_ACCOUNT_ID / EKS_CLUSTER_NAME from its environment.
+if [ -f /etc/spinifex-eks/first-boot.env ]; then
+    # shellcheck disable=SC1091
+    . /etc/spinifex-eks/first-boot.env
+    export SPINIFEX_NATS_URL SPINIFEX_NATS_TOKEN SPINIFEX_NATS_CA EKS_ACCOUNT_ID EKS_CLUSTER_NAME
+fi
+
 depend() {
     need net
     before k3s
+}
+
+start_pre() {
+    if [ ! -f /etc/spinifex-eks/first-boot.env ]; then
+        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed NATS creds"
+        return 1
+    fi
 }

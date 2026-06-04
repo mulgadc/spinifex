@@ -57,13 +57,13 @@ chmod 0755 /usr/local/sbin/k3s-first-boot
 chmod 0755 /etc/periodic/15min/mulga-eks-state-report
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
 
-# K3s server config — empty skeleton; cloud-init / first-boot fills in the
+# K3s server config — skeleton; cloud-init / first-boot fills in the
 # per-cluster fields (cluster-cidr, service-cidr, token-file, etc).
-# Webhook-token-auth is NOT wired in the skeleton: enabling it before the
-# eks-token-webhook binary is the real implementation (currently a 503 stub,
-# replaced by cs-eks-6c) would block /healthz from anonymous callers. The
-# Sprint 6c orchestrator drops a webhook-config.yaml + restarts k3s once
-# the binary is the real one.
+# IAM token-auth is wired here via kube-apiserver-arg: the eks-token-webhook
+# service (ordered `before k3s`) writes its kubeconfig to
+# /etc/spinifex-eks/token-webhook.kubeconfig before the apiserver reads it.
+# This only affects bearer-token requests; anonymous and client-cert paths
+# (the first-boot /readyz probe uses the admin kubeconfig) are unaffected.
 mkdir -p /etc/rancher/k3s
 cat > /etc/rancher/k3s/config.yaml.skel <<'EOF'
 # Populated at first boot by cloud-init user-data via k3s-first-boot.sh.
@@ -73,6 +73,9 @@ disable:
   - traefik
   - servicelb
   - local-storage
+kube-apiserver-arg:
+  - "authentication-token-webhook-config-file=/etc/spinifex-eks/token-webhook.kubeconfig"
+  - "authentication-token-webhook-cache-ttl=5m"
 EOF
 
 # Sentinel file marker — k3s-first-boot self-disables after first success by

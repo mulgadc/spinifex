@@ -25,8 +25,9 @@ func NewNATSEKSService(conn *nats.Conn) EKSService {
 
 // --- Cluster ---
 
-func (s *NATSEKSService) CreateCluster(input *eks.CreateClusterInput, accountID string) (*eks.CreateClusterOutput, error) {
-	return utils.NATSRequest[eks.CreateClusterOutput](s.natsConn, "eks.CreateCluster", input, defaultTimeout, accountID)
+func (s *NATSEKSService) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
+	return utils.NATSRequest[eks.CreateClusterOutput](s.natsConn, "eks.CreateCluster", input, defaultTimeout, accountID,
+		utils.NATSHeader{Key: utils.PrincipalARNHeader, Value: callerPrincipalARN})
 }
 
 func (s *NATSEKSService) DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error) {

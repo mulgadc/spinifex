@@ -5,7 +5,7 @@ import "github.com/nats-io/nats.go"
 // --- Cluster ---
 
 func (d *Daemon) handleEKSCreateCluster(msg *nats.Msg) {
-	handleNATSRequest(msg, d.eksService.CreateCluster)
+	handleNATSRequestWithPrincipal(msg, d.eksService.CreateCluster)
 }
 
 func (d *Daemon) handleEKSDescribeCluster(msg *nats.Msg) {

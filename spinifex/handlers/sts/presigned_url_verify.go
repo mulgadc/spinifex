@@ -143,7 +143,11 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 		canonicalQuery,
 		canonicalHeaders,
 		signedHeadersList,
-		"UNSIGNED-PAYLOAD",
+		// botocore / aws-sdk presign `sts:GetCallerIdentity` (a non-S3, empty-body
+		// request) with the SHA256 of the empty string as the payload hash.
+		// "UNSIGNED-PAYLOAD" is an S3-only convention and would mismatch every
+		// real `aws eks get-token`.
+		emptyStringSHA256,
 	}, "\n")
 
 	stringToSign := strings.Join([]string{
@@ -359,6 +363,10 @@ func hexSHA256(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// emptyStringSHA256 is the SigV4 payload hash for an empty body — the value
+// botocore/aws-sdk use when presigning non-S3 requests like GetCallerIdentity.
+var emptyStringSHA256 = hexSHA256("")
 
 func hmacSHA256(key []byte, data string) []byte {
 	mac := hmac.New(sha256.New, key)

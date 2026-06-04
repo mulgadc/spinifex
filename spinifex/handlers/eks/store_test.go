@@ -47,7 +47,7 @@ func TestKeyPaths_MatchQ2Spec(t *testing.T) {
 	}{
 		{"ClusterMetaKey", ClusterMetaKey("alpha"), "clusters/alpha/meta"},
 		{"NodegroupKey", NodegroupKey("alpha", "ng-1"), "clusters/alpha/nodegroups/ng-1"},
-		{"AccessEntryKey", AccessEntryKey("alpha", "arn:aws:iam::111122223333:user/dev"), "clusters/alpha/access-entries/arn:aws:iam::111122223333:user/dev"},
+		{"AccessEntryKey", AccessEntryKey("alpha", "arn:aws:iam::111122223333:user/dev"), "clusters/alpha/access-entries/" + PrincipalARNHash("arn:aws:iam::111122223333:user/dev")},
 		{"OIDCProviderKey", OIDCProviderKey("alpha", "abc123"), "clusters/alpha/oidc-providers/abc123"},
 		{"OIDCSigningKeyKey", OIDCSigningKeyKey("alpha"), "clusters/alpha/oidc-signing-key.pem.enc"},
 		{"OIDCJWKSKey", OIDCJWKSKey("alpha"), "clusters/alpha/oidc-jwks.json"},

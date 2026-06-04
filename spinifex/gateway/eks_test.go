@@ -66,6 +66,37 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 	}
 }
 
+// IAM principal ARNs contain a `/` (`user/admin`) and a `:` which the AWS CLI
+// percent-encodes in the request path. lookupEKSAction is fed r.URL.EscapedPath()
+// so `%2F` stays a single `([^/]+)` segment; the captured param is then
+// PathUnescape'd back to the real ARN before reaching the handler.
+func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
+	const (
+		arn     = "arn:aws:iam::000000000001:user/admin"
+		escaped = "arn%3Aaws%3Aiam%3A%3A000000000001%3Auser%2Fadmin"
+	)
+	cases := []struct {
+		method, path string
+		wantAction   string
+	}{
+		{"GET", "/clusters/alpha/access-entries/" + escaped, "DescribeAccessEntry"},
+		{"POST", "/clusters/alpha/access-entries/" + escaped, "UpdateAccessEntry"},
+		{"DELETE", "/clusters/alpha/access-entries/" + escaped, "DeleteAccessEntry"},
+		{"POST", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "AssociateAccessPolicy"},
+		{"DELETE", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "DisassociateAccessPolicy"},
+		{"GET", "/clusters/alpha/access-entries/" + escaped + "/access-policies", "ListAssociatedAccessPolicies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+"_"+tc.wantAction, func(t *testing.T) {
+			action, params, handler, ok := lookupEKSAction(tc.method, tc.path)
+			require.True(t, ok, "encoded ARN path should match: %s %s", tc.method, tc.path)
+			require.NotNil(t, handler)
+			assert.Equal(t, tc.wantAction, action)
+			assert.Equal(t, []string{"alpha", arn}, params)
+		})
+	}
+}
+
 func TestLookupEKSAction_CoversAll34Actions(t *testing.T) {
 	expected := map[string]bool{
 		"CreateCluster":                      false,

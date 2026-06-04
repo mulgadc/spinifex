@@ -33,39 +33,49 @@ func readUnit(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-// TestIMDS_NetnsSharedMountInvariant pins the host<->vpcd mount-propagation
-// contract for per-VPC IMDS netns (see spinifex-vpcd.service + bead js-133):
-// vpcd's MountFlags=shared is necessary but inert unless /run/netns is ALREADY a
-// shared mount on the host before vpcd unshares. spinifex-netns.service supplies
-// that, UNSANDBOXED so the make-shared lands in the host mount namespace, ordered
-// Before vpcd. Dropping any half of this coupling reintroduces the setns(2)
-// EINVAL failure (CI run 26920490454), so guard the whole shape here.
-func TestIMDS_NetnsSharedMountInvariant(t *testing.T) {
+// TestIMDS_NetnsHostMountNSInvariant pins the host-mount-namespace contract for
+// per-VPC IMDS netns (see spinifex-vpcd.service + bead js-133): vpcd creates the
+// netns via `ip netns add` and binds the listener via in-process setns, so the
+// /run/netns/<vpc> bind-mount must live in the HOST mount namespace — host-visible
+// for diagnostics and durable across a vpcd restart. Any filesystem-sandbox
+// directive forks a PRIVATE mount ns that traps the bind-mount inside vpcd, so the
+// host sees only a stale handle that fails setns(2) EINVAL (CI runs 26920490454,
+// 26922587471). The earlier MountFlags=shared + spinifex-netns.service shared-mount
+// workaround was proven insufficient and removed; vpcd now simply shares the host
+// mount ns. Guard that shape: re-adding any mount-ns directive reintroduces the bug.
+func TestIMDS_NetnsHostMountNSInvariant(t *testing.T) {
 	root := repoRoot(t)
 
 	vpcd := readUnit(t, root, "build/systemd/spinifex-vpcd.service")
-	netns := readUnit(t, root, "build/systemd/spinifex-netns.service")
 	target := readUnit(t, root, "build/systemd/spinifex.target")
 
-	// vpcd keeps shared propagation and depends on the host-side prep unit.
-	mustContain(t, "spinifex-vpcd.service", vpcd, "MountFlags=shared")
-	mustOrderingRefs(t, vpcd, "spinifex-netns.service")
-
-	// The prep unit must run in the HOST mount namespace: oneshot, ordered
-	// before vpcd, establishing shared propagation on /run/netns, with NO
-	// sandbox directive that would fork a private mount ns and hide it.
-	mustContain(t, "spinifex-netns.service", netns, "Type=oneshot")
-	mustContain(t, "spinifex-netns.service", netns, "Before=spinifex-vpcd.service")
-	mustContain(t, "spinifex-netns.service", netns, "mount --make-shared /run/netns")
-	for _, banned := range []string{"ProtectSystem", "ProtectHome", "PrivateTmp", "MountFlags", "RestrictNamespaces"} {
-		if directiveSet(netns, banned) {
-			t.Errorf("spinifex-netns.service must stay UNSANDBOXED but sets %s= — a private mount ns hides make-shared from the host", banned)
+	// No filesystem-sandbox directive may be set on vpcd: each forks a private
+	// mount namespace and re-traps the netns bind-mount.
+	for _, banned := range []string{
+		"ProtectSystem", "ProtectHome", "PrivateTmp", "ProtectKernelTunables",
+		"ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups",
+		"ProtectProc", "ReadOnlyPaths", "ReadWritePaths", "MountFlags",
+	} {
+		if directiveSet(vpcd, banned) {
+			t.Errorf("spinifex-vpcd.service must share the HOST mount ns but sets %s= — a private mount ns traps /run/netns/<vpc> and host setns(2) fails EINVAL", banned)
 		}
 	}
 
-	// The target pulls the prep unit in at boot (units start via the target's
-	// Wants=, not per-unit enable).
-	mustContain(t, "spinifex.target", target, "spinifex-netns.service")
+	// vpcd still needs CAP_SYS_ADMIN for setns(CLONE_NEWNET) and the net+mnt
+	// namespace allowance for the in-netns `ip` plumbing.
+	mustContain(t, "spinifex-vpcd.service", vpcd, "CAP_SYS_ADMIN")
+	mustContain(t, "spinifex-vpcd.service", vpcd, "RestrictNamespaces=net mnt")
+
+	// The removed shared-mount workaround must not reappear by reference.
+	if strings.Contains(vpcd, "spinifex-netns.service") && !strings.Contains(vpcd, "# ") {
+		t.Errorf("spinifex-vpcd.service must not depend on spinifex-netns.service (removed)")
+	}
+	if directiveSet(target, "Wants") && strings.Contains(target, "spinifex-netns.service") {
+		t.Errorf("spinifex.target must not pull in spinifex-netns.service (removed)")
+	}
+	if _, err := os.Stat(filepath.Join(root, "build", "systemd", "spinifex-netns.service")); err == nil {
+		t.Errorf("build/systemd/spinifex-netns.service must be removed — the shared-mount workaround was proven insufficient")
+	}
 }
 
 // directiveSet reports whether key is set as an actual unit directive (a line

@@ -1,8 +1,8 @@
 [Unit]
 Description=Spinifex VPC Daemon (OVN Networking)
 PartOf=spinifex.target
-After=spinifex-nats.service spinifex-daemon.service systemd-networkd.service openvswitch-switch.service ovn-controller.service spinifex-netns.service
-Wants=spinifex-nats.service ovn-controller.service spinifex-netns.service
+After=spinifex-nats.service spinifex-daemon.service systemd-networkd.service openvswitch-switch.service ovn-controller.service
+Wants=spinifex-nats.service ovn-controller.service
 
 [Service]
 Type=simple
@@ -16,46 +16,34 @@ OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/vpcd/
 
-# Filesystem access — NoNewPrivileges omitted (vpcd uses sudo for ovs-vsctl, ovn-nbctl, systemctl)
-ProtectSystem=full
+# vpcd MUST share the HOST mount namespace. IMDS binds one listener per VPC inside
+# a per-VPC netns entered in-process via setns(CLONE_NEWNET); the /run/netns/<vpc>
+# bind-mount that `ip netns add` creates must be host-visible (for diagnostics) and
+# must survive a vpcd restart (so the listener can rebind). ANY filesystem-sandbox
+# directive — ProtectSystem / ProtectHome / PrivateTmp / ProtectKernel* /
+# ProtectControlGroups / ProtectProc / Read{Only,Write}Paths — forks a PRIVATE
+# mount namespace that traps that bind-mount inside vpcd, leaving the host a stale
+# handle that fails setns(2) with EINVAL (CI runs 26920490454, 26922587471). Those
+# directives are therefore omitted by design, and so is the MountFlags=shared /
+# spinifex-netns.service propagation workaround they required.
+#
+# Boundary that REMAINS: DAC (User=spinifex-vpcd) plus the seccomp / capability /
+# namespace / address-family restrictions below. The durable fix that restores
+# filesystem sandboxing AND drops CAP_SYS_ADMIN is the process-per-netns model
+# (`ip netns exec` helper instead of in-process setns) — see
+# docs/development/improvements/imds-l2-datapath.md Phase 5.
 PrivateDevices=no
-ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/ca.pem
-ReadWritePaths=/var/lib/spinifex/vpcd /var/log/spinifex
 
-# Hardening
-ProtectHome=yes
-PrivateTmp=yes
+# Hardening that does NOT fork a mount namespace (kept)
 RestrictSUIDSGID=no
 LockPersonality=yes
 RestrictRealtime=yes
-# IMDS binds one listener per VPC inside a per-VPC network namespace; the handler
-# enters it in-process via setns(CLONE_NEWNET), which RestrictNamespaces=yes would
-# block. The `ip -n <netns>` / `ip netns exec` plumbing also unshares a mount
-# namespace (CLONE_NEWNS, to give the netns its own /sys), so `mnt` must be
-# allowlisted alongside `net` or the first in-netns command fails with EPERM.
-RestrictNamespaces=net mnt
-# The sandbox directives above (ProtectSystem/ProtectHome/PrivateTmp) give vpcd a
-# private mount namespace. Without shared propagation, the /run/netns/<vpc>
-# bind-mount that `ip netns add` creates lives only inside vpcd's mount ns: it is
-# invisible to the host (every `ip netns exec` from outside fails setns EINVAL,
-# blinding diagnostics) and — worse — it dies on a vpcd restart, leaving a stale
-# /run/netns/<vpc> handle that fails setns EINVAL so the IMDS listener can never
-# rebind. MountFlags=shared propagates the netns mounts to the host mount ns so
-# they survive restart and are observable. vpcd already runs with CAP_SYS_ADMIN +
-# CAP_NET_ADMIN, so the propagation does not widen its effective privilege.
-#
-# MountFlags=shared is necessary but NOT sufficient on its own: propagation only
-# crosses the host<->vpcd boundary when /run/netns is ALREADY a shared mount on
-# the host before vpcd unshares. spinifex-netns.service (ordered Before= this
-# unit) establishes that host-side shared mount; without it the netns bind-mount
-# lands in vpcd's own fresh peer group and host setns(2) still fails EINVAL.
-MountFlags=shared
 ProtectClock=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
-ProtectControlGroups=yes
-ProtectProc=invisible
+# IMDS enters the per-VPC netns via setns(CLONE_NEWNET); the `ip -n <netns>` /
+# `ip netns exec` plumbing also unshares a mount namespace (CLONE_NEWNS, to give
+# the netns its own /sys), so `mnt` must be allowlisted alongside `net` or the
+# first in-netns command fails with EPERM.
+RestrictNamespaces=net mnt
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=no
 # AF_PACKET: required by the in-process DHCP client (github.com/insomniacslk/dhcp

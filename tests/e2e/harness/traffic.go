@@ -77,6 +77,38 @@ func TCPRoundRobin(host string, port int, n int, timeout time.Duration) TrafficR
 	return r
 }
 
+// UDPRoundRobin sends n UDP datagrams to host:port, reads the echoed line per
+// datagram, and counts responders. Matches the app-userdata UDP echo responder.
+// UDP is connectionless, so each probe writes a payload then reads with a
+// deadline; a dropped datagram counts as a failure rather than blocking.
+func UDPRoundRobin(host string, port int, n int, timeout time.Duration) TrafficResult {
+	r := TrafficResult{Distribution: map[string]int{}, Total: n}
+	for i := 0; i < n; i++ {
+		conn, err := net.DialTimeout("udp", fmt.Sprintf("%s:%d", host, port), timeout)
+		if err != nil {
+			continue
+		}
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			conn.Close()
+			continue
+		}
+		conn.SetReadDeadline(time.Now().Add(timeout))
+		buf := make([]byte, 256)
+		nb, err := conn.Read(buf)
+		conn.Close()
+		if err != nil {
+			continue
+		}
+		resp := strings.TrimSpace(string(buf[:nb]))
+		if resp == "" {
+			continue
+		}
+		r.Distribution[resp]++
+		r.Successful++
+	}
+	return r
+}
+
 // AssertRoundRobin asserts that r has at least minUnique distinct responders
 // and at least minSuccess successful probes. Logs the distribution either way.
 func AssertRoundRobin(t *testing.T, r TrafficResult, minUnique, minSuccess int, label string) {

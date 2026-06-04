@@ -602,7 +602,7 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 
 ## ELBv2 (Application & Network Load Balancer)
 
-The data plane uses a system-managed LB VM running HAProxy, launched automatically during `create-load-balancer`.
+The data plane uses a system-managed LB VM, launched automatically during `create-load-balancer`. Application Load Balancers run **HAProxy** (L7: rules, fixed-response, redirect, HTTP/HTTPS). Network Load Balancers run **nginx `stream`** (L4: TCP, UDP, TLS, TCP_UDP) — HAProxy cannot load-balance UDP. The agent selects the engine from the `Engine` field on the config-delivery response.
 
 ### ELBv2 — Load Balancers
 

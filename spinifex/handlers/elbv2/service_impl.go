@@ -608,6 +608,13 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
+	// NLBs run nginx, which has no active upstream probing — the agent
+	// probes these targets and reports health. ALBs report via HAProxy stats.
+	if lb.Type == LoadBalancerTypeNetwork {
+		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
+	} else {
+		lb.HealthTargets = nil
+	}
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
 		slog.Error("updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
@@ -828,10 +835,30 @@ func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string
 	}
 
 	return &GetLBConfigOutput{
-		ConfigText: aws.String(lb.ConfigText),
-		ConfigHash: aws.String(lb.ConfigHash),
-		CertFiles:  certFilesToSDK(lb.CertFiles),
+		ConfigText:    aws.String(lb.ConfigText),
+		ConfigHash:    aws.String(lb.ConfigHash),
+		CertFiles:     certFilesToSDK(lb.CertFiles),
+		Engine:        aws.String(engineForType(lb.Type)),
+		HealthTargets: healthTargetsToSDK(lb.HealthTargets),
 	}, nil
+}
+
+// healthTargetsToSDK converts the stored health-target specs into the SDK
+// HealthTarget slice delivered to the nginx agent.
+func healthTargetsToSDK(specs []HealthTargetSpec) []*HealthTarget {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]*HealthTarget, 0, len(specs))
+	for i := range specs {
+		out = append(out, &HealthTarget{
+			ServerName: aws.String(specs[i].ServerName),
+			Address:    aws.String(specs[i].Address),
+			Protocol:   aws.String(specs[i].Protocol),
+			Path:       aws.String(specs[i].Path),
+		})
+	}
+	return out
 }
 
 // certFilesToSDK converts the stored path→PEM map into the sorted CertFile

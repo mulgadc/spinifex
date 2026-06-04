@@ -91,13 +91,27 @@ describe("createLoadBalancerSchema", () => {
     expect(result.success).toBeTruthy()
   })
 
-  it("rejects <2 subnets", () => {
+  it("accepts a single subnet", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "my-alb",
       type: "application",
       scheme: "internet-facing",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a"],
+      securityGroupIds: [],
+      tags: [],
+      listener: baseListener,
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("rejects zero subnets", () => {
+    const result = createLoadBalancerSchema.safeParse({
+      name: "my-alb",
+      type: "application",
+      scheme: "internet-facing",
+      vpcId: "vpc-1",
+      subnetIds: [],
       securityGroupIds: [],
       tags: [],
       listener: baseListener,

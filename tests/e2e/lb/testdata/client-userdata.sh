@@ -28,6 +28,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             count = int(body.get("count", 20))
             outfile = body["outfile"]
             tcp_port = int(body.get("tcp_port", 9000))
+            udp_port = int(body.get("udp_port", 9001))
             http_port = int(body.get("http_port", 80))
             http_path = body.get("http_path", "/") or "/"
             if not http_path.startswith("/"):
@@ -47,6 +48,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         cmd += ["-H", f"Host: {host_header}"]
                     cmd.append(f"http://{ip}:{http_port}{http_path}")
                     r = subprocess.run(cmd, capture_output=True, text=True)
+                    fh.write(r.stdout.strip() + "\n")
+                elif proto == "udp":
+                    r = subprocess.run(
+                        ["bash", "-c", f'echo "ping" | nc -u -w2 {ip} {udp_port} 2>/dev/null || true'],
+                        capture_output=True, text=True)
                     fh.write(r.stdout.strip() + "\n")
                 else:
                     r = subprocess.run(

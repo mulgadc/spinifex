@@ -40,6 +40,12 @@ const (
 	ProtocolTLS    = "TLS"
 	ProtocolTCPUDP = "TCP_UDP"
 
+	// Data-plane engines. ALBs (L7) run HAProxy; NLBs (L4) run nginx `stream`
+	// because HAProxy cannot load-balance UDP. The agent learns which engine to
+	// run from the GetLBConfig response.
+	EngineHAProxy = "haproxy"
+	EngineNginx   = "nginx"
+
 	// DefaultSslPolicy is applied to a secure listener when the caller does
 	// not specify an SslPolicy.
 	DefaultSslPolicy = "ELBSecurityPolicy-2016-08"
@@ -94,31 +100,43 @@ const (
 
 // LoadBalancerRecord represents a stored load balancer (ALB or NLB).
 type LoadBalancerRecord struct {
-	LoadBalancerArn string            `json:"load_balancer_arn"`
-	LoadBalancerID  string            `json:"load_balancer_id"` // Short ID (hex suffix)
-	DNSName         string            `json:"dns_name"`
-	Name            string            `json:"name"`
-	Scheme          string            `json:"scheme"` // "internet-facing" or "internal"
-	Type            string            `json:"type"`   // Always "application"
-	State           string            `json:"state"`  // "provisioning", "active", "failed"
-	VpcId           string            `json:"vpc_id"`
-	SecurityGroups  []string          `json:"security_groups"`
-	Subnets         []string          `json:"subnets"`
-	AvailZones      []AvailZoneInfo   `json:"availability_zones"`
-	ENIs            []string          `json:"enis,omitempty"`        // ENI IDs created for this ALB (internal)
-	InstanceID      string            `json:"instance_id,omitempty"` // ALB VM instance ID (system-managed)
-	VPCIP           string            `json:"vpc_ip,omitempty"`      // VPC private IP of the ALB VM
-	ConfigText      string            `json:"config_text,omitempty"` // Pre-computed HAProxy config
-	ConfigHash      string            `json:"config_hash,omitempty"` // SHA256 of ConfigText + cert material
-	CertFiles       map[string]string `json:"cert_files,omitempty"`  // Absolute path → combined PEM (cert+chain+key), delivered with config
-	LastHeartbeat   time.Time         `json:"last_heartbeat"`        // Last agent heartbeat timestamp
-	HostPorts       map[int]int       `json:"host_ports,omitempty"`  // Dev mode: guest port → host port forwarding
-	NodeID          string            `json:"node_id"`               // Daemon node running this ALB
-	IPAddressType   string            `json:"ip_address_type"`       // "ipv4"
-	Attributes      map[string]string `json:"attributes,omitempty"`
-	Tags            map[string]string `json:"tags,omitempty"`
-	AccountID       string            `json:"account_id"`
-	CreatedAt       time.Time         `json:"created_at"`
+	LoadBalancerArn string             `json:"load_balancer_arn"`
+	LoadBalancerID  string             `json:"load_balancer_id"` // Short ID (hex suffix)
+	DNSName         string             `json:"dns_name"`
+	Name            string             `json:"name"`
+	Scheme          string             `json:"scheme"` // "internet-facing" or "internal"
+	Type            string             `json:"type"`   // Always "application"
+	State           string             `json:"state"`  // "provisioning", "active", "failed"
+	VpcId           string             `json:"vpc_id"`
+	SecurityGroups  []string           `json:"security_groups"`
+	Subnets         []string           `json:"subnets"`
+	AvailZones      []AvailZoneInfo    `json:"availability_zones"`
+	ENIs            []string           `json:"enis,omitempty"`           // ENI IDs created for this ALB (internal)
+	InstanceID      string             `json:"instance_id,omitempty"`    // ALB VM instance ID (system-managed)
+	VPCIP           string             `json:"vpc_ip,omitempty"`         // VPC private IP of the ALB VM
+	ConfigText      string             `json:"config_text,omitempty"`    // Pre-computed HAProxy config
+	ConfigHash      string             `json:"config_hash,omitempty"`    // SHA256 of ConfigText + cert material
+	CertFiles       map[string]string  `json:"cert_files,omitempty"`     // Absolute path → combined PEM (cert+chain+key), delivered with config
+	HealthTargets   []HealthTargetSpec `json:"health_targets,omitempty"` // NLB only: backends the nginx agent actively probes (HAProxy reports its own)
+	LastHeartbeat   time.Time          `json:"last_heartbeat"`           // Last agent heartbeat timestamp
+	HostPorts       map[int]int        `json:"host_ports,omitempty"`     // Dev mode: guest port → host port forwarding
+	NodeID          string             `json:"node_id"`                  // Daemon node running this ALB
+	IPAddressType   string             `json:"ip_address_type"`          // "ipv4"
+	Attributes      map[string]string  `json:"attributes,omitempty"`
+	Tags            map[string]string  `json:"tags,omitempty"`
+	AccountID       string             `json:"account_id"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+// HealthTargetSpec is a backend the nginx agent actively health-checks. It is
+// computed when the NLB config is stored and delivered to the agent via
+// GetLBConfig. ServerName matches the health checker's key
+// (sanitizeName("srv", target.Id)).
+type HealthTargetSpec struct {
+	ServerName string `json:"server_name"`
+	Address    string `json:"address"`  // ip:port to probe
+	Protocol   string `json:"protocol"` // TCP | HTTP | HTTPS
+	Path       string `json:"path,omitempty"`
 }
 
 // AvailZoneInfo tracks subnet-to-AZ mapping for a load balancer.

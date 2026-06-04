@@ -106,18 +106,18 @@ export function isSecureProtocol(protocol: string): boolean {
 
 export const createListenerSchema = z
   .object({
-    protocol: z.enum(["HTTP", "HTTPS"]),
+    protocol: z.enum(ALL_LISTENER_PROTOCOLS),
     port: portField,
     defaultTargetGroupArn: z.string().min(1, "Target group is required"),
     certificateArn: z.string().optional(),
     sslPolicy: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.protocol === "HTTPS" && !data.certificateArn) {
+    if (isSecureProtocol(data.protocol) && !data.certificateArn) {
       ctx.addIssue({
         code: "custom",
         path: ["certificateArn"],
-        message: "A certificate is required for HTTPS",
+        message: "A certificate is required for HTTPS and TLS",
       })
     }
   })
@@ -200,7 +200,7 @@ export const createLoadBalancerSchema = z.object({
   type: z.enum(LB_TYPES),
   scheme: z.enum(["internet-facing", "internal"]),
   vpcId: z.string().min(1, "VPC is required"),
-  subnetIds: z.array(z.string()).min(2, "At least 2 subnets are required"),
+  subnetIds: z.array(z.string()).min(1, "At least 1 subnet is required"),
   securityGroupIds: z.array(z.string()),
   tags: z.array(tagSchema),
   listener: z

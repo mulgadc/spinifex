@@ -19,7 +19,10 @@ INITTAB="$BUILD_DIR/inittab"
 
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
-ALPINE_PACKAGES="busybox linux-virt haproxy iproute2 ca-certificates"
+# haproxy: ALB (L7) data plane. nginx + nginx-mod-stream: NLB (L4) data plane —
+# the `stream` module (a separate Alpine package) load-balances TCP/UDP/TLS,
+# which haproxy cannot do for UDP.
+ALPINE_PACKAGES="busybox linux-virt haproxy nginx nginx-mod-stream iproute2 ca-certificates"
 
 echo "[build-microvm-image] repo root: $REPO_ROOT"
 echo "[build-microvm-image] build dir: $BUILD_DIR"

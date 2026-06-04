@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -124,6 +125,30 @@ func TestResolveCertPEM_ConcatOrderAndOwnership(t *testing.T) {
 	// Unknown ARN → not found.
 	_, err = svc.resolveCertPEM("arn:aws:acm:ap-southeast-2:123456789012:certificate/missing", testAccountID)
 	require.Error(t, err)
+}
+
+func TestValidateListenerCerts_RejectsUnknownAndWrongAccount(t *testing.T) {
+	svc := setupTestService(t)
+	putTestCert(t, svc, certTestArn, testAccountID, "LEAF", "", "KEY")
+
+	// Known, owned cert → accepted.
+	require.NoError(t, svc.validateListenerCerts(
+		[]ListenerCertificate{{CertificateArn: certTestArn}}, testAccountID))
+
+	// Unknown ARN → CertificateNotFound, rejected at the API boundary.
+	err := svc.validateListenerCerts(
+		[]ListenerCertificate{{CertificateArn: "arn:aws:acm:ap-southeast-2:123456789012:certificate/missing"}}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorELBv2CertificateNotFound)
+
+	// Cert owned by another account → not found.
+	err = svc.validateListenerCerts(
+		[]ListenerCertificate{{CertificateArn: certTestArn}}, "999999999999")
+	require.EqualError(t, err, awserrors.ErrorELBv2CertificateNotFound)
+
+	// No ACM store (degraded) → validation skipped, never blocks.
+	svc.acmStore = nil
+	require.NoError(t, svc.validateListenerCerts(
+		[]ListenerCertificate{{CertificateArn: certTestArn}}, testAccountID))
 }
 
 func TestResolveCertPEM_NoChain(t *testing.T) {

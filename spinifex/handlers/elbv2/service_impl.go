@@ -670,6 +670,25 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error)
 	return b.String(), nil
 }
 
+// validateListenerCerts confirms every certificate ARN resolves in the ACM
+// store and is owned by the account, rejecting an unknown ARN at the API
+// boundary (CreateListener/ModifyListener) with ErrorELBv2CertificateNotFound.
+// Without this, an unresolvable ARN is accepted into the listener and only
+// fails later at config-render time, which aborts updateStoredConfig wholesale
+// and silently freezes the LB's data-plane convergence. Skipped when the ACM
+// store is unavailable (cannot validate; matches the nil-safe resolve path).
+func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, accountID string) error {
+	if s.acmStore == nil {
+		return nil
+	}
+	for _, c := range certs {
+		if _, err := s.resolveCertPEM(c.CertificateArn, accountID); err != nil {
+			return errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		}
+	}
+	return nil
+}
+
 // configCertHash hashes the rendered config plus every delivered cert file
 // (path + content, in sorted path order) so a cert rotation changes the hash
 // and triggers an agent reload even when the config text is unchanged.
@@ -2016,6 +2035,9 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	if err != nil {
 		return nil, err
 	}
+	if err := s.validateListenerCerts(certs, accountID); err != nil {
+		return nil, err
+	}
 
 	listenerID := utils.GenerateResourceID("lst")
 	listenerArn := buildListenerArn(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
@@ -2254,6 +2276,9 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 		}
 		certs, policy, certErr := buildListenerCertificates(updated.Protocol, inCerts, sslPolicy)
 		if certErr != nil {
+			return nil, certErr
+		}
+		if certErr := s.validateListenerCerts(certs, accountID); certErr != nil {
 			return nil, certErr
 		}
 		updated.Certificates = certs

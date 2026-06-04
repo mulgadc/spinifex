@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ func loopbackListen(addrs *sync.Map) listenFunc {
 func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 	const hostEnd = "imds-h-abc12345"
 	var ensured, removed atomic.Int32
-	ensure := func(_ context.Context, _ string) (string, string, error) {
+	ensure := func(_ context.Context, _ string, _ netip.Prefix) (string, string, error) {
 		ensured.Add(1)
 		return "", hostEnd, nil
 	}
@@ -53,12 +54,13 @@ func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 	var addrs sync.Map
 	bm := newBindManager(nil, handler, ensure, remove, loopbackListen(&addrs))
 	ctx := context.Background()
+	cidr := netip.MustParsePrefix("10.211.0.0/16")
 
-	require.NoError(t, bm.bind(ctx, "vpc-abc12345"))
+	require.NoError(t, bm.bind(ctx, "vpc-abc12345", cidr))
 	assert.Equal(t, int32(1), ensured.Load())
 
-	// Second bind of the same VPC is a no-op (idempotent), no extra veth ensure.
-	require.NoError(t, bm.bind(ctx, "vpc-abc12345"))
+	// Second bind of the same key is a no-op (idempotent), no extra veth ensure.
+	require.NoError(t, bm.bind(ctx, "vpc-abc12345", cidr))
 	assert.Equal(t, int32(1), ensured.Load())
 
 	raw, ok := addrs.Load(hostEnd)
@@ -82,41 +84,44 @@ func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 }
 
 func TestBindManager_BindPropagatesVethError(t *testing.T) {
-	ensure := func(_ context.Context, _ string) (string, string, error) {
+	ensure := func(_ context.Context, _ string, _ netip.Prefix) (string, string, error) {
 		return "", "", errEnsureFailed
 	}
 	bm := newBindManager(nil, http.NewServeMux(), ensure, func(context.Context, string) error { return nil }, loopbackListen(&sync.Map{}))
-	err := bm.bind(context.Background(), "vpc-x")
+	err := bm.bind(context.Background(), "vpc-x", netip.MustParsePrefix("10.211.0.0/16"))
 	require.Error(t, err)
 }
 
 var errEnsureFailed = io.ErrUnexpectedEOF
 
 // TestBindManager_SyncSkipsVersionKey guards that the schema-version marker
-// migrate.RunKV stamps into the vpc-veth bucket is not mistaken for a VPC ID
-// and made to bring up a bogus veth + listener.
+// migrate.RunKV stamps into the subnet-veth bucket is not mistaken for a subnet
+// ID and made to bring up a bogus veth + listener.
 func TestBindManager_SyncSkipsVersionKey(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	vpcVeth, _, err := InitBuckets(js, 1)
+	subnetVeth, _, err := InitBuckets(js, 1)
 	require.NoError(t, err)
 
-	// InitBuckets → migrate.RunKV stamps utils.VersionKey; add one real VPC too.
-	_, err = vpcVeth.PutString("vpc-abcdef12", "{}")
-	require.NoError(t, err)
+	// InitBuckets → migrate.RunKV stamps utils.VersionKey; add one real subnet
+	// record (sync resolves its CIDR from the record before binding).
+	require.NoError(t, NewVethStore(subnetVeth).Put(SubnetVethRecord{
+		SubnetID:   "subnet-abcdef12",
+		SubnetCIDR: "10.211.0.0/16",
+	}))
 
 	var bound sync.Map
-	ensure := func(_ context.Context, vpcID string) (string, string, error) {
-		bound.Store(vpcID, true)
-		return "imds-" + vpcID, "imds-h-" + vpcID, nil
+	ensure := func(_ context.Context, subnetID string, _ netip.Prefix) (string, string, error) {
+		bound.Store(subnetID, true)
+		return "imds-" + subnetID, "imds-h-" + subnetID, nil
 	}
 	remove := func(context.Context, string) error { return nil }
-	bm := newBindManager(vpcVeth, http.NewServeMux(), ensure, remove, loopbackListen(&sync.Map{}))
+	bm := newBindManager(subnetVeth, http.NewServeMux(), ensure, remove, loopbackListen(&sync.Map{}))
 
 	require.NoError(t, bm.sync(context.Background()))
 	defer bm.shutdown()
 
 	_, versionBound := bound.Load(utils.VersionKey)
-	assert.False(t, versionBound, "_version marker must not be bound as a VPC")
-	_, vpcBound := bound.Load("vpc-abcdef12")
-	assert.True(t, vpcBound, "real VPC entry must be bound")
+	assert.False(t, versionBound, "_version marker must not be bound as a subnet")
+	_, subnetBound := bound.Load("subnet-abcdef12")
+	assert.True(t, subnetBound, "real subnet entry must be bound")
 }

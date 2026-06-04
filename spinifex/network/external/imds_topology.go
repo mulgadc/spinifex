@@ -63,7 +63,7 @@ func NewIMDSTopologyManager(client ovn.Client, store *handlers_imds.VethStore) (
 func IMDSSpecForSubnet(subnetID string) IMDSSubnetSpec {
 	return IMDSSubnetSpec{
 		SubnetID:      subnetID,
-		ShortSubnetID: host.IMDSShortVPCID(subnetID),
+		ShortSubnetID: host.IMDSShortSubnetID(subnetID),
 		LSName:        topology.SubnetSwitch(subnetID),
 		LSPName:       topology.IMDSPort(subnetID),
 		LSPMAC:        utils.HashMAC("imds-" + subnetID),

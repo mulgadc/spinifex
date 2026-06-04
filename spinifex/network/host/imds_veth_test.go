@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"net/netip"
 	"os/exec"
 	"slices"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-const testVPCID = "vpc-0123456789abcdef" // short form: "89abcdef"
+const testSubnetID = "subnet-0123456789abcdef" // short form: "89abcdef"
+
+var testSubnetCIDR = netip.MustParsePrefix("10.211.0.0/16")
 
 func recordSudo(t *testing.T, fail func(name string, args []string) *exec.Cmd) *[][]string {
 	t.Helper()
@@ -36,7 +39,7 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 		return nil
 	})
 
-	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR)
 	if err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
 	}
@@ -53,14 +56,14 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 		{"ip", "link", "add", "imds-o-89abcdef", "type", "veth", "peer", "name", "imds-h-89abcdef"},
 		{"ip", "link", "set", "imds-o-89abcdef", "up"},
 		{"ip", "link", "set", "imds-h-89abcdef", "netns", "imds-89abcdef"},
-		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "address", utils.HashMAC("imds-" + testVPCID)},
+		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "address", utils.HashMAC("imds-" + testSubnetID)},
 		{"ip", "-n", "imds-89abcdef", "link", "set", "lo", "up"},
 		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "up"},
 		{"ip", "-n", "imds-89abcdef", "addr", "add", "169.254.169.254/30", "dev", "imds-h-89abcdef"},
-		{"ip", "-n", "imds-89abcdef", "route", "add", "default", "via", "169.254.169.253"},
+		{"ip", "-n", "imds-89abcdef", "route", "add", "10.211.0.0/16", "dev", "imds-h-89abcdef"},
 		{"ovs-vsctl", "add-port", "br-int", "imds-o-89abcdef",
 			"--", "set", "Interface", "imds-o-89abcdef",
-			"external_ids:iface-id=imds-port-" + testVPCID},
+			"external_ids:iface-id=imds-port-" + testSubnetID},
 	}
 	if len(*calls) != len(want) {
 		t.Fatalf("got %d calls, want %d: %v", len(*calls), len(want), *calls)
@@ -82,7 +85,7 @@ func TestEnsureIMDSVeth_Idempotent(t *testing.T) {
 		return nil
 	})
 
-	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	netns, hostEnd, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR)
 	if err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
 	}
@@ -122,7 +125,7 @@ func TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds(t *testing.T) {
 		return nil
 	})
 
-	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+	if _, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR); err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
 	}
 
@@ -170,7 +173,7 @@ func TestEnsureIMDSVeth_StaleNetnsRecreated(t *testing.T) {
 		return nil
 	})
 
-	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+	if _, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR); err != nil {
 		t.Fatalf("EnsureIMDSVeth: %v", err)
 	}
 
@@ -208,7 +211,7 @@ func TestEnsureIMDSVeth_NetnsExistsTolerated(t *testing.T) {
 		return nil
 	})
 
-	if _, _, err := EnsureIMDSVeth(context.Background(), testVPCID); err != nil {
+	if _, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR); err != nil {
 		t.Fatalf("expected nil for pre-existing netns, got %v", err)
 	}
 }
@@ -224,7 +227,7 @@ func TestEnsureIMDSVeth_AddPortFailureCleansUp(t *testing.T) {
 		return nil
 	})
 
-	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	_, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR)
 	if err == nil || !strings.Contains(err.Error(), "add IMDS veth") {
 		t.Fatalf("expected add-port error, got %v", err)
 	}
@@ -257,7 +260,7 @@ func TestEnsureIMDSVeth_LinkAddFailureSurfaces(t *testing.T) {
 		return nil
 	})
 
-	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	_, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR)
 	if err == nil || !strings.Contains(err.Error(), "create IMDS veth pair") {
 		t.Fatalf("expected create error, got %v", err)
 	}
@@ -276,7 +279,7 @@ func TestEnsureIMDSVeth_AddrFailureCleansUp(t *testing.T) {
 		return nil
 	})
 
-	_, _, err := EnsureIMDSVeth(context.Background(), testVPCID)
+	_, _, err := EnsureIMDSVeth(context.Background(), testSubnetID, testSubnetCIDR)
 	if err == nil || !strings.Contains(err.Error(), "addr add") {
 		t.Fatalf("expected addr-add error, got %v", err)
 	}
@@ -294,7 +297,7 @@ func TestEnsureIMDSVeth_AddrFailureCleansUp(t *testing.T) {
 func TestRemoveIMDSVeth(t *testing.T) {
 	calls := recordSudo(t, nil)
 
-	if err := RemoveIMDSVeth(context.Background(), testVPCID); err != nil {
+	if err := RemoveIMDSVeth(context.Background(), testSubnetID); err != nil {
 		t.Fatalf("RemoveIMDSVeth: %v", err)
 	}
 
@@ -325,26 +328,26 @@ func TestRemoveIMDSVeth_MissingDeviceIsNotError(t *testing.T) {
 		return nil
 	})
 
-	if err := RemoveIMDSVeth(context.Background(), testVPCID); err != nil {
+	if err := RemoveIMDSVeth(context.Background(), testSubnetID); err != nil {
 		t.Fatalf("expected nil for absent device, got %v", err)
 	}
 }
 
 // TestIMDSVethNamesWithinIFNAMSIZ guards the load-bearing constraint that both
 // veth-end names fit Linux's IFNAMSIZ-1 (15 chars). A longer name makes
-// `ip link add` fail with "name too long" for every VPC, silently taking IMDS
+// `ip link add` fail with "name too long" for every subnet, silently taking IMDS
 // offline cluster-wide — and the SudoCommand mock would never catch it.
 func TestIMDSVethNamesWithinIFNAMSIZ(t *testing.T) {
 	const ifnamsizMax = 15
-	for _, vpcID := range []string{
-		"vpc-0123456789abcdef",
-		"vpc-0a1b2c3d4e5f6a7b8",
-		"vpc-deadbeef",
+	for _, subnetID := range []string{
+		"subnet-0123456789abcdef",
+		"subnet-0a1b2c3d4e5f6a7b8",
+		"subnet-deadbeef",
 		"short",
 	} {
-		for _, name := range []string{IMDSOVSPortName(vpcID), IMDSHostVethName(vpcID)} {
+		for _, name := range []string{IMDSOVSPortName(subnetID), IMDSHostVethName(subnetID)} {
 			if len(name) > ifnamsizMax {
-				t.Errorf("veth name %q (%d chars) exceeds IFNAMSIZ-1 (%d) for vpc %q", name, len(name), ifnamsizMax, vpcID)
+				t.Errorf("veth name %q (%d chars) exceeds IFNAMSIZ-1 (%d) for subnet %q", name, len(name), ifnamsizMax, subnetID)
 			}
 		}
 	}

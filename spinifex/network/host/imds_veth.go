@@ -4,44 +4,46 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-const (
-	// imdsNetnsAddr is the host/listener side of the IMDS /30, assigned to the
-	// veth host end inside the per-VPC netns. .254 is MetaDataServerIP; the /30
-	// makes .253 (the LRP) directly connected so the reply path has a next-hop.
-	imdsNetnsAddr = "169.254.169.254/30"
-	// imdsNetnsGateway is the IMDS LRP (.253) — the netns default gateway that
-	// routes guest replies back into OVN. Mirrors external.imdsLRPNetwork's .253.
-	imdsNetnsGateway = "169.254.169.253"
-)
+// imdsNetnsAddr is the host/listener side of the IMDS address, assigned to the
+// veth host end inside the per-subnet netns. .254 is MetaDataServerIP; the /30 is
+// kept (no longer load-bearing for a next-hop) and the reply path resolves the
+// guest via the subnet CIDR added on-link out the same veth.
+const imdsNetnsAddr = "169.254.169.254/30"
 
 // imdsPortLSPName is the OVN logical-switch-port the OVS-side veth binds to via
 // external_ids:iface-id. It mirrors topology.IMDSPort but is duplicated here to
 // avoid an import cycle (host ← handlers/imds ← topology).
-func imdsPortLSPName(vpcID string) string { return "imds-port-" + vpcID }
+func imdsPortLSPName(subnetID string) string { return "imds-port-" + subnetID }
 
 // imdsLSPMAC is the logical MAC OVN advertises for 169.254.169.254 (the localport
 // address). The netns veth host end MUST carry this exact MAC: OVN resolves .254
 // to it and delivers IMDS request frames with dl_dst set to it, so a kernel-random
 // veth MAC makes the netns drop every frame not-for-me and the listener never sees
-// a SYN. Mirrors external.IMDSSpecForVPC's LSPMAC, duplicated here (like
+// a SYN. Mirrors external.IMDSSpecForSubnet's LSPMAC, duplicated here (like
 // imdsPortLSPName) to avoid the import cycle.
-func imdsLSPMAC(vpcID string) string { return utils.HashMAC("imds-" + vpcID) }
+func imdsLSPMAC(subnetID string) string { return utils.HashMAC("imds-" + subnetID) }
 
-// EnsureIMDSVeth idempotently creates the per-VPC IMDS veth pair, moves the host end
-// into a dedicated netns with 169.254.169.254/30 + a default route via the .253 LRP,
-// and attaches the OVS end to br-int so ovn-controller binds the localport here. The
+// EnsureIMDSVeth idempotently creates the per-subnet IMDS veth pair, moves the host
+// end into a dedicated netns with 169.254.169.254/30 + the subnet CIDR on-link, and
+// attaches the OVS end to br-int so ovn-controller binds the localport here. The
 // netns gives the host-served reply a real L3 next-hop (SO_BINDTODEVICE alone cannot
-// route the SYN-ACK) and isolates overlapping VPC CIDRs into separate routing domains.
-// Returns the netns name and host-end name the listener enters and binds.
-func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName string, err error) {
-	ovsEnd := IMDSOVSPortName(vpcID)
-	hostEnd := IMDSHostVethName(vpcID)
-	netns := IMDSNetnsName(vpcID)
+// route the SYN-ACK): the on-link subnet route makes the guest directly reachable, so
+// the reply resolves by ARP over the localport on the guest's own L2 switch. The netns
+// also isolates overlapping subnet CIDRs into separate routing domains. Returns the
+// netns name and host-end name the listener enters and binds.
+func EnsureIMDSVeth(ctx context.Context, subnetID string, cidr netip.Prefix) (netnsName, hostEndName string, err error) {
+	if !cidr.IsValid() {
+		return "", "", fmt.Errorf("EnsureIMDSVeth: subnet %s requires a valid CIDR", subnetID)
+	}
+	ovsEnd := IMDSOVSPortName(subnetID)
+	hostEnd := IMDSHostVethName(subnetID)
+	netns := IMDSNetnsName(subnetID)
 
 	// Idempotency probe: the full plumbing (veth pair, netns, host-end address +
 	// route) exists from a prior boot only when the OVS end is a port on br-int
@@ -52,13 +54,13 @@ func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName s
 	// plumbing down and rebuild it below.
 	if imdsOVSPortOnBrInt(ovsEnd) {
 		if netnsEnterable(netns) {
-			slog.Debug("IMDS veth already present", "vpc", vpcID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns)
+			slog.Debug("IMDS veth already present", "subnet", subnetID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns)
 			return netns, hostEnd, nil
 		}
 		slog.Warn("IMDS netns unenterable behind a live OVS port (stale handle), rebuilding plumbing",
-			"vpc", vpcID, "netns", netns, "ovs_end", ovsEnd)
+			"subnet", subnetID, "netns", netns, "ovs_end", ovsEnd)
 		if err := removeIMDSPlumbing(ovsEnd, hostEnd, netns); err != nil {
-			slog.Warn("Failed to tear down stale IMDS plumbing before rebuild", "vpc", vpcID, "err", err)
+			slog.Warn("Failed to tear down stale IMDS plumbing before rebuild", "subnet", subnetID, "err", err)
 		}
 	}
 
@@ -68,40 +70,41 @@ func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName s
 
 	if out, err := utils.SudoCommand("ip", "link", "add", ovsEnd, "type", "veth", "peer", "name", hostEnd).CombinedOutput(); err != nil {
 		if cleanErr := removeIMDSPlumbing(ovsEnd, hostEnd, netns); cleanErr != nil {
-			slog.Warn("Failed to clean up IMDS plumbing after veth-create failure", "vpc", vpcID, "err", cleanErr)
+			slog.Warn("Failed to clean up IMDS plumbing after veth-create failure", "subnet", subnetID, "err", cleanErr)
 		}
 		return "", "", fmt.Errorf("create IMDS veth pair %s/%s: %s: %w", ovsEnd, hostEnd, strings.TrimSpace(string(out)), err)
 	}
 
-	if err := configureIMDSNetns(netns, hostEnd, ovsEnd, imdsLSPMAC(vpcID)); err != nil {
+	if err := configureIMDSNetns(netns, hostEnd, ovsEnd, imdsLSPMAC(subnetID), cidr); err != nil {
 		if cleanErr := removeIMDSPlumbing(ovsEnd, hostEnd, netns); cleanErr != nil {
-			slog.Warn("Failed to clean up IMDS plumbing after netns config failure", "vpc", vpcID, "err", cleanErr)
+			slog.Warn("Failed to clean up IMDS plumbing after netns config failure", "subnet", subnetID, "err", cleanErr)
 		}
 		return "", "", err
 	}
 
-	ifaceID := imdsPortLSPName(vpcID)
+	ifaceID := imdsPortLSPName(subnetID)
 	if out, err := utils.SudoCommand("ovs-vsctl", "add-port", "br-int", ovsEnd,
 		"--", "set", "Interface", ovsEnd, "external_ids:iface-id="+ifaceID).CombinedOutput(); err != nil {
 		if cleanErr := removeIMDSPlumbing(ovsEnd, hostEnd, netns); cleanErr != nil {
-			slog.Warn("Failed to clean up IMDS plumbing after OVS failure", "vpc", vpcID, "err", cleanErr)
+			slog.Warn("Failed to clean up IMDS plumbing after OVS failure", "subnet", subnetID, "err", cleanErr)
 		}
 		return "", "", fmt.Errorf("add IMDS veth %s to br-int: %s: %w", ovsEnd, strings.TrimSpace(string(out)), err)
 	}
 
-	slog.Info("IMDS veth plumbing complete", "vpc", vpcID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns, "iface_id", ifaceID)
+	slog.Info("IMDS veth plumbing complete", "subnet", subnetID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns, "iface_id", ifaceID)
 	return netns, hostEnd, nil
 }
 
 // configureIMDSNetns moves the host end into the netns, sets its MAC to the
 // localport's logical MAC, brings it (and lo) up, and assigns the IMDS address +
-// default route so the host-served reply has a real next-hop. The OVS end stays in
-// the root netns for ovn-controller to bind. The MAC set is the request-path
-// contract: OVN delivers frames with dl_dst = the localport MAC, so the veth host
-// end must own that MAC or the netns silently drops them. The addr/route adds
-// tolerate "File exists" so a re-run after a partial failure converges rather than
-// wedging.
-func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string) error {
+// the subnet CIDR on-link so the host-served reply resolves the guest by ARP over
+// the localport (a single L2 hop on the guest's own switch — no router next-hop).
+// The OVS end stays in the root netns for ovn-controller to bind. The MAC set is
+// the request-path contract: OVN delivers frames with dl_dst = the localport MAC,
+// so the veth host end must own that MAC or the netns silently drops them. The
+// addr/route adds tolerate "File exists" so a re-run after a partial failure
+// converges rather than wedging.
+func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string, cidr netip.Prefix) error {
 	if out, err := utils.SudoCommand("ip", "link", "set", ovsEnd, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("bring up IMDS OVS end %s: %s: %w", ovsEnd, strings.TrimSpace(string(out)), err)
 	}
@@ -119,7 +122,7 @@ func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string) error {
 	if err := ipNetnsTolerate(netns, "File exists", "addr", "add", imdsNetnsAddr, "dev", hostEnd); err != nil {
 		return err
 	}
-	return ipNetnsTolerate(netns, "File exists", "route", "add", "default", "via", imdsNetnsGateway)
+	return ipNetnsTolerate(netns, "File exists", "route", "add", cidr.String(), "dev", hostEnd)
 }
 
 // ensureNetns creates the netns, treating "already exists" as success — but
@@ -180,9 +183,9 @@ func ipNetnsTolerate(netns, tolerate string, args ...string) error {
 
 // RemoveIMDSVeth detaches the OVS port, deletes the netns (which destroys the
 // host end and thus the veth pair), and clears any root-netns remnant. Idempotent:
-// safe to call for a VPC that never had a veth on this chassis.
-func RemoveIMDSVeth(ctx context.Context, vpcID string) error {
-	return removeIMDSPlumbing(IMDSOVSPortName(vpcID), IMDSHostVethName(vpcID), IMDSNetnsName(vpcID))
+// safe to call for a subnet that never had a veth on this chassis.
+func RemoveIMDSVeth(ctx context.Context, subnetID string) error {
+	return removeIMDSPlumbing(IMDSOVSPortName(subnetID), IMDSHostVethName(subnetID), IMDSNetnsName(subnetID))
 }
 
 // removeIMDSPlumbing tears down the OVS port, the netns, and any leftover veth.

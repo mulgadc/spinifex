@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"runtime"
 	"sync"
@@ -18,20 +19,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ensureVethFunc / removeVethFunc are the per-VPC host veth lifecycle hooks,
+// ensureVethFunc / removeVethFunc are the per-subnet host veth lifecycle hooks,
 // injected (not imported) to avoid an import cycle via network/host. vpcd passes
 // host.EnsureIMDSVeth / host.RemoveIMDSVeth; tests pass root-free fakes. ensure
-// returns the per-VPC netns the listener must be created in plus the host-end
-// veth name (now living inside that netns).
-type ensureVethFunc func(ctx context.Context, vpcID string) (netnsName, hostEnd string, err error)
-type removeVethFunc func(ctx context.Context, vpcID string) error
+// takes the subnet CIDR (added on-link in the netns so the reply resolves the
+// guest by ARP) and returns the per-subnet netns the listener must be created in
+// plus the host-end veth name (now living inside that netns).
+type ensureVethFunc func(ctx context.Context, subnetID string, cidr netip.Prefix) (netnsName, hostEnd string, err error)
+type removeVethFunc func(ctx context.Context, subnetID string) error
 
-// listenFunc binds a TCP listener on 169.254.169.254:80 inside the VPC's netns,
+// listenFunc binds a TCP listener on 169.254.169.254:80 inside the subnet's netns,
 // scoped to its host veth. Swappable in tests so bind-manager logic runs without
 // CAP_NET_ADMIN or a real netns. An empty netnsName binds in the current netns.
 type listenFunc func(ctx context.Context, netnsName, hostEnd string) (net.Listener, error)
 
-// activeBinding is the per-VPC realised state: a listener bound to the VPC's
+// activeBinding is the per-subnet realised state: a listener bound to the subnet's
 // host veth and the http.Server serving it.
 type activeBinding struct {
 	listener net.Listener
@@ -39,10 +41,11 @@ type activeBinding struct {
 }
 
 // bindManager realises the per-chassis IMDS listener stack. It runs on every
-// chassis and eagerly materialises a veth + OVS port + listener for every VPC in
-// the vpc-veth bucket — lifecycle is "watch the bucket, ensure local state".
+// chassis and eagerly materialises a veth + OVS port + listener for every subnet in
+// the subnet-veth bucket — lifecycle is "watch the bucket, ensure local state".
 type bindManager struct {
-	kv         nats.KeyValue // spinifex-network-imds-vpc-veth
+	kv         nats.KeyValue // spinifex-network-imds-subnet-veth
+	store      *VethStore    // reads the subnet CIDR the host on-link route needs
 	handler    http.Handler
 	ensureVeth ensureVethFunc
 	removeVeth removeVethFunc
@@ -55,6 +58,7 @@ type bindManager struct {
 func newBindManager(kv nats.KeyValue, handler http.Handler, ensure ensureVethFunc, remove removeVethFunc, listen listenFunc) *bindManager {
 	return &bindManager{
 		kv:         kv,
+		store:      NewVethStore(kv),
 		handler:    handler,
 		ensureVeth: ensure,
 		removeVeth: remove,
@@ -63,7 +67,7 @@ func newBindManager(kv nats.KeyValue, handler http.Handler, ensure ensureVethFun
 	}
 }
 
-// sync reads the full vpc-veth bucket and binds a listener for every entry. Run
+// sync reads the full subnet-veth bucket and binds a listener for every entry. Run
 // once at startup; idempotent, so a re-sync after a transient error is safe.
 func (b *bindManager) sync(ctx context.Context) error {
 	keys, err := b.kv.Keys()
@@ -71,26 +75,49 @@ func (b *bindManager) sync(ctx context.Context) error {
 		if errors.Is(err, nats.ErrNoKeysFound) {
 			return nil
 		}
-		return fmt.Errorf("list vpc-veth keys: %w", err)
+		return fmt.Errorf("list subnet-veth keys: %w", err)
 	}
-	for _, vpcID := range keys {
-		if vpcID == utils.VersionKey {
-			continue // schema-version marker written by migrate.RunKV, not a VPC
+	for _, subnetID := range keys {
+		if subnetID == utils.VersionKey {
+			continue // schema-version marker written by migrate.RunKV, not a subnet
 		}
-		if err := b.bind(ctx, vpcID); err != nil {
-			slog.Error("IMDS: bind failed during sync", "vpc_id", vpcID, "err", err)
+		cidr, err := b.subnetCIDR(subnetID)
+		if err != nil {
+			slog.Error("IMDS: resolve subnet cidr during sync", "subnet_id", subnetID, "err", err)
+			continue
+		}
+		if err := b.bind(ctx, subnetID, cidr); err != nil {
+			slog.Error("IMDS: bind failed during sync", "subnet_id", subnetID, "err", err)
 		}
 	}
 	return nil
 }
 
-// watch reacts to vpc-veth bucket changes for the life of ctx: a Put binds the
-// VPC (if not already bound), a Delete unbinds it and tears down the veth. Both
+// subnetCIDR reads the persisted subnet CIDR for subnetID from the veth bucket.
+// The host adds it on-link in the netns so the reply resolves the guest by ARP,
+// so bind cannot proceed without it.
+func (b *bindManager) subnetCIDR(subnetID string) (netip.Prefix, error) {
+	rec, err := b.store.Get(subnetID)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	if rec == nil {
+		return netip.Prefix{}, fmt.Errorf("no veth record for %s", subnetID)
+	}
+	cidr, err := netip.ParsePrefix(rec.SubnetCIDR)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("parse subnet cidr %q: %w", rec.SubnetCIDR, err)
+	}
+	return cidr, nil
+}
+
+// watch reacts to subnet-veth bucket changes for the life of ctx: a Put binds the
+// subnet (if not already bound), a Delete unbinds it and tears down the veth. Both
 // transitions are idempotent.
 func (b *bindManager) watch(ctx context.Context) {
 	watcher, err := b.kv.WatchAll(nats.Context(ctx))
 	if err != nil {
-		slog.Error("IMDS: failed to start vpc-veth watcher", "err", err)
+		slog.Error("IMDS: failed to start subnet-veth watcher", "err", err)
 		return
 	}
 	defer func() { _ = watcher.Stop() }()
@@ -109,12 +136,17 @@ func (b *bindManager) watch(ctx context.Context) {
 				continue
 			}
 			if entry.Key() == utils.VersionKey {
-				continue // schema-version marker written by migrate.RunKV, not a VPC
+				continue // schema-version marker written by migrate.RunKV, not a subnet
 			}
 			switch entry.Operation() {
 			case nats.KeyValuePut:
-				if err := b.bind(ctx, entry.Key()); err != nil {
-					slog.Error("IMDS: bind failed on watch", "vpc_id", entry.Key(), "err", err)
+				cidr, err := b.subnetCIDR(entry.Key())
+				if err != nil {
+					slog.Error("IMDS: resolve subnet cidr on watch", "subnet_id", entry.Key(), "err", err)
+					continue
+				}
+				if err := b.bind(ctx, entry.Key(), cidr); err != nil {
+					slog.Error("IMDS: bind failed on watch", "subnet_id", entry.Key(), "err", err)
 				}
 			case nats.KeyValueDelete, nats.KeyValuePurge:
 				b.unbind(ctx, entry.Key())
@@ -123,9 +155,9 @@ func (b *bindManager) watch(ctx context.Context) {
 	}
 }
 
-// bind ensures the host veth then opens a device-scoped listener for vpcID. A
-// no-op if the VPC is already bound.
-func (b *bindManager) bind(ctx context.Context, vpcID string) error {
+// bind ensures the host veth (with the subnet CIDR on-link for the reply path)
+// then opens a device-scoped listener for vpcID. A no-op if already bound.
+func (b *bindManager) bind(ctx context.Context, vpcID string, cidr netip.Prefix) error {
 	b.mu.Lock()
 	if _, ok := b.active[vpcID]; ok {
 		b.mu.Unlock()
@@ -133,7 +165,7 @@ func (b *bindManager) bind(ctx context.Context, vpcID string) error {
 	}
 	b.mu.Unlock()
 
-	netnsName, hostEnd, err := b.ensureVeth(ctx, vpcID)
+	netnsName, hostEnd, err := b.ensureVeth(ctx, vpcID, cidr)
 	if err != nil {
 		return fmt.Errorf("ensure veth: %w", err)
 	}
@@ -206,13 +238,14 @@ func (b *bindManager) shutdown() {
 	}
 }
 
-// bindLocalListener opens a TCP listener on 169.254.169.254:80 inside the VPC's
-// netns, where the host-end veth carries 169.254.169.254/30 with a default route
-// via the .253 LRP — so the host-served reply has a real L3 next-hop back to the
-// guest (SO_BINDTODEVICE alone in the root netns could not route the SYN-ACK).
-// The netns also isolates VPCs whose CIDRs overlap, since each is its own routing
-// domain. The socket must be *created* in the netns, so we enter it on a locked
-// thread for the socket call and restore the root netns before serving.
+// bindLocalListener opens a TCP listener on 169.254.169.254:80 inside the subnet's
+// netns, where the host-end veth carries 169.254.169.254/30 with the subnet CIDR
+// on-link — so the host-served reply resolves the guest by ARP over the localport
+// on the guest's own L2 switch (SO_BINDTODEVICE alone in the root netns could not
+// route the SYN-ACK). The netns also isolates subnets whose CIDRs overlap, since
+// each is its own routing domain. The socket must be *created* in the netns, so we
+// enter it on a locked thread for the socket call and restore the root netns before
+// serving.
 // SO_BINDTODEVICE (belt-and-braces — there is only one veth in the netns) and
 // SO_REUSEADDR (fast rebind on vpcd restart) are still set on the fd.
 func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.Listener, error) {

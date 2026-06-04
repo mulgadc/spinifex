@@ -26,7 +26,7 @@ type profileLookup interface {
 
 // IMDSService is the host-served EC2 Instance Metadata Service. It runs in
 // vpcd on every chassis, serving 169.254.169.254 to local guest VMs over
-// per-VPC veths. Run owns the listener lifecycle and blocks until ctx is done.
+// per-subnet veths. Run owns the listener lifecycle and blocks until ctx is done.
 type IMDSService interface {
 	Run(ctx context.Context) error
 }

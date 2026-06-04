@@ -325,7 +325,7 @@ func init() {
 	imagesImportCmd.Flags().String("tmp-dir", os.TempDir(), "Temporary directory for image import processing")
 
 	imagesImportCmd.Flags().String("name", "", "Import specified image by name")
-	imagesImportCmd.Flags().String("ami-name", "", "Override the registered AMI name (DescribeImages name). Defaults to ami-{distro}-{version}-{arch}. Use for locally-built appliances (e.g. --ami-name spinifex-eks-server).")
+	imagesImportCmd.Flags().String("ami-name", "", "Override the registered AMI name (DescribeImages name). Defaults to ami-{distro}-{version}-{arch}. Use for locally-built appliances (e.g. --ami-name spinifex-eks-node).")
 	imagesImportCmd.Flags().String("file", "", "Import file from specified path (raw, qcow2, compressed)")
 	imagesImportCmd.Flags().String("distro", "", "Specified distro name (e.g debian)")
 	imagesImportCmd.Flags().String("version", "", "Specified distro version (e.g 12)")

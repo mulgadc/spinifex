@@ -73,7 +73,7 @@ build-lb-agent:
 	@echo -e "\n....Building lb-agent (static)"
 	CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -ldflags "-s -w" -o ./bin/lb-agent cmd/lb-agent/main.go
 
-build-system-image: ## Build a system image from manifest (use IMAGE=lb or IMAGE=eks-server)
+build-system-image: ## Build a system image from manifest (use IMAGE=lb or IMAGE=eks-node)
 ifndef IMAGE
 	$(error IMAGE is required. Usage: make build-system-image IMAGE=lb)
 endif
@@ -86,14 +86,11 @@ endif
 		exit 1; \
 	fi
 
-build-eks-server-image: ## Build the eks-server AMI (K3s control-plane variant; IMPORT=1 to register it)
-	$(MAKE) build-system-image IMAGE=eks-server
+build-eks-node-image: ## Build the unified eks-node AMI (K3s server+agent; role at first boot; IMPORT=1 to register)
+	$(MAKE) build-system-image IMAGE=eks-node
 
-import-eks-server-image: ## Build + register the eks-server AMI (requires a running cluster)
-	$(MAKE) build-system-image IMAGE=eks-server IMPORT=1
-
-build-eks-agent-image: ## Build the eks-agent AMI (K3s worker variant)
-	$(MAKE) build-system-image IMAGE=eks-agent
+import-eks-node-image: ## Build + register the eks-node AMI (requires a running cluster)
+	$(MAKE) build-system-image IMAGE=eks-node IMPORT=1
 
 MICROVM_OUT_DIR := build/microvm
 MICROVM_ARTIFACTS := $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz
@@ -295,7 +292,65 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-server-image import-eks-server-image build-eks-agent-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
+# Ansible dev lifecycle (experimental, parallel to dev-*.sh / reset-dev-env.sh).
+# See scripts/ansible/README.md and docs/development/improvements/ansible-dev-lifecycle.md.
+#
+# Variable overrides: pass EXTRA_VARS="key=val key2=val2" to forward as
+# `--extra-vars` to ansible-playbook. Plain `-e` on the make command line is
+# make's own flag and does NOT reach ansible.
+#   make ansible-dev-install EXTRA_VARS="spinifex_external_pool_start=192.168.1.90 spinifex_external_pool_end=192.168.1.99"
+EXTRA_VARS ?=
+_ANSIBLE_EXTRA = $(if $(strip $(EXTRA_VARS)),--extra-vars "$(EXTRA_VARS)",)
+
+ansible-dev-preflight:
+	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml $(_ANSIBLE_EXTRA)
+
+ansible-dev-teardown:
+	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml $(_ANSIBLE_EXTRA)
+
+ansible-dev-install:
+	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml $(_ANSIBLE_EXTRA)
+
+ansible-dev-reset:
+	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml $(_ANSIBLE_EXTRA)
+
+ansible-dev-deploy:
+	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml $(_ANSIBLE_EXTRA)
+
+ansible-dev-status:
+	cd scripts/ansible && ansible-playbook playbooks/dev-status.yml
+
+ansible-dev-logs:
+	cd scripts/ansible && ansible-playbook playbooks/dev-logs.yml
+
+# Snapshot / restore require an explicit -e snapshot_name=<name>. The
+# wrapper passes ANSIBLE_EXTRA through so devs can run
+# `make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'`.
+ansible-dev-snapshot:
+	cd scripts/ansible && ansible-playbook playbooks/dev-snapshot.yml $(ANSIBLE_EXTRA)
+
+ansible-dev-restore:
+	cd scripts/ansible && ansible-playbook playbooks/dev-restore.yml $(ANSIBLE_EXTRA)
+
+ansible-dev-version:
+	cd scripts/ansible && ansible-playbook playbooks/dev-version.yml
+
+ansible-dev-vpc:
+	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
+
+# Multi-node cluster bootstrap against a tofu env (env1, env2, bryn, etc).
+# Inventory is generated from scripts/tofu-cluster/envs/<env>.tfvars.
+#   make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
+ENV ?=
+POOL ?=
+ansible-cluster-bootstrap:
+	@test -n "$(ENV)" || { echo "ENV=<env> required (e.g. env1, env2)"; exit 64; }
+	cd scripts/ansible && CLUSTER_ENV=$(ENV) ansible-playbook -i inventory/tofu.py playbooks/cluster-bootstrap.yml \
+		-e cluster_env=$(ENV) \
+		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
+		$(_ANSIBLE_EXTRA)
+
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

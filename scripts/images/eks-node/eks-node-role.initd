@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# eks-node-role — one-shot first-boot service that selects the node's role
+# (server vs agent) from the cloud-init env and enables + starts the matching
+# K3s services. The unified eks-node AMI bakes every role's services but leaves
+# them out of the default runlevel; this selector adds the correct ones and then
+# removes itself so it runs exactly once.
+
+description="EKS node role selector (server vs agent)"
+# Backgrounded: the selector calls `rc-service k3s start`, which blocks on k3s'
+# start-stop-daemon --wait window; backgrounding keeps it off the runlevel's
+# critical path. command_background is also required for output_log/error_log.
+command="/usr/local/sbin/eks-node-role"
+command_background="yes"
+pidfile="/run/eks-node-role.pid"
+# Route to the serial console so the role decision + any failure is visible in
+# the orchestrator's host-side console capture — the VM has no operator login.
+output_log="/dev/console"
+error_log="/dev/console"
+
+depend() {
+    # Needs the same substrate the role services do, since it starts them.
+    need net cgroups
+    # cloud-init write_files delivers /etc/spinifex-eks/first-boot.env (the role
+    # source) in the cloud-config/cloud-final stages. Order after them so the
+    # selector never races ahead and reads a missing env file on a fast boot.
+    after firewall cloud-config cloud-final
+}

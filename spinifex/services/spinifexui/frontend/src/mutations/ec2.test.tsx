@@ -912,6 +912,34 @@ describe("useRevokeSecurityGroupIngress", () => {
     })
   })
 
+  it("uses UserIdGroupPairs when sourceGroupId is given", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      groupId: "sg-123",
+      ipProtocol: "-1",
+      fromPort: 0,
+      toPort: 0,
+      sourceGroupId: "sg-123",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      GroupId: "sg-123",
+      IpPermissions: [
+        {
+          IpProtocol: "-1",
+          FromPort: 0,
+          ToPort: 0,
+          UserIdGroupPairs: [{ GroupId: "sg-123" }],
+        },
+      ],
+    })
+  })
+
   it("invalidates securityGroups queries on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")

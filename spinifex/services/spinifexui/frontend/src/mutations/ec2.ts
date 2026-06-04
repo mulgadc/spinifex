@@ -700,22 +700,36 @@ export function useAuthorizeSecurityGroupEgress() {
   })
 }
 
+// RevokeSecurityGroupRuleParams identifies a single rule to revoke. The source
+// is either a CIDR (cidrIp) or a referenced security group (sourceGroupId) —
+// the latter is how AWS expresses the default SG's self-referencing rule.
+interface RevokeSecurityGroupRuleParams {
+  groupId: string
+  ipProtocol: string
+  fromPort: number
+  toPort: number
+  cidrIp?: string
+  sourceGroupId?: string
+}
+
+function revokeIpPermission(params: RevokeSecurityGroupRuleParams) {
+  return {
+    IpProtocol: params.ipProtocol,
+    FromPort: params.fromPort,
+    ToPort: params.toPort,
+    ...(params.sourceGroupId
+      ? { UserIdGroupPairs: [{ GroupId: params.sourceGroupId }] }
+      : { IpRanges: [{ CidrIp: params.cidrIp ?? "" }] }),
+  }
+}
+
 export function useRevokeSecurityGroupIngress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (
-      params: SecurityGroupRuleFormData & { groupId: string },
-    ) => {
+    mutationFn: async (params: RevokeSecurityGroupRuleParams) => {
       const command = new RevokeSecurityGroupIngressCommand({
         GroupId: params.groupId,
-        IpPermissions: [
-          {
-            IpProtocol: params.ipProtocol,
-            FromPort: params.fromPort,
-            ToPort: params.toPort,
-            IpRanges: [{ CidrIp: params.cidrIp }],
-          },
-        ],
+        IpPermissions: [revokeIpPermission(params)],
       })
       return await getEc2Client().send(command)
     },
@@ -733,19 +747,10 @@ export function useRevokeSecurityGroupIngress() {
 export function useRevokeSecurityGroupEgress() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (
-      params: SecurityGroupRuleFormData & { groupId: string },
-    ) => {
+    mutationFn: async (params: RevokeSecurityGroupRuleParams) => {
       const command = new RevokeSecurityGroupEgressCommand({
         GroupId: params.groupId,
-        IpPermissions: [
-          {
-            IpProtocol: params.ipProtocol,
-            FromPort: params.fromPort,
-            ToPort: params.toPort,
-            IpRanges: [{ CidrIp: params.cidrIp }],
-          },
-        ],
+        IpPermissions: [revokeIpPermission(params)],
       })
       return await getEc2Client().send(command)
     },

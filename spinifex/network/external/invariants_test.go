@@ -36,7 +36,7 @@ func TestI2_IMDSLocalportOnSubnetSwitchNoPortSecurity(t *testing.T) {
 	seedSubnetSwitch(t, m, imdsTestSubnetID)
 	mgr, _ := newIMDSManager(t, m)
 
-	spec, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, netip.MustParsePrefix(imdsTestCIDR))
+	spec, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, imdsTestVPCID, netip.MustParsePrefix(imdsTestCIDR))
 	require.NoError(t, err)
 
 	lsp, err := m.GetLogicalSwitchPort(ctx, spec.LSPName)

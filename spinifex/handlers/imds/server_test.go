@@ -33,22 +33,31 @@ func loopbackListen(addrs *sync.Map) listenFunc {
 }
 
 func TestBindManager_BindServesWithVPCContext(t *testing.T) {
-	const hostEnd = "imds-h-abc12345"
+	const (
+		hostEnd  = "imds-h-abc12345"
+		subnetID = "subnet-abc12345"
+		vpcID    = "vpc-abc12345"
+	)
 	var ensured, removed atomic.Int32
-	ensure := func(_ context.Context, _ string, _ netip.Prefix) (string, string, error) {
+	var ensuredKey, removedKey atomic.Value
+	ensure := func(_ context.Context, key string, _ netip.Prefix) (string, string, error) {
 		ensured.Add(1)
+		ensuredKey.Store(key)
 		return "", hostEnd, nil
 	}
-	remove := func(_ context.Context, _ string) error {
+	remove := func(_ context.Context, key string) error {
 		removed.Add(1)
+		removedKey.Store(key)
 		return nil
 	}
 
-	// Echo the VPC ID the bind manager threaded into the request context — this
-	// is the (VPC-ID, source-IP) → identity path the security model relies on.
+	// Echo the VPC + subnet the bind manager threaded into the request context.
+	// The VPC keys the eni-by-vpc-ip index — the (VPC-ID, source-IP) → identity
+	// path the security model relies on; the subnet rides along for triage.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
-		_, _ = io.WriteString(w, vpcID)
+		ctxVPC, _ := r.Context().Value(ctxKeyVPCID).(string)
+		ctxSubnet, _ := r.Context().Value(ctxKeySubnetID).(string)
+		_, _ = io.WriteString(w, ctxVPC+"|"+ctxSubnet)
 	})
 
 	var addrs sync.Map
@@ -56,11 +65,12 @@ func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 	ctx := context.Background()
 	cidr := netip.MustParsePrefix("10.211.0.0/16")
 
-	require.NoError(t, bm.bind(ctx, "vpc-abc12345", cidr))
+	require.NoError(t, bm.bind(ctx, subnetID, vpcID, cidr))
 	assert.Equal(t, int32(1), ensured.Load())
+	assert.Equal(t, subnetID, ensuredKey.Load(), "veth lifecycle is keyed by subnet")
 
 	// Second bind of the same key is a no-op (idempotent), no extra veth ensure.
-	require.NoError(t, bm.bind(ctx, "vpc-abc12345", cidr))
+	require.NoError(t, bm.bind(ctx, subnetID, vpcID, cidr))
 	assert.Equal(t, int32(1), ensured.Load())
 
 	raw, ok := addrs.Load(hostEnd)
@@ -72,11 +82,12 @@ func TestBindManager_BindServesWithVPCContext(t *testing.T) {
 	require.NoError(t, err)
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	assert.Equal(t, "vpc-abc12345", string(body), "handler must see the listener's VPC ID")
+	assert.Equal(t, vpcID+"|"+subnetID, string(body), "handler must see the listener's VPC and subnet")
 
-	// Unbind closes the listener and tears down the veth.
-	bm.unbind(ctx, "vpc-abc12345")
+	// Unbind closes the listener and tears down the veth, keyed by subnet.
+	bm.unbind(ctx, subnetID)
 	assert.Equal(t, int32(1), removed.Load())
+	assert.Equal(t, subnetID, removedKey.Load(), "veth removal is keyed by subnet")
 
 	client := http.Client{Timeout: 500 * time.Millisecond}
 	_, err = client.Get("http://" + addr + prefixMetaData)
@@ -88,7 +99,7 @@ func TestBindManager_BindPropagatesVethError(t *testing.T) {
 		return "", "", errEnsureFailed
 	}
 	bm := newBindManager(nil, http.NewServeMux(), ensure, func(context.Context, string) error { return nil }, loopbackListen(&sync.Map{}))
-	err := bm.bind(context.Background(), "vpc-x", netip.MustParsePrefix("10.211.0.0/16"))
+	err := bm.bind(context.Background(), "subnet-x", "vpc-x", netip.MustParsePrefix("10.211.0.0/16"))
 	require.Error(t, err)
 }
 
@@ -106,6 +117,7 @@ func TestBindManager_SyncSkipsVersionKey(t *testing.T) {
 	// record (sync resolves its CIDR from the record before binding).
 	require.NoError(t, NewVethStore(subnetVeth).Put(SubnetVethRecord{
 		SubnetID:   "subnet-abcdef12",
+		VPCID:      "vpc-abcdef12",
 		SubnetCIDR: "10.211.0.0/16",
 	}))
 

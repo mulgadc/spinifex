@@ -35,7 +35,7 @@ type IMDSSubnetSpec struct {
 // over a single L2 hop on the guest's own broadcast domain — no router in the
 // path. Idempotent.
 type IMDSTopologyManager interface {
-	EnsureForSubnet(ctx context.Context, subnetID string, cidr netip.Prefix) (IMDSSubnetSpec, error)
+	EnsureForSubnet(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) (IMDSSubnetSpec, error)
 	RemoveForSubnet(ctx context.Context, subnetID string) error
 }
 
@@ -76,10 +76,15 @@ func IMDSSpecForSubnet(subnetID string) IMDSSubnetSpec {
 // the subnet-veth record. Idempotent: a present record short-circuits, and the
 // localport is created only when absent so a lost record still converges. The
 // subnet switch must already exist (the subnet lifecycle owns it). cidr is
-// persisted in the record so the host reply path resolves the guest on-link.
-func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID string, cidr netip.Prefix) (IMDSSubnetSpec, error) {
+// persisted in the record so the host reply path resolves the guest on-link;
+// vpcID is persisted so the IMDS handler can resolve the subnet→VPC mapping the
+// eni-by-vpc-ip index needs (the index stays keyed vpcID/ip).
+func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) (IMDSSubnetSpec, error) {
 	if subnetID == "" {
 		return IMDSSubnetSpec{}, errors.New("EnsureForSubnet: subnetID required")
+	}
+	if vpcID == "" {
+		return IMDSSubnetSpec{}, errors.New("EnsureForSubnet: vpcID required")
 	}
 	if !cidr.IsValid() {
 		return IMDSSubnetSpec{}, errors.New("EnsureForSubnet: cidr required")
@@ -117,6 +122,7 @@ func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID stri
 	if err := m.store.Put(handlers_imds.SubnetVethRecord{
 		SubnetID:      subnetID,
 		ShortSubnetID: spec.ShortSubnetID,
+		VPCID:         vpcID,
 		IMDSPortMAC:   spec.LSPMAC,
 		SubnetCIDR:    cidr.String(),
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),

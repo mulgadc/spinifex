@@ -91,7 +91,7 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 	// one L2 hop). Install is best-effort — the reconciler re-ensures it
 	// idempotently, so a transient OVN failure here must not fail CreateSubnet.
 	if s.imds != nil {
-		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, cidr); err != nil {
+		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, evt.VpcId, cidr); err != nil {
 			slog.Warn("subscribers: IMDS EnsureForSubnet failed; reconciler will converge", "subnet_id", evt.SubnetId, "err", err)
 		}
 	}

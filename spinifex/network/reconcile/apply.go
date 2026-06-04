@@ -104,7 +104,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 		// The IMDS localport rides on the subnet switch (idempotent via the
 		// subnet-veth bucket gate); the switch must exist first.
 		if r.imds != nil {
-			if _, err := r.imds.EnsureForSubnet(ctx, subnetID, spec.CIDR); err != nil {
+			if _, err := r.imds.EnsureForSubnet(ctx, subnetID, spec.VPCID, spec.CIDR); err != nil {
 				slog.Error("reconcile/apply: IMDS EnsureForSubnet failed", "subnet_id", subnetID, "err", err)
 			}
 		}

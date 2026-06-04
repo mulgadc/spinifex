@@ -62,7 +62,7 @@ func TestIMDSDatapathContract_AnsweredAtL2_OverlappingCIDRs(t *testing.T) {
 		require.NoError(t, igwMgr.EnsureSubnetEgress(ctx, v.vpcID, v.subnetID, defaultRoute))
 		require.NoError(t, igwMgr.EnsureSubnetEgressDrop(ctx, v.vpcID, v.subnetID, defaultRoute))
 		// The IMDS localport on the subnet switch.
-		_, err := imdsMgr.EnsureForSubnet(ctx, v.subnetID, netip.MustParsePrefix(imdsContractCIDR))
+		_, err := imdsMgr.EnsureForSubnet(ctx, v.subnetID, v.vpcID, netip.MustParsePrefix(imdsContractCIDR))
 		require.NoError(t, err)
 	}
 

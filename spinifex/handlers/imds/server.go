@@ -52,7 +52,7 @@ type bindManager struct {
 	listen     listenFunc
 
 	mu     sync.Mutex
-	active map[string]*activeBinding // vpcID → binding
+	active map[string]*activeBinding // subnetID → binding
 }
 
 func newBindManager(kv nats.KeyValue, handler http.Handler, ensure ensureVethFunc, remove removeVethFunc, listen listenFunc) *bindManager {
@@ -81,34 +81,40 @@ func (b *bindManager) sync(ctx context.Context) error {
 		if subnetID == utils.VersionKey {
 			continue // schema-version marker written by migrate.RunKV, not a subnet
 		}
-		cidr, err := b.subnetCIDR(subnetID)
+		vpcID, cidr, err := b.subnetBinding(subnetID)
 		if err != nil {
-			slog.Error("IMDS: resolve subnet cidr during sync", "subnet_id", subnetID, "err", err)
+			slog.Error("IMDS: resolve subnet binding during sync", "subnet_id", subnetID, "err", err)
 			continue
 		}
-		if err := b.bind(ctx, subnetID, cidr); err != nil {
+		if err := b.bind(ctx, subnetID, vpcID, cidr); err != nil {
 			slog.Error("IMDS: bind failed during sync", "subnet_id", subnetID, "err", err)
 		}
 	}
 	return nil
 }
 
-// subnetCIDR reads the persisted subnet CIDR for subnetID from the veth bucket.
-// The host adds it on-link in the netns so the reply resolves the guest by ARP,
-// so bind cannot proceed without it.
-func (b *bindManager) subnetCIDR(subnetID string) (netip.Prefix, error) {
+// subnetBinding reads the persisted veth record for subnetID and returns the two
+// facts bind needs: the owning VPC (the subnet→VPC static lookup — the listener
+// identifies the subnet, the eni-by-vpc-ip index is keyed vpcID/ip) and the
+// subnet CIDR (added on-link in the netns so the reply resolves the guest by
+// ARP). A record missing either field is malformed; bind cannot proceed without
+// them, and the reconciler re-publishes a complete record to converge.
+func (b *bindManager) subnetBinding(subnetID string) (vpcID string, cidr netip.Prefix, err error) {
 	rec, err := b.store.Get(subnetID)
 	if err != nil {
-		return netip.Prefix{}, err
+		return "", netip.Prefix{}, err
 	}
 	if rec == nil {
-		return netip.Prefix{}, fmt.Errorf("no veth record for %s", subnetID)
+		return "", netip.Prefix{}, fmt.Errorf("no veth record for %s", subnetID)
 	}
-	cidr, err := netip.ParsePrefix(rec.SubnetCIDR)
+	if rec.VPCID == "" {
+		return "", netip.Prefix{}, fmt.Errorf("veth record for %s has no vpc_id", subnetID)
+	}
+	cidr, err = netip.ParsePrefix(rec.SubnetCIDR)
 	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("parse subnet cidr %q: %w", rec.SubnetCIDR, err)
+		return "", netip.Prefix{}, fmt.Errorf("parse subnet cidr %q: %w", rec.SubnetCIDR, err)
 	}
-	return cidr, nil
+	return rec.VPCID, cidr, nil
 }
 
 // watch reacts to subnet-veth bucket changes for the life of ctx: a Put binds the
@@ -140,12 +146,12 @@ func (b *bindManager) watch(ctx context.Context) {
 			}
 			switch entry.Operation() {
 			case nats.KeyValuePut:
-				cidr, err := b.subnetCIDR(entry.Key())
+				vpcID, cidr, err := b.subnetBinding(entry.Key())
 				if err != nil {
-					slog.Error("IMDS: resolve subnet cidr on watch", "subnet_id", entry.Key(), "err", err)
+					slog.Error("IMDS: resolve subnet binding on watch", "subnet_id", entry.Key(), "err", err)
 					continue
 				}
-				if err := b.bind(ctx, entry.Key(), cidr); err != nil {
+				if err := b.bind(ctx, entry.Key(), vpcID, cidr); err != nil {
 					slog.Error("IMDS: bind failed on watch", "subnet_id", entry.Key(), "err", err)
 				}
 			case nats.KeyValueDelete, nats.KeyValuePurge:
@@ -155,17 +161,19 @@ func (b *bindManager) watch(ctx context.Context) {
 	}
 }
 
-// bind ensures the host veth (with the subnet CIDR on-link for the reply path)
-// then opens a device-scoped listener for vpcID. A no-op if already bound.
-func (b *bindManager) bind(ctx context.Context, vpcID string, cidr netip.Prefix) error {
+// bind ensures the subnet's host veth (with the subnet CIDR on-link for the reply
+// path) then opens a device-scoped listener for subnetID. vpcID is the subnet's
+// statically-resolved owning VPC, threaded into every request so the handler can
+// key the eni-by-vpc-ip index. A no-op if already bound.
+func (b *bindManager) bind(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) error {
 	b.mu.Lock()
-	if _, ok := b.active[vpcID]; ok {
+	if _, ok := b.active[subnetID]; ok {
 		b.mu.Unlock()
 		return nil
 	}
 	b.mu.Unlock()
 
-	netnsName, hostEnd, err := b.ensureVeth(ctx, vpcID, cidr)
+	netnsName, hostEnd, err := b.ensureVeth(ctx, subnetID, cidr)
 	if err != nil {
 		return fmt.Errorf("ensure veth: %w", err)
 	}
@@ -178,49 +186,51 @@ func (b *bindManager) bind(ctx context.Context, vpcID string, cidr netip.Prefix)
 	server := &http.Server{
 		Handler:           b.handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		// Tag every request from this listener with its VPC ID. The handler
-		// pairs it with the datapath-attested source IP to resolve the ENI.
+		// Tag every request from this listener with the subnet it serves and that
+		// subnet's owning VPC. The handler pairs the VPC with the datapath-attested
+		// source IP to resolve the ENI; the subnet ID rides along for triage.
 		BaseContext: func(net.Listener) context.Context {
-			return context.WithValue(ctx, ctxKeyVPCID, vpcID)
+			c := context.WithValue(ctx, ctxKeyVPCID, vpcID)
+			return context.WithValue(c, ctxKeySubnetID, subnetID)
 		},
 	}
 
 	b.mu.Lock()
 	// Re-check under lock in case a concurrent bind won the race.
-	if _, ok := b.active[vpcID]; ok {
+	if _, ok := b.active[subnetID]; ok {
 		b.mu.Unlock()
 		_ = listener.Close()
 		return nil
 	}
-	b.active[vpcID] = &activeBinding{listener: listener, server: server}
+	b.active[subnetID] = &activeBinding{listener: listener, server: server}
 	b.mu.Unlock()
 
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("IMDS: listener serve exited", "vpc_id", vpcID, "host_end", hostEnd, "err", err)
+			slog.Error("IMDS: listener serve exited", "subnet_id", subnetID, "host_end", hostEnd, "err", err)
 		}
 	}()
 
-	slog.Info("IMDS: listener bound", "vpc_id", vpcID, "netns", netnsName, "host_end", hostEnd, "addr", listener.Addr().String())
+	slog.Info("IMDS: listener bound", "subnet_id", subnetID, "vpc_id", vpcID, "netns", netnsName, "host_end", hostEnd, "addr", listener.Addr().String())
 	return nil
 }
 
-// unbind closes the VPC's listener and removes its host veth. Idempotent.
-func (b *bindManager) unbind(ctx context.Context, vpcID string) {
+// unbind closes the subnet's listener and removes its host veth. Idempotent.
+func (b *bindManager) unbind(ctx context.Context, subnetID string) {
 	b.mu.Lock()
-	binding := b.active[vpcID]
-	delete(b.active, vpcID)
+	binding := b.active[subnetID]
+	delete(b.active, subnetID)
 	b.mu.Unlock()
 
 	if binding != nil {
 		if err := binding.server.Close(); err != nil {
-			slog.Warn("IMDS: listener close failed", "vpc_id", vpcID, "err", err)
+			slog.Warn("IMDS: listener close failed", "subnet_id", subnetID, "err", err)
 		}
 	}
-	if err := b.removeVeth(ctx, vpcID); err != nil {
-		slog.Warn("IMDS: veth removal failed", "vpc_id", vpcID, "err", err)
+	if err := b.removeVeth(ctx, subnetID); err != nil {
+		slog.Warn("IMDS: veth removal failed", "subnet_id", subnetID, "err", err)
 	}
-	slog.Info("IMDS: listener unbound", "vpc_id", vpcID)
+	slog.Info("IMDS: listener unbound", "subnet_id", subnetID)
 }
 
 // shutdown closes every active listener. The host veths are intentionally left
@@ -230,11 +240,11 @@ func (b *bindManager) unbind(ctx context.Context, vpcID string) {
 func (b *bindManager) shutdown() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for vpcID, binding := range b.active {
+	for subnetID, binding := range b.active {
 		if err := binding.server.Close(); err != nil {
-			slog.Warn("IMDS: listener close failed during shutdown", "vpc_id", vpcID, "err", err)
+			slog.Warn("IMDS: listener close failed during shutdown", "subnet_id", subnetID, "err", err)
 		}
-		delete(b.active, vpcID)
+		delete(b.active, subnetID)
 	}
 }
 

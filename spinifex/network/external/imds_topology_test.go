@@ -18,6 +18,7 @@ import (
 
 const (
 	imdsTestSubnetID = "subnet-0a1b2c3d4e5f6789"
+	imdsTestVPCID    = "vpc-0a1b2c3d4e5f6789"
 	imdsTestCIDR     = "10.0.1.0/24"
 )
 
@@ -71,7 +72,7 @@ func TestIMDSEnsureForSubnet_InstallsLocalportOnSubnetLS(t *testing.T) {
 	seedSubnetSwitch(t, m, imdsTestSubnetID)
 	mgr, store := newIMDSManager(t, m)
 
-	spec, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, netip.MustParsePrefix(imdsTestCIDR))
+	spec, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, imdsTestVPCID, netip.MustParsePrefix(imdsTestCIDR))
 	require.NoError(t, err)
 
 	// Resolved names are deterministic functions of the subnet ID.
@@ -100,11 +101,13 @@ func TestIMDSEnsureForSubnet_InstallsLocalportOnSubnetLS(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, slices.Contains(ls.Ports, lsp.UUID), "localport must be a port on the subnet switch")
 
-	// Record published to the bucket, keyed by subnet, carrying the CIDR.
+	// Record published to the bucket, keyed by subnet, carrying the owning VPC
+	// (the subnet→VPC static lookup the IMDS handler needs) and the CIDR.
 	rec, err := store.Get(imdsTestSubnetID)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	assert.Equal(t, spec.ShortSubnetID, rec.ShortSubnetID)
+	assert.Equal(t, imdsTestVPCID, rec.VPCID)
 	assert.Equal(t, spec.LSPMAC, rec.IMDSPortMAC)
 	assert.Equal(t, imdsTestCIDR, rec.SubnetCIDR)
 	assert.NotEmpty(t, rec.CreatedAt)
@@ -116,7 +119,19 @@ func TestIMDSEnsureForSubnet_RequiresCIDR(t *testing.T) {
 	seedSubnetSwitch(t, m, imdsTestSubnetID)
 	mgr, _ := newIMDSManager(t, m)
 
-	_, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, netip.Prefix{})
+	_, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, imdsTestVPCID, netip.Prefix{})
+	require.Error(t, err)
+}
+
+func TestIMDSEnsureForSubnet_RequiresVPCID(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedSubnetSwitch(t, m, imdsTestSubnetID)
+	mgr, _ := newIMDSManager(t, m)
+
+	// vpcID is persisted in the record for the IMDS handler's subnet→VPC lookup;
+	// without it the eni-by-vpc-ip index can't be keyed, so install must fail loud.
+	_, err := mgr.EnsureForSubnet(ctx, imdsTestSubnetID, "", netip.MustParsePrefix(imdsTestCIDR))
 	require.Error(t, err)
 }
 
@@ -127,7 +142,7 @@ func TestIMDSEnsureForSubnet_Idempotent(t *testing.T) {
 	mgr, _ := newIMDSManager(t, m)
 
 	for range 3 {
-		_, err := mgr.EnsureForSubnet(ctx, "subnet-1", netip.MustParsePrefix(imdsTestCIDR))
+		_, err := mgr.EnsureForSubnet(ctx, "subnet-1", "vpc-1", netip.MustParsePrefix(imdsTestCIDR))
 		require.NoError(t, err)
 	}
 
@@ -145,7 +160,7 @@ func TestIMDSEnsureForSubnet_MissingSwitchErrors(t *testing.T) {
 	// No subnet switch seeded — the localport create has nowhere to land.
 	mgr, store := newIMDSManager(t, m)
 
-	_, err := mgr.EnsureForSubnet(ctx, "subnet-missing", netip.MustParsePrefix(imdsTestCIDR))
+	_, err := mgr.EnsureForSubnet(ctx, "subnet-missing", "vpc-1", netip.MustParsePrefix(imdsTestCIDR))
 	require.Error(t, err)
 
 	// No record published when install fails.
@@ -160,7 +175,7 @@ func TestIMDSRemoveForSubnet_TearsDownLocalportKeepsSwitch(t *testing.T) {
 	seedSubnetSwitch(t, m, "subnet-1")
 	mgr, store := newIMDSManager(t, m)
 
-	spec, err := mgr.EnsureForSubnet(ctx, "subnet-1", netip.MustParsePrefix(imdsTestCIDR))
+	spec, err := mgr.EnsureForSubnet(ctx, "subnet-1", "vpc-1", netip.MustParsePrefix(imdsTestCIDR))
 	require.NoError(t, err)
 
 	require.NoError(t, mgr.RemoveForSubnet(ctx, "subnet-1"))

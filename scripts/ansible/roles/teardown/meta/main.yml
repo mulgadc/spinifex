@@ -1,7 +1,0 @@
----
-galaxy_info:
-  role_name: teardown
-  description: Wipe Spinifex dev state. Central leak-enumeration surface — every state location cleaned here is a known leak source. See README.md for catalog.
-  license: BSD-3-Clause
-  min_ansible_version: "2.14"
-dependencies: []

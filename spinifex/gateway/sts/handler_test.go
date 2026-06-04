@@ -32,6 +32,13 @@ func (s *stubSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	return &sts.AssumeRoleOutput{}, nil
 }
 
+// AssumeRoleForInstance is the in-process IMDS entry point and is never
+// dispatched over the HTTPS gateway; the stub exists only to satisfy the
+// interface.
+func (s *stubSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
+	return &sts.AssumeRoleOutput{}, nil
+}
+
 func (s *stubSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	if s.getCallerIdentityFn != nil {
 		return s.getCallerIdentityFn(callerAccountID, callerARN, callerUserID, input)

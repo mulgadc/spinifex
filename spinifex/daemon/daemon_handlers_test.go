@@ -1658,7 +1658,10 @@ func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
 		Status:       vm.StateStopped,
 		InstanceType: "t3.micro",
 		AccountID:    testAccountID,
-		UserData:     "#!/bin/bash",
+		RunInstancesInput: &ec2.RunInstancesInput{
+			// base64("#!/bin/bash") — DescribeInstanceAttribute returns user-data base64-encoded.
+			UserData: aws.String("IyEvYmluL2Jhc2g="),
+		},
 		Instance: &ec2.Instance{
 			InstanceId: aws.String(instanceID),
 		},
@@ -1679,7 +1682,7 @@ func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &output)
 	require.NoError(t, err)
 	require.NotNil(t, output.UserData)
-	assert.Equal(t, "#!/bin/bash", *output.UserData.Value)
+	assert.Equal(t, "IyEvYmluL2Jhc2g=", *output.UserData.Value)
 }
 
 func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTermination(t *testing.T) {

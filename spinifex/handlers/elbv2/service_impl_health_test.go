@@ -164,7 +164,7 @@ func TestRegisterTargets_MultipleInstances(t *testing.T) {
 // TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial verifies
 // that the startup reset rewrites every non-draining target's HealthState
 // back to "initial" so a daemon restart can't surface stale "healthy" claims
-// before the lb-agent has posted a fresh report. Refs mulga-siv-119.
+// before the lb-agent has posted a fresh report.
 func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testing.T) {
 	store := setupTestNATS(t)
 	svc := &ELBv2ServiceImpl{store: store}

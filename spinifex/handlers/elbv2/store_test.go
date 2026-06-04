@@ -350,6 +350,16 @@ func TestGetListenerByArn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, l.ListenerID, got.ListenerID)
+
+	got, err = store.GetListenerByArn("arn:nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// ARN that parses to a real listener ID but a different ARN must not match
+	// (defence-in-depth against the parse trick serving a wrong record).
+	got, err = store.GetListenerByArn("arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":listener/app/other/lbX/" + l.ListenerID)
+	require.NoError(t, err)
+	assert.Nil(t, got)
 }
 
 // --- Cross-resource isolation: shared IDs across record types must not collide ---

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
@@ -41,9 +42,13 @@ func GenerateEKSErrorResponse(code, message string) []byte {
 	return body
 }
 
-// WriteJSONResponse serializes obj as JSON and writes it as a 200 response.
+// WriteJSONResponse serializes obj as AWS REST-JSON and writes it as a 200
+// response. aws-sdk-go *Output structs tag their fields with locationName (the
+// restjson wire name) and carry no json: tags, so encoding/json would emit Go
+// PascalCase keys the AWS SDK cannot parse. jsonutil.BuildJSON is the same
+// marshaler the SDK uses for restjson bodies and honors locationName.
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
-	body, err := json.Marshal(obj)
+	body, err := jsonutil.BuildJSON(obj)
 	if err != nil {
 		slog.Error("Failed to marshal EKS response JSON", "err", err)
 		WriteJSONError(w, awserrors.ErrorInternalError, "failed to marshal response", http.StatusInternalServerError)

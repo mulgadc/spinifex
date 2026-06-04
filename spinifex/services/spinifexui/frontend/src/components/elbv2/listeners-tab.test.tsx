@@ -8,6 +8,7 @@ const mockSend = vi.fn()
 
 vi.mock("@/lib/awsClient", () => ({
   getElbv2Client: () => ({ send: mockSend }),
+  getAcmClient: () => ({ send: mockSend }),
 }))
 
 import { ListenersTab } from "./listeners-tab"
@@ -27,6 +28,8 @@ function createWrapper(queryClient: QueryClient) {
 function seedClient(opts: {
   listeners?: unknown
   targetGroups?: unknown
+  certificates?: unknown
+  sslPolicies?: unknown
 }): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -46,6 +49,14 @@ function seedClient(opts: {
     ["elbv2", "targetGroups"],
     opts.targetGroups ?? { TargetGroups: [] },
   )
+  queryClient.setQueryData(
+    ["acm", "certificates"],
+    opts.certificates ?? { CertificateSummaryList: [] },
+  )
+  queryClient.setQueryData(
+    ["elbv2", "sslPolicies"],
+    opts.sslPolicies ?? { SslPolicies: [] },
+  )
   return queryClient
 }
 
@@ -56,9 +67,16 @@ describe("ListenersTab", () => {
 
   it("renders empty state when no listeners", () => {
     const queryClient = seedClient({})
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     expect(screen.getByText("No listeners configured.")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Add listener" }),
@@ -89,9 +107,16 @@ describe("ListenersTab", () => {
         ],
       },
     })
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     expect(screen.getByText("forward → my-tg")).toBeInTheDocument()
     expect(screen.getByText("HTTP")).toBeInTheDocument()
     expect(screen.getByText("80")).toBeInTheDocument()
@@ -112,9 +137,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByLabelText("Delete listener HTTP:80"))
     expect(screen.getByText(/delete listener http:80/i)).toBeInTheDocument()
     const before = mockSend.mock.calls.length
@@ -148,9 +180,16 @@ describe("ListenersTab", () => {
       },
     })
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByRole("button", { name: "Add listener" }))
     await user.click(screen.getByLabelText("Default target group"))
     await expect(screen.findByText(/tg-in-vpc/)).resolves.toBeInTheDocument()
@@ -184,9 +223,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByLabelText("Edit listener HTTP:80"))
     await expect(
       screen.findByRole("alertdialog", { name: /edit listener/i }),
@@ -225,9 +271,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByRole("button", { name: "Add listener" }))
     await user.click(screen.getByLabelText("Default target group"))
     await user.click(await screen.findByText(/tg-a/))
@@ -242,6 +295,82 @@ describe("ListenersTab", () => {
       Protocol: "HTTP",
       Port: 80,
       DefaultActions: [{ Type: "forward", TargetGroupArn: TG_ARN_A }],
+    })
+  })
+
+  it("edits an HTTPS listener, prefilling cert + policy, and ModifyListener carries TLS fields", async () => {
+    const CERT_ARN = "arn:aws:acm:ap-southeast-2:1:certificate/abc-123"
+    const queryClient = seedClient({
+      listeners: {
+        Listeners: [
+          {
+            ListenerArn: "arn:listener/1",
+            LoadBalancerArn: LB_ARN,
+            Protocol: "HTTPS",
+            Port: 443,
+            SslPolicy: "ELBSecurityPolicy-2016-08",
+            Certificates: [{ CertificateArn: CERT_ARN, IsDefault: true }],
+            DefaultActions: [{ Type: "forward", TargetGroupArn: TG_ARN_A }],
+          },
+        ],
+      },
+      targetGroups: {
+        TargetGroups: [
+          {
+            TargetGroupArn: TG_ARN_A,
+            TargetGroupName: "tg-a",
+            Protocol: "HTTP",
+            Port: 80,
+            VpcId: "vpc-aaa",
+          },
+        ],
+      },
+      certificates: {
+        CertificateSummaryList: [
+          { CertificateArn: CERT_ARN, DomainName: "example.com" },
+        ],
+      },
+      sslPolicies: { SslPolicies: [{ Name: "ELBSecurityPolicy-2016-08" }] },
+    })
+    mockSend.mockResolvedValue({})
+    const user = userEvent.setup()
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
+
+    // The TLS column summarises the policy + cert id for HTTPS listeners.
+    expect(
+      screen.getByText(/ELBSecurityPolicy-2016-08 · abc-123/),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText("Edit listener HTTPS:443"))
+    await expect(
+      screen.findByRole("alertdialog", { name: /edit listener/i }),
+    ).resolves.toBeInTheDocument()
+    // The HTTPS-only fields are prefilled from the listener record.
+    expect(screen.getByLabelText("Certificate")).toBeInTheDocument()
+    expect(screen.getByLabelText("Security policy")).toBeInTheDocument()
+
+    const before = mockSend.mock.calls.length
+    await user.click(screen.getByRole("button", { name: /save changes/i }))
+    await waitFor(() =>
+      expect(mockSend.mock.calls.length).toBeGreaterThan(before),
+    )
+    const call = mockSend.mock.calls[before]?.[0]
+    expect(call.input).toStrictEqual({
+      ListenerArn: "arn:listener/1",
+      Protocol: "HTTPS",
+      Port: 443,
+      DefaultActions: [{ Type: "forward", TargetGroupArn: TG_ARN_A }],
+      Certificates: [{ CertificateArn: CERT_ARN }],
+      SslPolicy: "ELBSecurityPolicy-2016-08",
     })
   })
 })

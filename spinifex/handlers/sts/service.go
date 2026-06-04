@@ -17,6 +17,11 @@ type STSService interface {
 	// strings to keep the handler unit-testable.
 	AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 
+	// AssumeRoleForInstance mints role-bound temporary credentials for an EC2 instance.
+	// It is the in-process IMDS entry point, NOT reachable over HTTPS: the caller is the
+	// synthesised EC2 service principal (trust must allow Service ec2.amazonaws.com).
+	AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
+
 	// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a
 	// projected K8s ServiceAccount token signed by an EKS cluster's
 	// per-cluster signing key) for short-lived AWS credentials bound to the

@@ -19,6 +19,8 @@ const (
 	TopicDeleteIGWRoute     = "vpc.delete-igw-route"
 	TopicGateSubnetEgress   = "vpc.gate-subnet-egress"
 	TopicUngateSubnetEgress = "vpc.ungate-subnet-egress"
+	TopicAddSystemEgress    = "vpc.add-system-egress"
+	TopicDeleteSystemEgress = "vpc.delete-system-egress"
 	TopicCreateSG           = "vpc.create-sg"
 	TopicDeleteSG           = "vpc.delete-sg"
 	TopicUpdateSG           = "vpc.update-sg"
@@ -111,6 +113,19 @@ type SubnetEgressUngateEvent struct {
 	VpcId           string `json:"vpc_id"`
 	SubnetId        string `json:"subnet_id"`
 	DestinationCidr string `json:"destination_cidr"`
+}
+
+// SystemEgressEvent is published on vpc.add-system-egress /
+// vpc.delete-system-egress to give a single hidden system instance (e.g. an
+// EKS K3s server VM) egress-only internet access. The subscriber installs (or
+// removes) a /32 reroute policy at SystemInstanceEgressPriority plus a plain
+// snat (InstanceIp -> ExternalIp) — no DNAT, so the instance stays unreachable
+// inbound.
+type SystemEgressEvent struct {
+	VpcId      string `json:"vpc_id"`
+	SubnetId   string `json:"subnet_id"`
+	InstanceIp string `json:"instance_ip"`
+	ExternalIp string `json:"external_ip"`
 }
 
 // SGRule mirrors handlers/ec2/vpc.SGRule on the wire (kept local to avoid

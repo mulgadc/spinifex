@@ -25,25 +25,63 @@ import {
   useDeleteListener,
   useModifyListener,
 } from "@/mutations/elbv2"
+import { acmCertificatesQueryOptions } from "@/queries/acm"
 import {
   elbv2ListenersQueryOptions,
+  elbv2SslPoliciesQueryOptions,
   elbv2TargetGroupsQueryOptions,
 } from "@/queries/elbv2"
 import {
   type CreateListenerFormData,
   createListenerSchema,
+  defaultProtocolForType,
+  isSecureProtocol,
+  type LbType,
+  type ListenerProtocolValue,
+  protocolsForType,
 } from "@/types/elbv2"
 
 interface ListenersTabProps {
   loadBalancerArn: string
   vpcId: string | undefined
+  lbType: LbType
 }
 
-export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
+// NLB listeners default to TCP, ALB to HTTP — both on port 80.
+function listenerDefaults(lbType: LbType): CreateListenerFormData {
+  return {
+    protocol: defaultProtocolForType(lbType),
+    port: 80,
+    defaultTargetGroupArn: "",
+  }
+}
+
+function formatTls(listener: Listener): string {
+  if (listener.Protocol !== "HTTPS") {
+    return "—"
+  }
+  const certId = listener.Certificates?.[0]?.CertificateArn?.split("/").pop()
+  const policy = listener.SslPolicy
+  if (certId && policy) {
+    return `${policy} · ${certId}`
+  }
+  return policy ?? certId ?? "—"
+}
+
+export function ListenersTab({
+  loadBalancerArn,
+  vpcId,
+  lbType,
+}: ListenersTabProps) {
+  const protocols = protocolsForType(lbType)
   const { data: listenersData } = useSuspenseQuery(
     elbv2ListenersQueryOptions(loadBalancerArn),
   )
   const { data: tgsData } = useSuspenseQuery(elbv2TargetGroupsQueryOptions)
+  const { data: certsData } = useSuspenseQuery(acmCertificatesQueryOptions)
+  const { data: sslPoliciesData } = useSuspenseQuery(
+    elbv2SslPoliciesQueryOptions,
+  )
 
   const createMutation = useCreateListener()
   const deleteMutation = useDeleteListener()
@@ -57,6 +95,8 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
   const listeners = listenersData.Listeners ?? []
   const allTgs = tgsData.TargetGroups ?? []
   const vpcTgs = allTgs.filter((tg) => tg.VpcId === vpcId)
+  const certificates = certsData.CertificateSummaryList ?? []
+  const sslPolicies = sslPoliciesData.SslPolicies ?? []
 
   const tgNameByArn = new Map<string, string>()
   for (const tg of allTgs) {
@@ -84,6 +124,8 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
         protocol: data.protocol,
         port: data.port,
         defaultTargetGroupArn: data.defaultTargetGroupArn,
+        certificateArn: data.certificateArn,
+        sslPolicy: data.sslPolicy,
       })
       setAddOpen(false)
     } catch {
@@ -102,6 +144,8 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
         protocol: data.protocol,
         port: data.port,
         defaultTargetGroupArn: data.defaultTargetGroupArn,
+        certificateArn: data.certificateArn,
+        sslPolicy: data.sslPolicy,
       })
       setEditTarget(undefined)
     } catch {
@@ -159,6 +203,7 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
               <tr className="border-b text-left text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Protocol</th>
                 <th className="px-4 py-2 font-medium">Port</th>
+                <th className="px-4 py-2 font-medium">TLS</th>
                 <th className="px-4 py-2 font-medium">Default action</th>
                 <th className="px-4 py-2 font-medium">Listener ARN</th>
                 <th className="px-4 py-2 font-medium">
@@ -175,6 +220,9 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
                     <tr className="border-b last:border-0">
                       <td className="px-4 py-2">{listener.Protocol}</td>
                       <td className="px-4 py-2">{listener.Port}</td>
+                      <td className="px-4 py-2 text-xs">
+                        {formatTls(listener)}
+                      </td>
                       <td className="px-4 py-2 text-xs">
                         {formatDefaultAction(listener)}
                       </td>
@@ -212,7 +260,7 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
                     </tr>
                     {rulesOpen && arn && (
                       <tr className="border-b bg-muted/30 last:border-0">
-                        <td className="px-4 py-3" colSpan={5}>
+                        <td className="px-4 py-3" colSpan={6}>
                           <ListenerRulesTab
                             listenerArn={arn}
                             targetGroups={vpcTgs}
@@ -229,18 +277,25 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
       )}
 
       <AddListenerDialog
+        certificates={certificates}
         isPending={createMutation.isPending}
+        lbType={lbType}
         onOpenChange={setAddOpen}
         onSubmit={handleCreate}
         open={addOpen}
+        protocols={protocols}
+        sslPolicies={sslPolicies}
         targetGroups={vpcTgs}
       />
 
       <EditListenerDialog
+        certificates={certificates}
         isPending={modifyMutation.isPending}
         listener={editTarget}
         onOpenChange={(open) => !open && setEditTarget(undefined)}
         onSubmit={handleEdit}
+        protocols={protocols}
+        sslPolicies={sslPolicies}
         targetGroups={vpcTgs}
       />
 
@@ -263,7 +318,11 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
 interface AddListenerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  lbType: LbType
+  protocols: readonly ListenerProtocolValue[]
   targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
+  certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
+  sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
   isPending: boolean
   onSubmit: (data: CreateListenerFormData) => void
 }
@@ -271,28 +330,24 @@ interface AddListenerDialogProps {
 function AddListenerDialog({
   open,
   onOpenChange,
+  lbType,
+  protocols,
   targetGroups,
+  certificates,
+  sslPolicies,
   isPending,
   onSubmit,
 }: AddListenerDialogProps) {
   const form = useForm<CreateListenerFormData>({
     resolver: zodResolver(createListenerSchema),
-    defaultValues: {
-      protocol: "HTTP",
-      port: 80,
-      defaultTargetGroupArn: "",
-    },
+    defaultValues: listenerDefaults(lbType),
   })
 
   useEffect(() => {
     if (!open) {
-      form.reset({
-        protocol: "HTTP",
-        port: 80,
-        defaultTargetGroupArn: "",
-      })
+      form.reset(listenerDefaults(lbType))
     }
-  }, [open, form])
+  }, [open, form, lbType])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 
@@ -316,7 +371,13 @@ function AddListenerDialog({
             void handleConfirm()
           }}
         >
-          <ListenerForm form={form} targetGroups={targetGroups} />
+          <ListenerForm
+            certificates={certificates}
+            form={form}
+            protocols={protocols}
+            sslPolicies={sslPolicies}
+            targetGroups={targetGroups}
+          />
         </form>
 
         <AlertDialogFooter>
@@ -333,7 +394,10 @@ function AddListenerDialog({
 interface EditListenerDialogProps {
   listener: Listener | undefined
   onOpenChange: (open: boolean) => void
+  protocols: readonly ListenerProtocolValue[]
   targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
+  certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
+  sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
   isPending: boolean
   onSubmit: (data: CreateListenerFormData) => void
 }
@@ -341,7 +405,10 @@ interface EditListenerDialogProps {
 function EditListenerDialog({
   listener,
   onOpenChange,
+  protocols,
   targetGroups,
+  certificates,
+  sslPolicies,
   isPending,
   onSubmit,
 }: EditListenerDialogProps) {
@@ -360,12 +427,19 @@ function EditListenerDialog({
     if (!listener) {
       return
     }
+    const protocol: ListenerProtocolValue =
+      protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
+    const secure = isSecureProtocol(protocol)
     form.reset({
-      protocol: "HTTP",
+      protocol,
       port: listener.Port ?? 80,
       defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
+      certificateArn: secure
+        ? listener.Certificates?.[0]?.CertificateArn
+        : undefined,
+      sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
     })
-  }, [listener, form])
+  }, [listener, form, protocols])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 
@@ -390,7 +464,13 @@ function EditListenerDialog({
             void handleConfirm()
           }}
         >
-          <ListenerForm form={form} targetGroups={targetGroups} />
+          <ListenerForm
+            certificates={certificates}
+            form={form}
+            protocols={protocols}
+            sslPolicies={sslPolicies}
+            targetGroups={targetGroups}
+          />
         </form>
 
         <AlertDialogFooter>

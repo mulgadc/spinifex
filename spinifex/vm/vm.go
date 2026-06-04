@@ -61,9 +61,6 @@ type VM struct {
 	// Set when ownership is released on stop for shared KV storage.
 	LastNode string `json:"last_node,omitempty"`
 
-	// User data for cloud-init (decoded from base64)
-	UserData string `json:"user_data,omitempty"`
-
 	// Metadata server address (e.g., "127.0.0.1:12345") for EC2 metadata service
 	MetadataServerAddress string `json:"metadata_server_address,omitempty"`
 

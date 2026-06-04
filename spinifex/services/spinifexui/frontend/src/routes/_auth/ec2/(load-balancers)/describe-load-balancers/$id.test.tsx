@@ -105,6 +105,11 @@ describe("load-balancer detail route", () => {
     qc.setQueryData(["ec2", "subnets"], {
       Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
     })
+    qc.setQueryData(["ec2", "securityGroups"], {
+      SecurityGroups: [
+        { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-aaa" },
+      ],
+    })
     return qc
   }
 
@@ -116,6 +121,44 @@ describe("load-balancer detail route", () => {
     expect(screen.getByText("application")).toBeInTheDocument()
     expect(screen.getByText("internet-facing")).toBeInTheDocument()
     expect(screen.getByText("sg-1")).toBeInTheDocument()
+    expect(
+      screen.getByRole("tab", { name: "Security groups" }),
+    ).toBeInTheDocument()
+  })
+
+  it("hides the Security groups tab for a network load balancer", () => {
+    const qc = createTestQueryClient()
+    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], {
+      LoadBalancers: [
+        {
+          LoadBalancerArn: LB_ARN,
+          LoadBalancerName: "my-nlb",
+          DNSName: "my-nlb.example",
+          Type: "network",
+          Scheme: "internet-facing",
+          IpAddressType: "ipv4",
+          VpcId: "vpc-aaa",
+          State: { Code: "active" },
+          AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
+        },
+      ],
+    })
+    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
+      Attributes: [],
+    })
+    qc.setQueryData(["elbv2", "tags", LB_ARN], { TagDescriptions: [] })
+    qc.setQueryData(["elbv2", "listeners", LB_ARN], { Listeners: [] })
+    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
+    qc.setQueryData(["ec2", "subnets"], {
+      Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
+    })
+    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
+
+    renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, qc)
+
+    expect(screen.getByText("my-nlb")).toBeInTheDocument()
+    expect(screen.queryByRole("tab", { name: "Security groups" })).toBeNull()
+    expect(screen.getByRole("tab", { name: "Listeners" })).toBeInTheDocument()
   })
 
   it("renders a not-found state when the LB ARN is unknown", () => {
@@ -126,6 +169,7 @@ describe("load-balancer detail route", () => {
     })
     qc.setQueryData(["elbv2", "tags", LB_ARN], { TagDescriptions: [] })
     qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
+    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
 
     renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, qc)
 

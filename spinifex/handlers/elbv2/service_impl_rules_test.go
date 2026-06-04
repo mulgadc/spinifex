@@ -70,6 +70,46 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
+// TestDeleteLoadBalancer_CascadesRuleDeletion is a regression guard:
+// DeleteLoadBalancer must cascade through listener rule deletion. Previously it
+// called store.DeleteListener directly, bypassing the rule cascade, so a rule's
+// target group stayed pinned as ResourceInUse and was permanently undeletable.
+func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
+	env := newRuleTestEnv(t, "del-cascade")
+
+	// Rule on the listener forwards to the alt TG.
+	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(10),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgAltArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Tear down the LB.
+	_, err = env.svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(env.lbArn),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// LB deletion must cascade rule deletion — no rule may survive.
+	rules, err := env.svc.store.ListRules()
+	require.NoError(t, err)
+	assert.Empty(t, rules, "LB deletion must cascade rule deletion")
+
+	// Both target groups must now be deletable: neither an orphan rule nor a
+	// stale listener default action may pin them as ResourceInUse.
+	_, err = env.svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+		TargetGroupArn: aws.String(env.tgAltArn),
+	}, testAccountID)
+	require.NoError(t, err, "rule target group must not be pinned after LB deletion")
+
+	_, err = env.svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+		TargetGroupArn: aws.String(env.tgArn),
+	}, testAccountID)
+	require.NoError(t, err, "listener default-action target group must not be pinned after LB deletion")
+}
+
 func TestCreateRule_PriorityInUse(t *testing.T) {
 	env := newRuleTestEnv(t, "cr-pri")
 
@@ -107,14 +147,75 @@ func TestCreateRule_InvalidPriority(t *testing.T) {
 	}
 }
 
-func TestCreateRule_RejectsRedirect(t *testing.T) {
+func TestCreateRule_RedirectAction(t *testing.T) {
+	env := newRuleTestEnv(t, "cr-redir")
+
+	out, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/old/*"})}},
+		Actions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				StatusCode: aws.String("HTTP_301"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Rules, 1)
+	require.Len(t, out.Rules[0].Actions, 1)
+	assert.Equal(t, "redirect", *out.Rules[0].Actions[0].Type)
+	require.NotNil(t, out.Rules[0].Actions[0].RedirectConfig)
+	assert.Equal(t, "HTTP_301", *out.Rules[0].Actions[0].RedirectConfig.StatusCode)
+}
+
+func TestCreateRule_FixedResponseAction(t *testing.T) {
+	env := newRuleTestEnv(t, "cr-fixed")
+
+	out, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/down"})}},
+		Actions: []*elbv2.Action{{
+			Type: aws.String("fixed-response"),
+			FixedResponseConfig: &elbv2.FixedResponseActionConfig{
+				StatusCode:  aws.String("503"),
+				ContentType: aws.String("text/plain"),
+				MessageBody: aws.String("maintenance"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Rules, 1)
+	assert.Equal(t, "fixed-response", *out.Rules[0].Actions[0].Type)
+	require.NotNil(t, out.Rules[0].Actions[0].FixedResponseConfig)
+}
+
+func TestCreateRule_RejectsBadRedirectStatus(t *testing.T) {
+	env := newRuleTestEnv(t, "cr-badredir")
+
+	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/a"})}},
+		Actions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{StatusCode: aws.String("HTTP_418")},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
+func TestCreateRule_RejectsUnknownAction(t *testing.T) {
 	env := newRuleTestEnv(t, "cr-rej")
 
 	_, err := env.svc.CreateRule(&elbv2.CreateRuleInput{
 		ListenerArn: aws.String(env.listenerArn),
 		Priority:    aws.Int64(1),
 		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/a"})}},
-		Actions:     []*elbv2.Action{{Type: aws.String("redirect")}},
+		Actions:     []*elbv2.Action{{Type: aws.String("authenticate-cognito")}},
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidConfigurationRequest")

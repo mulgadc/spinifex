@@ -4,6 +4,7 @@ import {
   type RulePriorityPair,
   type Tag,
   type TargetDescription,
+  AddTagsCommand,
   CreateListenerCommand,
   CreateLoadBalancerCommand,
   CreateRuleCommand,
@@ -18,7 +19,9 @@ import {
   ModifyRuleCommand,
   ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
+  RemoveTagsCommand,
   SetRulePrioritiesCommand,
+  SetSecurityGroupsCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
@@ -76,6 +79,76 @@ export function useModifyLoadBalancerAttributes() {
   })
 }
 
+export interface UpdateTagsParams {
+  // ARN of any taggable ELBv2 resource (load balancer, target group, listener,
+  // listener rule).
+  resourceArn: string
+  // Desired final tag set after the edit.
+  tags: { key: string; value: string }[]
+  // Tag keys present before the edit, used to compute removals.
+  initialKeys: string[]
+}
+
+// useUpdateTags reconciles a resource's tags to the desired set by diffing
+// against the prior keys: it overwrites the final tags via AddTags and deletes
+// any dropped keys via RemoveTags. Either call is skipped when it has no work.
+export function useUpdateTags() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: UpdateTagsParams) => {
+      const finalKeys = new Set(params.tags.map((t) => t.key))
+      const toRemove = params.initialKeys.filter((k) => !finalKeys.has(k))
+      const client = getElbv2Client()
+
+      if (params.tags.length > 0) {
+        await client.send(
+          new AddTagsCommand({
+            ResourceArns: [params.resourceArn],
+            Tags: params.tags.map((t) => ({ Key: t.key, Value: t.value })),
+          }),
+        )
+      }
+      if (toRemove.length > 0) {
+        await client.send(
+          new RemoveTagsCommand({
+            ResourceArns: [params.resourceArn],
+            TagKeys: toRemove,
+          }),
+        )
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["elbv2", "tags"] })
+    },
+  })
+}
+
+export interface SetSecurityGroupsParams {
+  loadBalancerArn: string
+  securityGroupIds: string[]
+}
+
+// useSetSecurityGroups replaces the security groups associated with a load
+// balancer (SetSecurityGroups). The new set takes effect on the live data plane
+// server-side; the LB query is invalidated so the detail page reflects it.
+export function useSetSecurityGroups() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: SetSecurityGroupsParams) => {
+      const command = new SetSecurityGroupsCommand({
+        LoadBalancerArn: params.loadBalancerArn,
+        SecurityGroups: params.securityGroupIds,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "loadBalancers", variables.loadBalancerArn],
+      })
+    },
+  })
+}
+
 export function useCreateTargetGroup() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -83,6 +156,7 @@ export function useCreateTargetGroup() {
       const tags: Tag[] = params.tags
         .filter((t) => t.key.length > 0)
         .map((t) => ({ Key: t.key, Value: t.value }))
+      const httpHealthCheck = params.healthCheck.protocol === "HTTP"
       const command = new CreateTargetGroupCommand({
         Name: params.name,
         Protocol: params.protocol,
@@ -90,13 +164,15 @@ export function useCreateTargetGroup() {
         VpcId: params.vpcId,
         TargetType: "instance",
         HealthCheckProtocol: params.healthCheck.protocol,
-        HealthCheckPath: params.healthCheck.path,
+        HealthCheckPath: httpHealthCheck ? params.healthCheck.path : undefined,
         HealthCheckPort: params.healthCheck.port,
         HealthCheckIntervalSeconds: params.healthCheck.intervalSeconds,
         HealthCheckTimeoutSeconds: params.healthCheck.timeoutSeconds,
         HealthyThresholdCount: params.healthCheck.healthyThresholdCount,
         UnhealthyThresholdCount: params.healthCheck.unhealthyThresholdCount,
-        Matcher: { HttpCode: params.healthCheck.matcher },
+        Matcher: httpHealthCheck
+          ? { HttpCode: params.healthCheck.matcher }
+          : undefined,
         Tags: tags.length > 0 ? tags : undefined,
       })
       return await getElbv2Client().send(command)
@@ -157,11 +233,40 @@ export function useModifyTargetGroupAttributes() {
   })
 }
 
+export type ListenerProtocol =
+  | "HTTP"
+  | "HTTPS"
+  | "TCP"
+  | "UDP"
+  | "TLS"
+  | "TCP_UDP"
+
+// tlsListenerFields returns the Certificates + SslPolicy command fields for a
+// secure listener (HTTPS or NLB TLS), or empty undefined fields otherwise. The
+// server rejects certs on a non-secure protocol, so they are only emitted for
+// secure ones; SslPolicy is HTTPS-only (NLB TLS policies are not modelled).
+function tlsListenerFields(
+  protocol: ListenerProtocol,
+  certificateArn?: string,
+  sslPolicy?: string,
+): { Certificates?: { CertificateArn: string }[]; SslPolicy?: string } {
+  const secure = protocol === "HTTPS" || protocol === "TLS"
+  if (!secure || !certificateArn) {
+    return {}
+  }
+  return {
+    Certificates: [{ CertificateArn: certificateArn }],
+    SslPolicy: protocol === "HTTPS" ? sslPolicy : undefined,
+  }
+}
+
 export interface CreateListenerParams {
   loadBalancerArn: string
-  protocol: "HTTP"
+  protocol: ListenerProtocol
   port: number
   defaultTargetGroupArn: string
+  certificateArn?: string
+  sslPolicy?: string
 }
 
 export function useCreateListener() {
@@ -179,6 +284,11 @@ export function useCreateListener() {
         Protocol: params.protocol,
         Port: params.port,
         DefaultActions: defaultActions,
+        ...tlsListenerFields(
+          params.protocol,
+          params.certificateArn,
+          params.sslPolicy,
+        ),
       })
       return await getElbv2Client().send(command)
     },
@@ -206,9 +316,11 @@ export function useDeleteListener() {
 export interface ModifyListenerParams {
   listenerArn: string
   loadBalancerArn: string
-  protocol: "HTTP"
+  protocol: ListenerProtocol
   port: number
   defaultTargetGroupArn: string
+  certificateArn?: string
+  sslPolicy?: string
 }
 
 export function useModifyListener() {
@@ -226,6 +338,11 @@ export function useModifyListener() {
         Protocol: params.protocol,
         Port: params.port,
         DefaultActions: defaultActions,
+        ...tlsListenerFields(
+          params.protocol,
+          params.certificateArn,
+          params.sslPolicy,
+        ),
       })
       return await getElbv2Client().send(command)
     },
@@ -252,10 +369,12 @@ export interface LbWizardResult {
 export interface CreateLoadBalancerWizardParams {
   lb: Omit<CreateLoadBalancerFormData, "listener">
   listener: {
-    protocol: "HTTP"
+    protocol: ListenerProtocol
     port: number
     targetGroupMode: "new" | "existing"
     existingTargetGroupArn?: string
+    certificateArn?: string
+    sslPolicy?: string
     newTargetGroup?: CreateTargetGroupFormData
   }
 }
@@ -284,6 +403,8 @@ export function useCreateLoadBalancerWizard() {
           const tgTags: Tag[] = tg.tags
             .filter((t) => t.key.length > 0)
             .map((t) => ({ Key: t.key, Value: t.value }))
+          // Path + Matcher are HTTP-only; a TCP health check (NLB) rejects them.
+          const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
           const tgResult = await client.send(
             new CreateTargetGroupCommand({
               Name: tg.name,
@@ -292,13 +413,17 @@ export function useCreateLoadBalancerWizard() {
               VpcId: tg.vpcId,
               TargetType: "instance",
               HealthCheckProtocol: tg.healthCheck.protocol,
-              HealthCheckPath: tg.healthCheck.path,
+              HealthCheckPath: httpHealthCheck
+                ? tg.healthCheck.path
+                : undefined,
               HealthCheckPort: tg.healthCheck.port,
               HealthCheckIntervalSeconds: tg.healthCheck.intervalSeconds,
               HealthCheckTimeoutSeconds: tg.healthCheck.timeoutSeconds,
               HealthyThresholdCount: tg.healthCheck.healthyThresholdCount,
               UnhealthyThresholdCount: tg.healthCheck.unhealthyThresholdCount,
-              Matcher: { HttpCode: tg.healthCheck.matcher },
+              Matcher: httpHealthCheck
+                ? { HttpCode: tg.healthCheck.matcher }
+                : undefined,
               Tags: tgTags.length > 0 ? tgTags : undefined,
             }),
           )
@@ -324,7 +449,7 @@ export function useCreateLoadBalancerWizard() {
           new CreateLoadBalancerCommand({
             Name: params.lb.name,
             Scheme: params.lb.scheme,
-            Type: "application",
+            Type: params.lb.type,
             IpAddressType: "ipv4",
             Subnets: params.lb.subnetIds,
             SecurityGroups:
@@ -352,6 +477,11 @@ export function useCreateLoadBalancerWizard() {
             DefaultActions: [
               { Type: "forward", TargetGroupArn: targetGroupArn },
             ],
+            ...tlsListenerFields(
+              params.listener.protocol,
+              params.listener.certificateArn,
+              params.listener.sslPolicy,
+            ),
           }),
         )
         created.push({ type: "Listener", id: undefined })

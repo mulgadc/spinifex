@@ -33,6 +33,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -49,6 +50,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -132,6 +134,7 @@ type Daemon struct {
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
+	acmService            *handlers_acm.ACMServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -840,12 +843,20 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"elbv2.DescribeRules", d.handleELBv2DescribeRules, "spinifex-workers"},
 			natsSub{"elbv2.SetRulePriorities", d.handleELBv2SetRulePriorities, "spinifex-workers"},
 			natsSub{"elbv2.DescribeTags", d.handleELBv2DescribeTags, "spinifex-workers"},
+			natsSub{"elbv2.AddTags", d.handleELBv2AddTags, "spinifex-workers"},
+			natsSub{"elbv2.RemoveTags", d.handleELBv2RemoveTags, "spinifex-workers"},
 			natsSub{"elbv2.LBAgentHeartbeat", d.handleELBv2LBAgentHeartbeat, "spinifex-workers"},
 			natsSub{"elbv2.GetLBConfig", d.handleELBv2GetLBConfig, "spinifex-workers"},
 			natsSub{"elbv2.ModifyTargetGroupAttributes", d.handleELBv2ModifyTargetGroupAttributes, "spinifex-workers"},
 			natsSub{"elbv2.DescribeTargetGroupAttributes", d.handleELBv2DescribeTargetGroupAttributes, "spinifex-workers"},
 			natsSub{"elbv2.ModifyLoadBalancerAttributes", d.handleELBv2ModifyLoadBalancerAttributes, "spinifex-workers"},
 			natsSub{"elbv2.DescribeLoadBalancerAttributes", d.handleELBv2DescribeLoadBalancerAttributes, "spinifex-workers"},
+			natsSub{"elbv2.SetSecurityGroups", d.handleELBv2SetSecurityGroups, "spinifex-workers"},
+			natsSub{"elbv2.SetIpAddressType", d.handleELBv2SetIpAddressType, "spinifex-workers"},
+			natsSub{"elbv2.AddListenerCertificates", d.handleELBv2AddListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.RemoveListenerCertificates", d.handleELBv2RemoveListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.DescribeListenerCertificates", d.handleELBv2DescribeListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.DescribeSSLPolicies", d.handleELBv2DescribeSSLPolicies, "spinifex-workers"},
 		)
 	}
 
@@ -888,6 +899,16 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.TagResource", d.handleEKSTagResource, "spinifex-workers"},
 			natsSub{"eks.UntagResource", d.handleEKSUntagResource, "spinifex-workers"},
 			natsSub{"eks.ListTagsForResource", d.handleEKSListTagsForResource, "spinifex-workers"},
+		)
+	}
+
+	// ACM gateway → daemon subscriptions (minimal certificate store).
+	if d.acmService != nil {
+		subs = append(subs,
+			natsSub{"acm.ImportCertificate", d.handleACMImportCertificate, "spinifex-workers"},
+			natsSub{"acm.DescribeCertificate", d.handleACMDescribeCertificate, "spinifex-workers"},
+			natsSub{"acm.ListCertificates", d.handleACMListCertificates, "spinifex-workers"},
+			natsSub{"acm.DeleteCertificate", d.handleACMDeleteCertificate, "spinifex-workers"},
 		)
 	}
 
@@ -1186,6 +1207,16 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
 	}
 
+	// Wire the eni-by-vpc-ip reverse index so the ENI controller keeps the
+	// IMDS source-IP→ENI lookup in sync on Create/DeleteNetworkInterface.
+	if vpcJS, jsErr := d.natsConn.JetStream(); jsErr != nil {
+		slog.Warn("Failed to get JetStream for eni-by-ip index", "err", jsErr)
+	} else if eniByIPKV, kvErr := handlers_imds.InitENIByIPBucket(vpcJS, 1); kvErr != nil {
+		slog.Warn("Failed to init eni-by-ip index bucket", "err", kvErr)
+	} else {
+		d.vpcService.SetENIByIPIndex(handlers_ec2_vpc.NewENIByIPIndex(eniByIPKV))
+	}
+
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.config, d.natsConn)
 	})
@@ -1328,10 +1359,21 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*handlers_eks.EKSServiceImpl, error) {
-		return handlers_eks.NewEKSServiceImplWithNATS(d.config, d.natsConn)
+		return handlers_eks.NewEKSServiceImpl(d.buildEKSServiceDeps())
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
+	}
+
+	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
+		return handlers_acm.NewACMServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+
+	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
+		slog.Warn("EKS: SpawnRegisteredReconcilers failed", "err", err)
 	}
 
 	// Ensure default VPC exists for system and admin accounts
@@ -1927,6 +1969,11 @@ func (d *Daemon) setupShutdown() {
 			d.elbv2Service.Close()
 		}
 
+		// Stop EKS per-cluster reconciler + bootstrap goroutines.
+		if d.eksService != nil {
+			d.eksService.Shutdown()
+		}
+
 		// Final cleanup
 		for _, sub := range d.natsSubscriptions {
 			// Unsubscribe from each subscription
@@ -2217,26 +2264,15 @@ func (d *Daemon) wireLBAgentConfig() {
 	}
 
 	// Resolve gateway URL — the address LB VMs use to reach the AWS gateway.
-	// Precedence:
-	//   1. br-mgmt present + AWSGW on a dedicated IP distinct from AdvertiseIP
-	//      (multi-node: AWSGW on a mgmt-only IP, VPC path can't reach it) →
-	//      gateway URL is the AWSGW bind IP and lb-agent gets a bootcmd host
-	//      route via br-mgmt.
-	//   2. AdvertiseIP set (single-node, or multi-node where AWSGW binds to
-	//      the advertised IP) → AdvertiseIP. VMs reach it via VPC → external
-	//      (OVN's own dnat_and_snat SNATs their reply back to the ALB EIP).
-	//      Critically, we do NOT add the mgmt host route here: when host IPs
-	//      on the WAN share the advertiseIP, the /32 route would steal the
-	//      return path for host-initiated ALB connections — replies would
-	//      egress via mgmt with the VM's 10.x source IP, bypass OVN's SNAT,
-	//      and arrive at the host with a source that doesn't match the open
-	//      TCP socket (the client dialed the EIP, not the VM IP).
-	//   3. br-mgmt present + AWSGW on 0.0.0.0 → br-mgmt IP (both LB flavours
-	//      reach the daemon via mgmt).
-	//   4. DevNetworking shim → 10.0.2.2.
-	//   5. AWSGW bound to specific IP (no br-mgmt, no advertise) → that IP.
-	//   6. Else: error and skip assignment — no silent empty URL.
-	var gatewayHost string
+	// Host selection is centralized in resolveGatewayHost so the OIDC issuer
+	// host and EKS NATS URL come from the same source (see M7). The only
+	// LB-specific extra here is the multi-node mgmt host route: when the host
+	// resolves to a dedicated AWSGW bind IP reachable only over br-mgmt, the
+	// lb-agent needs a bootcmd /32 route via br-mgmt. We deliberately do NOT
+	// add that route when the host is AdvertiseIP — WAN host IPs may share the
+	// advertiseIP and a /32 would steal the return path for host-initiated ALB
+	// connections (reply egresses mgmt with the VM's 10.x source, bypassing
+	// OVN's SNAT, mismatching the open TCP socket dialed against the EIP).
 	awsgwBindIP := ""
 	if d.config.AWSGW.Host != "" {
 		if h, _, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil {
@@ -2246,25 +2282,13 @@ func (d *Daemon) wireLBAgentConfig() {
 
 	advertiseIP := d.config.AdvertiseIP
 
-	switch {
-	case d.mgmtBridgeIP != "" && awsgwBindIP != "" && awsgwBindIP != "0.0.0.0" &&
-		!net.ParseIP(awsgwBindIP).IsLoopback() && awsgwBindIP != advertiseIP:
-		// Multi-node: AWSGW on a dedicated mgmt IP. VMs can't reach it via
-		// VPC → external, so add a bootcmd host route via br-mgmt.
-		gatewayHost = awsgwBindIP
+	gatewayHost := d.resolveGatewayHost()
+
+	// Multi-node mgmt-dedicated AWSGW: host resolved to the bind IP over
+	// br-mgmt (case 1 in resolveGatewayHost). Loopback / no-mgmt / advertiseIP
+	// paths can't satisfy all three guards, so this matches only that case.
+	if gatewayHost != "" && gatewayHost == awsgwBindIP && d.mgmtBridgeIP != "" && awsgwBindIP != advertiseIP {
 		d.mgmtRouteVia = awsgwBindIP
-	case advertiseIP != "" && advertiseIP != "0.0.0.0":
-		// Single-node, or multi-node where AWSGW binds to AdvertiseIP: VMs
-		// reach AWSGW via the normal VPC → external path. No mgmt host route.
-		gatewayHost = advertiseIP
-	case d.mgmtBridgeIP != "":
-		// br-mgmt present + AWSGW on 0.0.0.0 and no advertiseIP — br-mgmt IP
-		// is the only reachable address.
-		gatewayHost = d.mgmtBridgeIP
-	case d.config.Daemon.DevNetworking:
-		gatewayHost = "10.0.2.2"
-	case awsgwBindIP != "" && awsgwBindIP != "0.0.0.0":
-		gatewayHost = awsgwBindIP
 	}
 
 	// Extract port from AWSGW host config (e.g. "0.0.0.0:9999" → "9999").

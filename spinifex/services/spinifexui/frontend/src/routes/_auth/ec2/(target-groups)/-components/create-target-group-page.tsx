@@ -150,11 +150,18 @@ function buildCreateTargetGroupCommands(
       { type: "value", value: ` ${vpcId}` },
     )
   }
+  const httpHealthCheck = hcProtocol === "HTTP"
   parts.push(
     { type: "flag", value: " \\\n  --health-check-protocol" },
     { type: "value", value: ` ${hcProtocol}` },
-    { type: "flag", value: " \\\n  --health-check-path" },
-    { type: "value", value: ` ${hcPath}` },
+  )
+  if (httpHealthCheck) {
+    parts.push(
+      { type: "flag", value: " \\\n  --health-check-path" },
+      { type: "value", value: ` ${hcPath}` },
+    )
+  }
+  parts.push(
     { type: "flag", value: " \\\n  --health-check-port" },
     { type: "value", value: ` ${hcPort}` },
     { type: "flag", value: " \\\n  --health-check-interval-seconds" },
@@ -165,9 +172,13 @@ function buildCreateTargetGroupCommands(
     { type: "value", value: ` ${hcHealthy ?? 5}` },
     { type: "flag", value: " \\\n  --unhealthy-threshold-count" },
     { type: "value", value: ` ${hcUnhealthy ?? 2}` },
-    { type: "flag", value: " \\\n  --matcher" },
-    { type: "value", value: ` HttpCode=${hcMatcher}` },
   )
+  if (httpHealthCheck) {
+    parts.push(
+      { type: "flag", value: " \\\n  --matcher" },
+      { type: "value", value: ` HttpCode=${hcMatcher}` },
+    )
+  }
 
   return [{ label: "Create Target Group", parts }]
 }

@@ -1561,6 +1561,9 @@ type mockSTSService struct {
 func (m *mockSTSService) AssumeRole(_, _, _ string, _ *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 	return nil, nil
 }
+func (m *mockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
+	return nil, nil
+}
 func (m *mockSTSService) GetCallerIdentity(_, _, _ string, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	return nil, nil
 }

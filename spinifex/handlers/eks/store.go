@@ -1,6 +1,8 @@
 package handlers_eks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,13 @@ import (
 const (
 	KVBucketEKSAccountPrefix  = "eks-account-"
 	KVBucketEKSAccountVersion = 1
+
+	// KVBucketEKSAccountHistory pins the per-account bucket to one revision per
+	// key. This MUST stay 1: ZeroizeClusterOIDCKey relies on Purge dropping the
+	// key's whole history so no prior revision of the encrypted OIDC signing key
+	// survives a DeleteCluster. Keep this decoupled from the schema version so a
+	// future version bump can't silently widen history and resurrect ciphertext.
+	KVBucketEKSAccountHistory = 1
 
 	KVBucketEKSLeader        = "spinifex-eks-leader"
 	KVBucketEKSLeaderVersion = 1
@@ -52,9 +61,23 @@ func NodegroupKey(cluster, ng string) string {
 	return fmt.Sprintf("clusters/%s/nodegroups/%s", cluster, ng)
 }
 
+// AccessEntriesPrefix returns the KV key prefix under which all of a cluster's
+// AccessEntry records live. Used by ListAccessEntries to enumerate.
+func AccessEntriesPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/access-entries/", cluster)
+}
+
 // AccessEntryKey returns the KV key for an AccessEntry record under a cluster.
+// The principal ARN is hashed because IAM ARNs contain ':' which is not a legal
+// NATS JetStream KV key character; the record itself carries the plaintext ARN.
 func AccessEntryKey(cluster, principalARN string) string {
-	return fmt.Sprintf("clusters/%s/access-entries/%s", cluster, principalARN)
+	return AccessEntriesPrefix(cluster) + PrincipalARNHash(principalARN)
+}
+
+// PrincipalARNHash maps an IAM principal ARN to a KV-key-safe token.
+func PrincipalARNHash(principalARN string) string {
+	sum := sha256.Sum256([]byte(principalARN))
+	return hex.EncodeToString(sum[:])
 }
 
 // OIDCProviderKey returns the KV key for a registered OIDC provider config
@@ -72,6 +95,15 @@ func OIDCSigningKeyKey(cluster string) string {
 // OIDCJWKSKey returns the KV key for a cluster's public OIDC JWKS document.
 func OIDCJWKSKey(cluster string) string {
 	return fmt.Sprintf("clusters/%s/oidc-jwks.json", cluster)
+}
+
+// OIDCJWKSVerifiedKey returns the KV key marking that the K3s-VM-published JWKS
+// passed the controller cross-check (kid + kty match the controller-generated
+// keypair). The reconciler gates the ACTIVE transition on this marker, NOT on
+// OIDCJWKSKey — the controller pre-seeds OIDCJWKSKey at create time, so its
+// presence proves nothing about the running cluster's actual signing key.
+func OIDCJWKSVerifiedKey(cluster string) string {
+	return fmt.Sprintf("clusters/%s/oidc-jwks-verified", cluster)
 }
 
 // AdminKubeconfigKey returns the KV key for a cluster's encrypted admin
@@ -118,7 +150,7 @@ func AccountBucketName(accountID string) string {
 // accountID return the existing handle.
 func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountVersion)
+	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}

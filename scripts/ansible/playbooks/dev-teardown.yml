@@ -1,8 +1,0 @@
----
-- name: Dev teardown — wipe Spinifex state (no reinstall)
-  hosts: localhost
-  gather_facts: true
-  vars_files:
-    - ../vars/defaults.yml
-  roles:
-    - teardown

@@ -260,6 +260,7 @@ describe("ELBv2 cross-slice flow (mocked SDK)", () => {
     const wizardResult = await result.current.wizard.mutateAsync({
       lb: {
         name: "my-alb",
+        type: "application",
         scheme: "internet-facing",
         vpcId: "vpc-aaa",
         subnetIds: ["subnet-a", "subnet-b"],

@@ -39,7 +39,7 @@ export type TagFormData = z.infer<typeof tagSchema>
 
 // ALB health-check config. NLB variant lands with slice 9.
 export const healthCheckSchema = z.object({
-  protocol: z.enum(["HTTP"]),
+  protocol: z.enum(["HTTP", "TCP"]),
   path: z.string().min(1, "Path is required").max(1024),
   port: z.string().min(1),
   intervalSeconds: z.number().int().min(5).max(300),
@@ -58,7 +58,7 @@ export type HealthCheckFormData = z.infer<typeof healthCheckSchema>
 
 export const createTargetGroupSchema = z.object({
   name: tgNameField,
-  protocol: z.enum(["HTTP"]),
+  protocol: z.enum(["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP"]),
   port: portField,
   vpcId: z.string().min(1, "VPC is required"),
   healthCheck: healthCheckSchema,
@@ -67,11 +67,60 @@ export const createTargetGroupSchema = z.object({
 
 export type CreateTargetGroupFormData = z.infer<typeof createTargetGroupSchema>
 
-export const createListenerSchema = z.object({
-  protocol: z.enum(["HTTP"]),
-  port: portField,
-  defaultTargetGroupArn: z.string().min(1, "Target group is required"),
-})
+export type TargetGroupProtocol = CreateTargetGroupFormData["protocol"]
+
+// Default SSL policy applied when an HTTPS listener leaves the policy unset;
+// mirrors the server's DefaultSslPolicy constant.
+export const DEFAULT_SSL_POLICY = "ELBSecurityPolicy-2016-08"
+
+// Load balancer types and the listener protocols each supports, mirroring the
+// server's validation (handlers/elbv2/service_impl.go): ALBs speak HTTP/HTTPS,
+// NLBs speak TCP/UDP/TLS/TCP_UDP.
+export const LB_TYPES = ["application", "network"] as const
+export type LbType = (typeof LB_TYPES)[number]
+
+export const ALB_PROTOCOLS = ["HTTP", "HTTPS"] as const
+export const NLB_PROTOCOLS = ["TCP", "UDP", "TLS", "TCP_UDP"] as const
+export const ALL_LISTENER_PROTOCOLS = [
+  ...ALB_PROTOCOLS,
+  ...NLB_PROTOCOLS,
+] as const
+
+export type ListenerProtocolValue = (typeof ALL_LISTENER_PROTOCOLS)[number]
+
+export function protocolsForType(
+  type: LbType,
+): readonly ListenerProtocolValue[] {
+  return type === "network" ? NLB_PROTOCOLS : ALB_PROTOCOLS
+}
+
+export function defaultProtocolForType(type: LbType): ListenerProtocolValue {
+  return type === "network" ? "TCP" : "HTTP"
+}
+
+// Secure protocols require a certificate; only HTTPS additionally takes an SSL
+// policy (NLB TLS policies are not modelled server-side — ssl_policies.go).
+export function isSecureProtocol(protocol: string): boolean {
+  return protocol === "HTTPS" || protocol === "TLS"
+}
+
+export const createListenerSchema = z
+  .object({
+    protocol: z.enum(ALL_LISTENER_PROTOCOLS),
+    port: portField,
+    defaultTargetGroupArn: z.string().min(1, "Target group is required"),
+    certificateArn: z.string().optional(),
+    sslPolicy: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (isSecureProtocol(data.protocol) && !data.certificateArn) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["certificateArn"],
+        message: "A certificate is required for HTTPS and TLS",
+      })
+    }
+  })
 
 export type CreateListenerFormData = z.infer<typeof createListenerSchema>
 
@@ -148,30 +197,40 @@ export type CreateRuleFormData = z.infer<typeof createRuleSchema>
 // schema only validates the existing-TG branch. See create-load-balancer.tsx.
 export const createLoadBalancerSchema = z.object({
   name: lbNameField,
+  type: z.enum(LB_TYPES),
   scheme: z.enum(["internet-facing", "internal"]),
   vpcId: z.string().min(1, "VPC is required"),
-  subnetIds: z
-    .array(z.string())
-    .min(2, "At least 2 subnets are required for an ALB"),
+  subnetIds: z.array(z.string()).min(1, "At least 1 subnet is required"),
   securityGroupIds: z.array(z.string()),
   tags: z.array(tagSchema),
   listener: z
     .object({
-      protocol: z.enum(["HTTP"]),
+      protocol: z.enum(ALL_LISTENER_PROTOCOLS),
       port: portField,
       targetGroupMode: z.enum(["new", "existing"]),
       existingTargetGroupArn: z.string().optional(),
+      certificateArn: z.string().optional(),
+      sslPolicy: z.string().optional(),
     })
-    .refine(
-      (value) =>
-        value.targetGroupMode === "existing"
-          ? !!value.existingTargetGroupArn
-          : true,
-      {
-        error: "Target group is required",
-        path: ["existingTargetGroupArn"],
-      },
-    ),
+    .superRefine((value, ctx) => {
+      if (
+        value.targetGroupMode === "existing" &&
+        !value.existingTargetGroupArn
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["existingTargetGroupArn"],
+          message: "Target group is required",
+        })
+      }
+      if (isSecureProtocol(value.protocol) && !value.certificateArn) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["certificateArn"],
+          message: "A certificate is required for HTTPS/TLS",
+        })
+      }
+    }),
 })
 
 export type CreateLoadBalancerFormData = z.infer<

@@ -9,6 +9,8 @@ type ELBv2Service interface {
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadBalancerAttributesInput, accountID string) (*elbv2.ModifyLoadBalancerAttributesOutput, error)
 	DescribeLoadBalancerAttributes(input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error)
+	SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, accountID string) (*elbv2.SetSecurityGroupsOutput, error)
+	SetIpAddressType(input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error)
 
 	CreateTargetGroup(input *elbv2.CreateTargetGroupInput, accountID string) (*elbv2.CreateTargetGroupOutput, error)
 	ModifyTargetGroup(input *elbv2.ModifyTargetGroupInput, accountID string) (*elbv2.ModifyTargetGroupOutput, error)
@@ -26,6 +28,11 @@ type ELBv2Service interface {
 	ModifyListener(input *elbv2.ModifyListenerInput, accountID string) (*elbv2.ModifyListenerOutput, error)
 	DescribeListeners(input *elbv2.DescribeListenersInput, accountID string) (*elbv2.DescribeListenersOutput, error)
 
+	AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error)
+	RemoveListenerCertificates(input *elbv2.RemoveListenerCertificatesInput, accountID string) (*elbv2.RemoveListenerCertificatesOutput, error)
+	DescribeListenerCertificates(input *elbv2.DescribeListenerCertificatesInput, accountID string) (*elbv2.DescribeListenerCertificatesOutput, error)
+	DescribeSSLPolicies(input *elbv2.DescribeSSLPoliciesInput, accountID string) (*elbv2.DescribeSSLPoliciesOutput, error)
+
 	CreateRule(input *elbv2.CreateRuleInput, accountID string) (*elbv2.CreateRuleOutput, error)
 	ModifyRule(input *elbv2.ModifyRuleInput, accountID string) (*elbv2.ModifyRuleOutput, error)
 	DeleteRule(input *elbv2.DeleteRuleInput, accountID string) (*elbv2.DeleteRuleOutput, error)
@@ -33,6 +40,8 @@ type ELBv2Service interface {
 	SetRulePriorities(input *elbv2.SetRulePrioritiesInput, accountID string) (*elbv2.SetRulePrioritiesOutput, error)
 
 	DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error)
+	AddTags(input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error)
+	RemoveTags(input *elbv2.RemoveTagsInput, accountID string) (*elbv2.RemoveTagsOutput, error)
 
 	LBAgentHeartbeat(input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error)
 	GetLBConfig(input *GetLBConfigInput, accountID string) (*GetLBConfigOutput, error)

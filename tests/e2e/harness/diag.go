@@ -92,6 +92,32 @@ func dumpConsoleOutput(t *testing.T, c *AWSClient, instanceID string) {
 	}
 }
 
+// DumpInstanceConsole writes an instance's full serial console (base64-decoded)
+// to <dir>/<name>. The lb-agent logs its data-plane engine activation and any
+// `reload nginx:` error to the guest console, which the host daemon journal
+// never sees — capturing it makes an NLB health-check timeout diagnosable from
+// CI artifacts alone. Best-effort: failures log, they don't fail the test.
+func DumpInstanceConsole(t *testing.T, c *AWSClient, instanceID, dir, name string) {
+	t.Helper()
+	out, err := c.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{
+		InstanceId: aws.String(instanceID),
+	})
+	if err != nil {
+		t.Logf("console capture: GetConsoleOutput(%s) failed: %v", instanceID, err)
+		return
+	}
+	encoded := aws.StringValue(out.Output)
+	if encoded == "" {
+		t.Logf("console capture: %s empty", instanceID)
+		return
+	}
+	raw, derr := base64.StdEncoding.DecodeString(encoded)
+	if derr != nil {
+		raw = []byte(encoded)
+	}
+	DumpFile(t, dir, name, raw)
+}
+
 func dumpOVNState(t *testing.T, instanceID string) {
 	t.Helper()
 	if _, err := exec.LookPath("ovn-nbctl"); err != nil {
@@ -156,16 +182,7 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 		return
 	}
 
-	type capture struct {
-		filename string
-		label    string
-		argv     []string
-		// grepFor, when non-empty, post-filters stdout to lines
-		// containing this substring. Lets us keep ovs-ofctl / conntrack
-		// output tight without an external pipe.
-		grepFor []string
-	}
-	caps := []capture{
+	runHostCaptures(t, opts.ArtifactDir, []hostCapture{
 		{
 			filename: "ovs-flows-extip.txt",
 			label:    "ovs-ofctl dump-flows br-int (filtered)",
@@ -190,8 +207,25 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 			argv: []string{"ovn-nbctl", "--bare", "--columns=_uuid,type,external_ip,logical_ip,external_mac,logical_port",
 				"find", "NAT", "external_ip=" + opts.ExternalIP},
 		},
-	}
+	})
+}
 
+// hostCapture is one `sudo`-run diagnostic command. grepFor, when non-empty,
+// post-filters stdout to lines containing any of the substrings (keeps
+// ovs-ofctl / conntrack output tight without an external pipe).
+type hostCapture struct {
+	filename string
+	label    string
+	argv     []string
+	grepFor  []string
+}
+
+// runHostCaptures runs each capture under `sudo -n`, echoes it to stdout for the
+// CI log, and persists it as a separate file under artifactDir (when set) so the
+// Stage 2 analyzer bundler picks it up. Assumes the caller already verified
+// passwordless sudo is available.
+func runHostCaptures(t *testing.T, artifactDir string, caps []hostCapture) {
+	t.Helper()
 	for _, cap := range caps {
 		fmt.Printf("  --- %s ---\n", cap.label)
 		var stdout, stderr bytes.Buffer
@@ -212,8 +246,8 @@ func dumpDatapathState(t *testing.T, opts VPCDiagnosticsOpts) {
 		for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
 			fmt.Printf("    %s\n", line)
 		}
-		if opts.ArtifactDir != "" {
-			path := filepath.Join(opts.ArtifactDir, cap.filename)
+		if artifactDir != "" {
+			path := filepath.Join(artifactDir, cap.filename)
 			header := fmt.Sprintf("$ sudo %s\n", strings.Join(cap.argv, " "))
 			if len(cap.grepFor) > 0 {
 				header += "# filtered to lines matching: " + strings.Join(cap.grepFor, ", ") + "\n"

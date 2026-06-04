@@ -42,13 +42,7 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 		ARN:                 fmt.Sprintf("arn:aws:iam::%s:instance-profile%s%s", accountID, path, profileName),
 		Path:                path,
 		CreatedAt:           time.Now().UTC().Format(time.RFC3339),
-		Tags:                []Tag{},
-	}
-
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			profile.Tags = append(profile.Tags, Tag{Key: *tag.Key, Value: *tag.Value})
-		}
+		Tags:                copyTags(input.Tags),
 	}
 
 	data, err := json.Marshal(profile)

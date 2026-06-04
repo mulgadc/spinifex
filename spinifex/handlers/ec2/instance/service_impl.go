@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -133,6 +134,14 @@ func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP 
 //
 // The dev NIC still gets an IP via DHCP (needed for hostfwd port forwarding)
 // but dhcp4-overrides prevents it from installing routes or DNS.
+//
+// The primary VPC NIC (vpc0) also carries an on-link route to the IMDS metadata
+// IP (169.254.169.254): under the L2 datapath the metadata localport lives on
+// the guest's subnet switch and answers ARP directly, so the guest must treat
+// the address as on-link rather than steering it via the default gateway. The
+// route is reached via the primary ENI, matching AWS; it is not delivered via
+// DHCP option 121 (which would force the default route into option 121 per
+// RFC 3442) and the default gateway stays option 3.
 func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
 	if eniMAC == "" {
 		return cloudInitNetworkConfigWildcard
@@ -145,7 +154,10 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
         macaddress: "%s"
       dhcp4: true
       dhcp-identifier: mac
-`, eniMAC)
+      routes:
+        - to: %s/32
+          scope: link
+`, eniMAC, handlers_imds.MetaDataServerIP)
 
 	for i, mac := range extraENIMACs {
 		if mac == "" {
@@ -215,9 +227,9 @@ type CloudInitData struct {
 // RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
 // non-VPC path) so NM's default autoconnect handles the interface.
 //
-// Mirrors generateNetworkConfig's per-interface structure: vpc0 + optional
-// vpc1..N for extra ENIs, dev0 (DHCP with route/DNS suppression), mgmt0
-// (static). Owning the keyfile bytes directly avoids relying on cloud-init's
+// Mirrors generateNetworkConfig's per-interface structure: vpc0 (DHCP + on-link
+// IMDS route) + optional vpc1..N for extra ENIs, dev0 (DHCP with route/DNS
+// suppression), mgmt0 (static). Owning the keyfile bytes directly avoids relying on cloud-init's
 // v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
 // which OVN's MAC-keyed DHCP requires.
 //
@@ -236,7 +248,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	rc.WriteString("  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]\n")
 	rc.WriteString("  - [ nmcli, connection, reload ]\n")
 
-	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false)
+	appendRHELDHCPKeyfile(&wf, "vpc0", eniMAC, false, true)
 	rc.WriteString("  - [ nmcli, connection, up, vpc0 ]\n")
 
 	for i, mac := range extraENIMACs {
@@ -244,12 +256,12 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 			continue
 		}
 		name := fmt.Sprintf("vpc%d", i+1)
-		appendRHELDHCPKeyfile(&wf, name, mac, false)
+		appendRHELDHCPKeyfile(&wf, name, mac, false, false)
 		fmt.Fprintf(&rc, "  - [ nmcli, connection, up, %s ]\n", name)
 	}
 
 	if devMAC != "" {
-		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true)
+		appendRHELDHCPKeyfile(&wf, "dev0", devMAC, true, false)
 		rc.WriteString("  - [ nmcli, connection, up, dev0 ]\n")
 	}
 
@@ -264,7 +276,7 @@ func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []s
 	return strings.TrimRight(wf.String(), "\n"), strings.TrimRight(rc.String(), "\n")
 }
 
-func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults bool) {
+func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefaults, imdsRoute bool) {
 	fmt.Fprintf(b, "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n", name)
 	b.WriteString("    owner: root:root\n")
 	b.WriteString("    permissions: '0600'\n")
@@ -282,6 +294,12 @@ func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefault
 		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
 		b.WriteString("      never-default=true\n")
 		b.WriteString("      ignore-auto-dns=true\n")
+	}
+	if imdsRoute {
+		// On-link route to the IMDS metadata IP so the guest ARPs 169.254.169.254
+		// directly on this NIC; the per-subnet localport answers. No next hop =
+		// link scope. Matches the netplan path in generateNetworkConfig.
+		fmt.Fprintf(b, "      route1=%s/32\n", handlers_imds.MetaDataServerIP)
 	}
 	b.WriteString("      [ipv6]\n")
 	b.WriteString("      method=disabled\n")
@@ -631,6 +649,35 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
+		// Pre-created ENI path: when the caller passes
+		// NetworkInterfaces[0].NetworkInterfaceId, attach that existing ENI
+		// instead of auto-creating one. AWS-parity behaviour; consumed by the
+		// EKS cluster launcher which needs the ENI to live under the customer
+		// account before the K3s server VM is created.
+		preExistingENIID := ""
+		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+			preExistingENIID = aws.StringValue(input.NetworkInterfaces[0].NetworkInterfaceId)
+		}
+		if preExistingENIID != "" {
+			if s.eniCreator == nil {
+				slog.Error("PrepareRunInstances: pre-created ENI specified but ENI service unavailable",
+					"instanceId", instance.ID, "eniId", preExistingENIID)
+				lastRunErr = errors.New(awserrors.ErrorServerInternal)
+				s.resourceMgr.Deallocate(instanceType)
+				continue
+			}
+			if err := s.attachPreCreatedENI(accountID, preExistingENIID, instance, ec2Instance); err != nil {
+				slog.Error("PrepareRunInstances: pre-created ENI attach failed",
+					"instanceId", instance.ID, "eniId", preExistingENIID, "err", err)
+				lastRunErr = err
+				s.resourceMgr.Deallocate(instanceType)
+				continue
+			}
+			instances = append(instances, instance)
+			allEC2Instances = append(allEC2Instances, ec2Instance)
+			continue
+		}
+
 		if (input.SubnetId == nil || *input.SubnetId == "") && s.eniCreator != nil {
 			defaultSubnet, dsErr := s.eniCreator.GetDefaultSubnet(accountID)
 			if dsErr == nil && defaultSubnet != nil {
@@ -772,6 +819,62 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	}
 
 	return reservation, instances, instanceType, nil
+}
+
+// attachPreCreatedENI looks up an existing ENI in accountID, verifies it is
+// not already in-use, attaches it as device-0 to instance, and populates the
+// VM + ec2.Instance with the ENI's network identity (private IP, MAC, subnet,
+// VPC, security groups). Returns an error without mutating any state if the
+// lookup or attach fails. Public-IP auto-assignment is skipped on the
+// pre-created path because the caller is expected to manage that out-of-band.
+func (s *InstanceServiceImpl) attachPreCreatedENI(accountID, eniID string, instance *vm.VM, ec2Instance *ec2.Instance) error {
+	eniInfo, err := s.eniCreator.GetENI(accountID, eniID)
+	if err != nil {
+		return err
+	}
+	if eniInfo == nil {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+	}
+	if eniInfo.Status == "in-use" {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+	}
+	if _, err := s.eniCreator.AttachENI(accountID, eniID, instance.ID, 0); err != nil {
+		return err
+	}
+
+	instance.ENIId = eniID
+	instance.ENIMac = eniInfo.MacAddress
+
+	ec2Instance.SetPrivateIpAddress(eniInfo.PrivateIpAddress)
+	ec2Instance.SetSubnetId(eniInfo.SubnetID)
+	ec2Instance.SetVpcId(eniInfo.VpcID)
+	if len(eniInfo.SecurityGroupIDs) > 0 {
+		groups := make([]*ec2.GroupIdentifier, 0, len(eniInfo.SecurityGroupIDs))
+		for _, id := range eniInfo.SecurityGroupIDs {
+			groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id)})
+		}
+		ec2Instance.SecurityGroups = groups
+	}
+	ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String(eniID),
+		PrivateIpAddress:   aws.String(eniInfo.PrivateIpAddress),
+		MacAddress:         aws.String(eniInfo.MacAddress),
+		SubnetId:           aws.String(eniInfo.SubnetID),
+		VpcId:              aws.String(eniInfo.VpcID),
+		Status:             aws.String("in-use"),
+		Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+			DeviceIndex: aws.Int64(0),
+			Status:      aws.String("attached"),
+		},
+	}}
+
+	slog.Info("PrepareRunInstances: attached pre-created ENI",
+		"instanceId", instance.ID,
+		"eniId", eniID,
+		"privateIp", eniInfo.PrivateIpAddress,
+		"mac", eniInfo.MacAddress,
+	)
+	return nil
 }
 
 // LaunchRunInstances takes the VMs created by PrepareRunInstances (already
@@ -2341,10 +2444,10 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	if input.UserData != nil && input.UserData.Value != nil {
 		slog.Info("ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
-		instance.UserData = string(input.UserData.Value)
-		if instance.RunInstancesInput != nil {
-			instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
+		if instance.RunInstancesInput == nil {
+			instance.RunInstancesInput = &ec2.RunInstancesInput{}
 		}
+		instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
 	}
 
 	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
@@ -2718,7 +2821,12 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInsta
 		output.InstanceType = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameUserData:
-		val := instance.UserData
+		// AWS returns user-data base64-encoded; RunInstancesInput.UserData is the
+		// canonical base64 store, set at launch and kept in sync by Modify.
+		var val string
+		if instance.RunInstancesInput != nil && instance.RunInstancesInput.UserData != nil {
+			val = *instance.RunInstancesInput.UserData
+		}
 		output.UserData = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiTermination:

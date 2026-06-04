@@ -2426,10 +2426,10 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 
 	if input.UserData != nil && input.UserData.Value != nil {
 		slog.Info("ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
-		instance.UserData = string(input.UserData.Value)
-		if instance.RunInstancesInput != nil {
-			instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
+		if instance.RunInstancesInput == nil {
+			instance.RunInstancesInput = &ec2.RunInstancesInput{}
 		}
+		instance.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
 	}
 
 	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
@@ -2803,7 +2803,12 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(input *ec2.DescribeInsta
 		output.InstanceType = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameUserData:
-		val := instance.UserData
+		// AWS returns user-data base64-encoded; RunInstancesInput.UserData is the
+		// canonical base64 store, set at launch and kept in sync by Modify.
+		var val string
+		if instance.RunInstancesInput != nil && instance.RunInstancesInput.UserData != nil {
+			val = *instance.RunInstancesInput.UserData
+		}
 		output.UserData = &ec2.AttributeValue{Value: &val}
 
 	case ec2.InstanceAttributeNameDisableApiTermination:

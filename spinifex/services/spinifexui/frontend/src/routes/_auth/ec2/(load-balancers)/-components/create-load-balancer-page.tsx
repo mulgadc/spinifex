@@ -469,7 +469,7 @@ export function CreateLoadBalancerPage() {
         </Field>
 
         <Field>
-          <FieldTitle>Subnets (select at least 2)</FieldTitle>
+          <FieldTitle>Subnets (select at least 1)</FieldTitle>
           {groupedSubnets.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               No subnets in the selected VPC.

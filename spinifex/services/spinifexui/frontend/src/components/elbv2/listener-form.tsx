@@ -18,10 +18,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { type CreateListenerFormData, DEFAULT_SSL_POLICY } from "@/types/elbv2"
+import {
+  type CreateListenerFormData,
+  DEFAULT_SSL_POLICY,
+  isSecureProtocol,
+  type ListenerProtocolValue,
+} from "@/types/elbv2"
 
 interface ListenerFormProps {
   form: UseFormReturn<CreateListenerFormData>
+  protocols: readonly ListenerProtocolValue[]
   targetGroups: TargetGroup[]
   certificates?: CertificateSummary[]
   sslPolicies?: SslPolicy[]
@@ -37,6 +43,7 @@ function certLabel(cert: CertificateSummary): string {
 
 export function ListenerForm({
   form,
+  protocols,
   targetGroups,
   certificates = [],
   sslPolicies = [],
@@ -53,19 +60,28 @@ export function ListenerForm({
 
   const protocol = useWatch({ control, name: "protocol" })
   const isHttps = protocol === "HTTPS"
+  const isSecure = isSecureProtocol(protocol)
 
   // Side-effects of a protocol switch, applied after the field's own onChange:
-  // adjust the default port (only when still on the other protocol's default)
-  // and toggle the TLS fields. Moving to HTTP clears cert + policy so the
-  // server doesn't reject them.
-  const applyProtocolDefaults = (next: "HTTP" | "HTTPS" | null) => {
+  // bump the default port (only when still on the other protocol's default) and
+  // toggle the TLS fields. A secure protocol (HTTPS/TLS) keeps the certificate;
+  // an SSL policy is HTTPS-only. Moving to an insecure protocol clears cert +
+  // policy so the server doesn't reject them.
+  const applyProtocolDefaults = (next: ListenerProtocolValue | null) => {
+    if (!next) {
+      return
+    }
     const current = getValues("port")
-    if (next === "HTTPS") {
+    if (isSecureProtocol(next)) {
       if (current === HTTP_PORT) {
         setValue("port", HTTPS_PORT)
       }
-      if (!getValues("sslPolicy")) {
-        setValue("sslPolicy", DEFAULT_SSL_POLICY)
+      if (next === "HTTPS") {
+        if (!getValues("sslPolicy")) {
+          setValue("sslPolicy", DEFAULT_SSL_POLICY)
+        }
+      } else {
+        setValue("sslPolicy", undefined)
       }
     } else {
       if (current === HTTPS_PORT) {
@@ -87,7 +103,7 @@ export function ListenerForm({
           name="protocol"
           render={({ field }) => (
             <Select
-              onValueChange={(next: "HTTP" | "HTTPS" | null) => {
+              onValueChange={(next: ListenerProtocolValue | null) => {
                 field.onChange(next)
                 applyProtocolDefaults(next)
               }}
@@ -97,8 +113,11 @@ export function ListenerForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="HTTP">HTTP</SelectItem>
-                <SelectItem value="HTTPS">HTTPS</SelectItem>
+                {protocols.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
@@ -113,14 +132,14 @@ export function ListenerForm({
           aria-invalid={!!errors.port}
           id="listener-port"
           inputMode="numeric"
-          placeholder={isHttps ? "443" : "80"}
+          placeholder={isSecure ? "443" : "80"}
           type="number"
           {...register("port", { valueAsNumber: true })}
         />
         <FieldError errors={[errors.port]} />
       </Field>
 
-      {isHttps && (
+      {isSecure && (
         <>
           <Field>
             <FieldTitle>
@@ -173,32 +192,34 @@ export function ListenerForm({
             </div>
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="listener-ssl-policy">Security policy</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="sslPolicy"
-              render={({ field }) => (
-                <Select
-                  onValueChange={field.onChange}
-                  value={field.value ?? DEFAULT_SSL_POLICY}
-                >
-                  <SelectTrigger className="w-full" id="listener-ssl-policy">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sslPolicies.map((policy) => (
-                      <SelectItem key={policy.Name} value={policy.Name ?? ""}>
-                        {policy.Name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </Field>
+          {isHttps && (
+            <Field>
+              <FieldTitle>
+                <label htmlFor="listener-ssl-policy">Security policy</label>
+              </FieldTitle>
+              <Controller
+                control={control}
+                name="sslPolicy"
+                render={({ field }) => (
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value ?? DEFAULT_SSL_POLICY}
+                  >
+                    <SelectTrigger className="w-full" id="listener-ssl-policy">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sslPolicies.map((policy) => (
+                        <SelectItem key={policy.Name} value={policy.Name ?? ""}>
+                          {policy.Name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </Field>
+          )}
 
           <CertificateImportDialog
             onImported={(arn) =>

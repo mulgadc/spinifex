@@ -34,11 +34,26 @@ import {
 import {
   type CreateListenerFormData,
   createListenerSchema,
+  defaultProtocolForType,
+  isSecureProtocol,
+  type LbType,
+  type ListenerProtocolValue,
+  protocolsForType,
 } from "@/types/elbv2"
 
 interface ListenersTabProps {
   loadBalancerArn: string
   vpcId: string | undefined
+  lbType: LbType
+}
+
+// NLB listeners default to TCP, ALB to HTTP — both on port 80.
+function listenerDefaults(lbType: LbType): CreateListenerFormData {
+  return {
+    protocol: defaultProtocolForType(lbType),
+    port: 80,
+    defaultTargetGroupArn: "",
+  }
 }
 
 function formatTls(listener: Listener): string {
@@ -53,7 +68,12 @@ function formatTls(listener: Listener): string {
   return policy ?? certId ?? "—"
 }
 
-export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
+export function ListenersTab({
+  loadBalancerArn,
+  vpcId,
+  lbType,
+}: ListenersTabProps) {
+  const protocols = protocolsForType(lbType)
   const { data: listenersData } = useSuspenseQuery(
     elbv2ListenersQueryOptions(loadBalancerArn),
   )
@@ -259,9 +279,11 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
       <AddListenerDialog
         certificates={certificates}
         isPending={createMutation.isPending}
+        lbType={lbType}
         onOpenChange={setAddOpen}
         onSubmit={handleCreate}
         open={addOpen}
+        protocols={protocols}
         sslPolicies={sslPolicies}
         targetGroups={vpcTgs}
       />
@@ -272,6 +294,7 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
         listener={editTarget}
         onOpenChange={(open) => !open && setEditTarget(undefined)}
         onSubmit={handleEdit}
+        protocols={protocols}
         sslPolicies={sslPolicies}
         targetGroups={vpcTgs}
       />
@@ -295,6 +318,8 @@ export function ListenersTab({ loadBalancerArn, vpcId }: ListenersTabProps) {
 interface AddListenerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  lbType: LbType
+  protocols: readonly ListenerProtocolValue[]
   targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
   certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
   sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
@@ -302,15 +327,11 @@ interface AddListenerDialogProps {
   onSubmit: (data: CreateListenerFormData) => void
 }
 
-const ADD_LISTENER_DEFAULTS: CreateListenerFormData = {
-  protocol: "HTTP",
-  port: 80,
-  defaultTargetGroupArn: "",
-}
-
 function AddListenerDialog({
   open,
   onOpenChange,
+  lbType,
+  protocols,
   targetGroups,
   certificates,
   sslPolicies,
@@ -319,14 +340,14 @@ function AddListenerDialog({
 }: AddListenerDialogProps) {
   const form = useForm<CreateListenerFormData>({
     resolver: zodResolver(createListenerSchema),
-    defaultValues: ADD_LISTENER_DEFAULTS,
+    defaultValues: listenerDefaults(lbType),
   })
 
   useEffect(() => {
     if (!open) {
-      form.reset(ADD_LISTENER_DEFAULTS)
+      form.reset(listenerDefaults(lbType))
     }
-  }, [open, form])
+  }, [open, form, lbType])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 
@@ -353,6 +374,7 @@ function AddListenerDialog({
           <ListenerForm
             certificates={certificates}
             form={form}
+            protocols={protocols}
             sslPolicies={sslPolicies}
             targetGroups={targetGroups}
           />
@@ -372,6 +394,7 @@ function AddListenerDialog({
 interface EditListenerDialogProps {
   listener: Listener | undefined
   onOpenChange: (open: boolean) => void
+  protocols: readonly ListenerProtocolValue[]
   targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
   certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
   sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
@@ -382,6 +405,7 @@ interface EditListenerDialogProps {
 function EditListenerDialog({
   listener,
   onOpenChange,
+  protocols,
   targetGroups,
   certificates,
   sslPolicies,
@@ -403,18 +427,19 @@ function EditListenerDialog({
     if (!listener) {
       return
     }
-    const protocol = listener.Protocol === "HTTPS" ? "HTTPS" : "HTTP"
+    const protocol: ListenerProtocolValue =
+      protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
+    const secure = isSecureProtocol(protocol)
     form.reset({
       protocol,
       port: listener.Port ?? 80,
       defaultTargetGroupArn: listener.DefaultActions?.[0]?.TargetGroupArn ?? "",
-      certificateArn:
-        protocol === "HTTPS"
-          ? listener.Certificates?.[0]?.CertificateArn
-          : undefined,
+      certificateArn: secure
+        ? listener.Certificates?.[0]?.CertificateArn
+        : undefined,
       sslPolicy: protocol === "HTTPS" ? listener.SslPolicy : undefined,
     })
-  }, [listener, form])
+  }, [listener, form, protocols])
 
   const handleConfirm = form.handleSubmit(onSubmit)
 
@@ -442,6 +467,7 @@ function EditListenerDialog({
           <ListenerForm
             certificates={certificates}
             form={form}
+            protocols={protocols}
             sslPolicies={sslPolicies}
             targetGroups={targetGroups}
           />

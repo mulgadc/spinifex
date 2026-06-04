@@ -12,7 +12,10 @@ import {
   createTestQueryClient,
   renderWithClient,
 } from "@/test/elbv2-integration"
-import type { CreateListenerFormData } from "@/types/elbv2"
+import {
+  ALL_LISTENER_PROTOCOLS,
+  type CreateListenerFormData,
+} from "@/types/elbv2"
 
 import { ListenerForm } from "./listener-form"
 
@@ -63,6 +66,7 @@ function Harness({
     <ListenerForm
       certificates={CERTS}
       form={form}
+      protocols={ALL_LISTENER_PROTOCOLS}
       sslPolicies={POLICIES}
       targetGroups={targetGroups}
     />
@@ -128,6 +132,7 @@ describe("ListenerForm", () => {
           <ListenerForm
             certificates={CERTS}
             form={form}
+            protocols={ALL_LISTENER_PROTOCOLS}
             sslPolicies={POLICIES}
             targetGroups={TGS}
           />

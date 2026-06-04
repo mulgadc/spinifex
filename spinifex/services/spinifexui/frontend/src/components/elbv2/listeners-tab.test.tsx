@@ -67,9 +67,16 @@ describe("ListenersTab", () => {
 
   it("renders empty state when no listeners", () => {
     const queryClient = seedClient({})
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     expect(screen.getByText("No listeners configured.")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Add listener" }),
@@ -100,9 +107,16 @@ describe("ListenersTab", () => {
         ],
       },
     })
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     expect(screen.getByText("forward → my-tg")).toBeInTheDocument()
     expect(screen.getByText("HTTP")).toBeInTheDocument()
     expect(screen.getByText("80")).toBeInTheDocument()
@@ -123,9 +137,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByLabelText("Delete listener HTTP:80"))
     expect(screen.getByText(/delete listener http:80/i)).toBeInTheDocument()
     const before = mockSend.mock.calls.length
@@ -159,9 +180,16 @@ describe("ListenersTab", () => {
       },
     })
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByRole("button", { name: "Add listener" }))
     await user.click(screen.getByLabelText("Default target group"))
     await expect(screen.findByText(/tg-in-vpc/)).resolves.toBeInTheDocument()
@@ -195,9 +223,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByLabelText("Edit listener HTTP:80"))
     await expect(
       screen.findByRole("alertdialog", { name: /edit listener/i }),
@@ -236,9 +271,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
     await user.click(screen.getByRole("button", { name: "Add listener" }))
     await user.click(screen.getByLabelText("Default target group"))
     await user.click(await screen.findByText(/tg-a/))
@@ -292,9 +334,16 @@ describe("ListenersTab", () => {
     })
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
-    render(<ListenersTab loadBalancerArn={LB_ARN} vpcId="vpc-aaa" />, {
-      wrapper: createWrapper(queryClient),
-    })
+    render(
+      <ListenersTab
+        lbType="application"
+        loadBalancerArn={LB_ARN}
+        vpcId="vpc-aaa"
+      />,
+      {
+        wrapper: createWrapper(queryClient),
+      },
+    )
 
     // The TLS column summarises the policy + cert id for HTTPS listeners.
     expect(

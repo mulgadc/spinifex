@@ -196,7 +196,11 @@ export function LoadBalancerDetailPage({ arn }: Props) {
           </TabsPanel>
 
           <TabsPanel value="listeners">
-            <ListenersTab loadBalancerArn={arn} vpcId={lb.VpcId} />
+            <ListenersTab
+              lbType={isNlb ? "network" : "application"}
+              loadBalancerArn={arn}
+              vpcId={lb.VpcId}
+            />
           </TabsPanel>
 
           {!isNlb && (

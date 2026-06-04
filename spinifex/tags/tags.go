@@ -15,7 +15,7 @@ const (
 	ManagedByELBv2 = "elbv2"
 
 	// ManagedByEKS identifies EKS-owned resources (K3s control-plane VMs,
-	// their ENIs, the eks-server / eks-agent AMIs, cluster + nodegroup SGs).
+	// their ENIs, the unified eks-node AMI, cluster + nodegroup SGs).
 	ManagedByEKS = "eks"
 
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.

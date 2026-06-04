@@ -266,6 +266,9 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.NotContains(t, udata, "path: "+k3sResolvConfPath)
 
 	assert.Contains(t, udata, "path: "+k3sFirstBootEnvPath)
+	// The eks-node-role first-boot selector keys off this to start control-plane
+	// services; without it the unified AMI boots into no role.
+	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
 	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
 	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")
 	assert.Contains(t, udata, "SPINIFEX_NATS_CA="+k3sNATSCAPath)

@@ -239,6 +239,32 @@ export type CreateInternetGatewayFormData = z.infer<
   typeof createInternetGatewaySchema
 >
 
+export const createRouteTableSchema = z.object({
+  vpcId: z.string().min(1, "VPC is required"),
+  name: z.string().optional(),
+})
+
+export type CreateRouteTableFormData = z.infer<typeof createRouteTableSchema>
+
+export const createRouteSchema = z.object({
+  destinationCidrBlock: z
+    .string()
+    .min(1, "Destination is required")
+    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 0.0.0.0/0)"),
+  targetType: z.enum(["igw", "nat"]),
+  targetId: z.string().min(1, "Target is required"),
+})
+
+export type CreateRouteFormData = z.infer<typeof createRouteSchema>
+
+export const associateRouteTableSchema = z.object({
+  subnetId: z.string().min(1, "Subnet is required"),
+})
+
+export type AssociateRouteTableFormData = z.infer<
+  typeof associateRouteTableSchema
+>
+
 export const createVpcSchema = z.object({
   cidrBlock: z
     .string()

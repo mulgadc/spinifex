@@ -24,6 +24,7 @@ import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './rout
 import { Route as AuthEc2subnetCreateSubnetRouteImport } from './routes/_auth/ec2/(subnet)/create-subnet'
 import { Route as AuthEc2snapshotsCreateSnapshotRouteImport } from './routes/_auth/ec2/(snapshots)/create-snapshot'
 import { Route as AuthEc2securityGroupsCreateSecurityGroupRouteImport } from './routes/_auth/ec2/(security-groups)/create-security-group'
+import { Route as AuthEc2routeTablesCreateRouteTableRouteImport } from './routes/_auth/ec2/(route-tables)/create-route-table'
 import { Route as AuthEc2placementGroupsCreatePlacementGroupRouteImport } from './routes/_auth/ec2/(placement-groups)/create-placement-group'
 import { Route as AuthEc2natGatewaysCreateNatGatewayRouteImport } from './routes/_auth/ec2/(nat-gateways)/create-nat-gateway'
 import { Route as AuthEc2loadBalancersCreateLoadBalancerRouteImport } from './routes/_auth/ec2/(load-balancers)/create-load-balancer'
@@ -42,6 +43,7 @@ import { Route as AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport } from
 import { Route as AuthEc2subnetDescribeSubnetsIndexRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/index'
 import { Route as AuthEc2snapshotsDescribeSnapshotsIndexRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/index'
 import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/index'
+import { Route as AuthEc2routeTablesDescribeRouteTablesIndexRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/index'
 import { Route as AuthEc2placementGroupsDescribePlacementGroupsIndexRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/index'
 import { Route as AuthEc2natGatewaysDescribeNatGatewaysIndexRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/index'
 import { Route as AuthEc2loadBalancersDescribeLoadBalancersIndexRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/index'
@@ -60,6 +62,7 @@ import { Route as AuthEc2targetGroupsDescribeTargetGroupsIdRouteImport } from '.
 import { Route as AuthEc2subnetDescribeSubnetsIdRouteImport } from './routes/_auth/ec2/(subnet)/describe-subnets/$id'
 import { Route as AuthEc2snapshotsDescribeSnapshotsIdRouteImport } from './routes/_auth/ec2/(snapshots)/describe-snapshots/$id'
 import { Route as AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport } from './routes/_auth/ec2/(security-groups)/describe-security-groups/$id'
+import { Route as AuthEc2routeTablesDescribeRouteTablesIdRouteImport } from './routes/_auth/ec2/(route-tables)/describe-route-tables/$id'
 import { Route as AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport } from './routes/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
 import { Route as AuthEc2natGatewaysDescribeNatGatewaysIdRouteImport } from './routes/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
 import { Route as AuthEc2loadBalancersDescribeLoadBalancersIdRouteImport } from './routes/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
@@ -148,6 +151,12 @@ const AuthEc2securityGroupsCreateSecurityGroupRoute =
   AuthEc2securityGroupsCreateSecurityGroupRouteImport.update({
     id: '/ec2/(security-groups)/create-security-group',
     path: '/ec2/create-security-group',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2routeTablesCreateRouteTableRoute =
+  AuthEc2routeTablesCreateRouteTableRouteImport.update({
+    id: '/ec2/(route-tables)/create-route-table',
+    path: '/ec2/create-route-table',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2placementGroupsCreatePlacementGroupRoute =
@@ -252,6 +261,12 @@ const AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute =
   AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport.update({
     id: '/ec2/(security-groups)/describe-security-groups/',
     path: '/ec2/describe-security-groups/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEc2routeTablesDescribeRouteTablesIndexRoute =
+  AuthEc2routeTablesDescribeRouteTablesIndexRouteImport.update({
+    id: '/ec2/(route-tables)/describe-route-tables/',
+    path: '/ec2/describe-route-tables/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2placementGroupsDescribePlacementGroupsIndexRoute =
@@ -361,6 +376,12 @@ const AuthEc2securityGroupsDescribeSecurityGroupsIdRoute =
     path: '/ec2/describe-security-groups/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEc2routeTablesDescribeRouteTablesIdRoute =
+  AuthEc2routeTablesDescribeRouteTablesIdRouteImport.update({
+    id: '/ec2/(route-tables)/describe-route-tables/$id',
+    path: '/ec2/describe-route-tables/$id',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2placementGroupsDescribePlacementGroupsIdRoute =
   AuthEc2placementGroupsDescribePlacementGroupsIdRouteImport.update({
     id: '/ec2/(placement-groups)/describe-placement-groups/$id',
@@ -424,6 +445,7 @@ export interface FileRoutesByFullPath {
   '/ec2/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
   '/ec2/create-nat-gateway': typeof AuthEc2natGatewaysCreateNatGatewayRoute
   '/ec2/create-placement-group': typeof AuthEc2placementGroupsCreatePlacementGroupRoute
+  '/ec2/create-route-table': typeof AuthEc2routeTablesCreateRouteTableRoute
   '/ec2/create-security-group': typeof AuthEc2securityGroupsCreateSecurityGroupRoute
   '/ec2/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/ec2/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
@@ -442,6 +464,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/ec2/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
   '/ec2/describe-placement-groups/$id': typeof AuthEc2placementGroupsDescribePlacementGroupsIdRoute
+  '/ec2/describe-route-tables/$id': typeof AuthEc2routeTablesDescribeRouteTablesIdRoute
   '/ec2/describe-security-groups/$id': typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRoute
   '/ec2/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/ec2/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
@@ -460,6 +483,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-load-balancers/': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/ec2/describe-nat-gateways/': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
   '/ec2/describe-placement-groups/': typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRoute
+  '/ec2/describe-route-tables/': typeof AuthEc2routeTablesDescribeRouteTablesIndexRoute
   '/ec2/describe-security-groups/': typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute
   '/ec2/describe-snapshots/': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/ec2/describe-subnets/': typeof AuthEc2subnetDescribeSubnetsIndexRoute
@@ -483,6 +507,7 @@ export interface FileRoutesByTo {
   '/ec2/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
   '/ec2/create-nat-gateway': typeof AuthEc2natGatewaysCreateNatGatewayRoute
   '/ec2/create-placement-group': typeof AuthEc2placementGroupsCreatePlacementGroupRoute
+  '/ec2/create-route-table': typeof AuthEc2routeTablesCreateRouteTableRoute
   '/ec2/create-security-group': typeof AuthEc2securityGroupsCreateSecurityGroupRoute
   '/ec2/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/ec2/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
@@ -501,6 +526,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/ec2/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
   '/ec2/describe-placement-groups/$id': typeof AuthEc2placementGroupsDescribePlacementGroupsIdRoute
+  '/ec2/describe-route-tables/$id': typeof AuthEc2routeTablesDescribeRouteTablesIdRoute
   '/ec2/describe-security-groups/$id': typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRoute
   '/ec2/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/ec2/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
@@ -519,6 +545,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-load-balancers': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/ec2/describe-nat-gateways': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
   '/ec2/describe-placement-groups': typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRoute
+  '/ec2/describe-route-tables': typeof AuthEc2routeTablesDescribeRouteTablesIndexRoute
   '/ec2/describe-security-groups': typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute
   '/ec2/describe-snapshots': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/ec2/describe-subnets': typeof AuthEc2subnetDescribeSubnetsIndexRoute
@@ -545,6 +572,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(load-balancers)/create-load-balancer': typeof AuthEc2loadBalancersCreateLoadBalancerRoute
   '/_auth/ec2/(nat-gateways)/create-nat-gateway': typeof AuthEc2natGatewaysCreateNatGatewayRoute
   '/_auth/ec2/(placement-groups)/create-placement-group': typeof AuthEc2placementGroupsCreatePlacementGroupRoute
+  '/_auth/ec2/(route-tables)/create-route-table': typeof AuthEc2routeTablesCreateRouteTableRoute
   '/_auth/ec2/(security-groups)/create-security-group': typeof AuthEc2securityGroupsCreateSecurityGroupRoute
   '/_auth/ec2/(snapshots)/create-snapshot': typeof AuthEc2snapshotsCreateSnapshotRoute
   '/_auth/ec2/(subnet)/create-subnet': typeof AuthEc2subnetCreateSubnetRoute
@@ -563,6 +591,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(load-balancers)/describe-load-balancers/$id': typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id': typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
   '/_auth/ec2/(placement-groups)/describe-placement-groups/$id': typeof AuthEc2placementGroupsDescribePlacementGroupsIdRoute
+  '/_auth/ec2/(route-tables)/describe-route-tables/$id': typeof AuthEc2routeTablesDescribeRouteTablesIdRoute
   '/_auth/ec2/(security-groups)/describe-security-groups/$id': typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRoute
   '/_auth/ec2/(snapshots)/describe-snapshots/$id': typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   '/_auth/ec2/(subnet)/describe-subnets/$id': typeof AuthEc2subnetDescribeSubnetsIdRoute
@@ -581,6 +610,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(load-balancers)/describe-load-balancers/': typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   '/_auth/ec2/(nat-gateways)/describe-nat-gateways/': typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
   '/_auth/ec2/(placement-groups)/describe-placement-groups/': typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRoute
+  '/_auth/ec2/(route-tables)/describe-route-tables/': typeof AuthEc2routeTablesDescribeRouteTablesIndexRoute
   '/_auth/ec2/(security-groups)/describe-security-groups/': typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute
   '/_auth/ec2/(snapshots)/describe-snapshots/': typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   '/_auth/ec2/(subnet)/describe-subnets/': typeof AuthEc2subnetDescribeSubnetsIndexRoute
@@ -607,6 +637,7 @@ export interface FileRouteTypes {
     | '/ec2/create-load-balancer'
     | '/ec2/create-nat-gateway'
     | '/ec2/create-placement-group'
+    | '/ec2/create-route-table'
     | '/ec2/create-security-group'
     | '/ec2/create-snapshot'
     | '/ec2/create-subnet'
@@ -625,6 +656,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-load-balancers/$id'
     | '/ec2/describe-nat-gateways/$id'
     | '/ec2/describe-placement-groups/$id'
+    | '/ec2/describe-route-tables/$id'
     | '/ec2/describe-security-groups/$id'
     | '/ec2/describe-snapshots/$id'
     | '/ec2/describe-subnets/$id'
@@ -643,6 +675,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-load-balancers/'
     | '/ec2/describe-nat-gateways/'
     | '/ec2/describe-placement-groups/'
+    | '/ec2/describe-route-tables/'
     | '/ec2/describe-security-groups/'
     | '/ec2/describe-snapshots/'
     | '/ec2/describe-subnets/'
@@ -666,6 +699,7 @@ export interface FileRouteTypes {
     | '/ec2/create-load-balancer'
     | '/ec2/create-nat-gateway'
     | '/ec2/create-placement-group'
+    | '/ec2/create-route-table'
     | '/ec2/create-security-group'
     | '/ec2/create-snapshot'
     | '/ec2/create-subnet'
@@ -684,6 +718,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-load-balancers/$id'
     | '/ec2/describe-nat-gateways/$id'
     | '/ec2/describe-placement-groups/$id'
+    | '/ec2/describe-route-tables/$id'
     | '/ec2/describe-security-groups/$id'
     | '/ec2/describe-snapshots/$id'
     | '/ec2/describe-subnets/$id'
@@ -702,6 +737,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-load-balancers'
     | '/ec2/describe-nat-gateways'
     | '/ec2/describe-placement-groups'
+    | '/ec2/describe-route-tables'
     | '/ec2/describe-security-groups'
     | '/ec2/describe-snapshots'
     | '/ec2/describe-subnets'
@@ -727,6 +763,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(load-balancers)/create-load-balancer'
     | '/_auth/ec2/(nat-gateways)/create-nat-gateway'
     | '/_auth/ec2/(placement-groups)/create-placement-group'
+    | '/_auth/ec2/(route-tables)/create-route-table'
     | '/_auth/ec2/(security-groups)/create-security-group'
     | '/_auth/ec2/(snapshots)/create-snapshot'
     | '/_auth/ec2/(subnet)/create-subnet'
@@ -745,6 +782,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(load-balancers)/describe-load-balancers/$id'
     | '/_auth/ec2/(nat-gateways)/describe-nat-gateways/$id'
     | '/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
+    | '/_auth/ec2/(route-tables)/describe-route-tables/$id'
     | '/_auth/ec2/(security-groups)/describe-security-groups/$id'
     | '/_auth/ec2/(snapshots)/describe-snapshots/$id'
     | '/_auth/ec2/(subnet)/describe-subnets/$id'
@@ -763,6 +801,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(load-balancers)/describe-load-balancers/'
     | '/_auth/ec2/(nat-gateways)/describe-nat-gateways/'
     | '/_auth/ec2/(placement-groups)/describe-placement-groups/'
+    | '/_auth/ec2/(route-tables)/describe-route-tables/'
     | '/_auth/ec2/(security-groups)/describe-security-groups/'
     | '/_auth/ec2/(snapshots)/describe-snapshots/'
     | '/_auth/ec2/(subnet)/describe-subnets/'
@@ -884,6 +923,13 @@ declare module '@tanstack/react-router' {
       path: '/ec2/create-security-group'
       fullPath: '/ec2/create-security-group'
       preLoaderRoute: typeof AuthEc2securityGroupsCreateSecurityGroupRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(route-tables)/create-route-table': {
+      id: '/_auth/ec2/(route-tables)/create-route-table'
+      path: '/ec2/create-route-table'
+      fullPath: '/ec2/create-route-table'
+      preLoaderRoute: typeof AuthEc2routeTablesCreateRouteTableRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(placement-groups)/create-placement-group': {
@@ -1012,6 +1058,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(route-tables)/describe-route-tables/': {
+      id: '/_auth/ec2/(route-tables)/describe-route-tables/'
+      path: '/ec2/describe-route-tables'
+      fullPath: '/ec2/describe-route-tables/'
+      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(placement-groups)/describe-placement-groups/': {
       id: '/_auth/ec2/(placement-groups)/describe-placement-groups/'
       path: '/ec2/describe-placement-groups'
@@ -1138,6 +1191,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(route-tables)/describe-route-tables/$id': {
+      id: '/_auth/ec2/(route-tables)/describe-route-tables/$id'
+      path: '/ec2/describe-route-tables/$id'
+      fullPath: '/ec2/describe-route-tables/$id'
+      preLoaderRoute: typeof AuthEc2routeTablesDescribeRouteTablesIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(placement-groups)/describe-placement-groups/$id': {
       id: '/_auth/ec2/(placement-groups)/describe-placement-groups/$id'
       path: '/ec2/describe-placement-groups/$id'
@@ -1223,6 +1283,7 @@ interface AuthRouteRouteChildren {
   AuthEc2loadBalancersCreateLoadBalancerRoute: typeof AuthEc2loadBalancersCreateLoadBalancerRoute
   AuthEc2natGatewaysCreateNatGatewayRoute: typeof AuthEc2natGatewaysCreateNatGatewayRoute
   AuthEc2placementGroupsCreatePlacementGroupRoute: typeof AuthEc2placementGroupsCreatePlacementGroupRoute
+  AuthEc2routeTablesCreateRouteTableRoute: typeof AuthEc2routeTablesCreateRouteTableRoute
   AuthEc2securityGroupsCreateSecurityGroupRoute: typeof AuthEc2securityGroupsCreateSecurityGroupRoute
   AuthEc2snapshotsCreateSnapshotRoute: typeof AuthEc2snapshotsCreateSnapshotRoute
   AuthEc2subnetCreateSubnetRoute: typeof AuthEc2subnetCreateSubnetRoute
@@ -1241,6 +1302,7 @@ interface AuthRouteRouteChildren {
   AuthEc2loadBalancersDescribeLoadBalancersIdRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIdRoute
   AuthEc2natGatewaysDescribeNatGatewaysIdRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIdRoute
   AuthEc2placementGroupsDescribePlacementGroupsIdRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIdRoute
+  AuthEc2routeTablesDescribeRouteTablesIdRoute: typeof AuthEc2routeTablesDescribeRouteTablesIdRoute
   AuthEc2securityGroupsDescribeSecurityGroupsIdRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIdRoute
   AuthEc2snapshotsDescribeSnapshotsIdRoute: typeof AuthEc2snapshotsDescribeSnapshotsIdRoute
   AuthEc2subnetDescribeSubnetsIdRoute: typeof AuthEc2subnetDescribeSubnetsIdRoute
@@ -1258,6 +1320,7 @@ interface AuthRouteRouteChildren {
   AuthEc2loadBalancersDescribeLoadBalancersIndexRoute: typeof AuthEc2loadBalancersDescribeLoadBalancersIndexRoute
   AuthEc2natGatewaysDescribeNatGatewaysIndexRoute: typeof AuthEc2natGatewaysDescribeNatGatewaysIndexRoute
   AuthEc2placementGroupsDescribePlacementGroupsIndexRoute: typeof AuthEc2placementGroupsDescribePlacementGroupsIndexRoute
+  AuthEc2routeTablesDescribeRouteTablesIndexRoute: typeof AuthEc2routeTablesDescribeRouteTablesIndexRoute
   AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute: typeof AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute
   AuthEc2snapshotsDescribeSnapshotsIndexRoute: typeof AuthEc2snapshotsDescribeSnapshotsIndexRoute
   AuthEc2subnetDescribeSubnetsIndexRoute: typeof AuthEc2subnetDescribeSubnetsIndexRoute
@@ -1285,6 +1348,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2natGatewaysCreateNatGatewayRoute,
   AuthEc2placementGroupsCreatePlacementGroupRoute:
     AuthEc2placementGroupsCreatePlacementGroupRoute,
+  AuthEc2routeTablesCreateRouteTableRoute:
+    AuthEc2routeTablesCreateRouteTableRoute,
   AuthEc2securityGroupsCreateSecurityGroupRoute:
     AuthEc2securityGroupsCreateSecurityGroupRoute,
   AuthEc2snapshotsCreateSnapshotRoute: AuthEc2snapshotsCreateSnapshotRoute,
@@ -1311,6 +1376,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2natGatewaysDescribeNatGatewaysIdRoute,
   AuthEc2placementGroupsDescribePlacementGroupsIdRoute:
     AuthEc2placementGroupsDescribePlacementGroupsIdRoute,
+  AuthEc2routeTablesDescribeRouteTablesIdRoute:
+    AuthEc2routeTablesDescribeRouteTablesIdRoute,
   AuthEc2securityGroupsDescribeSecurityGroupsIdRoute:
     AuthEc2securityGroupsDescribeSecurityGroupsIdRoute,
   AuthEc2snapshotsDescribeSnapshotsIdRoute:
@@ -1338,6 +1405,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2natGatewaysDescribeNatGatewaysIndexRoute,
   AuthEc2placementGroupsDescribePlacementGroupsIndexRoute:
     AuthEc2placementGroupsDescribePlacementGroupsIndexRoute,
+  AuthEc2routeTablesDescribeRouteTablesIndexRoute:
+    AuthEc2routeTablesDescribeRouteTablesIndexRoute,
   AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute:
     AuthEc2securityGroupsDescribeSecurityGroupsIndexRoute,
   AuthEc2snapshotsDescribeSnapshotsIndexRoute:

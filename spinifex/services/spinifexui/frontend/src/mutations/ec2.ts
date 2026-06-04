@@ -28,6 +28,8 @@ import {
   DeleteKeyPairCommand,
   DeleteNatGatewayCommand,
   DeletePlacementGroupCommand,
+  DeleteRouteCommand,
+  DeleteRouteTableCommand,
   DeleteSecurityGroupCommand,
   DeleteSnapshotCommand,
   DeleteSubnetCommand,
@@ -35,6 +37,7 @@ import {
   DeleteVpcCommand,
   DetachInternetGatewayCommand,
   DisassociateAddressCommand,
+  DisassociateRouteTableCommand,
   DetachVolumeCommand,
   ReleaseAddressCommand,
   GetConsoleOutputCommand,
@@ -961,6 +964,114 @@ export function useDeleteNatGateway() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "natGateways"] })
+    },
+  })
+}
+
+export function useCreateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: { vpcId: string; name?: string }) => {
+      const command = new CreateRouteTableCommand({
+        VpcId: params.vpcId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.route_table,
+          params.name,
+          [],
+        ),
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDeleteRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (routeTableId: string) => {
+      const command = new DeleteRouteTableCommand({
+        RouteTableId: routeTableId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useCreateRoute() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      routeTableId: string
+      destinationCidrBlock: string
+      gatewayId?: string
+      natGatewayId?: string
+    }) => {
+      const command = new CreateRouteCommand({
+        RouteTableId: params.routeTableId,
+        DestinationCidrBlock: params.destinationCidrBlock,
+        GatewayId: params.gatewayId,
+        NatGatewayId: params.natGatewayId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDeleteRoute() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      routeTableId: string
+      destinationCidrBlock: string
+    }) => {
+      const command = new DeleteRouteCommand({
+        RouteTableId: params.routeTableId,
+        DestinationCidrBlock: params.destinationCidrBlock,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useAssociateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: { routeTableId: string; subnetId: string }) => {
+      const command = new AssociateRouteTableCommand({
+        RouteTableId: params.routeTableId,
+        SubnetId: params.subnetId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+    },
+  })
+}
+
+export function useDisassociateRouteTable() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (associationId: string) => {
+      const command = new DisassociateRouteTableCommand({
+        AssociationId: associationId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
     },
   })
 }

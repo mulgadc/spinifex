@@ -183,7 +183,20 @@ export const ec2RouteTablesQueryOptions = queryOptions({
     const command = new DescribeRouteTablesCommand({})
     return await getEc2Client().send(command)
   },
+  refetchInterval: 5000,
 })
+
+export const ec2RouteTableQueryOptions = (routeTableId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "routeTables", routeTableId],
+    queryFn: async () => {
+      const command = new DescribeRouteTablesCommand({
+        RouteTableIds: [routeTableId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
 
 export const ec2VpcsQueryOptions = queryOptions({
   queryKey: ["ec2", "vpcs"],

@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -33,11 +33,15 @@ function CreateBucket() {
   const {
     handleSubmit,
     register,
-    watch,
+    control,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createBucketSchema),
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateBucketFormData) => {
     await createMutation.mutateAsync(data)
@@ -72,7 +76,7 @@ function CreateBucket() {
           <FieldError errors={[errors.bucketName]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateBucketCommands(watch)} />
+        <CliCommandPanel commands={buildCreateBucketCommands(cliWatch)} />
 
         <FormActions
           isPending={createMutation.isPending}

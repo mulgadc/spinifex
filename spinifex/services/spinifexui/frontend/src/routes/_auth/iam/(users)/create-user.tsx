@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -29,11 +29,15 @@ function CreateUser() {
   const {
     handleSubmit,
     register,
-    watch,
+    control,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createUserSchema),
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateUserFormData) => {
     await createMutation.mutateAsync(data)
@@ -71,7 +75,7 @@ function CreateUser() {
           <FieldError errors={[errors.path]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateUserCommands(watch)} />
+        <CliCommandPanel commands={buildCreateUserCommands(cliWatch)} />
 
         <FormActions
           isPending={createMutation.isPending}

@@ -230,11 +230,32 @@ export function useModifyTargetGroupAttributes() {
   })
 }
 
+export type ListenerProtocol = "HTTP" | "HTTPS"
+
+// tlsListenerFields returns the Certificates + SslPolicy command fields for an
+// HTTPS listener, or empty undefined fields for HTTP. The server rejects certs
+// on a non-secure protocol, so they are only emitted for HTTPS.
+function tlsListenerFields(
+  protocol: ListenerProtocol,
+  certificateArn?: string,
+  sslPolicy?: string,
+): { Certificates?: { CertificateArn: string }[]; SslPolicy?: string } {
+  if (protocol !== "HTTPS" || !certificateArn) {
+    return {}
+  }
+  return {
+    Certificates: [{ CertificateArn: certificateArn }],
+    SslPolicy: sslPolicy,
+  }
+}
+
 export interface CreateListenerParams {
   loadBalancerArn: string
-  protocol: "HTTP"
+  protocol: ListenerProtocol
   port: number
   defaultTargetGroupArn: string
+  certificateArn?: string
+  sslPolicy?: string
 }
 
 export function useCreateListener() {
@@ -252,6 +273,11 @@ export function useCreateListener() {
         Protocol: params.protocol,
         Port: params.port,
         DefaultActions: defaultActions,
+        ...tlsListenerFields(
+          params.protocol,
+          params.certificateArn,
+          params.sslPolicy,
+        ),
       })
       return await getElbv2Client().send(command)
     },
@@ -279,9 +305,11 @@ export function useDeleteListener() {
 export interface ModifyListenerParams {
   listenerArn: string
   loadBalancerArn: string
-  protocol: "HTTP"
+  protocol: ListenerProtocol
   port: number
   defaultTargetGroupArn: string
+  certificateArn?: string
+  sslPolicy?: string
 }
 
 export function useModifyListener() {
@@ -299,6 +327,11 @@ export function useModifyListener() {
         Protocol: params.protocol,
         Port: params.port,
         DefaultActions: defaultActions,
+        ...tlsListenerFields(
+          params.protocol,
+          params.certificateArn,
+          params.sslPolicy,
+        ),
       })
       return await getElbv2Client().send(command)
     },

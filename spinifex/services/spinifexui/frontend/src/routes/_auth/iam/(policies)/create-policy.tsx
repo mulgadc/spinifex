@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -45,7 +45,7 @@ function CreatePolicy() {
   const {
     handleSubmit,
     register,
-    watch,
+    control,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createPolicySchema),
@@ -53,6 +53,10 @@ function CreatePolicy() {
       policyDocument: DEFAULT_POLICY_DOCUMENT,
     },
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreatePolicyFormData) => {
     await createMutation.mutateAsync(data)
@@ -111,7 +115,7 @@ function CreatePolicy() {
           <FieldError errors={[errors.policyDocument]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreatePolicyCommands(watch)} />
+        <CliCommandPanel commands={buildCreatePolicyCommands(cliWatch)} />
 
         <FormActions
           isPending={createMutation.isPending}

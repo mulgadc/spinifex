@@ -67,11 +67,27 @@ export const createTargetGroupSchema = z.object({
 
 export type CreateTargetGroupFormData = z.infer<typeof createTargetGroupSchema>
 
-export const createListenerSchema = z.object({
-  protocol: z.enum(["HTTP"]),
-  port: portField,
-  defaultTargetGroupArn: z.string().min(1, "Target group is required"),
-})
+// Default SSL policy applied when an HTTPS listener leaves the policy unset;
+// mirrors the server's DefaultSslPolicy constant.
+export const DEFAULT_SSL_POLICY = "ELBSecurityPolicy-2016-08"
+
+export const createListenerSchema = z
+  .object({
+    protocol: z.enum(["HTTP", "HTTPS"]),
+    port: portField,
+    defaultTargetGroupArn: z.string().min(1, "Target group is required"),
+    certificateArn: z.string().optional(),
+    sslPolicy: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.protocol === "HTTPS" && !data.certificateArn) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["certificateArn"],
+        message: "A certificate is required for HTTPS",
+      })
+    }
+  })
 
 export type CreateListenerFormData = z.infer<typeof createListenerSchema>
 

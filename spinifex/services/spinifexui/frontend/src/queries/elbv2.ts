@@ -3,6 +3,7 @@ import {
   DescribeLoadBalancerAttributesCommand,
   DescribeLoadBalancersCommand,
   DescribeRulesCommand,
+  DescribeSSLPoliciesCommand,
   DescribeTagsCommand,
   DescribeTargetGroupAttributesCommand,
   DescribeTargetGroupsCommand,
@@ -115,6 +116,17 @@ export const elbv2TargetHealthQueryOptions = (targetGroupArn: string) =>
       return await getElbv2Client().send(command)
     },
   })
+
+// Static catalog of named SSL policies the HTTPS listener form offers; the
+// backend serves a fixed set (no persistence), so this never needs polling.
+export const elbv2SslPoliciesQueryOptions = queryOptions({
+  queryKey: ["elbv2", "sslPolicies"],
+  queryFn: async () => {
+    const command = new DescribeSSLPoliciesCommand({})
+    return await getElbv2Client().send(command)
+  },
+  staleTime: Infinity,
+})
 
 export const elbv2TagsQueryOptions = (resourceArns: string[]) =>
   queryOptions({

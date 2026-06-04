@@ -103,6 +103,10 @@ services:
       - "acm.DescribeCertificate"
       - "acm.ListCertificates"
       - "acm.DeleteCertificate"
+      - "elbv2.AddListenerCertificates"
+      - "elbv2.RemoveListenerCertificates"
+      - "elbv2.DescribeListenerCertificates"
+      - "elbv2.DescribeSSLPolicies"
     publishes:
       # → vpcd
       - "vpc.create"

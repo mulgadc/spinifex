@@ -1772,6 +1772,60 @@ func validateRedirectAction(rd *RedirectAction) error {
 	return nil
 }
 
+// buildListenerCertificates validates and normalises the certificate set and
+// SSL policy for a listener of the given protocol. Secure protocols (HTTPS,
+// TLS) require at least one certificate and receive a default SslPolicy when
+// unset; non-secure protocols must carry neither certificates nor an SslPolicy.
+// Exactly one certificate is marked default.
+func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPolicy *string) ([]ListenerCertificate, string, error) {
+	policy := ""
+	if sslPolicy != nil {
+		policy = *sslPolicy
+	}
+
+	if !protocolRequiresCert(protocol) {
+		if len(in) > 0 || policy != "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return nil, "", nil
+	}
+
+	if len(in) == 0 {
+		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+
+	certs := make([]ListenerCertificate, 0, len(in))
+	defaults := 0
+	for _, c := range in {
+		if c == nil || c.CertificateArn == nil || *c.CertificateArn == "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		isDefault := c.IsDefault != nil && *c.IsDefault
+		if isDefault {
+			defaults++
+		}
+		certs = append(certs, ListenerCertificate{
+			CertificateArn: *c.CertificateArn,
+			IsDefault:      isDefault,
+		})
+	}
+	switch defaults {
+	case 0:
+		certs[0].IsDefault = true
+	case 1:
+	default:
+		return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	if policy == "" {
+		policy = DefaultSslPolicy
+	} else if !isKnownSslPolicy(policy) {
+		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+	}
+
+	return certs, policy, nil
+}
+
 func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1846,6 +1900,11 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		}
 	}
 
+	certs, sslPolicy, err := buildListenerCertificates(protocol, input.Certificates, input.SslPolicy)
+	if err != nil {
+		return nil, err
+	}
+
 	listenerID := utils.GenerateResourceID("lst")
 	listenerArn := buildListenerArn(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
@@ -1874,6 +1933,8 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		DefaultActions:  actions,
 		AccountID:       accountID,
 		CreatedAt:       time.Now().UTC(),
+		Certificates:    certs,
+		SslPolicy:       sslPolicy,
 		Tags:            tags,
 	}
 
@@ -2054,6 +2115,37 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 			}
 		}
+	}
+
+	// Certificates / SSL policy. The effective protocol after any change drives
+	// the requirement: switching to a non-secure protocol clears cert material;
+	// staying on or switching to a secure protocol validates and defaults it.
+	if !protocolRequiresCert(updated.Protocol) {
+		if len(input.Certificates) > 0 || (input.SslPolicy != nil && *input.SslPolicy != "") {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		updated.Certificates = nil
+		updated.SslPolicy = ""
+	} else {
+		inCerts := input.Certificates
+		if inCerts == nil {
+			for _, c := range updated.Certificates {
+				inCerts = append(inCerts, &elbv2.Certificate{
+					CertificateArn: aws.String(c.CertificateArn),
+					IsDefault:      aws.Bool(c.IsDefault),
+				})
+			}
+		}
+		sslPolicy := input.SslPolicy
+		if sslPolicy == nil && updated.SslPolicy != "" {
+			sslPolicy = aws.String(updated.SslPolicy)
+		}
+		certs, policy, certErr := buildListenerCertificates(updated.Protocol, inCerts, sslPolicy)
+		if certErr != nil {
+			return nil, certErr
+		}
+		updated.Certificates = certs
+		updated.SslPolicy = policy
 	}
 
 	if err := s.store.PutListener(&updated); err != nil {
@@ -2323,6 +2415,13 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 
 	for _, a := range r.DefaultActions {
 		listener.DefaultActions = append(listener.DefaultActions, listenerActionToSDK(a))
+	}
+
+	if len(r.Certificates) > 0 {
+		listener.Certificates = listenerCertsToSDK(r.Certificates)
+	}
+	if r.SslPolicy != "" {
+		listener.SslPolicy = aws.String(r.SslPolicy)
 	}
 
 	return listener

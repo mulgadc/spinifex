@@ -31,6 +31,12 @@ const (
 	DefaultConfigPath = "/etc/haproxy/haproxy.cfg"
 	DefaultPIDPath    = "/run/haproxy.pid"
 
+	// CertDir is the fixed directory holding TLS certificate PEM files for
+	// HTTPS listeners. The daemon renders `ssl crt` paths under this dir; the
+	// agent writes the delivered PEM files here (0600) before reload and
+	// rejects any delivered path that escapes it.
+	CertDir = "/etc/haproxy/certs"
+
 	// pollInterval is how often the agent sends a heartbeat.
 	pollInterval = 5 * time.Second
 )
@@ -42,6 +48,7 @@ type Agent struct {
 	region     string // SigV4 signing region
 	configPath string
 	pidPath    string
+	certDir    string // dir for TLS cert PEM files; defaults to CertDir (overridable in tests)
 	socketPath string // HAProxy stats socket
 
 	accessKey string
@@ -91,6 +98,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		region:     region,
 		configPath: DefaultConfigPath,
 		pidPath:    DefaultPIDPath,
+		certDir:    CertDir,
 		socketPath: fmt.Sprintf("/tmp/spinifex-haproxy/lb-%s.sock", lbID),
 		accessKey:  accessKey,
 		secretKey:  secretKey,
@@ -162,11 +170,19 @@ type heartbeatResponse struct {
 	ConfigHash string   `xml:"LBAgentHeartbeatResult>ConfigHash"`
 }
 
+// certFile is one delivered TLS certificate PEM parsed from the GetLBConfig
+// response. Path is the absolute destination under CertDir.
+type certFile struct {
+	Path string `xml:"Path"`
+	PEM  string `xml:"PEM"`
+}
+
 // configResponse is the parsed XML response from GetLBConfig.
 type configResponse struct {
-	XMLName    xml.Name `xml:"GetLBConfigResponse"`
-	ConfigText string   `xml:"GetLBConfigResult>ConfigText"`
-	ConfigHash string   `xml:"GetLBConfigResult>ConfigHash"`
+	XMLName    xml.Name   `xml:"GetLBConfigResponse"`
+	ConfigText string     `xml:"GetLBConfigResult>ConfigText"`
+	ConfigHash string     `xml:"GetLBConfigResult>ConfigHash"`
+	CertFiles  []certFile `xml:"GetLBConfigResult>CertFiles>member"`
 }
 
 // sendHeartbeat sends a heartbeat with health report to the gateway.
@@ -216,6 +232,12 @@ func (a *Agent) fetchAndApplyConfig() error {
 		return fmt.Errorf("empty config returned")
 	}
 
+	// Cert files must land before the config that references them via
+	// `ssl crt`, otherwise HAProxy fails to start/reload on a missing path.
+	if err := a.writeCertFiles(resp.CertFiles); err != nil {
+		return fmt.Errorf("write cert files: %w", err)
+	}
+
 	if err := WriteConfig(a.configPath, resp.ConfigText); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
@@ -260,6 +282,34 @@ func (a *Agent) signedPost(params url.Values) ([]byte, error) {
 	}
 
 	return respBody, nil
+}
+
+// writeCertFiles writes each delivered TLS certificate PEM to its path 0600,
+// creating the cert dir as needed. Every path is constrained to a.certDir — a
+// delivered path that escapes it (traversal, absolute elsewhere) is rejected
+// rather than written, so a malformed/hostile response can't drop files across
+// the filesystem.
+func (a *Agent) writeCertFiles(certs []certFile) error {
+	if len(certs) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(a.certDir, 0o750); err != nil {
+		return fmt.Errorf("create cert dir: %w", err)
+	}
+	for _, c := range certs {
+		clean := filepath.Clean(c.Path)
+		if clean != filepath.Join(a.certDir, filepath.Base(clean)) {
+			return fmt.Errorf("cert path %q escapes %s", c.Path, a.certDir)
+		}
+		if c.PEM == "" {
+			return fmt.Errorf("cert %q has empty PEM", c.Path)
+		}
+		if err := os.WriteFile(clean, []byte(c.PEM), 0o600); err != nil {
+			return fmt.Errorf("write cert %q: %w", clean, err)
+		}
+		slog.Info("Wrote TLS cert", "path", clean, "bytes", len(c.PEM))
+	}
+	return nil
 }
 
 // WriteConfig atomically writes an HAProxy config file.

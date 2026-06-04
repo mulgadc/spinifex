@@ -20,5 +20,8 @@ error_log="/dev/console"
 depend() {
     # Needs the same substrate the role services do, since it starts them.
     need net cgroups
-    after firewall
+    # cloud-init write_files delivers /etc/spinifex-eks/first-boot.env (the role
+    # source) in the cloud-config/cloud-final stages. Order after them so the
+    # selector never races ahead and reads a missing env file on a fast boot.
+    after firewall cloud-config cloud-final
 }

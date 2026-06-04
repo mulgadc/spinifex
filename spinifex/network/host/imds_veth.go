@@ -24,6 +24,14 @@ const (
 // avoid an import cycle (host ← handlers/imds ← topology).
 func imdsPortLSPName(vpcID string) string { return "imds-port-" + vpcID }
 
+// imdsLSPMAC is the logical MAC OVN advertises for 169.254.169.254 (the localport
+// address). The netns veth host end MUST carry this exact MAC: OVN resolves .254
+// to it and delivers IMDS request frames with dl_dst set to it, so a kernel-random
+// veth MAC makes the netns drop every frame not-for-me and the listener never sees
+// a SYN. Mirrors external.IMDSSpecForVPC's LSPMAC, duplicated here (like
+// imdsPortLSPName) to avoid the import cycle.
+func imdsLSPMAC(vpcID string) string { return utils.HashMAC("imds-" + vpcID) }
+
 // EnsureIMDSVeth idempotently creates the per-VPC IMDS veth pair, moves the host end
 // into a dedicated netns with 169.254.169.254/30 + a default route via the .253 LRP,
 // and attaches the OVS end to br-int so ovn-controller binds the localport here. The
@@ -65,7 +73,7 @@ func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName s
 		return "", "", fmt.Errorf("create IMDS veth pair %s/%s: %s: %w", ovsEnd, hostEnd, strings.TrimSpace(string(out)), err)
 	}
 
-	if err := configureIMDSNetns(netns, hostEnd, ovsEnd); err != nil {
+	if err := configureIMDSNetns(netns, hostEnd, ovsEnd, imdsLSPMAC(vpcID)); err != nil {
 		if cleanErr := removeIMDSPlumbing(ovsEnd, hostEnd, netns); cleanErr != nil {
 			slog.Warn("Failed to clean up IMDS plumbing after netns config failure", "vpc", vpcID, "err", cleanErr)
 		}
@@ -85,17 +93,23 @@ func EnsureIMDSVeth(ctx context.Context, vpcID string) (netnsName, hostEndName s
 	return netns, hostEnd, nil
 }
 
-// configureIMDSNetns moves the host end into the netns, brings it (and lo) up,
-// and assigns the IMDS address + default route so the host-served reply has a
-// real next-hop. The OVS end stays in the root netns for ovn-controller to bind.
-// The addr/route adds tolerate "File exists" so a re-run after a partial failure
-// converges rather than wedging.
-func configureIMDSNetns(netns, hostEnd, ovsEnd string) error {
+// configureIMDSNetns moves the host end into the netns, sets its MAC to the
+// localport's logical MAC, brings it (and lo) up, and assigns the IMDS address +
+// default route so the host-served reply has a real next-hop. The OVS end stays in
+// the root netns for ovn-controller to bind. The MAC set is the request-path
+// contract: OVN delivers frames with dl_dst = the localport MAC, so the veth host
+// end must own that MAC or the netns silently drops them. The addr/route adds
+// tolerate "File exists" so a re-run after a partial failure converges rather than
+// wedging.
+func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string) error {
 	if out, err := utils.SudoCommand("ip", "link", "set", ovsEnd, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("bring up IMDS OVS end %s: %s: %w", ovsEnd, strings.TrimSpace(string(out)), err)
 	}
 	if out, err := utils.SudoCommand("ip", "link", "set", hostEnd, "netns", netns).CombinedOutput(); err != nil {
 		return fmt.Errorf("move IMDS host end %s into netns %s: %s: %w", hostEnd, netns, strings.TrimSpace(string(out)), err)
+	}
+	if out, err := utils.SudoCommand("ip", "-n", netns, "link", "set", hostEnd, "address", hostEndMAC).CombinedOutput(); err != nil {
+		return fmt.Errorf("set IMDS host end %s MAC %s in netns %s: %s: %w", hostEnd, hostEndMAC, netns, strings.TrimSpace(string(out)), err)
 	}
 	for _, dev := range []string{"lo", hostEnd} {
 		if out, err := utils.SudoCommand("ip", "-n", netns, "link", "set", dev, "up").CombinedOutput(); err != nil {

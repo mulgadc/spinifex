@@ -53,6 +53,7 @@ func TestEnsureIMDSVeth_HappyPath(t *testing.T) {
 		{"ip", "link", "add", "imds-o-89abcdef", "type", "veth", "peer", "name", "imds-h-89abcdef"},
 		{"ip", "link", "set", "imds-o-89abcdef", "up"},
 		{"ip", "link", "set", "imds-h-89abcdef", "netns", "imds-89abcdef"},
+		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "address", utils.HashMAC("imds-" + testVPCID)},
 		{"ip", "-n", "imds-89abcdef", "link", "set", "lo", "up"},
 		{"ip", "-n", "imds-89abcdef", "link", "set", "imds-h-89abcdef", "up"},
 		{"ip", "-n", "imds-89abcdef", "addr", "add", "169.254.169.254/30", "dev", "imds-h-89abcdef"},

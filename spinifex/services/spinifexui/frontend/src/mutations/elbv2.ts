@@ -156,6 +156,7 @@ export function useCreateTargetGroup() {
       const tags: Tag[] = params.tags
         .filter((t) => t.key.length > 0)
         .map((t) => ({ Key: t.key, Value: t.value }))
+      const httpHealthCheck = params.healthCheck.protocol === "HTTP"
       const command = new CreateTargetGroupCommand({
         Name: params.name,
         Protocol: params.protocol,
@@ -163,13 +164,15 @@ export function useCreateTargetGroup() {
         VpcId: params.vpcId,
         TargetType: "instance",
         HealthCheckProtocol: params.healthCheck.protocol,
-        HealthCheckPath: params.healthCheck.path,
+        HealthCheckPath: httpHealthCheck ? params.healthCheck.path : undefined,
         HealthCheckPort: params.healthCheck.port,
         HealthCheckIntervalSeconds: params.healthCheck.intervalSeconds,
         HealthCheckTimeoutSeconds: params.healthCheck.timeoutSeconds,
         HealthyThresholdCount: params.healthCheck.healthyThresholdCount,
         UnhealthyThresholdCount: params.healthCheck.unhealthyThresholdCount,
-        Matcher: { HttpCode: params.healthCheck.matcher },
+        Matcher: httpHealthCheck
+          ? { HttpCode: params.healthCheck.matcher }
+          : undefined,
         Tags: tags.length > 0 ? tags : undefined,
       })
       return await getElbv2Client().send(command)

@@ -2,13 +2,13 @@ import{t as e}from"./error-banner.js";import{t}from"./useSuspenseQuery.js";impor
   --name`},{type:`value`,value:` ${r||`<Name>`}`},{type:`flag`,value:` \\
   --protocol`},{type:`value`,value:` ${i}`},{type:`flag`,value:` \\
   --port`},{type:`value`,value:` ${a??80}`},{type:`flag`,value:` \\
-  --target-type`},{type:`value`,value:` instance`}];return o&&h.push({type:`flag`,value:` \\
-  --vpc-id`},{type:`value`,value:` ${o}`}),h.push({type:`flag`,value:` \\
-  --health-check-protocol`},{type:`value`,value:` ${s}`},{type:`flag`,value:` \\
-  --health-check-path`},{type:`value`,value:` ${c}`},{type:`flag`,value:` \\
+  --target-type`},{type:`value`,value:` instance`}];o&&h.push({type:`flag`,value:` \\
+  --vpc-id`},{type:`value`,value:` ${o}`});let g=s===`HTTP`;return h.push({type:`flag`,value:` \\
+  --health-check-protocol`},{type:`value`,value:` ${s}`}),g&&h.push({type:`flag`,value:` \\
+  --health-check-path`},{type:`value`,value:` ${c}`}),h.push({type:`flag`,value:` \\
   --health-check-port`},{type:`value`,value:` ${l}`},{type:`flag`,value:` \\
   --health-check-interval-seconds`},{type:`value`,value:` ${u??30}`},{type:`flag`,value:` \\
   --health-check-timeout-seconds`},{type:`value`,value:` ${d??5}`},{type:`flag`,value:` \\
   --healthy-threshold-count`},{type:`value`,value:` ${f??5}`},{type:`flag`,value:` \\
-  --unhealthy-threshold-count`},{type:`value`,value:` ${p??2}`},{type:`flag`,value:` \\
+  --unhealthy-threshold-count`},{type:`value`,value:` ${p??2}`}),g&&h.push({type:`flag`,value:` \\
   --matcher`},{type:`value`,value:` HttpCode=${m}`}),[{label:`Create Target Group`,parts:h}]}var _=h;export{_ as component};

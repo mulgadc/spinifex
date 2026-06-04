@@ -30,7 +30,7 @@ interface TargetGroupFormProps {
 export function TargetGroupForm({
   form,
   vpcs,
-  allowedProtocols = ["HTTP"],
+  allowedProtocols = ["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP"],
 }: TargetGroupFormProps) {
   const {
     control,
@@ -44,6 +44,19 @@ export function TargetGroupForm({
   // Path + Matcher only apply to HTTP(S) health checks; L4 target groups (TCP/
   // UDP/TLS) use a TCP health check that has neither.
   const httpHealthCheck = protocol === "HTTP" || protocol === "HTTPS"
+
+  // Keep the health-check protocol consistent with the target-group protocol so
+  // L4 groups submit a TCP health check and L7 groups submit an HTTP one.
+  const handleProtocolChange = (
+    next: CreateTargetGroupFormData["protocol"] | null,
+  ) => {
+    if (!next) {
+      return
+    }
+    setValue("protocol", next)
+    const layer7 = next === "HTTP" || next === "HTTPS"
+    setValue("healthCheck.protocol", layer7 ? "HTTP" : "TCP")
+  }
 
   return (
     <>
@@ -68,7 +81,7 @@ export function TargetGroupForm({
           control={control}
           name="protocol"
           render={({ field }) => (
-            <Select onValueChange={field.onChange} value={field.value}>
+            <Select onValueChange={handleProtocolChange} value={field.value}>
               <SelectTrigger className="w-full" id="tg-protocol">
                 <SelectValue />
               </SelectTrigger>

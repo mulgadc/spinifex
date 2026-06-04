@@ -146,8 +146,12 @@ func LoadClusterOIDCPrivateKey(kv nats.KeyValue, clusterName string, masterKey [
 }
 
 // ZeroizeClusterOIDCKey overwrites the encrypted private-key blob with zeros
-// of the same length, then deletes the key. DeleteCluster calls this first
-// so a crash after this point leaves no recoverable key material on disk.
+// of the same length, then purges the key. DeleteCluster calls this first so
+// a crash after this point leaves no recoverable key material. Purge (not
+// Delete) drops the key's entire revision history — a Delete leaves a tombstone
+// over prior revisions, so the original encrypted PEM would survive in history
+// until age/limit rolls it off. The account bucket is History=1 regardless
+// (see store.go), so this is defense-in-depth against a widened history.
 // Absent key is a no-op — supports idempotent DeleteCluster retries.
 func ZeroizeClusterOIDCKey(kv nats.KeyValue, clusterName string) error {
 	if clusterName == "" {
@@ -165,8 +169,8 @@ func ZeroizeClusterOIDCKey(kv nats.KeyValue, clusterName string) error {
 	if _, err := kv.Put(key, zero); err != nil {
 		return fmt.Errorf("kv put zero %s: %w", key, err)
 	}
-	if err := kv.Delete(key); err != nil {
-		return fmt.Errorf("kv delete %s: %w", key, err)
+	if err := kv.Purge(key); err != nil {
+		return fmt.Errorf("kv purge %s: %w", key, err)
 	}
 	return nil
 }

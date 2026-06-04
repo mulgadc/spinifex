@@ -26,6 +26,13 @@ const (
 	KVBucketEKSAccountPrefix  = "eks-account-"
 	KVBucketEKSAccountVersion = 1
 
+	// KVBucketEKSAccountHistory pins the per-account bucket to one revision per
+	// key. This MUST stay 1: ZeroizeClusterOIDCKey relies on Purge dropping the
+	// key's whole history so no prior revision of the encrypted OIDC signing key
+	// survives a DeleteCluster. Keep this decoupled from the schema version so a
+	// future version bump can't silently widen history and resurrect ciphertext.
+	KVBucketEKSAccountHistory = 1
+
 	KVBucketEKSLeader        = "spinifex-eks-leader"
 	KVBucketEKSLeaderVersion = 1
 	KVBucketEKSLeaderTTL     = 60 * time.Second
@@ -143,7 +150,7 @@ func AccountBucketName(accountID string) string {
 // accountID return the existing handle.
 func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountVersion)
+	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}

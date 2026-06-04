@@ -25,8 +25,9 @@ const (
 	imdsRoleName    = "imds-e2e-role"
 	imdsProfileName = "imds-e2e-profile"
 
-	// metaURL is the AWS-compatible link-local IMDS endpoint, served from the
-	// host per-VPC via SO_BINDTODEVICE on the imds-h-<shortVpcID> veth.
+	// metaURL is the AWS-compatible link-local IMDS endpoint, answered L2 on each
+	// subnet's own switch from the host via SO_BINDTODEVICE on the
+	// imds-h-<shortSubnetID> veth (no router, no proxy-ARP, no /32 route).
 	metaURL = "http://169.254.169.254"
 
 	// imdsUserData is a no-op cloud-config carrying a unique marker so the
@@ -67,7 +68,10 @@ type imdsCredDoc struct {
 //     metadata fields, the instance-role credential path + a wire round-trip
 //     proving the ASIA creds resolve to the instance assumed-role ARN, the
 //     /latest/user-data round-trip, and the DHCP option-121 guest route.
-//   - The per-VPC datapath invariant: imds-port-<vpcID> is a localport LSP.
+//   - The per-subnet L2 datapath invariant: imds-port-<subnetID> is a localport
+//     LSP on the guest's own subnet switch, and ovn-trace confirms the request
+//     and the established reply both resolve over a single L2 hop with no logical
+//     router in the path to shadow them.
 //   - Cross-VPC isolation: VM X and VM Y share the same source IP in different
 //     VPCs, yet each IMDS returns its OWN instance-id — the load-bearing
 //     (VPC-ID, source-IP) → ENI boundary (plan §Datapath-attested identity).
@@ -84,18 +88,22 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	imdsEnsureRoleProfile(t, fix, adminAccount)
 
 	// Two VPCs, identical subnet CIDR → the first VM in each gets the same IP.
-	vpcX, subX, sgX := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
-	vpcY, subY, sgY := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
+	// The VPC IDs are logged inside imdsEnsureProbeVPC; the L2 datapath and the
+	// isolation assertions key off the subnet and the instance identity, not the
+	// VPC ID, so they aren't bound here.
+	_, subX, sgX := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
+	_, subY, sgY := imdsEnsureProbeVPC(t, fix, imdsProbeVPCCIDR, imdsProbeSubnetCIDR)
 
-	// VM X — profile-bound + user-data; drives the full surface.
-	idX, privX, tgtX := imdsProbe(t, fix, keyPath, imdsVMSpec{
+	// VM X — profile-bound + user-data; drives the full surface. eniX builds the
+	// guest LSP name (port-<eni>) for the ovn-trace datapath assertion.
+	idX, privX, eniX, tgtX := imdsProbe(t, fix, keyPath, imdsVMSpec{
 		subnetID:    subX,
 		sgID:        sgX,
 		profileName: imdsProfileName,
 		userData:    imdsUserData,
 	})
 	// VM Y — isolation peer; no profile needed for the instance-id probe.
-	idY, privY, tgtY := imdsProbe(t, fix, keyPath, imdsVMSpec{
+	idY, privY, _, tgtY := imdsProbe(t, fix, keyPath, imdsVMSpec{
 		subnetID: subY,
 		sgID:     sgY,
 	})
@@ -105,30 +113,27 @@ func runIMDS(t *testing.T, fix *Fixture) {
 			"(IPAM is deterministic at network+4) — got %s vs %s", privX, privY)
 	harness.Detail(t, "vm_x", idX, "vm_y", idY, "shared_priv", privX)
 
-	// --- Per-VPC OVN datapath invariant: imds-port-<vpc> is a localport ------
-	harness.Step(t, "ovn-nbctl imds-port-%s must be a localport LSP", vpcX)
-	imdsLSP := "imds-port-" + vpcX // mirrors topology.IMDSPort (inlined, as datapath_test does)
+	// --- Per-subnet L2 datapath invariant: imds-port-<subnet> is a localport ---
+	harness.Step(t, "ovn-nbctl imds-port-%s must be a localport LSP", subX)
+	imdsLSP := "imds-port-" + subX // mirrors topology.IMDSPort (inlined, as datapath_test does)
 	lspType := harness.OvnNbctl(t, "--no-leader-only", "--bare", "--columns=type",
 		"find", "logical_switch_port", "name="+imdsLSP)
 	require.Equalf(t, "localport", lspType,
 		"imds-port LSP %s must be type=localport so every chassis self-serves IMDS "+
 			"(a regular LSP binds one chassis and forces Geneve tunnelling)", imdsLSP)
 
-	// --- Subnet-router proxy-ARP makes 169.254.169.254 reachable link-local --
-	// IMDS reachability no longer depends on a DHCP option-121 route in the
-	// guest; the subnet router LSP answers ARP for the IMDS address via OVN
-	// options:arp_proxy, so DHCP and fully static guests reach it identically.
-	harness.Step(t, "subnet router LSP rtr-port-%s must carry options:arp_proxy", subX)
-	rtrLSP := "rtr-port-" + subX // mirrors topology.SubnetSwitchRouterPort
-	lspOpts := harness.OvnNbctl(t, "--no-leader-only", "--bare", "--columns=options",
-		"find", "logical_switch_port", "name="+rtrLSP)
-	require.Containsf(t, lspOpts, "arp_proxy=169.254.169.254",
-		"subnet router LSP %s must set options:arp_proxy=169.254.169.254 so the subnet LRP "+
-			"answers ARP for IMDS link-local (static-IP and NetworkManager/RHEL/Ubuntu guests)", rtrLSP)
+	// --- ovn-trace: the L2 round-trip stays off the router (Phase-0 gate) -----
+	// The defining property of the L2 datapath is that 169.254.169.254 is answered
+	// on the guest's own broadcast domain, so neither the request nor the
+	// established reply may enter the VPC logical router — where v1's reroute,
+	// /32-static-route and hop-limit bugs all lived. Trace both directions on the
+	// subnet switch and assert each resolves over a single L2 hop with no
+	// lr_in_*/lr_out_* stage and lands on the expected port.
+	imdsAssertL2RoundTrip(t, subX, eniX, privX)
 
 	// --- IMDSv2 token issuance ----------------------------------------------
 	harness.Step(t, "PUT /latest/api/token (IMDSv2)")
-	tokenX := imdsAwaitToken(t, fix, tgtX, vpcX, privX)
+	tokenX := imdsAwaitToken(t, fix, tgtX, subX, privX)
 	harness.Detail(t, "token_len", len(tokenX))
 
 	// --- v2-only stance: tokenless + garbage-token GET → 401 -----------------
@@ -194,10 +199,11 @@ func runIMDS(t *testing.T, fix *Fixture) {
 
 	// --- Cross-VPC isolation -------------------------------------------------
 	// VM X and VM Y query 169.254.169.254 from the IDENTICAL source IP, in
-	// different VPCs. Each must get its own instance-id; a leak here means the
-	// per-VPC SO_BINDTODEVICE veth / (VPC-ID, source-IP) → ENI mapping is broken.
+	// different VPCs (hence different subnets). Each must get its own instance-id;
+	// a leak here means the per-subnet SO_BINDTODEVICE veth / (VPC-ID, source-IP) →
+	// ENI mapping is broken.
 	harness.Step(t, "cross-VPC isolation: shared IP %s, distinct identities", privX)
-	tokenY := imdsAwaitToken(t, fix, tgtY, vpcY, privY)
+	tokenY := imdsAwaitToken(t, fix, tgtY, subY, privY)
 	gotY := imdsGet(t, tgtY, tokenY, "/latest/meta-data/instance-id")
 	require.Equalf(t, idY, gotY, "VM Y IMDS must return VM Y's instance-id (got %q)", gotY)
 	require.NotEqualf(t, idX, gotY,
@@ -219,9 +225,10 @@ type imdsVMSpec struct {
 }
 
 // imdsProbe launches a VM per spec, waits for it to run + become SSH-reachable,
-// and returns (instanceID, privateIP, sshTarget). Registers terminate cleanup
-// so the VM is torn down before its VPC/subnet are deleted (LIFO).
-func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (string, string, harness.SSHTarget) {
+// and returns (instanceID, privateIP, eniID, sshTarget). eniID names the guest
+// LSP (port-<eni>) for the ovn-trace datapath assertion. Registers terminate
+// cleanup so the VM is torn down before its VPC/subnet are deleted (LIFO).
+func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (string, string, string, harness.SSHTarget) {
 	t.Helper()
 	id := imdsRunVM(t, fix, spec)
 	t.Cleanup(func() {
@@ -234,11 +241,82 @@ func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (str
 	inst := harness.WaitForInstanceState(t, fix.AWS, id, "running")
 	priv := aws.StringValue(inst.PrivateIpAddress)
 	require.NotEmptyf(t, priv, "instance %s has no PrivateIpAddress", id)
+	eni := primaryENI(t, inst)
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	harness.Step(t, "wait for %s SSH at %s:%d", id, host, port)
 	waitForSSHHandshake(t, host, port, keyPath)
-	return id, priv, harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+	return id, priv, eni, harness.SSHTarget{User: "ec2-user", Host: host, Port: port, KeyPath: keyPath}
+}
+
+// imdsAssertL2RoundTrip ovn-traces the IMDS request and its established reply on
+// the guest's subnet switch and asserts both resolve over a single L2 hop with no
+// logical-router stage. This promotes the Phase-0 gate to a standing assertion:
+// the L2 datapath's defining property is that IMDS never enters the VPC LR, so an
+// lr_in_*/lr_out_* stage appearing in either direction means the relocation
+// regressed back toward the v1 router pipeline.
+func imdsAssertL2RoundTrip(t *testing.T, subnetID, eniID, guestIP string) {
+	t.Helper()
+	subnetSwitch := "subnet-" + subnetID // topology.SubnetSwitch
+	imdsLSP := "imds-port-" + subnetID   // topology.IMDSPort
+	guestLSP := "port-" + eniID          // topology.Port
+
+	// MACs come from NB, the datapath's own source of truth: the localport and the
+	// guest LSP each advertise "<mac> <ip>" in their addresses column.
+	imdsMAC := imdsPortMAC(t, imdsLSP)
+	guestMAC := imdsPortMAC(t, guestLSP)
+
+	// Request: a NEW guest -> 169.254.169.254 SYN must be delivered L2 to the
+	// localport, with no router stage.
+	harness.Step(t, "ovn-trace request %s -> 169.254.169.254 lands L2 on %s", guestIP, imdsLSP)
+	reqFlow := fmt.Sprintf(
+		`inport=="%s" && eth.src==%s && eth.dst==%s && ip4.src==%s && ip4.dst==169.254.169.254 && ip.ttl==64 && tcp && tcp.src==40000 && tcp.dst==80`,
+		guestLSP, guestMAC, imdsMAC, guestIP)
+	reqTrace := harness.OvnTrace(t, "--no-leader-only", subnetSwitch, reqFlow)
+	imdsAssertNoRouterStage(t, "request", reqTrace)
+	require.Containsf(t, reqTrace, `output to "`+imdsLSP+`"`,
+		"IMDS request must be delivered L2 to the localport %s; trace:\n%s", imdsLSP, reqTrace)
+
+	// Reply: 169.254.169.254 -> guest is the established conntrack reply. Supply
+	// the reply ct-state to BOTH ct_next stages (ingress + egress) — a single --ct
+	// leaves the egress ct_next defaulting back to `est` without `rpl` and prints a
+	// spurious ct_mark.blocked drop (the Phase-0 false alarm). The reply landing on
+	// the guest also proves the guest's own SG ACLs never match the localport's
+	// frames.
+	harness.Step(t, "ovn-trace reply 169.254.169.254 -> %s lands L2 on %s", guestIP, guestLSP)
+	replyFlow := fmt.Sprintf(
+		`inport=="%s" && eth.src==%s && eth.dst==%s && ip4.src==169.254.169.254 && ip4.dst==%s && ip.ttl==64 && tcp && tcp.src==80 && tcp.dst==40000`,
+		imdsLSP, imdsMAC, guestMAC, guestIP)
+	replyTrace := harness.OvnTrace(t, "--no-leader-only", "--ct=est,rpl", "--ct=est,rpl", subnetSwitch, replyFlow)
+	imdsAssertNoRouterStage(t, "reply", replyTrace)
+	require.Containsf(t, replyTrace, `output to "`+guestLSP+`"`,
+		"IMDS established reply must be delivered L2 to the guest %s (the guest's own SG "+
+			"must not drop the localport's reply); trace:\n%s", guestLSP, replyTrace)
+}
+
+// imdsAssertNoRouterStage fails if an ovn-trace shows the packet entering a
+// logical router (any lr_in_*/lr_out_* stage). The L2 IMDS datapath must answer
+// 169.254.169.254 on the subnet switch and never transit the VPC LR.
+func imdsAssertNoRouterStage(t *testing.T, dir, trace string) {
+	t.Helper()
+	for _, stage := range []string{"lr_in_", "lr_out_"} {
+		require.NotContainsf(t, trace, stage,
+			"IMDS %s traversed a logical router (%s stage present) — the L2 datapath must "+
+				"answer 169.254.169.254 on the subnet switch and never enter the VPC LR; trace:\n%s",
+			dir, stage, trace)
+	}
+}
+
+// imdsPortMAC returns the MAC an LSP advertises in its addresses column
+// ("<mac> <ip>"). Fatal if the LSP is missing or carries no MAC, since the
+// ovn-trace microflow cannot be built without it.
+func imdsPortMAC(t *testing.T, lsp string) string {
+	t.Helper()
+	addrs := harness.OvnNbctl(t, "--no-leader-only", "--bare", "--columns=addresses",
+		"find", "logical_switch_port", "name="+lsp)
+	fields := strings.Fields(addrs)
+	require.NotEmptyf(t, fields, "LSP %s has no addresses (got %q); cannot build ovn-trace microflow", lsp, addrs)
+	return fields[0]
 }
 
 // imdsRunVM launches a single instance per spec and returns its ID. AMI / type /
@@ -395,11 +473,11 @@ func imdsEnsureRoleProfile(t *testing.T, fix *Fixture, adminAccount string) {
 
 // imdsAwaitToken PUTs an IMDSv2 token from inside the guest, retrying to ride
 // out the cold-start window before BindManager.Sync + the ENI reverse-index
-// land. Returns the token. On timeout it dumps the per-VPC IMDS datapath
+// land. Returns the token. On timeout it dumps the per-subnet IMDS datapath
 // (OVN realisation + host veth route/neigh + conntrack) before failing, so a
 // reachability timeout (exit 28) is triaged as request-path vs reply-path
 // rather than a bare "condition not met".
-func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, vpcID, guestIP string) string {
+func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, subnetID, guestIP string) string {
 	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
 	var lastErr error
@@ -416,9 +494,9 @@ func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, vpcID, gu
 			return strings.TrimSpace(out)
 		}
 		if time.Now().After(deadline) {
-			harness.DumpIMDSDatapathDiagnostics(t, vpcID, guestIP, fix.ArtifactDir(t))
-			t.Fatalf("imdsAwaitToken: token never minted within 90s (vpc=%s guest=%s): %v "+
-				"(see IMDS datapath diagnostics above)", vpcID, guestIP, lastErr)
+			harness.DumpIMDSDatapathDiagnostics(t, subnetID, guestIP, fix.ArtifactDir(t))
+			t.Fatalf("imdsAwaitToken: token never minted within 90s (subnet=%s guest=%s): %v "+
+				"(see IMDS datapath diagnostics above)", subnetID, guestIP, lastErr)
 		}
 		time.Sleep(3 * time.Second)
 	}

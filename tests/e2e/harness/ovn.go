@@ -38,6 +38,17 @@ func OvnSbctl(t *testing.T, args ...string) string {
 	return runOvn(t, "ovn-sbctl", args...)
 }
 
+// OvnTrace runs `sudo -n ovn-trace <args...>` and returns the detailed pipeline
+// trace. Usage is `ovn-trace [options] DATAPATH MICROFLOW`; pass any `--ct=...`
+// options first, then the datapath, then the microflow. The detailed trace names
+// each logical-flow table it traverses (`ls_in_*`, `lr_in_*`, …) and prints the
+// final `/* output to "<port>" */`, so callers can assert both the delivery port
+// and the absence of router stages.
+func OvnTrace(t *testing.T, args ...string) string {
+	t.Helper()
+	return runOvn(t, "ovn-trace", args...)
+}
+
 func runOvn(t *testing.T, tool string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-n", tool}, args...)

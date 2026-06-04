@@ -1066,12 +1066,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	tags := make(map[string]string)
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			tags[*tag.Key] = *tag.Value
-		}
-	}
+	tags := tagsFromSDK(input.Tags)
 
 	// Create ENIs in each subnet (when VPC service is available)
 	var eniIDs []string
@@ -1450,12 +1445,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	tgID := utils.GenerateResourceID("tg")
 	tgArn := buildTGArn(s.region, accountID, name, tgID)
 
-	tags := make(map[string]string)
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			tags[*tag.Key] = *tag.Value
-		}
-	}
+	tags := tagsFromSDK(input.Tags)
 
 	record := &TargetGroupRecord{
 		TargetGroupArn: tgArn,
@@ -2078,12 +2068,7 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		actions = append(actions, action)
 	}
 
-	tags := make(map[string]string)
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			tags[*tag.Key] = *tag.Value
-		}
-	}
+	tags := tagsFromSDK(input.Tags)
 
 	record := &ListenerRecord{
 		ListenerArn:     listenerArn,
@@ -2462,6 +2447,18 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 	return &elbv2.DescribeTagsOutput{
 		TagDescriptions: descriptions,
 	}, nil
+}
+
+// tagsFromSDK converts an SDK Tag slice into a tag map, skipping entries with a
+// nil key or value. Returns a non-nil (possibly empty) map for storage.
+func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
+	m := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		if tag.Key != nil && tag.Value != nil {
+			m[*tag.Key] = *tag.Value
+		}
+	}
+	return m
 }
 
 // tagsMapToSDK converts a tag map into the SDK Tag slice with deterministic

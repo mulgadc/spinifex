@@ -22,6 +22,10 @@ func setupTestService(t *testing.T) *ELBv2ServiceImpl {
 
 	svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)
+	// Seed the certificate ARNs the listener tests attach so the fail-closed
+	// cert validation in Create/Modify/AddListenerCertificates resolves them.
+	putTestCert(t, svc, testCertArn, testAccountID, "LEAF", "", "KEY")
+	putTestCert(t, svc, testCertArn2, testAccountID, "LEAF", "", "KEY")
 	return svc
 }
 

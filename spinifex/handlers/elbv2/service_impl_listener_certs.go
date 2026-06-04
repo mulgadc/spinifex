@@ -63,6 +63,10 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCerti
 	}
 	updated.Certificates = certs
 
+	if err := s.validateListenerCerts(certs, accountID); err != nil {
+		return nil, err
+	}
+
 	if err := s.store.PutListener(&updated); err != nil {
 		slog.Error("AddListenerCertificates: failed to persist record", "listenerId", updated.ListenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

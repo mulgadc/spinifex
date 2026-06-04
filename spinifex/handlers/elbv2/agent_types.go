@@ -32,10 +32,20 @@ type GetLBConfigInput struct {
 	LBID *string `locationName:"LBID" type:"string"`
 }
 
-// GetLBConfigOutput returns the pre-computed HAProxy config and its hash.
+// GetLBConfigOutput returns the pre-computed HAProxy config and its hash, plus
+// any TLS certificate files the config's `ssl crt` directives reference.
 type GetLBConfigOutput struct {
-	ConfigText *string `type:"string"`
-	ConfigHash *string `type:"string"`
+	ConfigText *string     `type:"string"`
+	ConfigHash *string     `type:"string"`
+	CertFiles  []*CertFile `locationName:"CertFiles" type:"list"`
+}
+
+// CertFile is one TLS certificate PEM delivered to the LB agent. Path is the
+// absolute destination (under lbagent.CertDir) the agent writes 0600 before
+// reload; PEM is the combined cert+chain+key material.
+type CertFile struct {
+	Path *string `locationName:"Path" type:"string"`
+	PEM  *string `locationName:"PEM" type:"string"`
 }
 
 // toHealthReport converts the heartbeat input's server list to the lbagent

@@ -34,7 +34,7 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 	// NLB-arn persist checkpoint, but before the final PutClusterMeta.
 	f.inst.launchErr = errors.New("no capacity")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.Error(t, err)
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
@@ -50,7 +50,7 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.Error(t, err)
 
 	// The NLB the partial create provisioned exists in the fake.
@@ -73,7 +73,7 @@ func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {
 	meta.Status = ClusterStatusActive
 	require.NoError(t, PutClusterMeta(f.kv, meta))
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 }
 
@@ -84,7 +84,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 
 	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
 	f.inst.launchErr = errors.New("no capacity")
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.Error(t, err)
 	failed, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
@@ -93,7 +93,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 	// Retry now succeeds: the reclaim path purges the failed attempt's NLB and
 	// the create starts clean.
 	f.inst.launchErr = nil
-	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 
 	got, err := GetClusterMeta(f.kv, "alpha")
@@ -161,7 +161,7 @@ func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks
 
-	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
@@ -172,7 +172,7 @@ func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	out, err := f.svc.CreateCluster(createInput("alpha"), testAccountID)
+	out, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	require.NotNil(t, out)
 
@@ -184,10 +184,43 @@ func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	assert.NotEmpty(t, meta.ControlPlaneENIID)
 }
 
+// bootstrapClusterCreatorAdminPermissions defaults true: a successful create
+// with a known caller principal ARN mints a system:masters AccessEntry for the
+// caller, keyed by their exact ARN (the token webhook looks it up by the same).
+func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	const caller = "arn:aws:iam::111122223333:role/admin"
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, caller)
+	require.NoError(t, err)
+
+	rec, err := GetAccessEntryRecord(f.kv, "alpha", caller)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"system:masters"}, rec.KubernetesGroups)
+	assert.Equal(t, caller, rec.KubernetesUsername)
+	assert.Equal(t, AccessEntryTypeStandard, rec.Type)
+}
+
+// With the bootstrap flag explicitly false, no creator-admin entry is minted.
+func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	const caller = "arn:aws:iam::111122223333:role/admin"
+	in := createInput("alpha")
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		BootstrapClusterCreatorAdminPermissions: aws.Bool(false),
+	}
+
+	_, err := f.svc.CreateCluster(in, testAccountID, caller)
+	require.NoError(t, err)
+
+	_, err = GetAccessEntryRecord(f.kv, "alpha", caller)
+	assert.ErrorIs(t, err, ErrAccessEntryNotFound)
+}
+
 func TestCreateCluster_AllocatesHiddenEgressEIP(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	_, err := f.svc.CreateCluster(createInput("egress"), testAccountID)
+	_, err := f.svc.CreateCluster(createInput("egress"), testAccountID, "")
 	require.NoError(t, err)
 
 	meta, err := GetClusterMeta(f.kv, "egress")

@@ -33,6 +33,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -133,6 +134,7 @@ type Daemon struct {
 	eipService            *handlers_ec2_eip.EIPServiceImpl
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
+	acmService            *handlers_acm.ACMServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
 	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
@@ -851,6 +853,10 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"elbv2.DescribeLoadBalancerAttributes", d.handleELBv2DescribeLoadBalancerAttributes, "spinifex-workers"},
 			natsSub{"elbv2.SetSecurityGroups", d.handleELBv2SetSecurityGroups, "spinifex-workers"},
 			natsSub{"elbv2.SetIpAddressType", d.handleELBv2SetIpAddressType, "spinifex-workers"},
+			natsSub{"elbv2.AddListenerCertificates", d.handleELBv2AddListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.RemoveListenerCertificates", d.handleELBv2RemoveListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.DescribeListenerCertificates", d.handleELBv2DescribeListenerCertificates, "spinifex-workers"},
+			natsSub{"elbv2.DescribeSSLPolicies", d.handleELBv2DescribeSSLPolicies, "spinifex-workers"},
 		)
 	}
 
@@ -893,6 +899,16 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.TagResource", d.handleEKSTagResource, "spinifex-workers"},
 			natsSub{"eks.UntagResource", d.handleEKSUntagResource, "spinifex-workers"},
 			natsSub{"eks.ListTagsForResource", d.handleEKSListTagsForResource, "spinifex-workers"},
+		)
+	}
+
+	// ACM gateway → daemon subscriptions (minimal certificate store).
+	if d.acmService != nil {
+		subs = append(subs,
+			natsSub{"acm.ImportCertificate", d.handleACMImportCertificate, "spinifex-workers"},
+			natsSub{"acm.DescribeCertificate", d.handleACMDescribeCertificate, "spinifex-workers"},
+			natsSub{"acm.ListCertificates", d.handleACMListCertificates, "spinifex-workers"},
+			natsSub{"acm.DeleteCertificate", d.handleACMDeleteCertificate, "spinifex-workers"},
 		)
 	}
 
@@ -1348,6 +1364,14 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize EKS service: %w", err)
 	}
+
+	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
+		return handlers_acm.NewACMServiceImplWithNATS(d.config, d.natsConn)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize ACM service: %w", err)
+	}
+
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
 		slog.Warn("EKS: SpawnRegisteredReconcilers failed", "err", err)
 	}

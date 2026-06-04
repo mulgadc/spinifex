@@ -132,6 +132,18 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"SetIpAddressType": elbv2Handler(func(input *elbv2.SetIpAddressTypeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.SetIpAddressType(input, gw.NATSConn, accountID)
 	}),
+	"AddListenerCertificates": elbv2Handler(func(input *elbv2.AddListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.AddListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"RemoveListenerCertificates": elbv2Handler(func(input *elbv2.RemoveListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.RemoveListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"DescribeListenerCertificates": elbv2Handler(func(input *elbv2.DescribeListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"DescribeSSLPolicies": elbv2Handler(func(input *elbv2.DescribeSSLPoliciesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeSSLPolicies(input, gw.NATSConn, accountID)
+	}),
 	"DescribeListenerAttributes": elbv2Handler(func(input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListenerAttributes(input, accountID)
 	}),

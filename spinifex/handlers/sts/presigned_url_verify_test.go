@@ -2,6 +2,7 @@ package handlers_sts
 
 import (
 	"encoding/hex"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
@@ -52,7 +55,7 @@ func presignTestURL(t *testing.T, accessKeyID, secret, clusterName string, signe
 	canonHeaders := "host:" + host + "\n" + "x-k8s-aws-id:" + clusterName + "\n"
 	signedHeadersList := "host;x-k8s-aws-id"
 	canonRequest := strings.Join([]string{
-		"GET", "/", canonQ, canonHeaders, signedHeadersList, "UNSIGNED-PAYLOAD",
+		"GET", "/", canonQ, canonHeaders, signedHeadersList, emptyStringSHA256,
 	}, "\n")
 
 	stringToSign := strings.Join([]string{
@@ -204,7 +207,7 @@ func TestVerifyPresignedGetCallerIdentity_MissingXK8sAwsIdInSignedHeaders(t *tes
 	canonQ := canonicalQueryStringForTest(q)
 	canonHeaders := "host:" + testPresignedHost + "\n"
 	canonReq := strings.Join([]string{
-		"GET", "/", canonQ, canonHeaders, "host", "UNSIGNED-PAYLOAD",
+		"GET", "/", canonQ, canonHeaders, "host", emptyStringSHA256,
 	}, "\n")
 	stringToSign := strings.Join([]string{
 		"AWS4-HMAC-SHA256", amzDate, credentialScope, hexSHA256(canonReq),
@@ -382,4 +385,39 @@ func TestDeriveSigningKey_KnownVector(t *testing.T) {
 	)
 	const wantHex = "f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d"
 	assert.Equal(t, wantHex, hex.EncodeToString(key))
+}
+
+// TestVerifyPresignedGetCallerIdentity_RealSDKPresign signs the URL with the
+// actual aws-sdk-go v4 presigner — the same canonicalisation `aws eks
+// get-token` uses — rather than the hand-rolled presignTestURL. This is the
+// faithful end-to-end guard: it caught the payload-hash bug (verify used the
+// S3-only "UNSIGNED-PAYLOAD" instead of the empty-string SHA256 that botocore
+// signs non-S3 requests with), which every hand-rolled test masked by using
+// the same wrong constant.
+func TestVerifyPresignedGetCallerIdentity_RealSDKPresign(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid, secret := seedAccessKey(t, svc, testCallerAccountID, "carol")
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "prod-cluster"
+	req, err := http.NewRequest(http.MethodGet,
+		"https://"+testPresignedHost+"/?Action=GetCallerIdentity&Version=2011-06-15", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-K8s-Aws-Id", cluster)
+
+	signer := v4.NewSigner(credentials.NewStaticCredentials(akid, secret, ""))
+	_, err = signer.Presign(req, nil, "sts", testPresignedRegion, 900*time.Second, signedAt)
+	require.NoError(t, err)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(req.URL.String(), cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, cluster, got.XK8sAwsID)
+	assert.Contains(t, got.ARN, ":user/carol")
+
+	// Anti-replay: the SDK-signed URL must NOT verify against a different cluster.
+	_, err = svc.VerifyPresignedGetCallerIdentity(req.URL.String(), "other-cluster")
+	require.Error(t, err)
 }

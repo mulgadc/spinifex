@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"text/template"
+
+	"github.com/mulgadc/spinifex/spinifex/lbagent"
 )
 
 // Every interpolated string field in the templates below MUST be regex-validated
@@ -34,7 +36,7 @@ defaults
     timeout server 60s
 {{range .Frontends}}
 frontend {{.Name}}
-    bind *:{{.Port}}
+    bind *:{{.Port}}{{if .CertPath}} ssl crt {{.CertPath}}{{end}}
 {{- range .Rules}}
 {{- range .ACLs}}
     acl {{.Name}} {{.Expr}}
@@ -74,7 +76,7 @@ defaults
     timeout server 60s
 {{range .Frontends}}
 frontend {{.Name}}
-    bind *:{{.Port}}
+    bind *:{{.Port}}{{if .CertPath}} ssl crt {{.CertPath}}{{end}}
     default_backend {{.DefaultBackend}}
 {{end}}
 {{range .Backends}}
@@ -103,6 +105,10 @@ type HAProxyConfig struct {
 	SocketPath string
 	Frontends  []HAProxyFrontend
 	Backends   []HAProxyBackend
+	// CertFiles maps each absolute `ssl crt` path referenced by a secure
+	// frontend to its combined PEM (cert+chain+key). Not rendered into the
+	// template — carried out to the caller for delivery to the LB agent.
+	CertFiles map[string]string
 }
 
 // HAProxyFrontend represents a listener frontend.
@@ -110,6 +116,8 @@ type HAProxyFrontend struct {
 	Name           string
 	BindAddr       string
 	Port           int64
+	Protocol       string // listener protocol (HTTP/HTTPS/TCP/TLS); drives TLS termination
+	CertPath       string // combined-PEM path for `ssl crt`; empty for non-secure frontends
 	DefaultBackend string
 	Rules          []HAProxyRule
 }
@@ -173,48 +181,61 @@ type HAProxyServer struct {
 
 // GenerateHAProxyConfig builds an HAProxy config string from the LB, its
 // listeners, target groups, and per-listener rules. For NLBs it generates a
-// TCP-mode config and ignores rules (NLB has no L7 routing).
+// TCP-mode config and ignores rules (NLB has no L7 routing). TLS termination
+// is off (no certificates resolved) — use GenerateHAProxyConfigWithCerts for
+// HTTPS listeners.
 func GenerateHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string) (string, error) {
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, bindAddr, nil)
+	return config, err
+}
+
+// GenerateHAProxyConfigWithCerts is GenerateHAProxyConfig plus TLS termination.
+// certPEMByArn maps each listener certificate ARN to its combined PEM; secure
+// frontends render `ssl crt <path>` and the returned certFiles map carries each
+// path → PEM for delivery to the LB agent. A secure listener whose default cert
+// ARN is absent from certPEMByArn renders without `ssl crt` (HAProxy would fail
+// to bind, surfacing the missing material).
+func GenerateHAProxyConfigWithCerts(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, certPEMByArn map[string]string) (string, map[string]string, error) {
 	if lb.Type == LoadBalancerTypeNetwork {
-		return generateNLBConfig(lb, listeners, tgByArn, bindAddr)
+		return generateNLBConfig(lb, listeners, tgByArn, bindAddr, certPEMByArn)
 	}
-	return generateALBConfig(lb, listeners, tgByArn, rulesByListener, bindAddr)
+	return generateALBConfig(lb, listeners, tgByArn, rulesByListener, bindAddr, certPEMByArn)
 }
 
 // generateALBConfig builds an HTTP-mode HAProxy config for ALBs.
-func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string) (string, error) {
-	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr, false)
+func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, certPEMByArn map[string]string) (string, map[string]string, error) {
+	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr, false, certPEMByArn)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	var buf strings.Builder
 	if err := haproxyHTTPTmpl.Execute(&buf, cfg); err != nil {
-		return "", fmt.Errorf("execute haproxy template: %w", err)
+		return "", nil, fmt.Errorf("execute haproxy template: %w", err)
 	}
 
-	return buf.String(), nil
+	return buf.String(), cfg.CertFiles, nil
 }
 
 // generateNLBConfig builds a TCP-mode HAProxy config for NLBs.
-func generateNLBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string) (string, error) {
-	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, nil, bindAddr, true)
+func generateNLBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, bindAddr string, certPEMByArn map[string]string) (string, map[string]string, error) {
+	cfg, err := buildHAProxyConfig(lb, listeners, tgByArn, nil, bindAddr, true, certPEMByArn)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	var buf strings.Builder
 	if err := haproxyTCPTmpl.Execute(&buf, cfg); err != nil {
-		return "", fmt.Errorf("execute haproxy tcp template: %w", err)
+		return "", nil, fmt.Errorf("execute haproxy tcp template: %w", err)
 	}
 
-	return buf.String(), nil
+	return buf.String(), cfg.CertFiles, nil
 }
 
 // buildHAProxyConfig constructs the HAProxyConfig struct shared by ALB and NLB
 // generation. For ALBs, rulesByListener provides per-listener rules sorted by
 // priority; nil/empty for NLBs.
-func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, isTCP bool) (HAProxyConfig, error) {
+func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, isTCP bool, certPEMByArn map[string]string) (HAProxyConfig, error) {
 	socketDir := filepath.Join(os.TempDir(), "spinifex-haproxy")
 	// Use "lb" prefix for both ALB and NLB — must match the agent's socket path.
 	socketPath := filepath.Join(socketDir, fmt.Sprintf("lb-%s.sock", lb.LoadBalancerID))
@@ -316,7 +337,22 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			Name:           sanitizeName("ft", l.ListenerArn),
 			BindAddr:       bindAddr,
 			Port:           l.Port,
+			Protocol:       l.Protocol,
 			DefaultBackend: defaultBackendName,
+		}
+
+		// Secure listeners terminate TLS: resolve the default cert to a stable
+		// per-listener PEM path and stage it for delivery. Without resolved
+		// material the frontend renders plain (HAProxy then fails to bind,
+		// surfacing the gap rather than silently serving cleartext).
+		if protocolRequiresCert(l.Protocol) {
+			if pem, path := resolveFrontendCert(lb, l, certPEMByArn); pem != "" {
+				frontend.CertPath = path
+				if cfg.CertFiles == nil {
+					cfg.CertFiles = make(map[string]string)
+				}
+				cfg.CertFiles[path] = pem
+			}
 		}
 
 		if !isTCP {
@@ -349,6 +385,34 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 	}
 
 	return cfg, nil
+}
+
+// frontendCertPath returns the stable absolute path of a listener's combined
+// PEM file under the agent's cert dir. Daemon-rendered and agent-written paths
+// must match exactly.
+func frontendCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
+	return filepath.Join(lbagent.CertDir, fmt.Sprintf("lb-%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+}
+
+// resolveFrontendCert picks a listener's default certificate, resolves its PEM
+// from certPEMByArn, and returns (pem, path). Returns ("", "") when the listener
+// has no certificate or its default ARN is unresolved.
+func resolveFrontendCert(lb *LoadBalancerRecord, l *ListenerRecord, certPEMByArn map[string]string) (pem, path string) {
+	if len(l.Certificates) == 0 || certPEMByArn == nil {
+		return "", ""
+	}
+	arn := l.Certificates[0].CertificateArn
+	for _, c := range l.Certificates {
+		if c.IsDefault {
+			arn = c.CertificateArn
+			break
+		}
+	}
+	pem, ok := certPEMByArn[arn]
+	if !ok || pem == "" {
+		return "", ""
+	}
+	return pem, frontendCertPath(lb, l)
 }
 
 // registerRuleBackend resolves the HAProxy backend a rule's single action

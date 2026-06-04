@@ -3,12 +3,14 @@ package handlers_elbv2
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -96,6 +99,7 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 type ELBv2ServiceImpl struct {
 	config                     *config.Config
 	store                      *Store
+	acmStore                   *handlers_acm.Store              // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
 	nc                         *nats.Conn                       // NATS connection for JetStream KV store
 	VPCService                 *handlers_ec2_vpc.VPCServiceImpl // nil-safe: ENI ops skipped when nil (e.g. in tests)
 	InstanceLauncher           SystemInstanceLauncher           // nil-safe: system VM ops skipped when nil
@@ -128,6 +132,16 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 		return nil, fmt.Errorf("failed to create ELBv2 store: %w", err)
 	}
 
+	// ACM store shares the same JetStream KV — read cert PEM directly, no
+	// cross-service NATS hop. Non-fatal: a failure here only disables HTTPS
+	// termination (resolveCertPEM returns an error), it must not block the
+	// daemon from serving ELBv2 control-plane requests.
+	acmStore, acmErr := handlers_acm.NewStore(nc)
+	if acmErr != nil {
+		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
+		acmStore = nil
+	}
+
 	region := "us-east-1"
 	nodeID := ""
 	if cfg != nil {
@@ -141,14 +155,15 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
-		config: cfg,
-		store:  store,
-		nc:     nc,
-		nodeID: nodeID,
-		region: region,
-		ctx:    ctx,
-		cancel: cancel,
-		hc:     hc,
+		config:   cfg,
+		store:    store,
+		acmStore: acmStore,
+		nc:       nc,
+		nodeID:   nodeID,
+		region:   region,
+		ctx:      ctx,
+		cancel:   cancel,
+		hc:       hc,
 	}, nil
 }
 
@@ -577,15 +592,22 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 		}
 	}
 
-	configContent, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr)
+	certPEMByArn, err := s.resolveListenerCerts(listeners, lb.AccountID)
+	if err != nil {
+		slog.Error("updateStoredConfig: failed to resolve certs", "lbId", lb.LoadBalancerID, "err", err)
+		return fmt.Errorf("resolve certs: %w", err)
+	}
+
+	configContent, certFiles, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, bindAddr, certPEMByArn)
 	if err != nil {
 		slog.Error("updateStoredConfig: failed to generate config", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configContent)))
+	hash := configCertHash(configContent, certFiles)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
+	lb.CertFiles = certFiles
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
 		slog.Error("updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
@@ -593,8 +615,98 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	}
 
 	slog.Info("updateStoredConfig: config stored",
-		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent))
+		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
+}
+
+// resolveListenerCerts resolves every distinct certificate ARN referenced by
+// the listeners to its combined PEM via the ACM store. Returns nil when no
+// listener carries a certificate (the common HTTP-only case).
+func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, accountID string) (map[string]string, error) {
+	var out map[string]string
+	for _, l := range listeners {
+		for _, c := range l.Certificates {
+			if _, ok := out[c.CertificateArn]; ok {
+				continue
+			}
+			pem, err := s.resolveCertPEM(c.CertificateArn, accountID)
+			if err != nil {
+				return nil, fmt.Errorf("cert %s: %w", c.CertificateArn, err)
+			}
+			if out == nil {
+				out = make(map[string]string)
+			}
+			out[c.CertificateArn] = pem
+		}
+	}
+	return out, nil
+}
+
+// resolveCertPEM loads a certificate by ARN from the ACM store and returns its
+// combined PEM (leaf + chain + key) in the order HAProxy `ssl crt` expects.
+// Ownership is enforced: a cert belonging to another account is treated as
+// absent.
+func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error) {
+	if s.acmStore == nil {
+		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+	rec, err := s.acmStore.GetCert(arn)
+	if err != nil {
+		return "", fmt.Errorf("get cert: %w", err)
+	}
+	if rec == nil || rec.AccountID != accountID {
+		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(rec.Certificate, "\n"))
+	b.WriteByte('\n')
+	if rec.CertificateChain != "" {
+		b.WriteString(strings.TrimRight(rec.CertificateChain, "\n"))
+		b.WriteByte('\n')
+	}
+	b.WriteString(strings.TrimRight(rec.PrivateKey, "\n"))
+	b.WriteByte('\n')
+	return b.String(), nil
+}
+
+// validateListenerCerts confirms every certificate ARN resolves in the ACM
+// store and is owned by the account, rejecting an unknown ARN at the API
+// boundary (CreateListener/ModifyListener) with ErrorELBv2CertificateNotFound.
+// Without this, an unresolvable ARN is accepted into the listener and only
+// fails later at config-render time, which aborts updateStoredConfig wholesale
+// and silently freezes the LB's data-plane convergence. Skipped when the ACM
+// store is unavailable (cannot validate; matches the nil-safe resolve path).
+func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, accountID string) error {
+	if s.acmStore == nil {
+		return nil
+	}
+	for _, c := range certs {
+		if _, err := s.resolveCertPEM(c.CertificateArn, accountID); err != nil {
+			return errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		}
+	}
+	return nil
+}
+
+// configCertHash hashes the rendered config plus every delivered cert file
+// (path + content, in sorted path order) so a cert rotation changes the hash
+// and triggers an agent reload even when the config text is unchanged.
+func configCertHash(configContent string, certFiles map[string]string) string {
+	h := sha256.New()
+	h.Write([]byte(configContent))
+	paths := make([]string, 0, len(certFiles))
+	for p := range certFiles {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+		h.Write([]byte(certFiles[p]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // updateStoredConfigForTargetGroup finds all LBs that reference the given target
@@ -718,7 +830,26 @@ func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string
 	return &GetLBConfigOutput{
 		ConfigText: aws.String(lb.ConfigText),
 		ConfigHash: aws.String(lb.ConfigHash),
+		CertFiles:  certFilesToSDK(lb.CertFiles),
 	}, nil
+}
+
+// certFilesToSDK converts the stored path→PEM map into the sorted CertFile
+// slice delivered to the agent. Sorted for deterministic output.
+func certFilesToSDK(certFiles map[string]string) []*CertFile {
+	if len(certFiles) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(certFiles))
+	for p := range certFiles {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]*CertFile, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, &CertFile{Path: aws.String(p), PEM: aws.String(certFiles[p])})
+	}
+	return out
 }
 
 // lbArnPathSegment returns the ARN path segment for the given LB type:
@@ -1772,6 +1903,60 @@ func validateRedirectAction(rd *RedirectAction) error {
 	return nil
 }
 
+// buildListenerCertificates validates and normalises the certificate set and
+// SSL policy for a listener of the given protocol. Secure protocols (HTTPS,
+// TLS) require at least one certificate and receive a default SslPolicy when
+// unset; non-secure protocols must carry neither certificates nor an SslPolicy.
+// Exactly one certificate is marked default.
+func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPolicy *string) ([]ListenerCertificate, string, error) {
+	policy := ""
+	if sslPolicy != nil {
+		policy = *sslPolicy
+	}
+
+	if !protocolRequiresCert(protocol) {
+		if len(in) > 0 || policy != "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return nil, "", nil
+	}
+
+	if len(in) == 0 {
+		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+
+	certs := make([]ListenerCertificate, 0, len(in))
+	defaults := 0
+	for _, c := range in {
+		if c == nil || c.CertificateArn == nil || *c.CertificateArn == "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		isDefault := c.IsDefault != nil && *c.IsDefault
+		if isDefault {
+			defaults++
+		}
+		certs = append(certs, ListenerCertificate{
+			CertificateArn: *c.CertificateArn,
+			IsDefault:      isDefault,
+		})
+	}
+	switch defaults {
+	case 0:
+		certs[0].IsDefault = true
+	case 1:
+	default:
+		return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	if policy == "" {
+		policy = DefaultSslPolicy
+	} else if !isKnownSslPolicy(policy) {
+		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+	}
+
+	return certs, policy, nil
+}
+
 func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1846,6 +2031,14 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		}
 	}
 
+	certs, sslPolicy, err := buildListenerCertificates(protocol, input.Certificates, input.SslPolicy)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateListenerCerts(certs, accountID); err != nil {
+		return nil, err
+	}
+
 	listenerID := utils.GenerateResourceID("lst")
 	listenerArn := buildListenerArn(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
@@ -1874,6 +2067,8 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		DefaultActions:  actions,
 		AccountID:       accountID,
 		CreatedAt:       time.Now().UTC(),
+		Certificates:    certs,
+		SslPolicy:       sslPolicy,
 		Tags:            tags,
 	}
 
@@ -2054,6 +2249,40 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 			}
 		}
+	}
+
+	// Certificates / SSL policy. The effective protocol after any change drives
+	// the requirement: switching to a non-secure protocol clears cert material;
+	// staying on or switching to a secure protocol validates and defaults it.
+	if !protocolRequiresCert(updated.Protocol) {
+		if len(input.Certificates) > 0 || (input.SslPolicy != nil && *input.SslPolicy != "") {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		updated.Certificates = nil
+		updated.SslPolicy = ""
+	} else {
+		inCerts := input.Certificates
+		if inCerts == nil {
+			for _, c := range updated.Certificates {
+				inCerts = append(inCerts, &elbv2.Certificate{
+					CertificateArn: aws.String(c.CertificateArn),
+					IsDefault:      aws.Bool(c.IsDefault),
+				})
+			}
+		}
+		sslPolicy := input.SslPolicy
+		if sslPolicy == nil && updated.SslPolicy != "" {
+			sslPolicy = aws.String(updated.SslPolicy)
+		}
+		certs, policy, certErr := buildListenerCertificates(updated.Protocol, inCerts, sslPolicy)
+		if certErr != nil {
+			return nil, certErr
+		}
+		if certErr := s.validateListenerCerts(certs, accountID); certErr != nil {
+			return nil, certErr
+		}
+		updated.Certificates = certs
+		updated.SslPolicy = policy
 	}
 
 	if err := s.store.PutListener(&updated); err != nil {
@@ -2323,6 +2552,13 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 
 	for _, a := range r.DefaultActions {
 		listener.DefaultActions = append(listener.DefaultActions, listenerActionToSDK(a))
+	}
+
+	if len(r.Certificates) > 0 {
+		listener.Certificates = listenerCertsToSDK(r.Certificates)
+	}
+	if r.SslPolicy != "" {
+		listener.SslPolicy = aws.String(r.SslPolicy)
 	}
 
 	return listener

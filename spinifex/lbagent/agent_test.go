@@ -353,6 +353,61 @@ func TestHeartbeat_StatsError(t *testing.T) {
 	agent.tick()
 }
 
+func TestEnginePaths_Nginx(t *testing.T) {
+	agent := newTestAgent(t, "http://example.invalid")
+	var nginxCalled, haproxyCalled bool
+	agent.reloadNginxFn = func(_, _ string) error { nginxCalled = true; return nil }
+	agent.reloadFn = func(_, _ string) error { haproxyCalled = true; return nil }
+
+	cfg, pid, certDir, reload := agent.enginePaths(EngineNginx)
+	if cfg != NginxConfigPath || pid != NginxPIDPath || certDir != NginxCertDir {
+		t.Errorf("nginx paths = %q,%q,%q want %q,%q,%q", cfg, pid, certDir, NginxConfigPath, NginxPIDPath, NginxCertDir)
+	}
+	_ = reload("", "")
+	if !nginxCalled || haproxyCalled {
+		t.Errorf("nginx engine routed to wrong reload (nginx=%v haproxy=%v)", nginxCalled, haproxyCalled)
+	}
+}
+
+func TestEnginePaths_HAProxyDefault(t *testing.T) {
+	agent := newTestAgent(t, "http://example.invalid")
+	var nginxCalled, haproxyCalled bool
+	agent.reloadNginxFn = func(_, _ string) error { nginxCalled = true; return nil }
+	agent.reloadFn = func(_, _ string) error { haproxyCalled = true; return nil }
+
+	// Both explicit haproxy and an empty engine fall through to HAProxy.
+	for _, engine := range []string{EngineHAProxy, ""} {
+		cfg, pid, certDir, reload := agent.enginePaths(engine)
+		if cfg != agent.configPath || pid != agent.pidPath || certDir != agent.certDir {
+			t.Errorf("engine %q paths = %q,%q,%q want haproxy defaults", engine, cfg, pid, certDir)
+		}
+		_ = reload("", "")
+	}
+	if nginxCalled || !haproxyCalled {
+		t.Errorf("haproxy/empty engine routed to wrong reload (nginx=%v haproxy=%v)", nginxCalled, haproxyCalled)
+	}
+}
+
+func TestTick_NginxSkipsStats(t *testing.T) {
+	gw := fakeGateway(t, "h1", "", "active")
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	agent.localConfigHash = "h1"
+	agent.engine = EngineNginx // stats poll is HAProxy-only
+	statsCalled := false
+	agent.statsFn = func(_ string) ([]ServerStatus, error) {
+		statsCalled = true
+		return nil, nil
+	}
+
+	agent.tick()
+
+	if statsCalled {
+		t.Error("nginx engine must not poll HAProxy stats")
+	}
+}
+
 func TestHeartbeat_EmptyConfigHash(t *testing.T) {
 	// Gateway returns empty config hash (no config stored yet)
 	gw := fakeGateway(t, "", "", "provisioning")

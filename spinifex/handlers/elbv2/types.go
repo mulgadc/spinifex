@@ -40,6 +40,12 @@ const (
 	ProtocolTLS    = "TLS"
 	ProtocolTCPUDP = "TCP_UDP"
 
+	// Data-plane engines. ALBs (L7) run HAProxy; NLBs (L4) run nginx `stream`
+	// because HAProxy cannot load-balance UDP. The agent learns which engine to
+	// run from the GetLBConfig response.
+	EngineHAProxy = "haproxy"
+	EngineNginx   = "nginx"
+
 	// DefaultSslPolicy is applied to a secure listener when the caller does
 	// not specify an SslPolicy.
 	DefaultSslPolicy = "ELBSecurityPolicy-2016-08"

@@ -32,12 +32,14 @@ type GetLBConfigInput struct {
 	LBID *string `locationName:"LBID" type:"string"`
 }
 
-// GetLBConfigOutput returns the pre-computed HAProxy config and its hash, plus
-// any TLS certificate files the config's `ssl crt` directives reference.
+// GetLBConfigOutput returns the pre-computed data-plane config and its hash,
+// plus any TLS certificate files the config references. Engine selects the
+// data plane the agent runs: "haproxy" (ALB) or "nginx" (NLB).
 type GetLBConfigOutput struct {
 	ConfigText *string     `type:"string"`
 	ConfigHash *string     `type:"string"`
 	CertFiles  []*CertFile `locationName:"CertFiles" type:"list"`
+	Engine     *string     `type:"string"`
 }
 
 // CertFile is one TLS certificate PEM delivered to the LB agent. Path is the

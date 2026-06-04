@@ -831,6 +831,7 @@ func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string
 		ConfigText: aws.String(lb.ConfigText),
 		ConfigHash: aws.String(lb.ConfigHash),
 		CertFiles:  certFilesToSDK(lb.CertFiles),
+		Engine:     aws.String(engineForType(lb.Type)),
 	}, nil
 }
 

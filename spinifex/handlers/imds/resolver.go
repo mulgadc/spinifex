@@ -100,6 +100,8 @@ type metadataResolver struct {
 	lookup instanceLookup
 }
 
+var _ eniResolver = (*metadataResolver)(nil)
+
 // resolveENI returns the ENI facts for a request's (vpcID, srcIP), or (nil, nil)
 // when no mapping exists — the caller maps a miss to 404, matching AWS's
 // "eventually available during boot" posture. A non-nil error is reserved for

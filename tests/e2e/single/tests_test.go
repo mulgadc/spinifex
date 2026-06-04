@@ -102,8 +102,8 @@ func TestDefaultSGReachabilityBaseline(t *testing.T) {
 	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
 }
 
-func TestNewSubnetPublicEgressBaseline(t *testing.T) {
-	runNewSubnetPublicEgressBaseline(t, requireSingleNodeFixture(t))
+func TestNewVPCEgressBaseline(t *testing.T) {
+	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
 }
 
 func TestSameSGComms(t *testing.T) {

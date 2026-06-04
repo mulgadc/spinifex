@@ -31,14 +31,17 @@ import (
 //     ingress rule is added — AWS default-SG semantics admit only same-SG
 //     members. Routes are fine; the SG is the gate.
 //
-//  2. Route/egress barrier (runNewSubnetPublicEgressBaseline): an instance
-//     in a freshly-created subnet with an open SG and a public IP must still
-//     be reachable, because the new subnet implicitly inherits the VPC main
-//     route table's 0.0.0.0/0 -> IGW route. If the per-subnet egress policy
-//     is only installed on route/association mutations (not on subnet
-//     creation), this fails — the subnet has no datapath path to the IGW.
+//  2. Route/egress barrier (runNewVPCEgressBaseline): a brand-new VPC where
+//     the 0.0.0.0/0 -> IGW route is added to the MAIN route table BEFORE the
+//     public subnet is created. The subnet implicitly joins the main RT, which
+//     already carries the IGW route, but CreateSubnet does not recompute the
+//     per-subnet OVN egress policy — so the subnet's egress LRP is never
+//     installed and the instance has no datapath to the IGW. The default VPC
+//     masks this: its main RT is prebaked with the IGW route at bootstrap and
+//     the vpcd drift loop reconciles any implicit-main subnets, so a subnet
+//     created in it is reachable regardless of the create-time gap.
 //
-// Both own all their resources (dedicated SG + instance, dedicated subnet)
+// Both own all their resources (dedicated SG + instance; #2 owns a whole VPC)
 // so they don't perturb the singleton VM or the shared default SG.
 
 // tcpReachable reports whether a TCP connect to host:port succeeds within
@@ -186,51 +189,144 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	assert.Containsf(t, idOut, "ec2-user", "ssh id after authorize\n%s", idOut)
 }
 
-// runNewSubnetPublicEgressBaseline launches an instance into a freshly-created
-// subnet (MapPublicIpOnLaunch=true, open SG) and asserts external SSH works.
-// The new subnet has no explicit RT association, so it inherits the VPC main
-// route table's 0.0.0.0/0 -> IGW route. If the per-subnet egress policy is not
-// installed at subnet-create time, the instance has no datapath to the IGW and
-// this fails — the SG is open, so the only remaining barrier is routing.
-func runNewSubnetPublicEgressBaseline(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Baseline: new public subnet inherits IGW egress")
+// mainRouteTableID returns the main (implicitly-associated) route table for
+// vpcID — the one a subnet joins when it has no explicit RT association.
+func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
+	t.Helper()
+	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
+			{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
+		},
+	})
+	require.NoError(t, err, "describe-route-tables main vpc=%s", vpcID)
+	require.NotEmptyf(t, out.RouteTables, "no main route table for vpc %s", vpcID)
+	id := aws.StringValue(out.RouteTables[0].RouteTableId)
+	require.NotEmpty(t, id, "main RouteTableId empty")
+	return id
+}
 
-	vpcID, _, _ := harness.DiscoverDefaultVPC(t, fix.AWS)
+// runNewVPCEgressBaseline stands up a brand-new VPC and reproduces the IGW
+// egress gap that the default-VPC path masks. The bug is order-sensitive: the
+// 0.0.0.0/0 -> IGW route is added to the MAIN route table BEFORE the public
+// subnet exists, so when the subnet is created it implicitly joins a main RT
+// that already carries the route. CreateSubnet does not recompute per-subnet
+// egress, so the subnet's OVN egress LRP is never installed and the instance
+// has no datapath to the IGW. With an open SG, routing is the only remaining
+// barrier, so an unreachable instance pins the gap.
+//
+// runVPCSubnetE2E does NOT catch this: it uses a custom RT, associates the
+// subnet, then CreateRoute — so the route mutation enumerates the already-
+// associated subnet and installs the LRP. The default-VPC path doesn't catch
+// it either (route prebaked at bootstrap + drift-loop reconcile).
+//
+// PoolMode-gated like runVPCSubnetE2E: a fresh VPC needs OVN IPAM to hand the
+// instance a routable public IP, which dev_networking single-node lacks.
+func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
+	if !fix.PoolMode {
+		t.Skip("fresh-VPC egress baseline requires pool-mode networking")
+	}
+	harness.Phase(t, "Single — Baseline: fresh VPC main-RT IGW egress (route before subnet)")
+
+	c := fix.AWS
 	az := needAZ(t, fix)
 	instType, _ := needInstanceTypeArch(t, fix)
 	keyName, keyPath := needKeyPair(t, fix)
 	ami := needAMI(t, fix)
 
-	// High /24 inside the default VPC CIDR (172.31.0.0/16); clear of the
-	// default subnet which sits at the low end.
-	const newSubnetCIDR = "172.31.250.0/24"
-	subnetID := harness.EnsureSubnet(t, fix.Harness, vpcID, newSubnetCIDR, az)
+	const vpcCIDR = "10.231.0.0/16"
+	const subnetCIDR = "10.231.1.0/24"
 
-	_, err := fix.AWS.EC2.ModifySubnetAttribute(&ec2.ModifySubnetAttributeInput{
+	// --- VPC ---
+	vpcOut, err := c.EC2.CreateVpc(&ec2.CreateVpcInput{CidrBlock: aws.String(vpcCIDR)})
+	require.NoError(t, err, "create-vpc")
+	require.NotNil(t, vpcOut.Vpc, "create-vpc returned nil Vpc")
+	vpcID := aws.StringValue(vpcOut.Vpc.VpcId)
+	require.NotEmpty(t, vpcID, "VpcId empty")
+	t.Cleanup(func() { _, _ = c.EC2.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}) })
+
+	// --- IGW + attach ---
+	igwOut, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
+	require.NoError(t, err, "create-internet-gateway")
+	require.NotNil(t, igwOut.InternetGateway, "create-internet-gateway returned nil InternetGateway")
+	igwID := aws.StringValue(igwOut.InternetGateway.InternetGatewayId)
+	require.NotEmpty(t, igwID, "InternetGatewayId empty")
+	t.Cleanup(func() {
+		_, _ = c.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID), VpcId: aws.String(vpcID),
+		})
+		_, _ = c.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID),
+		})
+	})
+	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID), VpcId: aws.String(vpcID),
+	})
+	require.NoError(t, err, "attach-internet-gateway")
+
+	mainRT := mainRouteTableID(t, c, vpcID)
+	harness.Detail(t, "vpc", vpcID, "igw", igwID, "main_rtb", mainRT)
+
+	// --- Route FIRST, on the main RT, before the subnet exists ---
+	harness.Step(t, "create-route 0.0.0.0/0 -> %s on main RT %s (before subnet)", igwID, mainRT)
+	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
+		RouteTableId:         aws.String(mainRT),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String(igwID),
+	})
+	require.NoError(t, err, "create-route 0.0.0.0/0 -> IGW on main RT")
+	t.Cleanup(func() {
+		_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{
+			RouteTableId:         aws.String(mainRT),
+			DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		})
+	})
+
+	// --- Subnet AFTER the route (implicit main-RT membership) ---
+	harness.Step(t, "create-subnet %s (implicit main RT, after IGW route)", subnetCIDR)
+	subOut, err := c.EC2.CreateSubnet(&ec2.CreateSubnetInput{
+		VpcId:            aws.String(vpcID),
+		CidrBlock:        aws.String(subnetCIDR),
+		AvailabilityZone: aws.String(az),
+	})
+	require.NoError(t, err, "create-subnet")
+	require.NotNil(t, subOut.Subnet, "create-subnet returned nil Subnet")
+	subnetID := aws.StringValue(subOut.Subnet.SubnetId)
+	require.NotEmpty(t, subnetID, "SubnetId empty")
+	t.Cleanup(func() { _, _ = c.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}) })
+
+	_, err = c.EC2.ModifySubnetAttribute(&ec2.ModifySubnetAttributeInput{
 		SubnetId:            aws.String(subnetID),
 		MapPublicIpOnLaunch: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	})
-	require.NoError(t, err, "ModifySubnetAttribute MapPublicIpOnLaunch on %s", subnetID)
+	require.NoError(t, err, "modify-subnet-attribute MapPublicIpOnLaunch on %s", subnetID)
 
-	// Open SG so the SG is provably not the barrier — only routing remains.
-	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-opensg")
+	// --- Open SG so routing is provably the only barrier ---
+	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-newvpc-opensg")
 	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	harness.Detail(t, "vpc", vpcID, "new_subnet", subnetID, "cidr", newSubnetCIDR, "sg", sgID)
+	harness.Detail(t, "subnet", subnetID, "cidr", subnetCIDR, "sg", sgID)
 
 	instanceID := launchBaselineInstance(t, fix, ami, instType, keyName, subnetID, []string{sgID})
-
 	pubIP := instancePublicIP(t, fix, instanceID)
 	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
 
-	harness.Step(t, "expecting external SSH to a new public subnet's instance")
-	require.Truef(t, trySSHReady(pubIP, 22, keyPath, 3*time.Minute),
-		"tcp/22 to %s in new subnet %s never became reachable — the implicit "+
-			"main-RT IGW egress policy was not installed for a subnet created "+
-			"after the route existed", pubIP, subnetID)
+	harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
+	if !trySSHReady(pubIP, 22, keyPath, 3*time.Minute) {
+		harness.DumpVPCFlowDiagnostics(t, c, instanceID,
+			fmt.Sprintf("fresh-VPC egress baseline SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  pubIP,
+				LogicalIP:   instancePrivateIP(t, fix, instanceID),
+				ArtifactDir: fix.ArtifactDir(t),
+			})
+		t.Fatalf("tcp/22 to %s in fresh-VPC subnet %s never became reachable — the "+
+			"per-subnet IGW egress policy was not installed for a subnet created "+
+			"after the main-RT IGW route existed", pubIP, subnetID)
+	}
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}
 	idOut := runSSH(t, tgt, "id")
-	assert.Containsf(t, idOut, "ec2-user", "ssh id in new subnet\n%s", idOut)
+	assert.Containsf(t, idOut, "ec2-user", "ssh id in fresh-VPC subnet\n%s", idOut)
 }
 
 // runSameSGComms launches two instances in the default SG (plus a dedicated

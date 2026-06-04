@@ -109,7 +109,8 @@ type LoadBalancerRecord struct {
 	InstanceID      string            `json:"instance_id,omitempty"` // ALB VM instance ID (system-managed)
 	VPCIP           string            `json:"vpc_ip,omitempty"`      // VPC private IP of the ALB VM
 	ConfigText      string            `json:"config_text,omitempty"` // Pre-computed HAProxy config
-	ConfigHash      string            `json:"config_hash,omitempty"` // SHA256 of ConfigText
+	ConfigHash      string            `json:"config_hash,omitempty"` // SHA256 of ConfigText + cert material
+	CertFiles       map[string]string `json:"cert_files,omitempty"`  // Absolute path → combined PEM (cert+chain+key), delivered with config
 	LastHeartbeat   time.Time         `json:"last_heartbeat"`        // Last agent heartbeat timestamp
 	HostPorts       map[int]int       `json:"host_ports,omitempty"`  // Dev mode: guest port → host port forwarding
 	NodeID          string            `json:"node_id"`               // Daemon node running this ALB

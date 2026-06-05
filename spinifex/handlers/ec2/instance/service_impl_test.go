@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -662,7 +663,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
 	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "", nil)
+	cfg := generateNetworkConfig("", "", "", "", nil, true)
 	assert.Contains(t, cfg, "version: 2")
 	assert.Contains(t, cfg, "dhcp4: true")
 	assert.Contains(t, cfg, "dhcp-identifier: mac")
@@ -674,7 +675,7 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 	eniMAC := "02:00:00:61:ef:c2"
 	devMAC := "02:de:00:60:83:0d"
 
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
+	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil, true)
 
 	// Both MACs present in config
 	assert.Contains(t, cfg, eniMAC)
@@ -694,12 +695,12 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 
 func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
 	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
+	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "dev0:")
 
 	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
+	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil, true)
 	assert.Contains(t, cfg, `name: "e*"`)
 	assert.NotContains(t, cfg, "use-routes")
 }
@@ -710,7 +711,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 		"02:00:00:bb:bb:bb",
 		"02:00:00:cc:cc:cc",
 	}
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras, true)
 
 	assert.Contains(t, cfg, "vpc0:")
 	assert.Contains(t, cfg, "vpc1:")
@@ -729,7 +730,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
 	// Empty strings inside the extras slice are ignored rather than producing
 	// a malformed ethernets block.
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""}, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "vpc1:")
 }
@@ -1079,6 +1080,70 @@ func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
 	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, "111122223333")
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
+}
+
+// EKS control-plane VMs are owned by the customer account (their ENI lives in
+// the customer VPC) but are platform-managed system instances, so they must be
+// hidden from the owning customer's DescribeInstances the same way LB VMs are.
+func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-ekscp",
+		AccountID: owner,
+		ManagedBy: tags.ManagedByEKS,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-ekscp"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
+}
+
+// Root/operator callers still see managed system VMs.
+func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-lb",
+		AccountID: utils.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-lb"),
+			OwnerId:       aws.String(utils.GlobalAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+// A customer's own unmanaged instance (no ManagedBy) stays visible — confirms
+// the exclusion keys on ManagedBy, not on account scope. Future EKS worker
+// nodes (customer-owned, no ManagedBy tag) follow this path.
+func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-worker",
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-worker"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
 }
 
 func TestDescribeInstances_MalformedID(t *testing.T) {

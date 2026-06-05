@@ -301,6 +301,34 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
 	assert.Contains(t, udata, "FAKECA")
+
+	// IMDS on-link route delivered out-of-band (Alpine's eni renderer can't emit
+	// the gateway-less route in network-config). It rides this payload's own
+	// write_files/runcmd, enabled via the OpenRC local service.
+	assert.Contains(t, udata, "path: /etc/local.d/imds-onlink-route.start")
+	assert.Contains(t, udata, "ip route show default")
+	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
+	assert.Contains(t, udata, "runcmd:")
+	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
+
+	// Exactly one write_files / runcmd key — a second would collide and silently
+	// drop a block under yaml.safe_load (last key wins).
+	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
+	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
+}
+
+func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// cluster-init selects the embedded etcd datastore (not SQLite/kine);
+	// etcd-expose-metrics surfaces wal_fsync/backend_commit on 127.0.0.1:2381.
+	assert.Contains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "etcd-expose-metrics: true")
 }
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {

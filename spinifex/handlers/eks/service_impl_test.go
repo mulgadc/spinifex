@@ -64,6 +64,17 @@ func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorInvalidParameter)
 }
 
+// The API_AND_CONFIG_MAP hybrid still enables the unsupported aws-auth ConfigMap
+// path, so it must be rejected the same as plain CONFIG_MAP — the sibling test
+// only covers the CONFIG_MAP value.
+func TestValidateCreateClusterInput_RejectsAPIAndConfigMapAuthMode(t *testing.T) {
+	in := createInput("alpha")
+	in.AccessConfig = &eks.CreateAccessConfigRequest{
+		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
+	}
+	require.EqualError(t, validateCreateClusterInput(in), awserrors.ErrorInvalidParameter)
+}
+
 func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
@@ -89,6 +100,16 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.DescribeCluster(&eks.DescribeClusterInput{Name: aws.String("ghost")}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+// DeleteCluster on an absent cluster must reach the KV lookup with full deps
+// wired (the shim path short-circuits to ServiceUnavailable before the meta
+// read) and surface ResourceNotFoundException, not a teardown of nothing.
+func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.DeleteCluster(deleteInput("ghost"), testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 }
 

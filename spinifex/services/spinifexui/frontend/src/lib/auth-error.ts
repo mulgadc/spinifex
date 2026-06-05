@@ -10,6 +10,9 @@ const AUTH_ERROR_CODES = new Set([
   "UnrecognizedClientException",
   "ExpiredToken",
   "ExpiredTokenException",
+  // S3/predastore reports a stale key as InvalidAccessKeyId rather than the
+  // gateway's InvalidClientTokenId.
+  "InvalidAccessKeyId",
 ])
 
 // isStaleCredentialsError reports whether an error came from stale or invalid

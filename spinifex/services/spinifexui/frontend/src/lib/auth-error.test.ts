@@ -19,6 +19,7 @@ describe("isStaleCredentialsError", () => {
     "UnrecognizedClientException",
     "ExpiredToken",
     "ExpiredTokenException",
+    "InvalidAccessKeyId",
   ]
 
   it.each(authCodes)("returns true for auth code %s", (code) => {

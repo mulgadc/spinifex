@@ -11,8 +11,8 @@ pidfile="/run/k3s.pid"
 output_log="/var/log/k3s.log"
 error_log="/var/log/k3s.log"
 
-# Generous start timeout — K3s bootstraps containerd, initialises the SQLite
-# datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
+# Generous start timeout — K3s bootstraps containerd, initialises the embedded
+# etcd datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
 start_stop_daemon_args="--wait 5000"
 
 depend() {

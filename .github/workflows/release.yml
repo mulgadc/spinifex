@@ -331,10 +331,10 @@ jobs:
         run: |
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
             s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso" \
-                  "s3://spinifex-iso/spinifex-${VERSION}.iso"
+                  "s3://spinifex-iso/spinifex.iso"
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
             s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso.sha256" \
-                  "s3://spinifex-iso/spinifex-${VERSION}.iso.sha256"
+                  "s3://spinifex-iso/spinifex.iso.sha256"
 
       - name: Mark ISO failed
         if: always() && (steps.build-iso.outcome == 'failure' || steps.upload.outcome == 'failure')

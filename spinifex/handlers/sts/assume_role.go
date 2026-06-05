@@ -33,6 +33,12 @@ const (
 	// session — the default kind, also assumed when a stored value is empty.
 	principalTypeAssumedRole = "assumed-role"
 
+	// principalTypeUser is the SessionCredential.PrincipalType for a session
+	// minted by GetSessionToken, which resolves back to the calling IAM user.
+	// Mirrors the gateway's principalTypeUser so the ASIA resolve path can map
+	// the stored value straight onto the user principal context.
+	principalTypeUser = "user"
+
 	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance — the
 	// only service principal that matches a trust policy in v1. The HTTPS AssumeRole
 	// path supplies an empty principalSource, so service principals never match there.

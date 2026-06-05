@@ -134,9 +134,9 @@ aws ec2 attach-internet-gateway \
 echo "IGW: $IGW_ID (attached to $VPC_ID)"
 ```
 
-### Create a Public Subnet
+### Create a Subnet
 
-A public subnet auto-assigns a routable IP to each instance, making it directly reachable from your network.
+Create the subnet your instances will launch into. The routing and public-IP steps below are what make it a *public* subnet.
 
 ```bash
 SUBNET_ID=$(aws ec2 create-subnet \
@@ -144,7 +144,37 @@ SUBNET_ID=$(aws ec2 create-subnet \
   --cidr-block 10.200.1.0/24 \
   --query 'Subnet.SubnetId' --output text)
 
-# Enable auto-assign public IP
+echo "Subnet: $SUBNET_ID"
+```
+
+### Create a Route Table
+
+A subnet is only **public** if its route table has a default route to the Internet Gateway. Spinifex does **not** add this route automatically — a new VPC's route table only routes traffic within the VPC (matching AWS). Without a `0.0.0.0/0` route to the IGW, instances in the subnet cannot reach the internet (and inbound connections cannot complete) even with a public IP assigned.
+
+```bash
+RT_ID=$(aws ec2 create-route-table \
+  --vpc-id $VPC_ID \
+  --query 'RouteTable.RouteTableId' --output text)
+
+# Default route to the internet via the IGW
+aws ec2 create-route \
+  --route-table-id $RT_ID \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id $IGW_ID
+
+# Associate the route table with the subnet
+aws ec2 associate-route-table \
+  --route-table-id $RT_ID \
+  --subnet-id $SUBNET_ID
+
+echo "Route table: $RT_ID (default route via $IGW_ID)"
+```
+
+### Enable Auto-Assign Public IP
+
+Give every instance launched into the subnet a routable public IP, making it directly reachable from your network.
+
+```bash
 aws ec2 modify-subnet-attribute \
   --subnet-id $SUBNET_ID \
   --map-public-ip-on-launch
@@ -179,6 +209,7 @@ aws ec2 authorize-security-group-ingress \
 ```bash
 aws ec2 describe-vpcs --vpc-ids $VPC_ID
 aws ec2 describe-subnets --subnet-ids $SUBNET_ID
+aws ec2 describe-route-tables --route-table-ids $RT_ID
 aws ec2 describe-security-groups --group-ids $SG_ID
 ```
 
@@ -415,7 +446,23 @@ aws ec2 describe-internet-gateways
 
 ### Instance Has No Internet Access
 
-Check the VPC router's NAT rules (from the host):
+First confirm the subnet's route table has a default route to the IGW. Spinifex gates a subnet's egress with a drop policy when this route is missing, so an instance with a public IP still cannot reach the internet:
+
+```bash
+aws ec2 describe-route-tables \
+  --filters Name=association.subnet-id,Values=$SUBNET_ID \
+  --query 'RouteTables[0].Routes'
+# Expect a 0.0.0.0/0 route with a GatewayId of igw-...
+```
+
+If the route is missing, add it (see [Create a Route Table](#create-a-route-table)):
+
+```bash
+aws ec2 create-route --route-table-id $RT_ID \
+  --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID
+```
+
+If the route is present, check the VPC router's NAT rules (from the host):
 
 ```bash
 sudo ovn-nbctl lr-nat-list $(sudo ovn-nbctl lr-list | awk '{print $2}' | head -1)

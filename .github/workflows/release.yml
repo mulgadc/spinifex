@@ -327,13 +327,12 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_ENDPOINT_URL: ${{ secrets.CF_R2_ENDPOINT_URL }}
-          VERSION: ${{ github.ref_name }}
         run: |
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
-            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso" \
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex.iso" \
                   "s3://spinifex-iso/spinifex.iso"
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
-            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso.sha256" \
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex.iso.sha256" \
                   "s3://spinifex-iso/spinifex.iso.sha256"
 
       - name: Mark ISO failed

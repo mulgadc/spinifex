@@ -49,9 +49,11 @@ case "${ROLE}" in
         rc-update add eks-token-webhook default
         rc-update add k3s default
         rc-update add k3s-first-boot default
+        rc-update add mulga-eks-state-report default
         rc-service eks-token-webhook start
         rc-service k3s start
         rc-service k3s-first-boot start
+        rc-service mulga-eks-state-report start
         ;;
     agent)
         log "configuring agent role"

@@ -1171,21 +1171,7 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 	}()
 }
 
-func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *ClusterMeta) {
-	healthURL := ""
-	switch {
-	case meta.ControlPlaneMgmtIP != "":
-		// Workaround until authoritative DNS (Eclipso/Route53) lands: the
-		// reconciler runs on the host, outside the VPC overlay, and can neither
-		// resolve the NLB DNS name nor route to the VPC-internal NLB front-end.
-		// The control-plane VM's br-mgmt NIC is the one apiserver address
-		// reachable from the daemon, so probe :6443/healthz there directly. The
-		// probe client sets InsecureSkipVerify, so the mgmt IP need not be in the
-		// apiserver cert SAN.
-		healthURL = "https://" + net.JoinHostPort(meta.ControlPlaneMgmtIP, "6443") + "/healthz"
-	case meta.Endpoint != "":
-		healthURL = strings.TrimRight(meta.Endpoint, "/") + "/healthz"
-	}
+func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
 		slog.Error("spawnReconciler: jetstream", "err", err)
@@ -1196,8 +1182,13 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *Cl
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return
 	}
+	// Health gates on the control plane's NATS self-report, not an HTTP probe:
+	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
+	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
+	stateSubject := StateSubject(accountID, clusterName)
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, healthURL)
+		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
+			WithStateSource(s.deps.NATSConn, stateSubject))
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

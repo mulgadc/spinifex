@@ -15,6 +15,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
+// imdsServerIP is the link-local IMDS address (mirror of
+// handlers/imds.MetaDataServerIP, duplicated to avoid an import cycle:
+// imds → sts → eks).
+const imdsServerIP = "169.254.169.254"
+
 // ErrEKSServerAMINotFound is returned by the launcher when no AMI carrying the
 // EKS managed-by tag exists in the account. CreateCluster maps it to a precise
 // client error: it signals an operator/config gap (the eks-server image was
@@ -366,11 +371,10 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
 	}, "\n")
 
-	// Omitting cluster-init selects the embedded SQLite (kine) datastore, not
-	// embedded etcd. etcd's per-commit fsync stalls past apiserver's 5s deadline
-	// on the viperblock-backed root volume, so it never reaches /healthz; kine
-	// tolerates the deferred-durability block path. Trade-off: no multi-server
-	// HA (that needs etcd) — acceptable for single-node v1.
+	// cluster-init selects the embedded etcd datastore (required for multi-server
+	// HA). etcd-expose-metrics surfaces etcd's own wal_fsync_duration_seconds and
+	// backend_commit_duration_seconds on 127.0.0.1:2381/metrics so control-plane
+	// commit latency is measurable directly, not inferred.
 	//
 	// anonymous-auth=true: k3s hardens it off by default, which makes the
 	// apiserver answer 401 to an unauthenticated /healthz. The cluster reconciler
@@ -378,6 +382,8 @@ func buildK3sUserData(in K3sServerInput) string {
 	// reachable; the default RBAC binds only the health/version non-resource
 	// paths to system:unauthenticated, so this exposes nothing else.
 	k3sConfig := strings.Join([]string{
+		"cluster-init: true",
+		"etcd-expose-metrics: true",
 		"tls-san:",
 		"  - " + in.NLBDNS,
 		"kube-apiserver-arg:",
@@ -395,6 +401,23 @@ func buildK3sUserData(in K3sServerInput) string {
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
 		{Path: k3sNATSCAPath, Perms: "0644", Body: strings.TrimRight(in.NATSCACert, "\n")},
+		// IMDS on-link route. Alpine's cloud-init eni renderer crashes on a
+		// gateway-less route in network-config, so it's delivered out-of-band:
+		// a persistent local.d script (re-applied every boot by the OpenRC
+		// `local` service, enabled via runcmd below) ARPs 169.254.169.254
+		// directly on the VPC subnet. This block owns the only write_files key,
+		// so it must carry the route itself — appending a second write_files via
+		// the generic cloud-init template would collide (last key wins, silently
+		// dropping the k3s config). The device is resolved via the default route
+		// (the VPC egress NIC), not a name: the persistent-net rename to vpc0
+		// doesn't apply on the Alpine AMI, so the kernel name is eth0 at boot.
+		{
+			Path:  "/etc/local.d/imds-onlink-route.start",
+			Perms: "0755",
+			Body: "#!/bin/sh\n" +
+				"dev=$(ip route show default | awk '{print $5; exit}')\n" +
+				"[ -n \"$dev\" ] && ip route replace " + imdsServerIP + "/32 dev \"$dev\" scope link",
+		},
 	}
 
 	var buf strings.Builder
@@ -424,5 +447,12 @@ func buildK3sUserData(in K3sServerInput) string {
 			buf.WriteString("\n")
 		}
 	}
+
+	// Enable + start the OpenRC `local` service so the IMDS route script runs on
+	// first boot and is re-applied on every subsequent boot.
+	buf.WriteString("runcmd:\n")
+	buf.WriteString("  - [ rc-update, add, local, default ]\n")
+	buf.WriteString("  - [ rc-service, local, start ]\n")
+
 	return buf.String()
 }

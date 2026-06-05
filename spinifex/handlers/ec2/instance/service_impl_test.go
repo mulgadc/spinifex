@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -1079,6 +1080,70 @@ func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
 	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, "111122223333")
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
+}
+
+// EKS control-plane VMs are owned by the customer account (their ENI lives in
+// the customer VPC) but are platform-managed system instances, so they must be
+// hidden from the owning customer's DescribeInstances the same way LB VMs are.
+func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-ekscp",
+		AccountID: owner,
+		ManagedBy: tags.ManagedByEKS,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-ekscp"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
+}
+
+// Root/operator callers still see managed system VMs.
+func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-lb",
+		AccountID: utils.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-lb"),
+			OwnerId:       aws.String(utils.GlobalAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+// A customer's own unmanaged instance (no ManagedBy) stays visible — confirms
+// the exclusion keys on ManagedBy, not on account scope. Future EKS worker
+// nodes (customer-owned, no ManagedBy tag) follow this path.
+func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-worker",
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-worker"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
 }
 
 func TestDescribeInstances_MalformedID(t *testing.T) {

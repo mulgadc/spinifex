@@ -2221,6 +2221,16 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 			if !IsInstanceVisible(accountID, instance.AccountID) {
 				continue
 			}
+			// Platform-managed system VMs (LB HAProxy, EKS control plane) carry a
+			// ManagedBy tag and must stay out of customer EC2 listings, the same
+			// way they're filtered from the UI Nodes page. LB VMs are owned by the
+			// system account so IsInstanceVisible already hides them, but the EKS
+			// control-plane VM is owned by the customer account (its ENI lives in
+			// the customer VPC), so guard on ManagedBy here. Root/operator callers
+			// still see system instances.
+			if instance.ManagedBy != "" && accountID != utils.GlobalAccountID {
+				continue
+			}
 			if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
 				continue
 			}

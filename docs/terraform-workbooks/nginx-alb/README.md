@@ -142,7 +142,6 @@ The ALB is internet-facing, but the DNS name Spinifex returns (`*.elb.spinifex.l
 ALB_IP=$(aws elbv2 describe-load-balancers --names nginx-alb \
   --query 'LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress' \
   --output text)
-echo "ALB public IP: $ALB_IP"
 ```
 
 Then hit the ALB — successive requests should alternate between Server 1 and Server 2:
@@ -162,8 +161,6 @@ Check target health via AWS CLI:
 TG_ARN=$(aws elbv2 describe-target-groups \
   --query 'TargetGroups[0].TargetGroupArn' \
   --output text)
-
-echo "Target Group ARN: $TG_ARN"
 
 aws elbv2 describe-target-health --target-group-arn $TG_ARN
 ```

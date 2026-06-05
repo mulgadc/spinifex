@@ -34,9 +34,11 @@ resources:
 ## Overview
 
 This guide assumes Spinifex is already installed and running. If not, follow one of the installation guides first:
-- [Single-Node Install)](/docs/install)
+- [Single-Node Install](/docs/install)
 - [Multi-Node Install](/docs/install-multi-node)
 - [Source Install](/docs/install-source)
+
+This guide walks through provisioning an instance on a public subnet. Because a public subnet requires the full AWS networking path (Internet Gateway, a default route, and auto-assigned public IPs), the networking section is necessarily detailed. A shorter private-subnet guide is coming soon.
 
 ## Instructions
 
@@ -50,7 +52,9 @@ export AWS_PROFILE=spinifex
 
 ## 1. Import an AMI
 
-List available images and import one matching your architecture:
+### Option A: Import a bundled image
+
+List the bundled images and import one matching your architecture:
 
 ```bash
 spx admin images list
@@ -64,13 +68,11 @@ ubuntu-26.04-arm64      | ubuntu | 26.04   | arm64  | uefi
 ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | uefi
 ```
 
-Import an image:
-
 ```bash
 spx admin images import --name ubuntu-26.04-x86_64
 ```
 
-Or import a local image file:
+### Option B: Import a local image file
 
 ```bash
 spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
@@ -79,7 +81,7 @@ spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --versi
 Verify the import and note the AMI ID:
 
 ```bash
-aws ec2 describe-images
+AMI_ID=$(aws ec2 describe-images --query 'Images[0].ImageId' --output text)
 ```
 
 ## 2. Create an SSH Key
@@ -115,8 +117,6 @@ aws ec2 describe-key-pairs
 ```bash
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.200.0.0/16 \
   --query 'Vpc.VpcId' --output text)
-
-echo "VPC: $VPC_ID"
 ```
 
 ### Create an Internet Gateway
@@ -130,8 +130,6 @@ IGW_ID=$(aws ec2 create-internet-gateway \
 aws ec2 attach-internet-gateway \
   --internet-gateway-id $IGW_ID \
   --vpc-id $VPC_ID
-
-echo "IGW: $IGW_ID (attached to $VPC_ID)"
 ```
 
 ### Create a Subnet
@@ -143,8 +141,6 @@ SUBNET_ID=$(aws ec2 create-subnet \
   --vpc-id $VPC_ID \
   --cidr-block 10.200.1.0/24 \
   --query 'Subnet.SubnetId' --output text)
-
-echo "Subnet: $SUBNET_ID"
 ```
 
 ### Create a Route Table
@@ -166,8 +162,6 @@ aws ec2 create-route \
 aws ec2 associate-route-table \
   --route-table-id $RT_ID \
   --subnet-id $SUBNET_ID
-
-echo "Route table: $RT_ID (default route via $IGW_ID)"
 ```
 
 ### Enable Auto-Assign Public IP
@@ -178,8 +172,6 @@ Give every instance launched into the subnet a routable public IP, making it dir
 aws ec2 modify-subnet-attribute \
   --subnet-id $SUBNET_ID \
   --map-public-ip-on-launch
-
-echo "Subnet: $SUBNET_ID (public)"
 ```
 
 ### Allow SSH and ICMP
@@ -215,37 +207,18 @@ aws ec2 describe-security-groups --group-ids $SG_ID
 
 ## 4. Launch an Instance
 
-Query available instance types for your hardware:
+Launch an instance in the public subnet on a `t3.micro` (2 vCPU / 1 GiB).
+
+> **Note:** On an **arm64** host, use `t4g.micro` instead of `t3.micro`.
 
 ```bash
-aws ec2 describe-instance-types
-```
-
-Launch an instance in the public subnet, note this will select an instance type with 2 VCPU and 1024MB of memory.
-
-> **Note:** Replace `AMI_NAME` with the previously imported image above with the `ami-` prefix.
-
-```bash
-AMI_NAME="ami-ubuntu-26.04-x86_64"
-
-AMI_ID=$(aws ec2 describe-images \
-  --filters "Name=name,Values=$AMI_NAME" \
-  --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
-  --output text)
-
-INSTANCE_TYPE=$(aws ec2 describe-instance-types \
-  --query "sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus==\`2\` && MemoryInfo.SizeInMiB>=\`1024\`], &MemoryInfo.SizeInMiB)[0].InstanceType" \
-  --output text)
-
 INSTANCE_ID=$(aws ec2 run-instances \
   --image-id $AMI_ID \
-  --instance-type $INSTANCE_TYPE \
+  --instance-type t3.micro \
   --key-name spinifex-key \
   --subnet-id $SUBNET_ID \
   --count 1 \
   --query 'Instances[0].InstanceId' --output text)
-
-echo "Instance: $INSTANCE_ID"
 ```
 
 Wait for the instance to reach `running` state:

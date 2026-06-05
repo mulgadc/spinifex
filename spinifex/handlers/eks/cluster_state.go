@@ -69,6 +69,10 @@ type ClusterMeta struct {
 	// only) and never treats a time.Time struct as empty, so this field always
 	// serializes. The tag states that honestly rather than implying it elides.
 	LastHealthProbe time.Time `json:"lastHealthProbe"`
+	// NodeCount is the node total from the control plane's last NATS state
+	// report (server + joined agents). Surfaces nodegroup join/scale progress
+	// without the host needing apiserver reachability.
+	NodeCount int `json:"nodeCount,omitempty"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /
@@ -226,6 +230,27 @@ func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
 			return false
 		}
 		m.HealthIssue = issue
+		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// SetClusterHealthState records the latest health outcome together with the
+// node count from the control-plane state report. issue is the failure reason
+// (empty clears it / marks healthy). LastHealthProbe is stamped whenever health
+// or node count changes; a steady-state healthy cluster with an unchanging node
+// count produces no KV write. Returns ErrClusterNotFound if the meta record was
+// deleted underneath us.
+func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int) error {
+	if name == "" {
+		return errors.New("eks: SetClusterHealthState empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.HealthIssue == issue && m.NodeCount == nodeCount {
+			return false
+		}
+		m.HealthIssue = issue
+		m.NodeCount = nodeCount
 		m.LastHealthProbe = time.Now().UTC()
 		return true
 	})

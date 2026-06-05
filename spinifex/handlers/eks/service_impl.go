@@ -55,6 +55,19 @@ type EKSServiceDeps struct {
 	Instance  k3sInstanceLauncher
 	Image     k3sAMIResolver
 	EIP       eipProvisioner
+	Worker    WorkerLauncher
+}
+
+// WorkerLauncher is the narrow EC2 surface CreateNodegroup needs to launch and
+// terminate nodegroup worker instances. Workers go through the normal
+// customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC) so they are
+// visible in DescribeInstances and reclaimed by TerminateInstances like any
+// other customer EC2. The daemon adapts its concrete instance service onto this.
+// Exported so the daemon can assert *Daemon satisfies it with a compile-time
+// check.
+type WorkerLauncher interface {
+	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
+	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 
 // eipProvisioner is the narrow EIP surface CreateCluster needs to give the
@@ -225,6 +238,9 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	}
 	if s.deps.EIP == nil {
 		missing = append(missing, "EIP")
+	}
+	if s.deps.Worker == nil {
+		missing = append(missing, "Worker")
 	}
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
@@ -682,28 +698,63 @@ func (s *EKSServiceImpl) UpdateClusterVersion(_ *eks.UpdateClusterVersionInput, 
 
 // --- Nodegroup ---
 
-func (s *EKSServiceImpl) CreateNodegroup(_ *eks.CreateNodegroupInput, _ string) (*eks.CreateNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) CreateNodegroup(input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
+	if err := s.requireOrchestrationDeps("CreateNodegroup"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.createNodegroup(acctKV, input, accountID)
 }
 
-func (s *EKSServiceImpl) DescribeNodegroup(_ *eks.DescribeNodegroupInput, _ string) (*eks.DescribeNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DescribeNodegroup(input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.describeNodegroup(acctKV, input)
 }
 
-func (s *EKSServiceImpl) ListNodegroups(_ *eks.ListNodegroupsInput, _ string) (*eks.ListNodegroupsOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) ListNodegroups(input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.listNodegroups(acctKV, input)
 }
 
-func (s *EKSServiceImpl) UpdateNodegroupConfig(_ *eks.UpdateNodegroupConfigInput, _ string) (*eks.UpdateNodegroupConfigOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UpdateNodegroupConfig(input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
+	if err := s.requireOrchestrationDeps("UpdateNodegroupConfig"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.updateNodegroupConfig(acctKV, input, accountID)
 }
 
-func (s *EKSServiceImpl) UpdateNodegroupVersion(_ *eks.UpdateNodegroupVersionInput, _ string) (*eks.UpdateNodegroupVersionOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UpdateNodegroupVersion(input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error) {
+	return s.updateNodegroupVersion(input)
 }
 
-func (s *EKSServiceImpl) DeleteNodegroup(_ *eks.DeleteNodegroupInput, _ string) (*eks.DeleteNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DeleteNodegroup(input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
+	if err := s.requireOrchestrationDeps("DeleteNodegroup"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.deleteNodegroup(acctKV, input, accountID)
 }
 
 // --- AccessEntry + AccessPolicy ---
@@ -1120,21 +1171,7 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 	}()
 }
 
-func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *ClusterMeta) {
-	healthURL := ""
-	switch {
-	case meta.ControlPlaneMgmtIP != "":
-		// Workaround until authoritative DNS (Eclipso/Route53) lands: the
-		// reconciler runs on the host, outside the VPC overlay, and can neither
-		// resolve the NLB DNS name nor route to the VPC-internal NLB front-end.
-		// The control-plane VM's br-mgmt NIC is the one apiserver address
-		// reachable from the daemon, so probe :6443/healthz there directly. The
-		// probe client sets InsecureSkipVerify, so the mgmt IP need not be in the
-		// apiserver cert SAN.
-		healthURL = "https://" + net.JoinHostPort(meta.ControlPlaneMgmtIP, "6443") + "/healthz"
-	case meta.Endpoint != "":
-		healthURL = strings.TrimRight(meta.Endpoint, "/") + "/healthz"
-	}
+func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
 		slog.Error("spawnReconciler: jetstream", "err", err)
@@ -1145,8 +1182,13 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *Cl
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return
 	}
+	// Health gates on the control plane's NATS self-report, not an HTTP probe:
+	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
+	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
+	stateSubject := StateSubject(accountID, clusterName)
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, healthURL)
+		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
+			WithStateSource(s.deps.NATSConn, stateSubject))
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

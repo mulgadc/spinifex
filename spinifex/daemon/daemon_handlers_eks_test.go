@@ -61,6 +61,11 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	// no error, so wantCode is "" (success — assert a non-error payload).
 	notImpl := awserrors.ErrorNotImplemented
 	invalid := awserrors.ErrorInvalidParameterValue
+	// Nodegroup mutators gate on orchestration deps, which the shim service
+	// lacks → ServiceUnavailable. The read paths reach input validation and an
+	// empty body fails with InvalidParameterValue. UpdateNodegroupVersion stays
+	// NotImplemented (v1 doesn't do AMI upgrades).
+	unavailable := awserrors.ErrorServiceUnavailable
 	cases := []struct {
 		subject  string
 		handler  nats.MsgHandler
@@ -68,12 +73,12 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	}{
 		{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig, notImpl},
 		{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion, notImpl},
-		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, notImpl},
-		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, notImpl},
-		{"eks.ListNodegroups", d.handleEKSListNodegroups, notImpl},
-		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, notImpl},
+		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, unavailable},
+		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, invalid},
+		{"eks.ListNodegroups", d.handleEKSListNodegroups, invalid},
+		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, unavailable},
 		{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion, notImpl},
-		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, notImpl},
+		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, unavailable},
 		{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry, invalid},
 		{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry, invalid},
 		{"eks.ListAccessEntries", d.handleEKSListAccessEntries, invalid},

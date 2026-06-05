@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -17,6 +18,7 @@ type sgProvisioner interface {
 	CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
 	DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 	DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, accountID string) (*ec2.DeleteSecurityGroupOutput, error)
+	AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 }
 
 // clusterEKSClusterTagKey is stamped on every cluster-scoped resource so the
@@ -26,6 +28,10 @@ const clusterEKSClusterTagKey = "spinifex:eks-cluster"
 // clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup
 // SG when both live in the same VPC.
 const clusterEKSRoleTagKey = "spinifex:eks-role"
+
+// clusterEKSNodegroupTagKey is stamped on worker instances so the nodegroup
+// they belong to is recoverable from EC2 tags alone.
+const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
 	clusterEKSRoleControlPlane = "control-plane"
@@ -140,6 +146,66 @@ func ensureClusterSG(sgp sgProvisioner, accountID, vpcID, clusterName, name, des
 		return "", fmt.Errorf("eks: CreateSecurityGroup returned empty GroupId for %s", name)
 	}
 	return *out.GroupId, nil
+}
+
+// EnsureNodegroupSGRules authorizes the ingress rules a nodegroup's workers
+// need to join the K3s control plane and form the flannel overlay. All rules
+// are group-to-group (UserIdGroupPairs) so they stay correct as instances come
+// and go. Idempotent: the InvalidPermission.Duplicate error a re-run triggers
+// for an already-authorized rule is treated as success.
+//
+// Rules:
+//   - agent → server apiserver/supervisor: 6443/tcp (ngSG → cpSG)
+//   - flannel VXLAN: 8472/udp both directions between cpSG and ngSG, and
+//     ngSG ↔ ngSG
+//   - kubelet: 10250/tcp (cpSG → ngSG)
+//   - intra-nodegroup all traffic: ngSG self-reference
+func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, ngSGID string) error {
+	if cpSGID == "" || ngSGID == "" {
+		return errors.New("eks: EnsureNodegroupSGRules empty SG id")
+	}
+
+	type rule struct {
+		targetSG string
+		sourceSG string
+		proto    string
+		from     int64
+		to       int64
+		desc     string
+	}
+	rules := []rule{
+		{cpSGID, ngSGID, "tcp", 6443, 6443, "EKS agent to apiserver/supervisor"},
+		{cpSGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to control-plane"},
+		{ngSGID, cpSGID, "udp", 8472, 8472, "EKS flannel VXLAN control-plane to node"},
+		{ngSGID, ngSGID, "udp", 8472, 8472, "EKS flannel VXLAN node to node"},
+		{ngSGID, cpSGID, "tcp", 10250, 10250, "EKS kubelet control-plane to node"},
+		{ngSGID, ngSGID, "-1", -1, -1, "EKS intra-nodegroup all traffic"},
+	}
+
+	for _, r := range rules {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String(r.proto),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(r.sourceSG),
+				Description: aws.String(r.desc),
+			}},
+		}
+		if r.proto != "-1" {
+			perm.FromPort = aws.Int64(r.from)
+			perm.ToPort = aws.Int64(r.to)
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(r.targetSG),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+				continue
+			}
+			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, r.targetSG, err)
+		}
+	}
+	return nil
 }
 
 func lookupSGByName(sgp sgProvisioner, accountID, vpcID, name string) (string, error) {

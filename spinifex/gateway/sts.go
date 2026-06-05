@@ -71,6 +71,9 @@ var stsActions = map[string]STSHandler{
 	"GetCallerIdentity": stsHandler(func(c stsCaller, input *sts.GetCallerIdentityInput, gw *GatewayConfig) (any, error) {
 		return gateway_sts.GetCallerIdentity(c.accountID, c.arn, c.principalType, c.identity, c.assumedRoleID, input, gw.IAMService, gw.STSService)
 	}),
+	"GetSessionToken": stsHandler(func(c stsCaller, input *sts.GetSessionTokenInput, gw *GatewayConfig) (any, error) {
+		return gateway_sts.GetSessionToken(c.accountID, c.identity, c.principalType, input, gw.STSService)
+	}),
 }
 
 // stsSkipPolicyCheck lists the actions whose authorization is NOT gated by an
@@ -78,11 +81,15 @@ var stsActions = map[string]STSHandler{
 // trust policy (evaluated inside the handler); GetCallerIdentity is always
 // allowed per AWS so SDK init flows do not break;
 // AssumeRoleWithWebIdentity is anonymous — caller is identified by the JWT,
-// not by SigV4 — and trust-policy-gated inside the handler.
+// not by SigV4 — and trust-policy-gated inside the handler. GetSessionToken is
+// allowed for any authenticated caller (consistent with GetCallerIdentity so
+// SDK/console init flows are not blocked) and enforces its user-only
+// constraint — deny assumed-role/root/session callers — inside the handler.
 var stsSkipPolicyCheck = map[string]bool{
 	"AssumeRole":                true,
 	"AssumeRoleWithWebIdentity": true,
 	"GetCallerIdentity":         true,
+	"GetSessionToken":           true,
 }
 
 func (gw *GatewayConfig) STS_Request(w http.ResponseWriter, r *http.Request) error {

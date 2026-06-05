@@ -20,6 +20,7 @@ import (
 type stubSTSService struct {
 	assumeRoleFn        func(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+	getSessionTokenFn   func(callerAccountID, callerUserName, callerPrincipalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
 	lookupSessionFn     func(akid string) (*handlers_sts.SessionCredential, error)
 }
 
@@ -48,6 +49,13 @@ func (s *stubSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUse
 		Arn:     aws.String(callerARN),
 		UserId:  aws.String(callerUserID),
 	}, nil
+}
+
+func (s *stubSTSService) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+	if s.getSessionTokenFn != nil {
+		return s.getSessionTokenFn(callerAccountID, callerUserName, callerPrincipalType, input)
+	}
+	return &sts.GetSessionTokenOutput{}, nil
 }
 
 func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.SessionCredential, error) {
@@ -427,4 +435,43 @@ func TestGetCallerIdentity_UnknownPrincipalType(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+}
+
+func TestGetSessionToken_ForwardsCallerFields(t *testing.T) {
+	var got struct {
+		accountID     string
+		userName      string
+		principalType string
+	}
+	svc := &stubSTSService{
+		getSessionTokenFn: func(callerAccountID, callerUserName, callerPrincipalType string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+			got.accountID = callerAccountID
+			got.userName = callerUserName
+			got.principalType = callerPrincipalType
+			return &sts.GetSessionTokenOutput{
+				Credentials: &sts.Credentials{AccessKeyId: aws.String("ASIAEXAMPLE")},
+			}, nil
+		},
+	}
+	// The wrapper's job is to forward c.identity as the user name and
+	// c.principalType through to the service so the handler can enforce its
+	// user-only rule; assert that mapping holds.
+	out, err := GetSessionToken("000000000000", "alice", PrincipalTypeUser, &sts.GetSessionTokenInput{}, svc)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "ASIAEXAMPLE", aws.StringValue(out.Credentials.AccessKeyId))
+	assert.Equal(t, "000000000000", got.accountID)
+	assert.Equal(t, "alice", got.userName)
+	assert.Equal(t, PrincipalTypeUser, got.principalType)
+}
+
+func TestGetSessionToken_PropagatesServiceError(t *testing.T) {
+	svc := &stubSTSService{
+		getSessionTokenFn: func(string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		},
+	}
+	_, err := GetSessionToken("000000000000", "s1", PrincipalTypeAssumedRole, &sts.GetSessionTokenInput{}, svc)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }

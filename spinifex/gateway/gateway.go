@@ -135,6 +135,11 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		r.Use(slogRequestLogger)
 	}
 
+	// Anonymous STS bootstrap (AssumeRoleWithWebIdentity) is dispatched here,
+	// ahead of the SigV4 surface — these calls hold no AWS credentials, only a
+	// web-identity JWT in the body. Signed requests pass straight through.
+	r.Use(gw.anonymousSTSInterceptor)
+
 	// Public, unauthenticated OIDC discovery endpoints (IRSA). They serve the
 	// per-cluster issuer discovery document + JWKS so AWS STS / SDKs can
 	// validate ServiceAccount tokens. These carry no SigV4 and must bypass the

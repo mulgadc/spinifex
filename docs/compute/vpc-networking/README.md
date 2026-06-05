@@ -202,8 +202,7 @@ use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
 DHCP — not Spinifex's internal OVN DHCP for VMs.
 
 **Use when:** VMs only need outbound access (apt update, pulling images). Edge
-deployments behind ISP NAT. Single WAN IP available. Future: use with AWS-style
-NAT Gateway for private subnet internet access.
+deployments behind ISP NAT. Single WAN IP available.
 
 ```toml
 [network]

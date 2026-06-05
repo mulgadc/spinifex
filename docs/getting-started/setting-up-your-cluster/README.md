@@ -38,8 +38,6 @@ This guide assumes Spinifex is already installed and running. If not, follow one
 - [Multi-Node Install](/docs/install-multi-node)
 - [Source Install](/docs/install-source)
 
-This guide walks through provisioning an instance on a public subnet. Because a public subnet requires the full AWS networking path (Internet Gateway, a default route, and auto-assigned public IPs), the networking section is necessarily detailed. A shorter private-subnet guide is coming soon.
-
 ## Instructions
 
 ## Prerequisites
@@ -355,7 +353,36 @@ PRIVATE_SUBNET=$(aws ec2 create-subnet \
   --query 'Subnet.SubnetId' --output text)
 ```
 
-Instances in private subnets get a private IP only. They can still reach the internet via SNAT through the VPC router, but are not directly reachable from your network.
+Instances in a private subnet get a private IP only and are not reachable from your network. By default they also have **no internet access**: with no `0.0.0.0/0` route in the subnet's route table, Spinifex gates egress with a drop policy — matching AWS, where a private subnet has no route off the VPC. They can still reach other instances in the same VPC.
+
+To give a private subnet outbound-only internet access, deploy a NAT Gateway in a public subnet and point the private subnet's default route at it (the AWS pattern):
+
+```bash
+# Allocate an Elastic IP for the NAT Gateway
+NAT_EIP=$(aws ec2 allocate-address --query AllocationId --output text)
+
+# Create the NAT Gateway in the PUBLIC subnet (the one with the IGW route)
+NATGW_ID=$(aws ec2 create-nat-gateway \
+  --subnet-id $SUBNET_ID \
+  --allocation-id $NAT_EIP \
+  --query 'NatGateway.NatGatewayId' --output text)
+
+# Give the private subnet its own route table with a default route to the NAT Gateway
+PRIVATE_RT=$(aws ec2 create-route-table \
+  --vpc-id $VPC_ID \
+  --query 'RouteTable.RouteTableId' --output text)
+
+aws ec2 create-route \
+  --route-table-id $PRIVATE_RT \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NATGW_ID
+
+aws ec2 associate-route-table \
+  --route-table-id $PRIVATE_RT \
+  --subnet-id $PRIVATE_SUBNET
+```
+
+Instances in the private subnet now reach the internet outbound through the NAT Gateway's public IP, but remain unreachable from the WAN.
 
 ### Multiple Accounts
 

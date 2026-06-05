@@ -70,7 +70,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -385,7 +393,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -793,7 +809,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token

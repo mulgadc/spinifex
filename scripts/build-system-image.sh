@@ -98,12 +98,13 @@ esac
 
 cleanup() {
     echo "Cleaning up..."
-    # Ubuntu chroot has bind mounts that must be released first
-    sudo umount "${MOUNT_DIR}/dev/pts" 2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/dev"     2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/sys"     2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/proc"    2>/dev/null || true
-    sudo umount "${MOUNT_DIR}"         2>/dev/null || true
+    # Recursive lazy unmount detaches the chroot binds (/dev, /dev/pts, /sys,
+    # /proc) and the root mount from the path hierarchy at once, even if a
+    # straggler still holds one busy. This MUST succeed: a leaked /dev bind left
+    # under the build dir would be traversed by a later `rm -rf` and wipe the
+    # host's /dev (deletes /dev/null, wedges the box). -R recurses children,
+    # -l detaches busy mounts immediately so the path no longer crosses /dev.
+    sudo umount -R -l "${MOUNT_DIR}" 2>/dev/null || true
     sudo qemu-nbd --disconnect "${NBD_DEV}" 2>/dev/null || true
     exec 9>&- 2>/dev/null || true  # release nbd lock if held
     echo "Done."
@@ -288,6 +289,10 @@ fi
 # Step 4: Mount and customize
 echo "Mounting root filesystem..."
 sudo mount "${ROOT_PART}" "$MOUNT_DIR"
+# Mark the build-dir subtree private so the chroot's /dev bind below cannot
+# propagate into the host mount namespace (a propagated bind is what turned a
+# leaked mount into a host /dev wipe on the CI runners).
+sudo mount --make-rprivate "$MOUNT_DIR" 2>/dev/null || true
 
 # Set up resolv.conf for DNS inside chroot.
 # Ubuntu cloud images symlink /etc/resolv.conf → /run/systemd/resolve/stub-resolv.conf

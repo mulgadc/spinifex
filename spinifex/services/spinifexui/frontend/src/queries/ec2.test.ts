@@ -8,6 +8,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 import {
   ec2AvailabilityZonesQueryOptions,
+  ec2IamInstanceProfileAssociationsQueryOptions,
   ec2ImageQueryOptions,
   ec2ImagesQueryOptions,
   ec2InstanceQueryOptions,
@@ -44,6 +45,12 @@ describe("query keys", () => {
       "instances",
       "i-123",
     ])
+  })
+
+  it("ec2IamInstanceProfileAssociationsQueryOptions includes instanceId in key", () => {
+    expect(
+      ec2IamInstanceProfileAssociationsQueryOptions("i-123").queryKey,
+    ).toStrictEqual(["ec2", "iam-instance-profile-associations", "i-123"])
   })
 
   it("ec2ImagesQueryOptions has correct key", () => {
@@ -389,6 +396,15 @@ describe("queryFn", () => {
     await queryFn({} as never)
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupIds: ["sg-123"],
+    })
+  })
+
+  it("ec2IamInstanceProfileAssociationsQueryOptions filters by instance-id", async () => {
+    const queryFn = ec2IamInstanceProfileAssociationsQueryOptions("i-123")
+      .queryFn as (ctx: never) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      Filters: [{ Name: "instance-id", Values: ["i-123"] }],
     })
   })
 })

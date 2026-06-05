@@ -1,6 +1,7 @@
 import {
   DescribeAddressesCommand,
   DescribeAvailabilityZonesCommand,
+  DescribeIamInstanceProfileAssociationsCommand,
   DescribeImagesCommand,
   DescribeInstancesCommand,
   DescribeInstanceTypesCommand,
@@ -44,6 +45,20 @@ export const ec2InstanceQueryOptions = (instanceId: string) =>
     queryFn: async () => {
       const command = new DescribeInstancesCommand({
         InstanceIds: [instanceId],
+      })
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2IamInstanceProfileAssociationsQueryOptions = (
+  instanceId: string,
+) =>
+  queryOptions({
+    queryKey: ["ec2", "iam-instance-profile-associations", instanceId],
+    queryFn: async () => {
+      const command = new DescribeIamInstanceProfileAssociationsCommand({
+        Filters: [{ Name: "instance-id", Values: [instanceId] }],
       })
       return await getEc2Client().send(command)
     },

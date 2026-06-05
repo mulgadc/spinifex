@@ -10,14 +10,22 @@ vi.mock("@/lib/awsClient", () => ({
 }))
 
 import {
+  useAddRoleToInstanceProfile,
+  useAttachRolePolicy,
   useAttachUserPolicy,
   useCreateAccessKey,
+  useCreateInstanceProfile,
   useCreatePolicy,
+  useCreateRole,
   useCreateUser,
   useDeleteAccessKey,
+  useDeleteInstanceProfile,
   useDeletePolicy,
+  useDeleteRole,
   useDeleteUser,
+  useDetachRolePolicy,
   useDetachUserPolicy,
+  useRemoveRoleFromInstanceProfile,
   useUpdateAccessKey,
 } from "./iam"
 
@@ -264,6 +272,217 @@ describe("useDetachUserPolicy", () => {
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     expect(spy).toHaveBeenCalledWith({
       queryKey: ["iam", "attached-user-policies"],
+    })
+  })
+})
+
+describe("useCreateRole", () => {
+  it("sends CreateRoleCommand with role data", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateRole(), { wrapper })
+
+    result.current.mutate({
+      roleName: "my-role",
+      assumeRolePolicyDocument: '{"Version":"2012-10-17"}',
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+      Path: undefined,
+      Description: undefined,
+      AssumeRolePolicyDocument: '{"Version":"2012-10-17"}',
+    })
+  })
+
+  it("includes Path and Description when provided", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateRole(), { wrapper })
+
+    result.current.mutate({
+      roleName: "my-role",
+      path: "/service/",
+      description: "EC2 role",
+      assumeRolePolicyDocument: "{}",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+      Path: "/service/",
+      Description: "EC2 role",
+      AssumeRolePolicyDocument: "{}",
+    })
+  })
+
+  it("invalidates roles query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useCreateRole(), { wrapper })
+
+    result.current.mutate({
+      roleName: "my-role",
+      assumeRolePolicyDocument: "{}",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "roles"] })
+  })
+})
+
+describe("useDeleteRole", () => {
+  it("sends DeleteRoleCommand with roleName", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteRole(), { wrapper })
+
+    result.current.mutate("my-role")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+    })
+  })
+})
+
+describe("useAttachRolePolicy", () => {
+  it("sends AttachRolePolicyCommand with roleName and policyArn", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAttachRolePolicy(), { wrapper })
+
+    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+      PolicyArn: "arn:test",
+    })
+  })
+
+  it("invalidates attached-role-policies query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAttachRolePolicy(), { wrapper })
+
+    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["iam", "attached-role-policies"],
+    })
+  })
+})
+
+describe("useDetachRolePolicy", () => {
+  it("sends DetachRolePolicyCommand with roleName and policyArn", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDetachRolePolicy(), { wrapper })
+
+    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      RoleName: "my-role",
+      PolicyArn: "arn:test",
+    })
+  })
+})
+
+describe("useCreateInstanceProfile", () => {
+  it("sends CreateInstanceProfileCommand with name", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateInstanceProfile(), { wrapper })
+
+    result.current.mutate({ instanceProfileName: "my-profile" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceProfileName: "my-profile",
+      Path: undefined,
+    })
+  })
+
+  it("invalidates instance-profiles query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useCreateInstanceProfile(), { wrapper })
+
+    result.current.mutate({ instanceProfileName: "my-profile" })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["iam", "instance-profiles"],
+    })
+  })
+})
+
+describe("useDeleteInstanceProfile", () => {
+  it("sends DeleteInstanceProfileCommand with name", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDeleteInstanceProfile(), { wrapper })
+
+    result.current.mutate("my-profile")
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceProfileName: "my-profile",
+    })
+  })
+})
+
+describe("useAddRoleToInstanceProfile", () => {
+  it("sends AddRoleToInstanceProfileCommand with name and role", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceProfileName: "my-profile",
+      roleName: "my-role",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceProfileName: "my-profile",
+      RoleName: "my-role",
+    })
+  })
+
+  it("invalidates instance-profiles query on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceProfileName: "my-profile",
+      roleName: "my-role",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["iam", "instance-profiles"],
+    })
+  })
+})
+
+describe("useRemoveRoleFromInstanceProfile", () => {
+  it("sends RemoveRoleFromInstanceProfileCommand with name and role", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceProfileName: "my-profile",
+      roleName: "my-role",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceProfileName: "my-profile",
+      RoleName: "my-role",
     })
   })
 })

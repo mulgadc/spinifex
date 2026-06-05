@@ -243,6 +243,16 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 
 // --- Cluster ---
 
+// logCreateErr records the precise cause of a CreateCluster step failure at
+// ERROR. The request surface collapses these wrapped errors to an opaque
+// ServerInternal ("An internal error has occurred... contact AWS re:Post"), so
+// without this the wrapped error never reaches the operator. Returns the error
+// wrapped with the stage for the caller to surface.
+func logCreateErr(name, accountID, stage string, err error) error {
+	slog.Error("CreateCluster: "+stage+" failed", "cluster", name, "accountID", accountID, "err", err)
+	return fmt.Errorf("%s: %w", stage, err)
+}
+
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
@@ -255,11 +265,11 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
+		return nil, logCreateErr(name, accountID, "jetstream", err)
 	}
 	acctKV, err := GetOrCreateAccountBucket(js, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
 
 	if existing, err := GetClusterMeta(acctKV, name); err == nil {
@@ -277,15 +287,20 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		slog.Info("CreateCluster: reclaiming FAILED cluster before recreate",
 			"name", name, "accountID", accountID)
 		if perr := s.purgeClusterInfra(accountID, name, existing, acctKV); perr != nil {
-			return nil, fmt.Errorf("reclaim failed cluster %s: %w", name, perr)
+			return nil, logCreateErr(name, accountID, "reclaim failed cluster", perr)
 		}
 	} else if !errors.Is(err, ErrClusterNotFound) {
-		return nil, fmt.Errorf("preflight get meta: %w", err)
+		return nil, logCreateErr(name, accountID, "preflight get meta", err)
 	}
 
 	vpcID, err := s.deps.VPCSubnet.GetSubnetVPC(accountID, subnetIDs[0])
 	if err != nil {
-		return nil, fmt.Errorf("resolve subnet VPC: %w", err)
+		// Subnet is a caller-supplied parameter — a resolve failure is a client
+		// fault (bad/foreign subnet), not an internal one. Surface it as such
+		// instead of collapsing to a retryable ServerInternal the SDK retries.
+		slog.Error("CreateCluster: resolve subnet VPC failed",
+			"cluster", name, "accountID", accountID, "subnet", subnetIDs[0], "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	region := s.deps.Region
@@ -304,20 +319,20 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		return nil, err
+		return nil, logCreateErr(name, accountID, "persist initial meta", err)
 	}
 
 	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, accountID, name, vpcID)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
+		return nil, logCreateErr(name, accountID, "ensure cluster SGs", err)
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
 	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("ensure cluster NLB: %w", err)
+		return nil, logCreateErr(name, accountID, "ensure cluster NLB", err)
 	}
 	meta.Endpoint = "https://" + net.JoinHostPort(nlb.DNSName, strconv.FormatInt(clusterNLBListenPort, 10))
 	meta.NLBArn = nlb.LoadBalancerArn
@@ -330,25 +345,25 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	// reclaim them.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("persist NLB arns: %w", err)
+		return nil, logCreateErr(name, accountID, "persist NLB arns", err)
 	}
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("build OIDC issuer: %w", err)
+		return nil, logCreateErr(name, accountID, "build OIDC issuer", err)
 	}
 	meta.OIDCIssuer = oidcIssuer
 
 	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("generate OIDC keypair: %w", err)
+		return nil, logCreateErr(name, accountID, "generate OIDC keypair", err)
 	}
 	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("derive OIDC public key: %w", err)
+		return nil, logCreateErr(name, accountID, "derive OIDC public key", err)
 	}
 
 	k3sOut, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, K3sServerInput{
@@ -387,7 +402,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("allocate cluster egress IP: %w", err)
+		return nil, logCreateErr(name, accountID, "allocate cluster egress IP", err)
 	}
 	meta.EgressEIPAllocationID = egressAllocID
 	meta.EgressEIPPublicIP = egressIP
@@ -402,16 +417,17 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	// register (or anything after) leaves them recoverable by DeleteCluster.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("persist control-plane ids: %w", err)
+		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
 	}
 
 	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, k3sOut.ENIIP); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("register NLB target: %w", err)
+		return nil, logCreateErr(name, accountID, "register NLB target", err)
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		return nil, err
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "persist final meta", err)
 	}
 
 	// bootstrapClusterCreatorAdminPermissions (default true): grant the caller

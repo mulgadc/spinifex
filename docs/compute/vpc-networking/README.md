@@ -946,6 +946,17 @@ aws ec2 attach-internet-gateway \
 
 aws ec2 modify-subnet-attribute \
   --subnet-id $SUBNET --map-public-ip-on-launch
+
+# Allow SSH + ICMP on the VPC's default security group (blocks inbound by default)
+SG=$(aws ec2 describe-security-groups \
+  --filters Name=vpc-id,Values=$VPC \
+  --query 'SecurityGroups[0].GroupId' --output text)
+
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol icmp --port -1 --cidr 0.0.0.0/0
 ```
 
 ## 4. Launch Instance

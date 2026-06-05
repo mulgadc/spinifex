@@ -152,11 +152,34 @@ aws ec2 modify-subnet-attribute \
 echo "Subnet: $SUBNET_ID (public)"
 ```
 
+### Allow SSH and ICMP
+
+Every VPC gets a default security group that **blocks inbound traffic from outside the group** (matching AWS). Instances launched without an explicit security group use this default, so you must authorize ingress before you can SSH or ping the instance.
+
+```bash
+SG_ID=$(aws ec2 describe-security-groups \
+  --filters Name=vpc-id,Values=$VPC_ID \
+  --query 'SecurityGroups[0].GroupId' --output text)
+
+# Allow SSH from anywhere
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+# Allow ICMP (ping) from anywhere
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol icmp --port -1 --cidr 0.0.0.0/0
+```
+
+**Note:** `0.0.0.0/0` opens these ports to every source. For anything beyond a quick evaluation, scope the `--cidr` to a trusted range. Rule changes apply immediately — no instance restart needed.
+
 ### Verify
 
 ```bash
 aws ec2 describe-vpcs --vpc-ids $VPC_ID
 aws ec2 describe-subnets --subnet-ids $SUBNET_ID
+aws ec2 describe-security-groups --group-ids $SG_ID
 ```
 
 ## 4. Launch an Instance
@@ -348,12 +371,26 @@ journalctl -u spinifex-daemon -f
 aws ec2 describe-images
 ```
 
-### SSH Connection Refused
+### SSH Connection Refused or Times Out
 
 cloud-init needs 30-60 seconds after boot. Check instance state:
 
 ```bash
 aws ec2 describe-instances --instance-ids $INSTANCE_ID
+```
+
+A connection that **times out** (rather than being refused) usually means the security group is blocking port 22. Confirm the default security group allows SSH ingress:
+
+```bash
+aws ec2 describe-security-groups --group-ids $SG_ID \
+  --query 'SecurityGroups[0].IpPermissions'
+```
+
+If there are no rules for TCP 22, authorize it (see [Allow SSH and ICMP](#allow-ssh-and-icmp)):
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
 ```
 
 ### No Public IP Assigned

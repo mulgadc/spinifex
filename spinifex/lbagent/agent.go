@@ -436,8 +436,24 @@ func reloadNginx(configPath, pidPath string) error {
 		cmd = exec.Command("nginx", "-c", configPath)
 	}
 
-	out, err := cmd.CombinedOutput()
+	// nginx daemonizes on start, and the rendered config uses `error_log stderr`,
+	// so the forked master and workers inherit and keep this command's stderr
+	// open. CombinedOutput pipes stderr and blocks on Wait until EOF — which the
+	// long-lived daemon never sends — hanging the agent here forever before it
+	// ever reports health, leaving NLB targets stuck at 0/N. Capture to a temp
+	// file instead: Wait then blocks only on the short-lived foreground process,
+	// which exits once it has daemonized.
+	logFile, err := os.CreateTemp("", "nginx-reload-*.log")
 	if err != nil {
+		return fmt.Errorf("create nginx log: %w", err)
+	}
+	defer os.Remove(logFile.Name())
+	defer logFile.Close()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Run(); err != nil {
+		out, _ := os.ReadFile(logFile.Name())
 		return fmt.Errorf("nginx: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil

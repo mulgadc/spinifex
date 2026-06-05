@@ -8,6 +8,7 @@ import {
   Globe,
   HardDrive,
   Home,
+  IdCard,
   Image,
   Key,
   Layers,
@@ -20,6 +21,7 @@ import {
   Server,
   Shield,
   ShieldCheck,
+  UserCog,
   Users,
   Waypoints,
 } from "lucide-react"
@@ -357,6 +359,36 @@ export function SidebarLayout() {
                 >
                   <Shield className="size-4" />
                   <span>Policies</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-roles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-roles") ||
+                    pathname.startsWith("/iam/create-role")
+                  }
+                  tooltip="Roles"
+                >
+                  <UserCog className="size-4" />
+                  <span>Roles</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-instance-profiles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-instance-profiles") ||
+                    pathname.startsWith("/iam/create-instance-profile")
+                  }
+                  tooltip="Instance Profiles"
+                >
+                  <IdCard className="size-4" />
+                  <span>Instance Profiles</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

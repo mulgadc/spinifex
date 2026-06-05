@@ -43,6 +43,7 @@ import {
 
 import { AmiDetails } from "../../-components/ami-details"
 import { CreateImageDialog } from "../../-components/create-image-dialog"
+import { IamRolePanel } from "../../-components/iam-role-panel"
 import { InstanceActions } from "../../-components/instance-actions"
 
 export const Route = createFileRoute(
@@ -329,6 +330,9 @@ function InstanceDetail() {
             </DetailCard.Content>
           </DetailCard>
         )}
+
+        {/* IAM Role */}
+        <IamRolePanel instanceId={instance.InstanceId} />
 
         {/* GPU */}
         {isAdmin && vmInfo?.gpu && (

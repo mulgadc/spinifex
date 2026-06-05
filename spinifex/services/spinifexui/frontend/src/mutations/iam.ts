@@ -1,21 +1,33 @@
 import {
+  AddRoleToInstanceProfileCommand,
+  AttachRolePolicyCommand,
   AttachUserPolicyCommand,
   CreateAccessKeyCommand,
+  CreateInstanceProfileCommand,
   CreatePolicyCommand,
+  CreateRoleCommand,
   CreateUserCommand,
   DeleteAccessKeyCommand,
+  DeleteInstanceProfileCommand,
   DeletePolicyCommand,
+  DeleteRoleCommand,
   DeleteUserCommand,
+  DetachRolePolicyCommand,
   DetachUserPolicyCommand,
+  RemoveRoleFromInstanceProfileCommand,
   UpdateAccessKeyCommand,
 } from "@aws-sdk/client-iam"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 import { getIamClient } from "@/lib/awsClient"
 import type {
+  AddRoleToProfileParams,
+  CreateInstanceProfileFormData,
   CreatePolicyFormData,
+  CreateRoleFormData,
   CreateUserFormData,
   DeleteAccessKeyParams,
+  RolePolicyParams,
   UpdateAccessKeyParams,
   UserPolicyParams,
 } from "@/types/iam"
@@ -162,6 +174,153 @@ export function useDetachUserPolicy() {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["iam", "attached-user-policies"],
+      })
+    },
+  })
+}
+
+export function useCreateRole() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateRoleFormData) => {
+      const command = new CreateRoleCommand({
+        RoleName: params.roleName,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        Path: params.path || undefined,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        Description: params.description || undefined,
+        AssumeRolePolicyDocument: params.assumeRolePolicyDocument,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "roles"] })
+    },
+  })
+}
+
+export function useDeleteRole() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (roleName: string) => {
+      const command = new DeleteRoleCommand({ RoleName: roleName })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["iam", "roles"] })
+    },
+  })
+}
+
+export function useAttachRolePolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
+      const command = new AttachRolePolicyCommand({
+        RoleName: roleName,
+        PolicyArn: policyArn,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "attached-role-policies"],
+      })
+    },
+  })
+}
+
+export function useDetachRolePolicy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
+      const command = new DetachRolePolicyCommand({
+        RoleName: roleName,
+        PolicyArn: policyArn,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "attached-role-policies"],
+      })
+    },
+  })
+}
+
+export function useCreateInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateInstanceProfileFormData) => {
+      const command = new CreateInstanceProfileCommand({
+        InstanceProfileName: params.instanceProfileName,
+        // oxlint-disable-next-line typescript/prefer-nullish-coalescing
+        Path: params.path || undefined,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "instance-profiles"],
+      })
+    },
+  })
+}
+
+export function useDeleteInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (instanceProfileName: string) => {
+      const command = new DeleteInstanceProfileCommand({
+        InstanceProfileName: instanceProfileName,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "instance-profiles"],
+      })
+    },
+  })
+}
+
+export function useAddRoleToInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      instanceProfileName,
+      roleName,
+    }: AddRoleToProfileParams) => {
+      const command = new AddRoleToInstanceProfileCommand({
+        InstanceProfileName: instanceProfileName,
+        RoleName: roleName,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "instance-profiles"],
+      })
+    },
+  })
+}
+
+export function useRemoveRoleFromInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      instanceProfileName,
+      roleName,
+    }: AddRoleToProfileParams) => {
+      const command = new RemoveRoleFromInstanceProfileCommand({
+        InstanceProfileName: instanceProfileName,
+        RoleName: roleName,
+      })
+      return await getIamClient().send(command)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", "instance-profiles"],
       })
     },
   })

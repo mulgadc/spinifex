@@ -12,6 +12,7 @@ vi.mock("@/lib/awsClient", () => ({
 import type { CreateVpcWizardFormData } from "@/types/ec2"
 
 import {
+  useAssociateIamInstanceProfile,
   useAttachVolume,
   useAuthorizeSecurityGroupEgress,
   useAuthorizeSecurityGroupIngress,
@@ -27,6 +28,7 @@ import {
   useCreateVpc,
   useCreateVpcWizard,
   useDeleteKeyPair,
+  useDisassociateIamInstanceProfile,
   useDeletePlacementGroup,
   useDeleteSecurityGroup,
   useDeleteSnapshot,
@@ -1247,5 +1249,63 @@ describe("useCreateVpcWizard", () => {
     await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
     const tags = mockSend.mock.calls[0]?.[0].input.TagSpecifications?.[0]?.Tags
     expect(tags).toContainEqual({ Key: "Env", Value: "prod" })
+  })
+})
+
+describe("useAssociateIamInstanceProfile", () => {
+  it("sends AssociateIamInstanceProfileCommand with instance and profile", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceId: "i-abc123",
+      instanceProfileName: "my-profile",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      InstanceId: "i-abc123",
+      IamInstanceProfile: { Name: "my-profile" },
+    })
+  })
+
+  it("invalidates associations and instances on success", async () => {
+    createQueryClient()
+    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      instanceId: "i-abc123",
+      instanceProfileName: "my-profile",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["ec2", "iam-instance-profile-associations", "i-abc123"],
+    })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["ec2", "instances"] })
+  })
+})
+
+describe("useDisassociateIamInstanceProfile", () => {
+  it("sends DisassociateIamInstanceProfileCommand with associationId", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useDisassociateIamInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({
+      associationId: "iip-assoc-1",
+      instanceId: "i-abc123",
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      AssociationId: "iip-assoc-1",
+    })
   })
 })

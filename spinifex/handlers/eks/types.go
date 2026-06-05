@@ -27,14 +27,29 @@ type ClusterRecord struct {
 }
 
 // NodegroupRecord is the persisted-state envelope for an EKS managed
-// nodegroup.
+// nodegroup. It is the source of truth for Describe/ListNodegroups and tracks
+// the worker EC2 instance IDs the nodegroup owns so Update/DeleteNodegroup can
+// scale and tear them down.
 type NodegroupRecord struct {
-	ClusterName   string    `json:"clusterName"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	DesiredSize   int64     `json:"desiredSize"`
-	InstanceTypes []string  `json:"instanceTypes,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
+	ClusterName    string            `json:"clusterName"`
+	Name           string            `json:"name"`
+	Arn            string            `json:"arn"`
+	Status         string            `json:"status"`
+	StatusReason   string            `json:"statusReason,omitempty"`
+	Subnets        []string          `json:"subnets,omitempty"`
+	InstanceTypes  []string          `json:"instanceTypes,omitempty"`
+	AMIType        string            `json:"amiType,omitempty"`
+	DiskSize       int64             `json:"diskSize,omitempty"`
+	ScalingMin     int64             `json:"scalingMin"`
+	ScalingMax     int64             `json:"scalingMax"`
+	ScalingDesired int64             `json:"scalingDesired"`
+	Version        string            `json:"version,omitempty"`
+	NodeRole       string            `json:"nodeRole,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	InstanceIDs    []string          `json:"instanceIds,omitempty"`
+	Health         string            `json:"health,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	ModifiedAt     time.Time         `json:"modifiedAt"`
 }
 
 // AccessEntryRecord is the persisted-state envelope for an EKS API-mode

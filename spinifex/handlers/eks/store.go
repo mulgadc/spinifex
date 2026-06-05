@@ -56,9 +56,15 @@ func ClusterMetaKey(name string) string {
 	return fmt.Sprintf("clusters/%s/meta", name)
 }
 
+// NodegroupsPrefix returns the KV key prefix under which all of a cluster's
+// nodegroup records live. Used by ListNodegroups to enumerate.
+func NodegroupsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/nodegroups/", cluster)
+}
+
 // NodegroupKey returns the KV key for a nodegroup record under a cluster.
 func NodegroupKey(cluster, ng string) string {
-	return fmt.Sprintf("clusters/%s/nodegroups/%s", cluster, ng)
+	return NodegroupsPrefix(cluster) + ng
 }
 
 // AccessEntriesPrefix returns the KV key prefix under which all of a cluster's

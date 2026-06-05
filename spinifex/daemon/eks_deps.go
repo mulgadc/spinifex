@@ -59,6 +59,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		Instance:       d,
 		Image:          d.imageService,
 		EIP:            d.eipService,
+		Worker:         d,
 	}
 }
 

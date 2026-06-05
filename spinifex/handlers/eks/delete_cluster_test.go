@@ -27,13 +27,15 @@ func deleteInput(name string) *eks.DeleteClusterInput {
 // and an embedded JetStream KV. Tests poke the fakes' *Err fields to force
 // failures at specific lifecycle steps.
 type eksServiceFixture struct {
-	svc  *EKSServiceImpl
-	kv   nats.KeyValue
-	nlb  *fakeNLBProvisioner
-	inst *fakeK3sInst
-	vpc  *fakeK3sVPC
-	ami  *fakeK3sAMI
-	eip  *fakeEIPProvisioner
+	svc    *EKSServiceImpl
+	kv     nats.KeyValue
+	nlb    *fakeNLBProvisioner
+	inst   *fakeK3sInst
+	vpc    *fakeK3sVPC
+	ami    *fakeK3sAMI
+	eip    *fakeEIPProvisioner
+	sg     *fakeSGProvisioner
+	worker *fakeWorkerLauncher
 }
 
 func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
@@ -47,6 +49,8 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	vpc := &fakeK3sVPC{}
 	ami := &fakeK3sAMI{}
 	eip := newFakeEIPProvisioner()
+	sg := newFakeSGProvisioner()
+	worker := newFakeWorkerLauncher()
 
 	svc, err := NewEKSServiceImpl(EKSServiceDeps{
 		NATSConn:       nc,
@@ -57,18 +61,19 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		NATSURL:        "nats://gw.local:4222",
 		NATSToken:      "s3cr3t-token",
 		NATSCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
-		VPCSG:          newFakeSGProvisioner(),
+		VPCSG:          sg,
 		VPCK3s:         vpc,
 		VPCSubnet:      fakeSubnetResolver{},
 		NLB:            nlb,
 		Instance:       inst,
 		Image:          ami,
 		EIP:            eip,
+		Worker:         worker,
 	})
 	require.NoError(t, err)
 	t.Cleanup(svc.Shutdown)
 
-	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip}
+	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker}
 }
 
 // deleteClusterFixture is an eksServiceFixture pre-seeded with a CREATING

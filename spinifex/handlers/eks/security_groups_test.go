@@ -12,9 +12,10 @@ import (
 )
 
 type fakeSGProvisioner struct {
-	createCalls   []*ec2.CreateSecurityGroupInput
-	describeCalls []*ec2.DescribeSecurityGroupsInput
-	deleteCalls   []*ec2.DeleteSecurityGroupInput
+	createCalls    []*ec2.CreateSecurityGroupInput
+	describeCalls  []*ec2.DescribeSecurityGroupsInput
+	deleteCalls    []*ec2.DeleteSecurityGroupInput
+	authorizeCalls []*ec2.AuthorizeSecurityGroupIngressInput
 
 	// existing maps "name|vpcId" → groupId for DescribeSecurityGroups lookup.
 	existing map[string]string
@@ -24,9 +25,10 @@ type fakeSGProvisioner struct {
 	// nodegroup SG IDs.
 	createIDs []string
 
-	createErr   error
-	describeErr error
-	deleteErr   error
+	createErr    error
+	describeErr  error
+	deleteErr    error
+	authorizeErr error
 }
 
 var _ sgProvisioner = (*fakeSGProvisioner)(nil)
@@ -82,6 +84,14 @@ func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupIn
 		return nil, f.deleteErr
 	}
 	return &ec2.DeleteSecurityGroupOutput{}, nil
+}
+
+func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+	f.authorizeCalls = append(f.authorizeCalls, input)
+	if f.authorizeErr != nil {
+		return nil, f.authorizeErr
+	}
+	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
 }
 
 func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {

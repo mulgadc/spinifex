@@ -71,6 +71,11 @@ const (
 	// (see scripts/images/eks-server/k3s-first-boot.sh ENVFILE).
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
 
+	// agentEnvPath is the env file the k3s-agent OpenRC service sources for its
+	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL. Path matches the AGENT_ENVFILE
+	// in scripts/images/eks-node/eks-node-role.sh and k3s-agent.initd.
+	agentEnvPath = "/etc/spinifex-eks/agent.env"
+
 	// k3sNATSCAPath is the on-VM destination for the NATS CA cert PEM. The K3s
 	// VM uses it to verify the daemon's NATS TLS when publishing bootstrap
 	// messages. Path matches k3s-first-boot.sh SPINIFEX_NATS_CA.

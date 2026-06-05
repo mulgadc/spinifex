@@ -463,6 +463,10 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 }
 
 func TestSigV4Auth_DecryptFailure(t *testing.T) {
+	// A secret that can't be decrypted (e.g. encrypted under a since-rotated
+	// master key) means the credential is unverifiable. The gateway treats this
+	// as an authentication failure (InvalidClientTokenId / 403), not a server
+	// fault, so clients re-authenticate instead of retrying a dead request.
 	// Encrypt secret with a DIFFERENT master key so decryption fails
 	otherKey, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
@@ -503,13 +507,13 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 
 	resp := doRequest(r, req)
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("Expected status 500 for decrypt failure, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("Expected status 403 for decrypt failure, got %d", resp.StatusCode)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "InternalError") {
-		t.Errorf("Expected InternalError, got: %s", string(body))
+	if !strings.Contains(string(body), awserrors.ErrorInvalidClientTokenId) {
+		t.Errorf("Expected InvalidClientTokenId, got: %s", string(body))
 	}
 }
 

@@ -194,8 +194,17 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 	}
 	secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
 	if err != nil {
+		// An undecryptable secret means the stored credential cannot be used to
+		// verify the request — e.g. the IAM master key was rotated out from
+		// under a key record left behind in KV. The credential is unverifiable,
+		// so this is an authentication failure, not a server fault: AWS never
+		// returns InternalError for a bad credential, and InvalidClientTokenId
+		// lets the client re-authenticate instead of retrying a dead request.
+		// The ERROR log preserves the signal for an operator diagnosing a
+		// genuine cipher misconfiguration.
 		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
-		return "", principalContext{}, awserrors.ErrorInternalError
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	return secret, principalContext{
 		identity:      ak.UserName,
@@ -246,8 +255,11 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 
 	secret, err := gw.IAMService.DecryptSecret(cred.SecretEncrypted)
 	if err != nil {
+		// Unverifiable session secret — treat as an authentication failure for
+		// the same reason as the long-lived path above.
 		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
-		return "", principalContext{}, awserrors.ErrorInternalError
+		gw.RateLimiter.RecordFailure(clientIP)
+		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	return secret, principalContext{
 		identity:       cred.SessionName,

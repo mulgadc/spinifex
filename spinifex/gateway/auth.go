@@ -262,6 +262,21 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 		gw.RateLimiter.RecordFailure(clientIP)
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
+	if cred.PrincipalType == principalTypeUser {
+		// Minted by GetSessionToken for an IAM user: resolve straight back to
+		// that user so buildCallerARN yields arn:aws:iam::A:user/N and IAM
+		// policy is evaluated against the user, not a synthesised role session.
+		// The assumed-role fields stay empty by construction.
+		return secret, principalContext{
+			identity:      cred.SessionName,
+			accountID:     cred.AccountID,
+			principalType: principalTypeUser,
+		}, ""
+	}
+
+	// "assumed-role" or empty — the latter covers records minted before
+	// PrincipalType existed, so an absent value keeps the original role-session
+	// behaviour (see SessionCredential.PrincipalType backward-compat note).
 	return secret, principalContext{
 		identity:       cred.SessionName,
 		accountID:      cred.AccountID,

@@ -29,6 +29,10 @@ const (
 	stsActionWildcard   = "sts:*"
 	globalWildcard      = "*"
 
+	// principalTypeAssumedRole is the SessionCredential.PrincipalType for a role
+	// session — the default kind, also assumed when a stored value is empty.
+	principalTypeAssumedRole = "assumed-role"
+
 	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance — the
 	// only service principal that matches a trust policy in v1. The HTTPS AssumeRole
 	// path supplies an empty principalSource, so service principals never match there.
@@ -170,7 +174,8 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 		return nil, err
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSessionCredential(role, roleAccountID, sessionName, sourceIdentity, duration)
+	env := assumedRoleEnvelope(role, roleAccountID, sessionName, sourceIdentity)
+	cred, plainSecret, plainToken, err := s.mintSession(env, duration)
 	if err != nil {
 		return nil, err
 	}
@@ -423,11 +428,48 @@ func lastPathSegment(s string) string {
 	return s
 }
 
-// mintSessionCredential generates a fresh ASIA AKID, secret, and session
-// token, encrypts the secret with the IAM master key, HMACs the session
-// token, and persists the record. Retries on AKID collision; the birthday
-// bound for 64-bit AKID entropy makes that practically unreachable.
-func (s *STSServiceImpl) mintSessionCredential(role *iam.Role, roleAccountID, sessionName, sourceIdentity string, duration int64) (*SessionCredential, string, string, error) {
+// sessionEnvelope is the resolved identity a session credential is minted for.
+// It decouples mintSession from AssumeRole's *iam.Role so GetSessionToken can
+// mint a user-bound session: the role paths fill the assumed-role fields, the
+// user path sets PrincipalType "user" + SessionName = the IAM user name and
+// leaves the assumed-role fields empty.
+type sessionEnvelope struct {
+	PrincipalType  string
+	AccountID      string
+	SessionName    string
+	SourceIdentity string
+
+	// Assumed-role-only; empty for a user (GetSessionToken) envelope.
+	AssumedRoleARN    string
+	UnderlyingRoleARN string
+	RoleID            string
+	AssumedRoleID     string
+}
+
+// assumedRoleEnvelope derives the session envelope for a role session, shared by
+// AssumeRole, AssumeRoleForInstance, and AssumeRoleWithWebIdentity. It owns the
+// assumed-role ARN / AssumedRoleId construction so every role path stays
+// consistent.
+func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdentity string) sessionEnvelope {
+	roleID := aws.StringValue(role.RoleId)
+	roleName := aws.StringValue(role.RoleName)
+	return sessionEnvelope{
+		PrincipalType:     principalTypeAssumedRole,
+		AccountID:         roleAccountID,
+		SessionName:       sessionName,
+		SourceIdentity:    sourceIdentity,
+		AssumedRoleARN:    fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s/%s", roleAccountID, roleName, sessionName),
+		UnderlyingRoleARN: aws.StringValue(role.Arn),
+		RoleID:            roleID,
+		AssumedRoleID:     fmt.Sprintf("%s:%s", roleID, sessionName),
+	}
+}
+
+// mintSession generates a fresh ASIA AKID, secret, and session token, encrypts
+// the secret with the IAM master key, HMACs the session token, and persists the
+// record described by env. Retries on AKID collision; the birthday bound for
+// 64-bit AKID entropy makes that practically unreachable.
+func (s *STSServiceImpl) mintSession(env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
 	plainSecret, err := generateRandomBase64(sessionSecretBytes)
 	if err != nil {
 		return nil, "", "", err
@@ -446,10 +488,6 @@ func (s *STSServiceImpl) mintSessionCredential(role *iam.Role, roleAccountID, se
 	now := time.Now().UTC()
 	expiresAt := now.Add(time.Duration(duration) * time.Second)
 
-	roleID := aws.StringValue(role.RoleId)
-	roleName := aws.StringValue(role.RoleName)
-	underlyingRoleARN := aws.StringValue(role.Arn)
-
 	for range mintMaxAttempts {
 		akid, err := generateSessionAKID()
 		if err != nil {
@@ -459,13 +497,14 @@ func (s *STSServiceImpl) mintSessionCredential(role *iam.Role, roleAccountID, se
 			AccessKeyID:       akid,
 			SecretEncrypted:   secretEncrypted,
 			SessionTokenHMAC:  tokenHMAC,
-			AccountID:         roleAccountID,
-			AssumedRoleARN:    fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s/%s", roleAccountID, roleName, sessionName),
-			UnderlyingRoleARN: underlyingRoleARN,
-			RoleID:            roleID,
-			AssumedRoleID:     fmt.Sprintf("%s:%s", roleID, sessionName),
-			SessionName:       sessionName,
-			SourceIdentity:    sourceIdentity,
+			AccountID:         env.AccountID,
+			PrincipalType:     env.PrincipalType,
+			AssumedRoleARN:    env.AssumedRoleARN,
+			UnderlyingRoleARN: env.UnderlyingRoleARN,
+			RoleID:            env.RoleID,
+			AssumedRoleID:     env.AssumedRoleID,
+			SessionName:       env.SessionName,
+			SourceIdentity:    env.SourceIdentity,
 			ExpiresAt:         expiresAt,
 			CreatedAt:         now,
 		}

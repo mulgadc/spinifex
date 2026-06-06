@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -25,6 +26,7 @@ import (
 type AWSClient struct {
 	EC2   *ec2.EC2
 	ELBv2 *elbv2.ELBV2
+	EKS   *eks.EKS
 	IAM   *iam.IAM
 	STS   *sts.STS
 }
@@ -125,6 +127,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 	return &AWSClient{
 		EC2:   ec2.New(sess),
 		ELBv2: elbv2.New(sess),
+		EKS:   eks.New(sess),
 		IAM:   iam.New(sess),
 		STS:   sts.New(sess),
 	}
@@ -137,6 +140,7 @@ func (c *AWSClient) IgnoreCertErrors() {
 	hc := &http.Client{Transport: tr}
 	c.EC2.Config.HTTPClient = hc
 	c.ELBv2.Config.HTTPClient = hc
+	c.EKS.Config.HTTPClient = hc
 	c.IAM.Config.HTTPClient = hc
 	c.STS.Config.HTTPClient = hc
 	_ = (*x509.CertPool)(nil) // silence unused-import on hardened paths

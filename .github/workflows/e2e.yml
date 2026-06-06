@@ -18,9 +18,9 @@ on:
         description: "PR head SHA to report status on"
         required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb"
+        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -32,7 +32,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
     # suites='e2e-reboot' only). Push triggers and the default SUITES list
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb')
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks')
     runs-on: [ self-hosted, ci-single ]
     timeout-minutes: 45
     env:

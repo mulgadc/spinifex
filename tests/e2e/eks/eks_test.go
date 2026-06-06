@@ -120,6 +120,35 @@ func TestEKS(t *testing.T) {
 		assert.Contains(t, strings.ToLower(url), "x-k8s-aws-id", "presigned URL must pin the cluster via x-k8s-aws-id")
 	})
 
+	t.Run("KubectlGetNodes", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		// Reachability shim: the kubeconfig endpoint (NLB DNS) is unresolvable
+		// from here, so point kubectl at the control-plane VM's mgmt IP:6443
+		// directly. The serving cert SANs the NLB DNS + node IPs, not the mgmt
+		// IP, so skip TLS verification — auth still flows through the get-token
+		// webhook, which is what this asserts.
+		mgmtIP := harness.ControlPlaneMgmtIP(t, env, fx.AccountID, fx.ClusterName)
+		kcPath := writeKubectlKubeconfig(t, artifacts, fx.Cluster, mgmtIP)
+		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+
+		// Auth + reachability: poll until the apiserver answers and reports a
+		// Ready node. A 401 here means the get-token webhook chain regressed.
+		harness.EventuallyErr(t, func() error {
+			out, err := kc.Run(30*time.Second, "get", "nodes",
+				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
+			if err != nil {
+				return fmt.Errorf("kubectl get nodes: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "=True") {
+				return fmt.Errorf("no Ready node yet:\n%s", out)
+			}
+			return nil
+		}, 3*time.Minute, 5*time.Second)
+
+		out, _ := kc.Run(30*time.Second, "get", "nodes", "-o", "wide")
+		t.Logf("kubectl get nodes:\n%s", out)
+	})
+
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		_, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
@@ -275,6 +304,46 @@ users:
 	path := filepath.Join(artifacts, "kubeconfig-"+name+".yaml")
 	require.NoError(t, os.WriteFile(path, []byte(kc), 0o600), "write kubeconfig")
 	t.Logf("kubeconfig: %s", path)
+	return path
+}
+
+// writeKubectlKubeconfig assembles a kubeconfig pointed at the control-plane
+// VM's reachable mgmt IP (Phase-2 shim) with TLS verification disabled, and an
+// exec block that mints a bearer token via `aws eks get-token`. Distinct from
+// writeKubeconfig (the Phase-1 artifact built from the real NLB endpoint).
+func writeKubectlKubeconfig(t *testing.T, artifacts string, cl *eks.Cluster, mgmtIP string) string {
+	t.Helper()
+	name := aws.StringValue(cl.Name)
+	server := fmt.Sprintf("https://%s:6443", mgmtIP)
+	kc := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: %[1]s
+  cluster:
+    server: %[2]s
+    insecure-skip-tls-verify: true
+contexts:
+- name: %[1]s
+  context:
+    cluster: %[1]s
+    user: %[1]s
+current-context: %[1]s
+users:
+- name: %[1]s
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+      args:
+      - eks
+      - get-token
+      - --cluster-name
+      - %[1]s
+`, name, server)
+
+	path := filepath.Join(artifacts, "kubectl-"+name+".yaml")
+	require.NoError(t, os.WriteFile(path, []byte(kc), 0o600), "write kubectl kubeconfig")
+	t.Logf("kubectl kubeconfig: %s (server=%s)", path, server)
 	return path
 }
 

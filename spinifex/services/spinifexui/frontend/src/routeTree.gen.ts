@@ -20,6 +20,7 @@ import { Route as AuthIamusersCreateUserRouteImport } from './routes/_auth/iam/(
 import { Route as AuthIamrolesCreateRoleRouteImport } from './routes/_auth/iam/(roles)/create-role'
 import { Route as AuthIampoliciesCreatePolicyRouteImport } from './routes/_auth/iam/(policies)/create-policy'
 import { Route as AuthIaminstanceProfilesCreateInstanceProfileRouteImport } from './routes/_auth/iam/(instance-profiles)/create-instance-profile'
+import { Route as AuthEksclustersCreateClusterRouteImport } from './routes/_auth/eks/(clusters)/create-cluster'
 import { Route as AuthEc2vpcCreateVpcRouteImport } from './routes/_auth/ec2/(vpc)/create-vpc'
 import { Route as AuthEc2volumesCreateVolumeRouteImport } from './routes/_auth/ec2/(volumes)/create-volume'
 import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './routes/_auth/ec2/(target-groups)/create-target-group'
@@ -41,6 +42,7 @@ import { Route as AuthIamusersListUsersIndexRouteImport } from './routes/_auth/i
 import { Route as AuthIamrolesListRolesIndexRouteImport } from './routes/_auth/iam/(roles)/list-roles/index'
 import { Route as AuthIampoliciesListPoliciesIndexRouteImport } from './routes/_auth/iam/(policies)/list-policies/index'
 import { Route as AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/index'
+import { Route as AuthEksclustersListClustersIndexRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/index'
 import { Route as AuthEc2vpcDescribeVpcsIndexRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/index'
 import { Route as AuthEc2volumesDescribeVolumesIndexRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/index'
 import { Route as AuthEc2targetGroupsDescribeTargetGroupsIndexRouteImport } from './routes/_auth/ec2/(target-groups)/describe-target-groups/index'
@@ -61,6 +63,7 @@ import { Route as AuthIamusersListUsersUserNameRouteImport } from './routes/_aut
 import { Route as AuthIamrolesListRolesRoleNameRouteImport } from './routes/_auth/iam/(roles)/list-roles/$roleName'
 import { Route as AuthIampoliciesListPoliciesPolicyArnRouteImport } from './routes/_auth/iam/(policies)/list-policies/$policyArn'
 import { Route as AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport } from './routes/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
+import { Route as AuthEksclustersListClustersClusterNameRouteImport } from './routes/_auth/eks/(clusters)/list-clusters/$clusterName'
 import { Route as AuthEc2vpcDescribeVpcsIdRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/$id'
 import { Route as AuthEc2volumesModifyVolumeIdRouteImport } from './routes/_auth/ec2/(volumes)/modify-volume/$id'
 import { Route as AuthEc2volumesDescribeVolumesIdRouteImport } from './routes/_auth/ec2/(volumes)/describe-volumes/$id'
@@ -133,6 +136,12 @@ const AuthIaminstanceProfilesCreateInstanceProfileRoute =
   AuthIaminstanceProfilesCreateInstanceProfileRouteImport.update({
     id: '/iam/(instance-profiles)/create-instance-profile',
     path: '/iam/create-instance-profile',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthEksclustersCreateClusterRoute =
+  AuthEksclustersCreateClusterRouteImport.update({
+    id: '/eks/(clusters)/create-cluster',
+    path: '/eks/create-cluster',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthEc2vpcCreateVpcRoute = AuthEc2vpcCreateVpcRouteImport.update({
@@ -256,6 +265,12 @@ const AuthIaminstanceProfilesListInstanceProfilesIndexRoute =
     path: '/iam/list-instance-profiles/',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEksclustersListClustersIndexRoute =
+  AuthEksclustersListClustersIndexRouteImport.update({
+    id: '/eks/(clusters)/list-clusters/',
+    path: '/eks/list-clusters/',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2vpcDescribeVpcsIndexRoute =
   AuthEc2vpcDescribeVpcsIndexRouteImport.update({
     id: '/ec2/(vpc)/describe-vpcs/',
@@ -377,6 +392,12 @@ const AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute =
       getParentRoute: () => AuthRouteRoute,
     } as any,
   )
+const AuthEksclustersListClustersClusterNameRoute =
+  AuthEksclustersListClustersClusterNameRouteImport.update({
+    id: '/eks/(clusters)/list-clusters/$clusterName',
+    path: '/eks/list-clusters/$clusterName',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEc2vpcDescribeVpcsIdRoute =
   AuthEc2vpcDescribeVpcsIdRouteImport.update({
     id: '/ec2/(vpc)/describe-vpcs/$id',
@@ -495,6 +516,7 @@ export interface FileRoutesByFullPath {
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/eks/create-cluster': typeof AuthEksclustersCreateClusterRoute
   '/iam/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -517,6 +539,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
   '/iam/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -537,6 +560,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/ec2/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/eks/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
   '/iam/list-instance-profiles/': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/iam/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles/': typeof AuthIamrolesListRolesIndexRoute
@@ -563,6 +587,7 @@ export interface FileRoutesByTo {
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/eks/create-cluster': typeof AuthEksclustersCreateClusterRoute
   '/iam/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/iam/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/iam/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -585,6 +610,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
   '/iam/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/iam/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/iam/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -605,6 +631,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-target-groups': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/ec2/describe-volumes': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/eks/list-clusters': typeof AuthEksclustersListClustersIndexRoute
   '/iam/list-instance-profiles': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/iam/list-policies': typeof AuthIampoliciesListPoliciesIndexRoute
   '/iam/list-roles': typeof AuthIamrolesListRolesIndexRoute
@@ -634,6 +661,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(target-groups)/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/_auth/ec2/(volumes)/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/_auth/ec2/(vpc)/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/_auth/eks/(clusters)/create-cluster': typeof AuthEksclustersCreateClusterRoute
   '/_auth/iam/(instance-profiles)/create-instance-profile': typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   '/_auth/iam/(policies)/create-policy': typeof AuthIampoliciesCreatePolicyRoute
   '/_auth/iam/(roles)/create-role': typeof AuthIamrolesCreateRoleRoute
@@ -656,6 +684,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(volumes)/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/_auth/ec2/(volumes)/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/_auth/ec2/(vpc)/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/_auth/eks/(clusters)/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
   '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName': typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   '/_auth/iam/(policies)/list-policies/$policyArn': typeof AuthIampoliciesListPoliciesPolicyArnRoute
   '/_auth/iam/(roles)/list-roles/$roleName': typeof AuthIamrolesListRolesRoleNameRoute
@@ -676,6 +705,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(target-groups)/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/_auth/ec2/(volumes)/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/_auth/ec2/(vpc)/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/_auth/eks/(clusters)/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
   '/_auth/iam/(instance-profiles)/list-instance-profiles/': typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   '/_auth/iam/(policies)/list-policies/': typeof AuthIampoliciesListPoliciesIndexRoute
   '/_auth/iam/(roles)/list-roles/': typeof AuthIamrolesListRolesIndexRoute
@@ -705,6 +735,7 @@ export interface FileRouteTypes {
     | '/ec2/create-target-group'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
+    | '/eks/create-cluster'
     | '/iam/create-instance-profile'
     | '/iam/create-policy'
     | '/iam/create-role'
@@ -727,6 +758,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
+    | '/eks/list-clusters/$clusterName'
     | '/iam/list-instance-profiles/$instanceProfileName'
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
@@ -747,6 +779,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-target-groups/'
     | '/ec2/describe-volumes/'
     | '/ec2/describe-vpcs/'
+    | '/eks/list-clusters/'
     | '/iam/list-instance-profiles/'
     | '/iam/list-policies/'
     | '/iam/list-roles/'
@@ -773,6 +806,7 @@ export interface FileRouteTypes {
     | '/ec2/create-target-group'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
+    | '/eks/create-cluster'
     | '/iam/create-instance-profile'
     | '/iam/create-policy'
     | '/iam/create-role'
@@ -795,6 +829,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
+    | '/eks/list-clusters/$clusterName'
     | '/iam/list-instance-profiles/$instanceProfileName'
     | '/iam/list-policies/$policyArn'
     | '/iam/list-roles/$roleName'
@@ -815,6 +850,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-target-groups'
     | '/ec2/describe-volumes'
     | '/ec2/describe-vpcs'
+    | '/eks/list-clusters'
     | '/iam/list-instance-profiles'
     | '/iam/list-policies'
     | '/iam/list-roles'
@@ -843,6 +879,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(target-groups)/create-target-group'
     | '/_auth/ec2/(volumes)/create-volume'
     | '/_auth/ec2/(vpc)/create-vpc'
+    | '/_auth/eks/(clusters)/create-cluster'
     | '/_auth/iam/(instance-profiles)/create-instance-profile'
     | '/_auth/iam/(policies)/create-policy'
     | '/_auth/iam/(roles)/create-role'
@@ -865,6 +902,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(volumes)/describe-volumes/$id'
     | '/_auth/ec2/(volumes)/modify-volume/$id'
     | '/_auth/ec2/(vpc)/describe-vpcs/$id'
+    | '/_auth/eks/(clusters)/list-clusters/$clusterName'
     | '/_auth/iam/(instance-profiles)/list-instance-profiles/$instanceProfileName'
     | '/_auth/iam/(policies)/list-policies/$policyArn'
     | '/_auth/iam/(roles)/list-roles/$roleName'
@@ -885,6 +923,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(target-groups)/describe-target-groups/'
     | '/_auth/ec2/(volumes)/describe-volumes/'
     | '/_auth/ec2/(vpc)/describe-vpcs/'
+    | '/_auth/eks/(clusters)/list-clusters/'
     | '/_auth/iam/(instance-profiles)/list-instance-profiles/'
     | '/_auth/iam/(policies)/list-policies/'
     | '/_auth/iam/(roles)/list-roles/'
@@ -974,6 +1013,13 @@ declare module '@tanstack/react-router' {
       path: '/iam/create-instance-profile'
       fullPath: '/iam/create-instance-profile'
       preLoaderRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/eks/(clusters)/create-cluster': {
+      id: '/_auth/eks/(clusters)/create-cluster'
+      path: '/eks/create-cluster'
+      fullPath: '/eks/create-cluster'
+      preLoaderRoute: typeof AuthEksclustersCreateClusterRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(vpc)/create-vpc': {
@@ -1123,6 +1169,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/eks/(clusters)/list-clusters/': {
+      id: '/_auth/eks/(clusters)/list-clusters/'
+      path: '/eks/list-clusters'
+      fullPath: '/eks/list-clusters/'
+      preLoaderRoute: typeof AuthEksclustersListClustersIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ec2/(vpc)/describe-vpcs/': {
       id: '/_auth/ec2/(vpc)/describe-vpcs/'
       path: '/ec2/describe-vpcs'
@@ -1261,6 +1314,13 @@ declare module '@tanstack/react-router' {
       path: '/iam/list-instance-profiles/$instanceProfileName'
       fullPath: '/iam/list-instance-profiles/$instanceProfileName'
       preLoaderRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/eks/(clusters)/list-clusters/$clusterName': {
+      id: '/_auth/eks/(clusters)/list-clusters/$clusterName'
+      path: '/eks/list-clusters/$clusterName'
+      fullPath: '/eks/list-clusters/$clusterName'
+      preLoaderRoute: typeof AuthEksclustersListClustersClusterNameRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ec2/(vpc)/describe-vpcs/$id': {
@@ -1411,6 +1471,7 @@ interface AuthRouteRouteChildren {
   AuthEc2targetGroupsCreateTargetGroupRoute: typeof AuthEc2targetGroupsCreateTargetGroupRoute
   AuthEc2volumesCreateVolumeRoute: typeof AuthEc2volumesCreateVolumeRoute
   AuthEc2vpcCreateVpcRoute: typeof AuthEc2vpcCreateVpcRoute
+  AuthEksclustersCreateClusterRoute: typeof AuthEksclustersCreateClusterRoute
   AuthIaminstanceProfilesCreateInstanceProfileRoute: typeof AuthIaminstanceProfilesCreateInstanceProfileRoute
   AuthIampoliciesCreatePolicyRoute: typeof AuthIampoliciesCreatePolicyRoute
   AuthIamrolesCreateRoleRoute: typeof AuthIamrolesCreateRoleRoute
@@ -1433,6 +1494,7 @@ interface AuthRouteRouteChildren {
   AuthEc2volumesDescribeVolumesIdRoute: typeof AuthEc2volumesDescribeVolumesIdRoute
   AuthEc2volumesModifyVolumeIdRoute: typeof AuthEc2volumesModifyVolumeIdRoute
   AuthEc2vpcDescribeVpcsIdRoute: typeof AuthEc2vpcDescribeVpcsIdRoute
+  AuthEksclustersListClustersClusterNameRoute: typeof AuthEksclustersListClustersClusterNameRoute
   AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute: typeof AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute
   AuthIampoliciesListPoliciesPolicyArnRoute: typeof AuthIampoliciesListPoliciesPolicyArnRoute
   AuthIamrolesListRolesRoleNameRoute: typeof AuthIamrolesListRolesRoleNameRoute
@@ -1452,6 +1514,7 @@ interface AuthRouteRouteChildren {
   AuthEc2targetGroupsDescribeTargetGroupsIndexRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   AuthEc2volumesDescribeVolumesIndexRoute: typeof AuthEc2volumesDescribeVolumesIndexRoute
   AuthEc2vpcDescribeVpcsIndexRoute: typeof AuthEc2vpcDescribeVpcsIndexRoute
+  AuthEksclustersListClustersIndexRoute: typeof AuthEksclustersListClustersIndexRoute
   AuthIaminstanceProfilesListInstanceProfilesIndexRoute: typeof AuthIaminstanceProfilesListInstanceProfilesIndexRoute
   AuthIampoliciesListPoliciesIndexRoute: typeof AuthIampoliciesListPoliciesIndexRoute
   AuthIamrolesListRolesIndexRoute: typeof AuthIamrolesListRolesIndexRoute
@@ -1485,6 +1548,7 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2targetGroupsCreateTargetGroupRoute,
   AuthEc2volumesCreateVolumeRoute: AuthEc2volumesCreateVolumeRoute,
   AuthEc2vpcCreateVpcRoute: AuthEc2vpcCreateVpcRoute,
+  AuthEksclustersCreateClusterRoute: AuthEksclustersCreateClusterRoute,
   AuthIaminstanceProfilesCreateInstanceProfileRoute:
     AuthIaminstanceProfilesCreateInstanceProfileRoute,
   AuthIampoliciesCreatePolicyRoute: AuthIampoliciesCreatePolicyRoute,
@@ -1518,6 +1582,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2volumesDescribeVolumesIdRoute: AuthEc2volumesDescribeVolumesIdRoute,
   AuthEc2volumesModifyVolumeIdRoute: AuthEc2volumesModifyVolumeIdRoute,
   AuthEc2vpcDescribeVpcsIdRoute: AuthEc2vpcDescribeVpcsIdRoute,
+  AuthEksclustersListClustersClusterNameRoute:
+    AuthEksclustersListClustersClusterNameRoute,
   AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute:
     AuthIaminstanceProfilesListInstanceProfilesInstanceProfileNameRoute,
   AuthIampoliciesListPoliciesPolicyArnRoute:
@@ -1551,6 +1617,7 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2volumesDescribeVolumesIndexRoute:
     AuthEc2volumesDescribeVolumesIndexRoute,
   AuthEc2vpcDescribeVpcsIndexRoute: AuthEc2vpcDescribeVpcsIndexRoute,
+  AuthEksclustersListClustersIndexRoute: AuthEksclustersListClustersIndexRoute,
   AuthIaminstanceProfilesListInstanceProfilesIndexRoute:
     AuthIaminstanceProfilesListInstanceProfilesIndexRoute,
   AuthIampoliciesListPoliciesIndexRoute: AuthIampoliciesListPoliciesIndexRoute,

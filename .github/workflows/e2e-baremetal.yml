@@ -20,6 +20,7 @@ jobs:
       cancel-in-progress: false
     env:
       BM_ISO_CACHE: /var/cache/spinifex-iso-builder
+      ARTIFACT_DIR: /tmp/spinifex-e2e-baremetal-artifacts-${{ github.run_id }}
     steps:
       - name: Clean Workspace
         run: sudo rm -rf "$GITHUB_WORKSPACE"/*
@@ -92,6 +93,9 @@ jobs:
           fi
 
 
+      - name: Install go-junit-report on runner
+        run: go install github.com/jstemmer/go-junit-report/v2@latest
+
       - name: Run Bare-Metal E2E
         env:
           BM_CI_PASSWORD: ${{ secrets.BM_CI_PASSWORD }}
@@ -100,8 +104,38 @@ jobs:
           BM_UBUNTU_IMAGE: ${{ env.BM_ISO_CACHE }}/ubuntu-26.04-cloudimg-amd64.img
           SPX_EXTERNAL_POOL: ${{ env.SPINIFEX_CI_POOL }}
         run: |
+          mkdir -p "${ARTIFACT_DIR}"
+          # Capture combined bootstrap + e2e output so failures produce a
+          # downloadable, analyzable artifact (the suites run go test -v on the
+          # init node and stream back over SSH). pipefail keeps the script's
+          # real exit code through the tee.
+          set -o pipefail
           sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \
             --vmlinuz   "${BM_ISO_CACHE}/vmlinuz" \
             --initrd    "${BM_ISO_CACHE}/initrd.img" \
             --squashfs  "${BM_ISO_CACHE}/spinifex.squashfs" \
-            --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+            --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar" \
+            2>&1 | tee "${ARTIFACT_DIR}/test-baremetal.log"
+
+      - name: Generate JUnit report
+        if: always()
+        run: |
+          LOG="${ARTIFACT_DIR}/test-baremetal.log"
+          [ -f "$LOG" ] || exit 0
+          go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-baremetal.xml" || true
+
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "Bare-Metal E2E failure analysis"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-baremetal-artifacts-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

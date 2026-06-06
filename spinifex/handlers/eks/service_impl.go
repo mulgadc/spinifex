@@ -533,15 +533,15 @@ func (s *EKSServiceImpl) DescribeCluster(input *eks.DescribeClusterInput, accoun
 func (s *EKSServiceImpl) ListClusters(input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
+		return nil, eksReadUnavailableOr(err, "jetstream")
 	}
 	acctKV, err := GetOrCreateAccountBucket(js, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, eksReadUnavailableOr(err, "get account bucket")
 	}
 	names, err := listClusterNames(acctKV)
 	if err != nil {
-		return nil, err
+		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
 	sort.Strings(names)
 
@@ -1232,6 +1232,30 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 		}
 	}
 	return out
+}
+
+// natsTransient reports whether err is a transient NATS/JetStream condition
+// rather than a genuine fault. These occur in the post-restart window before
+// the KV stream's Raft group has elected a leader: JetStream requests get no
+// responder, time out, or the stream is briefly unreachable.
+func natsTransient(err error) bool {
+	return err != nil && (errors.Is(err, nats.ErrNoResponders) ||
+		errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, nats.ErrNoStreamResponse) ||
+		errors.Is(err, nats.ErrConnectionClosed))
+}
+
+// eksReadUnavailableOr maps a transient NATS/JetStream failure to a retryable
+// ServiceUnavailable (503) so AWS clients back off and retry, instead of the
+// daemon sanitizing an unrecognised wrapped error to a misleading 500
+// InternalError. Non-transient errors pass through wrapped so real faults stay
+// visible.
+func eksReadUnavailableOr(err error, op string) error {
+	if natsTransient(err) {
+		slog.Warn("EKS read temporarily unavailable", "op", op, "err", err)
+		return errors.New(awserrors.ErrorServiceUnavailable)
+	}
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 func listClusterNames(kv nats.KeyValue) ([]string, error) {

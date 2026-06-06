@@ -89,6 +89,13 @@ func (s *ELBv2ServiceImpl) resolveMgmtRoute(scheme string) (gateway, target stri
 	if scheme == SchemeInternal && s.MgmtBridgeIP != "" && s.AdvertiseIP != "" {
 		return s.MgmtBridgeIP, s.AdvertiseIP
 	}
+	if scheme == SchemeInternal {
+		slog.Warn("resolveMgmtRoute: internal LB has no mgmt return route; lb-agent cannot reach AWSGW and the LB will stay provisioning",
+			"mgmtRouteGateway", s.MgmtRouteGateway,
+			"mgmtRouteTarget", s.MgmtRouteTarget,
+			"mgmtBridgeIP", s.MgmtBridgeIP,
+			"advertiseIP", s.AdvertiseIP)
+	}
 	return "", ""
 }
 
@@ -1195,6 +1202,19 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	state := StateActive
 	if albInstanceID != "" {
 		state = StateProvisioning
+		// Internal LBs only leave provisioning once the lb-agent heartbeats,
+		// which needs the mgmt return route. If it can't be resolved the LB
+		// hangs in provisioning forever — fail loud instead so the broken
+		// return path is visible immediately rather than as a generic timeout.
+		if scheme == SchemeInternal {
+			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
+				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
+					"lbId", lbID,
+					"mgmtBridgeIP", s.MgmtBridgeIP,
+					"advertiseIP", s.AdvertiseIP)
+				state = StateFailed
+			}
+		}
 	} else if launchFailed {
 		state = StateFailed
 	}

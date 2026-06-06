@@ -194,6 +194,7 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := authenticate(review.Spec.Token, a.verify, a.lookup)
+	slog.Info("TokenReview decision", "authenticated", status.Authenticated, "username", status.User.Username)
 
 	resp := tokenReview{
 		APIVersion: "authentication.k8s.io/v1",

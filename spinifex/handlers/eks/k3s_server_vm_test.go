@@ -297,6 +297,10 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.NotContains(t, udata, "service-account-key-file="+k3sOIDCSigningKeyPath)
 	assert.Contains(t, udata, "service-account-issuer=https://oidc.spinifex.local/clusters/111122223333/alpha")
 	assert.Contains(t, udata, "api-audiences=sts.amazonaws.com")
+	// IAM bearer-token auth: the generated config overrides the AMI skel, so the
+	// token-webhook arg MUST be emitted here or `aws eks get-token` 401s with the
+	// webhook never invoked.
+	assert.Contains(t, udata, "authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath)
 
 	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")

@@ -194,6 +194,12 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := authenticate(review.Spec.Token, a.verify, a.lookup)
+	if status.Authenticated {
+		// Confirm the token for the audiences the apiserver asked about; an empty
+		// status.audiences is rejected when --api-audiences is configured.
+		status.Audiences = review.Spec.Audiences
+	}
+	slog.Info("TokenReview decision", "authenticated", status.Authenticated, "username", status.User.Username, "audiences", status.Audiences)
 
 	resp := tokenReview{
 		APIVersion: "authentication.k8s.io/v1",

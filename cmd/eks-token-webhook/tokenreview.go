@@ -19,7 +19,12 @@ type tokenReviewSpec struct {
 type tokenReviewStatus struct {
 	Authenticated bool     `json:"authenticated"`
 	User          userInfo `json:"user,omitzero"`
-	Error         string   `json:"error,omitempty"`
+	// Audiences echoes the request's spec.audiences on success. When the
+	// apiserver runs with --api-audiences, it sends spec.audiences and discards
+	// an authenticated=true response that does not confirm a matching audience —
+	// so an empty Audiences here surfaces as a 401 despite a valid principal.
+	Audiences []string `json:"audiences,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 type userInfo struct {

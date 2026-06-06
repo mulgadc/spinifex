@@ -81,6 +81,13 @@ const (
 	// messages. Path matches k3s-first-boot.sh SPINIFEX_NATS_CA.
 	k3sNATSCAPath = "/etc/spinifex-eks/nats-ca.pem"
 
+	// k3sTokenWebhookKubeconfigPath is the apiserver token-webhook config the
+	// eks-token-webhook service (ordered `before k3s`) writes before the
+	// apiserver starts. Wired via the authentication-token-webhook-config-file
+	// apiserver arg so bearer tokens minted by `aws eks get-token` resolve
+	// through the webhook. Must match the webhook's EKS_WEBHOOK_KUBECONFIG default.
+	k3sTokenWebhookKubeconfigPath = "/etc/spinifex-eks/token-webhook.kubeconfig" //nolint:gosec // file path, not a credential
+
 	// k3sConfigPath is the K3s server config file cloud-init writes; K3s
 	// reads it at startup (overrides the AMI-baked config.yaml.skel).
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
@@ -397,6 +404,11 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - service-account-issuer=" + in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
 		"  - anonymous-auth=true",
+		"  - authentication-token-webhook-config-file=" + k3sTokenWebhookKubeconfigPath,
+		"  - authentication-token-webhook-cache-ttl=5m",
+		// Pin v1 so the apiserver decodes the webhook's authentication.k8s.io/v1
+		// TokenReview response; the default v1beta1 rejects the GVK mismatch (401).
+		"  - authentication-token-webhook-version=v1",
 	}, "\n")
 
 	files := []userDataFile{

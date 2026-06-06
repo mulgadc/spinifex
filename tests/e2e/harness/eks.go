@@ -5,6 +5,7 @@ package harness
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,11 +50,24 @@ func WaitForEKSClusterDeleted(t *testing.T, c *AWSClient, name string, opts ...P
 		if err == nil {
 			return fmt.Errorf("%s still exists", name)
 		}
-		var aerr awserr.Error
-		if errors.As(err, &aerr) && aerr.Code() == eks.ErrCodeResourceNotFoundException {
+		if isClusterNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("describe-cluster %s: %w", name, err)
 	}, cfg.timeout, cfg.interval)
 	t.Logf("cluster %s deleted", name)
+}
+
+// isClusterNotFound reports whether err is the EKS "cluster gone" error. The
+// SDK constant is "ResourceNotFoundException" but awsgw emits the doubled
+// "ResourceNotFoundExceptionException" on the wire, so match by substring.
+func isClusterNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var aerr awserr.Error
+	if errors.As(err, &aerr) {
+		return strings.Contains(aerr.Code(), "ResourceNotFound")
+	}
+	return false
 }

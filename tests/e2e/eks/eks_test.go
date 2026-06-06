@@ -257,7 +257,7 @@ func deleteClusterBestEffort(t *testing.T, c *harness.AWSClient, fx *clusterFixt
 	}
 	if _, err := c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)}); err != nil {
 		var aerr awserr.Error
-		if errors.As(err, &aerr) && aerr.Code() == eks.ErrCodeResourceNotFoundException {
+		if errors.As(err, &aerr) && strings.Contains(aerr.Code(), "ResourceNotFound") {
 			return
 		}
 		t.Logf("cleanup delete-cluster %s: %v", fx.ClusterName, err)

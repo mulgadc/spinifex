@@ -5,6 +5,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -57,7 +58,7 @@ func natsConn(t *testing.T, env *Env) (host, token, ca string) {
 	token = os.Getenv("SPINIFEX_NATS_TOKEN")
 	ca = os.Getenv("SPINIFEX_NATS_CA")
 	if host != "" {
-		return host, token, ca
+		return dialableNATSHost(host), token, ca
 	}
 
 	cfgPath := filepath.Join(env.ConfigDir, "spinifex.toml")
@@ -69,7 +70,14 @@ func natsConn(t *testing.T, env *Env) (host, token, ca string) {
 	if node == nil {
 		t.Fatalf("no node stanza with a NATS host in %s", cfgPath)
 	}
-	return node.NATS.Host, node.NATS.ACL.Token, node.NATS.CACert
+	return dialableNATSHost(node.NATS.Host), node.NATS.ACL.Token, node.NATS.CACert
+}
+
+// dialableNATSHost rewrites a wildcard bind address to loopback. NATS.Host is a
+// bind address (commonly 0.0.0.0:4222); the TLS serving cert SANs the loopback
+// and real node IPs but not 0.0.0.0, so dial 127.0.0.1 instead.
+func dialableNATSHost(host string) string {
+	return strings.Replace(host, "0.0.0.0", "127.0.0.1", 1)
 }
 
 // nodeConfig returns the local node's Config (cc.Node), falling back to the

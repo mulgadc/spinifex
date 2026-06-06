@@ -406,6 +406,9 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - anonymous-auth=true",
 		"  - authentication-token-webhook-config-file=" + k3sTokenWebhookKubeconfigPath,
 		"  - authentication-token-webhook-cache-ttl=5m",
+		// Pin v1 so the apiserver decodes the webhook's authentication.k8s.io/v1
+		// TokenReview response; the default v1beta1 rejects the GVK mismatch (401).
+		"  - authentication-token-webhook-version=v1",
 	}, "\n")
 
 	files := []userDataFile{

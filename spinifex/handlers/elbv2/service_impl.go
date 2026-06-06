@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -280,9 +281,30 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 
 // buildLBAgentEnv returns the KEY=value blob written to /etc/conf.d/lb-agent
 // via fw_cfg on the direct-boot path.
-func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID, scheme string) string {
 	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
-		lbID, s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
+		lbID, s.agentGatewayURL(scheme), s.SystemAccessKey, s.SystemSecretKey, s.region)
+}
+
+// agentGatewayURL returns the AWSGW URL the lb-agent dials. Internal-scheme LBs
+// on single-node have no dedicated mgmt-bind IP on br-mgmt (MgmtRouteTarget is
+// empty), so the advertised IP in GatewayURL lives on a different bridge than
+// the agent's mgmt NIC and the cross-bridge return path is unreliable. Target
+// the br-mgmt host IP instead — it shares the agent's mgmt L2, mirroring the
+// multi-node datapath where the agent reaches AWSGW over br-mgmt directly. This
+// requires AWSGW to listen on br-mgmt (bind 0.0.0.0); the server cert already
+// carries the br-mgmt IP as a SAN.
+func (s *ELBv2ServiceImpl) agentGatewayURL(scheme string) string {
+	if scheme == SchemeInternal && s.MgmtBridgeIP != "" && s.MgmtRouteTarget == "" && s.GatewayURL != "" {
+		if u, err := url.Parse(s.GatewayURL); err == nil {
+			port := u.Port()
+			if port == "" {
+				port = "9999"
+			}
+			return "https://" + net.JoinHostPort(s.MgmtBridgeIP, port)
+		}
+	}
+	return s.GatewayURL
 }
 
 // subnetCIDRForIP computes "ip/prefixlen" given a host IP and the subnet's
@@ -518,7 +540,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		Scheme:       lb.Scheme,
 		AccountID:    lb.AccountID,
 		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
+		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID, lb.Scheme),
 		CACert:       s.CACert,
 	}, nil
 }
@@ -1169,7 +1191,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				Scheme:       scheme,
 				AccountID:    accountID,
 				NICs:         nics,
-				LBAgentEnv:   s.buildLBAgentEnv(lbID),
+				LBAgentEnv:   s.buildLBAgentEnv(lbID, scheme),
 				CACert:       s.CACert,
 			}
 		}

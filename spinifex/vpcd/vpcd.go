@@ -525,10 +525,13 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	// IMDS per-subnet localport installer. Replicas track the chassis count so
-	// the subnet-veth bucket survives a node loss (create-or-open: awsgw inits the
-	// same bucket; first writer wins).
-	imdsVethKV, _, err := handlers_imds.InitBuckets(js, max(len(chassisNames), 1))
+	// IMDS per-subnet localport installer. Create the KV bucket at a single
+	// replica; the daemon's deferred upgradeJetStreamReplicas bumps all KV_*
+	// streams to the cluster size once the cluster is ready. Using the chassis
+	// count here requested more replicas than a single-node JetStream could
+	// satisfy (chassis count can exceed NATS node count), failing the create
+	// with "bucket not found".
+	imdsVethKV, _, err := handlers_imds.InitBuckets(js, 1)
 	if err != nil {
 		return fmt.Errorf("init imds buckets: %w", err)
 	}

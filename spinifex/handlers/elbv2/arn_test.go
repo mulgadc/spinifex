@@ -48,7 +48,7 @@ func TestBuildLBAgentEnv(t *testing.T) {
 		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		region:          "ap-southeast-2",
 	}
-	env := svc.buildLBAgentEnv("lb-abc123", SchemeInternetFacing)
+	env := svc.buildLBAgentEnv("lb-abc123")
 
 	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
 	kvs := make(map[string]string, len(lines))
@@ -63,30 +63,6 @@ func TestBuildLBAgentEnv(t *testing.T) {
 	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", kvs["LB_ACCESS_KEY"])
 	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", kvs["LB_SECRET_KEY"])
 	assert.Equal(t, "ap-southeast-2", kvs["LB_REGION"])
-}
-
-// TestAgentGatewayURL covers the internal-scheme br-mgmt override: on single-node
-// (MgmtRouteTarget empty) internal LBs must dial the br-mgmt host IP, while
-// internet-facing LBs and the multi-node case keep GatewayURL untouched.
-func TestAgentGatewayURL(t *testing.T) {
-	base := func() *ELBv2ServiceImpl {
-		return &ELBv2ServiceImpl{GatewayURL: "https://192.168.0.140:9999", MgmtBridgeIP: "10.15.8.1"}
-	}
-
-	// Internal + single-node fallback (MgmtRouteTarget empty) → br-mgmt IP.
-	assert.Equal(t, "https://10.15.8.1:9999", base().agentGatewayURL(SchemeInternal))
-
-	// Internet-facing → unchanged.
-	assert.Equal(t, "https://192.168.0.140:9999", base().agentGatewayURL(SchemeInternetFacing))
-
-	// Multi-node internal (MgmtRouteTarget set) → unchanged.
-	svc := base()
-	svc.MgmtRouteTarget = "10.20.0.5"
-	assert.Equal(t, "https://192.168.0.140:9999", svc.agentGatewayURL(SchemeInternal))
-
-	// Internal but no br-mgmt → unchanged (nothing to fall back to).
-	svc = &ELBv2ServiceImpl{GatewayURL: "https://192.168.0.140:9999"}
-	assert.Equal(t, "https://192.168.0.140:9999", svc.agentGatewayURL(SchemeInternal))
 }
 
 // TestSubnetCIDRForIP and TestSubnetGatewayIP cover the CIDR helpers.

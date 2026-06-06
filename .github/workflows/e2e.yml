@@ -154,6 +154,51 @@ jobs:
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
 
+      # The eks suite's CreateCluster boots a control-plane VM from the
+      # eks-node AMI, so that AMI must exist in the VM's image store before the
+      # suite runs. build-system-image.sh customizes the image with libguestfs
+      # (an isolated userspace appliance) — it touches no host block device, so
+      # it is safe on the shared runner. The build needs the spinifex source +
+      # network (runner only); the import needs predastore/NATS (VM only), so
+      # build on the runner then ship the raw and import on the VM.
+      - name: Build eks-node AMI (libguestfs, runner)
+        if: contains(env.SUITES, 'e2e-eks')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build eks-node AMI (libguestfs — no host devices)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # Debian/Ubuntu ship /boot/vmlinuz-* mode 0600; the libguestfs
+          # appliance needs to read a host kernel. direct backend = no libvirt.
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          group_open "make build-eks-node-image"
+          make build-eks-node-image
+          group_close
+          ok "raw: $(du -h /tmp/eks-node-image-build/eks-node-alpine.raw | cut -f1)"
+
+      - name: Import eks-node AMI on VM
+        if: contains(env.SUITES, 'e2e-eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # Pull import args straight from the manifest so they never drift.
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/eks-node/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import eks-node AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "$VM":/tmp/eks-node-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/eks-node-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}"
+          ok "eks-node AMI imported"
+
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e
         run: |

@@ -1,16 +1,17 @@
 #!/bin/sh
 set -eu
 
-# setup.sh — chroot customisation for the unified eks-node AMI (server + agent).
+# setup.sh — guest customisation for the unified eks-node AMI (server + agent).
 #
-# Runs inside an Alpine 3.21 chroot under build-system-image.sh after packages
-# and binaries are installed. Downloads the pinned K3s binary, verifies its
-# SHA256, drops it into /usr/local/bin, sets executable bits on all role init
-# scripts + cron entries, and writes the K3s server config skeleton. The role
-# (server vs agent) is selected per-instance at first boot by eks-node-role.
+# Runs inside the libguestfs appliance (via virt-customize --run) under
+# build-system-image.sh after packages and binaries are installed. Downloads the
+# pinned K3s binary, verifies its SHA256, drops it into /usr/local/bin, sets
+# executable bits on all role init scripts + cron entries, and writes the K3s
+# server config skeleton. The role (server vs agent) is selected per-instance at
+# first boot by eks-node-role.
 #
-# Network access inside the chroot is provided by the host's /etc/resolv.conf
-# (build-system-image.sh copies it in). curl is in APK_PACKAGES.
+# Network access inside the appliance is provided by virt-customize --network.
+# curl is in APK_PACKAGES.
 
 K3S_VERSION="v1.32.5+k3s1"
 K3S_URL_BASE="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}"

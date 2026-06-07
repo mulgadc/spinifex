@@ -565,7 +565,12 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          # eks is excluded on multinode: EKS KV is a clustered (Raft) JetStream
+          # stream and create-cluster needs an elected leader, but multinode
+          # JetStream clustering isn't solid yet (mulga-omq/z2z/5yg). EKS is
+          # validated single-node only for now; re-enable here once clustered
+          # JetStream + multinode EKS are a deliberate target.
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -648,7 +653,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"

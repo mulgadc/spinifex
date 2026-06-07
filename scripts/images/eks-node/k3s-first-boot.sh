@@ -40,8 +40,13 @@ if [ ! -f "${ENVFILE}" ]; then
     die "${ENVFILE} not found — cloud-init did not seed first-boot env"
 fi
 
+# set -a so the sourced KEY=value lines are exported: the eks-gateway-publish
+# child reads its config from the environment (EKS_ACCOUNT_ID etc.). A bare
+# source leaves them unexported and the helper exits "--account-id is required".
+set -a
 # shellcheck disable=SC1090
 . "${ENVFILE}"
+set +a
 
 for v in EKS_GATEWAY_URL EKS_ACCESS_KEY EKS_SECRET_KEY EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_NLB_ENDPOINT; do
     eval "val=\${$v:-}"

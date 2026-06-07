@@ -18,8 +18,13 @@ set -eu
 
 ENVFILE=/etc/spinifex-eks/first-boot.env
 [ -f "${ENVFILE}" ] || { logger -t mulga-eks-state-report "${ENVFILE} missing — exiting"; exit 0; }
+# set -a so the sourced KEY=value lines are exported to the eks-gateway-publish
+# child (it reads EKS_ACCOUNT_ID etc. from its environment); a bare source
+# leaves them unexported and the helper exits "--account-id is required".
+set -a
 # shellcheck disable=SC1090
 . "${ENVFILE}"
+set +a
 
 : "${EKS_GATEWAY_URL:?}"
 : "${EKS_ACCESS_KEY:?}"

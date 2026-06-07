@@ -5,13 +5,17 @@ set -eu
 # Reads the bootstrap node-token and admin kubeconfig that K3s writes at
 # server startup, rewrites the kubeconfig server address to the cluster's
 # NLB endpoint (so workers and external kubectl can use it), and publishes
-# both as one-shot NATS messages for the spinifex cluster reconciler to
-# consume into KV.
+# the bootstrap artifacts to the host via the AWS gateway (SigV4-signed HTTPS
+# POST — the eks-gateway-publish helper) for the spinifex cluster reconciler
+# to consume into KV. The gateway relays onto the eks.bus.* NATS subjects; the
+# VM never speaks NATS directly.
 #
 # Required env (from cloud-init user-data /etc/spinifex-eks/first-boot.env):
-#   SPINIFEX_NATS_URL          nats://...
-#   SPINIFEX_NATS_TOKEN        shared NATS auth token
-#   SPINIFEX_NATS_CA           /etc/spinifex-eks/nats-ca.pem (TLS CA bundle)
+#   EKS_GATEWAY_URL            https://{mgmt-host}:9999 (AWS gateway)
+#   EKS_GATEWAY_CA             /etc/spinifex-eks/gateway-ca.pem (TLS CA bundle)
+#   EKS_ACCESS_KEY             system SigV4 access key id
+#   EKS_SECRET_KEY             system SigV4 secret access key
+#   EKS_REGION                 SigV4 signing region
 #   EKS_ACCOUNT_ID
 #   EKS_CLUSTER_NAME
 #   EKS_NLB_ENDPOINT           https://{cluster}.{accountID}.eks.{region}.{suffix}
@@ -36,10 +40,15 @@ if [ ! -f "${ENVFILE}" ]; then
     die "${ENVFILE} not found — cloud-init did not seed first-boot env"
 fi
 
+# set -a so the sourced KEY=value lines are exported: the eks-gateway-publish
+# child reads its config from the environment (EKS_ACCOUNT_ID etc.). A bare
+# source leaves them unexported and the helper exits "--account-id is required".
+set -a
 # shellcheck disable=SC1090
 . "${ENVFILE}"
+set +a
 
-for v in SPINIFEX_NATS_URL EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_NLB_ENDPOINT; do
+for v in EKS_GATEWAY_URL EKS_ACCESS_KEY EKS_SECRET_KEY EKS_ACCOUNT_ID EKS_CLUSTER_NAME EKS_NLB_ENDPOINT; do
     eval "val=\${$v:-}"
     [ -n "${val}" ] || die "env ${v} not set"
 done
@@ -105,23 +114,18 @@ CA_B64=$(awk '/certificate-authority-data:/ {print $2; exit}' "${KUBECONFIG_FILE
 JWKS=$(kubectl --kubeconfig "${KUBECONFIG_FILE}" get --raw='/openid/v1/jwks' 2>/dev/null)
 [ -n "${JWKS}" ] || die "apiserver returned empty /openid/v1/jwks"
 
-# 3. Publish the four one-shot bootstrap messages. Each is a BootstrapEnvelope
-# JSON document (handlers/eks/nats_bootstrap.go); jq encodes the values so
-# embedded newlines/quotes in the kubeconfig and JWKS stay valid JSON.
-NATS_ARGS="-s ${SPINIFEX_NATS_URL}"
-if [ -n "${SPINIFEX_NATS_TOKEN:-}" ]; then
-    NATS_ARGS="${NATS_ARGS} --token ${SPINIFEX_NATS_TOKEN}"
-fi
-if [ -n "${SPINIFEX_NATS_CA:-}" ] && [ -f "${SPINIFEX_NATS_CA}" ]; then
-    NATS_ARGS="${NATS_ARGS} --tlsca ${SPINIFEX_NATS_CA}"
-fi
+# 3. Publish the four bootstrap messages through the AWS gateway. Each is a
+# BootstrapEnvelope JSON document (handlers/eks/nats_bootstrap.go); jq encodes
+# the values so embedded newlines/quotes in the kubeconfig and JWKS stay valid
+# JSON. eks-gateway-publish SigV4-signs the POST and retries until the gateway
+# acks, then the gateway relays onto eks.bus.{account}.{cluster}.{kind}. It
+# reads EKS_GATEWAY_URL/EKS_GATEWAY_CA/EKS_ACCESS_KEY/EKS_SECRET_KEY/EKS_REGION/
+# EKS_ACCOUNT_ID/EKS_CLUSTER_NAME from the env file already sourced above.
 
 # publish_envelope <kind-suffix>: reads the envelope JSON from stdin.
 publish_envelope() {
-    subj="eks.bus.${EKS_ACCOUNT_ID}.${EKS_CLUSTER_NAME}.$1"
-    log "publishing $1 to ${subj}"
-    # shellcheck disable=SC2086
-    nats ${NATS_ARGS} pub "${subj}" --force-stdin
+    log "publishing $1 via gateway"
+    eks-gateway-publish -channel bootstrap -kind "$1"
 }
 
 jq -n --arg t "${NODE_TOKEN}"           '{token: $t}'                | publish_envelope k3s-bootstrap-token

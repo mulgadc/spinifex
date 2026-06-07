@@ -21,6 +21,16 @@ func TestGenerateEKSErrorResponse_ShapesExceptionSuffix(t *testing.T) {
 	assert.Equal(t, "Cluster does not exist", env.Message)
 }
 
+// Codes that already carry the "Exception" suffix (e.g.
+// awserrors.ErrorEKSResourceNotFound = "ResourceNotFoundException") must not be
+// doubled into ResourceNotFoundExceptionException, which SDK clients reject.
+func TestGenerateEKSErrorResponse_DoesNotDoubleExceptionSuffix(t *testing.T) {
+	body := GenerateEKSErrorResponse("ResourceNotFoundException", "Cluster does not exist")
+	var env EKSJSONError
+	require.NoError(t, json.Unmarshal(body, &env))
+	assert.Equal(t, eks.ErrCodeResourceNotFoundException, env.Type)
+}
+
 func TestWriteJSONError_SetsContentTypeAndStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	WriteJSONError(w, "NotImplemented", "Operation not implemented", http.StatusNotImplemented)

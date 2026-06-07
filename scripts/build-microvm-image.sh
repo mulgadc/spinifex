@@ -33,7 +33,7 @@ mkdir -p "$BUILD_DIR"
 # faked-root environment so no real device node is ever created on the host
 # filesystem (which previously required sudo mknod and risked clobbering host
 # /dev/null on cleanup).
-for tool in cpio gzip find fakeroot depmod; do
+for tool in cpio gzip find fakeroot; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required tool not found: $tool" >&2
         exit 1
@@ -231,17 +231,26 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     # host-kmod dependency entirely and the guest needs no decompressor either.
     find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
 
-    # Regenerate module dependency map from the surviving modules. A usable
-    # modules.dep is mandatory: the guest init's load_mod() tries modprobe
-    # first, and busybox modprobe silently no-ops without it. Fail loudly here
-    # rather than ship an image that depends on init's insmod fallback alone.
-    if ! depmod -b "$CHROOT_DIR" "$kver"; then
-        echo "ERROR: depmod failed for $kver" >&2
-        exit 1
-    fi
-    if [ ! -s "$kver_dir/modules.dep" ]; then
-        echo "ERROR: ${kver_dir}modules.dep missing or empty after depmod" >&2
-        exit 1
+    # Regenerate the module dependency map when a host depmod is available. A
+    # populated modules.dep lets the guest init's load_mod() resolve modules via
+    # modprobe; without it, load_mod() falls back to insmod-by-path (see
+    # build/microvm/init.sh), so modules.dep is an optimisation, not a boot
+    # requirement. depmod (kmod) is absent on some self-hosted CI runners and
+    # cannot be apt-installed there — skip rather than hard-fail. When depmod
+    # IS present, still assert a non-empty result so the trixie-kmod-can't-read
+    # -compressed-modules bug (empty modules.dep from .ko.gz) fails loudly.
+    if command -v depmod >/dev/null 2>&1; then
+        if ! depmod -b "$CHROOT_DIR" "$kver"; then
+            echo "ERROR: depmod failed for $kver" >&2
+            exit 1
+        fi
+        if [ ! -s "$kver_dir/modules.dep" ]; then
+            echo "ERROR: ${kver_dir}modules.dep missing or empty after depmod" >&2
+            exit 1
+        fi
+    else
+        echo "[build-microvm-image] depmod not found; skipping modules.dep" \
+             "(guest init load_mod() will insmod modules by path)" >&2
     fi
 done
 

@@ -78,15 +78,6 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - name: Install kmod (depmod)
-        if: steps.gate.outputs.selected == 'true'
-        # build-microvm-image's mandatory-tool preflight requires depmod (from
-        # the kmod package); self-hosted runners don't ship it. Idempotent —
-        # no-op once baked into the runner/gold image.
-        run: |
-          command -v depmod >/dev/null 2>&1 || \
-            { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends kmod; }
-
       - name: Build Install Artifacts
         if: steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster

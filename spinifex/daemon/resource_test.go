@@ -442,3 +442,24 @@ func TestResolveHostReserve(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveHostVCPU(t *testing.T) {
+	const detected = 12
+	tests := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{name: "no env returns detected", env: "", want: detected},
+		{name: "valid override", env: "8", want: 8},
+		{name: "non-numeric falls back to detected", env: "garbage", want: detected},
+		{name: "zero falls back to detected", env: "0", want: detected},
+		{name: "negative falls back to detected", env: "-4", want: detected},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveHostVCPU(func(string) string { return tc.env }, detected)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

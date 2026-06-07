@@ -27,11 +27,11 @@ import (
 func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params map[string]string) (status int, body []byte, awsCode string) {
 	t.Helper()
 
-	endpoint := c.EC2.Endpoint
+	endpoint := c.EC2Conf.Endpoint
 	if endpoint == "" {
 		t.Fatalf("PostAWSAction: EC2 endpoint not configured")
 	}
-	region := aws.StringValue(c.EC2.Config.Region)
+	region := aws.StringValue(c.EC2Conf.Config.Region)
 
 	form := url.Values{}
 	form.Set("Action", action)
@@ -51,7 +51,7 @@ func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params m
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 
-	creds := c.EC2.Config.Credentials
+	creds := c.EC2Conf.Config.Credentials
 	if creds == nil {
 		t.Fatalf("PostAWSAction: no credentials on client")
 	}
@@ -64,7 +64,7 @@ func PostAWSAction(t *testing.T, env *Env, c *AWSClient, action string, params m
 	// Reuse the EC2 client's HTTP transport so TLS trust matches the rest of
 	// the suite. Fall back to a CA-loaded transport if the embedded client
 	// is using the SDK default.
-	httpClient := c.EC2.Config.HTTPClient
+	httpClient := c.EC2Conf.Config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{}},

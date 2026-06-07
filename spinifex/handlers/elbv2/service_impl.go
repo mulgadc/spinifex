@@ -859,12 +859,19 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	}
 
 	lbID := *input.LBID
+	slog.Debug("LBAgentHeartbeat received", "lbId", lbID, "accountId", accountID)
 	lb, err := s.store.GetLoadBalancer(lbID)
 	if err != nil {
 		slog.Error("LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+		// The heartbeat reached AWSGW (so the mgmt return path works) but
+		// cannot transition any LB. Without this the reject is silent and a
+		// stuck-in-provisioning LB looks identical to one whose heartbeat
+		// never arrived.
+		slog.Warn("LBAgentHeartbeat: LB not found or account mismatch",
+			"lbId", lbID, "accountId", accountID, "found", lb != nil)
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 

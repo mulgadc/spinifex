@@ -1,9 +1,10 @@
 #!/sbin/openrc-run
 # eks-token-webhook — K8s TokenReview authenticator for IAM-backed kubectl.
 # Binds 127.0.0.1:8443 only; kube-apiserver is the sole client (loopback path).
-# Decodes `aws eks get-token` presigned URLs, verifies them via Mulga STS over
-# NATS, and resolves the principal to a TokenReview via the cluster AccessEntry
-# KV. Ordered `before k3s` so its apiserver kubeconfig exists before k3s reads
+# Relays `aws eks get-token` bearer tokens through the AWS gateway broker (SigV4
+# HTTPS), which host-side verifies via Mulga STS + resolves the principal to a
+# TokenReview via the cluster AccessEntry KV — the VM never speaks core NATS.
+# Ordered `before k3s` so its apiserver kubeconfig exists before k3s reads
 # --authentication-token-webhook-config-file.
 
 description="EKS Token Review webhook (Mulga)"
@@ -17,13 +18,14 @@ pidfile="/run/eks-token-webhook.pid"
 output_log="/dev/console"
 error_log="/dev/console"
 
-# NATS creds + cluster identity come from the cloud-init-seeded first-boot env.
-# Sourced here and exported so start-stop-daemon hands them to the binary, which
-# reads SPINIFEX_NATS_* / EKS_ACCOUNT_ID / EKS_CLUSTER_NAME from its environment.
+# Gateway endpoint + SigV4 creds + cluster identity come from the cloud-init-
+# seeded first-boot env. Sourced here and exported so start-stop-daemon hands
+# them to the binary, which reads EKS_GATEWAY_* / EKS_ACCESS_KEY / EKS_SECRET_KEY
+# / EKS_REGION / EKS_ACCOUNT_ID / EKS_CLUSTER_NAME from its environment.
 if [ -f /etc/spinifex-eks/first-boot.env ]; then
     # shellcheck disable=SC1091
     . /etc/spinifex-eks/first-boot.env
-    export SPINIFEX_NATS_URL SPINIFEX_NATS_TOKEN SPINIFEX_NATS_CA EKS_ACCOUNT_ID EKS_CLUSTER_NAME
+    export EKS_GATEWAY_URL EKS_GATEWAY_CA EKS_ACCESS_KEY EKS_SECRET_KEY EKS_REGION EKS_ACCOUNT_ID EKS_CLUSTER_NAME
 fi
 
 depend() {
@@ -33,7 +35,7 @@ depend() {
 
 start_pre() {
     if [ ! -f /etc/spinifex-eks/first-boot.env ]; then
-        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed NATS creds"
+        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed gateway creds"
         return 1
     fi
 }

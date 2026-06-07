@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -33,6 +34,7 @@ type AWSClient struct {
 	ELBv2   *elbv2.ELBV2
 	IAM     *iam.IAM
 	STS     *sts.STS
+	EKS   *eks.EKS
 }
 
 // NewAWSClient builds clients pointed at https://<endpoint>:<port>/ using the
@@ -135,6 +137,7 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		ELBv2:   elbv2.New(sess),
 		IAM:     iam.New(sess),
 		STS:     sts.New(sess),
+		EKS:   eks.New(sess),
 	}
 }
 
@@ -145,6 +148,7 @@ func (c *AWSClient) IgnoreCertErrors() {
 	hc := &http.Client{Transport: tr}
 	c.EC2Conf.Config.HTTPClient = hc
 	c.ELBv2.Config.HTTPClient = hc
+	c.EKS.Config.HTTPClient = hc
 	c.IAM.Config.HTTPClient = hc
 	c.STS.Config.HTTPClient = hc
 	_ = (*x509.CertPool)(nil) // silence unused-import on hardened paths

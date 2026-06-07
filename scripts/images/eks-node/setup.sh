@@ -1,16 +1,17 @@
 #!/bin/sh
 set -eu
 
-# setup.sh — chroot customisation for the unified eks-node AMI (server + agent).
+# setup.sh — guest customisation for the unified eks-node AMI (server + agent).
 #
-# Runs inside an Alpine 3.21 chroot under build-system-image.sh after packages
-# and binaries are installed. Downloads the pinned K3s binary, verifies its
-# SHA256, drops it into /usr/local/bin, sets executable bits on all role init
-# scripts + cron entries, and writes the K3s server config skeleton. The role
-# (server vs agent) is selected per-instance at first boot by eks-node-role.
+# Runs inside the libguestfs appliance (via virt-customize --run) under
+# build-system-image.sh after packages and binaries are installed. Downloads the
+# pinned K3s binary, verifies its SHA256, drops it into /usr/local/bin, sets
+# executable bits on all role init scripts + cron entries, and writes the K3s
+# server config skeleton. The role (server vs agent) is selected per-instance at
+# first boot by eks-node-role.
 #
-# Network access inside the chroot is provided by the host's /etc/resolv.conf
-# (build-system-image.sh copies it in). curl is in APK_PACKAGES.
+# Network access inside the appliance is provided by virt-customize --network.
+# curl is in APK_PACKAGES.
 
 K3S_VERSION="v1.32.5+k3s1"
 K3S_URL_BASE="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION}"
@@ -38,19 +39,6 @@ chmod 0755 /usr/local/bin/k3s
 ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
 ln -sf /usr/local/bin/k3s /usr/local/bin/crictl
 ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
-
-# nats-cli is not in Alpine main/community — pull the upstream release binary.
-# Used by k3s-first-boot.sh (one-shot publishes) and mulga-eks-state-report.sh
-# (periodic publishes).
-NATS_CLI_VERSION="0.4.0"
-NATS_CLI_URL="https://github.com/nats-io/natscli/releases/download/v${NATS_CLI_VERSION}/nats-${NATS_CLI_VERSION}-linux-amd64.zip"
-echo "[eks-node-setup] downloading nats-cli ${NATS_CLI_VERSION}"
-curl -fsSL -o /tmp/nats-cli.zip "${NATS_CLI_URL}"
-apk add --no-cache unzip
-unzip -q -d /tmp/nats-cli /tmp/nats-cli.zip
-install -m 0755 /tmp/nats-cli/nats-${NATS_CLI_VERSION}-linux-amd64/nats /usr/local/bin/nats
-rm -rf /tmp/nats-cli /tmp/nats-cli.zip
-apk del --no-cache unzip
 
 # Init scripts ship as 0644 from INSTALL_FILES; OpenRC requires 0755. Every
 # role's services are baked; the selector enables the right ones at first boot.

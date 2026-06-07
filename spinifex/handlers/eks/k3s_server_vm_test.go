@@ -118,9 +118,10 @@ func validK3sInput() K3sServerInput {
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
 		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
 		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
-		NATSURL:           "nats://localhost:4222",
-		NATSToken:         "s3cr3t-token",
-		NATSCACert:        "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		GatewayURL:        "https://10.15.8.1:9999",
+		AccessKey:         "AKIAEXAMPLE",
+		SecretKey:         "s3cr3t-key",
+		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
 	}
 }
 
@@ -142,9 +143,10 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCIssuer", mk(func(in *K3sServerInput) { in.OIDCIssuer = "" })},
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
-		{"empty NATSURL", mk(func(in *K3sServerInput) { in.NATSURL = "" })},
-		{"empty NATSToken", mk(func(in *K3sServerInput) { in.NATSToken = "" })},
-		{"empty NATSCACert", mk(func(in *K3sServerInput) { in.NATSCACert = "  \n" })},
+		{"empty GatewayURL", mk(func(in *K3sServerInput) { in.GatewayURL = "" })},
+		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
+		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
+		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -269,9 +271,11 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// The eks-node-role first-boot selector keys off this to start control-plane
 	// services; without it the unified AMI boots into no role.
 	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
-	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
-	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")
-	assert.Contains(t, udata, "SPINIFEX_NATS_CA="+k3sNATSCAPath)
+	assert.Contains(t, udata, "EKS_GATEWAY_URL=https://10.15.8.1:9999")
+	assert.Contains(t, udata, "EKS_GATEWAY_CA="+k3sGatewayCAPath)
+	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
+	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
+	assert.Contains(t, udata, "EKS_REGION=us-east-1")
 	assert.Contains(t, udata, "EKS_ACCOUNT_ID=111122223333")
 	assert.Contains(t, udata, "EKS_CLUSTER_NAME=alpha")
 	assert.Contains(t, udata, "EKS_NLB_ENDPOINT=https://eks-alpha-lb-001.us-east-1.elb.spinifex.local:443")
@@ -302,7 +306,7 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// webhook never invoked.
 	assert.Contains(t, udata, "authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath)
 
-	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
+	assert.Contains(t, udata, "path: "+k3sGatewayCAPath)
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
 	assert.Contains(t, udata, "FAKECA")
 

@@ -41,12 +41,17 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
-	// NATS auth handed to the K3s server VM so it can publish its one-shot
-	// bootstrap messages. Shared token + CA (PEM content) + a VM-reachable
-	// URL — spinifex has no per-principal nkeys hierarchy to scope against.
-	NATSURL    string
-	NATSToken  string
-	NATSCACert string
+	// Gateway broker config handed to the K3s server VM so it can publish its
+	// bootstrap envelopes + state reports via SigV4-signed HTTPS POST to the AWS
+	// gateway (the ELBv2 lb-agent model) instead of dialing core NATS.
+	// SystemGatewayURL is the mgmt-reachable AWSGW endpoint (distinct from
+	// GatewayBaseURL, which is the OIDC issuer host); SystemAccessKey/SecretKey
+	// are the system (Predastore) SigV4 creds; GatewayCACert is the PEM that
+	// signs the gateway server cert.
+	SystemGatewayURL string
+	SystemAccessKey  string
+	SystemSecretKey  string
+	GatewayCACert    string
 
 	VPCSG     sgProvisioner
 	VPCK3s    k3sVPCProvisioner
@@ -392,9 +397,10 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
 		OIDCPublicKeyPEM:  pubPEM,
-		NATSURL:           s.deps.NATSURL,
-		NATSToken:         s.deps.NATSToken,
-		NATSCACert:        s.deps.NATSCACert,
+		GatewayURL:        s.deps.SystemGatewayURL,
+		AccessKey:         s.deps.SystemAccessKey,
+		SecretKey:         s.deps.SystemSecretKey,
+		GatewayCACert:     s.deps.GatewayCACert,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)

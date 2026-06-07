@@ -18,6 +18,7 @@ import { useDeleteCluster } from "@/mutations/eks"
 import { eksClusterQueryOptions } from "@/queries/eks"
 
 import { AccessTab } from "./access-tab"
+import { NetworkingTab } from "./networking-tab"
 import { NodegroupsTab } from "./nodegroups-tab"
 
 const AWS_REGION = "ap-southeast-2"
@@ -113,6 +114,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
           <TabsTab value="overview">Overview</TabsTab>
           <TabsTab value="compute">Compute</TabsTab>
           <TabsTab value="access">Access</TabsTab>
+          <TabsTab value="networking">Networking</TabsTab>
           <TabsTab value="connect">Connect</TabsTab>
         </TabsList>
 
@@ -153,6 +155,10 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
 
         <TabsPanel value="access">
           <AccessTab clusterName={clusterName} />
+        </TabsPanel>
+
+        <TabsPanel value="networking">
+          <NetworkingTab cluster={cluster} />
         </TabsPanel>
 
         <TabsPanel value="connect">

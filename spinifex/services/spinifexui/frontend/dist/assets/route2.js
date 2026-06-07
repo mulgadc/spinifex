@@ -1,1 +1,1 @@
-import{Ms as e,Ns as t,zs as n}from"./index.js";var r=e(),i=n(),a=()=>{let e=(0,r.c)(1),n;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(n=(0,i.jsx)(t,{}),e[0]=n):n=e[0],n};export{a as component};
+import{Bs as e,Ns as t,Ps as n}from"./index.js";var r=t(),i=e(),a=()=>{let e=(0,r.c)(1),t;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(t=(0,i.jsx)(n,{}),e[0]=t):t=e[0],t};export{a as component};

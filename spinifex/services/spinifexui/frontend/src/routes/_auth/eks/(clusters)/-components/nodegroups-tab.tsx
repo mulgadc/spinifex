@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { Trash2 } from "lucide-react"
-import { useState } from "react"
+import { SlidersHorizontal, Trash2 } from "lucide-react"
+import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
@@ -19,7 +19,11 @@ import {
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { useCreateNodegroup, useDeleteNodegroup } from "@/mutations/eks"
+import {
+  useCreateNodegroup,
+  useDeleteNodegroup,
+  useScaleNodegroup,
+} from "@/mutations/eks"
 import { ec2SubnetsQueryOptions } from "@/queries/ec2"
 import {
   eksNodegroupQueryOptions,
@@ -32,6 +36,106 @@ import {
   EKS_AMI_TYPES,
   EKS_CAPACITY_TYPES,
 } from "@/types/eks"
+
+function ScaleNodegroupDialog({
+  clusterName,
+  nodegroupName,
+  current,
+  open,
+  onOpenChange,
+}: {
+  clusterName: string
+  nodegroupName: string
+  current: { minSize?: number; desiredSize?: number; maxSize?: number }
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const scaleNodegroup = useScaleNodegroup()
+  const [minSize, setMinSize] = useState(current.minSize ?? 0)
+  const [desiredSize, setDesiredSize] = useState(current.desiredSize ?? 0)
+  const [maxSize, setMaxSize] = useState(current.maxSize ?? 0)
+  const [error, setError] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (open) {
+      setMinSize(current.minSize ?? 0)
+      setDesiredSize(current.desiredSize ?? 0)
+      setMaxSize(current.maxSize ?? 0)
+      setError(undefined)
+    }
+  }, [open, current.minSize, current.desiredSize, current.maxSize])
+
+  const handleConfirm = () => {
+    if (!(minSize <= desiredSize && desiredSize <= maxSize)) {
+      setError("Sizes must satisfy min ≤ desired ≤ max")
+      return
+    }
+    scaleNodegroup.mutate(
+      { clusterName, nodegroupName, minSize, desiredSize, maxSize },
+      { onSuccess: () => onOpenChange(false) },
+    )
+  }
+
+  return (
+    <AlertDialog onOpenChange={onOpenChange} open={open}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Scale {nodegroupName}</AlertDialogTitle>
+        </AlertDialogHeader>
+
+        <div className="grid grid-cols-3 gap-3">
+          <Field>
+            <FieldTitle>
+              <label htmlFor="scale-min">Min</label>
+            </FieldTitle>
+            <Input
+              id="scale-min"
+              onChange={(e) => setMinSize(Number(e.target.value))}
+              type="number"
+              value={minSize}
+            />
+          </Field>
+          <Field>
+            <FieldTitle>
+              <label htmlFor="scale-desired">Desired</label>
+            </FieldTitle>
+            <Input
+              id="scale-desired"
+              onChange={(e) => setDesiredSize(Number(e.target.value))}
+              type="number"
+              value={desiredSize}
+            />
+          </Field>
+          <Field>
+            <FieldTitle>
+              <label htmlFor="scale-max">Max</label>
+            </FieldTitle>
+            <Input
+              id="scale-max"
+              onChange={(e) => setMaxSize(Number(e.target.value))}
+              type="number"
+              value={maxSize}
+            />
+          </Field>
+        </div>
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={scaleNodegroup.isPending}
+            onClick={(e) => {
+              e.preventDefault()
+              handleConfirm()
+            }}
+          >
+            {scaleNodegroup.isPending ? "Scaling…" : "Scale"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
 
 function NodegroupRow({
   clusterName,
@@ -47,19 +151,31 @@ function NodegroupRow({
   )
   const ng = data?.nodegroup
   const scaling = ng?.scalingConfig
+  const [showScale, setShowScale] = useState(false)
 
   return (
     <DetailCard>
       <DetailCard.Header>
         <div className="flex items-center justify-between">
           <span>{nodegroupName}</span>
-          <Button
-            onClick={() => onDelete(nodegroupName)}
-            size="icon"
-            variant="ghost"
-          >
-            <Trash2 className="size-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              aria-label="Scale node group"
+              onClick={() => setShowScale(true)}
+              size="icon"
+              variant="ghost"
+            >
+              <SlidersHorizontal className="size-4" />
+            </Button>
+            <Button
+              aria-label="Delete node group"
+              onClick={() => onDelete(nodegroupName)}
+              size="icon"
+              variant="ghost"
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          </div>
         </div>
       </DetailCard.Header>
       <DetailCard.Content>
@@ -79,6 +195,14 @@ function NodegroupRow({
           }
         />
       </DetailCard.Content>
+
+      <ScaleNodegroupDialog
+        clusterName={clusterName}
+        current={scaling ?? {}}
+        nodegroupName={nodegroupName}
+        onOpenChange={setShowScale}
+        open={showScale}
+      />
     </DetailCard>
   )
 }

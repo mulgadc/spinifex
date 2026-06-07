@@ -21,7 +21,7 @@ set -euo pipefail
 #
 # Env (required unless --dry-run):
 #   R2_ENDPOINT            https://<account>.r2.cloudflarestorage.com
-#   R2_BUCKET              defaults to "iso-mulgadc"
+#   R2_BUCKET              defaults to "spinifex-iso" (backs iso.mulgadc.com)
 #   AWS_ACCESS_KEY_ID      R2 token access key
 #   AWS_SECRET_ACCESS_KEY  R2 token secret
 
@@ -59,7 +59,7 @@ source "$MANIFEST"
 
 DISTRO="${DISTRO:-alpine}"
 ARCH="x86_64" # build-system-image.sh builds x86_64 only today
-R2_BUCKET="${R2_BUCKET:-iso-mulgadc}"
+R2_BUCKET="${R2_BUCKET:-spinifex-iso}" # iso.mulgadc.com is served from this bucket
 
 if [[ -z "${IMAGE_NAME:-}" ]]; then
     echo "ERROR: Manifest missing required field: IMAGE_NAME"

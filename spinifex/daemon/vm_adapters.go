@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -398,6 +399,19 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		}
 		d.natsSubscriptions[consoleSubKey] = consoleSub
 
+		// Re-arm the per-instance terminate subscription for system-managed VMs
+		// (ELBv2 load balancers). The launch handler binds it at first launch,
+		// but it is lost across a daemon restart; OnInstanceUp fires on both the
+		// relaunch and the reconnect-to-surviving-QEMU recovery paths, so without
+		// this system.TerminateInstance.{id} has no responder and the VM can
+		// never be torn down (SetSubnets relaunch, DeleteLoadBalancer).
+		if instance.ManagedBy == tags.ManagedByELBv2 {
+			if subErr := d.subscribeSystemTerminateLocked(instance.ID); subErr != nil {
+				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",
+					"instanceId", instance.ID, "err", subErr)
+			}
+		}
+
 		// Re-claim GPU(s) after a daemon restart with a still-running QEMU
 		// process: the manager's reconnect path fires OnInstanceUp without
 		// going through the handler-side Claim, so the GPU pool would
@@ -468,6 +482,16 @@ func (d *Daemon) onInstanceDownHook() func(string) {
 					"instanceId", instanceID, "err", err)
 			}
 			delete(d.natsSubscriptions, consoleSubKey)
+		}
+		// Drop the system terminate subscription (system VMs only; a no-op for
+		// regular instances that never registered one).
+		terminateSubKey := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
+		if sub, ok := d.natsSubscriptions[terminateSubKey]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe system terminate topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, terminateSubKey)
 		}
 	}
 }

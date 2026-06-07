@@ -6,8 +6,24 @@ mount -t devtmpfs dev /dev
 # virtio_mmio is built-in (CONFIG_VIRTIO_MMIO=y) so virtio-net devices are
 # already enumerated by the time PID 1 runs — no modprobe needed.
 # qemu_fw_cfg and virtio_net are =m in stock Alpine linux-virt, so load them.
-modprobe qemu_fw_cfg 2>/dev/null || modprobe fw_cfg_sysfs 2>/dev/null || true
-modprobe virtio_net 2>/dev/null || true
+#
+# modprobe needs a usable modules.dep; when the image is built on a host whose
+# depmod can't produce one, busybox modprobe silently no-ops and the module
+# never loads — fw_cfg then never appears and init panics. insmod by explicit
+# path needs no modules.dep, so fall back to it. Handles .ko and .ko.gz.
+load_mod() {
+    modprobe "$1" 2>/dev/null && return 0
+    for ko in $(find /lib/modules -name "$1.ko" -o -name "$1.ko.gz" 2>/dev/null); do
+        insmod "$ko" 2>/dev/null && return 0
+        case "$ko" in
+            *.gz) gunzip -c "$ko" >/tmp/mod.ko 2>/dev/null \
+                  && insmod /tmp/mod.ko 2>/dev/null && return 0 ;;
+        esac
+    done
+    return 1
+}
+load_mod qemu_fw_cfg || load_mod fw_cfg_sysfs || true
+load_mod virtio_net || true
 
 NETCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw
 i=0

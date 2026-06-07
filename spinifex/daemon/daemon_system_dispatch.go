@@ -67,6 +67,15 @@ func (d *Daemon) subscribeSystemTerminate(instanceID string) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.subscribeSystemTerminateLocked(instanceID)
+}
+
+// subscribeSystemTerminateLocked is the body of subscribeSystemTerminate for
+// callers that already hold d.mu (e.g. onInstanceUpHook). Idempotent.
+func (d *Daemon) subscribeSystemTerminateLocked(instanceID string) error {
+	if d.natsConn == nil {
+		return nil
+	}
 	subject := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
 	if _, exists := d.natsSubscriptions[subject]; exists {
 		return nil

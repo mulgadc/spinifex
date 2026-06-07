@@ -291,6 +291,11 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
+	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
+	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
+	assert.Contains(t, udata, "disable:")
+	assert.Contains(t, udata, "  - traefik")
+	assert.Contains(t, udata, "  - servicelb")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -323,6 +328,22 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// drop a block under yaml.safe_load (last key wins).
 	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
 	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
+}
+
+func TestLaunchK3sServerVM_BuiltinIngressOptInKeepsK3sDefaults(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.BuiltinIngress = true
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// Opted in: leave K3s' traefik + servicelb running, so no disable block.
+	assert.NotContains(t, udata, "disable:")
+	assert.NotContains(t, udata, "- traefik")
+	assert.NotContains(t, udata, "- servicelb")
 }
 
 func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {

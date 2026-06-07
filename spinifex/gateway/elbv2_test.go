@@ -56,6 +56,7 @@ func TestELBv2ActionsMap_AllActionsRegistered(t *testing.T) {
 		"RemoveTags",
 		"SetSecurityGroups",
 		"SetIpAddressType",
+		"SetSubnets",
 		"LBAgentHeartbeat",
 		"GetLBConfig",
 		"ModifyTargetGroupAttributes",

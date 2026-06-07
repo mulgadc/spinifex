@@ -22,6 +22,7 @@ import {
   RemoveTagsCommand,
   SetRulePrioritiesCommand,
   SetSecurityGroupsCommand,
+  SetSubnetsCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
@@ -138,6 +139,32 @@ export function useSetSecurityGroups() {
       const command = new SetSecurityGroupsCommand({
         LoadBalancerArn: params.loadBalancerArn,
         SecurityGroups: params.securityGroupIds,
+      })
+      return await getElbv2Client().send(command)
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["elbv2", "loadBalancers", variables.loadBalancerArn],
+      })
+    },
+  })
+}
+
+export interface SetSubnetsParams {
+  loadBalancerArn: string
+  subnetIds: string[]
+}
+
+// useSetSubnets replaces the subnets a load balancer fronts (SetSubnets).
+// Server-side this re-homes the LB by relaunching its system VM, so the LB
+// query is invalidated to reflect the new availability zones once it settles.
+export function useSetSubnets() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: SetSubnetsParams) => {
+      const command = new SetSubnetsCommand({
+        LoadBalancerArn: params.loadBalancerArn,
+        Subnets: params.subnetIds,
       })
       return await getElbv2Client().send(command)
     },

@@ -73,6 +73,11 @@ type ClusterMeta struct {
 	// report (server + joined agents). Surfaces nodegroup join/scale progress
 	// without the host needing apiserver reachability.
 	NodeCount int `json:"nodeCount,omitempty"`
+	// BuiltinIngress records whether the cluster opted into K3s' bundled
+	// traefik + servicelb (dev / interim in-VPC app exposure), derived from the
+	// managed-ingress tag at CreateCluster. Default false = AWS parity (built-ins
+	// disabled; ingress via the AWS Load Balancer Controller).
+	BuiltinIngress bool `json:"builtinIngress,omitempty"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /

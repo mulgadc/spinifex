@@ -274,6 +274,18 @@ func logCreateErr(name, accountID, stage string, err error) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
+// managedIngressTagKey is the CreateCluster tag that opts a cluster into K3s'
+// bundled traefik + servicelb (dev / interim in-VPC app exposure). Value "true"
+// (case-insensitive) enables it; absent or any other value keeps AWS parity
+// (built-ins disabled, ingress via the AWS Load Balancer Controller).
+const managedIngressTagKey = "spinifex.io/managed-ingress"
+
+// builtinIngressEnabled reports whether the CreateCluster tags opt into the K3s
+// built-in ingress stack.
+func builtinIngressEnabled(tags map[string]*string) bool {
+	return strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "true")
+}
+
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
@@ -337,7 +349,8 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			SubnetIds: subnetIDs,
 			VpcId:     vpcID,
 		},
-		CreatedAt: time.Now().UTC(),
+		BuiltinIngress: builtinIngressEnabled(input.Tags),
+		CreatedAt:      time.Now().UTC(),
 	}
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		return nil, logCreateErr(name, accountID, "persist initial meta", err)
@@ -401,6 +414,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		AccessKey:         s.deps.SystemAccessKey,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
+		BuiltinIngress:    meta.BuiltinIngress,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)

@@ -132,6 +132,11 @@ type K3sServerInput struct {
 	SecretKey     string
 	GatewayCACert string
 	InstanceType  string
+	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (dev /
+	// interim in-VPC app exposure). Default false disables them for AWS parity,
+	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
+	// Balancer Controller instead.
+	BuiltinIngress bool
 }
 
 // K3sServerOutput carries the identifiers the caller needs to persist into
@@ -405,23 +410,34 @@ func buildK3sUserData(in K3sServerInput) string {
 	// probes https://<NLB>/healthz anonymously to gate ACTIVE, so it must be
 	// reachable; the default RBAC binds only the health/version non-resource
 	// paths to system:unauthenticated, so this exposes nothing else.
-	k3sConfig := strings.Join([]string{
+	// In real EKS neither traefik nor servicelb exists; Service type=LoadBalancer
+	// and Ingress are reconciled by the AWS Load Balancer Controller. Disable the
+	// K3s built-ins by default for parity. A cluster opted into built-in ingress
+	// (dev / interim) keeps them so apps are reachable in-VPC before the
+	// controller add-on lands.
+	configLines := []string{
 		"cluster-init: true",
 		"etcd-expose-metrics: true",
+	}
+	if !in.BuiltinIngress {
+		configLines = append(configLines, "disable:", "  - traefik", "  - servicelb")
+	}
+	configLines = append(configLines,
 		"tls-san:",
-		"  - " + in.NLBDNS,
+		"  - "+in.NLBDNS,
 		"kube-apiserver-arg:",
-		"  - service-account-key-file=" + k3sOIDCPublicKeyPath,
-		"  - service-account-signing-key-file=" + k3sOIDCSigningKeyPath,
-		"  - service-account-issuer=" + in.OIDCIssuer,
+		"  - service-account-key-file="+k3sOIDCPublicKeyPath,
+		"  - service-account-signing-key-file="+k3sOIDCSigningKeyPath,
+		"  - service-account-issuer="+in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
 		"  - anonymous-auth=true",
-		"  - authentication-token-webhook-config-file=" + k3sTokenWebhookKubeconfigPath,
+		"  - authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath,
 		"  - authentication-token-webhook-cache-ttl=5m",
 		// Pin v1 so the apiserver decodes the webhook's authentication.k8s.io/v1
 		// TokenReview response; the default v1beta1 rejects the GVK mismatch (401).
 		"  - authentication-token-webhook-version=v1",
-	}, "\n")
+	)
+	k3sConfig := strings.Join(configLines, "\n")
 
 	files := []userDataFile{
 		// first-boot.env carries the system SigV4 secret key, so keep it

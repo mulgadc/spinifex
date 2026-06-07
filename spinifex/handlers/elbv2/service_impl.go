@@ -436,6 +436,81 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 	return extras
 }
 
+// lbVMLaunch is the outcome of booting the system VM that backs a load
+// balancer. failed is true when the VM could not be launched (missing system
+// credentials or a launcher error) so the caller can mark the LB failed.
+type lbVMLaunch struct {
+	instanceID string
+	vpcIP      string
+	publicIP   string
+	hostPorts  map[int]int
+	failed     bool
+}
+
+// launchLBVM boots the system VM backing a load balancer with the given ENI
+// set. The first ENI is the primary NIC; any additional ENIs are passed as
+// ExtraENIs so the daemon sets up a tap + QEMU NIC per subnet, giving the LB VM
+// data-plane presence in every subnet it spans. When no launcher is configured
+// the call is a no-op (zero value, failed=false) so launcher-less deployments
+// keep the LB Active. Shared by CreateLoadBalancer and the SetSubnets relaunch.
+func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string) lbVMLaunch {
+	var res lbVMLaunch
+	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
+		return res
+	}
+
+	eniDetails := s.describeENIs(eniIDs, accountID)
+	primary := eniDetails[eniIDs[0]]
+	primaryIP := ""
+	primaryMAC := ""
+	if primary != nil {
+		primaryIP = aws.StringValue(primary.PrivateIpAddress)
+		primaryMAC = aws.StringValue(primary.MacAddress)
+	}
+
+	extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
+
+	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
+		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
+		res.failed = true
+		return res
+	}
+
+	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
+	launchInput := &SystemInstanceInput{
+		InstanceType: s.getSystemInstanceType(),
+		SubnetID:     subnets[0],
+		ENIID:        eniIDs[0],
+		ENIMac:       primaryMAC,
+		ENIIP:        primaryIP,
+		ExtraENIs:    extraENIInputs,
+		Scheme:       scheme,
+		AccountID:    accountID,
+		NICs:         nics,
+		LBAgentEnv:   s.buildLBAgentEnv(lbID),
+		CACert:       s.CACert,
+	}
+	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
+	// In production (VPC networking), traffic reaches the LB VM's VPC IP directly.
+	if s.config != nil && s.config.Daemon.DevNetworking {
+		launchInput.HostfwdPorts = []int{80, 443}
+	}
+
+	out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
+	if launchErr != nil {
+		slog.Error("launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
+		res.failed = true
+		return res
+	}
+
+	res.instanceID = out.InstanceID
+	res.vpcIP = out.PrivateIP
+	res.publicIP = out.PublicIP
+	res.hostPorts = out.HostfwdMap
+	slog.Info("launchLBVM: LB VM launched", "lbId", lbID, "instanceId", out.InstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", out.HostfwdMap)
+	return res
+}
+
 // loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
 // first successful call. Errors are not cached: a transient JetStream
 // failure at startup must not condemn every subsequent recovery candidate
@@ -1143,64 +1218,14 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// The first ENI is the primary NIC; any additional ENIs are passed as
 	// ExtraENIs so the daemon sets up a tap + QEMU NIC for each, giving the
 	// ALB VM data-plane presence in every subnet the LB spans.
-	var albInstanceID string
-	var albVPCIP string
-	var hostPorts map[int]int
-	var launchFailed bool
-	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		eniDetails := s.describeENIs(eniIDs, accountID)
-
-		primary := eniDetails[eniIDs[0]]
-		primaryIP := ""
-		primaryMAC := ""
-		if primary != nil {
-			primaryIP = aws.StringValue(primary.PrivateIpAddress)
-			primaryMAC = aws.StringValue(primary.MacAddress)
-		}
-
-		extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
-
-		var launchInput *SystemInstanceInput
-		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
-			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID)
-			launchFailed = true
-		} else {
-			nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
-			launchInput = &SystemInstanceInput{
-				InstanceType: s.getSystemInstanceType(),
-				SubnetID:     subnets[0],
-				ENIID:        eniIDs[0],
-				ENIMac:       primaryMAC,
-				ENIIP:        primaryIP,
-				ExtraENIs:    extraENIInputs,
-				Scheme:       scheme,
-				AccountID:    accountID,
-				NICs:         nics,
-				LBAgentEnv:   s.buildLBAgentEnv(lbID),
-				CACert:       s.CACert,
-			}
-		}
-		if !launchFailed && launchInput != nil {
-			// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
-			// In production (VPC networking), traffic reaches the ALB VM's VPC IP directly.
-			if s.config != nil && s.config.Daemon.DevNetworking {
-				launchInput.HostfwdPorts = []int{80, 443}
-			}
-			out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
-			if launchErr != nil {
-				slog.Error("CreateLoadBalancer: failed to launch ALB VM", "lbId", lbID, "err", launchErr)
-				launchFailed = true
-			} else {
-				albInstanceID = out.InstanceID
-				albVPCIP = out.PrivateIP
-				hostPorts = out.HostfwdMap
-				// Record public IP on the first AZ entry for internet-facing ALBs.
-				if out.PublicIP != "" && len(availZones) > 0 {
-					availZones[0].PublicIP = out.PublicIP
-				}
-				slog.Info("CreateLoadBalancer: ALB VM launched", "lbId", lbID, "instanceId", albInstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", hostPorts)
-			}
-		}
+	launch := s.launchLBVM(lbID, scheme, eniIDs, subnets, accountID)
+	albInstanceID := launch.instanceID
+	albVPCIP := launch.vpcIP
+	hostPorts := launch.hostPorts
+	launchFailed := launch.failed
+	// Record public IP on the first AZ entry for internet-facing LBs.
+	if launch.publicIP != "" && len(availZones) > 0 {
+		availZones[0].PublicIP = launch.publicIP
 	}
 
 	// ALB starts in provisioning until the agent inside the VM connects and

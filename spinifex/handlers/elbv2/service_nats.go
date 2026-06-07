@@ -143,6 +143,10 @@ func (s *NATSELBv2Service) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 	return utils.NATSRequest[elbv2.SetIpAddressTypeOutput](s.natsConn, "elbv2.SetIpAddressType", input, defaultTimeout, accountID)
 }
 
+func (s *NATSELBv2Service) SetSubnets(input *elbv2.SetSubnetsInput, accountID string) (*elbv2.SetSubnetsOutput, error) {
+	return utils.NATSRequest[elbv2.SetSubnetsOutput](s.natsConn, "elbv2.SetSubnets", input, defaultTimeout, accountID)
+}
+
 func (s *NATSELBv2Service) AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
 	return utils.NATSRequest[elbv2.AddListenerCertificatesOutput](s.natsConn, "elbv2.AddListenerCertificates", input, defaultTimeout, accountID)
 }

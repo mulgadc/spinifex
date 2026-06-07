@@ -14,6 +14,7 @@ import {
 } from "@/components/elbv2/attributes-editor"
 import { ListenersTab } from "@/components/elbv2/listeners-tab"
 import { SecurityGroupsEditor } from "@/components/elbv2/security-groups-editor"
+import { SubnetsEditor } from "@/components/elbv2/subnets-editor"
 import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
@@ -25,6 +26,7 @@ import {
   useDeleteLoadBalancer,
   useModifyLoadBalancerAttributes,
   useSetSecurityGroups,
+  useSetSubnets,
   useUpdateTags,
 } from "@/mutations/elbv2"
 import {
@@ -55,6 +57,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
   const modifyAttrsMutation = useModifyLoadBalancerAttributes()
   const updateTagsMutation = useUpdateTags()
   const setSecurityGroupsMutation = useSetSecurityGroups()
+  const setSubnetsMutation = useSetSubnets()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   const lb = lbData.LoadBalancers?.[0]
@@ -99,6 +102,10 @@ export function LoadBalancerDetailPage({ arn }: Props) {
   const vpcSecurityGroups = (sgsData.SecurityGroups ?? []).filter(
     (sg) => sg.VpcId === lb.VpcId,
   )
+  const vpcSubnets = subnets.filter((s) => s.VpcId === lb.VpcId)
+  const currentSubnets = (lb.AvailabilityZones ?? [])
+    .map((az) => az.SubnetId)
+    .filter((id): id is string => id !== undefined)
   // NLBs carry no security groups, so the editor tab is hidden for them.
   const isNlb = lb.Type === "network"
 
@@ -138,6 +145,7 @@ export function LoadBalancerDetailPage({ arn }: Props) {
           <TabsList>
             <TabsTab value="overview">Overview</TabsTab>
             <TabsTab value="listeners">Listeners</TabsTab>
+            <TabsTab value="subnets">Subnets</TabsTab>
             {!isNlb && (
               <TabsTab value="security-groups">Security groups</TabsTab>
             )}
@@ -200,6 +208,22 @@ export function LoadBalancerDetailPage({ arn }: Props) {
               lbType={isNlb ? "network" : "application"}
               loadBalancerArn={arn}
               vpcId={lb.VpcId}
+            />
+          </TabsPanel>
+
+          <TabsPanel value="subnets">
+            <SubnetsEditor
+              available={vpcSubnets}
+              current={currentSubnets}
+              error={setSubnetsMutation.error}
+              isPending={setSubnetsMutation.isPending}
+              isSuccess={setSubnetsMutation.isSuccess}
+              onSubmit={(subnetIds) =>
+                setSubnetsMutation.mutate({
+                  loadBalancerArn: arn,
+                  subnetIds,
+                })
+              }
             />
           </TabsPanel>
 

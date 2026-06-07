@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -28,11 +29,18 @@ type EKSJSONError struct {
 }
 
 // GenerateEKSErrorResponse marshals the AWS REST-JSON error envelope.
-// The trailing "Exception" suffix matches the convention AWS uses
-// (e.g. ResourceNotFoundException, InvalidParameterException).
+// The wire __type carries the trailing "Exception" suffix AWS uses
+// (e.g. ResourceNotFoundException, InvalidParameterException). The suffix is
+// appended idempotently: many awserrors codes already end in "Exception"
+// (e.g. ErrorEKSResourceNotFound = "ResourceNotFoundException"), and adding a
+// second would emit ResourceNotFoundExceptionException, which SDK clients
+// reject when matching eks.ErrCodeResourceNotFoundException.
 func GenerateEKSErrorResponse(code, message string) []byte {
+	if !strings.HasSuffix(code, "Exception") {
+		code += "Exception"
+	}
 	body, err := json.Marshal(EKSJSONError{
-		Type:    code + "Exception",
+		Type:    code,
 		Message: message,
 	})
 	if err != nil {

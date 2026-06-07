@@ -76,6 +76,7 @@ var supportedServices = map[string]bool{
 	"elasticloadbalancing": true,
 	"eks":                  true,
 	"acm":                  true,
+	"tagging":              true,
 	"spinifex":             true,
 }
 
@@ -326,6 +327,8 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.EKS_Request(w, r)
 	case "acm":
 		err = gw.ACM_Request(w, r)
+	case "tagging":
+		err = gw.Tagging_Request(w, r)
 	case "spinifex":
 		err = gw.Spinifex_Request(w, r)
 	default:
@@ -478,10 +481,10 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	// EKS and ACM both use the AWS JSON 1.1 error envelope
-	// ({"__type":"<Code>Exception","message":...}, Content-Type
+	// EKS, ACM, and the Resource Groups Tagging API all use the AWS JSON 1.1
+	// error envelope ({"__type":"<Code>Exception","message":...}, Content-Type
 	// application/x-amz-json-1.1). Query/XML services fall through below.
-	if svc == "eks" || svc == "acm" {
+	if svc == "eks" || svc == "acm" || svc == "tagging" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

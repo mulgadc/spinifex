@@ -224,6 +224,13 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     done)
     rm -rf "$tmp_keep"
 
+    # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
+    # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently
+    # produces an EMPTY modules.dep from compressed modules — the guest's
+    # modprobe then no-ops and qemu_fw_cfg never loads. Plain .ko sidesteps the
+    # host-kmod dependency entirely and the guest needs no decompressor either.
+    find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
+
     # Regenerate module dependency map from the surviving modules. A usable
     # modules.dep is mandatory: the guest init's load_mod() tries modprobe
     # first, and busybox modprobe silently no-ops without it. Fail loudly here

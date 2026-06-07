@@ -76,10 +76,11 @@ const (
 	// in scripts/images/eks-node/eks-node-role.sh and k3s-agent.initd.
 	agentEnvPath = "/etc/spinifex-eks/agent.env"
 
-	// k3sNATSCAPath is the on-VM destination for the NATS CA cert PEM. The K3s
-	// VM uses it to verify the daemon's NATS TLS when publishing bootstrap
-	// messages. Path matches k3s-first-boot.sh SPINIFEX_NATS_CA.
-	k3sNATSCAPath = "/etc/spinifex-eks/nats-ca.pem"
+	// k3sGatewayCAPath is the on-VM destination for the AWS gateway TLS CA cert
+	// PEM. The K3s VM uses it to verify the gateway's HTTPS cert when the
+	// eks-gateway-publish helper POSTs bootstrap envelopes + state reports.
+	// Path matches k3s-first-boot.sh EKS_GATEWAY_CA.
+	k3sGatewayCAPath = "/etc/spinifex-eks/gateway-ca.pem"
 
 	// k3sTokenWebhookKubeconfigPath is the apiserver token-webhook config the
 	// eks-token-webhook service (ordered `before k3s`) writes before the
@@ -120,10 +121,17 @@ type K3sServerInput struct {
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	OIDCPublicKeyPEM  string
-	NATSURL           string
-	NATSToken         string
-	NATSCACert        string
-	InstanceType      string
+	// Gateway broker config: the control-plane VM publishes its bootstrap
+	// envelopes + state reports via SigV4-signed HTTPS POST to the AWS gateway
+	// (the ELBv2 lb-agent model), not by dialing core NATS. GatewayURL is the
+	// mgmt-reachable AWSGW endpoint; AccessKey/SecretKey are the system
+	// (Predastore) SigV4 creds; GatewayCACert is the PEM that signs the gateway
+	// server cert.
+	GatewayURL    string
+	AccessKey     string
+	SecretKey     string
+	GatewayCACert string
+	InstanceType  string
 }
 
 // K3sServerOutput carries the identifiers the caller needs to persist into
@@ -346,12 +354,14 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPrivateKeyPEM")
 	case strings.TrimSpace(in.OIDCPublicKeyPEM) == "":
 		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
-	case in.NATSURL == "":
-		return errors.New("eks: K3sServerInput empty NATSURL")
-	case in.NATSToken == "":
-		return errors.New("eks: K3sServerInput empty NATSToken")
-	case strings.TrimSpace(in.NATSCACert) == "":
-		return errors.New("eks: K3sServerInput empty NATSCACert")
+	case in.GatewayURL == "":
+		return errors.New("eks: K3sServerInput empty GatewayURL")
+	case in.AccessKey == "":
+		return errors.New("eks: K3sServerInput empty AccessKey")
+	case in.SecretKey == "":
+		return errors.New("eks: K3sServerInput empty SecretKey")
+	case strings.TrimSpace(in.GatewayCACert) == "":
+		return errors.New("eks: K3sServerInput empty GatewayCACert")
 	}
 	return nil
 }
@@ -374,9 +384,11 @@ func buildK3sUserData(in K3sServerInput) string {
 		// control-plane services (k3s server + token webhook + bootstrap
 		// publisher). Nodegroup workers seed "agent" through their own path.
 		"SPINIFEX_K3S_ROLE=server",
-		"SPINIFEX_NATS_URL=" + in.NATSURL,
-		"SPINIFEX_NATS_TOKEN=" + in.NATSToken,
-		"SPINIFEX_NATS_CA=" + k3sNATSCAPath,
+		"EKS_GATEWAY_URL=" + in.GatewayURL,
+		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
+		"EKS_ACCESS_KEY=" + in.AccessKey,
+		"EKS_SECRET_KEY=" + in.SecretKey,
+		"EKS_REGION=" + in.Region,
 		"EKS_ACCOUNT_ID=" + in.AccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
@@ -412,12 +424,13 @@ func buildK3sUserData(in K3sServerInput) string {
 	}, "\n")
 
 	files := []userDataFile{
-		// first-boot.env carries the NATS token, so keep it root-only (0600).
+		// first-boot.env carries the system SigV4 secret key, so keep it
+		// root-only (0600).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
-		{Path: k3sNATSCAPath, Perms: "0644", Body: strings.TrimRight(in.NATSCACert, "\n")},
+		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
 		// IMDS on-link route. Alpine's cloud-init eni renderer crashes on a
 		// gateway-less route in network-config, so it's delivered out-of-band:
 		// a persistent local.d script (re-applied every boot by the OpenRC

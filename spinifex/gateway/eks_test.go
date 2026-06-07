@@ -97,9 +97,12 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 	}
 }
 
-func TestLookupEKSAction_CoversAll34Actions(t *testing.T) {
+func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 	expected := map[string]bool{
-		"CreateCluster":                      false,
+		"CreateCluster": false,
+		// PublishInternal is the internal control-plane VM broker route, not an
+		// AWS-SDK EKS action — registered alongside the public actions.
+		"PublishInternal":                    false,
 		"DescribeCluster":                    false,
 		"ListClusters":                       false,
 		"UpdateClusterConfig":                false,

@@ -29,37 +29,39 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		masterKey = nil
 	}
 
-	// CA PEM the K3s server VM uses to verify the daemon's NATS TLS. Same CA
-	// that signs the AWSGW server cert; read here so the VM can publish its
-	// one-shot bootstrap messages over the token+TLS NATS endpoint.
-	natsCA := ""
+	// CA PEM the K3s server VM uses to verify the AWS gateway's HTTPS cert when
+	// the eks-gateway-publish helper POSTs its bootstrap envelopes + state
+	// reports. The same CA signs the AWSGW server cert and the NATS server cert,
+	// so it is read from the configured NATS CA path.
+	gatewayCA := ""
 	if d.config.NATS.CACert != "" {
 		if caBytes, readErr := os.ReadFile(d.config.NATS.CACert); readErr == nil {
-			natsCA = string(caBytes)
+			gatewayCA = string(caBytes)
 		} else {
-			slog.Warn("EKS: read NATS CACert failed; K3s server VM will not reach NATS over TLS",
+			slog.Warn("EKS: read gateway CACert failed; K3s server VM will not verify the gateway over TLS",
 				"path", d.config.NATS.CACert, "err", readErr)
 		}
 	}
 
 	return handlers_eks.EKSServiceDeps{
-		Config:         d.config,
-		NATSConn:       d.natsConn,
-		MasterKey:      masterKey,
-		GatewayBaseURL: d.resolveGatewayBaseURL(),
-		Region:         d.config.Region,
-		HolderID:       d.node,
-		NATSURL:        d.resolveSystemNATSURL(),
-		NATSToken:      d.config.NATS.ACL.Token,
-		NATSCACert:     natsCA,
-		VPCSG:          d.vpcService,
-		VPCK3s:         d.vpcService,
-		VPCSubnet:      &daemonEKSSubnetResolver{d: d},
-		NLB:            d.elbv2Service,
-		Instance:       d,
-		Image:          d.imageService,
-		EIP:            d.eipService,
-		Worker:         d,
+		Config:           d.config,
+		NATSConn:         d.natsConn,
+		MasterKey:        masterKey,
+		GatewayBaseURL:   d.resolveGatewayBaseURL(),
+		Region:           d.config.Region,
+		HolderID:         d.node,
+		SystemGatewayURL: d.resolveSystemGatewayBaseURL(),
+		SystemAccessKey:  d.config.Predastore.AccessKey,
+		SystemSecretKey:  d.config.Predastore.SecretKey,
+		GatewayCACert:    gatewayCA,
+		VPCSG:            d.vpcService,
+		VPCK3s:           d.vpcService,
+		VPCSubnet:        &daemonEKSSubnetResolver{d: d},
+		NLB:              d.elbv2Service,
+		Instance:         d,
+		Image:            d.imageService,
+		EIP:              d.eipService,
+		Worker:           d,
 	}
 }
 
@@ -121,40 +123,24 @@ func (d *Daemon) resolveGatewayBaseURL() string {
 	return "https://" + net.JoinHostPort(host, gatewayPort)
 }
 
-// resolveSystemNATSURL derives the NATS URL a system instance (the K3s server
-// VM) dials to publish its one-shot bootstrap messages. Unlike a customer VM,
+// resolveSystemGatewayBaseURL derives the AWS gateway URL a system instance
+// (the K3s server VM) POSTs its bootstrap envelopes + state reports to. Unlike
+// a customer LB VM — which reaches the gateway via VPC→external (AdvertiseIP) —
 // a system instance reaches the daemon only over the mgmt bridge: its cloud-init
-// mgmt0 NIC is on-link to mgmtBridgeIP with no off-link route, so NATS must be
-// dialed at the bridge address directly. NATS listens on 0.0.0.0:4222, so the
-// bridge IP is reachable. Falls back to resolveNATSURL() (gateway-host
-// precedence) when no mgmt bridge exists — e.g. dev-shim networking.
-func (d *Daemon) resolveSystemNATSURL() string {
+// mgmt0 NIC is on-link to mgmtBridgeIP with no off-link route, so the gateway
+// must be dialed at the bridge address directly. AWSGW binds 0.0.0.0 (or the
+// mgmt IP), and the server cert SANs include the bridge IP, so HTTPS validates.
+// Falls back to resolveGatewayBaseURL() (gateway-host precedence) when no mgmt
+// bridge exists — e.g. dev-shim networking.
+func (d *Daemon) resolveSystemGatewayBaseURL() string {
 	if d.mgmtBridgeIP == "" {
-		return d.resolveNATSURL()
+		return d.resolveGatewayBaseURL()
 	}
-	natsPort := "4222"
-	if d.config.NATS.Host != "" {
-		if _, port, splitErr := net.SplitHostPort(d.config.NATS.Host); splitErr == nil && port != "" {
-			natsPort = port
+	gatewayPort := "9999"
+	if d.config.AWSGW.Host != "" {
+		if _, port, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil && port != "" {
+			gatewayPort = port
 		}
 	}
-	return "nats://" + net.JoinHostPort(d.mgmtBridgeIP, natsPort)
-}
-
-// resolveNATSURL derives the NATS URL the K3s server VM dials to publish its
-// one-shot bootstrap messages. Host reuses the gateway host resolution; port
-// comes from the configured NATS listen address (default 4222). Returns "" if
-// no reachable host can be derived.
-func (d *Daemon) resolveNATSURL() string {
-	host := d.resolveGatewayHost()
-	if host == "" {
-		return ""
-	}
-	natsPort := "4222"
-	if d.config.NATS.Host != "" {
-		if _, port, splitErr := net.SplitHostPort(d.config.NATS.Host); splitErr == nil && port != "" {
-			natsPort = port
-		}
-	}
-	return "nats://" + net.JoinHostPort(host, natsPort)
+	return "https://" + net.JoinHostPort(d.mgmtBridgeIP, gatewayPort)
 }

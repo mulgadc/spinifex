@@ -40,19 +40,6 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
 ln -sf /usr/local/bin/k3s /usr/local/bin/crictl
 ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 
-# nats-cli is not in Alpine main/community — pull the upstream release binary.
-# Used by k3s-first-boot.sh (one-shot publishes) and mulga-eks-state-report.sh
-# (periodic publishes).
-NATS_CLI_VERSION="0.4.0"
-NATS_CLI_URL="https://github.com/nats-io/natscli/releases/download/v${NATS_CLI_VERSION}/nats-${NATS_CLI_VERSION}-linux-amd64.zip"
-echo "[eks-node-setup] downloading nats-cli ${NATS_CLI_VERSION}"
-curl -fsSL -o /tmp/nats-cli.zip "${NATS_CLI_URL}"
-apk add --no-cache unzip
-unzip -q -d /tmp/nats-cli /tmp/nats-cli.zip
-install -m 0755 /tmp/nats-cli/nats-${NATS_CLI_VERSION}-linux-amd64/nats /usr/local/bin/nats
-rm -rf /tmp/nats-cli /tmp/nats-cli.zip
-apk del --no-cache unzip
-
 # Init scripts ship as 0644 from INSTALL_FILES; OpenRC requires 0755. Every
 # role's services are baked; the selector enables the right ones at first boot.
 chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -256,6 +257,37 @@ func TestSetSubnets_Replace(t *testing.T) {
 	assert.Equal(t, 1, countManagedENIs(t, vpcSvc))
 	lb := describeLB(t, svc, arn)
 	assert.Equal(t, []string{sub2}, subnetIDsOfLB(lb))
+}
+
+func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	vid := vpcID(t, vpcSvc)
+	sub1 := getTestSubnetID(t, vpcSvc, vid, "10.0.26.0/24", "us-east-1a")
+	sub2 := getTestSubnetID(t, vpcSvc, vid, "10.0.27.0/24", "us-east-1b")
+
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("rollback-lb"),
+		Subnets: []*string{aws.String(sub1)},
+	}, testAccountID)
+	require.NoError(t, err)
+	arn := *out.LoadBalancers[0].LoadBalancerArn
+	require.Equal(t, 1, countManagedENIs(t, vpcSvc))
+
+	// Terminate fails mid-relaunch (e.g. owning daemon unreachable). The ENI
+	// created for the added subnet must be rolled back, not leaked.
+	mock.terminateErr = errors.New("no responders available")
+
+	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
+		LoadBalancerArn: aws.String(arn),
+		Subnets:         []*string{aws.String(sub1), aws.String(sub2)},
+	}, testAccountID)
+	require.Error(t, err)
+
+	// No leak: still the single original ENI; LB record unchanged; no relaunch.
+	assert.Equal(t, 1, countManagedENIs(t, vpcSvc))
+	assert.Len(t, mock.launchCalls, 1)
+	lb := describeLB(t, svc, arn)
+	assert.Equal(t, []string{sub1}, subnetIDsOfLB(lb))
 }
 
 func TestSetSubnets_Idempotent(t *testing.T) {

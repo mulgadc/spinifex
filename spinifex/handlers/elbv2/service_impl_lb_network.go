@@ -173,16 +173,19 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	// a partial apply never leaks ENIs or mutates the live LB.
 	newENIBySubnet := make(map[string]string, len(toAdd))
 	newAZBySubnet := make(map[string]string, len(toAdd))
+	rollbackNewENIs := func() {
+		for _, created := range newENIBySubnet {
+			if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+				NetworkInterfaceId: aws.String(created),
+			}, accountID); delErr != nil {
+				slog.Error("SetSubnets: rollback failed to delete ENI", "eni", created, "err", delErr)
+			}
+		}
+	}
 	for _, subnetID := range toAdd {
 		eniID, az, eniErr := s.createLBENI(subnetID, lb, accountID)
 		if eniErr != nil {
-			for _, created := range newENIBySubnet {
-				if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-					NetworkInterfaceId: aws.String(created),
-				}, accountID); delErr != nil {
-					slog.Error("SetSubnets: rollback failed to delete ENI", "eni", created, "err", delErr)
-				}
-			}
+			rollbackNewENIs()
 			slog.Error("SetSubnets: failed to create ENI", "subnet", subnetID, "err", eniErr)
 			return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 		}
@@ -200,16 +203,27 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		}
 	}
 
-	// Terminate the LB VM first so retained and removed ENIs are detached before
-	// the dropped ones are deleted and the VM is relaunched on the new set.
+	// Terminate the LB VM before reshaping its ENI set, then relaunch it on the
+	// new set.
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
 		if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
+			rollbackNewENIs()
 			slog.Error("SetSubnets: failed to terminate LB VM for relaunch", "arn", *input.LoadBalancerArn, "instanceId", lb.InstanceID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
 
-	// Delete ENIs for removed subnets now that the VM has released them.
+	// TerminateSystemInstance tears down the VM but leaves its ENIs marked
+	// in-use, so detach the existing ENIs explicitly: retained ones must be free
+	// to re-attach to the relaunched VM, and removed ones must be detached before
+	// they can be deleted.
+	for _, eniID := range current {
+		if detachErr := s.VPCService.DetachENI(accountID, eniID); detachErr != nil {
+			slog.Warn("SetSubnets: failed to detach ENI before relaunch", "eni", eniID, "err", detachErr)
+		}
+	}
+
+	// Delete ENIs for removed subnets now that they are detached.
 	for _, sn := range toRemove {
 		eniID := current[sn]
 		if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{

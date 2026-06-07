@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
 
 import {
+  ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/_auth/eks/(clusters)/create-cluster")({
       context.queryClient.ensureQueryData(ec2SubnetsQueryOptions),
       context.queryClient.ensureQueryData(ec2SecurityGroupsQueryOptions),
       context.queryClient.ensureQueryData(iamRolesQueryOptions),
+      context.queryClient.ensureQueryData(ec2ImagesQueryOptions),
     ])
   },
   head: () => ({

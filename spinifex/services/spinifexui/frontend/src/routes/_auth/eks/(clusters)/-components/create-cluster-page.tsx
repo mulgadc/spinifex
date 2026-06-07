@@ -1,7 +1,8 @@
 import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
+import { useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
@@ -17,9 +18,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { isEksSystemImage } from "@/lib/system-managed"
 import { getNameTag } from "@/lib/utils"
 import { useCreateCluster } from "@/mutations/eks"
 import {
+  ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -30,6 +33,8 @@ import {
   createClusterSchema,
   EKS_SUPPORTED_VERSIONS,
 } from "@/types/eks"
+
+import { EksSystemImageRequired } from "./eks-system-image-required"
 
 function vpcLabel(vpc: Vpc): string {
   const name = getNameTag(vpc.Tags)
@@ -44,11 +49,27 @@ function subnetLabel(subnet: Subnet): string {
 
 export function CreateClusterPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [isRechecking, setIsRechecking] = useState(false)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: rolesData } = useSuspenseQuery(iamRolesQueryOptions)
+  const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const createCluster = useCreateCluster()
+
+  const hasEksSystemImage = (imagesData.Images ?? []).some(isEksSystemImage)
+
+  const handleRecheck = async () => {
+    setIsRechecking(true)
+    try {
+      await queryClient.invalidateQueries({
+        queryKey: ec2ImagesQueryOptions.queryKey,
+      })
+    } finally {
+      setIsRechecking(false)
+    }
+  }
 
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
@@ -108,6 +129,19 @@ export function CreateClusterPage() {
       to: "/eks/list-clusters/$clusterName",
       params: { clusterName: data.name },
     })
+  }
+
+  if (!hasEksSystemImage) {
+    return (
+      <>
+        <BackLink to="/eks/list-clusters">Clusters</BackLink>
+        <PageHeading subtitle="EKS" title="Create Cluster" />
+        <EksSystemImageRequired
+          isRechecking={isRechecking}
+          onRecheck={handleRecheck}
+        />
+      </>
+    )
   }
 
   return (

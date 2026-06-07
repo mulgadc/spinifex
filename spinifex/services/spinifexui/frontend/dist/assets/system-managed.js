@@ -1,1 +1,1 @@
-function e(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}export{e as t};
+function e(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`)??!1}function t(e){return e.Tags?.some(e=>e.Key===`spinifex:managed-by`&&e.Value===`eks`)??!1}export{e as n,t};

@@ -18,6 +18,7 @@ vi.mock("@tanstack/react-router", () => ({
 }))
 
 import {
+  ec2ImagesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -26,7 +27,12 @@ import { iamRolesQueryOptions } from "@/queries/iam"
 
 import { CreateClusterPage } from "./-components/create-cluster-page"
 
-function renderPage() {
+const EKS_IMAGE = {
+  ImageId: "ami-eks",
+  Tags: [{ Key: "spinifex:managed-by", Value: "eks" }],
+}
+
+function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -45,6 +51,10 @@ function renderPage() {
   queryClient.setQueryData(iamRolesQueryOptions.queryKey, {
     $metadata: {},
     Roles: [],
+  })
+  queryClient.setQueryData(ec2ImagesQueryOptions.queryKey, {
+    $metadata: {},
+    Images: withEksImage ? [EKS_IMAGE] : [],
   })
   return render(
     <QueryClientProvider client={queryClient}>
@@ -72,5 +82,14 @@ describe("CreateClusterPage", () => {
       screen.findByText("Name is required"),
     ).resolves.toBeInTheDocument()
     expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it("blocks the form when the EKS system image is missing", () => {
+    renderPage({ withEksImage: false })
+    expect(screen.getByText("EKS system image not found")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Create Cluster" }),
+    ).not.toBeInTheDocument()
   })
 })

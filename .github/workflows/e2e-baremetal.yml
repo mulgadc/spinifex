@@ -2,6 +2,13 @@ name: E2E Bare-Metal
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "spinifex ref to checkout/test (default: triggering ref)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -26,6 +33,11 @@ jobs:
         run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
       - uses: actions/checkout@v6
+        with:
+          # When called (nightly/release) the caller picks the ref (dev on
+          # schedule, the tag on release); standalone dispatch defaults to the
+          # triggering ref.
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/create-github-app-token@v3
         id: app-token

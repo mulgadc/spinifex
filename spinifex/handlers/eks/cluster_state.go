@@ -28,19 +28,32 @@ type ClusterVpcConfig struct {
 	SubnetIds        []string `json:"subnetIds"`
 	SecurityGroupIds []string `json:"securityGroupIds,omitempty"`
 	VpcId            string   `json:"vpcId,omitempty"`
+	// EndpointPublicAccess / EndpointPrivateAccess control apiserver endpoint
+	// exposure (AWS resourcesVpcConfig parity). Public ⇒ internet-facing cluster
+	// NLB (external-pool front-end IP, LAN-reachable); private ⇒ internal NLB
+	// (VPC-only). PublicAccessCidrs records the allowed source ranges for the
+	// public endpoint (stored for parity + Describe; ingress enforcement is a
+	// follow-up).
+	EndpointPublicAccess  bool     `json:"endpointPublicAccess"`
+	EndpointPrivateAccess bool     `json:"endpointPrivateAccess"`
+	PublicAccessCidrs     []string `json:"publicAccessCidrs,omitempty"`
 }
 
 // ClusterMeta is the persisted control-plane record for one cluster. The
 // blob lives at ClusterMetaKey(name) inside the per-account KV bucket and is
 // the source of truth for DescribeCluster.
 type ClusterMeta struct {
-	Name                    string            `json:"name"`
-	Arn                     string            `json:"arn"`
-	Status                  ClusterStatus     `json:"status"`
-	StatusReason            string            `json:"statusReason,omitempty"`
-	Version                 string            `json:"version"`
-	RoleArn                 string            `json:"roleArn"`
-	Endpoint                string            `json:"endpoint,omitempty"`
+	Name         string        `json:"name"`
+	Arn          string        `json:"arn"`
+	Status       ClusterStatus `json:"status"`
+	StatusReason string        `json:"statusReason,omitempty"`
+	Version      string        `json:"version"`
+	RoleArn      string        `json:"roleArn"`
+	Endpoint     string        `json:"endpoint,omitempty"`
+	// EndpointIP is the host/LAN-reachable front-end IP the cluster NLB exposes
+	// (public-access ⇒ external-pool IP; private ⇒ VPC IP). The apiserver serving
+	// cert SANs this IP, so kubectl reaches Endpoint with TLS verification on.
+	EndpointIP              string            `json:"endpointIp,omitempty"`
 	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
 	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`

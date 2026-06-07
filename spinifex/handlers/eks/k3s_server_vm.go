@@ -112,12 +112,17 @@ const (
 // deferred behind cross-account-ENI work). Region is carried for future
 // region-aware AMI lookups but not consumed today.
 type K3sServerInput struct {
-	AccountID         string
-	ClusterName       string
-	Region            string
-	SubnetID          string
-	ControlPlaneSGID  string
-	NLBDNS            string
+	AccountID        string
+	ClusterName      string
+	Region           string
+	SubnetID         string
+	ControlPlaneSGID string
+	NLBDNS           string
+	// EndpointIP is the reachable cluster NLB front-end IP. When set it is added
+	// to the apiserver serving-cert SANs (tls-san) so kubectl reaching the
+	// cluster on this IP validates TLS. Empty for an internal endpoint with no
+	// front-end IP read back.
+	EndpointIP        string
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	OIDCPublicKeyPEM  string
@@ -422,9 +427,14 @@ func buildK3sUserData(in K3sServerInput) string {
 	if !in.BuiltinIngress {
 		configLines = append(configLines, "disable:", "  - traefik", "  - servicelb")
 	}
+	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
+	// The reachable front-end IP must be a cert SAN so kubectl reaching the
+	// cluster on https://<EndpointIP>:443 validates TLS. k3s accepts IP literals
+	// in tls-san and classifies them as IP SANs.
+	if in.EndpointIP != "" {
+		configLines = append(configLines, "  - "+in.EndpointIP)
+	}
 	configLines = append(configLines,
-		"tls-san:",
-		"  - "+in.NLBDNS,
 		"kube-apiserver-arg:",
 		"  - service-account-key-file="+k3sOIDCPublicKeyPath,
 		"  - service-account-signing-key-file="+k3sOIDCSigningKeyPath,

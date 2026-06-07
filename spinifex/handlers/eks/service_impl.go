@@ -339,6 +339,9 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	region := s.deps.Region
 	arn := fmt.Sprintf("arn:aws:eks:%s:%s:cluster/%s", region, accountID, name)
 
+	publicAccess, privateAccess := endpointAccess(input.ResourcesVpcConfig)
+	publicCidrs := publicAccessCidrs(input.ResourcesVpcConfig, publicAccess)
+
 	meta := &ClusterMeta{
 		Name:    name,
 		Arn:     arn,
@@ -346,8 +349,11 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		Version: deref(input.Version, defaultK8sVersion),
 		RoleArn: aws.StringValue(input.RoleArn),
 		ResourcesVpcConfig: &ClusterVpcConfig{
-			SubnetIds: subnetIDs,
-			VpcId:     vpcID,
+			SubnetIds:             subnetIDs,
+			VpcId:                 vpcID,
+			EndpointPublicAccess:  publicAccess,
+			EndpointPrivateAccess: privateAccess,
+			PublicAccessCidrs:     publicCidrs,
 		},
 		BuiltinIngress: builtinIngressEnabled(input.Tags),
 		CreatedAt:      time.Now().UTC(),
@@ -363,12 +369,22 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
-	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs)
+	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
+	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).
+	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess)
 	if err != nil {
 		s.markFailed(acctKV, name)
 		return nil, logCreateErr(name, accountID, "ensure cluster NLB", err)
 	}
-	meta.Endpoint = "https://" + net.JoinHostPort(nlb.DNSName, strconv.FormatInt(clusterNLBListenPort, 10))
+	// Prefer the reachable front-end IP as the kubeconfig endpoint host so the
+	// apiserver serving cert (which SANs this IP) validates with TLS verification
+	// on. Fall back to the synthetic NLB DNS name when no IP was read back.
+	endpointHost := nlb.FrontendIP
+	if endpointHost == "" {
+		endpointHost = nlb.DNSName
+	}
+	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
+	meta.EndpointIP = nlb.FrontendIP
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
@@ -407,6 +423,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		SubnetID:          subnetIDs[0],
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
+		EndpointIP:        nlb.FrontendIP,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
 		OIDCPublicKeyPEM:  pubPEM,
@@ -1156,7 +1173,47 @@ func validateCreateClusterInput(input *eks.CreateClusterInput) error {
 			return errors.New(awserrors.ErrorInvalidParameter)
 		}
 	}
+	// AWS rejects disabling both public and private endpoint access — the
+	// control plane would be unreachable.
+	if v := input.ResourcesVpcConfig; v != nil &&
+		v.EndpointPublicAccess != nil && !*v.EndpointPublicAccess &&
+		v.EndpointPrivateAccess != nil && !*v.EndpointPrivateAccess {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 	return nil
+}
+
+// defaultPublicAccessCidr is the AWS-default allowed source range for a public
+// cluster endpoint when the caller specifies none.
+const defaultPublicAccessCidr = "0.0.0.0/0"
+
+// endpointAccess resolves apiserver endpoint exposure from the request,
+// applying AWS defaults (public on, private off) to omitted fields.
+func endpointAccess(vpc *eks.VpcConfigRequest) (public, private bool) {
+	public, private = true, false
+	if vpc == nil {
+		return public, private
+	}
+	if vpc.EndpointPublicAccess != nil {
+		public = *vpc.EndpointPublicAccess
+	}
+	if vpc.EndpointPrivateAccess != nil {
+		private = *vpc.EndpointPrivateAccess
+	}
+	return public, private
+}
+
+// publicAccessCidrs returns the allowed source ranges for a public endpoint,
+// defaulting to 0.0.0.0/0 (AWS parity) when public access is on and none given.
+// Nil for a private-only endpoint.
+func publicAccessCidrs(vpc *eks.VpcConfigRequest, public bool) []string {
+	if !public {
+		return nil
+	}
+	if vpc != nil && len(vpc.PublicAccessCidrs) > 0 {
+		return aws.StringValueSlice(vpc.PublicAccessCidrs)
+	}
+	return []string{defaultPublicAccessCidr}
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
@@ -1238,9 +1295,12 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 	}
 	if meta.ResourcesVpcConfig != nil {
 		out.ResourcesVpcConfig = &eks.VpcConfigResponse{
-			SubnetIds:        aws.StringSlice(meta.ResourcesVpcConfig.SubnetIds),
-			SecurityGroupIds: aws.StringSlice(meta.ResourcesVpcConfig.SecurityGroupIds),
-			VpcId:            aws.String(meta.ResourcesVpcConfig.VpcId),
+			SubnetIds:             aws.StringSlice(meta.ResourcesVpcConfig.SubnetIds),
+			SecurityGroupIds:      aws.StringSlice(meta.ResourcesVpcConfig.SecurityGroupIds),
+			VpcId:                 aws.String(meta.ResourcesVpcConfig.VpcId),
+			EndpointPublicAccess:  aws.Bool(meta.ResourcesVpcConfig.EndpointPublicAccess),
+			EndpointPrivateAccess: aws.Bool(meta.ResourcesVpcConfig.EndpointPrivateAccess),
+			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
 	}
 	if meta.HealthIssue != "" {

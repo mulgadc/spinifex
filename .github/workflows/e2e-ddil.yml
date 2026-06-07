@@ -76,6 +76,14 @@ jobs:
           echo "${BIN_DIR}" >> "${GITHUB_PATH}"
           "${BIN_DIR}/gotestsum" --version
 
+      - name: Install kmod (depmod)
+        # build-microvm-image's mandatory-tool preflight requires depmod (from
+        # the kmod package); self-hosted runners don't ship it. Idempotent —
+        # no-op once baked into the runner/gold image.
+        run: |
+          command -v depmod >/dev/null 2>&1 || \
+            { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends kmod; }
+
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
         run: |

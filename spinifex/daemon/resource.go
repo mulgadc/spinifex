@@ -52,6 +52,23 @@ func resolveHostReserve(getenv func(string) string) hostReserve {
 	return r
 }
 
+// resolveHostVCPU returns the detected core count, overridden by
+// SPINIFEX_HOST_VCPU when set to a valid positive integer. The override is an
+// escape hatch: it pins the schedulable core count for hosts where
+// /proc/cpuinfo topology detection misreports (some VMs/containers expose no
+// "core id", or fewer physical cores than the host can actually schedule), and
+// lets tests decouple from runner topology. Invalid values are logged and
+// ignored so a typo can't silently shrink capacity below the reserve.
+func resolveHostVCPU(getenv func(string) string, detected int) int {
+	if v := getenv("SPINIFEX_HOST_VCPU"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		slog.Warn("ignoring SPINIFEX_HOST_VCPU", "value", v)
+	}
+	return detected
+}
+
 // minHostMemHeadroomGB is the minimum schedulable memory we require above
 // the reserve, so a host that just meets the reserve still has a small
 // amount left to launch the smallest guest type.

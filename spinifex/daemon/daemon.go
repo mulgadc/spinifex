@@ -477,8 +477,9 @@ func parsePhysicalCores(data []byte) (int, bool) {
 func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
 	// Schedule guest vCPUs against physical cores, not SMT threads (see
 	// physicalCoreCount), so a hyperthreaded/hybrid host can't be packed past
-	// what it can actually run.
-	hostVCPU := physicalCoreCount()
+	// what it can actually run. SPINIFEX_HOST_VCPU overrides detection for
+	// hosts that misreport topology.
+	hostVCPU := resolveHostVCPU(os.Getenv, physicalCoreCount())
 
 	// Get system memory (in GB)
 	totalMemGB, err := getSystemMemory()

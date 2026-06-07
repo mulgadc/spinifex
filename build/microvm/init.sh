@@ -23,6 +23,14 @@ load_mod() {
     return 1
 }
 load_mod qemu_fw_cfg || load_mod fw_cfg_sysfs || true
+# virtio_net depends on net_failover, which depends on failover. The load_mod
+# insmod fallback loads a single .ko with no dependency resolution, and
+# modules.dep is absent when the image is built on a kmod-less host (depmod
+# skipped), so modprobe can't resolve the chain either. Load it explicitly
+# bottom-up so the NIC comes up regardless of how the image was built —
+# without this the agent has no network and the LB hangs in provisioning.
+load_mod failover || true
+load_mod net_failover || true
 load_mod virtio_net || true
 
 NETCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw

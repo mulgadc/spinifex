@@ -33,7 +33,7 @@ mkdir -p "$BUILD_DIR"
 # faked-root environment so no real device node is ever created on the host
 # filesystem (which previously required sudo mknod and risked clobbering host
 # /dev/null on cleanup).
-for tool in cpio gzip find fakeroot; do
+for tool in cpio gzip find fakeroot depmod; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required tool not found: $tool" >&2
         exit 1
@@ -224,8 +224,25 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     done)
     rm -rf "$tmp_keep"
 
-    # Regenerate module dependency map from the surviving modules.
-    depmod -b "$CHROOT_DIR" "$kver" 2>/dev/null || true
+    # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
+    # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently
+    # produces an EMPTY modules.dep from compressed modules — the guest's
+    # modprobe then no-ops and qemu_fw_cfg never loads. Plain .ko sidesteps the
+    # host-kmod dependency entirely and the guest needs no decompressor either.
+    find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
+
+    # Regenerate module dependency map from the surviving modules. A usable
+    # modules.dep is mandatory: the guest init's load_mod() tries modprobe
+    # first, and busybox modprobe silently no-ops without it. Fail loudly here
+    # rather than ship an image that depends on init's insmod fallback alone.
+    if ! depmod -b "$CHROOT_DIR" "$kver"; then
+        echo "ERROR: depmod failed for $kver" >&2
+        exit 1
+    fi
+    if [ ! -s "$kver_dir/modules.dep" ]; then
+        echo "ERROR: ${kver_dir}modules.dep missing or empty after depmod" >&2
+        exit 1
+    fi
 done
 
 # --- Strip package-manager artifacts (not needed at runtime) ---

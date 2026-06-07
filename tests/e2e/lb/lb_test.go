@@ -94,10 +94,20 @@ func TestLoadBalancer(t *testing.T) {
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
 	})
-	t.Run("Internal_ALB", func(t *testing.T) {
+	// Every internal subtest depends on the same mgmt-return datapath and shared
+	// fixture. If the first (Internal_ALB) never leaves provisioning, the rest
+	// time out identically — gate them on it so the suite fails fast instead of
+	// burning ~5 minutes per subtest on a foregone outcome.
+	albOK := t.Run("Internal_ALB", func(t *testing.T) {
 		runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
 	})
+	skipIfInternalBroken := func(t *testing.T) {
+		if !albOK {
+			t.Skip("Internal_ALB failed (LB never reached active) — skipping remaining internal subtests to fail fast")
+		}
+	}
 	t.Run("Internal_NLB", func(t *testing.T) {
+		skipIfInternalBroken(t)
 		// DescribeLoadBalancers reports the ALB gone before the sys.micro VM's
 		// vCPU/memory allocation is actually reclaimed. Without this settle,
 		// NLB's createLB races the deallocate on capacity-tight dev hosts and
@@ -107,14 +117,17 @@ func TestLoadBalancer(t *testing.T) {
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
 	t.Run("Internal_NLB_UDP", func(t *testing.T) {
+		skipIfInternalBroken(t)
 		time.Sleep(15 * time.Second)
 		runUDPNLBSuite(t, client, fixture)
 	})
 	t.Run("Internal_ALB_ModifyListener", func(t *testing.T) {
+		skipIfInternalBroken(t)
 		time.Sleep(15 * time.Second)
 		runModifyListenerSuite(t, client, fixture)
 	})
 	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
+		skipIfInternalBroken(t)
 		time.Sleep(15 * time.Second)
 		runListenerRulesSuite(t, client, fixture)
 	})

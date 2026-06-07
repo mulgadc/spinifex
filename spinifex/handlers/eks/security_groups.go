@@ -208,6 +208,40 @@ func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, n
 	return nil
 }
 
+// EnsureControlPlaneIngress authorizes the ingress the cluster NLB needs to
+// reach the K3s apiserver. The NLB's backing LB VM forwards the front-end
+// listener to the apiserver on k3sAPIServerPort from inside the VPC, so the
+// control-plane SG must admit that port from the VPC CIDR. Public exposure is
+// gated separately at the NLB front-end by publicAccessCidrs; this rule only
+// governs the in-VPC LB→apiserver hop. Idempotent: the
+// InvalidPermission.Duplicate error a re-run triggers is treated as success.
+func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
+	if cpSGID == "" {
+		return errors.New("eks: EnsureControlPlaneIngress empty control-plane SG id")
+	}
+	if vpcCIDR == "" {
+		return errors.New("eks: EnsureControlPlaneIngress empty vpc cidr")
+	}
+
+	perm := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"),
+		FromPort:   aws.Int64(k3sAPIServerPort),
+		ToPort:     aws.Int64(k3sAPIServerPort),
+		IpRanges: []*ec2.IpRange{{
+			CidrIp:      aws.String(vpcCIDR),
+			Description: aws.String("EKS NLB to apiserver"),
+		}},
+	}
+	_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(cpSGID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, accountID)
+	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+		return fmt.Errorf("authorize control-plane apiserver ingress on %s: %w", cpSGID, err)
+	}
+	return nil
+}
+
 func lookupSGByName(sgp sgProvisioner, accountID, vpcID, name string) (string, error) {
 	out, err := sgp.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{

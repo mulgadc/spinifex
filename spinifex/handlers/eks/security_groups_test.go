@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,49 @@ func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sg-existing-cp")
 	assert.Len(t, sgp.deleteCalls, 2, "both delete calls should be attempted despite first error")
+}
+
+func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	require.NoError(t, err)
+
+	require.Len(t, sgp.authorizeCalls, 1)
+	in := sgp.authorizeCalls[0]
+	assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
+	require.Len(t, in.IpPermissions, 1)
+	perm := in.IpPermissions[0]
+	assert.Equal(t, "tcp", aws.StringValue(perm.IpProtocol))
+	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.FromPort))
+	assert.Equal(t, k3sAPIServerPort, aws.Int64Value(perm.ToPort))
+	require.Len(t, perm.IpRanges, 1)
+	assert.Equal(t, "10.0.0.0/16", aws.StringValue(perm.IpRanges[0].CidrIp))
+}
+
+func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	require.Error(t, EnsureControlPlaneIngress(sgp, "111122223333", "", "10.0.0.0/16"))
+	require.Error(t, EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", ""))
+	assert.Empty(t, sgp.authorizeCalls)
+}
+
+func TestEnsureControlPlaneIngress_DuplicateTolerated(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+
+	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	require.NoError(t, err, "a duplicate rule on re-run must be treated as success")
+}
+
+func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.authorizeErr = errors.New("vpcd unavailable")
+
+	err := EnsureControlPlaneIngress(sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sg-cp-001")
 }
 
 func assertSGCreateTagged(t *testing.T, in *ec2.CreateSecurityGroupInput, name, vpcID, clusterName, role string) {

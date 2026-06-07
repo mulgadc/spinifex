@@ -22,11 +22,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// SubnetVPCResolver resolves a subnet ID to its parent VPC ID. Narrow so
-// EKSServiceImpl can stay free of the wider handlers/ec2/vpc surface; the
-// daemon adapts VPCServiceImpl.GetSubnet onto this contract.
+// SubnetVPCResolver resolves a subnet ID to its parent VPC ID and the VPC's
+// CIDR block. Narrow so EKSServiceImpl can stay free of the wider
+// handlers/ec2/vpc surface; the daemon adapts VPCServiceImpl onto this
+// contract.
 type SubnetVPCResolver interface {
 	GetSubnetVPC(accountID, subnetID string) (vpcID string, err error)
+	GetVPCCIDR(accountID, vpcID string) (cidr string, err error)
 }
 
 // EKSServiceDeps wires every external collaborator EKSServiceImpl needs.
@@ -368,6 +370,19 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "ensure cluster SGs", err)
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
+
+	// The NLB's backing LB VM forwards the published endpoint to the apiserver
+	// from inside the VPC, so the control-plane SG must admit that hop or the
+	// NLB target stays unhealthy and the endpoint never serves.
+	vpcCIDR, err := s.deps.VPCSubnet.GetVPCCIDR(accountID, vpcID)
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "resolve vpc cidr", err)
+	}
+	if err := EnsureControlPlaneIngress(s.deps.VPCSG, accountID, cpSG, vpcCIDR); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "ensure control-plane ingress", err)
+	}
 
 	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
 	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).

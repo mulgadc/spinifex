@@ -17,6 +17,7 @@ import {
   useDeleteCluster,
   useDeleteNodegroup,
   useScaleNodegroup,
+  useUpdateNodegroupVersion,
 } from "./eks"
 
 let queryClient: QueryClient
@@ -138,6 +139,28 @@ describe("eks mutations", () => {
         clusterName: "c1",
         nodegroupName: "ng1",
         scalingConfig: { minSize: 2, maxSize: 5, desiredSize: 3 },
+      })
+    })
+  })
+
+  describe("useUpdateNodegroupVersion", () => {
+    it("sends UpdateNodegroupVersionCommand with target version", async () => {
+      createQueryClient()
+      const { result } = renderHook(() => useUpdateNodegroupVersion(), {
+        wrapper,
+      })
+
+      result.current.mutate({
+        clusterName: "c1",
+        nodegroupName: "ng1",
+        version: "1.32",
+      })
+
+      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+        clusterName: "c1",
+        nodegroupName: "ng1",
+        version: "1.32",
       })
     })
   })

@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { SlidersHorizontal, Trash2 } from "lucide-react"
+import { ArrowUpCircle, SlidersHorizontal, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 
@@ -23,6 +23,7 @@ import {
   useCreateNodegroup,
   useDeleteNodegroup,
   useScaleNodegroup,
+  useUpdateNodegroupVersion,
 } from "@/mutations/eks"
 import { ec2SubnetsQueryOptions } from "@/queries/ec2"
 import {
@@ -139,19 +140,26 @@ function ScaleNodegroupDialog({
 
 function NodegroupRow({
   clusterName,
+  clusterVersion,
   nodegroupName,
   onDelete,
 }: {
   clusterName: string
+  clusterVersion: string | undefined
   nodegroupName: string
   onDelete: (name: string) => void
 }) {
   const { data } = useQuery(
     eksNodegroupQueryOptions(clusterName, nodegroupName),
   )
+  const updateVersion = useUpdateNodegroupVersion()
   const ng = data?.nodegroup
   const scaling = ng?.scalingConfig
   const [showScale, setShowScale] = useState(false)
+  const [showUpdate, setShowUpdate] = useState(false)
+
+  const updateAvailable =
+    !!clusterVersion && !!ng?.version && ng.version !== clusterVersion
 
   return (
     <DetailCard>
@@ -159,6 +167,16 @@ function NodegroupRow({
         <div className="flex items-center justify-between">
           <span>{nodegroupName}</span>
           <div className="flex items-center gap-1">
+            {updateAvailable && (
+              <Button
+                aria-label="Update node group version"
+                onClick={() => setShowUpdate(true)}
+                size="icon"
+                variant="ghost"
+              >
+                <ArrowUpCircle className="size-4" />
+              </Button>
+            )}
             <Button
               aria-label="Scale node group"
               onClick={() => setShowScale(true)}
@@ -181,6 +199,14 @@ function NodegroupRow({
       <DetailCard.Content>
         <DetailRow label="Status" value={ng?.status} />
         <DetailRow
+          label="Kubernetes version"
+          value={
+            updateAvailable
+              ? `${ng?.version} (cluster on ${clusterVersion})`
+              : ng?.version
+          }
+        />
+        <DetailRow
           label="Instance types"
           value={ng?.instanceTypes?.join(", ")}
         />
@@ -202,6 +228,21 @@ function NodegroupRow({
         nodegroupName={nodegroupName}
         onOpenChange={setShowScale}
         open={showScale}
+      />
+
+      <DeleteConfirmationDialog
+        confirmLabel="Update"
+        description={`Update node group "${nodegroupName}" from ${ng?.version} to ${clusterVersion}? Nodes are replaced in a rolling update.`}
+        isPending={updateVersion.isPending}
+        onConfirm={() =>
+          updateVersion.mutate(
+            { clusterName, nodegroupName, version: clusterVersion },
+            { onSuccess: () => setShowUpdate(false) },
+          )
+        }
+        onOpenChange={setShowUpdate}
+        open={showUpdate}
+        title="Update node group version"
       />
     </DetailCard>
   )
@@ -459,9 +500,11 @@ function AddNodegroupDialog({
 
 export function NodegroupsTab({
   clusterName,
+  clusterVersion,
   vpcId,
 }: {
   clusterName: string
+  clusterVersion: string | undefined
   vpcId: string | undefined
 }) {
   const { data } = useSuspenseQuery(eksNodegroupsQueryOptions(clusterName))
@@ -484,6 +527,7 @@ export function NodegroupsTab({
           {nodegroups.map((ng) => (
             <NodegroupRow
               clusterName={clusterName}
+              clusterVersion={clusterVersion}
               key={ng}
               nodegroupName={ng}
               onDelete={setPendingDelete}

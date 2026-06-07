@@ -8,6 +8,7 @@ import {
   DeleteNodegroupCommand,
   DisassociateAccessPolicyCommand,
   UpdateNodegroupConfigCommand,
+  UpdateNodegroupVersionCommand,
 } from "@aws-sdk/client-eks"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
@@ -102,6 +103,29 @@ export function useScaleNodegroup() {
           maxSize: params.maxSize,
           desiredSize: params.desiredSize,
         },
+      })
+      return await getEksClient().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["eks", "clusters", params.clusterName, "nodegroups"],
+      })
+    },
+  })
+}
+
+export function useUpdateNodegroupVersion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      clusterName: string
+      nodegroupName: string
+      version?: string
+    }) => {
+      const command = new UpdateNodegroupVersionCommand({
+        clusterName: params.clusterName,
+        nodegroupName: params.nodegroupName,
+        version: params.version,
       })
       return await getEksClient().send(command)
     },

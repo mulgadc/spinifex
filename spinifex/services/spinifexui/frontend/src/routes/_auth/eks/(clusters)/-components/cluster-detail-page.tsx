@@ -149,6 +149,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         <TabsPanel value="compute">
           <NodegroupsTab
             clusterName={clusterName}
+            clusterVersion={cluster?.version}
             vpcId={cluster?.resourcesVpcConfig?.vpcId}
           />
         </TabsPanel>

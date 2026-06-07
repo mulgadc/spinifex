@@ -21,22 +21,15 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/mulgadc/predastore/auth"
-	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/internal/eksgw"
 
 	_ "github.com/mulgadc/spinifex/internal/fipsboot"
 )
@@ -47,7 +40,6 @@ const (
 	// boot still terminates the OpenRC service.
 	maxAttempts = 30
 	retryDelay  = 5 * time.Second
-	httpTimeout = 10 * time.Second
 )
 
 type publishBody struct {
@@ -74,7 +66,7 @@ func main() {
 	flag.StringVar(&gatewayCA, "gateway-ca", os.Getenv("EKS_GATEWAY_CA"), "Path to gateway TLS CA PEM (optional; falls back to system trust)")
 	flag.StringVar(&accessKey, "access-key", os.Getenv("EKS_ACCESS_KEY"), "AWS access key ID")
 	flag.StringVar(&secretKey, "secret-key", os.Getenv("EKS_SECRET_KEY"), "AWS secret access key")
-	flag.StringVar(&region, "region", envOrDefault("EKS_REGION", "us-east-1"), "AWS region for SigV4 signing")
+	flag.StringVar(&region, "region", os.Getenv("EKS_REGION"), "AWS region for SigV4 signing")
 	flag.StringVar(&accountID, "account-id", os.Getenv("EKS_ACCOUNT_ID"), "Cluster account ID")
 	flag.StringVar(&clusterName, "cluster", os.Getenv("EKS_CLUSTER_NAME"), "Cluster name")
 	flag.StringVar(&channel, "channel", "", "Publish channel: bootstrap|state")
@@ -82,10 +74,6 @@ func main() {
 	flag.Parse()
 
 	switch {
-	case gatewayURL == "":
-		fatal("--gateway is required (or set EKS_GATEWAY_URL)")
-	case accessKey == "" || secretKey == "":
-		fatal("--access-key and --secret-key are required (or set EKS_ACCESS_KEY / EKS_SECRET_KEY)")
 	case accountID == "":
 		fatal("--account-id is required (or set EKS_ACCOUNT_ID)")
 	case clusterName == "":
@@ -117,16 +105,15 @@ func main() {
 		fatal(fmt.Sprintf("marshal request body: %v", err))
 	}
 
-	client, err := newClient(gatewayCA)
+	client, err := eksgw.New(gatewayURL, gatewayCA, accessKey, secretKey, region)
 	if err != nil {
-		fatal(fmt.Sprintf("build HTTP client: %v", err))
+		fatal(fmt.Sprintf("build gateway client: %v", err))
 	}
-
-	url := strings.TrimRight(gatewayURL, "/") + "/clusters/" + clusterName + "/internal-publish"
+	path := "/clusters/" + clusterName + "/internal-publish"
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := post(client, url, body, accessKey, secretKey, region); err != nil {
+		if _, err := client.Post(path, body); err != nil {
 			lastErr = err
 			slog.Warn("eks-gateway-publish: attempt failed",
 				"channel", channel, "kind", kind, "attempt", attempt, "err", err)
@@ -139,62 +126,6 @@ func main() {
 		return
 	}
 	fatal(fmt.Sprintf("publish failed after %d attempts: %v", maxAttempts, lastErr))
-}
-
-func post(client *http.Client, url string, body []byte, accessKey, secretKey, region string) error {
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
-
-	sum := sha256.Sum256(body)
-	if err := auth.SignReq(req, accessKey, secretKey, hex.EncodeToString(sum[:]), "eks", region); err != nil {
-		return fmt.Errorf("sign request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-	return nil
-}
-
-// newClient builds an HTTPS client. When caPath is set it pins the gateway CA;
-// otherwise it relies on the system trust store (CA injected via cloud-init).
-func newClient(caPath string) (*http.Client, error) {
-	tlsCfg := &tls.Config{
-		MinVersion:       tls.VersionTLS13,
-		CurvePreferences: tlsconfig.Curves,
-	}
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("read gateway CA %q: %w", caPath, err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("gateway CA %q has no usable certificates", caPath)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	return &http.Client{
-		Timeout:   httpTimeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg, MaxIdleConns: 1, IdleConnTimeout: 30 * time.Second},
-	}, nil
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func fatal(msg string) {

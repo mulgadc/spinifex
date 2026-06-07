@@ -2,9 +2,13 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
@@ -12,83 +16,79 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func validToken(url string) string {
-	return "k8s-aws-v1." + base64.RawURLEncoding.EncodeToString([]byte(url))
+// postReview drives authenticator.handle with a TokenReview carrying token and
+// audiences, returning the decoded response status and HTTP code.
+func postReview(t *testing.T, a *authenticator, token string, audiences []string) (tokenReviewStatus, int) {
+	t.Helper()
+	body, err := json.Marshal(tokenReview{
+		APIVersion: "authentication.k8s.io/v1",
+		Kind:       "TokenReview",
+		Spec:       tokenReviewSpec{Token: token, Audiences: audiences},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/authenticate", strings.NewReader(string(body)))
+	w := httptest.NewRecorder()
+	a.handle(w, req)
+
+	if w.Code != http.StatusOK {
+		return tokenReviewStatus{}, w.Code
+	}
+	var resp tokenReview
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	return resp.Status, w.Code
 }
 
-const testARN = "arn:aws:iam::111122223333:role/admin"
+func TestHandle_GrantsAndStampsAudiences(t *testing.T) {
+	a := &authenticator{
+		accountID:   "111122223333",
+		clusterName: "alpha",
+		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
+			return handlers_eks.WebhookTokenReviewResult{
+				Authenticated: true,
+				Username:      "arn:aws:iam::111122223333:role/admin",
+				UID:           "AROAEXAMPLE:session",
+				Groups:        []string{"system:masters"},
+			}, nil
+		},
+	}
 
-func okVerify(_ string) (*handlers_eks.TokenVerifyResponse, error) {
-	return &handlers_eks.TokenVerifyResponse{
-		AccountID:     "111122223333",
-		ARN:           testARN,
-		UserID:        "AROAEXAMPLE:session",
-		PrincipalType: "AssumedRole",
-	}, nil
+	status, code := postReview(t, a, "tok", []string{"https://kubernetes.default.svc"})
+	require.Equal(t, http.StatusOK, code)
+	require.True(t, status.Authenticated)
+	assert.Equal(t, "arn:aws:iam::111122223333:role/admin", status.User.Username)
+	assert.Equal(t, "AROAEXAMPLE:session", status.User.UID)
+	assert.Equal(t, []string{"system:masters"}, status.User.Groups)
+	assert.Equal(t, []string{"https://kubernetes.default.svc"}, status.Audiences)
 }
 
-func TestAuthenticate_GrantsWhenEntryExists(t *testing.T) {
-	lookup := func(arn string) (*handlers_eks.AccessEntryRecord, error) {
-		assert.Equal(t, testARN, arn)
-		return &handlers_eks.AccessEntryRecord{
-			KubernetesUsername: testARN,
-			KubernetesGroups:   []string{"system:masters"},
-		}, nil
+func TestHandle_DeniesWithoutStampingAudiences(t *testing.T) {
+	a := &authenticator{
+		clusterName: "alpha",
+		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
+			return handlers_eks.WebhookTokenReviewResult{Authenticated: false}, nil
+		},
 	}
 
-	st := authenticate(validToken("https://sts.amazonaws.com/?Action=GetCallerIdentity"), okVerify, lookup)
-
-	require.True(t, st.Authenticated)
-	assert.Equal(t, testARN, st.User.Username)
-	assert.Equal(t, "AROAEXAMPLE:session", st.User.UID)
-	assert.Equal(t, []string{"system:masters"}, st.User.Groups)
+	status, code := postReview(t, a, "tok", []string{"https://kubernetes.default.svc"})
+	require.Equal(t, http.StatusOK, code)
+	assert.False(t, status.Authenticated)
+	assert.Empty(t, status.User.Username)
+	assert.Empty(t, status.Audiences, "unauthenticated review must not stamp audiences")
 }
 
-func TestAuthenticate_DeniesMalformedToken(t *testing.T) {
-	called := false
-	verify := func(string) (*handlers_eks.TokenVerifyResponse, error) { called = true; return nil, nil }
-	lookup := func(string) (*handlers_eks.AccessEntryRecord, error) { return nil, nil }
-
-	st := authenticate("not-a-k8s-aws-token", verify, lookup)
-
-	assert.False(t, st.Authenticated)
-	assert.False(t, called, "must not call STS for a token that fails to decode")
-}
-
-func TestAuthenticate_DeniesWhenVerifyFails(t *testing.T) {
-	verify := func(string) (*handlers_eks.TokenVerifyResponse, error) {
-		return nil, errors.New("signature mismatch")
-	}
-	lookup := func(string) (*handlers_eks.AccessEntryRecord, error) {
-		t.Fatal("lookup must not run when verify fails")
-		return nil, nil
+// A broker fault is a 5xx (retryable), not a silent deny — a transient gateway
+// outage must not look identical to a rejected token.
+func TestHandle_BrokerFaultReturns5xx(t *testing.T) {
+	a := &authenticator{
+		clusterName: "alpha",
+		review: func(string) (handlers_eks.WebhookTokenReviewResult, error) {
+			return handlers_eks.WebhookTokenReviewResult{}, errors.New("gateway returned 503")
+		},
 	}
 
-	st := authenticate(validToken("https://sts/?x=1"), verify, lookup)
-	assert.False(t, st.Authenticated)
-}
-
-func TestAuthenticate_DeniesWhenNoAccessEntry(t *testing.T) {
-	lookup := func(string) (*handlers_eks.AccessEntryRecord, error) {
-		return nil, handlers_eks.ErrAccessEntryNotFound
-	}
-
-	st := authenticate(validToken("https://sts/?x=1"), okVerify, lookup)
-	assert.False(t, st.Authenticated)
-	assert.Empty(t, st.User.Username)
-}
-
-func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
-	verify := func(string) (*handlers_eks.TokenVerifyResponse, error) {
-		return &handlers_eks.TokenVerifyResponse{ARN: testARN}, nil // no UserID
-	}
-	lookup := func(string) (*handlers_eks.AccessEntryRecord, error) {
-		return &handlers_eks.AccessEntryRecord{KubernetesUsername: testARN, KubernetesGroups: []string{"system:masters"}}, nil
-	}
-
-	st := authenticate(validToken("https://sts/?x=1"), verify, lookup)
-	require.True(t, st.Authenticated)
-	assert.Equal(t, testARN, st.User.UID)
+	_, code := postReview(t, a, "tok", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, code)
 }
 
 func TestEnsureServingCert_PersistsAndReuses(t *testing.T) {

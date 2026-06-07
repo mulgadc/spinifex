@@ -68,6 +68,14 @@ var eksRoutes = []eksRoute{
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.PublishInternal(gw.NATSConn, p[0], b)
 		}},
+	// Control-plane VM TokenReview broker: the eks-token-webhook POSTs the
+	// `aws eks get-token` bearer token here (system SigV4 creds) and the gateway
+	// resolves it host-side (STS verify + AccessEntry lookup), so the webhook
+	// never speaks NATS. Cluster account comes from the body.
+	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/token-review$`), "WebhookTokenReview",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.WebhookTokenReview(gw.NATSConn, p[0], b)
+		}},
 
 	// Nodegroup
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/node-groups$`), "CreateNodegroup",

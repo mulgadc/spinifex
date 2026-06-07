@@ -24,6 +24,14 @@ const describeTagsBatchSize = 20
 // AWS allows up to 100; matching that keeps the controller's reconcile fast.
 const defaultResourcesPerPage = 100
 
+// resourceLister fetches an account's tagged resources by family, already
+// shaped as RGT mappings. Splitting the fetch out of getResources keeps the
+// filter/sort/paginate orchestration testable without a live NATS backend.
+type resourceLister interface {
+	listELBv2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
+	listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
+}
+
 // GetResources implements the Resource Groups Tagging API GetResources call by
 // aggregating tagged ELBv2 (load balancers + target groups) and EC2 resources
 // for the account, applying the request's resource-type and tag filters. The
@@ -31,6 +39,13 @@ const defaultResourcesPerPage = 100
 // manages (filtering on its cluster/stack tags). Pagination is an opaque
 // integer offset into a deterministically ARN-sorted result set.
 func GetResources(natsConn *nats.Conn, region, accountID string, body []byte) (any, error) {
+	return getResources(&natsLister{natsConn: natsConn, region: region, accountID: accountID}, body)
+}
+
+// getResources is the protocol-independent core: it parses the request, asks
+// the lister for the in-scope resource families, then applies tag filters,
+// stable ordering, and pagination.
+func getResources(lister resourceLister, body []byte) (any, error) {
 	var input rgt.GetResourcesInput
 	if err := unmarshalIfBody(body, &input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -40,13 +55,13 @@ func GetResources(natsConn *nats.Conn, region, accountID string, body []byte) (a
 
 	var mappings []*rgt.ResourceTagMapping
 
-	elbMappings, err := elbv2Resources(natsConn, accountID, typeFilters)
+	elbMappings, err := lister.listELBv2(typeFilters)
 	if err != nil {
 		return nil, err
 	}
 	mappings = append(mappings, elbMappings...)
 
-	ec2Mappings, err := ec2Resources(natsConn, region, accountID, typeFilters)
+	ec2Mappings, err := lister.listEC2(typeFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -65,13 +80,30 @@ func GetResources(natsConn *nats.Conn, region, accountID string, body []byte) (a
 	}
 
 	out := &rgt.GetResourcesOutput{ResourceTagMappingList: page}
-	if next != "" {
-		out.PaginationToken = aws.String(next)
-	} else {
-		// AWS returns an empty (not absent) token on the last page.
-		out.PaginationToken = aws.String("")
-	}
+	// AWS returns an empty (not absent) token on the last page.
+	out.PaginationToken = aws.String(next)
 	return out, nil
+}
+
+// natsLister fetches tagged resources from the elbv2 and ec2 tag stores over
+// NATS.
+type natsLister struct {
+	natsConn  *nats.Conn
+	region    string
+	accountID string
+}
+
+func (l *natsLister) listELBv2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
+	return elbv2Resources(l.natsConn, l.accountID, typeFilters)
+}
+
+func (l *natsLister) listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
+	svc := handlers_ec2_tags.NewNATSTagsService(l.natsConn)
+	tagsOut, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, l.accountID)
+	if err != nil {
+		return nil, err
+	}
+	return buildEC2Mappings(tagsOut.Tags, l.region, l.accountID, typeFilters), nil
 }
 
 // elbv2Resources lists the account's load balancers and target groups (when the
@@ -131,23 +163,17 @@ func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[strin
 	return mappings, nil
 }
 
-// ec2Resources walks the account's EC2 tag store, groups tags by resource, and
-// synthesises an ARN per tagged resource that passes the type filters.
-func ec2Resources(natsConn *nats.Conn, region, accountID string, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
-	svc := handlers_ec2_tags.NewNATSTagsService(natsConn)
-	tagsOut, err := svc.DescribeTags(&ec2.DescribeTagsInput{}, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	// resourceID -> (fullType, tags). EC2 tags carry the bare resource ID and a
-	// type word (e.g. "subnet"); the RGT type string is "ec2:<type>".
+// buildEC2Mappings groups EC2 tag descriptions by resource, synthesises an ARN
+// per resource, and keeps those that pass the type filters. EC2 tags carry a
+// bare resource ID and a type word (e.g. "subnet"); the RGT type string is
+// "ec2:<type>". Pure (no NATS) so the grouping/ARN logic is unit-tested.
+func buildEC2Mappings(tagDescriptions []*ec2.TagDescription, region, accountID string, typeFilters map[string]bool) []*rgt.ResourceTagMapping {
 	type resourceTags struct {
 		fullType string
 		tags     map[string]string
 	}
 	byResource := make(map[string]*resourceTags)
-	for _, td := range tagsOut.Tags {
+	for _, td := range tagDescriptions {
 		id := aws.StringValue(td.ResourceId)
 		if id == "" {
 			continue
@@ -171,7 +197,7 @@ func ec2Resources(natsConn *nats.Conn, region, accountID string, typeFilters map
 			Tags:        tagMapToRGT(rt.tags),
 		})
 	}
-	return mappings, nil
+	return mappings
 }
 
 // ec2ARN builds an arn:aws:ec2 ARN for a resource. fullType is "ec2:<type>".

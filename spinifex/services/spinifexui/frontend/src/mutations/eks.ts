@@ -116,9 +116,10 @@ export function useScaleNodegroup() {
 export function useDeleteNodegroup() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (
-      params: AccessEntryParams & { nodegroupName: string },
-    ) => {
+    mutationFn: async (params: {
+      clusterName: string
+      nodegroupName: string
+    }) => {
       const command = new DeleteNodegroupCommand({
         clusterName: params.clusterName,
         nodegroupName: params.nodegroupName,

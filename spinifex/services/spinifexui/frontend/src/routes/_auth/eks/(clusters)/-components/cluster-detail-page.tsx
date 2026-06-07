@@ -15,11 +15,10 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteCluster } from "@/mutations/eks"
-import {
-  eksAccessEntriesQueryOptions,
-  eksClusterQueryOptions,
-  eksNodegroupsQueryOptions,
-} from "@/queries/eks"
+import { eksClusterQueryOptions } from "@/queries/eks"
+
+import { AccessTab } from "./access-tab"
+import { NodegroupsTab } from "./nodegroups-tab"
 
 const AWS_REGION = "ap-southeast-2"
 
@@ -44,18 +43,10 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
   const { data: clusterData } = useSuspenseQuery(
     eksClusterQueryOptions(clusterName),
   )
-  const { data: nodegroupData } = useSuspenseQuery(
-    eksNodegroupsQueryOptions(clusterName),
-  )
-  const { data: accessData } = useSuspenseQuery(
-    eksAccessEntriesQueryOptions(clusterName),
-  )
 
   const deleteCluster = useDeleteCluster()
 
   const cluster = clusterData.cluster
-  const nodegroups = nodegroupData.nodegroups ?? []
-  const accessEntries = accessData.accessEntries ?? []
 
   const kubeconfigCommands = [
     {
@@ -154,33 +145,14 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         </TabsPanel>
 
         <TabsPanel value="compute">
-          <DetailCard>
-            <DetailCard.Header>Node groups</DetailCard.Header>
-            <DetailCard.Content>
-              {nodegroups.length > 0 ? (
-                nodegroups.map((ng) => (
-                  <DetailRow key={ng} label={ng} value="" />
-                ))
-              ) : (
-                <p className="text-muted-foreground">No node groups.</p>
-              )}
-            </DetailCard.Content>
-          </DetailCard>
+          <NodegroupsTab
+            clusterName={clusterName}
+            vpcId={cluster?.resourcesVpcConfig?.vpcId}
+          />
         </TabsPanel>
 
         <TabsPanel value="access">
-          <DetailCard>
-            <DetailCard.Header>IAM access entries</DetailCard.Header>
-            <DetailCard.Content>
-              {accessEntries.length > 0 ? (
-                accessEntries.map((principalArn) => (
-                  <DetailRow key={principalArn} label={principalArn} value="" />
-                ))
-              ) : (
-                <p className="text-muted-foreground">No access entries.</p>
-              )}
-            </DetailCard.Content>
-          </DetailCard>
+          <AccessTab clusterName={clusterName} />
         </TabsPanel>
 
         <TabsPanel value="connect">

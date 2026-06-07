@@ -85,9 +85,9 @@ type EBS struct {
 // when full, it unsubscribes so NATS routes requests to other nodes.
 type ResourceManager struct {
 	mu sync.RWMutex
-	// hostVCPU / hostMemGB are the raw figures reported by the host
-	// (runtime.NumCPU, /proc/meminfo). Schedulable capacity for guest VMs
-	// is host - reserved - allocated.
+	// hostVCPU / hostMemGB are the host figures guests schedule against:
+	// physical cores (physicalCoreCount, not SMT threads) and /proc/meminfo.
+	// Schedulable capacity for guest VMs is host - reserved - allocated.
 	hostVCPU  int
 	hostMemGB float64
 	// reservedVCPU / reservedMem are held back from guest scheduling for
@@ -403,6 +403,69 @@ func getSystemMemory() (float64, error) {
 	}
 }
 
+// physicalCoreCount returns the number of physical CPU cores. Guest vCPUs are
+// scheduled 1:1 against physical cores rather than SMT threads:
+// runtime.NumCPU() counts logical threads, so on an SMT or hybrid host (e.g.
+// 12 cores / 16 threads) it would let guest vCPUs pack past the physical core
+// count and thrash them during the boot spike. Parses /proc/cpuinfo, counting
+// distinct (physical id, core id) pairs. Falls back to runtime.NumCPU() on
+// non-Linux hosts or when the topology fields are absent (some VMs/containers
+// omit them).
+func physicalCoreCount() int {
+	logical := runtime.NumCPU()
+	if runtime.GOOS != "linux" {
+		return logical
+	}
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		slog.Warn("physical core detection failed, scheduling against logical CPUs",
+			"err", err, "logicalCPU", logical)
+		return logical
+	}
+	if n, ok := parsePhysicalCores(data); ok {
+		return n
+	}
+	return logical
+}
+
+// parsePhysicalCores counts distinct (physical id, core id) pairs in
+// /proc/cpuinfo contents — i.e. physical cores, with SMT siblings collapsed.
+// Returns ok=false when the topology fields are absent (some VMs/containers
+// omit them) so the caller can fall back to the logical CPU count.
+func parsePhysicalCores(data []byte) (int, bool) {
+	cores := make(map[string]struct{})
+	var phys, core string
+	sawCore := false
+	flush := func() {
+		if core != "" {
+			cores[phys+":"+core] = struct{}{}
+		}
+		phys, core = "", ""
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "physical id":
+			phys = strings.TrimSpace(val)
+		case "core id":
+			core = strings.TrimSpace(val)
+			sawCore = true
+		}
+	}
+	flush()
+	if !sawCore || len(cores) == 0 {
+		return 0, false
+	}
+	return len(cores), true
+}
+
 // NewResourceManager creates a new resource manager with system capabilities.
 // Returns an error if system memory cannot be detected, since an incorrect
 // default would either under-provision (large servers) or over-commit (small devices).
@@ -412,8 +475,10 @@ func getSystemMemory() (float64, error) {
 // gpuModels is the list of recognised GPU models present on the host; pass nil if
 // GPU passthrough is disabled or no GPUs were found.
 func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
-	// Get system CPU cores
-	numCPU := runtime.NumCPU()
+	// Schedule guest vCPUs against physical cores, not SMT threads (see
+	// physicalCoreCount), so a hyperthreaded/hybrid host can't be packed past
+	// what it can actually run.
+	hostVCPU := physicalCoreCount()
 
 	// Get system memory (in GB)
 	totalMemGB, err := getSystemMemory()
@@ -422,10 +487,10 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 	}
 
 	reserve := resolveHostReserve(os.Getenv)
-	reservedVCPU, reservedMem, err := applyHostReserve(reserve, numCPU, totalMemGB)
+	reservedVCPU, reservedMem, err := applyHostReserve(reserve, hostVCPU, totalMemGB)
 	if err != nil {
 		slog.Error("host below minimum reserve — daemon refuses to start",
-			"err", err, "hostVCPU", numCPU, "hostMemGB", totalMemGB,
+			"err", err, "hostVCPU", hostVCPU, "hostMemGB", totalMemGB,
 			"reserveVCPU", reserve.vCPU, "reserveMemGB", reserve.memGB)
 		return nil, fmt.Errorf("validate host reserve: %w", err)
 	}
@@ -444,13 +509,13 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 	}
 
 	slog.Info("System resources detected",
-		"hostVCPU", numCPU, "hostMemGB", totalMemGB,
+		"hostVCPU", hostVCPU, "logicalCPU", runtime.NumCPU(), "hostMemGB", totalMemGB,
 		"reservedVCPU", reservedVCPU, "reservedMemGB", reservedMem,
-		"schedulableVCPU", numCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
+		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))
 
 	return &ResourceManager{
-		hostVCPU:      numCPU,
+		hostVCPU:      hostVCPU,
 		hostMemGB:     totalMemGB,
 		reservedVCPU:  reservedVCPU,
 		reservedMem:   reservedMem,

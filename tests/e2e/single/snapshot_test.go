@@ -63,7 +63,7 @@ func runSnapshotLifecycle(t *testing.T, fix *Fixture) {
 
 	// CopySnapshot expects the source region — pulled off the configured
 	// EC2 client so the test honours SPINIFEX_AWS_REGION overrides.
-	region := aws.StringValue(fix.AWS.EC2.Config.Region)
+	region := aws.StringValue(fix.AWS.EC2Conf.Config.Region)
 	const copyDesc = "e2e-copy"
 	harness.Step(t, "copy-snapshot src=%s region=%s", snapshotID, region)
 	copyOut, err := fix.AWS.EC2.CopySnapshot(&ec2.CopySnapshotInput{

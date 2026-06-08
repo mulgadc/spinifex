@@ -386,7 +386,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 
 	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
 	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).
-	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess)
+	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
 	if err != nil {
 		s.markFailed(acctKV, name)
 		return nil, logCreateErr(name, accountID, "ensure cluster NLB", err)

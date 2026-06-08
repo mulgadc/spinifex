@@ -91,13 +91,13 @@ type GARPEmitter func(EIPSpec) error
 // Best-effort: implementations return errors but callers warn and proceed.
 type NeighFlusher func(externalIP string) error
 
-// NeighPrimer installs the host neighbour entry for a distributed EIP directly,
-// mapping ExternalIP to its external_mac. Preferred over NeighFlusher on attach
-// when the MAC is known (distributed mode): a flush merely re-arms ARP, but on
-// OVN builds without inject-garp no node answers the host's re-ARP for a
-// same-chassis recycled IP, so the entry would just decay back to FAILED.
-// Programming the known MAC makes the recycled IP reachable without an ARP
-// round-trip.
+// NeighPrimer installs the host neighbour entry for an EIP directly, mapping
+// ExternalIP to the MAC that owns it on the WAN segment — the per-VM external_mac
+// in distributed mode, the VPC gateway router-port MAC in centralised mode.
+// Preferred over NeighFlusher on attach: a flush merely re-arms ARP, but on OVN
+// builds without inject-garp no node answers the host's re-ARP for a same-chassis
+// recycled IP, so the entry would just decay back to FAILED. Programming the
+// known MAC makes the recycled IP reachable without an ARP round-trip.
 //
 // Best-effort: implementations return errors but callers warn and proceed.
 type NeighPrimer func(eip EIPSpec) error
@@ -126,9 +126,8 @@ func WithGARPEmitter(g GARPEmitter) Option {
 }
 
 // WithNeighFlusher injects the host neighbour-flush hook fired on EIP detach (and
-// on attach when the external_mac is unknown). Without it, recycled external IPs
-// rely solely on the GARPEmitter, which is a no-op on OVN builds lacking
-// inject-garp.
+// on attach when no owning MAC resolves). Without it, recycled external IPs rely
+// solely on the GARPEmitter, which is a no-op on OVN builds lacking inject-garp.
 func WithNeighFlusher(f NeighFlusher) Option {
 	return func(m *natManager) {
 		if f != nil {
@@ -137,10 +136,10 @@ func WithNeighFlusher(f NeighFlusher) Option {
 	}
 }
 
-// WithNeighPrimer injects the host neighbour-prime hook fired on EIP attach in
-// distributed mode (external_mac known). Preferred over the flusher there: it
-// programs the recycled IP's MAC directly instead of waiting on an ARP reply
-// that no node sends when inject-garp is unavailable.
+// WithNeighPrimer injects the host neighbour-prime hook fired on EIP attach when
+// the owning MAC is known. Preferred over the flusher: it programs the recycled
+// IP's MAC directly instead of waiting on an ARP reply that no node sends when
+// inject-garp is unavailable.
 func WithNeighPrimer(p NeighPrimer) Option {
 	return func(m *natManager) {
 		if p != nil {
@@ -231,18 +230,38 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if err := m.garp(eip); err != nil {
 		slog.Warn("policy: AddEIP gratuitous-ARP emission failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
-	// Distributed mode: the external_mac is known, so program the host
-	// neighbour entry directly instead of flushing and waiting on an ARP reply
-	// no node sends when inject-garp is unavailable. Fall back to a flush when
-	// the MAC is absent (centralised shape).
-	if distributed {
-		if err := m.neighPrime(eip); err != nil {
+	// Program the host neighbour entry with the MAC that owns the external IP
+	// on the WAN segment so a recycled EIP is reachable immediately, instead of
+	// flushing and waiting on an ARP reply no node sends for a same-chassis
+	// rebind when inject-garp is unavailable. Distributed mode owns the EIP on
+	// the VM's own LSP (external_mac); centralised mode owns it on the VPC
+	// gateway router port, so resolve that port's MAC. Fall back to a flush only
+	// when no MAC resolves.
+	primeMAC := eip.MAC
+	if !distributed {
+		primeMAC = m.gatewayPortMAC(ctx, eip.VPCID)
+	}
+	if primeMAC != "" {
+		primed := eip
+		primed.MAC = primeMAC
+		if err := m.neighPrime(primed); err != nil {
 			slog.Warn("policy: AddEIP neighbour prime failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 		}
 	} else if err := m.neigh(eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP neighbour flush failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	return nil
+}
+
+// gatewayPortMAC returns the MAC of the VPC gateway router's external port, the
+// L2 owner of a centralised EIP on the WAN segment. Empty on lookup miss so the
+// caller falls back to an ARP flush.
+func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, topology.GatewayRouterPort(vpcID))
+	if err != nil || lrp == nil {
+		return ""
+	}
+	return lrp.MAC
 }
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {

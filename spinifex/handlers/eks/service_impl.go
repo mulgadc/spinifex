@@ -276,16 +276,18 @@ func logCreateErr(name, accountID, stage string, err error) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-// managedIngressTagKey is the CreateCluster tag that opts a cluster into K3s'
-// bundled traefik + servicelb (dev / interim in-VPC app exposure). Value "true"
-// (case-insensitive) enables it; absent or any other value keeps AWS parity
-// (built-ins disabled, ingress via the AWS Load Balancer Controller).
+// managedIngressTagKey is the CreateCluster tag that controls K3s' bundled
+// traefik + servicelb (interim in-VPC app exposure). They are ON by default so
+// workloads are reachable before the AWS Load Balancer Controller add-on ships;
+// value "false" (case-insensitive) opts out for AWS parity. TODO: flip the
+// default back off (parity) once the aws-lb-controller add-on lands — see
+// docs/development/feature/eks-dataplane-ingress.md.
 const managedIngressTagKey = "spinifex.io/managed-ingress"
 
-// builtinIngressEnabled reports whether the CreateCluster tags opt into the K3s
-// built-in ingress stack.
+// builtinIngressEnabled reports whether a cluster keeps the K3s built-in ingress
+// stack. Default ON; the tag opts out with "false".
 func builtinIngressEnabled(tags map[string]*string) bool {
-	return strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "true")
+	return !strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "false")
 }
 
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {

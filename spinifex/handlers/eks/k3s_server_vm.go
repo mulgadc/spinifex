@@ -137,10 +137,11 @@ type K3sServerInput struct {
 	SecretKey     string
 	GatewayCACert string
 	InstanceType  string
-	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (dev /
-	// interim in-VPC app exposure). Default false disables them for AWS parity,
+	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (interim
+	// in-VPC app exposure). When false the config disables them for AWS parity,
 	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
-	// Balancer Controller instead.
+	// Balancer Controller instead. The CreateCluster default is ON until that
+	// controller ships (see managedIngressTagKey).
 	BuiltinIngress bool
 }
 

@@ -24,7 +24,7 @@ func createInput(name string) *eks.CreateClusterInput {
 	}
 }
 
-func TestCreateCluster_BuiltinIngressDefaultsOff(t *testing.T) {
+func TestCreateCluster_BuiltinIngressDefaultsOn(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
@@ -32,7 +32,20 @@ func TestCreateCluster_BuiltinIngressDefaultsOff(t *testing.T) {
 
 	meta, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
-	assert.False(t, meta.BuiltinIngress, "parity default: built-in ingress off")
+	assert.True(t, meta.BuiltinIngress, "interim default: built-in ingress on until aws-lb-controller ships")
+}
+
+func TestCreateCluster_BuiltinIngressOptOutFromTag(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.Tags = map[string]*string{managedIngressTagKey: aws.String("false")}
+	_, err := f.svc.CreateCluster(in, testAccountID, "")
+	require.NoError(t, err)
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	assert.False(t, meta.BuiltinIngress, "managed-ingress=false opts out for AWS parity")
 }
 
 func TestCreateCluster_BuiltinIngressFromTag(t *testing.T) {
@@ -45,7 +58,7 @@ func TestCreateCluster_BuiltinIngressFromTag(t *testing.T) {
 
 	meta, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
-	assert.True(t, meta.BuiltinIngress, "managed-ingress tag opts into built-in ingress")
+	assert.True(t, meta.BuiltinIngress, "managed-ingress=true keeps built-in ingress")
 }
 
 // A create that fails after the NLB is provisioned must leave the NLB ARNs

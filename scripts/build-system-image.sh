@@ -3,16 +3,27 @@ set -euo pipefail
 
 # build-system-image.sh — Build a minimal system AMI from a manifest
 #
-# Supports Alpine Linux and Ubuntu 24.04 as base distros.
-# Creates a pre-baked image with custom packages, binaries, and setup scripts
-# installed, ready for import as a Spinifex AMI.
+# Supports Alpine Linux and Ubuntu 24.04+ as base distros. Creates a pre-baked
+# image with custom packages, binaries, and setup scripts installed, ready for
+# import as a Spinifex AMI.
 #
-# Requirements: qemu-nbd, qemu-img, sudo (for mount/chroot), curl
+# Customization runs entirely inside the libguestfs appliance (its own kernel +
+# userspace), so the build touches NO host block device, NO host mount, and
+# needs NO sudo. This deliberately replaces the previous qemu-nbd + `sudo mount`
+# + chroot + /dev bind-mount flow, whose leaked binds could be traversed by a
+# later `rm -rf` and wipe the host's /dev (it wedged CI runners). libguestfs
+# isolates all of that in a throwaway VM.
+#
+# Requirements: virt-customize, guestfish, virt-resize (libguestfs-tools),
+#               qemu-img, curl
 # Usage: ./scripts/build-system-image.sh <manifest.conf> [--import]
 #   --import  Also import the image as an AMI via spx admin images import
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# No libvirt on CI runners — drive qemu directly. Harmless when libvirt exists.
+export LIBGUESTFS_BACKEND="${LIBGUESTFS_BACKEND:-direct}"
 
 usage() {
     echo "Usage: $0 <manifest.conf> [--import]"
@@ -60,8 +71,6 @@ done
 
 # Derived paths
 BUILD_DIR="/tmp/${IMAGE_NAME}-image-build"
-NBD_DEV="/dev/nbd0"
-MOUNT_DIR="${BUILD_DIR}/mnt"
 
 case "$DISTRO" in
     alpine)
@@ -74,7 +83,6 @@ case "$DISTRO" in
         OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-alpine.qcow2"
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-alpine.raw"
         DISTRO_VERSION="${ALPINE_VERSION}"
-        ROOT_PART="${NBD_DEV}"
         BOOT_MODE="bios"
         ;;
     ubuntu)
@@ -87,7 +95,6 @@ case "$DISTRO" in
         OUTPUT_IMAGE="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.qcow2"
         OUTPUT_RAW="${BUILD_DIR}/${IMAGE_NAME}-ubuntu.raw"
         DISTRO_VERSION="${UBUNTU_VERSION}"
-        ROOT_PART="${NBD_DEV}p1"
         BOOT_MODE="uefi"
         ;;
     *)
@@ -96,19 +103,20 @@ case "$DISTRO" in
         ;;
 esac
 
-cleanup() {
-    echo "Cleaning up..."
-    # Ubuntu chroot has bind mounts that must be released first
-    sudo umount "${MOUNT_DIR}/dev/pts" 2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/dev"     2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/sys"     2>/dev/null || true
-    sudo umount "${MOUNT_DIR}/proc"    2>/dev/null || true
-    sudo umount "${MOUNT_DIR}"         2>/dev/null || true
-    sudo qemu-nbd --disconnect "${NBD_DEV}" 2>/dev/null || true
-    exec 9>&- 2>/dev/null || true  # release nbd lock if held
-    echo "Done."
+# import_ami registers the built raw image as a Spinifex AMI. Shared by the
+# fresh-build and cached-build paths.
+import_ami() {
+    echo "Importing as AMI..."
+    rm -f "$OUTPUT_IMAGE"
+    local args=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
+    if [[ -n "${AMI_NAME:-}" ]]; then
+        args+=(--ami-name "$AMI_NAME")
+    fi
+    if [[ -n "${SYSTEM_TAG:-}" ]]; then
+        args+=(--tag "$SYSTEM_TAG")
+    fi
+    spx admin images import "${args[@]}"
 }
-trap cleanup EXIT
 
 # In quiet mode, redirect build output to /dev/null (import output still shown)
 if [[ "$QUIET" == true ]]; then
@@ -116,7 +124,7 @@ if [[ "$QUIET" == true ]]; then
     exec 1>/dev/null  # suppress build output
 fi
 
-echo "=== System Image Builder ==="
+echo "=== System Image Builder (libguestfs) ==="
 echo "Image:   ${IMAGE_NAME} — ${IMAGE_DESCRIPTION:-}"
 echo "Distro:  ${DISTRO} ${DISTRO_VERSION}"
 echo "Size:    ${IMAGE_SIZE}"
@@ -124,18 +132,18 @@ echo "Build:   ${BUILD_DIR}"
 echo ""
 
 # Step 0: Check prerequisites
-if ! command -v qemu-nbd &>/dev/null; then
-    echo "ERROR: qemu-nbd not found. Install qemu-utils."
+for tool in virt-customize qemu-img; do
+    if ! command -v "$tool" &>/dev/null; then
+        echo "ERROR: $tool not found. Install libguestfs-tools + qemu-utils."
+        exit 1
+    fi
+done
+if [[ "$DISTRO" == "alpine" ]] && ! command -v guestfish &>/dev/null; then
+    echo "ERROR: guestfish not found. Install libguestfs-tools."
     exit 1
 fi
-
-if ! command -v qemu-img &>/dev/null; then
-    echo "ERROR: qemu-img not found. Install qemu-utils."
-    exit 1
-fi
-
-if [[ "$DISTRO" == "ubuntu" ]] && ! command -v parted &>/dev/null && ! [[ -x /usr/sbin/parted ]]; then
-    echo "ERROR: parted not found. Install parted."
+if [[ "$DISTRO" == "ubuntu" ]] && ! command -v virt-resize &>/dev/null; then
+    echo "ERROR: virt-resize not found. Install libguestfs-tools."
     exit 1
 fi
 
@@ -166,11 +174,11 @@ if [[ -n "${INSTALL_BINARIES:-}" ]]; then
     done
 fi
 
-# Serialize the entire image build with flock — concurrent builds on the same
-# host (e.g. CI single-node + multi-node jobs) share /dev/nbd0 and BUILD_DIR.
-NBD_LOCK="/tmp/build-system-image.lock"
+# Serialize the build with flock — concurrent builds on the same host (e.g. CI
+# single-node + multi-node jobs) share BUILD_DIR + the cached raw image.
+BUILD_LOCK="/tmp/build-system-image.lock"
 echo "Acquiring build lock..."
-exec 9>"$NBD_LOCK"
+exec 9>"$BUILD_LOCK"
 flock 9
 echo "Lock acquired"
 
@@ -189,21 +197,12 @@ if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") ))
     echo "  raw: $OUTPUT_RAW ($(du -h "$OUTPUT_RAW" | cut -f1))"
 
     if [[ "$DO_IMPORT" == true ]]; then
-        echo "Importing as AMI..."
-        rm -f "$OUTPUT_IMAGE"
-        IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
-        if [[ -n "${AMI_NAME:-}" ]]; then
-            IMPORT_ARGS+=(--ami-name "$AMI_NAME")
-        fi
-        if [[ -n "${SYSTEM_TAG:-}" ]]; then
-            IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
-        fi
-        spx admin images import "${IMPORT_ARGS[@]}"
+        import_ami
     fi
     exit 0
 fi
 
-mkdir -p "$BUILD_DIR" "$MOUNT_DIR"
+mkdir -p "$BUILD_DIR"
 
 # Step 1: Download base cloud image
 if [[ -f "${BUILD_DIR}/${SOURCE_IMAGE}" ]]; then
@@ -228,126 +227,66 @@ rm -f "$OUTPUT_IMAGE"
 echo "Copying image for customization..."
 cp "${BUILD_DIR}/${SOURCE_IMAGE}" "$OUTPUT_IMAGE"
 
-# Resize the image to provide room for packages
-qemu-img resize "$OUTPUT_IMAGE" "$IMAGE_SIZE"
-
-# Step 3: Connect via qemu-nbd
-echo "Connecting image via qemu-nbd..."
-sudo modprobe nbd max_part=4 2>/dev/null || true
-if [[ ! -e "${NBD_DEV}" ]]; then
-    echo "ERROR: ${NBD_DEV} does not exist. Is the nbd kernel module loaded? Try: sudo modprobe nbd"
-    exit 1
+# Step 3: Resize to provide room for packages. Both paths grow the root
+# filesystem entirely inside the libguestfs appliance — no host loop/nbd device.
+echo "Resizing image to ${IMAGE_SIZE}..."
+if [[ "$DISTRO" == "alpine" ]]; then
+    # Alpine cloud images have ext4 directly on the whole disk (no partition
+    # table); grow the disk file then expand the fs from inside the appliance.
+    qemu-img resize "$OUTPUT_IMAGE" "$IMAGE_SIZE"
+    guestfish --rw -a "$OUTPUT_IMAGE" run \
+        : e2fsck /dev/sda forceall:true \
+        : resize2fs /dev/sda
+else
+    # Ubuntu images use a GPT partition table with the root fs on /dev/sda1;
+    # virt-resize expands the partition + fs into a fresh IMAGE_SIZE disk.
+    RESIZED="${OUTPUT_IMAGE}.resized"
+    rm -f "$RESIZED"
+    qemu-img create -f qcow2 "$RESIZED" "$IMAGE_SIZE"
+    virt-resize --expand /dev/sda1 "$OUTPUT_IMAGE" "$RESIZED"
+    mv -f "$RESIZED" "$OUTPUT_IMAGE"
 fi
-sudo qemu-nbd --disconnect "${NBD_DEV}" 2>/dev/null || true
-sudo qemu-nbd --connect="${NBD_DEV}" "$OUTPUT_IMAGE"
 
-# Wait for the nbd device to be ready
-for i in $(seq 1 10); do
-    if sudo blockdev --getsize64 "${NBD_DEV}" &>/dev/null; then
-        break
-    fi
-    sleep 1
-done
-sleep 1
-
-# Ubuntu images have a partition table; wait for partition devices then resize
-# the partition to fill the expanded image before resizing the filesystem.
+# Step 4: Assemble the virt-customize operation list. virt-customize runs the
+# operations in the order they appear on the command line, so this mirrors the
+# old chroot sequence: packages → binaries → files → setup → services → clean.
+CUST=(virt-customize -a "$OUTPUT_IMAGE" --network)
 if [[ "$DISTRO" == "ubuntu" ]]; then
-    for i in $(seq 1 10); do
-        if [[ -e "${ROOT_PART}" ]]; then break; fi
-        sleep 1
-    done
-    echo "Resizing partition..."
-    # After qemu-img resize the GPT backup header sits at the old end of disk.
-    # Relocate it to the new end (sfdisk --relocate is util-linux built-in,
-    # no extra packages needed), then re-read the partition table before parted
-    # runs — without this, parted sees stale GPT geometry and fails with
-    # "Unable to satisfy all constraints on the partition."
-    sudo sgdisk --move-second-header "${NBD_DEV}"
-    sudo partprobe "${NBD_DEV}" 2>/dev/null || true
-    sleep 1
-    sudo parted --script "${NBD_DEV}" resizepart 1 100%
+    # DKMS driver bakes (GPU images) need real resources in the appliance.
+    CUST+=(--memsize 6144 --smp 4)
+else
+    CUST+=(--memsize 2048)
 fi
 
-# Alpine cloud images have ext4 directly on the block device (no partition table).
-echo "Checking filesystem..."
-sudo e2fsck -f -y "${ROOT_PART}" || {
-    ec=$?
-    if [[ $ec -gt 1 ]]; then
-        echo "ERROR: e2fsck failed with exit code $ec on ${ROOT_PART}"
-        exit 1
-    fi
-}
-
-echo "Resizing filesystem..."
-if ! sudo resize2fs "${ROOT_PART}"; then
-    echo "ERROR: resize2fs failed on ${ROOT_PART}"
-    exit 1
-fi
-
-# Step 4: Mount and customize
-echo "Mounting root filesystem..."
-sudo mount "${ROOT_PART}" "$MOUNT_DIR"
-
-# Set up resolv.conf for DNS inside chroot.
-# Ubuntu cloud images symlink /etc/resolv.conf → /run/systemd/resolve/stub-resolv.conf
-# which doesn't exist yet. Remove the symlink and write a real file.
-sudo rm -f "${MOUNT_DIR}/etc/resolv.conf"
-sudo cp /etc/resolv.conf "${MOUNT_DIR}/etc/resolv.conf"
-
-# Ubuntu chroot requires /proc /sys /dev bind mounts for systemd and DKMS
-if [[ "$DISTRO" == "ubuntu" ]]; then
-    sudo mount --bind /proc       "${MOUNT_DIR}/proc"
-    sudo mount --bind /sys        "${MOUNT_DIR}/sys"
-    sudo mount --bind /dev        "${MOUNT_DIR}/dev"
-    sudo mount --bind /dev/pts    "${MOUNT_DIR}/dev/pts"
-fi
-
-# Install packages
+# Packages
 if [[ "$DISTRO" == "alpine" ]] && [[ -n "${APK_PACKAGES:-}" ]]; then
-    echo "Installing packages: ${APK_PACKAGES}..."
-    sudo chroot "$MOUNT_DIR" /bin/sh -c "
-set -e
-# Enable community repo
-sed -i 's|^#\(.*community\)|\1|' /etc/apk/repositories 2>/dev/null || true
-
-# Ensure community repo is present
-if ! grep -q community /etc/apk/repositories; then
-    MIRROR=\$(grep main /etc/apk/repositories | head -1 | sed 's|/main|/community|')
-    echo \"\$MIRROR\" >> /etc/apk/repositories
-fi
-
-apk update
-apk add ${APK_PACKAGES}
-"
+    echo "Will install packages: ${APK_PACKAGES}"
+    CUST+=(--run-command 'sed -i "s|^#\(.*community\)|\1|" /etc/apk/repositories 2>/dev/null || true')
+    CUST+=(--run-command 'grep -q community /etc/apk/repositories || grep main /etc/apk/repositories | head -1 | sed "s|/main|/community|" >> /etc/apk/repositories')
+    CUST+=(--run-command 'apk update')
+    CUST+=(--run-command "apk add ${APK_PACKAGES}")
 elif [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${APT_PACKAGES:-}" ]]; then
-    echo "Installing packages: ${APT_PACKAGES}..."
-    sudo chroot "$MOUNT_DIR" /bin/bash -c "
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ${APT_PACKAGES}
-"
+    echo "Will install packages: ${APT_PACKAGES}"
+    CUST+=(--run-command 'export DEBIAN_FRONTEND=noninteractive; apt-get update')
+    CUST+=(--run-command "export DEBIAN_FRONTEND=noninteractive; apt-get install -y --no-install-recommends ${APT_PACKAGES}")
 fi
 
-# Step 5: Copy binaries into the image (before setup script, which may reference them)
+# Binaries (mode 0755). --mkdir is idempotent (mkdir -p semantics).
 if [[ -n "${INSTALL_BINARIES:-}" ]]; then
-    echo "Installing binaries..."
     IFS=' ' read -ra BINARY_PAIRS <<< "$INSTALL_BINARIES"
     for pair in "${BINARY_PAIRS[@]}"; do
         src="${pair%%:*}"
         dst="${pair#*:}"
         src_path="${PROJECT_DIR}/${src}"
-        echo "  ${src} -> ${dst}"
-        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
-        sudo chmod 755 "${MOUNT_DIR}${dst}"
+        CUST+=(--mkdir "$(dirname "$dst")")
+        CUST+=(--upload "${src_path}:${dst}")
+        CUST+=(--chmod "0755:${dst}")
     done
 fi
 
-# Copy auxiliary files (systemd units, OpenRC initd scripts, cron entries, configs).
-# Same src:dst pair grammar as INSTALL_BINARIES; mode 0644, parent dirs auto-created.
-# Optional — manifests without INSTALL_FILES (e.g. existing GPU images) skip this step.
+# Auxiliary files (systemd units, OpenRC initd scripts, cron entries, configs).
+# Mode 0644; setup scripts may chmod role-specific files to 0755 afterwards.
 if [[ -n "${INSTALL_FILES:-}" ]]; then
-    echo "Installing files..."
     IFS=' ' read -ra FILE_PAIRS <<< "$INSTALL_FILES"
     for pair in "${FILE_PAIRS[@]}"; do
         src="${pair%%:*}"
@@ -357,85 +296,45 @@ if [[ -n "${INSTALL_FILES:-}" ]]; then
             echo "ERROR: INSTALL_FILES source not found: $src_path"
             exit 1
         fi
-        echo "  ${src} -> ${dst}"
-        sudo mkdir -p "${MOUNT_DIR}$(dirname "$dst")"
-        sudo cp "$src_path" "${MOUNT_DIR}${dst}"
-        sudo chmod 0644 "${MOUNT_DIR}${dst}"
+        CUST+=(--mkdir "$(dirname "$dst")")
+        CUST+=(--upload "${src_path}:${dst}")
+        CUST+=(--chmod "0644:${dst}")
     done
 fi
 
-# Run custom setup script inside chroot (after binaries are installed)
+# Custom setup script (uploaded + executed + removed by --run, inside the guest).
 if [[ -n "${SETUP_SCRIPT:-}" ]]; then
     setup_path="${PROJECT_DIR}/${SETUP_SCRIPT}"
     if [[ ! -f "$setup_path" ]]; then
         echo "ERROR: Setup script not found: $setup_path"
         exit 1
     fi
-    echo "Running setup script: ${SETUP_SCRIPT}..."
-    sudo cp "$setup_path" "${MOUNT_DIR}/tmp/setup.sh"
-    sudo chmod 755 "${MOUNT_DIR}/tmp/setup.sh"
-    if [[ "$DISTRO" == "ubuntu" ]]; then
-        if [[ ! -x "${MOUNT_DIR}/bin/bash" ]]; then
-            echo "ERROR: /bin/bash not found or not executable in chroot"
-            exit 1
-        fi
-        sudo chroot "$MOUNT_DIR" /bin/bash -x /tmp/setup.sh
-    else
-        sudo chroot "$MOUNT_DIR" /tmp/setup.sh
-    fi
-    sudo rm -f "${MOUNT_DIR}/tmp/setup.sh"
+    CUST+=(--run "$setup_path")
 fi
 
-# Enable services (runs after INSTALL_FILES + SETUP_SCRIPT so init scripts the
-# manifest references are already on disk).
+# Enable services (after files + setup so referenced init scripts exist).
 if [[ -n "${ENABLE_SERVICES:-}" ]]; then
-    echo "Enabling services: ${ENABLE_SERVICES}..."
     IFS=' ' read -ra SERVICES <<< "$ENABLE_SERVICES"
     for svc in "${SERVICES[@]}"; do
         if [[ "$DISTRO" == "alpine" ]]; then
-            if ! sudo chroot "$MOUNT_DIR" /bin/sh -c "rc-update add ${svc} default"; then
-                echo "ERROR: Failed to enable service '${svc}' — does it exist in the image?"
-                exit 1
-            fi
+            CUST+=(--run-command "rc-update add ${svc} default")
         else
-            if ! sudo chroot "$MOUNT_DIR" /bin/bash -c "systemctl enable ${svc}"; then
-                echo "ERROR: Failed to enable service '${svc}'"
-                exit 1
-            fi
+            CUST+=(--run-command "systemctl enable ${svc}")
         fi
     done
 fi
 
-# Step 6: Clean up and unmount
-echo "Cleaning up image..."
+# Final cleanup of package caches + tmp.
 if [[ "$DISTRO" == "alpine" ]]; then
-    sudo chroot "$MOUNT_DIR" /bin/sh -c '
-apk cache clean 2>/dev/null || true
-rm -rf /var/cache/apk/* /tmp/*
-'
+    CUST+=(--run-command 'apk cache clean 2>/dev/null || true; rm -rf /var/cache/apk/* /tmp/* 2>/dev/null || true')
 else
-    sudo chroot "$MOUNT_DIR" /bin/bash -c '
-export DEBIAN_FRONTEND=noninteractive
-apt-get clean
-rm -rf /var/lib/apt/lists/* /tmp/*
-'
+    CUST+=(--run-command 'export DEBIAN_FRONTEND=noninteractive; apt-get clean; rm -rf /var/lib/apt/lists/* /tmp/* 2>/dev/null || true')
 fi
 
-# Restore the systemd-resolved symlink (Ubuntu default); cloud-init sets DNS on boot.
-sudo rm -f "${MOUNT_DIR}/etc/resolv.conf"
-sudo ln -sf /run/systemd/resolve/stub-resolv.conf "${MOUNT_DIR}/etc/resolv.conf"
+echo "Customizing image (libguestfs appliance)..."
+"${CUST[@]}"
 
-echo "Unmounting..."
-if [[ "$DISTRO" == "ubuntu" ]]; then
-    sudo umount "${MOUNT_DIR}/dev/pts"
-    sudo umount "${MOUNT_DIR}/dev"
-    sudo umount "${MOUNT_DIR}/sys"
-    sudo umount "${MOUNT_DIR}/proc"
-fi
-sudo umount "$MOUNT_DIR"
-sudo qemu-nbd --disconnect "${NBD_DEV}"
-
-# Step 7: Convert to raw for import
+# Step 5: Convert to raw for import
 echo "Converting to raw format..."
 qemu-img convert -f qcow2 -O raw "$OUTPUT_IMAGE" "$OUTPUT_RAW"
 
@@ -452,16 +351,7 @@ echo "  raw:   $OUTPUT_RAW ($(du -h "$OUTPUT_RAW" | cut -f1))"
 echo ""
 
 if [[ "$DO_IMPORT" == true ]]; then
-    echo "Importing as AMI..."
-    rm -f "$OUTPUT_IMAGE"
-    IMPORT_ARGS=(--file "$OUTPUT_RAW" --distro "${DISTRO}" --version "${DISTRO_VERSION}" --arch x86_64 --boot-mode "${BOOT_MODE}")
-    if [[ -n "${AMI_NAME:-}" ]]; then
-        IMPORT_ARGS+=(--ami-name "$AMI_NAME")
-    fi
-    if [[ -n "${SYSTEM_TAG:-}" ]]; then
-        IMPORT_ARGS+=(--tag "$SYSTEM_TAG")
-    fi
-    spx admin images import "${IMPORT_ARGS[@]}"
+    import_ami
 else
     echo "To import as AMI, run:"
     echo "  spx admin images import \\"

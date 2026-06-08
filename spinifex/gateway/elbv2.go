@@ -132,6 +132,9 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"SetIpAddressType": elbv2Handler(func(input *elbv2.SetIpAddressTypeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.SetIpAddressType(input, gw.NATSConn, accountID)
 	}),
+	"SetSubnets": elbv2Handler(func(input *elbv2.SetSubnetsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetSubnets(input, gw.NATSConn, accountID)
+	}),
 	"AddListenerCertificates": elbv2Handler(func(input *elbv2.AddListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.AddListenerCertificates(input, gw.NATSConn, accountID)
 	}),

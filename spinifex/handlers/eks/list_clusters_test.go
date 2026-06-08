@@ -1,10 +1,14 @@
 package handlers_eks
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,4 +56,27 @@ func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
 		assert.Equal(t, want, aws.StringValueSlice(out.Clusters), "MaxResults=%d must clamp to one full page", mr)
 		assert.Nil(t, out.NextToken, "MaxResults=%d single page must not advertise a NextToken", mr)
 	}
+}
+
+// TestEKSReadUnavailableClassification pins the post-restart behaviour: a
+// transient JetStream error (no leader yet) surfaces as a retryable
+// ServiceUnavailable, while a genuine fault stays wrapped (the daemon maps it
+// to InternalError). Regression guard for list-clusters returning a misleading
+// 500 during the KV warmup window.
+func TestEKSReadUnavailableClassification(t *testing.T) {
+	transient := []error{
+		nats.ErrNoResponders,
+		nats.ErrTimeout,
+		nats.ErrNoStreamResponse,
+		nats.ErrConnectionClosed,
+		fmt.Errorf("kv keys: %w", nats.ErrNoResponders), // wrapped, as ListClusters wraps it
+	}
+	for _, e := range transient {
+		assert.True(t, natsTransient(e), "%v must be classified transient", e)
+		assert.EqualError(t, eksReadUnavailableOr(e, "op"), awserrors.ErrorServiceUnavailable)
+	}
+
+	genuine := errors.New("corrupt cluster meta")
+	assert.False(t, natsTransient(genuine))
+	assert.ErrorContains(t, eksReadUnavailableOr(genuine, "list cluster names"), "list cluster names: corrupt cluster meta")
 }

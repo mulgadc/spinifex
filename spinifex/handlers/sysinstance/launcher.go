@@ -1,6 +1,9 @@
 // Package sysinstance holds the boot-agnostic contract for launching
-// system-managed VMs. A system instance is owned by the system account and
-// hidden from customer DescribeInstances calls. Two boot styles are supported:
+// system-managed VMs. System instances are hidden from customer
+// DescribeInstances calls — BootDirect VMs (LB) via system-account ownership,
+// BootAMI VMs (EKS control plane, owned by the customer account so their ENI
+// can live in the customer VPC) via their ManagedBy tag. Two boot styles are
+// supported:
 //
 //   - BootDirect: a direct-boot microVM (bundled vmlinuz+initramfs, per-VM
 //     config delivered via QEMU fw_cfg blobs; no AMI, volume, or cloud-init).

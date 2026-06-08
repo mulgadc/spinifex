@@ -24,6 +24,30 @@ func createInput(name string) *eks.CreateClusterInput {
 	}
 }
 
+func TestCreateCluster_BuiltinIngressDefaultsOff(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	require.NoError(t, err)
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	assert.False(t, meta.BuiltinIngress, "parity default: built-in ingress off")
+}
+
+func TestCreateCluster_BuiltinIngressFromTag(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	in := createInput("alpha")
+	in.Tags = map[string]*string{managedIngressTagKey: aws.String("true")}
+	_, err := f.svc.CreateCluster(in, testAccountID, "")
+	require.NoError(t, err)
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	assert.True(t, meta.BuiltinIngress, "managed-ingress tag opts into built-in ingress")
+}
+
 // A create that fails after the NLB is provisioned must leave the NLB ARNs
 // persisted on the (now FAILED) meta, otherwise the resources leak with no
 // owning record and DeleteCluster cannot reclaim them (bead 165.3).

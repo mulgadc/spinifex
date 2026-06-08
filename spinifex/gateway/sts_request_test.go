@@ -26,6 +26,7 @@ type flexMockSTSService struct {
 	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	lookupSessionFn     func(string) (*handlers_sts.SessionCredential, error)
+	assumeWebIdentityFn func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
 }
 
 var _ handlers_sts.STSService = (*flexMockSTSService)(nil)
@@ -65,7 +66,10 @@ func (m *flexMockSTSService) VerifySessionToken(*handlers_sts.SessionCredential,
 	return true
 }
 
-func (m *flexMockSTSService) AssumeRoleWithWebIdentity(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+func (m *flexMockSTSService) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	if m.assumeWebIdentityFn != nil {
+		return m.assumeWebIdentityFn(input)
+	}
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 

@@ -224,8 +224,34 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     done)
     rm -rf "$tmp_keep"
 
-    # Regenerate module dependency map from the surviving modules.
-    depmod -b "$CHROOT_DIR" "$kver" 2>/dev/null || true
+    # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
+    # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently
+    # produces an EMPTY modules.dep from compressed modules — the guest's
+    # modprobe then no-ops and qemu_fw_cfg never loads. Plain .ko sidesteps the
+    # host-kmod dependency entirely and the guest needs no decompressor either.
+    find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
+
+    # Regenerate the module dependency map when a host depmod is available. A
+    # populated modules.dep lets the guest init's load_mod() resolve modules via
+    # modprobe; without it, load_mod() falls back to insmod-by-path (see
+    # build/microvm/init.sh), so modules.dep is an optimisation, not a boot
+    # requirement. depmod (kmod) is absent on some self-hosted CI runners and
+    # cannot be apt-installed there — skip rather than hard-fail. When depmod
+    # IS present, still assert a non-empty result so the trixie-kmod-can't-read
+    # -compressed-modules bug (empty modules.dep from .ko.gz) fails loudly.
+    if command -v depmod >/dev/null 2>&1; then
+        if ! depmod -b "$CHROOT_DIR" "$kver"; then
+            echo "ERROR: depmod failed for $kver" >&2
+            exit 1
+        fi
+        if [ ! -s "$kver_dir/modules.dep" ]; then
+            echo "ERROR: ${kver_dir}modules.dep missing or empty after depmod" >&2
+            exit 1
+        fi
+    else
+        echo "[build-microvm-image] depmod not found; skipping modules.dep" \
+             "(guest init load_mod() will insmod modules by path)" >&2
+    fi
 done
 
 # --- Strip package-manager artifacts (not needed at runtime) ---

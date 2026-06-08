@@ -1,8 +1,10 @@
 // eks-token-webhook is the K8s TokenReview webhook authenticator baked into
-// the eks-server AMI. It decodes the SigV4-presigned GetCallerIdentity URL
-// produced by `aws eks get-token`, calls Mulga STS over NATS (which enforces
-// the x-k8s-aws-id cross-cluster pin against this cluster's name), and resolves
-// the principal ARN to a TokenReview response via the cluster's AccessEntry KV.
+// the eks-server AMI. Per kubectl call the kube-apiserver POSTs the bearer
+// token (produced by `aws eks get-token`); the webhook relays it through the
+// AWS gateway broker (SigV4 HTTPS POST to /clusters/{name}/token-review), which
+// host-side runs the STS verify (cross-cluster x-k8s-aws-id pin) + AccessEntry
+// KV lookup and returns the resolved identity. The webhook never speaks core
+// NATS — same gateway-broker model as ELBv2's lb-agent and eks-gateway-publish.
 //
 // It binds 127.0.0.1 only; the kube-apiserver is the sole client (loopback).
 // On startup it writes the apiserver webhook kubeconfig (with its self-signed
@@ -20,46 +22,48 @@ import (
 	"os"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/eksgw"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/nats-io/nats.go"
 )
 
 // config is the webhook's runtime configuration, sourced from the first-boot
 // env (/etc/spinifex-eks/first-boot.env) cloud-init seeds onto the VM.
 type config struct {
 	addr        string
-	natsURL     string
-	natsToken   string
-	natsCA      string
+	gatewayURL  string
+	gatewayCA   string
+	accessKey   string
+	secretKey   string
+	region      string
 	accountID   string
 	clusterName string
 	certPath    string
 	keyPath     string
 	kubeconfig  string
-	verifyTO    time.Duration
 }
 
 func loadConfig() (config, error) {
 	c := config{
 		addr:        flagAddr,
-		natsURL:     os.Getenv("SPINIFEX_NATS_URL"),
-		natsToken:   os.Getenv("SPINIFEX_NATS_TOKEN"),
-		natsCA:      os.Getenv("SPINIFEX_NATS_CA"),
+		gatewayURL:  os.Getenv("EKS_GATEWAY_URL"),
+		gatewayCA:   os.Getenv("EKS_GATEWAY_CA"),
+		accessKey:   os.Getenv("EKS_ACCESS_KEY"),
+		secretKey:   os.Getenv("EKS_SECRET_KEY"),
+		region:      os.Getenv("EKS_REGION"),
 		accountID:   os.Getenv("EKS_ACCOUNT_ID"),
 		clusterName: os.Getenv("EKS_CLUSTER_NAME"),
 		certPath:    envOr("EKS_WEBHOOK_CERT", "/etc/spinifex-eks/token-webhook.crt"),
 		keyPath:     envOr("EKS_WEBHOOK_KEY", "/etc/spinifex-eks/token-webhook.key"),
 		kubeconfig:  envOr("EKS_WEBHOOK_KUBECONFIG", "/etc/spinifex-eks/token-webhook.kubeconfig"),
-		verifyTO:    5 * time.Second,
 	}
-	if c.natsURL == "" {
-		return c, errors.New("SPINIFEX_NATS_URL not set")
-	}
-	if c.accountID == "" {
+	switch {
+	case c.gatewayURL == "":
+		return c, errors.New("EKS_GATEWAY_URL not set")
+	case c.accessKey == "" || c.secretKey == "":
+		return c, errors.New("EKS_ACCESS_KEY / EKS_SECRET_KEY not set")
+	case c.accountID == "":
 		return c, errors.New("EKS_ACCOUNT_ID not set")
-	}
-	if c.clusterName == "" {
+	case c.clusterName == "":
 		return c, errors.New("EKS_CLUSTER_NAME not set")
 	}
 	return c, nil
@@ -103,22 +107,15 @@ func run(cfg config) error {
 		return fmt.Errorf("write apiserver kubeconfig: %w", err)
 	}
 
-	nc, err := utils.ConnectNATSWithRetry(cfg.natsURL, cfg.natsToken, cfg.natsCA)
+	client, err := eksgw.New(cfg.gatewayURL, cfg.gatewayCA, cfg.accessKey, cfg.secretKey, cfg.region)
 	if err != nil {
-		return fmt.Errorf("connect NATS: %w", err)
-	}
-	defer nc.Close()
-
-	kv, err := openAccountKV(nc, cfg.accountID)
-	if err != nil {
-		return fmt.Errorf("open account KV: %w", err)
+		return fmt.Errorf("build gateway client: %w", err)
 	}
 
 	authr := &authenticator{
-		nc:          nc,
-		kv:          kv,
+		accountID:   cfg.accountID,
 		clusterName: cfg.clusterName,
-		verifyTO:    cfg.verifyTO,
+		review:      gatewayReviewer(client, cfg.clusterName, cfg.accountID),
 	}
 
 	mux := http.NewServeMux()
@@ -136,50 +133,42 @@ func run(cfg config) error {
 	return nil
 }
 
-// openAccountKV attaches to the per-account EKS KV bucket. The bucket already
-// exists by the time a control-plane VM is running (CreateCluster created it),
-// but JetStream may briefly lag at boot, so retry a few times.
-func openAccountKV(nc *nats.Conn, accountID string) (nats.KeyValue, error) {
-	js, err := nc.JetStream()
-	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	bucket := handlers_eks.AccountBucketName(accountID)
-	var lastErr error
-	for range 30 {
-		kv, kvErr := js.KeyValue(bucket)
-		if kvErr == nil {
-			return kv, nil
+// tokenReviewRequest is the body POSTed to /clusters/{name}/token-review. The
+// webhook holds system SigV4 creds (system account, not the cluster account),
+// so accountId names the cluster account explicitly — same as PublishInternal.
+type tokenReviewRequest struct {
+	AccountID string `json:"accountId"`
+	Token     string `json:"token"`
+}
+
+// gatewayReviewer returns the per-call relay: SigV4-POST {accountId,token} to
+// the gateway and decode the resolved identity. A non-2xx / transport error is
+// surfaced (handle() turns it into a 5xx so the apiserver retries) rather than a
+// silent deny, distinguishing "webhook broker down" from "token rejected".
+func gatewayReviewer(client *eksgw.Client, clusterName, accountID string) func(string) (handlers_eks.WebhookTokenReviewResult, error) {
+	path := "/clusters/" + clusterName + "/token-review"
+	return func(token string) (handlers_eks.WebhookTokenReviewResult, error) {
+		body, err := json.Marshal(tokenReviewRequest{AccountID: accountID, Token: token})
+		if err != nil {
+			return handlers_eks.WebhookTokenReviewResult{}, fmt.Errorf("marshal request: %w", err)
 		}
-		lastErr = kvErr
-		time.Sleep(2 * time.Second)
+		respBody, err := client.Post(path, body)
+		if err != nil {
+			return handlers_eks.WebhookTokenReviewResult{}, err
+		}
+		var res handlers_eks.WebhookTokenReviewResult
+		if err := json.Unmarshal(respBody, &res); err != nil {
+			return handlers_eks.WebhookTokenReviewResult{}, fmt.Errorf("decode response: %w", err)
+		}
+		return res, nil
 	}
-	return nil, fmt.Errorf("kv bucket %s not available: %w", bucket, lastErr)
 }
 
-// authenticator resolves a TokenReview against STS (over NATS) + AccessEntry KV.
+// authenticator resolves a TokenReview by relaying to the gateway broker.
 type authenticator struct {
-	nc          *nats.Conn
-	kv          nats.KeyValue
+	accountID   string
 	clusterName string
-	verifyTO    time.Duration
-}
-
-// verify resolves a presigned get-token URL into the caller principal via the
-// awsgw-hosted STS verify subject, binding the signature to this cluster name.
-func (a *authenticator) verify(presignedURL string) (*handlers_eks.TokenVerifyResponse, error) {
-	req := handlers_eks.TokenVerifyRequest{
-		PresignedURL: presignedURL,
-		ClusterName:  a.clusterName,
-	}
-	// accountID header is unused by the verify responder; pass empty.
-	return utils.NATSRequest[handlers_eks.TokenVerifyResponse](
-		a.nc, handlers_eks.TokenVerifySubject, req, a.verifyTO, "")
-}
-
-// lookup reads the AccessEntry for a principal ARN from the cluster KV.
-func (a *authenticator) lookup(principalARN string) (*handlers_eks.AccessEntryRecord, error) {
-	return handlers_eks.GetAccessEntryRecord(a.kv, a.clusterName, principalARN)
+	review      func(token string) (handlers_eks.WebhookTokenReviewResult, error)
 }
 
 func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +182,27 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := authenticate(review.Spec.Token, a.verify, a.lookup)
+	res, err := a.review(review.Spec.Token)
+	if err != nil {
+		// Broker fault (gateway down, transport error): a 5xx tells the apiserver
+		// to retry rather than treating a transient outage as a hard deny.
+		slog.Error("TokenReview relay failed", "cluster", a.clusterName, "err", err)
+		http.Error(w, "token review unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	status := tokenReviewStatus{Authenticated: res.Authenticated}
+	if res.Authenticated {
+		status.User = userInfo{
+			Username: res.Username,
+			UID:      res.UID,
+			Groups:   res.Groups,
+		}
+		// Confirm the token for the audiences the apiserver asked about; an empty
+		// status.audiences is rejected when --api-audiences is configured.
+		status.Audiences = review.Spec.Audiences
+	}
+	slog.Info("TokenReview decision", "authenticated", status.Authenticated, "username", status.User.Username, "audiences", status.Audiences)
 
 	resp := tokenReview{
 		APIVersion: "authentication.k8s.io/v1",
@@ -203,45 +212,6 @@ func (a *authenticator) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("encode TokenReview response", "err", err)
-	}
-}
-
-// authenticate is the pure decision core: decode token → STS verify → KV
-// AccessEntry lookup → TokenReview status. Any failure yields an unauthenticated
-// status (never a 5xx) so a forged/unknown token is a clean K8s 401, not a
-// webhook outage. verify and lookup are injected so the logic is unit-testable.
-func authenticate(
-	token string,
-	verify func(presignedURL string) (*handlers_eks.TokenVerifyResponse, error),
-	lookup func(principalARN string) (*handlers_eks.AccessEntryRecord, error),
-) tokenReviewStatus {
-	presignedURL, err := handlers_eks.DecodeGetToken(token)
-	if err != nil {
-		return tokenReviewStatus{Authenticated: false}
-	}
-	ident, err := verify(presignedURL)
-	if err != nil {
-		slog.Debug("token verify rejected", "err", err)
-		return tokenReviewStatus{Authenticated: false}
-	}
-	rec, err := lookup(ident.ARN)
-	if err != nil {
-		// No AccessEntry for an otherwise-valid IAM principal: authenticated to
-		// AWS, but not granted any K8s identity on this cluster.
-		slog.Debug("no access entry for principal", "arn", ident.ARN, "err", err)
-		return tokenReviewStatus{Authenticated: false}
-	}
-	uid := ident.UserID
-	if uid == "" {
-		uid = ident.ARN
-	}
-	return tokenReviewStatus{
-		Authenticated: true,
-		User: userInfo{
-			Username: rec.KubernetesUsername,
-			UID:      uid,
-			Groups:   rec.KubernetesGroups,
-		},
 	}
 }
 

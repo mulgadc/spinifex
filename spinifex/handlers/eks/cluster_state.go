@@ -28,19 +28,32 @@ type ClusterVpcConfig struct {
 	SubnetIds        []string `json:"subnetIds"`
 	SecurityGroupIds []string `json:"securityGroupIds,omitempty"`
 	VpcId            string   `json:"vpcId,omitempty"`
+	// EndpointPublicAccess / EndpointPrivateAccess control apiserver endpoint
+	// exposure (AWS resourcesVpcConfig parity). Public ⇒ internet-facing cluster
+	// NLB (external-pool front-end IP, LAN-reachable); private ⇒ internal NLB
+	// (VPC-only). PublicAccessCidrs records the allowed source ranges for the
+	// public endpoint (stored for parity + Describe; ingress enforcement is a
+	// follow-up).
+	EndpointPublicAccess  bool     `json:"endpointPublicAccess"`
+	EndpointPrivateAccess bool     `json:"endpointPrivateAccess"`
+	PublicAccessCidrs     []string `json:"publicAccessCidrs,omitempty"`
 }
 
 // ClusterMeta is the persisted control-plane record for one cluster. The
 // blob lives at ClusterMetaKey(name) inside the per-account KV bucket and is
 // the source of truth for DescribeCluster.
 type ClusterMeta struct {
-	Name                    string            `json:"name"`
-	Arn                     string            `json:"arn"`
-	Status                  ClusterStatus     `json:"status"`
-	StatusReason            string            `json:"statusReason,omitempty"`
-	Version                 string            `json:"version"`
-	RoleArn                 string            `json:"roleArn"`
-	Endpoint                string            `json:"endpoint,omitempty"`
+	Name         string        `json:"name"`
+	Arn          string        `json:"arn"`
+	Status       ClusterStatus `json:"status"`
+	StatusReason string        `json:"statusReason,omitempty"`
+	Version      string        `json:"version"`
+	RoleArn      string        `json:"roleArn"`
+	Endpoint     string        `json:"endpoint,omitempty"`
+	// EndpointIP is the host/LAN-reachable front-end IP the cluster NLB exposes
+	// (public-access ⇒ external-pool IP; private ⇒ VPC IP). The apiserver serving
+	// cert SANs this IP, so kubectl reaches Endpoint with TLS verification on.
+	EndpointIP              string            `json:"endpointIp,omitempty"`
 	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
 	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`
@@ -69,6 +82,15 @@ type ClusterMeta struct {
 	// only) and never treats a time.Time struct as empty, so this field always
 	// serializes. The tag states that honestly rather than implying it elides.
 	LastHealthProbe time.Time `json:"lastHealthProbe"`
+	// NodeCount is the node total from the control plane's last NATS state
+	// report (server + joined agents). Surfaces nodegroup join/scale progress
+	// without the host needing apiserver reachability.
+	NodeCount int `json:"nodeCount,omitempty"`
+	// BuiltinIngress records whether the cluster opted into K3s' bundled
+	// traefik + servicelb (dev / interim in-VPC app exposure), derived from the
+	// managed-ingress tag at CreateCluster. Default false = AWS parity (built-ins
+	// disabled; ingress via the AWS Load Balancer Controller).
+	BuiltinIngress bool `json:"builtinIngress,omitempty"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /
@@ -226,6 +248,27 @@ func SetClusterHealth(kv nats.KeyValue, name, issue string) error {
 			return false
 		}
 		m.HealthIssue = issue
+		m.LastHealthProbe = time.Now().UTC()
+		return true
+	})
+}
+
+// SetClusterHealthState records the latest health outcome together with the
+// node count from the control-plane state report. issue is the failure reason
+// (empty clears it / marks healthy). LastHealthProbe is stamped whenever health
+// or node count changes; a steady-state healthy cluster with an unchanging node
+// count produces no KV write. Returns ErrClusterNotFound if the meta record was
+// deleted underneath us.
+func SetClusterHealthState(kv nats.KeyValue, name, issue string, nodeCount int) error {
+	if name == "" {
+		return errors.New("eks: SetClusterHealthState empty name")
+	}
+	return casUpdateMeta(kv, name, func(m *ClusterMeta) bool {
+		if m.HealthIssue == issue && m.NodeCount == nodeCount {
+			return false
+		}
+		m.HealthIssue = issue
+		m.NodeCount = nodeCount
 		m.LastHealthProbe = time.Now().UTC()
 		return true
 	})

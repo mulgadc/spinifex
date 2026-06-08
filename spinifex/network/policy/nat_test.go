@@ -140,6 +140,42 @@ func TestNATManager_AddEIP_GARP_FailureNonFatal(t *testing.T) {
 	assert.NotNil(t, findNAT(m, "dnat_and_snat", "10.0.0.5"), "NAT row must persist despite GARP failure")
 }
 
+func TestNATManager_NeighFlusher_FiresOnAddAndDelete(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeDistributed, WithNeighFlusher(func(externalIP string) error {
+		flushed = append(flushed, externalIP)
+		return nil
+	}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
+	assert.Equal(t, []string{"1.2.3.4", "1.2.3.4"}, flushed,
+		"NeighFlusher must fire with the external IP on both attach and detach")
+}
+
+func TestNATManager_NeighFlusher_FailureNonFatal(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeDistributed, WithNeighFlusher(func(string) error {
+		return assert.AnError
+	}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+	}), "neigh flush failure must not propagate from AddEIP")
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"),
+		"neigh flush failure must not propagate from DeleteEIP")
+}
+
 func TestNATManager_AddEIP_NoBarrier_Default(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -237,7 +273,7 @@ func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {
 	nm, _ := NewNATManager(m, NATModeDistributed)
 
 	// No prior AddEIP — delete should still succeed.
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
 }
 
 func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
@@ -342,7 +378,7 @@ func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 		PortName: "port-b", MAC: "bb:bb:bb:bb:bb:bb",
 	}))
 
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "1.1.1.1", "10.0.0.5"))
 
 	var survived *nbdb.NAT
 	for _, n := range m.NATs {

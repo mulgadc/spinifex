@@ -122,6 +122,10 @@ func (d *Daemon) handleELBv2SetIpAddressType(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.SetIpAddressType)
 }
 
+func (d *Daemon) handleELBv2SetSubnets(msg *nats.Msg) {
+	handleNATSRequest(msg, d.elbv2Service.SetSubnets)
+}
+
 func (d *Daemon) handleELBv2AddListenerCertificates(msg *nats.Msg) {
 	handleNATSRequest(msg, d.elbv2Service.AddListenerCertificates)
 }

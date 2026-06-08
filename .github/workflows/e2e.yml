@@ -18,9 +18,9 @@ on:
         description: "PR head SHA to report status on"
         required: false
       suites:
-        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb')"
+        description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb"
+        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -32,7 +32,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
     # suites='e2e-reboot' only). Push triggers and the default SUITES list
     # both include single/cert/lb so the inputs.suites null-check keeps the
     # job running on plain PR pushes.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb')
+    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-eks')
     runs-on: [ self-hosted, ci-single ]
     timeout-minutes: 45
     env:
@@ -70,7 +70,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -145,6 +153,82 @@ jobs:
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+
+      # The eks suite's CreateCluster boots a control-plane VM from the
+      # eks-node AMI, so that AMI must exist in the VM's image store before the
+      # suite runs. build-system-image.sh customizes the image with libguestfs
+      # (an isolated userspace appliance) — it touches no host block device, so
+      # it is safe on the shared runner. The build needs the spinifex source +
+      # network (runner only); the import needs predastore/NATS (VM only), so
+      # build on the runner then ship the raw and import on the VM.
+      - name: Build eks-node AMI (libguestfs, runner)
+        if: contains(env.SUITES, 'e2e-eks')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build eks-node AMI (libguestfs — no host devices)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          # Debian/Ubuntu ship /boot/vmlinuz-* mode 0600; the libguestfs
+          # appliance needs to read a host kernel. direct backend = no libvirt.
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          group_open "make build-eks-node-image"
+          make build-eks-node-image
+          group_close
+          ok "raw: $(du -h /tmp/eks-node-image-build/eks-node-alpine.raw | cut -f1)"
+
+      - name: Import eks-node AMI on VM
+        if: contains(env.SUITES, 'e2e-eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # Pull import args straight from the manifest so they never drift.
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/eks-node/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import eks-node AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "$VM":/tmp/eks-node-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/eks-node-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}"
+          ok "eks-node AMI imported"
+
+      # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full
+      # `aws eks get-token` → kubectl → apiserver → token-webhook → gateway
+      # broker → STS verify path. The e2e binaries run ON the VM, so kubectl
+      # must be on the VM's PATH or harness.NewKubectl t.Skips the subtest.
+      # Pin to the k3s server version (setup.sh K3S_VERSION) — kubectl is
+      # ±1-minor skew tolerant; matching is simplest. Checksum-verified.
+      - name: Install kubectl on VM
+        if: contains(env.SUITES, 'e2e-eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "install kubectl on VM (eks data-plane subtest)"
+          ssh "${SSH_OPTS[@]}" "$VM" 'bash -s' <<'EOF'
+          set -euo pipefail
+          KVER=v1.32.5
+          case "$(uname -m)" in
+            x86_64)  ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          cd /tmp
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+          EOF
+          ok "kubectl installed on VM"
 
       - name: Build E2E test binaries on runner
         working-directory: spinifex/tests/e2e
@@ -385,7 +469,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -473,7 +565,12 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          # eks is excluded on multinode: EKS KV is a clustered (Raft) JetStream
+          # stream and create-cluster needs an elected leader, but multinode
+          # JetStream clustering isn't solid yet (mulga-omq/z2z/5yg). EKS is
+          # validated single-node only for now; re-enable here once clustered
+          # JetStream + multinode EKS are a deliberate target.
+          SUITES_BUILD=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_BUILD}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); nothing to build"
             exit 0
@@ -556,7 +653,7 @@ jobs:
         id: e2e
         run: |
           set +e
-          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single)$' | tr '\n' ' ')
+          SUITES_RUN=$(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -vE '^(reboot|single|eks)$' | tr '\n' ' ')
           if [ -z "$(echo "${SUITES_RUN}" | tr -d ' ')" ]; then
             echo "no multinode-eligible suites requested (SUITES=${SUITES}); skipping"
             echo "rc=0" >> "$GITHUB_OUTPUT"
@@ -793,7 +890,15 @@ jobs:
           true
 
       - name: Clean Workspace
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Detach any leaked mounts under the workspace before deleting. A
+          # killed image build can leave a `mount --bind /dev` under its build
+          # dir; if `rm -rf` traverses it as root it wipes the host's /dev
+          # (deletes /dev/null and wedges the box). umount deepest-first, then
+          # forbid rm from crossing any mount boundary as a hard backstop.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token

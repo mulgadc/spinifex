@@ -15,6 +15,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
+// imdsServerIP is the link-local IMDS address (mirror of
+// handlers/imds.MetaDataServerIP, duplicated to avoid an import cycle:
+// imds → sts → eks).
+const imdsServerIP = "169.254.169.254"
+
 // ErrEKSServerAMINotFound is returned by the launcher when no AMI carrying the
 // EKS managed-by tag exists in the account. CreateCluster maps it to a precise
 // client error: it signals an operator/config gap (the eks-server image was
@@ -66,10 +71,23 @@ const (
 	// (see scripts/images/eks-server/k3s-first-boot.sh ENVFILE).
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
 
-	// k3sNATSCAPath is the on-VM destination for the NATS CA cert PEM. The K3s
-	// VM uses it to verify the daemon's NATS TLS when publishing bootstrap
-	// messages. Path matches k3s-first-boot.sh SPINIFEX_NATS_CA.
-	k3sNATSCAPath = "/etc/spinifex-eks/nats-ca.pem"
+	// agentEnvPath is the env file the k3s-agent OpenRC service sources for its
+	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL. Path matches the AGENT_ENVFILE
+	// in scripts/images/eks-node/eks-node-role.sh and k3s-agent.initd.
+	agentEnvPath = "/etc/spinifex-eks/agent.env"
+
+	// k3sGatewayCAPath is the on-VM destination for the AWS gateway TLS CA cert
+	// PEM. The K3s VM uses it to verify the gateway's HTTPS cert when the
+	// eks-gateway-publish helper POSTs bootstrap envelopes + state reports.
+	// Path matches k3s-first-boot.sh EKS_GATEWAY_CA.
+	k3sGatewayCAPath = "/etc/spinifex-eks/gateway-ca.pem"
+
+	// k3sTokenWebhookKubeconfigPath is the apiserver token-webhook config the
+	// eks-token-webhook service (ordered `before k3s`) writes before the
+	// apiserver starts. Wired via the authentication-token-webhook-config-file
+	// apiserver arg so bearer tokens minted by `aws eks get-token` resolve
+	// through the webhook. Must match the webhook's EKS_WEBHOOK_KUBECONFIG default.
+	k3sTokenWebhookKubeconfigPath = "/etc/spinifex-eks/token-webhook.kubeconfig" //nolint:gosec // file path, not a credential
 
 	// k3sConfigPath is the K3s server config file cloud-init writes; K3s
 	// reads it at startup (overrides the AMI-baked config.yaml.skel).
@@ -94,19 +112,36 @@ const (
 // deferred behind cross-account-ENI work). Region is carried for future
 // region-aware AMI lookups but not consumed today.
 type K3sServerInput struct {
-	AccountID         string
-	ClusterName       string
-	Region            string
-	SubnetID          string
-	ControlPlaneSGID  string
-	NLBDNS            string
+	AccountID        string
+	ClusterName      string
+	Region           string
+	SubnetID         string
+	ControlPlaneSGID string
+	NLBDNS           string
+	// EndpointIP is the reachable cluster NLB front-end IP. When set it is added
+	// to the apiserver serving-cert SANs (tls-san) so kubectl reaching the
+	// cluster on this IP validates TLS. Empty for an internal endpoint with no
+	// front-end IP read back.
+	EndpointIP        string
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	OIDCPublicKeyPEM  string
-	NATSURL           string
-	NATSToken         string
-	NATSCACert        string
-	InstanceType      string
+	// Gateway broker config: the control-plane VM publishes its bootstrap
+	// envelopes + state reports via SigV4-signed HTTPS POST to the AWS gateway
+	// (the ELBv2 lb-agent model), not by dialing core NATS. GatewayURL is the
+	// mgmt-reachable AWSGW endpoint; AccessKey/SecretKey are the system
+	// (Predastore) SigV4 creds; GatewayCACert is the PEM that signs the gateway
+	// server cert.
+	GatewayURL    string
+	AccessKey     string
+	SecretKey     string
+	GatewayCACert string
+	InstanceType  string
+	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (dev /
+	// interim in-VPC app exposure). Default false disables them for AWS parity,
+	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
+	// Balancer Controller instead.
+	BuiltinIngress bool
 }
 
 // K3sServerOutput carries the identifiers the caller needs to persist into
@@ -329,12 +364,14 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty OIDCPrivateKeyPEM")
 	case strings.TrimSpace(in.OIDCPublicKeyPEM) == "":
 		return errors.New("eks: K3sServerInput empty OIDCPublicKeyPEM")
-	case in.NATSURL == "":
-		return errors.New("eks: K3sServerInput empty NATSURL")
-	case in.NATSToken == "":
-		return errors.New("eks: K3sServerInput empty NATSToken")
-	case strings.TrimSpace(in.NATSCACert) == "":
-		return errors.New("eks: K3sServerInput empty NATSCACert")
+	case in.GatewayURL == "":
+		return errors.New("eks: K3sServerInput empty GatewayURL")
+	case in.AccessKey == "":
+		return errors.New("eks: K3sServerInput empty AccessKey")
+	case in.SecretKey == "":
+		return errors.New("eks: K3sServerInput empty SecretKey")
+	case strings.TrimSpace(in.GatewayCACert) == "":
+		return errors.New("eks: K3sServerInput empty GatewayCACert")
 	}
 	return nil
 }
@@ -357,44 +394,86 @@ func buildK3sUserData(in K3sServerInput) string {
 		// control-plane services (k3s server + token webhook + bootstrap
 		// publisher). Nodegroup workers seed "agent" through their own path.
 		"SPINIFEX_K3S_ROLE=server",
-		"SPINIFEX_NATS_URL=" + in.NATSURL,
-		"SPINIFEX_NATS_TOKEN=" + in.NATSToken,
-		"SPINIFEX_NATS_CA=" + k3sNATSCAPath,
+		"EKS_GATEWAY_URL=" + in.GatewayURL,
+		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
+		"EKS_ACCESS_KEY=" + in.AccessKey,
+		"EKS_SECRET_KEY=" + in.SecretKey,
+		"EKS_REGION=" + in.Region,
 		"EKS_ACCOUNT_ID=" + in.AccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
 	}, "\n")
 
-	// Omitting cluster-init selects the embedded SQLite (kine) datastore, not
-	// embedded etcd. etcd's per-commit fsync stalls past apiserver's 5s deadline
-	// on the viperblock-backed root volume, so it never reaches /healthz; kine
-	// tolerates the deferred-durability block path. Trade-off: no multi-server
-	// HA (that needs etcd) — acceptable for single-node v1.
+	// cluster-init selects the embedded etcd datastore (required for multi-server
+	// HA). etcd-expose-metrics surfaces etcd's own wal_fsync_duration_seconds and
+	// backend_commit_duration_seconds on 127.0.0.1:2381/metrics so control-plane
+	// commit latency is measurable directly, not inferred.
 	//
 	// anonymous-auth=true: k3s hardens it off by default, which makes the
 	// apiserver answer 401 to an unauthenticated /healthz. The cluster reconciler
 	// probes https://<NLB>/healthz anonymously to gate ACTIVE, so it must be
 	// reachable; the default RBAC binds only the health/version non-resource
 	// paths to system:unauthenticated, so this exposes nothing else.
-	k3sConfig := strings.Join([]string{
-		"tls-san:",
-		"  - " + in.NLBDNS,
+	// In real EKS neither traefik nor servicelb exists; Service type=LoadBalancer
+	// and Ingress are reconciled by the AWS Load Balancer Controller. Disable the
+	// K3s built-ins by default for parity. A cluster opted into built-in ingress
+	// (dev / interim) keeps them so apps are reachable in-VPC before the
+	// controller add-on lands.
+	configLines := []string{
+		"cluster-init: true",
+		"etcd-expose-metrics: true",
+	}
+	if !in.BuiltinIngress {
+		configLines = append(configLines, "disable:", "  - traefik", "  - servicelb")
+	}
+	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
+	// The reachable front-end IP must be a cert SAN so kubectl reaching the
+	// cluster on https://<EndpointIP>:443 validates TLS. k3s accepts IP literals
+	// in tls-san and classifies them as IP SANs.
+	if in.EndpointIP != "" {
+		configLines = append(configLines, "  - "+in.EndpointIP)
+	}
+	configLines = append(configLines,
 		"kube-apiserver-arg:",
-		"  - service-account-key-file=" + k3sOIDCPublicKeyPath,
-		"  - service-account-signing-key-file=" + k3sOIDCSigningKeyPath,
-		"  - service-account-issuer=" + in.OIDCIssuer,
+		"  - service-account-key-file="+k3sOIDCPublicKeyPath,
+		"  - service-account-signing-key-file="+k3sOIDCSigningKeyPath,
+		"  - service-account-issuer="+in.OIDCIssuer,
 		"  - api-audiences=sts.amazonaws.com",
 		"  - anonymous-auth=true",
-	}, "\n")
+		"  - authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath,
+		"  - authentication-token-webhook-cache-ttl=5m",
+		// Pin v1 so the apiserver decodes the webhook's authentication.k8s.io/v1
+		// TokenReview response; the default v1beta1 rejects the GVK mismatch (401).
+		"  - authentication-token-webhook-version=v1",
+	)
+	k3sConfig := strings.Join(configLines, "\n")
 
 	files := []userDataFile{
-		// first-boot.env carries the NATS token, so keep it root-only (0600).
+		// first-boot.env carries the system SigV4 secret key, so keep it
+		// root-only (0600).
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
-		{Path: k3sNATSCAPath, Perms: "0644", Body: strings.TrimRight(in.NATSCACert, "\n")},
+		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
+		// IMDS on-link route. Alpine's cloud-init eni renderer crashes on a
+		// gateway-less route in network-config, so it's delivered out-of-band:
+		// a persistent local.d script (re-applied every boot by the OpenRC
+		// `local` service, enabled via runcmd below) ARPs 169.254.169.254
+		// directly on the VPC subnet. This block owns the only write_files key,
+		// so it must carry the route itself — appending a second write_files via
+		// the generic cloud-init template would collide (last key wins, silently
+		// dropping the k3s config). The device is resolved via the default route
+		// (the VPC egress NIC), not a name: the persistent-net rename to vpc0
+		// doesn't apply on the Alpine AMI, so the kernel name is eth0 at boot.
+		{
+			Path:  "/etc/local.d/imds-onlink-route.start",
+			Perms: "0755",
+			Body: "#!/bin/sh\n" +
+				"dev=$(ip route show default | awk '{print $5; exit}')\n" +
+				"[ -n \"$dev\" ] && ip route replace " + imdsServerIP + "/32 dev \"$dev\" scope link",
+		},
 	}
 
 	var buf strings.Builder
@@ -424,5 +503,12 @@ func buildK3sUserData(in K3sServerInput) string {
 			buf.WriteString("\n")
 		}
 	}
+
+	// Enable + start the OpenRC `local` service so the IMDS route script runs on
+	// first boot and is re-applied on every subsequent boot.
+	buf.WriteString("runcmd:\n")
+	buf.WriteString("  - [ rc-update, add, local, default ]\n")
+	buf.WriteString("  - [ rc-service, local, start ]\n")
+
 	return buf.String()
 }

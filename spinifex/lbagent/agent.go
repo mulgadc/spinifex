@@ -135,7 +135,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 
 // Start runs the poll loop. It blocks until Stop is called.
 func (a *Agent) Start() error {
-	slog.Info("Agent started", "lbId", a.lbID, "gateway", a.gatewayURL)
+	slog.Info("Agent started", "lbId", a.lbID, "gateway", a.gatewayURL, "region", a.region)
 
 	// Run first tick immediately.
 	a.tick()
@@ -180,7 +180,10 @@ func (a *Agent) tick() {
 
 	resp, err := a.sendHeartbeat(servers)
 	if err != nil {
-		slog.Error("Heartbeat failed", "err", err)
+		// Include the dial target so the serial console disambiguates a
+		// transport failure (never reached AWSGW — "send request: dial ...")
+		// from an HTTP-level rejection ("gateway returned NNN: ...").
+		slog.Error("Heartbeat failed", "err", err, "gateway", a.gatewayURL, "region", a.region)
 		return
 	}
 

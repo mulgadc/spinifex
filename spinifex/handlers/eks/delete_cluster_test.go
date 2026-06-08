@@ -18,6 +18,7 @@ type fakeSubnetResolver struct{}
 var _ SubnetVPCResolver = (*fakeSubnetResolver)(nil)
 
 func (fakeSubnetResolver) GetSubnetVPC(_, _ string) (string, error) { return "vpc-aaa", nil }
+func (fakeSubnetResolver) GetVPCCIDR(_, _ string) (string, error)   { return "10.0.0.0/16", nil }
 
 func deleteInput(name string) *eks.DeleteClusterInput {
 	return &eks.DeleteClusterInput{Name: aws.String(name)}
@@ -27,13 +28,15 @@ func deleteInput(name string) *eks.DeleteClusterInput {
 // and an embedded JetStream KV. Tests poke the fakes' *Err fields to force
 // failures at specific lifecycle steps.
 type eksServiceFixture struct {
-	svc  *EKSServiceImpl
-	kv   nats.KeyValue
-	nlb  *fakeNLBProvisioner
-	inst *fakeK3sInst
-	vpc  *fakeK3sVPC
-	ami  *fakeK3sAMI
-	eip  *fakeEIPProvisioner
+	svc    *EKSServiceImpl
+	kv     nats.KeyValue
+	nlb    *fakeNLBProvisioner
+	inst   *fakeK3sInst
+	vpc    *fakeK3sVPC
+	ami    *fakeK3sAMI
+	eip    *fakeEIPProvisioner
+	sg     *fakeSGProvisioner
+	worker *fakeWorkerLauncher
 }
 
 func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
@@ -47,28 +50,32 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	vpc := &fakeK3sVPC{}
 	ami := &fakeK3sAMI{}
 	eip := newFakeEIPProvisioner()
+	sg := newFakeSGProvisioner()
+	worker := newFakeWorkerLauncher()
 
 	svc, err := NewEKSServiceImpl(EKSServiceDeps{
-		NATSConn:       nc,
-		MasterKey:      bootstrapTestMasterKey,
-		GatewayBaseURL: "https://gw.local:9999",
-		Region:         "us-east-1",
-		HolderID:       "node-1",
-		NATSURL:        "nats://gw.local:4222",
-		NATSToken:      "s3cr3t-token",
-		NATSCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
-		VPCSG:          newFakeSGProvisioner(),
-		VPCK3s:         vpc,
-		VPCSubnet:      fakeSubnetResolver{},
-		NLB:            nlb,
-		Instance:       inst,
-		Image:          ami,
-		EIP:            eip,
+		NATSConn:         nc,
+		MasterKey:        bootstrapTestMasterKey,
+		GatewayBaseURL:   "https://gw.local:9999",
+		Region:           "us-east-1",
+		HolderID:         "node-1",
+		SystemGatewayURL: "https://gw.local:9999",
+		SystemAccessKey:  "AKIAEXAMPLE",
+		SystemSecretKey:  "s3cr3t-key",
+		GatewayCACert:    "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		VPCSG:            sg,
+		VPCK3s:           vpc,
+		VPCSubnet:        fakeSubnetResolver{},
+		NLB:              nlb,
+		Instance:         inst,
+		Image:            ami,
+		EIP:              eip,
+		Worker:           worker,
 	})
 	require.NoError(t, err)
 	t.Cleanup(svc.Shutdown)
 
-	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip}
+	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker}
 }
 
 // deleteClusterFixture is an eksServiceFixture pre-seeded with a CREATING

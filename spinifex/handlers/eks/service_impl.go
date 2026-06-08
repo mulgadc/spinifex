@@ -22,11 +22,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// SubnetVPCResolver resolves a subnet ID to its parent VPC ID. Narrow so
-// EKSServiceImpl can stay free of the wider handlers/ec2/vpc surface; the
-// daemon adapts VPCServiceImpl.GetSubnet onto this contract.
+// SubnetVPCResolver resolves a subnet ID to its parent VPC ID and the VPC's
+// CIDR block. Narrow so EKSServiceImpl can stay free of the wider
+// handlers/ec2/vpc surface; the daemon adapts VPCServiceImpl onto this
+// contract.
 type SubnetVPCResolver interface {
 	GetSubnetVPC(accountID, subnetID string) (vpcID string, err error)
+	GetVPCCIDR(accountID, vpcID string) (cidr string, err error)
 }
 
 // EKSServiceDeps wires every external collaborator EKSServiceImpl needs.
@@ -41,12 +43,17 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
-	// NATS auth handed to the K3s server VM so it can publish its one-shot
-	// bootstrap messages. Shared token + CA (PEM content) + a VM-reachable
-	// URL — spinifex has no per-principal nkeys hierarchy to scope against.
-	NATSURL    string
-	NATSToken  string
-	NATSCACert string
+	// Gateway broker config handed to the K3s server VM so it can publish its
+	// bootstrap envelopes + state reports via SigV4-signed HTTPS POST to the AWS
+	// gateway (the ELBv2 lb-agent model) instead of dialing core NATS.
+	// SystemGatewayURL is the mgmt-reachable AWSGW endpoint (distinct from
+	// GatewayBaseURL, which is the OIDC issuer host); SystemAccessKey/SecretKey
+	// are the system (Predastore) SigV4 creds; GatewayCACert is the PEM that
+	// signs the gateway server cert.
+	SystemGatewayURL string
+	SystemAccessKey  string
+	SystemSecretKey  string
+	GatewayCACert    string
 
 	VPCSG     sgProvisioner
 	VPCK3s    k3sVPCProvisioner
@@ -55,6 +62,19 @@ type EKSServiceDeps struct {
 	Instance  k3sInstanceLauncher
 	Image     k3sAMIResolver
 	EIP       eipProvisioner
+	Worker    WorkerLauncher
+}
+
+// WorkerLauncher is the narrow EC2 surface CreateNodegroup needs to launch and
+// terminate nodegroup worker instances. Workers go through the normal
+// customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC) so they are
+// visible in DescribeInstances and reclaimed by TerminateInstances like any
+// other customer EC2. The daemon adapts its concrete instance service onto this.
+// Exported so the daemon can assert *Daemon satisfies it with a compile-time
+// check.
+type WorkerLauncher interface {
+	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
+	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 
 // eipProvisioner is the narrow EIP surface CreateCluster needs to give the
@@ -226,6 +246,9 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	if s.deps.EIP == nil {
 		missing = append(missing, "EIP")
 	}
+	if s.deps.Worker == nil {
+		missing = append(missing, "Worker")
+	}
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
 	}
@@ -243,6 +266,28 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 
 // --- Cluster ---
 
+// logCreateErr records the precise cause of a CreateCluster step failure at
+// ERROR. The request surface collapses these wrapped errors to an opaque
+// ServerInternal ("An internal error has occurred... contact AWS re:Post"), so
+// without this the wrapped error never reaches the operator. Returns the error
+// wrapped with the stage for the caller to surface.
+func logCreateErr(name, accountID, stage string, err error) error {
+	slog.Error("CreateCluster: "+stage+" failed", "cluster", name, "accountID", accountID, "err", err)
+	return fmt.Errorf("%s: %w", stage, err)
+}
+
+// managedIngressTagKey is the CreateCluster tag that opts a cluster into K3s'
+// bundled traefik + servicelb (dev / interim in-VPC app exposure). Value "true"
+// (case-insensitive) enables it; absent or any other value keeps AWS parity
+// (built-ins disabled, ingress via the AWS Load Balancer Controller).
+const managedIngressTagKey = "spinifex.io/managed-ingress"
+
+// builtinIngressEnabled reports whether the CreateCluster tags opt into the K3s
+// built-in ingress stack.
+func builtinIngressEnabled(tags map[string]*string) bool {
+	return strings.EqualFold(aws.StringValue(tags[managedIngressTagKey]), "true")
+}
+
 func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error) {
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
@@ -255,11 +300,11 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
+		return nil, logCreateErr(name, accountID, "jetstream", err)
 	}
 	acctKV, err := GetOrCreateAccountBucket(js, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
 
 	if existing, err := GetClusterMeta(acctKV, name); err == nil {
@@ -277,19 +322,27 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		slog.Info("CreateCluster: reclaiming FAILED cluster before recreate",
 			"name", name, "accountID", accountID)
 		if perr := s.purgeClusterInfra(accountID, name, existing, acctKV); perr != nil {
-			return nil, fmt.Errorf("reclaim failed cluster %s: %w", name, perr)
+			return nil, logCreateErr(name, accountID, "reclaim failed cluster", perr)
 		}
 	} else if !errors.Is(err, ErrClusterNotFound) {
-		return nil, fmt.Errorf("preflight get meta: %w", err)
+		return nil, logCreateErr(name, accountID, "preflight get meta", err)
 	}
 
 	vpcID, err := s.deps.VPCSubnet.GetSubnetVPC(accountID, subnetIDs[0])
 	if err != nil {
-		return nil, fmt.Errorf("resolve subnet VPC: %w", err)
+		// Subnet is a caller-supplied parameter — a resolve failure is a client
+		// fault (bad/foreign subnet), not an internal one. Surface it as such
+		// instead of collapsing to a retryable ServerInternal the SDK retries.
+		slog.Error("CreateCluster: resolve subnet VPC failed",
+			"cluster", name, "accountID", accountID, "subnet", subnetIDs[0], "err", err)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	region := s.deps.Region
 	arn := fmt.Sprintf("arn:aws:eks:%s:%s:cluster/%s", region, accountID, name)
+
+	publicAccess, privateAccess := endpointAccess(input.ResourcesVpcConfig)
+	publicCidrs := publicAccessCidrs(input.ResourcesVpcConfig, publicAccess)
 
 	meta := &ClusterMeta{
 		Name:    name,
@@ -298,28 +351,55 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		Version: deref(input.Version, defaultK8sVersion),
 		RoleArn: aws.StringValue(input.RoleArn),
 		ResourcesVpcConfig: &ClusterVpcConfig{
-			SubnetIds: subnetIDs,
-			VpcId:     vpcID,
+			SubnetIds:             subnetIDs,
+			VpcId:                 vpcID,
+			EndpointPublicAccess:  publicAccess,
+			EndpointPrivateAccess: privateAccess,
+			PublicAccessCidrs:     publicCidrs,
 		},
-		CreatedAt: time.Now().UTC(),
+		BuiltinIngress: builtinIngressEnabled(input.Tags),
+		CreatedAt:      time.Now().UTC(),
 	}
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		return nil, err
+		return nil, logCreateErr(name, accountID, "persist initial meta", err)
 	}
 
 	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, accountID, name, vpcID)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
+		return nil, logCreateErr(name, accountID, "ensure cluster SGs", err)
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
-	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs)
+	// The NLB's backing LB VM forwards the published endpoint to the apiserver
+	// from inside the VPC, so the control-plane SG must admit that hop or the
+	// NLB target stays unhealthy and the endpoint never serves.
+	vpcCIDR, err := s.deps.VPCSubnet.GetVPCCIDR(accountID, vpcID)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("ensure cluster NLB: %w", err)
+		return nil, logCreateErr(name, accountID, "resolve vpc cidr", err)
 	}
-	meta.Endpoint = "https://" + net.JoinHostPort(nlb.DNSName, strconv.FormatInt(clusterNLBListenPort, 10))
+	if err := EnsureControlPlaneIngress(s.deps.VPCSG, accountID, cpSG, vpcCIDR); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "ensure control-plane ingress", err)
+	}
+
+	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
+	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).
+	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "ensure cluster NLB", err)
+	}
+	// Prefer the reachable front-end IP as the kubeconfig endpoint host so the
+	// apiserver serving cert (which SANs this IP) validates with TLS verification
+	// on. Fall back to the synthetic NLB DNS name when no IP was read back.
+	endpointHost := nlb.FrontendIP
+	if endpointHost == "" {
+		endpointHost = nlb.DNSName
+	}
+	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
+	meta.EndpointIP = nlb.FrontendIP
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
@@ -330,25 +410,25 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	// reclaim them.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("persist NLB arns: %w", err)
+		return nil, logCreateErr(name, accountID, "persist NLB arns", err)
 	}
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("build OIDC issuer: %w", err)
+		return nil, logCreateErr(name, accountID, "build OIDC issuer", err)
 	}
 	meta.OIDCIssuer = oidcIssuer
 
 	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("generate OIDC keypair: %w", err)
+		return nil, logCreateErr(name, accountID, "generate OIDC keypair", err)
 	}
 	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("derive OIDC public key: %w", err)
+		return nil, logCreateErr(name, accountID, "derive OIDC public key", err)
 	}
 
 	k3sOut, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, K3sServerInput{
@@ -358,12 +438,15 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		SubnetID:          subnetIDs[0],
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
+		EndpointIP:        nlb.FrontendIP,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
 		OIDCPublicKeyPEM:  pubPEM,
-		NATSURL:           s.deps.NATSURL,
-		NATSToken:         s.deps.NATSToken,
-		NATSCACert:        s.deps.NATSCACert,
+		GatewayURL:        s.deps.SystemGatewayURL,
+		AccessKey:         s.deps.SystemAccessKey,
+		SecretKey:         s.deps.SystemSecretKey,
+		GatewayCACert:     s.deps.GatewayCACert,
+		BuiltinIngress:    meta.BuiltinIngress,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)
@@ -387,7 +470,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
 	if err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("allocate cluster egress IP: %w", err)
+		return nil, logCreateErr(name, accountID, "allocate cluster egress IP", err)
 	}
 	meta.EgressEIPAllocationID = egressAllocID
 	meta.EgressEIPPublicIP = egressIP
@@ -402,16 +485,17 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	// register (or anything after) leaves them recoverable by DeleteCluster.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("persist control-plane ids: %w", err)
+		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
 	}
 
 	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, k3sOut.ENIIP); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, fmt.Errorf("register NLB target: %w", err)
+		return nil, logCreateErr(name, accountID, "register NLB target", err)
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		return nil, err
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "persist final meta", err)
 	}
 
 	// bootstrapClusterCreatorAdminPermissions (default true): grant the caller
@@ -501,15 +585,15 @@ func (s *EKSServiceImpl) DescribeCluster(input *eks.DescribeClusterInput, accoun
 func (s *EKSServiceImpl) ListClusters(input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
+		return nil, eksReadUnavailableOr(err, "jetstream")
 	}
 	acctKV, err := GetOrCreateAccountBucket(js, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, eksReadUnavailableOr(err, "get account bucket")
 	}
 	names, err := listClusterNames(acctKV)
 	if err != nil {
-		return nil, err
+		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
 	sort.Strings(names)
 
@@ -666,28 +750,63 @@ func (s *EKSServiceImpl) UpdateClusterVersion(_ *eks.UpdateClusterVersionInput, 
 
 // --- Nodegroup ---
 
-func (s *EKSServiceImpl) CreateNodegroup(_ *eks.CreateNodegroupInput, _ string) (*eks.CreateNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) CreateNodegroup(input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
+	if err := s.requireOrchestrationDeps("CreateNodegroup"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.createNodegroup(acctKV, input, accountID)
 }
 
-func (s *EKSServiceImpl) DescribeNodegroup(_ *eks.DescribeNodegroupInput, _ string) (*eks.DescribeNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DescribeNodegroup(input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.describeNodegroup(acctKV, input)
 }
 
-func (s *EKSServiceImpl) ListNodegroups(_ *eks.ListNodegroupsInput, _ string) (*eks.ListNodegroupsOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) ListNodegroups(input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error) {
+	if input == nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.listNodegroups(acctKV, input)
 }
 
-func (s *EKSServiceImpl) UpdateNodegroupConfig(_ *eks.UpdateNodegroupConfigInput, _ string) (*eks.UpdateNodegroupConfigOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UpdateNodegroupConfig(input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
+	if err := s.requireOrchestrationDeps("UpdateNodegroupConfig"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.updateNodegroupConfig(acctKV, input, accountID)
 }
 
-func (s *EKSServiceImpl) UpdateNodegroupVersion(_ *eks.UpdateNodegroupVersionInput, _ string) (*eks.UpdateNodegroupVersionOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UpdateNodegroupVersion(input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error) {
+	return s.updateNodegroupVersion(input)
 }
 
-func (s *EKSServiceImpl) DeleteNodegroup(_ *eks.DeleteNodegroupInput, _ string) (*eks.DeleteNodegroupOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) DeleteNodegroup(input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
+	if err := s.requireOrchestrationDeps("DeleteNodegroup"); err != nil {
+		return nil, err
+	}
+	acctKV, err := s.nodegroupAcctKV(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.deleteNodegroup(acctKV, input, accountID)
 }
 
 // --- AccessEntry + AccessPolicy ---
@@ -1069,7 +1188,47 @@ func validateCreateClusterInput(input *eks.CreateClusterInput) error {
 			return errors.New(awserrors.ErrorInvalidParameter)
 		}
 	}
+	// AWS rejects disabling both public and private endpoint access — the
+	// control plane would be unreachable.
+	if v := input.ResourcesVpcConfig; v != nil &&
+		v.EndpointPublicAccess != nil && !*v.EndpointPublicAccess &&
+		v.EndpointPrivateAccess != nil && !*v.EndpointPrivateAccess {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 	return nil
+}
+
+// defaultPublicAccessCidr is the AWS-default allowed source range for a public
+// cluster endpoint when the caller specifies none.
+const defaultPublicAccessCidr = "0.0.0.0/0"
+
+// endpointAccess resolves apiserver endpoint exposure from the request,
+// applying AWS defaults (public on, private off) to omitted fields.
+func endpointAccess(vpc *eks.VpcConfigRequest) (public, private bool) {
+	public, private = true, false
+	if vpc == nil {
+		return public, private
+	}
+	if vpc.EndpointPublicAccess != nil {
+		public = *vpc.EndpointPublicAccess
+	}
+	if vpc.EndpointPrivateAccess != nil {
+		private = *vpc.EndpointPrivateAccess
+	}
+	return public, private
+}
+
+// publicAccessCidrs returns the allowed source ranges for a public endpoint,
+// defaulting to 0.0.0.0/0 (AWS parity) when public access is on and none given.
+// Nil for a private-only endpoint.
+func publicAccessCidrs(vpc *eks.VpcConfigRequest, public bool) []string {
+	if !public {
+		return nil
+	}
+	if vpc != nil && len(vpc.PublicAccessCidrs) > 0 {
+		return aws.StringValueSlice(vpc.PublicAccessCidrs)
+	}
+	return []string{defaultPublicAccessCidr}
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {
@@ -1104,21 +1263,7 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv nats.K
 	}()
 }
 
-func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *ClusterMeta) {
-	healthURL := ""
-	switch {
-	case meta.ControlPlaneMgmtIP != "":
-		// Workaround until authoritative DNS (Eclipso/Route53) lands: the
-		// reconciler runs on the host, outside the VPC overlay, and can neither
-		// resolve the NLB DNS name nor route to the VPC-internal NLB front-end.
-		// The control-plane VM's br-mgmt NIC is the one apiserver address
-		// reachable from the daemon, so probe :6443/healthz there directly. The
-		// probe client sets InsecureSkipVerify, so the mgmt IP need not be in the
-		// apiserver cert SAN.
-		healthURL = "https://" + net.JoinHostPort(meta.ControlPlaneMgmtIP, "6443") + "/healthz"
-	case meta.Endpoint != "":
-		healthURL = strings.TrimRight(meta.Endpoint, "/") + "/healthz"
-	}
+func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
 	js, err := s.deps.NATSConn.JetStream()
 	if err != nil {
 		slog.Error("spawnReconciler: jetstream", "err", err)
@@ -1129,8 +1274,13 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, meta *Cl
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return
 	}
+	// Health gates on the control plane's NATS self-report, not an HTTP probe:
+	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
+	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
+	stateSubject := StateSubject(accountID, clusterName)
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, healthURL)
+		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
+			WithStateSource(s.deps.NATSConn, stateSubject))
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)
@@ -1160,9 +1310,12 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 	}
 	if meta.ResourcesVpcConfig != nil {
 		out.ResourcesVpcConfig = &eks.VpcConfigResponse{
-			SubnetIds:        aws.StringSlice(meta.ResourcesVpcConfig.SubnetIds),
-			SecurityGroupIds: aws.StringSlice(meta.ResourcesVpcConfig.SecurityGroupIds),
-			VpcId:            aws.String(meta.ResourcesVpcConfig.VpcId),
+			SubnetIds:             aws.StringSlice(meta.ResourcesVpcConfig.SubnetIds),
+			SecurityGroupIds:      aws.StringSlice(meta.ResourcesVpcConfig.SecurityGroupIds),
+			VpcId:                 aws.String(meta.ResourcesVpcConfig.VpcId),
+			EndpointPublicAccess:  aws.Bool(meta.ResourcesVpcConfig.EndpointPublicAccess),
+			EndpointPrivateAccess: aws.Bool(meta.ResourcesVpcConfig.EndpointPrivateAccess),
+			PublicAccessCidrs:     aws.StringSlice(meta.ResourcesVpcConfig.PublicAccessCidrs),
 		}
 	}
 	if meta.HealthIssue != "" {
@@ -1174,6 +1327,30 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 		}
 	}
 	return out
+}
+
+// natsTransient reports whether err is a transient NATS/JetStream condition
+// rather than a genuine fault. These occur in the post-restart window before
+// the KV stream's Raft group has elected a leader: JetStream requests get no
+// responder, time out, or the stream is briefly unreachable.
+func natsTransient(err error) bool {
+	return err != nil && (errors.Is(err, nats.ErrNoResponders) ||
+		errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, nats.ErrNoStreamResponse) ||
+		errors.Is(err, nats.ErrConnectionClosed))
+}
+
+// eksReadUnavailableOr maps a transient NATS/JetStream failure to a retryable
+// ServiceUnavailable (503) so AWS clients back off and retry, instead of the
+// daemon sanitizing an unrecognised wrapped error to a misleading 500
+// InternalError. Non-transient errors pass through wrapped so real faults stay
+// visible.
+func eksReadUnavailableOr(err error, op string) error {
+	if natsTransient(err) {
+		slog.Warn("EKS read temporarily unavailable", "op", op, "err", err)
+		return errors.New(awserrors.ErrorServiceUnavailable)
+	}
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 func listClusterNames(kv nats.KeyValue) ([]string, error) {

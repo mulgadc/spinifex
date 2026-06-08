@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -21,7 +22,17 @@ const (
 	// (absolute), so a VM that never boots reaches a terminal state even across
 	// daemon restarts. Plan Risk #1.
 	defaultCreateTimeout = 15 * time.Minute
+	// defaultStateStaleAfter bounds how old the control plane's last NATS state
+	// report may be before health is treated as unknown/failed. The CP publishes
+	// every ~30s; 3x that tolerates a missed tick without flapping.
+	defaultStateStaleAfter = 90 * time.Second
 )
+
+// natsSubscriber is the minimum surface the reconciler needs to consume the
+// control-plane state report; *nats.Conn satisfies it, tests stub it.
+type natsSubscriber interface {
+	Subscribe(subject string, cb nats.MsgHandler) (*nats.Subscription, error)
+}
 
 // ErrReconcilerLeaseLost is returned by Run when the leader lease was lost
 // mid-loop. Callers can re-Acquire and re-Run if they want to keep driving
@@ -58,6 +69,14 @@ type ClusterReconciler struct {
 	healthTimeout time.Duration
 	createTimeout time.Duration
 	httpClient    HTTPDoer
+
+	// State-report health source. When stateSub is non-nil the reconciler gates
+	// on the CP's NATS self-report (latest) rather than the HTTP /healthz probe —
+	// the apiserver is bound to the VPC node-ip and unreachable from the host.
+	stateSub        natsSubscriber
+	stateSubject    string
+	stateStaleAfter time.Duration
+	latest          atomic.Pointer[ServerStateReport]
 }
 
 // ReconcilerOption tunes a ClusterReconciler. Tests use the With* helpers to
@@ -91,6 +110,22 @@ func WithHTTPClient(c HTTPDoer) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.httpClient = c }
 }
 
+// WithStateSource configures the reconciler to gate health on the control
+// plane's NATS state report (subject) consumed via sub, instead of the HTTP
+// /healthz probe. The subscription is opened in Run and closed when it returns.
+func WithStateSource(sub natsSubscriber, subject string) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.stateSub = sub
+		r.stateSubject = subject
+	}
+}
+
+// WithStateStaleAfter overrides how old the last state report may be before
+// health is treated as failing.
+func WithStateStaleAfter(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.stateStaleAfter = d }
+}
+
 // NewClusterReconciler constructs a ClusterReconciler. healthURL is the
 // fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
 // to skip /healthz probing (CREATING transitions on bootstrap state alone).
@@ -111,16 +146,17 @@ func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName
 		return nil, errors.New("eks: NewClusterReconciler empty holderID")
 	}
 	r := &ClusterReconciler{
-		leaderKV:      leaderKV,
-		acctKV:        acctKV,
-		accountID:     accountID,
-		clusterName:   clusterName,
-		holderID:      holderID,
-		healthURL:     healthURL,
-		leaseRefresh:  defaultReconcileLeaseRefresh,
-		interval:      defaultReconcileInterval,
-		healthTimeout: defaultHealthzTimeout,
-		createTimeout: defaultCreateTimeout,
+		leaderKV:        leaderKV,
+		acctKV:          acctKV,
+		accountID:       accountID,
+		clusterName:     clusterName,
+		holderID:        holderID,
+		healthURL:       healthURL,
+		leaseRefresh:    defaultReconcileLeaseRefresh,
+		interval:        defaultReconcileInterval,
+		healthTimeout:   defaultHealthzTimeout,
+		createTimeout:   defaultCreateTimeout,
+		stateStaleAfter: defaultStateStaleAfter,
 		httpClient: &http.Client{
 			Timeout: defaultHealthzTimeout,
 			Transport: &http.Transport{
@@ -186,6 +222,22 @@ func (r *ClusterReconciler) RefreshLease() bool {
 // cluster reaches a terminal state. Caller is expected to AcquireLease first;
 // Run does not re-acquire.
 func (r *ClusterReconciler) Run(ctx context.Context) error {
+	if r.stateSub != nil && r.stateSubject != "" {
+		sub, err := r.stateSub.Subscribe(r.stateSubject, func(m *nats.Msg) {
+			report, perr := unmarshalServerStateReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad state report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.latest.Store(&report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe state report %s: %w", r.stateSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
 	refreshT := time.NewTicker(r.leaseRefresh)
 	defer refreshT.Stop()
 	reconcileT := time.NewTicker(r.interval)
@@ -238,24 +290,30 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 				"cluster", r.clusterName, "reason", reason)
 			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
 		}
-		if err := r.probeHealthz(ctx); err != nil {
-			slog.Debug("ClusterReconciler: /healthz still failing",
-				"cluster", r.clusterName, "err", err)
-			return r.failIfCreateTimedOut(meta, "healthz not ready: "+err.Error())
+		issue, nodeCount := r.observe(ctx)
+		if issue != "" {
+			slog.Debug("ClusterReconciler: health not ready",
+				"cluster", r.clusterName, "issue", issue)
+			return r.failIfCreateTimedOut(meta, "healthz not ready: "+issue)
 		}
 		if err := SetClusterStatus(r.acctKV, r.clusterName, ClusterStatusActive); err != nil {
 			return err
 		}
-		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
-			"cluster", r.clusterName)
-	case ClusterStatusActive:
-		issue := ""
-		if err := r.probeHealthz(ctx); err != nil {
-			slog.Warn("ClusterReconciler: /healthz failing for ACTIVE cluster",
-				"cluster", r.clusterName, "err", err)
-			issue = err.Error()
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, "", nodeCount); err != nil {
+			if errors.Is(err, ErrClusterNotFound) {
+				return ErrClusterNotFound
+			}
+			return fmt.Errorf("record cluster health: %w", err)
 		}
-		if err := SetClusterHealth(r.acctKV, r.clusterName, issue); err != nil {
+		slog.Info("ClusterReconciler: cluster transitioned to ACTIVE",
+			"cluster", r.clusterName, "nodes", nodeCount)
+	case ClusterStatusActive:
+		issue, nodeCount := r.observe(ctx)
+		if issue != "" {
+			slog.Warn("ClusterReconciler: health failing for ACTIVE cluster",
+				"cluster", r.clusterName, "issue", issue)
+		}
+		if err := SetClusterHealthState(r.acctKV, r.clusterName, issue, nodeCount); err != nil {
 			if errors.Is(err, ErrClusterNotFound) {
 				return ErrClusterNotFound
 			}
@@ -267,6 +325,31 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 		return ErrReconcilerClusterFailed
 	}
 	return nil
+}
+
+// observe returns the current health issue ("" when healthy) and the reported
+// node count. With a NATS state source it reads the control plane's latest
+// self-report (rejecting a stale or unhealthy one); otherwise it falls back to
+// the HTTP /healthz probe (node count is then 0, the probe carries no count).
+func (r *ClusterReconciler) observe(ctx context.Context) (issue string, nodeCount int) {
+	if r.stateSub != nil && r.stateSubject != "" {
+		report := r.latest.Load()
+		if report == nil {
+			return "no control-plane state report received yet", 0
+		}
+		age := time.Since(time.Unix(report.TS, 0))
+		if age > r.stateStaleAfter {
+			return fmt.Sprintf("control-plane state report stale (%s old)", age.Round(time.Second)), report.NodeCount
+		}
+		if !report.Healthy() {
+			return fmt.Sprintf("apiserver healthz=%q", report.Healthz), report.NodeCount
+		}
+		return "", report.NodeCount
+	}
+	if err := r.probeHealthz(ctx); err != nil {
+		return err.Error(), 0
+	}
+	return "", 0
 }
 
 // failIfCreateTimedOut transitions a still-CREATING cluster to FAILED once it

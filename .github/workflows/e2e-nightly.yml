@@ -216,3 +216,22 @@ jobs:
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+
+  # Bare-metal single-node suite (PXE-reimaged physical hardware). Doesn't fit
+  # the tofu matrix shape (different runner/provisioning/120m timeout), so it
+  # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
+  # matrix cell ("cell 20"): every weeknight cron, or dispatch with 20 selected
+  # (blank cells = all). Tests `dev` on schedule to match GIT_BRANCH above.
+  baremetal:
+    name: cell-20 (baremetal/pxe/real-hw)
+    if: >-
+      github.event_name == 'schedule' ||
+      inputs.cells == '' ||
+      contains(format(',{0},', inputs.cells), ',20,')
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/e2e-baremetal.yml
+    with:
+      ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref_name }}
+    secrets: inherit

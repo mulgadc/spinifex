@@ -1,9 +1,7 @@
 #!/sbin/openrc-run
-# K3s server control plane. v1 = single-node embedded SQLite (kine) datastore;
-# the per-cluster config.yaml omits cluster-init so k3s uses SQLite, not etcd
-# (etcd's per-commit fsync stalls on the viperblock root volume). Data lives at
-# /var/lib/rancher/k3s; subsequent starts reuse it. Multi-server HA needs etcd
-# and is deferred.
+# K3s server control plane. The per-cluster config.yaml sets cluster-init, so
+# k3s uses the embedded etcd datastore (required for multi-server HA). Data
+# lives at /var/lib/rancher/k3s; subsequent starts reuse it.
 
 description="K3s Kubernetes server (Mulga EKS control plane)"
 command="/usr/local/bin/k3s"
@@ -13,8 +11,8 @@ pidfile="/run/k3s.pid"
 output_log="/var/log/k3s.log"
 error_log="/var/log/k3s.log"
 
-# Generous start timeout — K3s bootstraps containerd, initialises the SQLite
-# datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
+# Generous start timeout — K3s bootstraps containerd, initialises the embedded
+# etcd datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
 start_stop_daemon_args="--wait 5000"
 
 depend() {

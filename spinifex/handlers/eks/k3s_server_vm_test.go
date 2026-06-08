@@ -118,9 +118,10 @@ func validK3sInput() K3sServerInput {
 		OIDCIssuer:        "https://oidc.spinifex.local/clusters/111122223333/alpha",
 		OIDCPrivateKeyPEM: "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
 		OIDCPublicKeyPEM:  "-----BEGIN PUBLIC KEY-----\nFAKEPUB\n-----END PUBLIC KEY-----\n",
-		NATSURL:           "nats://localhost:4222",
-		NATSToken:         "s3cr3t-token",
-		NATSCACert:        "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		GatewayURL:        "https://10.15.8.1:9999",
+		AccessKey:         "AKIAEXAMPLE",
+		SecretKey:         "s3cr3t-key",
+		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
 	}
 }
 
@@ -142,9 +143,10 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		{"empty OIDCIssuer", mk(func(in *K3sServerInput) { in.OIDCIssuer = "" })},
 		{"empty OIDCPrivateKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPrivateKeyPEM = "   \n " })},
 		{"empty OIDCPublicKeyPEM", mk(func(in *K3sServerInput) { in.OIDCPublicKeyPEM = "   \n " })},
-		{"empty NATSURL", mk(func(in *K3sServerInput) { in.NATSURL = "" })},
-		{"empty NATSToken", mk(func(in *K3sServerInput) { in.NATSToken = "" })},
-		{"empty NATSCACert", mk(func(in *K3sServerInput) { in.NATSCACert = "  \n" })},
+		{"empty GatewayURL", mk(func(in *K3sServerInput) { in.GatewayURL = "" })},
+		{"empty AccessKey", mk(func(in *K3sServerInput) { in.AccessKey = "" })},
+		{"empty SecretKey", mk(func(in *K3sServerInput) { in.SecretKey = "" })},
+		{"empty GatewayCACert", mk(func(in *K3sServerInput) { in.GatewayCACert = "  \n" })},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -269,9 +271,11 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	// The eks-node-role first-boot selector keys off this to start control-plane
 	// services; without it the unified AMI boots into no role.
 	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server")
-	assert.Contains(t, udata, "SPINIFEX_NATS_URL=nats://localhost:4222")
-	assert.Contains(t, udata, "SPINIFEX_NATS_TOKEN=s3cr3t-token")
-	assert.Contains(t, udata, "SPINIFEX_NATS_CA="+k3sNATSCAPath)
+	assert.Contains(t, udata, "EKS_GATEWAY_URL=https://10.15.8.1:9999")
+	assert.Contains(t, udata, "EKS_GATEWAY_CA="+k3sGatewayCAPath)
+	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
+	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
+	assert.Contains(t, udata, "EKS_REGION=us-east-1")
 	assert.Contains(t, udata, "EKS_ACCOUNT_ID=111122223333")
 	assert.Contains(t, udata, "EKS_CLUSTER_NAME=alpha")
 	assert.Contains(t, udata, "EKS_NLB_ENDPOINT=https://eks-alpha-lb-001.us-east-1.elb.spinifex.local:443")
@@ -287,6 +291,11 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
+	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
+	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
+	assert.Contains(t, udata, "disable:")
+	assert.Contains(t, udata, "  - traefik")
+	assert.Contains(t, udata, "  - servicelb")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -297,10 +306,58 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.NotContains(t, udata, "service-account-key-file="+k3sOIDCSigningKeyPath)
 	assert.Contains(t, udata, "service-account-issuer=https://oidc.spinifex.local/clusters/111122223333/alpha")
 	assert.Contains(t, udata, "api-audiences=sts.amazonaws.com")
+	// IAM bearer-token auth: the generated config overrides the AMI skel, so the
+	// token-webhook arg MUST be emitted here or `aws eks get-token` 401s with the
+	// webhook never invoked.
+	assert.Contains(t, udata, "authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath)
 
-	assert.Contains(t, udata, "path: "+k3sNATSCAPath)
+	assert.Contains(t, udata, "path: "+k3sGatewayCAPath)
 	assert.Contains(t, udata, "-----BEGIN CERTIFICATE-----")
 	assert.Contains(t, udata, "FAKECA")
+
+	// IMDS on-link route delivered out-of-band (Alpine's eni renderer can't emit
+	// the gateway-less route in network-config). It rides this payload's own
+	// write_files/runcmd, enabled via the OpenRC local service.
+	assert.Contains(t, udata, "path: /etc/local.d/imds-onlink-route.start")
+	assert.Contains(t, udata, "ip route show default")
+	assert.Contains(t, udata, `ip route replace 169.254.169.254/32 dev "$dev" scope link`)
+	assert.Contains(t, udata, "runcmd:")
+	assert.Contains(t, udata, "[ rc-update, add, local, default ]")
+
+	// Exactly one write_files / runcmd key — a second would collide and silently
+	// drop a block under yaml.safe_load (last key wins).
+	assert.Equal(t, 1, strings.Count(udata, "\nwrite_files:"))
+	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
+}
+
+func TestLaunchK3sServerVM_BuiltinIngressOptInKeepsK3sDefaults(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.BuiltinIngress = true
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// Opted in: leave K3s' traefik + servicelb running, so no disable block.
+	assert.NotContains(t, udata, "disable:")
+	assert.NotContains(t, udata, "- traefik")
+	assert.NotContains(t, udata, "- servicelb")
+}
+
+func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// cluster-init selects the embedded etcd datastore (not SQLite/kine);
+	// etcd-expose-metrics surfaces wal_fsync/backend_commit on 127.0.0.1:2381.
+	assert.Contains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "etcd-expose-metrics: true")
 }
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {

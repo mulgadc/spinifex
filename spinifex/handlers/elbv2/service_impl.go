@@ -89,6 +89,13 @@ func (s *ELBv2ServiceImpl) resolveMgmtRoute(scheme string) (gateway, target stri
 	if scheme == SchemeInternal && s.MgmtBridgeIP != "" && s.AdvertiseIP != "" {
 		return s.MgmtBridgeIP, s.AdvertiseIP
 	}
+	if scheme == SchemeInternal {
+		slog.Warn("resolveMgmtRoute: internal LB has no mgmt return route; lb-agent cannot reach AWSGW and the LB will stay provisioning",
+			"mgmtRouteGateway", s.MgmtRouteGateway,
+			"mgmtRouteTarget", s.MgmtRouteTarget,
+			"mgmtBridgeIP", s.MgmtBridgeIP,
+			"advertiseIP", s.AdvertiseIP)
+	}
 	return "", ""
 }
 
@@ -427,6 +434,81 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 		})
 	}
 	return extras
+}
+
+// lbVMLaunch is the outcome of booting the system VM that backs a load
+// balancer. failed is true when the VM could not be launched (missing system
+// credentials or a launcher error) so the caller can mark the LB failed.
+type lbVMLaunch struct {
+	instanceID string
+	vpcIP      string
+	publicIP   string
+	hostPorts  map[int]int
+	failed     bool
+}
+
+// launchLBVM boots the system VM backing a load balancer with the given ENI
+// set. The first ENI is the primary NIC; any additional ENIs are passed as
+// ExtraENIs so the daemon sets up a tap + QEMU NIC per subnet, giving the LB VM
+// data-plane presence in every subnet it spans. When no launcher is configured
+// the call is a no-op (zero value, failed=false) so launcher-less deployments
+// keep the LB Active. Shared by CreateLoadBalancer and the SetSubnets relaunch.
+func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string) lbVMLaunch {
+	var res lbVMLaunch
+	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
+		return res
+	}
+
+	eniDetails := s.describeENIs(eniIDs, accountID)
+	primary := eniDetails[eniIDs[0]]
+	primaryIP := ""
+	primaryMAC := ""
+	if primary != nil {
+		primaryIP = aws.StringValue(primary.PrivateIpAddress)
+		primaryMAC = aws.StringValue(primary.MacAddress)
+	}
+
+	extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
+
+	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
+		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
+		res.failed = true
+		return res
+	}
+
+	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
+	launchInput := &SystemInstanceInput{
+		InstanceType: s.getSystemInstanceType(),
+		SubnetID:     subnets[0],
+		ENIID:        eniIDs[0],
+		ENIMac:       primaryMAC,
+		ENIIP:        primaryIP,
+		ExtraENIs:    extraENIInputs,
+		Scheme:       scheme,
+		AccountID:    accountID,
+		NICs:         nics,
+		LBAgentEnv:   s.buildLBAgentEnv(lbID),
+		CACert:       s.CACert,
+	}
+	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
+	// In production (VPC networking), traffic reaches the LB VM's VPC IP directly.
+	if s.config != nil && s.config.Daemon.DevNetworking {
+		launchInput.HostfwdPorts = []int{80, 443}
+	}
+
+	out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
+	if launchErr != nil {
+		slog.Error("launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
+		res.failed = true
+		return res
+	}
+
+	res.instanceID = out.InstanceID
+	res.vpcIP = out.PrivateIP
+	res.publicIP = out.PublicIP
+	res.hostPorts = out.HostfwdMap
+	slog.Info("launchLBVM: LB VM launched", "lbId", lbID, "instanceId", out.InstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", out.HostfwdMap)
+	return res
 }
 
 // loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
@@ -777,12 +859,19 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	}
 
 	lbID := *input.LBID
+	slog.Debug("LBAgentHeartbeat received", "lbId", lbID, "accountId", accountID)
 	lb, err := s.store.GetLoadBalancer(lbID)
 	if err != nil {
 		slog.Error("LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+		// The heartbeat reached AWSGW (so the mgmt return path works) but
+		// cannot transition any LB. Without this the reject is silent and a
+		// stuck-in-provisioning LB looks identical to one whose heartbeat
+		// never arrived.
+		slog.Warn("LBAgentHeartbeat: LB not found or account mismatch",
+			"lbId", lbID, "accountId", accountID, "found", lb != nil)
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
@@ -1072,7 +1161,22 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var eniIDs []string
 	var availZones []AvailZoneInfo
 	vpcID := ""
+	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
+		// NLBs reject customer SGs (rejected above), so the ENIs would fall back
+		// to the VPC default SG whose intra-SG-only ingress drops inbound
+		// listener traffic. Mint a dedicated managed SG up front and attach it to
+		// every LB ENI; CreateListener opens the listener ports on it.
+		eniGroups := securityGroups
+		if lbType == LoadBalancerTypeNetwork {
+			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
+			if sgErr != nil {
+				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			nlbManagedSGID = sgID
+			eniGroups = []string{sgID}
+		}
 		for _, subnetID := range subnets {
 			eniIn := &ec2.CreateNetworkInterfaceInput{
 				SubnetId:    aws.String(subnetID),
@@ -1088,11 +1192,12 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				},
 			}
 			// SG enforcement gates inbound traffic by the ENI's port-group
-			// membership, which is set at ENI creation. Empty Groups
-			// intentionally falls back to the VPC default SG inside
+			// membership, which is set at ENI creation. For NLBs this is the
+			// managed SG minted above; for ALBs it is the customer SGs. Empty
+			// Groups intentionally falls back to the VPC default SG inside
 			// eni.CreateNetworkInterface.
-			if len(securityGroups) > 0 {
-				eniIn.Groups = aws.StringSlice(securityGroups)
+			if len(eniGroups) > 0 {
+				eniIn.Groups = aws.StringSlice(eniGroups)
 			}
 			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
@@ -1104,6 +1209,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 						slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", rollbackENI, "err", delErr)
 					}
 				}
+				s.deleteNLBManagedSG(nlbManagedSGID, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
@@ -1129,64 +1235,14 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// The first ENI is the primary NIC; any additional ENIs are passed as
 	// ExtraENIs so the daemon sets up a tap + QEMU NIC for each, giving the
 	// ALB VM data-plane presence in every subnet the LB spans.
-	var albInstanceID string
-	var albVPCIP string
-	var hostPorts map[int]int
-	var launchFailed bool
-	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		eniDetails := s.describeENIs(eniIDs, accountID)
-
-		primary := eniDetails[eniIDs[0]]
-		primaryIP := ""
-		primaryMAC := ""
-		if primary != nil {
-			primaryIP = aws.StringValue(primary.PrivateIpAddress)
-			primaryMAC = aws.StringValue(primary.MacAddress)
-		}
-
-		extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
-
-		var launchInput *SystemInstanceInput
-		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
-			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID)
-			launchFailed = true
-		} else {
-			nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
-			launchInput = &SystemInstanceInput{
-				InstanceType: s.getSystemInstanceType(),
-				SubnetID:     subnets[0],
-				ENIID:        eniIDs[0],
-				ENIMac:       primaryMAC,
-				ENIIP:        primaryIP,
-				ExtraENIs:    extraENIInputs,
-				Scheme:       scheme,
-				AccountID:    accountID,
-				NICs:         nics,
-				LBAgentEnv:   s.buildLBAgentEnv(lbID),
-				CACert:       s.CACert,
-			}
-		}
-		if !launchFailed && launchInput != nil {
-			// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
-			// In production (VPC networking), traffic reaches the ALB VM's VPC IP directly.
-			if s.config != nil && s.config.Daemon.DevNetworking {
-				launchInput.HostfwdPorts = []int{80, 443}
-			}
-			out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
-			if launchErr != nil {
-				slog.Error("CreateLoadBalancer: failed to launch ALB VM", "lbId", lbID, "err", launchErr)
-				launchFailed = true
-			} else {
-				albInstanceID = out.InstanceID
-				albVPCIP = out.PrivateIP
-				hostPorts = out.HostfwdMap
-				// Record public IP on the first AZ entry for internet-facing ALBs.
-				if out.PublicIP != "" && len(availZones) > 0 {
-					availZones[0].PublicIP = out.PublicIP
-				}
-				slog.Info("CreateLoadBalancer: ALB VM launched", "lbId", lbID, "instanceId", albInstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", hostPorts)
-			}
-		}
+	launch := s.launchLBVM(lbID, scheme, eniIDs, subnets, accountID)
+	albInstanceID := launch.instanceID
+	albVPCIP := launch.vpcIP
+	hostPorts := launch.hostPorts
+	launchFailed := launch.failed
+	// Record public IP on the first AZ entry for internet-facing LBs.
+	if launch.publicIP != "" && len(availZones) > 0 {
+		availZones[0].PublicIP = launch.publicIP
 	}
 
 	// ALB starts in provisioning until the agent inside the VM connects and
@@ -1195,6 +1251,19 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	state := StateActive
 	if albInstanceID != "" {
 		state = StateProvisioning
+		// Internal LBs only leave provisioning once the lb-agent heartbeats,
+		// which needs the mgmt return route. If it can't be resolved the LB
+		// hangs in provisioning forever — fail loud instead so the broken
+		// return path is visible immediately rather than as a generic timeout.
+		if scheme == SchemeInternal {
+			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
+				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
+					"lbId", lbID,
+					"mgmtBridgeIP", s.MgmtBridgeIP,
+					"advertiseIP", s.AdvertiseIP)
+				state = StateFailed
+			}
+		}
 	} else if launchFailed {
 		state = StateFailed
 	}
@@ -1212,6 +1281,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		State:           state,
 		VpcId:           vpcID,
 		SecurityGroups:  securityGroups,
+		NLBManagedSGID:  nlbManagedSGID,
 		Subnets:         subnets,
 		AvailZones:      availZones,
 		ENIs:            eniIDs,
@@ -1297,6 +1367,8 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 				slog.Warn("Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
 			}
 		}
+		// The managed NLB SG can only be removed once its ENIs are gone.
+		s.deleteNLBManagedSG(lb.NLBManagedSGID, accountID)
 	}
 
 	if err := s.store.DeleteLoadBalancer(lb.LoadBalancerID); err != nil {
@@ -2089,6 +2161,21 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Open the listener port on the NLB's managed front-end SG so inbound
+	// traffic from the configured client CIDRs is admitted by the OVN ACL
+	// (NLB ENIs would otherwise sit in the intra-SG-only default SG).
+	if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+		cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb)
+		if cidrErr != nil {
+			slog.Error("CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if authErr := s.authorizeNLBListenerPort(lb, protocol, port, cidrs, accountID); authErr != nil {
+			slog.Error("CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Start or reload HAProxy now that a listener exists
 	if err := s.updateStoredConfig(lb); err != nil {
 		slog.Error("CreateListener: failed to update config", "listenerId", listenerID, "err", err)
@@ -2146,6 +2233,16 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	// Reload or stop HAProxy after listener removal
 	lb, lbErr := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
 	if lbErr == nil && lb != nil {
+		// Close the listener port on the NLB's managed front-end SG.
+		if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+			if cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb); cidrErr == nil {
+				if revokeErr := s.revokeNLBListenerPort(lb, listener.Protocol, listener.Port, cidrs, accountID); revokeErr != nil {
+					slog.Warn("DeleteListener: revoke listener port failed", "lbArn", lb.LoadBalancerArn, "port", listener.Port, "err", revokeErr)
+				}
+			} else {
+				slog.Warn("DeleteListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			}
+		}
 		if err := s.updateStoredConfig(lb); err != nil {
 			slog.Error("DeleteListener: failed to update config", "listenerArn", *input.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)

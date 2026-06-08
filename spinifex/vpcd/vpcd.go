@@ -508,6 +508,7 @@ func launchService(cfg *Config) error {
 	natMgr, err := policy.NewNATManager(liveClient, natMode,
 		policy.WithFlowsBarrier(waitForFlowsHV),
 		policy.WithGARPEmitter(injectGARPEmitter()),
+		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 	)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
@@ -525,10 +526,13 @@ func launchService(cfg *Config) error {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	// IMDS per-subnet localport installer. Replicas track the chassis count so
-	// the subnet-veth bucket survives a node loss (create-or-open: awsgw inits the
-	// same bucket; first writer wins).
-	imdsVethKV, _, err := handlers_imds.InitBuckets(js, max(len(chassisNames), 1))
+	// IMDS per-subnet localport installer. Create the KV bucket at a single
+	// replica; the daemon's deferred upgradeJetStreamReplicas bumps all KV_*
+	// streams to the cluster size once the cluster is ready. Using the chassis
+	// count here requested more replicas than a single-node JetStream could
+	// satisfy (chassis count can exceed NATS node count), failing the create
+	// with "bucket not found".
+	imdsVethKV, _, err := handlers_imds.InitBuckets(js, 1)
 	if err != nil {
 		return fmt.Errorf("init imds buckets: %w", err)
 	}
@@ -811,6 +815,22 @@ func injectGARPEmitter() policy.GARPEmitter {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return host.InjectGARP(ctx, nil, port)
+	}
+}
+
+// neighFlusher builds the post-AddEIP / post-DeleteEIP host ARP-flush hook. It
+// flushes the kernel neighbour entry for the external IP on the Linux WAN
+// bridge so a recycled IP re-resolves L2 against the current owner — the
+// inject-garp-independent path that keeps EIPs reachable on OVN builds whose
+// ovn-controller lacks inject-garp. No-op when wanBridge is unset.
+func neighFlusher(wanBridge string) policy.NeighFlusher {
+	return func(externalIP string) error {
+		if wanBridge == "" {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return host.FlushNeigh(ctx, nil, wanBridge, externalIP)
 	}
 }
 

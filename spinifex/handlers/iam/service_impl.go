@@ -87,6 +87,10 @@ type IAMServiceImpl struct {
 	instanceProfilesBucket nats.KeyValue
 	masterKey              []byte
 	decrypter              *Decrypter
+	// replicas is the JetStream replication factor for lazily-created
+	// per-account buckets (the OIDC-provider registry). Matches the factor
+	// the eagerly-created buckets above were built with.
+	replicas int
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
@@ -189,6 +193,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		instanceProfilesBucket: instanceProfilesBucket,
 		masterKey:              masterKey,
 		decrypter:              decrypter,
+		replicas:               replicas,
 	}, nil
 }
 

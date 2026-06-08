@@ -129,6 +129,23 @@ func EventKey(cluster, ts string) string {
 	return fmt.Sprintf("clusters/%s/events/%s", cluster, ts)
 }
 
+// AddonsPrefix returns the KV key prefix under which all of a cluster's managed
+// add-on records live. Used by ListAddons to enumerate.
+func AddonsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/addons/", cluster)
+}
+
+// AddonKey returns the KV key for a managed add-on record under a cluster.
+func AddonKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon
+}
+
+// AddonManifestKey returns the KV key under which the rendered manifest for a
+// managed add-on is staged for the VM-side delivery transport to consume.
+func AddonManifestKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon + "/manifest"
+}
+
 // Store is the per-daemon EKS KV handle. Per-account and leader buckets are
 // accessed via the package-level factories below.
 type Store struct {

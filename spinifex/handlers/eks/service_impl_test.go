@@ -323,28 +323,6 @@ func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 	}
 }
 
-func TestEKSServiceImpl_AddonsMethodsReturnNotImplemented(t *testing.T) {
-	svc := setupTestService(t)
-
-	_, err := svc.ListAddons(&eks.ListAddonsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.CreateAddon(&eks.CreateAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeAddon(&eks.DescribeAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.UpdateAddon(&eks.UpdateAddonInput{ClusterName: aws.String("c1"), AddonName: aws.String("vpc-cni")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-}
-
 func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 	svc := setupTestService(t)
 

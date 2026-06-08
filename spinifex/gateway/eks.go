@@ -146,9 +146,9 @@ var eksRoutes = []eksRoute{
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.DescribeAddonVersions(gw.NATSConn, acct)
 		}},
-	{"GET", regexp.MustCompile(`^/addons$`), "ListAddons",
+	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/addons$`), "ListAddons",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListAddons(gw.NATSConn, acct)
+			return gateway_eks.ListAddons(gw.NATSConn, acct, p[0])
 		}},
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/addons$`), "CreateAddon",
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {

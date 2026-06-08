@@ -1,0 +1,241 @@
+package handlers_eks
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeAddonInstaller records calls so tests can assert the state machine drives
+// the installer with the right record.
+type fakeAddonInstaller struct {
+	installs   []*AddonRecord
+	uninstalls []string
+	installErr error
+}
+
+var _ AddonInstaller = (*fakeAddonInstaller)(nil)
+
+func (f *fakeAddonInstaller) Install(_, _ string, rec *AddonRecord) error {
+	f.installs = append(f.installs, rec)
+	return f.installErr
+}
+
+func (f *fakeAddonInstaller) Uninstall(_, _, addon string) error {
+	f.uninstalls = append(f.uninstalls, addon)
+	return nil
+}
+
+func setupAddonService(t *testing.T) (*EKSServiceImpl, *fakeAddonInstaller) {
+	t.Helper()
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+	fake := &fakeAddonInstaller{}
+	svc.deps.AddonInstaller = fake
+	return svc, fake
+}
+
+const albController = "aws-load-balancer-controller"
+
+func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
+	svc := setupTestService(t)
+
+	out, err := svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Addons, len(addonCatalog))
+
+	// Filtered to one addon.
+	out, err = svc.DescribeAddonVersions(&eks.DescribeAddonVersionsInput{
+		AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Addons, 1)
+	assert.Equal(t, albController, aws.StringValue(out.Addons[0].AddonName))
+	require.NotEmpty(t, out.Addons[0].AddonVersions)
+	assert.True(t, aws.BoolValue(out.Addons[0].AddonVersions[0].RequiresIamPermissions))
+}
+
+func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("missing"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
+	svc, _ := setupAddonService(t)
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("not-a-real-addon"),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
+	svc, _ := setupAddonService(t)
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		AddonVersion: aws.String("9.9.9-nope"),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
+	svc, fake := setupAddonService(t)
+	spec, _ := lookupAddon(albController)
+
+	out, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Addon)
+	// Version defaults to catalog default; status starts CREATING (honest until
+	// VM-side delivery confirms ACTIVE).
+	assert.Equal(t, spec.DefaultVersion, aws.StringValue(out.Addon.AddonVersion))
+	assert.Equal(t, string(AddonStatusCreating), aws.StringValue(out.Addon.Status))
+	assert.Contains(t, aws.StringValue(out.Addon.AddonArn), ":addon/c1/"+albController)
+
+	// Installer was driven with the persisted record.
+	require.Len(t, fake.installs, 1)
+	assert.Equal(t, albController, fake.installs[0].AddonName)
+
+	// Duplicate create → ResourceInUseException.
+	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
+}
+
+func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
+	svc, fake := setupAddonService(t)
+	fake.installErr = errors.New("delivery bus unreachable")
+
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.Error(t, err)
+
+	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, string(AddonStatusCreateFailed), aws.StringValue(desc.Addon.Status))
+}
+
+func TestAddon_DescribeListDelete(t *testing.T) {
+	svc, fake := setupAddonService(t)
+
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, albController, aws.StringValue(desc.Addon.AddonName))
+
+	list, err := svc.ListAddons(&eks.ListAddonsInput{ClusterName: aws.String("c1")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{albController}, aws.StringValueSlice(list.Addons))
+
+	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{albController}, fake.uninstalls)
+
+	_, err = svc.DescribeAddon(&eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
+	svc, _ := setupAddonService(t)
+	_, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
+	svc, fake := setupAddonService(t)
+	spec, _ := lookupAddon("coredns")
+
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, fake.installs, 1)
+
+	out, err := svc.UpdateAddon(&eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		ConfigurationValues: aws.String(`{"replicaCount":2}`),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Update)
+	assert.Equal(t, eks.UpdateTypeAddonUpdate, aws.StringValue(out.Update.Type))
+	require.Len(t, fake.installs, 2, "update must re-drive the installer")
+
+	desc, err := svc.DescribeAddon(&eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, `{"replicaCount":2}`, aws.StringValue(desc.Addon.ConfigurationValues))
+	assert.Equal(t, spec.DefaultVersion, aws.StringValue(desc.Addon.AddonVersion))
+	assert.Equal(t, string(AddonStatusUpdating), aws.StringValue(desc.Addon.Status))
+}
+
+func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
+	svc, _ := setupAddonService(t)
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UpdateAddon(&eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+		AddonVersion: aws.String("9.9.9-nope"),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
+	svc, _ := setupAddonService(t)
+	_, err := svc.UpdateAddon(&eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+}
+
+// The default (uninjected) installer stages a manifest in KV that the VM-side
+// delivery slice consumes.
+func TestStagingInstaller_StagesManifest(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+
+	_, err := svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ServiceAccountRoleArn: aws.String("arn:aws:iam::111122223333:role/alb"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	js, err := svc.deps.NATSConn.JetStream()
+	require.NoError(t, err)
+	kv, err := GetOrCreateAccountBucket(js, testAccountID)
+	require.NoError(t, err)
+	entry, err := kv.Get(AddonManifestKey("c1", albController))
+	require.NoError(t, err, "installer must stage a manifest for VM-side delivery")
+	assert.Contains(t, string(entry.Value()), albController)
+}

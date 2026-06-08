@@ -7,9 +7,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ListAddons — GET /addons
-func ListAddons(natsConn *nats.Conn, accountID string) (*eks.ListAddonsOutput, error) {
-	return handlers_eks.NewNATSEKSService(natsConn).ListAddons(&eks.ListAddonsInput{}, accountID)
+// ListAddons — GET /clusters/{name}/addons
+func ListAddons(natsConn *nats.Conn, accountID, cluster string) (*eks.ListAddonsOutput, error) {
+	return handlers_eks.NewNATSEKSService(natsConn).ListAddons(&eks.ListAddonsInput{
+		ClusterName: aws.String(cluster),
+	}, accountID)
 }
 
 // DescribeAddonVersions — GET /addons/supported-versions

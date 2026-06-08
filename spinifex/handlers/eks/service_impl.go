@@ -63,6 +63,11 @@ type EKSServiceDeps struct {
 	Image     k3sAMIResolver
 	EIP       eipProvisioner
 	Worker    WorkerLauncher
+
+	// AddonInstaller delivers managed-addon manifests to clusters. Optional:
+	// when nil the service defaults to the KV staging installer
+	// (newStagingInstaller) bound to NATSConn.
+	AddonInstaller AddonInstaller
 }
 
 // WorkerLauncher is the narrow EC2 surface CreateNodegroup needs to launch and
@@ -1107,31 +1112,7 @@ func accessPolicyName(arn string) string {
 	return arn
 }
 
-// --- Addons ---
-
-func (s *EKSServiceImpl) ListAddons(_ *eks.ListAddonsInput, _ string) (*eks.ListAddonsOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) DescribeAddonVersions(_ *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) CreateAddon(_ *eks.CreateAddonInput, _ string) (*eks.CreateAddonOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) DeleteAddon(_ *eks.DeleteAddonInput, _ string) (*eks.DeleteAddonOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) DescribeAddon(_ *eks.DescribeAddonInput, _ string) (*eks.DescribeAddonOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) UpdateAddon(_ *eks.UpdateAddonInput, _ string) (*eks.UpdateAddonOutput, error) {
-	return nil, notImpl()
-}
+// --- Addons (see addons.go) ---
 
 // --- OIDC identity-provider configs ---
 

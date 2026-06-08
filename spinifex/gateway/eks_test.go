@@ -41,7 +41,7 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"DELETE", "/clusters/alpha/access-entries/arn-user/access-policies", "DisassociateAccessPolicy", []string{"alpha", "arn-user"}},
 		{"GET", "/clusters/alpha/access-entries/arn-user/access-policies", "ListAssociatedAccessPolicies", []string{"alpha", "arn-user"}},
 		{"GET", "/access-policies", "ListAccessPolicies", nil},
-		{"GET", "/addons", "ListAddons", nil},
+		{"GET", "/clusters/alpha/addons", "ListAddons", []string{"alpha"}},
 		{"GET", "/addons/supported-versions", "DescribeAddonVersions", nil},
 		{"POST", "/clusters/alpha/addons", "CreateAddon", []string{"alpha"}},
 		{"GET", "/clusters/alpha/addons/vpc-cni", "DescribeAddon", []string{"alpha", "vpc-cni"}},

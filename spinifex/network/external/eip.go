@@ -12,7 +12,7 @@ import (
 // that adds the flows-barrier so callers see the EIP reachable on return.
 type EIPManager interface {
 	AttachEIP(ctx context.Context, eip policy.EIPSpec) error
-	DetachEIP(ctx context.Context, vpcID, logicalIP string) error
+	DetachEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error
 }
 
 type eipManager struct {
@@ -44,6 +44,6 @@ func (m *eipManager) AttachEIP(ctx context.Context, eip policy.EIPSpec) error {
 	return nil
 }
 
-func (m *eipManager) DetachEIP(ctx context.Context, vpcID, logicalIP string) error {
-	return m.nat.DeleteEIP(ctx, vpcID, logicalIP)
+func (m *eipManager) DetachEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {
+	return m.nat.DeleteEIP(ctx, vpcID, externalIP, logicalIP)
 }

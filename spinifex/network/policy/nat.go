@@ -36,8 +36,10 @@ type NATManager interface {
 	// same ExternalIP on any router first (pool reuse across VPCs).
 	AddEIP(ctx context.Context, eip EIPSpec) error
 
-	// DeleteEIP removes the rule by LogicalIP; idempotent.
-	DeleteEIP(ctx context.Context, vpcID, logicalIP string) error
+	// DeleteEIP removes the rule by LogicalIP and flushes the host ARP entry
+	// for ExternalIP so a recycled IP is not shadowed by the stale MAC;
+	// idempotent.
+	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
@@ -79,6 +81,16 @@ type FlowsBarrier func() error
 // Best-effort: implementations return errors but callers warn and proceed.
 type GARPEmitter func(EIPSpec) error
 
+// NeighFlusher invalidates the host neighbour (ARP) entry for externalIP so the
+// next dial re-resolves L2. Called on both EIP attach and detach: it is the
+// inject-garp-independent path that keeps a recycled external IP reachable on
+// OVN builds where the GARPEmitter (ovn-appctl inject-garp) is a no-op,
+// preventing the host ARP cache from pointing at the prior owner's MAC until
+// the kernel ARP timeout expires (60-300s).
+//
+// Best-effort: implementations return errors but callers warn and proceed.
+type NeighFlusher func(externalIP string) error
+
 type Option func(*natManager)
 
 // WithFlowsBarrier injects the post-write flow-install barrier so callers
@@ -102,11 +114,23 @@ func WithGARPEmitter(g GARPEmitter) Option {
 	}
 }
 
+// WithNeighFlusher injects the host neighbour-flush hook fired on EIP attach and
+// detach. Without it, recycled external IPs rely solely on the GARPEmitter,
+// which is a no-op on OVN builds lacking inject-garp.
+func WithNeighFlusher(f NeighFlusher) Option {
+	return func(m *natManager) {
+		if f != nil {
+			m.neigh = f
+		}
+	}
+}
+
 type natManager struct {
 	ovn     ovn.Client
 	mode    NATMode
 	barrier FlowsBarrier
 	garp    GARPEmitter
+	neigh   NeighFlusher
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -122,6 +146,7 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 		mode:    mode,
 		barrier: func() error { return nil },
 		garp:    func(EIPSpec) error { return nil },
+		neigh:   func(string) error { return nil },
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -180,16 +205,26 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if err := m.garp(eip); err != nil {
 		slog.Warn("policy: AddEIP gratuitous-ARP emission failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
+	if err := m.neigh(eip.ExternalIP); err != nil {
+		slog.Warn("policy: AddEIP neighbour flush failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
+	}
 	return nil
 }
 
-func (m *natManager) DeleteEIP(ctx context.Context, vpcID, logicalIP string) error {
+func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {
 	router := topology.VPCRouter(vpcID)
 	if err := m.ovn.DeleteNAT(ctx, router, "dnat_and_snat", logicalIP); err != nil {
-		if errors.Is(err, ovn.ErrNATNotFound) {
-			return nil
+		if !errors.Is(err, ovn.ErrNATNotFound) {
+			return fmt.Errorf("delete dnat_and_snat %s on %s: %w", logicalIP, router, err)
 		}
-		return fmt.Errorf("delete dnat_and_snat %s on %s: %w", logicalIP, router, err)
+	}
+	// Flush the host ARP entry for the released IP so the next owner is not
+	// shadowed by this rule's stale MAC. Best-effort, and safe on the
+	// not-found path (the entry may still be cached from a prior binding).
+	if externalIP != "" {
+		if err := m.neigh(externalIP); err != nil {
+			slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
+		}
 	}
 	return nil
 }

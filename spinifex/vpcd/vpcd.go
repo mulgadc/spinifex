@@ -508,6 +508,7 @@ func launchService(cfg *Config) error {
 	natMgr, err := policy.NewNATManager(liveClient, natMode,
 		policy.WithFlowsBarrier(waitForFlowsHV),
 		policy.WithGARPEmitter(injectGARPEmitter()),
+		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 	)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
@@ -814,6 +815,22 @@ func injectGARPEmitter() policy.GARPEmitter {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return host.InjectGARP(ctx, nil, port)
+	}
+}
+
+// neighFlusher builds the post-AddEIP / post-DeleteEIP host ARP-flush hook. It
+// flushes the kernel neighbour entry for the external IP on the Linux WAN
+// bridge so a recycled IP re-resolves L2 against the current owner — the
+// inject-garp-independent path that keeps EIPs reachable on OVN builds whose
+// ovn-controller lacks inject-garp. No-op when wanBridge is unset.
+func neighFlusher(wanBridge string) policy.NeighFlusher {
+	return func(externalIP string) error {
+		if wanBridge == "" {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return host.FlushNeigh(ctx, nil, wanBridge, externalIP)
 	}
 }
 

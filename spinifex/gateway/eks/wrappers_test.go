@@ -207,7 +207,7 @@ func TestGatewayWrappers_Addons(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubEKSResponder(t, nc)
 
-	out1, err := ListAddons(nc, acct)
+	out1, err := ListAddons(nc, acct, "alpha")
 	require.NoError(t, err)
 	assert.NotNil(t, out1)
 

@@ -91,6 +91,17 @@ type GARPEmitter func(EIPSpec) error
 // Best-effort: implementations return errors but callers warn and proceed.
 type NeighFlusher func(externalIP string) error
 
+// NeighPrimer installs the host neighbour entry for a distributed EIP directly,
+// mapping ExternalIP to its external_mac. Preferred over NeighFlusher on attach
+// when the MAC is known (distributed mode): a flush merely re-arms ARP, but on
+// OVN builds without inject-garp no node answers the host's re-ARP for a
+// same-chassis recycled IP, so the entry would just decay back to FAILED.
+// Programming the known MAC makes the recycled IP reachable without an ARP
+// round-trip.
+//
+// Best-effort: implementations return errors but callers warn and proceed.
+type NeighPrimer func(eip EIPSpec) error
+
 type Option func(*natManager)
 
 // WithFlowsBarrier injects the post-write flow-install barrier so callers
@@ -114,9 +125,10 @@ func WithGARPEmitter(g GARPEmitter) Option {
 	}
 }
 
-// WithNeighFlusher injects the host neighbour-flush hook fired on EIP attach and
-// detach. Without it, recycled external IPs rely solely on the GARPEmitter,
-// which is a no-op on OVN builds lacking inject-garp.
+// WithNeighFlusher injects the host neighbour-flush hook fired on EIP detach (and
+// on attach when the external_mac is unknown). Without it, recycled external IPs
+// rely solely on the GARPEmitter, which is a no-op on OVN builds lacking
+// inject-garp.
 func WithNeighFlusher(f NeighFlusher) Option {
 	return func(m *natManager) {
 		if f != nil {
@@ -125,12 +137,25 @@ func WithNeighFlusher(f NeighFlusher) Option {
 	}
 }
 
+// WithNeighPrimer injects the host neighbour-prime hook fired on EIP attach in
+// distributed mode (external_mac known). Preferred over the flusher there: it
+// programs the recycled IP's MAC directly instead of waiting on an ARP reply
+// that no node sends when inject-garp is unavailable.
+func WithNeighPrimer(p NeighPrimer) Option {
+	return func(m *natManager) {
+		if p != nil {
+			m.neighPrime = p
+		}
+	}
+}
+
 type natManager struct {
-	ovn     ovn.Client
-	mode    NATMode
-	barrier FlowsBarrier
-	garp    GARPEmitter
-	neigh   NeighFlusher
+	ovn        ovn.Client
+	mode       NATMode
+	barrier    FlowsBarrier
+	garp       GARPEmitter
+	neigh      NeighFlusher
+	neighPrime NeighPrimer
 }
 
 var _ NATManager = (*natManager)(nil)
@@ -142,11 +167,12 @@ func NewNATManager(client ovn.Client, mode NATMode, opts ...Option) (NATManager,
 		return nil, fmt.Errorf("NAT mode is unknown; resolve from host.Wiring.UplinkMode()")
 	}
 	m := &natManager{
-		ovn:     client,
-		mode:    mode,
-		barrier: func() error { return nil },
-		garp:    func(EIPSpec) error { return nil },
-		neigh:   func(string) error { return nil },
+		ovn:        client,
+		mode:       mode,
+		barrier:    func() error { return nil },
+		garp:       func(EIPSpec) error { return nil },
+		neigh:      func(string) error { return nil },
+		neighPrime: func(EIPSpec) error { return nil },
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -205,7 +231,15 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if err := m.garp(eip); err != nil {
 		slog.Warn("policy: AddEIP gratuitous-ARP emission failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
-	if err := m.neigh(eip.ExternalIP); err != nil {
+	// Distributed mode: the external_mac is known, so program the host
+	// neighbour entry directly instead of flushing and waiting on an ARP reply
+	// no node sends when inject-garp is unavailable. Fall back to a flush when
+	// the MAC is absent (centralised shape).
+	if distributed {
+		if err := m.neighPrime(eip); err != nil {
+			slog.Warn("policy: AddEIP neighbour prime failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
+		}
+	} else if err := m.neigh(eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP neighbour flush failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
 	return nil

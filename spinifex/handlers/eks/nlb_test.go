@@ -23,6 +23,7 @@ type fakeNLBProvisioner struct {
 	describeListeners   []*elbv2.DescribeListenersInput
 	registerCalls       []*elbv2.RegisterTargetsInput
 	deregisterCalls     []*elbv2.DeregisterTargetsInput
+	setIngressCalls     []setIngressCIDRsCall
 
 	lbByName       map[string]*elbv2.LoadBalancer
 	tgByName       map[string]*elbv2.TargetGroup
@@ -38,6 +39,12 @@ type fakeNLBProvisioner struct {
 	deleteTGErr       error
 	registerErr       error
 	deregisterErr     error
+	setIngressErr     error
+}
+
+type setIngressCIDRsCall struct {
+	lbArn string
+	cidrs []string
 }
 
 var _ nlbProvisioner = (*fakeNLBProvisioner)(nil)
@@ -214,13 +221,18 @@ func (f *fakeNLBProvisioner) DeregisterTargets(input *elbv2.DeregisterTargetsInp
 	return &elbv2.DeregisterTargetsOutput{}, nil
 }
 
+func (f *fakeNLBProvisioner) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []string, _ string) error {
+	f.setIngressCalls = append(f.setIngressCalls, setIngressCIDRsCall{lbArn: lbArn, cidrs: cidrs})
+	return f.setIngressErr
+}
+
 func TestEnsureClusterNLB_EmptyInputsRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "", []string{"subnet-aaa"})
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "", []string{"subnet-aaa"}, false, nil)
 	require.Error(t, err)
 
-	_, err = EnsureClusterNLB(nlbp, "111122223333", "alpha", nil)
+	_, err = EnsureClusterNLB(nlbp, "111122223333", "alpha", nil, false, nil)
 	require.Error(t, err)
 
 	assert.Empty(t, nlbp.createLBCalls)
@@ -230,7 +242,7 @@ func TestEnsureClusterNLB_NameTooLongRejected(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
 	longName := strings.Repeat("x", maxELBv2NameLen) // "eks-" + 32x = 36 chars
-	_, err := EnsureClusterNLB(nlbp, "111122223333", longName, []string{"subnet-aaa"})
+	_, err := EnsureClusterNLB(nlbp, "111122223333", longName, []string{"subnet-aaa"}, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 	assert.Empty(t, nlbp.createLBCalls)
@@ -239,7 +251,7 @@ func TestEnsureClusterNLB_NameTooLongRejected(t *testing.T) {
 func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa", "subnet-bbb"})
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa", "subnet-bbb"}, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.NotEmpty(t, out.LoadBalancerArn)
@@ -276,14 +288,14 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 
-	first, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"})
+	first, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
 	require.NoError(t, err)
 
 	createLBCount := len(nlbp.createLBCalls)
 	createTGCount := len(nlbp.createTGCalls)
 	createListenerCount := len(nlbp.createListenerCalls)
 
-	second, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"})
+	second, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, first.LoadBalancerArn, second.LoadBalancerArn)
@@ -300,10 +312,111 @@ func TestEnsureClusterNLB_LBCreateErrorSurfaced(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 	nlbp.createLBErr = errors.New("InsufficientCapacity")
 
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"})
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create NLB eks-alpha")
 	assert.Empty(t, nlbp.createTGCalls, "TG create should not run when LB create fails")
+}
+
+func TestEnsureClusterNLB_InternetFacingSchemeAndPublicFrontendIP(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	// Internet-facing LB record exposes a public IpAddress in its AZ addresses.
+	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/eks-alpha/lb-001"
+	nlbp.createLBOut = &elbv2.CreateLoadBalancerOutput{
+		LoadBalancers: []*elbv2.LoadBalancer{{
+			LoadBalancerArn:  aws.String(arn),
+			LoadBalancerName: aws.String("eks-alpha"),
+			DNSName:          aws.String("eks-alpha-lb-001.us-east-1.elb.spinifex.local"),
+			Type:             aws.String(elbv2.LoadBalancerTypeEnumNetwork),
+			Scheme:           aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
+			AvailabilityZones: []*elbv2.AvailabilityZone{{
+				LoadBalancerAddresses: []*elbv2.LoadBalancerAddress{
+					{PrivateIPv4Address: aws.String("10.0.1.5")},
+					{IpAddress: aws.String("203.0.113.10")},
+				},
+			}},
+		}},
+	}
+
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil)
+	require.NoError(t, err)
+	require.Len(t, nlbp.createLBCalls, 1)
+	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternetFacing, aws.StringValue(nlbp.createLBCalls[0].Scheme))
+	assert.Equal(t, "203.0.113.10", out.FrontendIP, "internet-facing front-end uses the public IpAddress")
+}
+
+func TestEnsureClusterNLB_InternalSchemeUsesPrivateFrontendIP(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/eks-alpha/lb-001"
+	nlbp.createLBOut = &elbv2.CreateLoadBalancerOutput{
+		LoadBalancers: []*elbv2.LoadBalancer{{
+			LoadBalancerArn:  aws.String(arn),
+			LoadBalancerName: aws.String("eks-alpha"),
+			DNSName:          aws.String("eks-alpha-lb-001.us-east-1.elb.spinifex.local"),
+			Type:             aws.String(elbv2.LoadBalancerTypeEnumNetwork),
+			Scheme:           aws.String(elbv2.LoadBalancerSchemeEnumInternal),
+			AvailabilityZones: []*elbv2.AvailabilityZone{{
+				LoadBalancerAddresses: []*elbv2.LoadBalancerAddress{
+					{PrivateIPv4Address: aws.String("10.0.1.5")},
+				},
+			}},
+		}},
+	}
+
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
+	require.NoError(t, err)
+	require.Len(t, nlbp.createLBCalls, 1)
+	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternal, aws.StringValue(nlbp.createLBCalls[0].Scheme))
+	assert.Equal(t, "10.0.1.5", out.FrontendIP, "internal front-end uses the private IPv4 address")
+}
+
+func TestEnsureClusterNLB_NarrowedPublicAccessSetsIngressCIDRs(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+
+	cidrs := []string{"203.0.113.0/24", "198.51.100.7/32"}
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, cidrs)
+	require.NoError(t, err)
+
+	require.Len(t, nlbp.setIngressCalls, 1, "narrowed public access should drive SetLoadBalancerIngressCIDRs")
+	assert.Equal(t, out.LoadBalancerArn, nlbp.setIngressCalls[0].lbArn)
+	assert.Equal(t, cidrs, nlbp.setIngressCalls[0].cidrs)
+}
+
+func TestEnsureClusterNLB_DefaultPublicAccessSkipsIngressCIDRs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cidrs []string
+	}{
+		{"nil", nil},
+		{"empty", []string{}},
+		{"wide-open default", []string{defaultPublicAccessCidr}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nlbp := newFakeNLBProvisioner()
+			_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, tc.cidrs)
+			require.NoError(t, err)
+			assert.Empty(t, nlbp.setIngressCalls, "wide-open front-end needs no ingress override")
+		})
+	}
+}
+
+func TestEnsureClusterNLB_InternalSkipsIngressCIDRs(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+
+	// Even with narrowed CIDRs, an internal NLB ignores them — its ingress
+	// already tracks the VPC CIDR, not a public front-end.
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, []string{"203.0.113.0/24"})
+	require.NoError(t, err)
+	assert.Empty(t, nlbp.setIngressCalls)
+}
+
+func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.setIngressErr = errors.New("InvalidLoadBalancer")
+
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, []string{"203.0.113.0/24"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "set NLB ingress CIDRs for eks-alpha")
 }
 
 func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
@@ -343,7 +456,7 @@ func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 
 func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"})
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, DeleteClusterNLB(nlbp, "111122223333", "alpha"))
@@ -363,7 +476,7 @@ func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
 
 func TestDeleteClusterNLB_FirstErrorSurfacedSweepContinues(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"})
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil)
 	require.NoError(t, err)
 	nlbp.deleteLBErr = errors.New("LoadBalancerInUse")
 

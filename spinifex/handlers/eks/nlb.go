@@ -27,6 +27,8 @@ type nlbProvisioner interface {
 
 	RegisterTargets(input *elbv2.RegisterTargetsInput, accountID string) (*elbv2.RegisterTargetsOutput, error)
 	DeregisterTargets(input *elbv2.DeregisterTargetsInput, accountID string) (*elbv2.DeregisterTargetsOutput, error)
+
+	SetLoadBalancerIngressCIDRs(lbArn string, cidrs []string, accountID string) error
 }
 
 // AWS load-balancer + target-group names are bounded to 32 alphanumeric or
@@ -51,6 +53,11 @@ type ClusterNLB struct {
 	TargetGroupArn  string
 	ListenerArn     string
 	DNSName         string
+	// FrontendIP is the NLB's reachable front-end address: the external-pool
+	// public IP for an internet-facing cluster NLB, or the VPC private IP for an
+	// internal one. Used as the kubeconfig endpoint host + apiserver cert SAN.
+	// Empty if the backing LB record has no address yet.
+	FrontendIP string
 }
 
 // ClusterNLBName returns the deterministic NLB name for a cluster. Stable so
@@ -73,7 +80,18 @@ func ClusterTargetGroupName(clusterName string) string {
 //
 // The K3s server VM ENI IP is NOT registered here — Stage 4
 // (k3s_server_vm.go) calls RegisterClusterTarget once the VM has its ENI IP.
-func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string) (*ClusterNLB, error) {
+//
+// internetFacing selects the NLB scheme: true ⇒ internet-facing (external-pool
+// front-end IP, LAN-reachable, for a public cluster endpoint); false ⇒ internal
+// (VPC-only). After ensuring the LB, the reachable FrontendIP is read back from
+// the backing LB record so the caller can use it as the endpoint host + cert SAN.
+//
+// publicAccessCidrs narrows who may reach an internet-facing front-end below the
+// scheme default (0.0.0.0/0). It maps the cluster's publicAccessCidrs onto the
+// NLB managed-SG ingress; ignored for an internal NLB (its ingress already
+// tracks the VPC CIDR) and for the wide-open default, which the LB carries out
+// of the box.
+func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
 	}
@@ -91,7 +109,7 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 
 	out := &ClusterNLB{}
 
-	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, out); err != nil {
+	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, out); err != nil {
 		return nil, err
 	}
 	if err := ensureClusterTG(nlbp, accountID, clusterName, tgName, out); err != nil {
@@ -100,7 +118,60 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	if err := ensureClusterListener(nlbp, accountID, lbName, out); err != nil {
 		return nil, err
 	}
+	// Narrow the internet-facing front-end to the cluster's publicAccessCidrs
+	// when they restrict below the wide-open scheme default the LB already
+	// carries. The override is idempotent, so re-running on retry converges.
+	if internetFacing && narrowsPublicAccess(publicAccessCidrs) {
+		if err := nlbp.SetLoadBalancerIngressCIDRs(out.LoadBalancerArn, publicAccessCidrs, accountID); err != nil {
+			return nil, fmt.Errorf("eks: set NLB ingress CIDRs for %s: %w", lbName, err)
+		}
+	}
+	// Read the front-end IP back from the LB record (DescribeLoadBalancers →
+	// populated LoadBalancerAddresses). Best-effort: an empty IP is not fatal
+	// here — the caller falls back to the DNS-name endpoint.
+	if lb, err := lookupLBByName(nlbp, accountID, lbName); err == nil && lb != nil {
+		out.FrontendIP = frontendIPFromLB(lb, internetFacing)
+	} else if err != nil {
+		slog.Warn("EnsureClusterNLB: front-end IP read-back failed", "name", lbName, "err", err)
+	}
 	return out, nil
+}
+
+// narrowsPublicAccess reports whether publicAccessCidrs restrict the front-end
+// below the wide-open default an internet-facing NLB already carries. Empty (no
+// override) or the lone 0.0.0.0/0 default are no-ops and skip the extra ELBv2
+// round-trip.
+func narrowsPublicAccess(cidrs []string) bool {
+	if len(cidrs) == 0 {
+		return false
+	}
+	if len(cidrs) == 1 && cidrs[0] == defaultPublicAccessCidr {
+		return false
+	}
+	return true
+}
+
+// frontendIPFromLB extracts the reachable front-end address from a described
+// load balancer: the public IpAddress for an internet-facing LB, else the VPC
+// PrivateIPv4Address. Returns the first non-empty match across AZs.
+func frontendIPFromLB(lb *elbv2.LoadBalancer, internetFacing bool) string {
+	for _, az := range lb.AvailabilityZones {
+		for _, addr := range az.LoadBalancerAddresses {
+			if addr == nil {
+				continue
+			}
+			if internetFacing {
+				if ip := aws.StringValue(addr.IpAddress); ip != "" {
+					return ip
+				}
+				continue
+			}
+			if ip := aws.StringValue(addr.PrivateIPv4Address); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
 }
 
 // RegisterClusterTarget attaches the K3s server ENI IP to the cluster TG so
@@ -197,7 +268,7 @@ func deleteClusterTG(nlbp nlbProvisioner, accountID, tgName string) error {
 	return nil
 }
 
-func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, out *ClusterNLB) error {
+func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, out *ClusterNLB) error {
 	if lb, err := lookupLBByName(nlbp, accountID, lbName); err != nil {
 		return err
 	} else if lb != nil {
@@ -209,10 +280,14 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 		return nil
 	}
 
+	scheme := elbv2.LoadBalancerSchemeEnumInternal
+	if internetFacing {
+		scheme = elbv2.LoadBalancerSchemeEnumInternetFacing
+	}
 	created, err := nlbp.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
 		Name:    aws.String(lbName),
 		Type:    aws.String(elbv2.LoadBalancerTypeEnumNetwork),
-		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternal),
+		Scheme:  aws.String(scheme),
 		Subnets: aws.StringSlice(subnetIDs),
 		Tags: []*elbv2.Tag{
 			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},

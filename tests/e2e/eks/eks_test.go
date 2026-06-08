@@ -122,13 +122,13 @@ func TestEKS(t *testing.T) {
 
 	t.Run("KubectlGetNodes", func(t *testing.T) {
 		requireClusterReady(t, fx)
-		// Reachability shim: the kubeconfig endpoint (NLB DNS) is unresolvable
-		// from here, so point kubectl at the control-plane VM's mgmt IP:6443
-		// directly. The serving cert SANs the NLB DNS + node IPs, not the mgmt
-		// IP, so skip TLS verification — auth still flows through the get-token
-		// webhook, which is what this asserts.
-		mgmtIP := harness.ControlPlaneMgmtIP(t, env, fx.AccountID, fx.ClusterName)
-		kcPath := writeKubectlKubeconfig(t, artifacts, fx.Cluster, mgmtIP)
+		// Reach the apiserver through the published cluster endpoint (the
+		// internet-facing NLB front-end IP:443) with TLS verification ON — the
+		// serving cert SANs this IP, so no insecure-skip-tls-verify and no
+		// mgmt-IP shim. A 401 here means the get-token webhook chain regressed;
+		// a TLS error means the endpoint/cert-SAN wiring regressed.
+		require.NotEmpty(t, aws.StringValue(fx.Cluster.Endpoint), "cluster must publish a reachable endpoint")
+		kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
 		// Auth + reachability: poll until the apiserver answers and reports a
@@ -304,46 +304,6 @@ users:
 	path := filepath.Join(artifacts, "kubeconfig-"+name+".yaml")
 	require.NoError(t, os.WriteFile(path, []byte(kc), 0o600), "write kubeconfig")
 	t.Logf("kubeconfig: %s", path)
-	return path
-}
-
-// writeKubectlKubeconfig assembles a kubeconfig pointed at the control-plane
-// VM's reachable mgmt IP (Phase-2 shim) with TLS verification disabled, and an
-// exec block that mints a bearer token via `aws eks get-token`. Distinct from
-// writeKubeconfig (the Phase-1 artifact built from the real NLB endpoint).
-func writeKubectlKubeconfig(t *testing.T, artifacts string, cl *eks.Cluster, mgmtIP string) string {
-	t.Helper()
-	name := aws.StringValue(cl.Name)
-	server := fmt.Sprintf("https://%s:6443", mgmtIP)
-	kc := fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- name: %[1]s
-  cluster:
-    server: %[2]s
-    insecure-skip-tls-verify: true
-contexts:
-- name: %[1]s
-  context:
-    cluster: %[1]s
-    user: %[1]s
-current-context: %[1]s
-users:
-- name: %[1]s
-  user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1beta1
-      command: aws
-      args:
-      - eks
-      - get-token
-      - --cluster-name
-      - %[1]s
-`, name, server)
-
-	path := filepath.Join(artifacts, "kubectl-"+name+".yaml")
-	require.NoError(t, os.WriteFile(path, []byte(kc), 0o600), "write kubectl kubeconfig")
-	t.Logf("kubectl kubeconfig: %s (server=%s)", path, server)
 	return path
 }
 

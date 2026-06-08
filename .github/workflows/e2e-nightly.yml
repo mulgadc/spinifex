@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 35
     env:
       TOFU_LOG: /tmp/e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}.log
+      ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ matrix.cell }}-${{ github.run_id }}
 
     steps:
       # blank or scheduled run = full matrix.
@@ -77,6 +78,13 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
+
+      # spinifex tree on the runner for the e2e-analyze / junit-report composite
+      # actions and .github/scripts used by the collect/analyze steps below.
+      - uses: actions/checkout@v6
+        if: steps.gate.outputs.selected == 'true'
+        with:
+          path: spinifex
 
       - name: Build Install Artifacts
         if: steps.gate.outputs.selected == 'true'
@@ -132,8 +140,21 @@ jobs:
           WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
-          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
-            "cd ~/e2e-tests && ./run-e2e.sh && ./run-cert-e2e.sh && ENDPOINT=https://${WAN_IP}:9999 ./run-lb-e2e.sh"
+          # Go harness (single/cert/lb) run in-VM; the suites use the node's
+          # spinifex AWS profile. Per-suite logs land in ARTIFACT_DIR on the VM
+          # and are pulled back by the Collect step.
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
+             for SUITE in single cert lb; do \
+               echo \"::group::suite \$SUITE\"; \
+               date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
+               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+                 ARTIFACT_DIR='${ARTIFACT_DIR}' \
+                 ./\$SUITE.test -test.v -test.timeout=30m \
+                 2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log'; \
+               rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
+               if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
+             done; exit \$FAIL"
 
       - name: Run Multi Node E2E
         if: steps.gate.outputs.selected == 'true' && matrix.topo == 'real-multi'
@@ -144,14 +165,29 @@ jobs:
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
 
-          NODE_IPS=""
+          NODES_CSV=""
           NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
           for i in $(seq 0 $((NODE_COUNT - 1))); do
-            NODE_IPS="${NODE_IPS} $(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")"
+            ip=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            NODES_CSV="${NODES_CSV:+$NODES_CSV,}$ip"
           done
 
-          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
-            "cd ~/e2e-tests && ./run-multinode-e2e.sh ${NODE_IPS} && ./run-cert-e2e.sh --multinode ${NODE_IPS} && ENDPOINT=https://${NODE1_IP}:9999 ./run-lb-e2e.sh --nodes ${NODE_IPS}"
+          # Go harness (multinode/cert/lb). The multinode suite drives peer nodes
+          # from node1 over $HOME/.ssh/tf-user-ap-southeast-2 (matches e2e.yml).
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
+             for SUITE in multinode cert lb; do \
+               echo \"::group::suite \$SUITE\"; \
+               date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
+               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+                 SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
+                 SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
+                 ARTIFACT_DIR='${ARTIFACT_DIR}' \
+                 ./\$SUITE.test -test.v -test.timeout=30m \
+                 2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log'; \
+               rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
+               if [ \$rc -ne 0 ]; then echo \"\$SUITE: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; FAIL=1; fi; \
+             done; exit \$FAIL"
 
       - name: Run Tofu Workbooks
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'
@@ -167,9 +203,11 @@ jobs:
       - name: Run Reboot Resilience E2E
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'reboot-single'
         working-directory: mulga/scripts/tofu-cluster
-        # Driver runs from the runner (NOT via ssh-and-run) so it survives the
+        # reboot.test runs from the runner (NOT via ssh-and-run) so it survives the
         # systemctl-reboot-induced ssh disconnect mid-run.
         run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
           INVENTORY=$(tofu output -json inventory)
           WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
@@ -178,30 +216,85 @@ jobs:
           REBOOT_DIR="${RUNNER_TEMP}/reboot-e2e"
           mkdir -p "$REBOOT_DIR"
           tar xf "${RUNNER_TEMP}/spinifex-tests.tar" -C "$REBOOT_DIR"
-          chmod +x "$REBOOT_DIR/run-reboot-e2e.sh"
+          chmod +x "$REBOOT_DIR/_bin/reboot.test"
 
-          WAN_IP="$WAN_IP" SSH_KEY="$SSH_KEY" "$REBOOT_DIR/run-reboot-e2e.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$SSH_KEY")
+          CREDS=$(ssh "${SSH_OPTS[@]}" tf-user@${WAN_IP} 'cat ~/.aws/credentials')
+          AWS_AK=$(echo "$CREDS" | awk -F '= *' '/^aws_access_key_id/ {print $2; exit}')
+          AWS_SK=$(echo "$CREDS" | awk -F '= *' '/^aws_secret_access_key/ {print $2; exit}')
+          echo "::add-mask::${AWS_AK}"; echo "::add-mask::${AWS_SK}"
 
-      - name: Dump Cluster Journals on Failure
-        if: failure() && steps.gate.outputs.selected == 'true'
+          date -u +%Y-%m-%dT%H:%M:%SZ > "${ARTIFACT_DIR}/test-reboot.start"
+          GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+            SPINIFEX_WAN_IP="${WAN_IP}" SPINIFEX_SSH_KEY="${SSH_KEY}" \
+            SPINIFEX_AWS_ENDPOINT="https://${WAN_IP}:9999" \
+            SPINIFEX_AWS_ACCESS_KEY_ID="${AWS_AK}" SPINIFEX_AWS_SECRET_ACCESS_KEY="${AWS_SK}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            "$REBOOT_DIR/_bin/reboot.test" -test.v -test.timeout=30m \
+            2>&1 | tee "${ARTIFACT_DIR}/test-reboot.log"
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ]; then echo "reboot: FAILED" >> "${ARTIFACT_DIR}/suite-status.txt"; fi
+          exit $rc
+
+      - name: Collect e2e artifacts
+        if: always() && steps.gate.outputs.selected == 'true'
         working-directory: mulga/scripts/tofu-cluster
         run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
           INVENTORY=$(tofu output -json inventory 2>/dev/null) || { echo "no inventory; skipping"; exit 0; }
-          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
-          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path'); SSH_KEY="${SSH_KEY/#\~/$HOME}"
           NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY")
+
+          # In-VM suite artifacts (single/multi write ARTIFACT_DIR on node1; no-op for reboot).
+          ssh "${SSH_OPTS[@]}" tf-user@${NODE1_IP} "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
+            | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
+
+          # LB/system microVM serial consoles — the lb-agent logs nginx/HAProxy
+          # activation + health-probe results here (the cell-18/cell-9 blind spot).
+          # Pulled per node since the LB VM may be hosted on any node.
           for i in $(seq 0 $((NODE_COUNT - 1))); do
-            IP=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
-            echo "===== node$((i+1)) ($IP) ====="
-            for svc in spinifex-nats spinifex-predastore spinifex-viperblock spinifex-daemon spinifex-awsgw spinifex-vpcd dhcpcd; do
-              echo "--- $svc ---"
-              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" tf-user@${IP} \
-                "sudo journalctl -u $svc --no-pager -n 200 2>/dev/null || echo '(not found)'" 2>&1 || echo "(node unreachable)"
-            done
-            echo "--- DHCP client state ---"
-            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" tf-user@${IP} \
-              "systemctl is-enabled dhcpcd.service 2>/dev/null; systemctl is-active dhcpcd.service 2>/dev/null; sudo ss -lupn 'sport = 68' 2>/dev/null; pgrep -laf dhcpcd 2>/dev/null" 2>&1 || echo "(node unreachable)"
+            IP=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip"); idx=$((i + 1))
+            mkdir -p "${ARTIFACT_DIR}/lb-console-node${idx}"
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo sh -c "cd /run/spinifex 2>/dev/null && tar -cf - console-*.log 2>/dev/null"' \
+              | tar -C "${ARTIFACT_DIR}/lb-console-node${idx}" -xf - 2>/dev/null
+            ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
+              > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
           done
+          echo "collected: $(ls "${ARTIFACT_DIR}" 2>/dev/null | wc -l) entries"
+
+      - name: Install go-junit-report
+        if: always() && steps.gate.outputs.selected == 'true'
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Convert test logs to JUnit XML
+        if: always() && steps.gate.outputs.selected == 'true'
+        run: |
+          shopt -s nullglob
+          for LOG in "${ARTIFACT_DIR}"/test-*.log; do
+            BASE=$(basename "$LOG" .log); SUITE=${BASE#test-}
+            go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-${SUITE}.xml" || true
+          done
+
+      - name: Analyze e2e failures
+        if: always() && steps.gate.outputs.selected == 'true'
+        uses: ./spinifex/.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "E2E failure analysis (cell ${{ matrix.cell }})"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.gate.outputs.selected == 'true'
+        with:
+          name: e2e-artifacts-cell-${{ matrix.cell }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Teardown
         if: always()

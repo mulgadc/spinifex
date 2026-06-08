@@ -88,12 +88,15 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy, invalid},
 		{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies, invalid},
 		{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies, ""},
-		{"eks.ListAddons", d.handleEKSListAddons, notImpl},
-		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, notImpl},
-		{"eks.CreateAddon", d.handleEKSCreateAddon, notImpl},
-		{"eks.DeleteAddon", d.handleEKSDeleteAddon, notImpl},
-		{"eks.DescribeAddon", d.handleEKSDescribeAddon, notImpl},
-		{"eks.UpdateAddon", d.handleEKSUpdateAddon, notImpl},
+		// Addon handlers are implemented (Sprint 6 P1): an empty body fails
+		// cluster validation with InvalidParameterValue, except
+		// DescribeAddonVersions which returns the static catalogue (success).
+		{"eks.ListAddons", d.handleEKSListAddons, invalid},
+		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, ""},
+		{"eks.CreateAddon", d.handleEKSCreateAddon, invalid},
+		{"eks.DeleteAddon", d.handleEKSDeleteAddon, invalid},
+		{"eks.DescribeAddon", d.handleEKSDescribeAddon, invalid},
+		{"eks.UpdateAddon", d.handleEKSUpdateAddon, invalid},
 		{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, notImpl},
 		{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, notImpl},
 		{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, notImpl},

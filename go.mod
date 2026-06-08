@@ -15,7 +15,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0
 	github.com/mulgadc/predastore v1.6.0
 	github.com/mulgadc/viperblock v1.6.0
-	github.com/nats-io/nats-server/v2 v2.14.1
+	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
 	github.com/ovn-kubernetes/libovsdb v0.8.1
 	github.com/pelletier/go-toml/v2 v2.3.1
@@ -101,8 +101,8 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/nats-io/jwt/v2 v2.8.1 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
+	github.com/nats-io/jwt/v2 v2.8.2 // indirect
+	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect

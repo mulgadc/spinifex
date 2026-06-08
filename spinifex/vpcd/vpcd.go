@@ -835,13 +835,12 @@ func neighFlusher(wanBridge string) policy.NeighFlusher {
 	}
 }
 
-// neighPrimer builds the post-AddEIP host ARP-prime hook. It programs the kernel
-// neighbour entry for the external IP to the MAC carried on the EIPSpec on the
-// Linux WAN bridge — the per-VM external_mac in distributed mode, the VPC gateway
-// router-port MAC in centralised mode — so a recycled IP is reachable immediately
-// without an ARP reply, needed on OVN builds whose ovn-controller lacks
-// inject-garp and therefore never advertises the new MAC. No-op when wanBridge or
-// the MAC is unset.
+// neighPrimer builds the post-AddEIP host ARP-prime hook for distributed EIPs.
+// It programs the kernel neighbour entry for the external IP to the EIP's
+// external_mac on the Linux WAN bridge, so a recycled IP is reachable
+// immediately without an ARP reply — needed on OVN builds whose ovn-controller
+// lacks inject-garp and therefore never advertises the new MAC. No-op when
+// wanBridge or the MAC is unset.
 func neighPrimer(wanBridge string) policy.NeighPrimer {
 	return func(eip policy.EIPSpec) error {
 		if wanBridge == "" || eip.MAC == "" {

@@ -6,14 +6,16 @@
 description="K3s Kubernetes server (Mulga EKS control plane)"
 command="/usr/local/bin/k3s"
 command_args="server --config /etc/rancher/k3s/config.yaml"
-command_background="yes"
 pidfile="/run/k3s.pid"
+
+# Supervise the apiserver. A transient k3s crash must self-heal: without a
+# supervisor a single exit leaves the control plane permanently dead, the NLB
+# target never recovers, and the cluster wedges ACTIVE-but-unreachable.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
 output_log="/var/log/k3s.log"
 error_log="/var/log/k3s.log"
-
-# Generous start timeout — K3s bootstraps containerd, initialises the embedded
-# etcd datastore, pulls system images. First boot can take 2-3 minutes on cold cache.
-start_stop_daemon_args="--wait 5000"
 
 depend() {
     need net cgroups

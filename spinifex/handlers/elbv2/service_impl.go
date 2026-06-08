@@ -1161,7 +1161,22 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	var eniIDs []string
 	var availZones []AvailZoneInfo
 	vpcID := ""
+	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
+		// NLBs reject customer SGs (rejected above), so the ENIs would fall back
+		// to the VPC default SG whose intra-SG-only ingress drops inbound
+		// listener traffic. Mint a dedicated managed SG up front and attach it to
+		// every LB ENI; CreateListener opens the listener ports on it.
+		eniGroups := securityGroups
+		if lbType == LoadBalancerTypeNetwork {
+			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
+			if sgErr != nil {
+				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			nlbManagedSGID = sgID
+			eniGroups = []string{sgID}
+		}
 		for _, subnetID := range subnets {
 			eniIn := &ec2.CreateNetworkInterfaceInput{
 				SubnetId:    aws.String(subnetID),
@@ -1177,11 +1192,12 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				},
 			}
 			// SG enforcement gates inbound traffic by the ENI's port-group
-			// membership, which is set at ENI creation. Empty Groups
-			// intentionally falls back to the VPC default SG inside
+			// membership, which is set at ENI creation. For NLBs this is the
+			// managed SG minted above; for ALBs it is the customer SGs. Empty
+			// Groups intentionally falls back to the VPC default SG inside
 			// eni.CreateNetworkInterface.
-			if len(securityGroups) > 0 {
-				eniIn.Groups = aws.StringSlice(securityGroups)
+			if len(eniGroups) > 0 {
+				eniIn.Groups = aws.StringSlice(eniGroups)
 			}
 			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
@@ -1193,6 +1209,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 						slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", rollbackENI, "err", delErr)
 					}
 				}
+				s.deleteNLBManagedSG(nlbManagedSGID, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
@@ -1264,6 +1281,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		State:           state,
 		VpcId:           vpcID,
 		SecurityGroups:  securityGroups,
+		NLBManagedSGID:  nlbManagedSGID,
 		Subnets:         subnets,
 		AvailZones:      availZones,
 		ENIs:            eniIDs,
@@ -1349,6 +1367,8 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 				slog.Warn("Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
 			}
 		}
+		// The managed NLB SG can only be removed once its ENIs are gone.
+		s.deleteNLBManagedSG(lb.NLBManagedSGID, accountID)
 	}
 
 	if err := s.store.DeleteLoadBalancer(lb.LoadBalancerID); err != nil {
@@ -2141,6 +2161,21 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Open the listener port on the NLB's managed front-end SG so inbound
+	// traffic from the configured client CIDRs is admitted by the OVN ACL
+	// (NLB ENIs would otherwise sit in the intra-SG-only default SG).
+	if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+		cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb)
+		if cidrErr != nil {
+			slog.Error("CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if authErr := s.authorizeNLBListenerPort(lb, protocol, port, cidrs, accountID); authErr != nil {
+			slog.Error("CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
 	// Start or reload HAProxy now that a listener exists
 	if err := s.updateStoredConfig(lb); err != nil {
 		slog.Error("CreateListener: failed to update config", "listenerId", listenerID, "err", err)
@@ -2198,6 +2233,16 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 	// Reload or stop HAProxy after listener removal
 	lb, lbErr := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
 	if lbErr == nil && lb != nil {
+		// Close the listener port on the NLB's managed front-end SG.
+		if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+			if cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb); cidrErr == nil {
+				if revokeErr := s.revokeNLBListenerPort(lb, listener.Protocol, listener.Port, cidrs, accountID); revokeErr != nil {
+					slog.Warn("DeleteListener: revoke listener port failed", "lbArn", lb.LoadBalancerArn, "port", listener.Port, "err", revokeErr)
+				}
+			} else {
+				slog.Warn("DeleteListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			}
+		}
 		if err := s.updateStoredConfig(lb); err != nil {
 			slog.Error("DeleteListener: failed to update config", "listenerArn", *input.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)

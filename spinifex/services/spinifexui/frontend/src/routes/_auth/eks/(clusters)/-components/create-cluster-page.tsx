@@ -24,7 +24,6 @@ import { getNameTag } from "@/lib/utils"
 import { useCreateCluster } from "@/mutations/eks"
 import {
   ec2ImagesQueryOptions,
-  ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
@@ -54,7 +53,6 @@ export function CreateClusterPage() {
   const [isRechecking, setIsRechecking] = useState(false)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
-  const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: rolesData } = useSuspenseQuery(iamRolesQueryOptions)
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const createCluster = useCreateCluster()
@@ -74,7 +72,6 @@ export function CreateClusterPage() {
 
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
-  const allSgs = sgsData.SecurityGroups ?? []
   const roles = rolesData.Roles ?? []
 
   const {
@@ -92,7 +89,6 @@ export function CreateClusterPage() {
       roleArn: "",
       vpcId: "",
       subnetIds: [],
-      securityGroupIds: [],
       bootstrapClusterCreatorAdminPermissions: true,
       endpointPublicAccess: true,
       endpointPrivateAccess: false,
@@ -102,17 +98,14 @@ export function CreateClusterPage() {
 
   const selectedVpc = watch("vpcId")
   const selectedSubnets = watch("subnetIds")
-  const selectedSgs = watch("securityGroupIds")
   const publicAccess = watch("endpointPublicAccess")
   const publicCidrs = watch("publicAccessCidrs")
 
   const vpcSubnets = allSubnets.filter((s) => s.VpcId === selectedVpc)
-  const vpcSgs = allSgs.filter((g) => g.VpcId === selectedVpc)
 
   const handleVpcChange = (newVpcId: string | null = "") => {
     setValue("vpcId", newVpcId ?? "", { shouldValidate: true })
     setValue("subnetIds", [])
-    setValue("securityGroupIds", [])
   }
 
   const toggleSubnet = (subnetId: string) => {
@@ -120,13 +113,6 @@ export function CreateClusterPage() {
       ? selectedSubnets.filter((id) => id !== subnetId)
       : [...selectedSubnets, subnetId]
     setValue("subnetIds", next, { shouldValidate: true })
-  }
-
-  const toggleSg = (sgId: string) => {
-    const next = selectedSgs.includes(sgId)
-      ? selectedSgs.filter((id) => id !== sgId)
-      : [...selectedSgs, sgId]
-    setValue("securityGroupIds", next)
   }
 
   const updateCidr = (index: number, value: string) => {
@@ -305,34 +291,6 @@ export function CreateClusterPage() {
             </div>
           )}
           <FieldError errors={[errors.subnetIds]} />
-        </Field>
-
-        <Field>
-          <FieldTitle>Control-plane security groups</FieldTitle>
-          {vpcSgs.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No security groups in the selected VPC.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {vpcSgs.map((sg) => (
-                <label
-                  className="flex items-center gap-2 text-xs"
-                  key={sg.GroupId}
-                >
-                  <input
-                    aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
-                    checked={selectedSgs.includes(sg.GroupId ?? "")}
-                    onChange={() => toggleSg(sg.GroupId ?? "")}
-                    type="checkbox"
-                  />
-                  <span className="font-mono">
-                    {sg.GroupId} ({sg.GroupName})
-                  </span>
-                </label>
-              ))}
-            </div>
-          )}
         </Field>
 
         <Field>

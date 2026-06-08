@@ -46,7 +46,6 @@ export const createClusterSchema = z
     roleArn: z.string().min(1, "Cluster IAM role is required"),
     vpcId: z.string().min(1, "VPC is required"),
     subnetIds: z.array(z.string()).min(1, "At least 1 subnet is required"),
-    securityGroupIds: z.array(z.string()),
     bootstrapClusterCreatorAdminPermissions: z.boolean(),
     endpointPublicAccess: z.boolean(),
     endpointPrivateAccess: z.boolean(),

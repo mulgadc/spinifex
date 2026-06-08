@@ -19,7 +19,6 @@ vi.mock("@tanstack/react-router", () => ({
 
 import {
   ec2ImagesQueryOptions,
-  ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
 } from "@/queries/ec2"
@@ -43,10 +42,6 @@ function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
   queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
     $metadata: {},
     Subnets: [],
-  })
-  queryClient.setQueryData(ec2SecurityGroupsQueryOptions.queryKey, {
-    $metadata: {},
-    SecurityGroups: [],
   })
   queryClient.setQueryData(iamRolesQueryOptions.queryKey, {
     $metadata: {},

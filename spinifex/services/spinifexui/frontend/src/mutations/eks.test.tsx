@@ -57,7 +57,6 @@ describe("eks mutations", () => {
         roleArn: "arn:role",
         vpcId: "vpc-1",
         subnetIds: ["subnet-1"],
-        securityGroupIds: ["sg-1"],
         bootstrapClusterCreatorAdminPermissions: true,
         endpointPublicAccess: true,
         endpointPrivateAccess: false,
@@ -71,7 +70,6 @@ describe("eks mutations", () => {
         roleArn: "arn:role",
         resourcesVpcConfig: {
           subnetIds: ["subnet-1"],
-          securityGroupIds: ["sg-1"],
           endpointPublicAccess: true,
           endpointPrivateAccess: false,
           publicAccessCidrs: ["203.0.113.0/24"],
@@ -93,7 +91,6 @@ describe("eks mutations", () => {
         roleArn: "arn:role",
         vpcId: "vpc-1",
         subnetIds: ["subnet-1"],
-        securityGroupIds: ["sg-1"],
         bootstrapClusterCreatorAdminPermissions: true,
         endpointPublicAccess: false,
         endpointPrivateAccess: true,
@@ -105,7 +102,6 @@ describe("eks mutations", () => {
         mockSend.mock.calls[0]?.[0].input.resourcesVpcConfig,
       ).toStrictEqual({
         subnetIds: ["subnet-1"],
-        securityGroupIds: ["sg-1"],
         endpointPublicAccess: false,
         endpointPrivateAccess: true,
         publicAccessCidrs: undefined,

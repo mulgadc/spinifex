@@ -39,7 +39,6 @@ export function useCreateCluster() {
         roleArn: params.roleArn,
         resourcesVpcConfig: {
           subnetIds: params.subnetIds,
-          securityGroupIds: params.securityGroupIds,
           endpointPublicAccess: params.endpointPublicAccess,
           endpointPrivateAccess: params.endpointPrivateAccess,
           publicAccessCidrs: params.endpointPublicAccess

@@ -56,6 +56,9 @@ describe("eks mutations", () => {
         subnetIds: ["subnet-1"],
         securityGroupIds: ["sg-1"],
         bootstrapClusterCreatorAdminPermissions: true,
+        endpointPublicAccess: true,
+        endpointPrivateAccess: false,
+        publicAccessCidrs: ["203.0.113.0/24"],
       })
 
       await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
@@ -66,11 +69,43 @@ describe("eks mutations", () => {
         resourcesVpcConfig: {
           subnetIds: ["subnet-1"],
           securityGroupIds: ["sg-1"],
+          endpointPublicAccess: true,
+          endpointPrivateAccess: false,
+          publicAccessCidrs: ["203.0.113.0/24"],
         },
         accessConfig: {
           authenticationMode: "API",
           bootstrapClusterCreatorAdminPermissions: true,
         },
+      })
+    })
+
+    it("omits public access CIDRs for a private-only cluster", async () => {
+      createQueryClient()
+      const { result } = renderHook(() => useCreateCluster(), { wrapper })
+
+      result.current.mutate({
+        name: "c1",
+        version: "1.32",
+        roleArn: "arn:role",
+        vpcId: "vpc-1",
+        subnetIds: ["subnet-1"],
+        securityGroupIds: ["sg-1"],
+        bootstrapClusterCreatorAdminPermissions: true,
+        endpointPublicAccess: false,
+        endpointPrivateAccess: true,
+        publicAccessCidrs: ["203.0.113.0/24"],
+      })
+
+      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      expect(
+        mockSend.mock.calls[0]?.[0].input.resourcesVpcConfig,
+      ).toStrictEqual({
+        subnetIds: ["subnet-1"],
+        securityGroupIds: ["sg-1"],
+        endpointPublicAccess: false,
+        endpointPrivateAccess: true,
+        publicAccessCidrs: undefined,
       })
     })
   })

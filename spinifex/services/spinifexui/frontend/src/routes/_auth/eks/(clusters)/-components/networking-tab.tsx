@@ -29,6 +29,7 @@ export function NetworkingTab({ cluster }: { cluster: Cluster | undefined }) {
   const vpc = cluster?.resourcesVpcConfig
   const subnetIds = vpc?.subnetIds ?? []
   const securityGroupIds = vpc?.securityGroupIds ?? []
+  const publicAccessCidrs = vpc?.publicAccessCidrs ?? []
 
   return (
     <>
@@ -52,6 +53,22 @@ export function NetworkingTab({ cluster }: { cluster: Cluster | undefined }) {
             label="Private access"
             value={vpc?.endpointPrivateAccess ? "Enabled" : "Disabled"}
           />
+          {vpc?.endpointPublicAccess && (
+            <DetailRow
+              label="Public access CIDRs"
+              value={
+                publicAccessCidrs.length > 0 ? (
+                  <div className="space-y-1 font-mono text-xs">
+                    {publicAccessCidrs.map((cidr) => (
+                      <div key={cidr}>{cidr}</div>
+                    ))}
+                  </div>
+                ) : (
+                  "Any (0.0.0.0/0)"
+                )
+              }
+            />
+          )}
         </DetailCard.Content>
       </DetailCard>
 

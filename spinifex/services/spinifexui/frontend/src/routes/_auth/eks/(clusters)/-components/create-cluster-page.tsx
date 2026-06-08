@@ -9,6 +9,7 @@ import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -93,12 +94,17 @@ export function CreateClusterPage() {
       subnetIds: [],
       securityGroupIds: [],
       bootstrapClusterCreatorAdminPermissions: true,
+      endpointPublicAccess: true,
+      endpointPrivateAccess: false,
+      publicAccessCidrs: ["0.0.0.0/0"],
     },
   })
 
   const selectedVpc = watch("vpcId")
   const selectedSubnets = watch("subnetIds")
   const selectedSgs = watch("securityGroupIds")
+  const publicAccess = watch("endpointPublicAccess")
+  const publicCidrs = watch("publicAccessCidrs")
 
   const vpcSubnets = allSubnets.filter((s) => s.VpcId === selectedVpc)
   const vpcSgs = allSgs.filter((g) => g.VpcId === selectedVpc)
@@ -122,6 +128,24 @@ export function CreateClusterPage() {
       : [...selectedSgs, sgId]
     setValue("securityGroupIds", next)
   }
+
+  const updateCidr = (index: number, value: string) => {
+    const next = [...publicCidrs]
+    next[index] = value
+    setValue("publicAccessCidrs", next, { shouldValidate: true })
+  }
+
+  const addCidr = () =>
+    setValue("publicAccessCidrs", [...publicCidrs, ""], {
+      shouldValidate: true,
+    })
+
+  const removeCidr = (index: number) =>
+    setValue(
+      "publicAccessCidrs",
+      publicCidrs.filter((_, i) => i !== index),
+      { shouldValidate: true },
+    )
 
   const onSubmit = async (data: CreateClusterFormData) => {
     await createCluster.mutateAsync(data)
@@ -307,6 +331,84 @@ export function CreateClusterPage() {
                   </span>
                 </label>
               ))}
+            </div>
+          )}
+        </Field>
+
+        <Field>
+          <FieldTitle>Endpoint access</FieldTitle>
+          <p className="text-xs text-muted-foreground">
+            Public access exposes the API server on an internet-facing endpoint;
+            private access keeps it reachable only from within the VPC. At least
+            one must be enabled.
+          </p>
+          <Controller
+            control={control}
+            name="endpointPublicAccess"
+            render={({ field }) => (
+              <label className="mt-2 flex items-center gap-2 text-xs">
+                <input
+                  aria-label="Enable public access"
+                  checked={field.value}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                  type="checkbox"
+                />
+                Public
+              </label>
+            )}
+          />
+          <Controller
+            control={control}
+            name="endpointPrivateAccess"
+            render={({ field }) => (
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  aria-label="Enable private access"
+                  checked={field.value}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                  type="checkbox"
+                />
+                Private
+              </label>
+            )}
+          />
+          <FieldError errors={[errors.endpointPublicAccess]} />
+
+          {publicAccess && (
+            <div className="mt-2 space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Public access source ranges (CIDR). Defaults to{" "}
+                <span className="font-mono">0.0.0.0/0</span>.
+              </p>
+              {publicCidrs.map((cidr, index) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <div className="flex items-center gap-2" key={index}>
+                  <Input
+                    aria-label={`Public access CIDR ${index + 1}`}
+                    className="font-mono"
+                    onChange={(e) => updateCidr(index, e.target.value)}
+                    placeholder="203.0.113.0/24"
+                    value={cidr}
+                  />
+                  <Button
+                    onClick={() => removeCidr(index)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+              <Button
+                onClick={addCidr}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Add CIDR
+              </Button>
+              <FieldError errors={[errors.publicAccessCidrs]} />
             </div>
           )}
         </Field>

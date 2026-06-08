@@ -70,8 +70,10 @@ describe("AccessTab", () => {
     const deleteButton = screen
       .getAllByRole("button")
       .find((b) => b.textContent === "")
-    expect(deleteButton).toBeDefined()
-    fireEvent.click(deleteButton!)
+    if (!deleteButton) {
+      throw new Error("delete button not found")
+    }
+    fireEvent.click(deleteButton)
     expect(
       screen.getByText(`Delete access entry for "${PRINCIPAL}"?`),
     ).toBeInTheDocument()

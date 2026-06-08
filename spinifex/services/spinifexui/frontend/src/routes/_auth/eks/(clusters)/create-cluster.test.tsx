@@ -84,6 +84,26 @@ describe("CreateClusterPage", () => {
     expect(mockSend).not.toHaveBeenCalled()
   })
 
+  it("defaults endpoint access to public with an open CIDR", () => {
+    renderPage()
+    expect(screen.getByLabelText("Enable public access")).toBeChecked()
+    expect(screen.getByLabelText("Enable private access")).not.toBeChecked()
+    expect(screen.getByLabelText("Public access CIDR 1")).toHaveValue(
+      "0.0.0.0/0",
+    )
+  })
+
+  it("hides the public CIDR editor when public access is disabled", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByLabelText("Enable public access"))
+
+    expect(
+      screen.queryByLabelText("Public access CIDR 1"),
+    ).not.toBeInTheDocument()
+  })
+
   it("blocks the form when the EKS system image is missing", () => {
     renderPage({ withEksImage: false })
     expect(screen.getByText("EKS system image not found")).toBeInTheDocument()

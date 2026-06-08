@@ -72,4 +72,35 @@ describe("NetworkingTab", () => {
     expect(screen.getByText("Enabled")).toBeInTheDocument()
     expect(screen.getByText("Disabled")).toBeInTheDocument()
   })
+
+  it("lists public access CIDRs when restricted", () => {
+    const restricted: Cluster = {
+      ...CLUSTER,
+      resourcesVpcConfig: {
+        ...CLUSTER.resourcesVpcConfig,
+        publicAccessCidrs: ["203.0.113.0/24", "198.51.100.0/24"],
+      },
+    }
+    render(<NetworkingTab cluster={restricted} />)
+    expect(screen.getByText("203.0.113.0/24")).toBeInTheDocument()
+    expect(screen.getByText("198.51.100.0/24")).toBeInTheDocument()
+  })
+
+  it("falls back to open access when no public CIDRs are set", () => {
+    render(<NetworkingTab cluster={CLUSTER} />)
+    expect(screen.getByText("Any (0.0.0.0/0)")).toBeInTheDocument()
+  })
+
+  it("hides public access CIDRs when public access is disabled", () => {
+    const privateOnly: Cluster = {
+      ...CLUSTER,
+      resourcesVpcConfig: {
+        ...CLUSTER.resourcesVpcConfig,
+        endpointPublicAccess: false,
+        endpointPrivateAccess: true,
+      },
+    }
+    render(<NetworkingTab cluster={privateOnly} />)
+    expect(screen.queryByText("Public access CIDRs")).not.toBeInTheDocument()
+  })
 })

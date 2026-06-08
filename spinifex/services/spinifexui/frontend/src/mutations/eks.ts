@@ -34,6 +34,11 @@ export function useCreateCluster() {
         resourcesVpcConfig: {
           subnetIds: params.subnetIds,
           securityGroupIds: params.securityGroupIds,
+          endpointPublicAccess: params.endpointPublicAccess,
+          endpointPrivateAccess: params.endpointPrivateAccess,
+          publicAccessCidrs: params.endpointPublicAccess
+            ? params.publicAccessCidrs
+            : undefined,
         },
         accessConfig: {
           authenticationMode: "API",

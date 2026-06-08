@@ -1,11 +1,11 @@
 import { defineConfig } from "oxlint"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
-import remix from "ultracite/oxlint/remix"
+import tanstack from "ultracite/oxlint/tanstack"
 import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, remix, vitest],
+  extends: [core, react, vitest, tanstack],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -108,5 +108,5 @@ export default defineConfig({
       },
     },
   ],
-  ignorePatterns: ["dist", "src/routeTree.gen.ts", "*.config.ts"],
+  ignorePatterns: core.ignorePatterns,
 })

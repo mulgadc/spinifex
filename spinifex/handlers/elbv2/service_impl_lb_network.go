@@ -310,8 +310,8 @@ func (s *ELBv2ServiceImpl) createLBENI(subnetID string, lb *LoadBalancerRecord, 
 			},
 		},
 	}
-	if len(lb.SecurityGroups) > 0 {
-		eniIn.Groups = aws.StringSlice(lb.SecurityGroups)
+	if groups := lbENIGroups(lb); len(groups) > 0 {
+		eniIn.Groups = aws.StringSlice(groups)
 	}
 	out, err := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 	if err != nil {

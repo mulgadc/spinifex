@@ -100,15 +100,24 @@ const (
 
 // LoadBalancerRecord represents a stored load balancer (ALB or NLB).
 type LoadBalancerRecord struct {
-	LoadBalancerArn string             `json:"load_balancer_arn"`
-	LoadBalancerID  string             `json:"load_balancer_id"` // Short ID (hex suffix)
-	DNSName         string             `json:"dns_name"`
-	Name            string             `json:"name"`
-	Scheme          string             `json:"scheme"` // "internet-facing" or "internal"
-	Type            string             `json:"type"`   // Always "application"
-	State           string             `json:"state"`  // "provisioning", "active", "failed"
-	VpcId           string             `json:"vpc_id"`
-	SecurityGroups  []string           `json:"security_groups"`
+	LoadBalancerArn string   `json:"load_balancer_arn"`
+	LoadBalancerID  string   `json:"load_balancer_id"` // Short ID (hex suffix)
+	DNSName         string   `json:"dns_name"`
+	Name            string   `json:"name"`
+	Scheme          string   `json:"scheme"` // "internet-facing" or "internal"
+	Type            string   `json:"type"`   // Always "application"
+	State           string   `json:"state"`  // "provisioning", "active", "failed"
+	VpcId           string   `json:"vpc_id"`
+	SecurityGroups  []string `json:"security_groups"`
+	// NLBManagedSGID is the internal security group the ELBv2 service mints for
+	// a network LB (NLBs reject customer SGs, so this is created and owned here).
+	// It is attached to every LB ENI and is the SG listener-port ingress is
+	// authorized on. Not surfaced by DescribeLoadBalancers.
+	NLBManagedSGID string `json:"nlb_managed_sg_id,omitempty"`
+	// NLBIngressCIDRs overrides the scheme-based default client CIDRs that
+	// listener ports are opened to on NLBManagedSGID. Empty ⇒ default
+	// (internet-facing: 0.0.0.0/0; internal: the VPC CIDR).
+	NLBIngressCIDRs []string           `json:"nlb_ingress_cidrs,omitempty"`
 	Subnets         []string           `json:"subnets"`
 	AvailZones      []AvailZoneInfo    `json:"availability_zones"`
 	ENIs            []string           `json:"enis,omitempty"`           // ENI IDs created for this ALB (internal)

@@ -291,6 +291,10 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
+	// The control plane is tainted so user workloads never schedule on it (EKS
+	// parity, and it keeps image pulls off the etcd disk).
+	assert.Contains(t, udata, "node-taint:")
+	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
 	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
 	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
 	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.

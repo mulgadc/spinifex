@@ -449,6 +449,15 @@ func buildK3sUserData(in K3sServerInput) string {
 	configLines := []string{
 		"cluster-init: true",
 		"etcd-expose-metrics: true",
+		// Keep user workloads off the control plane (EKS parity — the CP is never
+		// a worker). Critical here because the server node is schedulable by
+		// default: a workload landing on the CP pulls its images onto the same
+		// NBD/viperblock disk the embedded etcd fsyncs to, starving etcd until the
+		// apiserver crashes and the VM OOMs. k3s' packaged addons tolerate
+		// CriticalAddonsOnly, so they still run (here, draining to the nodegroup);
+		// NoExecute also evicts anything already scheduled, not just future pods.
+		"node-taint:",
+		"  - CriticalAddonsOnly=true:NoExecute",
 	}
 	if !in.BuiltinIngress {
 		configLines = append(configLines,

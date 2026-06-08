@@ -14,9 +14,10 @@ var knownModels = map[string]modelInfo{
 	"10de:20b5": {"NVIDIA A100 SXM 80GB", 81920},
 	"10de:20f1": {"NVIDIA A100 PCIe 40GB", 40960},
 	"10de:20f3": {"NVIDIA A100 PCIe 80GB", 81920},
-	"10de:2331": {"NVIDIA H100 SXM", 81920},
-	"10de:2330": {"NVIDIA H100 PCIe", 81920},
+	"10de:2330": {"NVIDIA H100 SXM", 81920},
+	"10de:2331": {"NVIDIA H100 PCIe", 81920},
 	"10de:233a": {"NVIDIA H100 NVL", 94208},
+	"10de:2335": {"NVIDIA H200 SXM", 144384},
 	"10de:2233": {"NVIDIA A30", 24576},
 	"10de:26b5": {"NVIDIA L40", 46068},
 	"10de:26b9": {"NVIDIA L40S", 46068},
@@ -44,9 +45,10 @@ var computeModels = map[string]bool{
 	"10de:20b5": true, // A100 SXM 80GB
 	"10de:20f1": true, // A100 PCIe 40GB
 	"10de:20f3": true, // A100 PCIe 80GB
-	"10de:2331": true, // H100 SXM
-	"10de:2330": true, // H100 PCIe
+	"10de:2330": true, // H100 SXM
+	"10de:2331": true, // H100 PCIe
 	"10de:233a": true, // H100 NVL
+	"10de:2335": true, // H200 SXM
 	"10de:2233": true, // A30
 	"10de:26b5": true, // L40
 	"10de:26b9": true, // L40S
@@ -65,9 +67,10 @@ var migCapableModels = map[string]bool{
 	"10de:20b5": true, // A100 SXM 80GB
 	"10de:20f1": true, // A100 PCIe 40GB
 	"10de:20f3": true, // A100 PCIe 80GB
-	"10de:2331": true, // H100 SXM
-	"10de:2330": true, // H100 PCIe
+	"10de:2330": true, // H100 SXM
+	"10de:2331": true, // H100 PCIe
 	"10de:233a": true, // H100 NVL
+	"10de:2335": true, // H200 SXM
 	"10de:2233": true, // A30
 	"10de:2bb5": true, // RTX Pro 6000 Blackwell Server Edition
 }

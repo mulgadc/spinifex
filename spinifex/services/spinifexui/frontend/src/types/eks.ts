@@ -90,6 +90,49 @@ export const createNodegroupSchema = z
 
 export type CreateNodegroupFormValues = z.infer<typeof createNodegroupSchema>
 
+export const createAddonSchema = z.object({
+  addonName: z.string().min(1, "Add-on is required"),
+  addonVersion: z.string().min(1, "Version is required"),
+  serviceAccountRoleArn: z.string(),
+  configurationValues: z.string().refine(
+    (v) => {
+      if (v.trim() === "") {
+        return true
+      }
+      try {
+        JSON.parse(v)
+        return true
+      } catch {
+        return false
+      }
+    },
+    { message: "Configuration must be valid JSON" },
+  ),
+})
+
+export type CreateAddonFormValues = z.infer<typeof createAddonSchema>
+
+// Map an add-on status to a Badge variant. In-progress states render calmly
+// (secondary) rather than as errors; only terminal failures are destructive.
+export function addonStatusVariant(
+  status: string | undefined,
+): "default" | "secondary" | "destructive" {
+  switch (status ?? "") {
+    case "ACTIVE": {
+      return "default"
+    }
+    case "CREATE_FAILED":
+    case "DELETE_FAILED":
+    case "UPDATE_FAILED":
+    case "DEGRADED": {
+      return "destructive"
+    }
+    default: {
+      return "secondary"
+    }
+  }
+}
+
 export const createAccessEntrySchema = z.object({
   principalArn: z.string().min(1, "Principal ARN is required"),
   kubernetesGroups: z.string(),
@@ -131,6 +174,27 @@ export interface CreateAccessEntryFormData {
 export interface AccessEntryParams {
   clusterName: string
   principalArn: string
+}
+
+export interface CreateAddonParams {
+  clusterName: string
+  addonName: string
+  addonVersion?: string
+  serviceAccountRoleArn?: string
+  configurationValues?: string
+}
+
+export interface UpdateAddonParams {
+  clusterName: string
+  addonName: string
+  addonVersion?: string
+  serviceAccountRoleArn?: string
+  configurationValues?: string
+}
+
+export interface DeleteAddonParams {
+  clusterName: string
+  addonName: string
 }
 
 export interface AssociateAccessPolicyParams {

@@ -1,9 +1,12 @@
 import {
   DescribeAccessEntryCommand,
+  DescribeAddonCommand,
+  DescribeAddonVersionsCommand,
   DescribeClusterCommand,
   DescribeNodegroupCommand,
   ListAccessEntriesCommand,
   ListAccessPoliciesCommand,
+  ListAddonsCommand,
   ListAssociatedAccessPoliciesCommand,
   ListClustersCommand,
   ListNodegroupsCommand,
@@ -117,3 +120,32 @@ export const eksAccessPoliciesQueryOptions = queryOptions({
   },
   staleTime: STATIC_STALE_TIME,
 })
+
+export const eksAddonVersionsQueryOptions = queryOptions({
+  queryKey: ["eks", "addon-versions"],
+  queryFn: async () => {
+    const command = new DescribeAddonVersionsCommand({})
+    return await getEksClient().send(command)
+  },
+  staleTime: STATIC_STALE_TIME,
+})
+
+export const eksAddonsQueryOptions = (clusterName: string) =>
+  queryOptions({
+    queryKey: ["eks", "clusters", clusterName, "addons"],
+    queryFn: async () => {
+      const command = new ListAddonsCommand({ clusterName })
+      return await getEksClient().send(command)
+    },
+    staleTime: CLUSTER_STALE_TIME,
+  })
+
+export const eksAddonQueryOptions = (clusterName: string, addonName: string) =>
+  queryOptions({
+    queryKey: ["eks", "clusters", clusterName, "addons", addonName],
+    queryFn: async () => {
+      const command = new DescribeAddonCommand({ clusterName, addonName })
+      return await getEksClient().send(command)
+    },
+    staleTime: CLUSTER_STALE_TIME,
+  })

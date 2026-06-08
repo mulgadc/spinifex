@@ -10,6 +10,9 @@ import {
   eksAccessEntriesQueryOptions,
   eksAccessEntryQueryOptions,
   eksAccessPoliciesQueryOptions,
+  eksAddonQueryOptions,
+  eksAddonsQueryOptions,
+  eksAddonVersionsQueryOptions,
   eksAssociatedAccessPoliciesQueryOptions,
   eksClusterQueryOptions,
   eksClustersQueryOptions,
@@ -77,6 +80,32 @@ describe("query keys", () => {
       "access-policies",
     ])
   })
+
+  it("addon versions catalog key", () => {
+    expect(eksAddonVersionsQueryOptions.queryKey).toStrictEqual([
+      "eks",
+      "addon-versions",
+    ])
+  })
+
+  it("addons key includes cluster", () => {
+    expect(eksAddonsQueryOptions("c1").queryKey).toStrictEqual([
+      "eks",
+      "clusters",
+      "c1",
+      "addons",
+    ])
+  })
+
+  it("addon key includes cluster and addon", () => {
+    expect(eksAddonQueryOptions("c1", "coredns").queryKey).toStrictEqual([
+      "eks",
+      "clusters",
+      "c1",
+      "addons",
+      "coredns",
+    ])
+  })
 })
 
 describe("queryFn", () => {
@@ -120,6 +149,27 @@ describe("queryFn", () => {
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       clusterName: "c1",
       principalArn: "arn:p",
+    })
+  })
+
+  it("addons sends ListAddonsCommand with cluster", async () => {
+    const queryFn = eksAddonsQueryOptions("c1").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      clusterName: "c1",
+    })
+  })
+
+  it("addon sends DescribeAddonCommand", async () => {
+    const queryFn = eksAddonQueryOptions("c1", "coredns").queryFn as (
+      ctx: never,
+    ) => Promise<unknown>
+    await queryFn({} as never)
+    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+      clusterName: "c1",
+      addonName: "coredns",
     })
   })
 })

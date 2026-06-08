@@ -12,11 +12,14 @@ vi.mock("@/lib/awsClient", () => ({
 import {
   useAssociateAccessPolicy,
   useCreateAccessEntry,
+  useCreateAddon,
   useCreateCluster,
   useCreateNodegroup,
+  useDeleteAddon,
   useDeleteCluster,
   useDeleteNodegroup,
   useScaleNodegroup,
+  useUpdateAddon,
   useUpdateNodegroupVersion,
 } from "./eks"
 
@@ -211,6 +214,67 @@ describe("eks mutations", () => {
       expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
         clusterName: "c1",
         nodegroupName: "ng1",
+      })
+    })
+  })
+
+  describe("useCreateAddon", () => {
+    it("maps params to CreateAddonCommand", async () => {
+      createQueryClient()
+      const { result } = renderHook(() => useCreateAddon(), { wrapper })
+
+      result.current.mutate({
+        clusterName: "c1",
+        addonName: "coredns",
+        addonVersion: "v1.0.0",
+        serviceAccountRoleArn: "arn:role",
+        configurationValues: '{"replicaCount":2}',
+      })
+
+      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+        clusterName: "c1",
+        addonName: "coredns",
+        addonVersion: "v1.0.0",
+        serviceAccountRoleArn: "arn:role",
+        configurationValues: '{"replicaCount":2}',
+      })
+    })
+  })
+
+  describe("useUpdateAddon", () => {
+    it("sends UpdateAddonCommand with target version", async () => {
+      createQueryClient()
+      const { result } = renderHook(() => useUpdateAddon(), { wrapper })
+
+      result.current.mutate({
+        clusterName: "c1",
+        addonName: "coredns",
+        addonVersion: "v2.0.0",
+      })
+
+      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+        clusterName: "c1",
+        addonName: "coredns",
+        addonVersion: "v2.0.0",
+        serviceAccountRoleArn: undefined,
+        configurationValues: undefined,
+      })
+    })
+  })
+
+  describe("useDeleteAddon", () => {
+    it("sends DeleteAddonCommand", async () => {
+      createQueryClient()
+      const { result } = renderHook(() => useDeleteAddon(), { wrapper })
+
+      result.current.mutate({ clusterName: "c1", addonName: "coredns" })
+
+      await waitFor(() => expect(result.current.isSuccess).toBeTruthy())
+      expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
+        clusterName: "c1",
+        addonName: "coredns",
       })
     })
   })

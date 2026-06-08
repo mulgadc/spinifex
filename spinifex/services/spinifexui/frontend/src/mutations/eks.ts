@@ -1,12 +1,15 @@
 import {
   AssociateAccessPolicyCommand,
   CreateAccessEntryCommand,
+  CreateAddonCommand,
   CreateClusterCommand,
   CreateNodegroupCommand,
   DeleteAccessEntryCommand,
+  DeleteAddonCommand,
   DeleteClusterCommand,
   DeleteNodegroupCommand,
   DisassociateAccessPolicyCommand,
+  UpdateAddonCommand,
   UpdateNodegroupConfigCommand,
   UpdateNodegroupVersionCommand,
 } from "@aws-sdk/client-eks"
@@ -17,10 +20,13 @@ import type {
   AccessEntryParams,
   AssociateAccessPolicyParams,
   CreateAccessEntryFormData,
+  CreateAddonParams,
   CreateClusterFormData,
   CreateNodegroupFormData,
+  DeleteAddonParams,
   DisassociateAccessPolicyParams,
   ScaleNodegroupParams,
+  UpdateAddonParams,
 } from "@/types/eks"
 
 export function useCreateCluster() {
@@ -158,6 +164,66 @@ export function useDeleteNodegroup() {
     onSuccess: (_data, params) => {
       void queryClient.invalidateQueries({
         queryKey: ["eks", "clusters", params.clusterName, "nodegroups"],
+      })
+    },
+  })
+}
+
+export function useCreateAddon() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: CreateAddonParams) => {
+      const command = new CreateAddonCommand({
+        clusterName: params.clusterName,
+        addonName: params.addonName,
+        addonVersion: params.addonVersion,
+        serviceAccountRoleArn: params.serviceAccountRoleArn,
+        configurationValues: params.configurationValues,
+      })
+      return await getEksClient().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["eks", "clusters", params.clusterName, "addons"],
+      })
+    },
+  })
+}
+
+export function useUpdateAddon() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: UpdateAddonParams) => {
+      const command = new UpdateAddonCommand({
+        clusterName: params.clusterName,
+        addonName: params.addonName,
+        addonVersion: params.addonVersion,
+        serviceAccountRoleArn: params.serviceAccountRoleArn,
+        configurationValues: params.configurationValues,
+      })
+      return await getEksClient().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["eks", "clusters", params.clusterName, "addons"],
+      })
+    },
+  })
+}
+
+export function useDeleteAddon() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: DeleteAddonParams) => {
+      const command = new DeleteAddonCommand({
+        clusterName: params.clusterName,
+        addonName: params.addonName,
+      })
+      return await getEksClient().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["eks", "clusters", params.clusterName, "addons"],
       })
     },
   })

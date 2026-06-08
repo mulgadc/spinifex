@@ -18,6 +18,7 @@ import { useDeleteCluster } from "@/mutations/eks"
 import { eksClusterQueryOptions } from "@/queries/eks"
 
 import { AccessTab } from "./access-tab"
+import { AddonsTab } from "./addons-tab"
 import { NetworkingTab } from "./networking-tab"
 import { NodegroupsTab } from "./nodegroups-tab"
 
@@ -113,6 +114,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
         <TabsList>
           <TabsTab value="overview">Overview</TabsTab>
           <TabsTab value="compute">Compute</TabsTab>
+          <TabsTab value="addons">Add-ons</TabsTab>
           <TabsTab value="access">Access</TabsTab>
           <TabsTab value="networking">Networking</TabsTab>
           <TabsTab value="connect">Connect</TabsTab>
@@ -152,6 +154,10 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
             clusterVersion={cluster?.version}
             vpcId={cluster?.resourcesVpcConfig?.vpcId}
           />
+        </TabsPanel>
+
+        <TabsPanel value="addons">
+          <AddonsTab clusterName={clusterName} />
         </TabsPanel>
 
         <TabsPanel value="access">

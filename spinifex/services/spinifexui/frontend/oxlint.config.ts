@@ -25,6 +25,7 @@ export default defineConfig({
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
     "react/rules-of-hooks": "error",
+    "react/no-object-type-as-default-prop": "off",
     "react/no-array-index-key": "error",
     "react/jsx-no-constructed-context-values": "error",
     "react/jsx-no-comment-textnodes": "error",

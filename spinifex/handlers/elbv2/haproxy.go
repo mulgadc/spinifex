@@ -185,8 +185,8 @@ func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgBy
 // nginx data plane (generateNLBStreamConfig), not this builder.
 func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, certPEMByArn map[string]string) (HAProxyConfig, error) {
 	socketDir := filepath.Join(os.TempDir(), "spinifex-haproxy")
-	// Use "lb" prefix for both ALB and NLB — must match the agent's socket path.
-	socketPath := filepath.Join(socketDir, fmt.Sprintf("lb-%s.sock", lb.LoadBalancerID))
+	// LoadBalancerID already carries the "lb-" prefix; must match the agent's socket path.
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s.sock", lb.LoadBalancerID))
 
 	cfg := HAProxyConfig{
 		SocketPath: socketPath,
@@ -328,7 +328,7 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 // PEM file under the agent's cert dir. Daemon-rendered and agent-written paths
 // must match exactly.
 func frontendCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
-	return filepath.Join(lbagent.CertDir, fmt.Sprintf("lb-%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+	return filepath.Join(lbagent.CertDir, fmt.Sprintf("%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
 }
 
 // resolveFrontendCert picks a listener's default certificate, resolves its PEM
@@ -731,12 +731,12 @@ func (m *HAProxyManager) Available() bool {
 
 // pidFilePath returns the pidfile path for a given LB.
 func (m *HAProxyManager) pidFilePath(lbID string) string {
-	return filepath.Join(m.configDir, fmt.Sprintf("alb-%s.pid", lbID))
+	return filepath.Join(m.configDir, fmt.Sprintf("%s.pid", lbID))
 }
 
 // configFilePath returns the config path for a given LB.
 func (m *HAProxyManager) configFilePath(lbID string) string {
-	return filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
+	return filepath.Join(m.configDir, fmt.Sprintf("%s.cfg", lbID))
 }
 
 // IsRunning returns true if an HAProxy process is tracked and alive for this LB.
@@ -888,7 +888,7 @@ func (m *HAProxyManager) WriteConfig(lbID, configContent string) (string, error)
 		return "", fmt.Errorf("create config dir: %w", err)
 	}
 
-	path := filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
+	path := filepath.Join(m.configDir, fmt.Sprintf("%s.cfg", lbID))
 	if err := os.WriteFile(path, []byte(configContent), 0o600); err != nil {
 		return "", fmt.Errorf("write haproxy config: %w", err)
 	}
@@ -899,7 +899,7 @@ func (m *HAProxyManager) WriteConfig(lbID, configContent string) (string, error)
 
 // RemoveConfig removes the HAProxy config file for the given load balancer.
 func (m *HAProxyManager) RemoveConfig(lbID string) error {
-	path := filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
+	path := filepath.Join(m.configDir, fmt.Sprintf("%s.cfg", lbID))
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove haproxy config: %w", err)
 	}

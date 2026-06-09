@@ -51,7 +51,7 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 
 	// Verify global section
 	assert.Contains(t, config, "stats socket")
-	assert.Contains(t, config, "lb-lb-abc123.sock")
+	assert.Contains(t, config, "lb-abc123.sock")
 
 	// Verify frontend
 	assert.Contains(t, config, "bind *:80")
@@ -457,8 +457,8 @@ func TestHAProxyManager_StopAll_Empty(t *testing.T) {
 
 func TestHAProxyManager_PidFilePath(t *testing.T) {
 	mgr := NewHAProxyManager("/tmp/haproxy-test")
-	assert.Equal(t, "/tmp/haproxy-test/alb-lb-123.pid", mgr.pidFilePath("lb-123"))
-	assert.Equal(t, "/tmp/haproxy-test/alb-lb-123.cfg", mgr.configFilePath("lb-123"))
+	assert.Equal(t, "/tmp/haproxy-test/lb-123.pid", mgr.pidFilePath("lb-123"))
+	assert.Equal(t, "/tmp/haproxy-test/lb-123.cfg", mgr.configFilePath("lb-123"))
 }
 
 func TestHAProxyManager_Start_MissingBinary(t *testing.T) {
@@ -562,7 +562,7 @@ func TestHAProxyManager_WriteAndRemoveConfig(t *testing.T) {
 	content := "global\n  log stdout\n"
 	path, err := mgr.WriteConfig("lb-test", content)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "alb-lb-test.cfg"), path)
+	assert.Equal(t, filepath.Join(dir, "lb-test.cfg"), path)
 
 	// Verify file contents
 	data, err := os.ReadFile(path)

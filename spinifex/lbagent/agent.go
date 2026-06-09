@@ -121,7 +121,7 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		configPath:    DefaultConfigPath,
 		pidPath:       DefaultPIDPath,
 		certDir:       CertDir,
-		socketPath:    fmt.Sprintf("/tmp/spinifex-haproxy/lb-%s.sock", lbID),
+		socketPath:    fmt.Sprintf("/tmp/spinifex-haproxy/%s.sock", lbID),
 		accessKey:     accessKey,
 		secretKey:     secretKey,
 		client:        client,

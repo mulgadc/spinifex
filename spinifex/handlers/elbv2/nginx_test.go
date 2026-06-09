@@ -94,7 +94,7 @@ func TestGenerateNLBStream_TLS(t *testing.T) {
 	config, certs, err := GenerateHAProxyConfigWithCerts(lb, []*ListenerRecord{lst}, tgByArn, nil, "10.0.3.1", certPEM)
 	require.NoError(t, err)
 
-	wantPath := "/etc/nginx/certs/lb-lb-tls-lst-tls.pem"
+	wantPath := "/etc/nginx/certs/lb-tls-lst-tls.pem"
 	assert.Contains(t, config, "listen 443 ssl;")
 	assert.Contains(t, config, "ssl_certificate "+wantPath+";")
 	assert.Contains(t, config, "ssl_certificate_key "+wantPath+";")

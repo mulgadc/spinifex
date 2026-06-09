@@ -26,10 +26,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 export LIBGUESTFS_BACKEND="${LIBGUESTFS_BACKEND:-direct}"
 
 usage() {
-    echo "Usage: $0 <manifest.conf> [--import]"
+    echo "Usage: $0 <manifest.conf> [--import] [--no-cache]"
     echo ""
     echo "  manifest.conf  Path to image manifest (see scripts/images/ for examples)"
     echo "  --import       Import the built image as an AMI"
+    echo "  --no-cache     Always rebuild; ignore a recently-built cached raw"
     exit 1
 }
 
@@ -47,10 +48,12 @@ fi
 
 DO_IMPORT=false
 QUIET=false
+NO_CACHE=false
 for arg in "$@"; do
     case "$arg" in
-        --import) DO_IMPORT=true ;;
-        --quiet)  QUIET=true ;;
+        --import)   DO_IMPORT=true ;;
+        --quiet)    QUIET=true ;;
+        --no-cache) NO_CACHE=true ;;
     esac
 done
 
@@ -184,7 +187,9 @@ echo "Lock acquired"
 
 # If the raw image was built recently (< 10 min), skip the entire build.
 # This avoids duplicate work when concurrent CI jobs build the same image.
-if [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") )) -lt 600 ]]; then
+# --no-cache (e.g. the publish path) forces a fresh build so a stale raw from
+# a prior/concurrent run on a persistent runner is never republished.
+if [[ "$NO_CACHE" == false ]] && [[ -f "$OUTPUT_RAW" ]] && [[ $(( $(date +%s) - $(stat -c %Y "$OUTPUT_RAW") )) -lt 600 ]]; then
     echo "=== Skipping build — $OUTPUT_RAW is fresh (< 10 min old) ==="
 
     # Restore stdout if suppressed, then jump to import

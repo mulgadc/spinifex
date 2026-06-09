@@ -89,7 +89,9 @@ fi
 
 if [[ "$DO_BUILD" == true ]]; then
     echo "=== Building ${IMAGE_NAME} ==="
-    "${SCRIPT_DIR}/build-system-image.sh" "$MANIFEST"
+    # --no-cache: publishing must never reuse a stale raw left by a prior or
+    # concurrent build on a persistent runner.
+    "${SCRIPT_DIR}/build-system-image.sh" "$MANIFEST" --no-cache
 fi
 
 if [[ ! -f "$RAW_IMAGE" ]]; then

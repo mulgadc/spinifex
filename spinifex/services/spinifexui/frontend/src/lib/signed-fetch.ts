@@ -2,14 +2,14 @@ import { Sha256 } from "@aws-crypto/sha256-browser"
 import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
 
-import type { AwsCredentials } from "./auth"
+import type { SessionCredentials } from "./auth"
 
 const AWS_REGION = "ap-southeast-2"
 const GATEWAY_PORT = 9999
 
 interface SignedFetchOptions {
   action: string
-  credentials: AwsCredentials
+  credentials: SessionCredentials
   service?: string
 }
 
@@ -68,6 +68,9 @@ export async function signedFetch<T>({
     credentials: {
       accessKeyId: credentials.accessKeyId,
       secretAccessKey: credentials.secretAccessKey,
+      // SignatureV4 emits the X-Amz-Security-Token header when present; the
+      // gateway's ASIA path verifies it.
+      sessionToken: credentials.sessionToken,
     },
     region: AWS_REGION,
     service,

@@ -1,8 +1,12 @@
 import { z } from "zod"
 
-// Versioned storage key - increment version when schema changes
-const STORAGE_KEY = "spinifex:v1:aws-credentials"
+// Versioned storage key - increment version when schema changes. v2 holds
+// short-lived STS session credentials; abandoned v1 long-lived entries simply
+// force a one-time re-login.
+const STORAGE_KEY = "spinifex:v2:aws-session"
 
+// Long-lived credentials entered on the login form. Used once to exchange for
+// session credentials via STS GetSessionToken and never persisted.
 export const awsCredentialsSchema = z.object({
   accessKeyId: z
     .string()
@@ -10,34 +14,53 @@ export const awsCredentialsSchema = z.object({
   secretAccessKey: z.string().min(1, "Secret Access Key is required"),
 })
 
-export type AwsCredentials = z.infer<typeof awsCredentialsSchema>
+export type AwsCredentialsInput = z.infer<typeof awsCredentialsSchema>
+
+// Short-lived STS session credentials persisted in localStorage.
+export const sessionCredentialsSchema = z.object({
+  accessKeyId: z.string().min(1),
+  secretAccessKey: z.string().min(1),
+  sessionToken: z.string().min(1),
+  expiration: z.string().min(1),
+})
+
+export type SessionCredentials = z.infer<typeof sessionCredentialsSchema>
 
 // In-memory cache to avoid repeated localStorage reads
-let credentialsCache: AwsCredentials | null | undefined
+let credentialsCache: SessionCredentials | null | undefined
 
-export function getCredentials(): AwsCredentials | null {
-  // Return cached value if available
-  if (credentialsCache !== undefined) {
-    return credentialsCache
-  }
+function isExpired(expiration: string): boolean {
+  const expiresAt = Date.parse(expiration)
+  return Number.isNaN(expiresAt) || expiresAt <= Date.now()
+}
 
+function readStoredCredentials(): SessionCredentials | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) {
-      credentialsCache = null
       return null
     }
     const parsed: unknown = JSON.parse(stored)
-    const result = awsCredentialsSchema.safeParse(parsed)
-    credentialsCache = result.success ? result.data : null
-    return credentialsCache
+    const result = sessionCredentialsSchema.safeParse(parsed)
+    return result.success ? result.data : null
   } catch {
-    credentialsCache = null
     return null
   }
 }
 
-export function setCredentials(credentials: AwsCredentials): void {
+export function getCredentials(): SessionCredentials | null {
+  if (credentialsCache === undefined) {
+    credentialsCache = readStoredCredentials()
+  }
+  // Treat expired sessions as logged out so route guards redirect to /login.
+  if (credentialsCache && isExpired(credentialsCache.expiration)) {
+    clearCredentials()
+    return null
+  }
+  return credentialsCache
+}
+
+export function setSessionCredentials(credentials: SessionCredentials): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(credentials))
     credentialsCache = credentials

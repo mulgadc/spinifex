@@ -42,7 +42,12 @@ describe("adminNodesQueryOptions", () => {
   })
 
   it("calls signedFetch with GetNodes action", async () => {
-    const creds = { accessKeyId: "ak", secretAccessKey: "sk" }
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ nodes: [], cluster_mode: "single" })
 
@@ -68,7 +73,12 @@ describe("adminVMsQueryOptions", () => {
   })
 
   it("calls signedFetch with GetVMs action", async () => {
-    const creds = { accessKeyId: "ak", secretAccessKey: "sk" }
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ vms: [] })
 
@@ -97,7 +107,12 @@ describe("adminStorageStatusQueryOptions", () => {
   })
 
   it("calls signedFetch with GetStorageStatus action", async () => {
-    const creds = { accessKeyId: "ak", secretAccessKey: "sk" }
+    const creds = {
+      accessKeyId: "ASIAak",
+      secretAccessKey: "sk",
+      sessionToken: "token",
+      expiration: new Date(Date.now() + 60_000).toISOString(),
+    }
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({})
 

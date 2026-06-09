@@ -69,13 +69,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		MaxSessionDuration:       maxSession,
 		CreatedAt:                time.Now().UTC().Format(time.RFC3339),
 		AttachedPolicies:         []string{},
-		Tags:                     []Tag{},
-	}
-
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			role.Tags = append(role.Tags, Tag{Key: *tag.Key, Value: *tag.Value})
-		}
+		Tags:                     copyTags(input.Tags),
 	}
 
 	data, err := json.Marshal(role)

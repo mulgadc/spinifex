@@ -48,8 +48,9 @@ NIC. Each host runs `ovn-controller` which programs OpenFlow rules on `br-int`
 
 ## Private vs Public Subnets
 
-A subnet's behavior depends on two things: whether the VPC has an Internet
-Gateway, and whether the subnet has `MapPublicIpOnLaunch` enabled.
+A subnet's behavior depends on three things: whether the VPC has an Internet
+Gateway, whether the subnet's route table has a default route to that IGW, and
+whether the subnet has `MapPublicIpOnLaunch` enabled.
 
 ## Private Subnet (Default)
 
@@ -61,9 +62,10 @@ internet or be reached from the WAN.
   <img src="../../../.github/assets/diagrams/vpc-private-subnet-flow.svg" alt="Private subnet — instance hits router, no default route, packet dropped" width="900">
 </p>
 
-If the VPC has an IGW attached, private subnet instances CAN reach the internet
-via the VPC router's SNAT rule (outbound only — they share the gateway IP). They
-still cannot be reached from the WAN because they have no public IP.
+Private subnet instances reach the internet only if their route table has a
+default route to the IGW (shared SNAT, outbound only — they share the gateway
+IP) or to a NAT gateway. With no default route, egress is dropped. Either way
+they cannot be reached from the WAN because they have no public IP.
 
 ## Public Subnet
 
@@ -77,8 +79,18 @@ managed by OVN — the instance OS only sees its private IP.
 **Requirements for a public subnet:**
 
 1. VPC has an Internet Gateway attached
-2. Subnet has `MapPublicIpOnLaunch = true`
-3. External IP pool configured in `spinifex.toml`
+2. A route table associated with the subnet has a `0.0.0.0/0` route to the IGW
+3. Subnet has `MapPublicIpOnLaunch = true`
+4. External IP pool configured in `spinifex.toml`
+
+Spinifex follows AWS route-table semantics: a subnet is only "public" if its
+effective route table carries a default route to the IGW. A new VPC's main
+route table has the local route only — Spinifex does **not** add the IGW route
+for you. Without it, the subnet's egress is gated with a drop policy, so
+instances cannot reach the internet (and inbound connections cannot complete
+because return traffic is dropped) even with a public IP and an attached IGW.
+Add the route explicitly — either to the main route table, or to a custom route
+table associated with the subnet (see [Quick Start](#3-create-vpc-with-public-subnet)).
 
 ## Comparison
 
@@ -86,7 +98,7 @@ managed by OVN — the instance OS only sees its private IP.
 | ------------------------ | --------------------------------- | ------------------------------ |
 | Private IP               | Yes                               | Yes                            |
 | Public IP                | No                                | Auto-assigned from pool        |
-| Outbound internet        | Only if VPC has IGW (shared SNAT) | Yes (own public IP via SNAT)   |
+| Outbound internet        | Only with a default route to IGW/NAT GW | Yes (own public IP via SNAT)   |
 | Inbound from WAN         | No                                | Yes (via 1:1 NAT to public IP) |
 | Instance sees public IP? | N/A                               | No — only sees private IP      |
 | Elastic IP support       | Only if explicitly associated     | Yes                            |
@@ -190,8 +202,7 @@ use `setup-ovn.sh --dhcp` to obtain one from the router. This is the router's
 DHCP — not Spinifex's internal OVN DHCP for VMs.
 
 **Use when:** VMs only need outbound access (apt update, pulling images). Edge
-deployments behind ISP NAT. Single WAN IP available. Future: use with AWS-style
-NAT Gateway for private subnet internet access.
+deployments behind ISP NAT. Single WAN IP available.
 
 ```toml
 [network]
@@ -935,17 +946,39 @@ spx admin init
 VPC=$(aws ec2 create-vpc --cidr-block 10.200.0.0/16 \
   --query Vpc.VpcId --output text)
 
-SUBNET=$(aws ec2 create-subnet --vpc-id $VPC \
-  --cidr-block 10.200.1.0/24 \
-  --query Subnet.SubnetId --output text)
-
 IGW=$(aws ec2 create-internet-gateway \
   --query InternetGateway.InternetGatewayId --output text)
 aws ec2 attach-internet-gateway \
   --internet-gateway-id $IGW --vpc-id $VPC
 
+SUBNET=$(aws ec2 create-subnet --vpc-id $VPC \
+  --cidr-block 10.200.1.0/24 \
+  --query Subnet.SubnetId --output text)
+
+# Route table — give the subnet a default route to the IGW. Spinifex does NOT
+# add this automatically; without it the subnet's egress is dropped.
+RT=$(aws ec2 create-route-table --vpc-id $VPC \
+  --query RouteTable.RouteTableId --output text)
+
+aws ec2 create-route --route-table-id $RT \
+  --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW
+
+aws ec2 associate-route-table --route-table-id $RT --subnet-id $SUBNET
+
+# Auto-assign a public IP to instances launched into the subnet
 aws ec2 modify-subnet-attribute \
   --subnet-id $SUBNET --map-public-ip-on-launch
+
+# Allow SSH + ICMP on the VPC's default security group (blocks inbound by default)
+SG=$(aws ec2 describe-security-groups \
+  --filters Name=vpc-id,Values=$VPC \
+  --query 'SecurityGroups[0].GroupId' --output text)
+
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+aws ec2 authorize-security-group-ingress --group-id $SG \
+  --protocol icmp --port -1 --cidr 0.0.0.0/0
 ```
 
 ## 4. Launch Instance
@@ -1134,6 +1167,37 @@ ip route show
    ```bash
    sudo ovn-nbctl lr-nat-list vpc-$VPC
    ```
+
+### Instance Has Public IP But No Internet
+
+The instance shows a public IP in `describe-instances` but cannot reach the
+internet, and inbound connections hang. The usual cause is a missing default
+route: the subnet's effective route table has no `0.0.0.0/0` route to the IGW,
+so Spinifex gates the subnet with a drop policy.
+
+```bash
+# Find the route table that applies to the subnet and check its routes
+aws ec2 describe-route-tables \
+  --filters Name=association.subnet-id,Values=$SUBNET \
+  --query 'RouteTables[0].Routes'
+# Expect a route with DestinationCidrBlock 0.0.0.0/0 and a GatewayId of igw-...
+```
+
+If the subnet has no explicit association it falls back to the VPC's main route
+table — check that one too, then add the route to whichever table applies:
+
+```bash
+aws ec2 create-route --route-table-id $RT \
+  --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW
+```
+
+On the host, the drop policy installed when a subnet lacks an IGW route appears
+as a `Logical_Router_Policy` on the VPC router:
+
+```bash
+sudo ovn-nbctl lr-policy-list vpc-$VPC
+# A drop policy matching the subnet CIDR means the subnet is gated.
+```
 
 ### Public IP Not Reachable from WAN
 

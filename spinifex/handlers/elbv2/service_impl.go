@@ -3,13 +3,14 @@ package handlers_elbv2
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -87,6 +89,13 @@ func (s *ELBv2ServiceImpl) resolveMgmtRoute(scheme string) (gateway, target stri
 	if scheme == SchemeInternal && s.MgmtBridgeIP != "" && s.AdvertiseIP != "" {
 		return s.MgmtBridgeIP, s.AdvertiseIP
 	}
+	if scheme == SchemeInternal {
+		slog.Warn("resolveMgmtRoute: internal LB has no mgmt return route; lb-agent cannot reach AWSGW and the LB will stay provisioning",
+			"mgmtRouteGateway", s.MgmtRouteGateway,
+			"mgmtRouteTarget", s.MgmtRouteTarget,
+			"mgmtBridgeIP", s.MgmtBridgeIP,
+			"advertiseIP", s.AdvertiseIP)
+	}
 	return "", ""
 }
 
@@ -97,6 +106,7 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 type ELBv2ServiceImpl struct {
 	config                     *config.Config
 	store                      *Store
+	acmStore                   *handlers_acm.Store              // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
 	nc                         *nats.Conn                       // NATS connection for JetStream KV store
 	VPCService                 *handlers_ec2_vpc.VPCServiceImpl // nil-safe: ENI ops skipped when nil (e.g. in tests)
 	InstanceLauncher           SystemInstanceLauncher           // nil-safe: system VM ops skipped when nil
@@ -129,6 +139,16 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 		return nil, fmt.Errorf("failed to create ELBv2 store: %w", err)
 	}
 
+	// ACM store shares the same JetStream KV — read cert PEM directly, no
+	// cross-service NATS hop. Non-fatal: a failure here only disables HTTPS
+	// termination (resolveCertPEM returns an error), it must not block the
+	// daemon from serving ELBv2 control-plane requests.
+	acmStore, acmErr := handlers_acm.NewStore(nc)
+	if acmErr != nil {
+		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
+		acmStore = nil
+	}
+
 	region := "us-east-1"
 	nodeID := ""
 	if cfg != nil {
@@ -142,14 +162,15 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 	hc := newHealthChecker(store)
 
 	return &ELBv2ServiceImpl{
-		config: cfg,
-		store:  store,
-		nc:     nc,
-		nodeID: nodeID,
-		region: region,
-		ctx:    ctx,
-		cancel: cancel,
-		hc:     hc,
+		config:   cfg,
+		store:    store,
+		acmStore: acmStore,
+		nc:       nc,
+		nodeID:   nodeID,
+		region:   region,
+		ctx:      ctx,
+		cancel:   cancel,
+		hc:       hc,
 	}, nil
 }
 
@@ -183,8 +204,6 @@ func (s *ELBv2ServiceImpl) Close() {
 // heartbeat re-converges. Acceptable trade-off — heartbeats arrive within
 // one health-check interval (default 5-30s) and round-robin transiently
 // excluding a backend is safer than serving traffic to a dead one.
-//
-// Refs mulga-siv-119.
 func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -417,6 +436,81 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 	return extras
 }
 
+// lbVMLaunch is the outcome of booting the system VM that backs a load
+// balancer. failed is true when the VM could not be launched (missing system
+// credentials or a launcher error) so the caller can mark the LB failed.
+type lbVMLaunch struct {
+	instanceID string
+	vpcIP      string
+	publicIP   string
+	hostPorts  map[int]int
+	failed     bool
+}
+
+// launchLBVM boots the system VM backing a load balancer with the given ENI
+// set. The first ENI is the primary NIC; any additional ENIs are passed as
+// ExtraENIs so the daemon sets up a tap + QEMU NIC per subnet, giving the LB VM
+// data-plane presence in every subnet it spans. When no launcher is configured
+// the call is a no-op (zero value, failed=false) so launcher-less deployments
+// keep the LB Active. Shared by CreateLoadBalancer and the SetSubnets relaunch.
+func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string) lbVMLaunch {
+	var res lbVMLaunch
+	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
+		return res
+	}
+
+	eniDetails := s.describeENIs(eniIDs, accountID)
+	primary := eniDetails[eniIDs[0]]
+	primaryIP := ""
+	primaryMAC := ""
+	if primary != nil {
+		primaryIP = aws.StringValue(primary.PrivateIpAddress)
+		primaryMAC = aws.StringValue(primary.MacAddress)
+	}
+
+	extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
+
+	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
+		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
+		res.failed = true
+		return res
+	}
+
+	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
+	launchInput := &SystemInstanceInput{
+		InstanceType: s.getSystemInstanceType(),
+		SubnetID:     subnets[0],
+		ENIID:        eniIDs[0],
+		ENIMac:       primaryMAC,
+		ENIIP:        primaryIP,
+		ExtraENIs:    extraENIInputs,
+		Scheme:       scheme,
+		AccountID:    accountID,
+		NICs:         nics,
+		LBAgentEnv:   s.buildLBAgentEnv(lbID),
+		CACert:       s.CACert,
+	}
+	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
+	// In production (VPC networking), traffic reaches the LB VM's VPC IP directly.
+	if s.config != nil && s.config.Daemon.DevNetworking {
+		launchInput.HostfwdPorts = []int{80, 443}
+	}
+
+	out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
+	if launchErr != nil {
+		slog.Error("launchLBVM: failed to launch LB VM", "lbId", lbID, "err", launchErr)
+		res.failed = true
+		return res
+	}
+
+	res.instanceID = out.InstanceID
+	res.vpcIP = out.PrivateIP
+	res.publicIP = out.PublicIP
+	res.hostPorts = out.HostfwdMap
+	slog.Info("launchLBVM: LB VM launched", "lbId", lbID, "instanceId", out.InstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", out.HostfwdMap)
+	return res
+}
+
 // loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
 // first successful call. Errors are not cached: a transient JetStream
 // failure at startup must not condemn every subsequent recovery candidate
@@ -580,15 +674,29 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 		}
 	}
 
-	configContent, err := GenerateHAProxyConfig(lb, listeners, tgByArn, rulesByListener, bindAddr)
+	certPEMByArn, err := s.resolveListenerCerts(listeners, lb.AccountID)
+	if err != nil {
+		slog.Error("updateStoredConfig: failed to resolve certs", "lbId", lb.LoadBalancerID, "err", err)
+		return fmt.Errorf("resolve certs: %w", err)
+	}
+
+	configContent, certFiles, err := GenerateHAProxyConfigWithCerts(lb, listeners, tgByArn, rulesByListener, bindAddr, certPEMByArn)
 	if err != nil {
 		slog.Error("updateStoredConfig: failed to generate config", "lbId", lb.LoadBalancerID, "err", err)
 		return fmt.Errorf("generate config: %w", err)
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configContent)))
+	hash := configCertHash(configContent, certFiles)
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
+	lb.CertFiles = certFiles
+	// NLBs run nginx, which has no active upstream probing — the agent
+	// probes these targets and reports health. ALBs report via HAProxy stats.
+	if lb.Type == LoadBalancerTypeNetwork {
+		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
+	} else {
+		lb.HealthTargets = nil
+	}
 
 	if err := s.store.PutLoadBalancer(lb); err != nil {
 		slog.Error("updateStoredConfig: failed to persist LB", "lbId", lb.LoadBalancerID, "err", err)
@@ -596,8 +704,98 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	}
 
 	slog.Info("updateStoredConfig: config stored",
-		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent))
+		"lbId", lb.LoadBalancerID, "hash", hash[:12], "size", len(configContent), "certs", len(certFiles))
 	return nil
+}
+
+// resolveListenerCerts resolves every distinct certificate ARN referenced by
+// the listeners to its combined PEM via the ACM store. Returns nil when no
+// listener carries a certificate (the common HTTP-only case).
+func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, accountID string) (map[string]string, error) {
+	var out map[string]string
+	for _, l := range listeners {
+		for _, c := range l.Certificates {
+			if _, ok := out[c.CertificateArn]; ok {
+				continue
+			}
+			pem, err := s.resolveCertPEM(c.CertificateArn, accountID)
+			if err != nil {
+				return nil, fmt.Errorf("cert %s: %w", c.CertificateArn, err)
+			}
+			if out == nil {
+				out = make(map[string]string)
+			}
+			out[c.CertificateArn] = pem
+		}
+	}
+	return out, nil
+}
+
+// resolveCertPEM loads a certificate by ARN from the ACM store and returns its
+// combined PEM (leaf + chain + key) in the order HAProxy `ssl crt` expects.
+// Ownership is enforced: a cert belonging to another account is treated as
+// absent.
+func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error) {
+	if s.acmStore == nil {
+		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+	rec, err := s.acmStore.GetCert(arn)
+	if err != nil {
+		return "", fmt.Errorf("get cert: %w", err)
+	}
+	if rec == nil || rec.AccountID != accountID {
+		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(rec.Certificate, "\n"))
+	b.WriteByte('\n')
+	if rec.CertificateChain != "" {
+		b.WriteString(strings.TrimRight(rec.CertificateChain, "\n"))
+		b.WriteByte('\n')
+	}
+	b.WriteString(strings.TrimRight(rec.PrivateKey, "\n"))
+	b.WriteByte('\n')
+	return b.String(), nil
+}
+
+// validateListenerCerts confirms every certificate ARN resolves in the ACM
+// store and is owned by the account, rejecting an unknown ARN at the API
+// boundary (CreateListener/ModifyListener) with ErrorELBv2CertificateNotFound.
+// Without this, an unresolvable ARN is accepted into the listener and only
+// fails later at config-render time, which aborts updateStoredConfig wholesale
+// and silently freezes the LB's data-plane convergence. Skipped when the ACM
+// store is unavailable (cannot validate; matches the nil-safe resolve path).
+func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, accountID string) error {
+	if s.acmStore == nil {
+		return nil
+	}
+	for _, c := range certs {
+		if _, err := s.resolveCertPEM(c.CertificateArn, accountID); err != nil {
+			return errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		}
+	}
+	return nil
+}
+
+// configCertHash hashes the rendered config plus every delivered cert file
+// (path + content, in sorted path order) so a cert rotation changes the hash
+// and triggers an agent reload even when the config text is unchanged.
+func configCertHash(configContent string, certFiles map[string]string) string {
+	h := sha256.New()
+	h.Write([]byte(configContent))
+	paths := make([]string, 0, len(certFiles))
+	for p := range certFiles {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+		h.Write([]byte(certFiles[p]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // updateStoredConfigForTargetGroup finds all LBs that reference the given target
@@ -661,12 +859,19 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	}
 
 	lbID := *input.LBID
+	slog.Debug("LBAgentHeartbeat received", "lbId", lbID, "accountId", accountID)
 	lb, err := s.store.GetLoadBalancer(lbID)
 	if err != nil {
 		slog.Error("LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+		// The heartbeat reached AWSGW (so the mgmt return path works) but
+		// cannot transition any LB. Without this the reject is silent and a
+		// stuck-in-provisioning LB looks identical to one whose heartbeat
+		// never arrived.
+		slog.Warn("LBAgentHeartbeat: LB not found or account mismatch",
+			"lbId", lbID, "accountId", accountID, "found", lb != nil)
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
@@ -719,9 +924,48 @@ func (s *ELBv2ServiceImpl) GetLBConfig(input *GetLBConfigInput, accountID string
 	}
 
 	return &GetLBConfigOutput{
-		ConfigText: aws.String(lb.ConfigText),
-		ConfigHash: aws.String(lb.ConfigHash),
+		ConfigText:    aws.String(lb.ConfigText),
+		ConfigHash:    aws.String(lb.ConfigHash),
+		CertFiles:     certFilesToSDK(lb.CertFiles),
+		Engine:        aws.String(engineForType(lb.Type)),
+		HealthTargets: healthTargetsToSDK(lb.HealthTargets),
 	}, nil
+}
+
+// healthTargetsToSDK converts the stored health-target specs into the SDK
+// HealthTarget slice delivered to the nginx agent.
+func healthTargetsToSDK(specs []HealthTargetSpec) []*HealthTarget {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]*HealthTarget, 0, len(specs))
+	for i := range specs {
+		out = append(out, &HealthTarget{
+			ServerName: aws.String(specs[i].ServerName),
+			Address:    aws.String(specs[i].Address),
+			Protocol:   aws.String(specs[i].Protocol),
+			Path:       aws.String(specs[i].Path),
+		})
+	}
+	return out
+}
+
+// certFilesToSDK converts the stored path→PEM map into the sorted CertFile
+// slice delivered to the agent. Sorted for deterministic output.
+func certFilesToSDK(certFiles map[string]string) []*CertFile {
+	if len(certFiles) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(certFiles))
+	for p := range certFiles {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]*CertFile, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, &CertFile{Path: aws.String(p), PEM: aws.String(certFiles[p])})
+	}
+	return out
 }
 
 // lbArnPathSegment returns the ARN path segment for the given LB type:
@@ -762,6 +1006,28 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(instanceID, accountID string) string 
 	return ""
 }
 
+// resolveRegisteredTargetIP returns the private IP to route to for a target
+// being registered, based on the target group's target type. For ip targets the
+// supplied ID is the IP itself; for instance targets it is resolved via the
+// instance's primary ENI. Returns an error when the ID's shape does not match
+// the target type.
+func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(targetType, id, accountID string) (string, error) {
+	switch targetType {
+	case TargetTypeIP:
+		if net.ParseIP(id) == nil {
+			slog.Warn("RegisterTargets: ip target id is not a valid IP", "id", id)
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return id, nil
+	default: // instance
+		if net.ParseIP(id) != nil {
+			slog.Warn("RegisterTargets: instance target group given an IP address", "id", id)
+			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return s.resolveTargetIP(id, accountID), nil
+	}
+}
+
 // buildTGArn constructs a target group ARN from components.
 func buildTGArn(region, accountID, name, tgID string) string {
 	return fmt.Sprintf("arn:aws:elasticloadbalancing:%s:%s:targetgroup/%s/%s", region, accountID, name, tgID)
@@ -777,13 +1043,15 @@ const (
 	elbv2ResourceLoadBalancer = "loadbalancer"
 	elbv2ResourceTargetGroup  = "targetgroup"
 	elbv2ResourceListener     = "listener"
+	elbv2ResourceListenerRule = "listener-rule"
 )
 
 // elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN.
 // ELBv2 ARNs have the form
 // "arn:aws:elasticloadbalancing:{region}:{account}:{type}/...". Returns one
-// of "loadbalancer", "targetgroup", "listener" — anything else yields
-// ErrorInvalidParameterValue so callers can surface a proper API error.
+// of "loadbalancer", "targetgroup", "listener", "listener-rule" — anything
+// else yields ErrorInvalidParameterValue so callers can surface a proper API
+// error.
 func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	parts := strings.SplitN(arn, ":", 6)
 	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "elasticloadbalancing" {
@@ -796,7 +1064,7 @@ func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	}
 	resourceType := resourceSegment[:slash]
 	switch resourceType {
-	case elbv2ResourceLoadBalancer, elbv2ResourceTargetGroup, elbv2ResourceListener:
+	case elbv2ResourceLoadBalancer, elbv2ResourceTargetGroup, elbv2ResourceListener, elbv2ResourceListenerRule:
 		return resourceType, nil
 	default:
 		return "", errors.New(awserrors.ErrorInvalidParameterValue)
@@ -887,18 +1155,28 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	tags := make(map[string]string)
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			tags[*tag.Key] = *tag.Value
-		}
-	}
+	tags := tagsFromSDK(input.Tags)
 
 	// Create ENIs in each subnet (when VPC service is available)
 	var eniIDs []string
 	var availZones []AvailZoneInfo
 	vpcID := ""
+	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
+		// NLBs reject customer SGs (rejected above), so the ENIs would fall back
+		// to the VPC default SG whose intra-SG-only ingress drops inbound
+		// listener traffic. Mint a dedicated managed SG up front and attach it to
+		// every LB ENI; CreateListener opens the listener ports on it.
+		eniGroups := securityGroups
+		if lbType == LoadBalancerTypeNetwork {
+			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
+			if sgErr != nil {
+				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			nlbManagedSGID = sgID
+			eniGroups = []string{sgID}
+		}
 		for _, subnetID := range subnets {
 			eniIn := &ec2.CreateNetworkInterfaceInput{
 				SubnetId:    aws.String(subnetID),
@@ -914,11 +1192,12 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				},
 			}
 			// SG enforcement gates inbound traffic by the ENI's port-group
-			// membership, which is set at ENI creation. Empty Groups
-			// intentionally falls back to the VPC default SG inside
+			// membership, which is set at ENI creation. For NLBs this is the
+			// managed SG minted above; for ALBs it is the customer SGs. Empty
+			// Groups intentionally falls back to the VPC default SG inside
 			// eni.CreateNetworkInterface.
-			if len(securityGroups) > 0 {
-				eniIn.Groups = aws.StringSlice(securityGroups)
+			if len(eniGroups) > 0 {
+				eniIn.Groups = aws.StringSlice(eniGroups)
 			}
 			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
@@ -930,6 +1209,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 						slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", rollbackENI, "err", delErr)
 					}
 				}
+				s.deleteNLBManagedSG(nlbManagedSGID, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
@@ -955,64 +1235,14 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// The first ENI is the primary NIC; any additional ENIs are passed as
 	// ExtraENIs so the daemon sets up a tap + QEMU NIC for each, giving the
 	// ALB VM data-plane presence in every subnet the LB spans.
-	var albInstanceID string
-	var albVPCIP string
-	var hostPorts map[int]int
-	var launchFailed bool
-	if s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0 {
-		eniDetails := s.describeENIs(eniIDs, accountID)
-
-		primary := eniDetails[eniIDs[0]]
-		primaryIP := ""
-		primaryMAC := ""
-		if primary != nil {
-			primaryIP = aws.StringValue(primary.PrivateIpAddress)
-			primaryMAC = aws.StringValue(primary.MacAddress)
-		}
-
-		extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
-
-		var launchInput *SystemInstanceInput
-		if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
-			slog.Error("CreateLoadBalancer: system credentials not configured — cannot launch ALB VM", "lbId", lbID)
-			launchFailed = true
-		} else {
-			nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
-			launchInput = &SystemInstanceInput{
-				InstanceType: s.getSystemInstanceType(),
-				SubnetID:     subnets[0],
-				ENIID:        eniIDs[0],
-				ENIMac:       primaryMAC,
-				ENIIP:        primaryIP,
-				ExtraENIs:    extraENIInputs,
-				Scheme:       scheme,
-				AccountID:    accountID,
-				NICs:         nics,
-				LBAgentEnv:   s.buildLBAgentEnv(lbID),
-				CACert:       s.CACert,
-			}
-		}
-		if !launchFailed && launchInput != nil {
-			// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
-			// In production (VPC networking), traffic reaches the ALB VM's VPC IP directly.
-			if s.config != nil && s.config.Daemon.DevNetworking {
-				launchInput.HostfwdPorts = []int{80, 443}
-			}
-			out, launchErr := s.InstanceLauncher.LaunchSystemInstance(launchInput)
-			if launchErr != nil {
-				slog.Error("CreateLoadBalancer: failed to launch ALB VM", "lbId", lbID, "err", launchErr)
-				launchFailed = true
-			} else {
-				albInstanceID = out.InstanceID
-				albVPCIP = out.PrivateIP
-				hostPorts = out.HostfwdMap
-				// Record public IP on the first AZ entry for internet-facing ALBs.
-				if out.PublicIP != "" && len(availZones) > 0 {
-					availZones[0].PublicIP = out.PublicIP
-				}
-				slog.Info("CreateLoadBalancer: ALB VM launched", "lbId", lbID, "instanceId", albInstanceID, "ip", out.PrivateIP, "publicIp", out.PublicIP, "hostfwd", hostPorts)
-			}
-		}
+	launch := s.launchLBVM(lbID, scheme, eniIDs, subnets, accountID)
+	albInstanceID := launch.instanceID
+	albVPCIP := launch.vpcIP
+	hostPorts := launch.hostPorts
+	launchFailed := launch.failed
+	// Record public IP on the first AZ entry for internet-facing LBs.
+	if launch.publicIP != "" && len(availZones) > 0 {
+		availZones[0].PublicIP = launch.publicIP
 	}
 
 	// ALB starts in provisioning until the agent inside the VM connects and
@@ -1021,6 +1251,19 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	state := StateActive
 	if albInstanceID != "" {
 		state = StateProvisioning
+		// Internal LBs only leave provisioning once the lb-agent heartbeats,
+		// which needs the mgmt return route. If it can't be resolved the LB
+		// hangs in provisioning forever — fail loud instead so the broken
+		// return path is visible immediately rather than as a generic timeout.
+		if scheme == SchemeInternal {
+			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
+				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
+					"lbId", lbID,
+					"mgmtBridgeIP", s.MgmtBridgeIP,
+					"advertiseIP", s.AdvertiseIP)
+				state = StateFailed
+			}
+		}
 	} else if launchFailed {
 		state = StateFailed
 	}
@@ -1038,6 +1281,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		State:           state,
 		VpcId:           vpcID,
 		SecurityGroups:  securityGroups,
+		NLBManagedSGID:  nlbManagedSGID,
 		Subnets:         subnets,
 		AvailZones:      availZones,
 		ENIs:            eniIDs,
@@ -1076,7 +1320,27 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) load balancer, so tofu destroy retries converge.
+		return &elbv2.DeleteLoadBalancerOutput{}, nil
+	}
+
+	// Delete all listeners (and their rules) for this LB before tearing down
+	// backing artifacts. Cascade through the shared helper, not
+	// store.DeleteListener directly, so rules don't survive and pin their
+	// target groups as ResourceInUse after the LB is gone. A list or cascade
+	// failure aborts the delete with the record intact, so tofu retries
+	// converge instead of leaving orphaned rules behind.
+	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
+	if err != nil {
+		slog.Error("DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	for _, l := range listeners {
+		if err := s.deleteListenerCascade(l); err != nil {
+			slog.Error("DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	// Terminate ALB VM in background (VM termination also cleans up tap device).
@@ -1091,17 +1355,6 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		}()
 	}
 
-	// Delete all listeners for this LB
-	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
-	if err != nil {
-		slog.Warn("Failed to list listeners for cleanup", "lbArn", lb.LoadBalancerArn, "err", err)
-	}
-	for _, l := range listeners {
-		if err := s.store.DeleteListener(l.ListenerID); err != nil {
-			slog.Warn("Failed to delete listener during LB cleanup", "listenerID", l.ListenerID, "err", err)
-		}
-	}
-
 	// Delete system-managed ENIs. Detach first to clear in-use status.
 	if s.VPCService != nil {
 		for _, eniID := range lb.ENIs {
@@ -1114,6 +1367,8 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 				slog.Warn("Failed to delete ALB ENI during cleanup", "eniId", eniID, "err", eniErr)
 			}
 		}
+		// The managed NLB SG can only be removed once its ENIs are gone.
+		s.deleteNLBManagedSG(lb.NLBManagedSGID, accountID)
 	}
 
 	if err := s.store.DeleteLoadBalancer(lb.LoadBalancerID); err != nil {
@@ -1208,9 +1463,13 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 		return nil, errors.New(awserrors.ErrorELBv2DuplicateTargetGroup)
 	}
 
-	targetType := "instance"
+	targetType := TargetTypeInstance
 	if input.TargetType != nil && *input.TargetType != "" {
 		targetType = *input.TargetType
+	}
+	if targetType != TargetTypeInstance && targetType != TargetTypeIP {
+		slog.Warn("CreateTargetGroup: unsupported target type", "targetType", targetType)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	// Use NLB health check defaults for NLB protocols.
@@ -1258,12 +1517,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(input *elbv2.CreateTargetGroupInput
 	tgID := utils.GenerateResourceID("tg")
 	tgArn := buildTGArn(s.region, accountID, name, tgID)
 
-	tags := make(map[string]string)
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			tags[*tag.Key] = *tag.Value
-		}
-	}
+	tags := tagsFromSDK(input.Tags)
 
 	record := &TargetGroupRecord{
 		TargetGroupArn: tgArn,
@@ -1364,16 +1618,37 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) target group, so tofu destroy retries converge.
+		return &elbv2.DeleteTargetGroupOutput{}, nil
 	}
 
-	// Check if any listener references this target group
+	// Only a *live* listener or rule pins the target group. A listener (or
+	// rule) whose owning load balancer no longer exists is treated as already
+	// torn down, not a live reference, so an orphan left by a partial teardown
+	// can never pin this target group as ResourceInUse permanently.
+	lbs, err := s.store.ListLoadBalancers()
+	if err != nil {
+		slog.Error("DeleteTargetGroup: failed to list load balancers for in-use check", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	liveLB := make(map[string]bool, len(lbs))
+	for _, lb := range lbs {
+		liveLB[lb.LoadBalancerArn] = true
+	}
+
+	// Check if any live listener references this target group.
 	listeners, err := s.store.ListListeners()
 	if err != nil {
 		slog.Error("DeleteTargetGroup: failed to list listeners for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	liveListener := make(map[string]bool, len(listeners))
 	for _, l := range listeners {
+		if !liveLB[l.LoadBalancerArn] {
+			continue
+		}
+		liveListener[l.ListenerArn] = true
 		for _, action := range l.DefaultActions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
@@ -1381,13 +1656,16 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		}
 	}
 
-	// Block deletion when a rule still forwards to the target group.
+	// Block deletion when a live rule still forwards to the target group.
 	allRules, err := s.store.ListRules()
 	if err != nil {
 		slog.Error("DeleteTargetGroup: failed to list rules for in-use check", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, r := range allRules {
+		if !liveListener[r.ListenerArn] {
+			continue
+		}
 		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
 				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
@@ -1496,8 +1774,11 @@ func (s *ELBv2ServiceImpl) RegisterTargets(input *elbv2.RegisterTargetsInput, ac
 			continue // Already registered
 		}
 
-		// Resolve instance ID → private IP via ENI lookup
-		privateIP := s.resolveTargetIP(*td.Id, accountID)
+		// Resolve target ID → private IP (instance ENI lookup, or raw IP for ip-type TGs)
+		privateIP, err := s.resolveRegisteredTargetIP(tg.TargetType, *td.Id, accountID)
+		if err != nil {
+			return nil, err
+		}
 
 		tg.Targets = append(tg.Targets, Target{
 			Id:          *td.Id,
@@ -1626,6 +1907,145 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 
 // --- Listener operations ---
 
+// listenerActionFromSDK converts an SDK listener action into the stored form,
+// preserving fixed-response config so HAProxy generation and tofu read-back see
+// the full action (a forward-only conversion drops the fixed-response default
+// and produces a dangling backend + perpetual plan diff).
+func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
+	action := ListenerAction{}
+	if a.Type != nil {
+		action.Type = *a.Type
+	}
+	if a.TargetGroupArn != nil {
+		action.TargetGroupArn = *a.TargetGroupArn
+	}
+	if a.FixedResponseConfig != nil {
+		fr := &FixedResponseAction{}
+		if a.FixedResponseConfig.StatusCode != nil {
+			fr.StatusCode = *a.FixedResponseConfig.StatusCode
+		}
+		if a.FixedResponseConfig.ContentType != nil {
+			fr.ContentType = *a.FixedResponseConfig.ContentType
+		}
+		if a.FixedResponseConfig.MessageBody != nil {
+			fr.MessageBody = *a.FixedResponseConfig.MessageBody
+		}
+		action.FixedResponse = fr
+	}
+	if a.RedirectConfig != nil {
+		rd := &RedirectAction{}
+		if a.RedirectConfig.Protocol != nil {
+			rd.Protocol = *a.RedirectConfig.Protocol
+		}
+		if a.RedirectConfig.Host != nil {
+			rd.Host = *a.RedirectConfig.Host
+		}
+		if a.RedirectConfig.Port != nil {
+			rd.Port = *a.RedirectConfig.Port
+		}
+		if a.RedirectConfig.Path != nil {
+			rd.Path = *a.RedirectConfig.Path
+		}
+		if a.RedirectConfig.Query != nil {
+			rd.Query = *a.RedirectConfig.Query
+		}
+		if a.RedirectConfig.StatusCode != nil {
+			rd.StatusCode = *a.RedirectConfig.StatusCode
+		}
+		action.Redirect = rd
+	}
+	return action
+}
+
+// validateListenerAction enforces the per-type action contract for listener
+// default actions and rule actions. Forward actions are validated against the
+// target group elsewhere; this covers redirect (status code + render-safe
+// fields) so invalid input fails at the API instead of being silently
+// defaulted by the renderer.
+func validateListenerAction(a ListenerAction) error {
+	if a.Type == ActionTypeRedirect {
+		if a.Redirect == nil {
+			return errors.New(awserrors.ErrorMissingParameter)
+		}
+		return validateRedirectAction(a.Redirect)
+	}
+	return nil
+}
+
+// validateRedirectAction rejects an unsupported status code or any field that
+// would break the HAProxy redirect directive once the known AWS placeholders
+// are stripped.
+func validateRedirectAction(rd *RedirectAction) error {
+	if rd == nil {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	switch rd.StatusCode {
+	case "HTTP_301", "HTTP_302":
+	default:
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	for _, f := range []string{rd.Protocol, rd.Host, rd.Port, rd.Path, rd.Query} {
+		if !validRedirectField(f) {
+			return errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+	return nil
+}
+
+// buildListenerCertificates validates and normalises the certificate set and
+// SSL policy for a listener of the given protocol. Secure protocols (HTTPS,
+// TLS) require at least one certificate and receive a default SslPolicy when
+// unset; non-secure protocols must carry neither certificates nor an SslPolicy.
+// Exactly one certificate is marked default.
+func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPolicy *string) ([]ListenerCertificate, string, error) {
+	policy := ""
+	if sslPolicy != nil {
+		policy = *sslPolicy
+	}
+
+	if !protocolRequiresCert(protocol) {
+		if len(in) > 0 || policy != "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return nil, "", nil
+	}
+
+	if len(in) == 0 {
+		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+	}
+
+	certs := make([]ListenerCertificate, 0, len(in))
+	defaults := 0
+	for _, c := range in {
+		if c == nil || c.CertificateArn == nil || *c.CertificateArn == "" {
+			return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		isDefault := c.IsDefault != nil && *c.IsDefault
+		if isDefault {
+			defaults++
+		}
+		certs = append(certs, ListenerCertificate{
+			CertificateArn: *c.CertificateArn,
+			IsDefault:      isDefault,
+		})
+	}
+	switch defaults {
+	case 0:
+		certs[0].IsDefault = true
+	case 1:
+	default:
+		return nil, "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	if policy == "" {
+		policy = DefaultSslPolicy
+	} else if !isKnownSslPolicy(policy) {
+		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+	}
+
+	return certs, policy, nil
+}
+
 func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, accountID string) (*elbv2.CreateListenerOutput, error) {
 	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1700,20 +2120,27 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		}
 	}
 
+	certs, sslPolicy, err := buildListenerCertificates(protocol, input.Certificates, input.SslPolicy)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateListenerCerts(certs, accountID); err != nil {
+		return nil, err
+	}
+
 	listenerID := utils.GenerateResourceID("lst")
 	listenerArn := buildListenerArn(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
 	var actions []ListenerAction
 	for _, a := range input.DefaultActions {
-		action := ListenerAction{}
-		if a.Type != nil {
-			action.Type = *a.Type
-		}
-		if a.TargetGroupArn != nil {
-			action.TargetGroupArn = *a.TargetGroupArn
+		action := listenerActionFromSDK(a)
+		if err := validateListenerAction(action); err != nil {
+			return nil, err
 		}
 		actions = append(actions, action)
 	}
+
+	tags := tagsFromSDK(input.Tags)
 
 	record := &ListenerRecord{
 		ListenerArn:     listenerArn,
@@ -1724,11 +2151,29 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 		DefaultActions:  actions,
 		AccountID:       accountID,
 		CreatedAt:       time.Now().UTC(),
+		Certificates:    certs,
+		SslPolicy:       sslPolicy,
+		Tags:            tags,
 	}
 
 	if err := s.store.PutListener(record); err != nil {
 		slog.Error("CreateListener: failed to persist record", "listenerId", listenerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Open the listener port on the NLB's managed front-end SG so inbound
+	// traffic from the configured client CIDRs is admitted by the OVN ACL
+	// (NLB ENIs would otherwise sit in the intra-SG-only default SG).
+	if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+		cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb)
+		if cidrErr != nil {
+			slog.Error("CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if authErr := s.authorizeNLBListenerPort(lb, protocol, port, cidrs, accountID); authErr != nil {
+			slog.Error("CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	// Start or reload HAProxy now that a listener exists
@@ -1744,6 +2189,25 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	}, nil
 }
 
+// deleteListenerCascade removes a listener and all of its rules. Shared by
+// DeleteListener and DeleteLoadBalancer so LB teardown never bypasses the rule
+// cascade and leaves orphan rules that pin a target group as ResourceInUse.
+func (s *ELBv2ServiceImpl) deleteListenerCascade(listener *ListenerRecord) error {
+	rules, err := s.store.ListRulesByListener(listener.ListenerArn)
+	if err != nil {
+		return fmt.Errorf("list rules for listener %s: %w", listener.ListenerArn, err)
+	}
+	for _, r := range rules {
+		if err := s.store.DeleteRule(r.RuleID); err != nil {
+			return fmt.Errorf("delete rule %s: %w", r.RuleID, err)
+		}
+	}
+	if err := s.store.DeleteListener(listener.ListenerID); err != nil {
+		return fmt.Errorf("delete listener %s: %w", listener.ListenerID, err)
+	}
+	return nil
+}
+
 func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, accountID string) (*elbv2.DeleteListenerOutput, error) {
 	if input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1755,30 +2219,30 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
+		// Idempotent: AWS ELBv2 delete returns success on an absent (or
+		// not-owned) listener, so tofu destroy retries converge.
+		return &elbv2.DeleteListenerOutput{}, nil
 	}
 
 	// Cascade-delete rules so a recreated listener doesn't inherit orphans.
-	rules, ruleErr := s.store.ListRulesByListener(listener.ListenerArn)
-	if ruleErr != nil {
-		slog.Error("DeleteListener: failed to list rules", "listenerArn", listener.ListenerArn, "err", ruleErr)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	for _, r := range rules {
-		if err := s.store.DeleteRule(r.RuleID); err != nil {
-			slog.Error("DeleteListener: failed to delete rule", "ruleId", r.RuleID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	if err := s.store.DeleteListener(listener.ListenerID); err != nil {
-		slog.Error("DeleteListener: failed to delete record", "listenerId", listener.ListenerID, "err", err)
+	if err := s.deleteListenerCascade(listener); err != nil {
+		slog.Error("DeleteListener: failed to cascade-delete listener", "listenerArn", listener.ListenerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Reload or stop HAProxy after listener removal
 	lb, lbErr := s.store.GetLoadBalancerByArn(listener.LoadBalancerArn)
 	if lbErr == nil && lb != nil {
+		// Close the listener port on the NLB's managed front-end SG.
+		if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
+			if cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb); cidrErr == nil {
+				if revokeErr := s.revokeNLBListenerPort(lb, listener.Protocol, listener.Port, cidrs, accountID); revokeErr != nil {
+					slog.Warn("DeleteListener: revoke listener port failed", "lbArn", lb.LoadBalancerArn, "port", listener.Port, "err", revokeErr)
+				}
+			} else {
+				slog.Warn("DeleteListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			}
+		}
 		if err := s.updateStoredConfig(lb); err != nil {
 			slog.Error("DeleteListener: failed to update config", "listenerArn", *input.ListenerArn, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1857,12 +2321,9 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 	if len(input.DefaultActions) > 0 {
 		var actions []ListenerAction
 		for _, a := range input.DefaultActions {
-			action := ListenerAction{}
-			if a.Type != nil {
-				action.Type = *a.Type
-			}
-			if a.TargetGroupArn != nil {
-				action.TargetGroupArn = *a.TargetGroupArn
+			action := listenerActionFromSDK(a)
+			if err := validateListenerAction(action); err != nil {
+				return nil, err
 			}
 			if action.Type == ActionTypeForward && action.TargetGroupArn != "" {
 				tg, tgErr := s.store.GetTargetGroupByArn(action.TargetGroupArn)
@@ -1897,6 +2358,40 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 			}
 		}
+	}
+
+	// Certificates / SSL policy. The effective protocol after any change drives
+	// the requirement: switching to a non-secure protocol clears cert material;
+	// staying on or switching to a secure protocol validates and defaults it.
+	if !protocolRequiresCert(updated.Protocol) {
+		if len(input.Certificates) > 0 || (input.SslPolicy != nil && *input.SslPolicy != "") {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		updated.Certificates = nil
+		updated.SslPolicy = ""
+	} else {
+		inCerts := input.Certificates
+		if inCerts == nil {
+			for _, c := range updated.Certificates {
+				inCerts = append(inCerts, &elbv2.Certificate{
+					CertificateArn: aws.String(c.CertificateArn),
+					IsDefault:      aws.Bool(c.IsDefault),
+				})
+			}
+		}
+		sslPolicy := input.SslPolicy
+		if sslPolicy == nil && updated.SslPolicy != "" {
+			sslPolicy = aws.String(updated.SslPolicy)
+		}
+		certs, policy, certErr := buildListenerCertificates(updated.Protocol, inCerts, sslPolicy)
+		if certErr != nil {
+			return nil, certErr
+		}
+		if certErr := s.validateListenerCerts(certs, accountID); certErr != nil {
+			return nil, certErr
+		}
+		updated.Certificates = certs
+		updated.SslPolicy = policy
 	}
 
 	if err := s.store.PutListener(&updated); err != nil {
@@ -1957,11 +2452,11 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 // --- Tag operations ---
 
 // DescribeTags returns tags for one or more ELBv2 resources (load balancers,
-// target groups, listeners). Tag data is read from the existing record stores
-// — Spinifex doesn't have a separate tag KV. Listeners currently never store
-// tags, so they always return an empty Tags slice (matches AWS behaviour for
-// untagged resources). Cross-account or unknown ARNs return the per-resource
-// not-found error so existence isn't leaked across accounts.
+// target groups, listeners, listener rules). Tag data is read from the existing
+// record stores — Spinifex doesn't have a separate tag KV. Untagged resources
+// return an empty Tags slice (matches AWS behaviour). Cross-account or unknown
+// ARNs return the per-resource not-found error so existence isn't leaked across
+// accounts.
 func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2019,8 +2514,20 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 			}
 			if l != nil {
 				found = true
+				tags = l.Tags
 				ownerAccount = l.AccountID
-				// Listeners don't store tags yet — leave map nil.
+			}
+		case elbv2ResourceListenerRule:
+			notFoundError = awserrors.ErrorELBv2RuleNotFound
+			r, rErr := s.store.GetRuleByArn(arn)
+			if rErr != nil {
+				slog.Error("DescribeTags: failed to get rule", "arn", arn, "err", rErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if r != nil {
+				found = true
+				tags = r.Tags
+				ownerAccount = r.AccountID
 			}
 		}
 
@@ -2037,6 +2544,18 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 	return &elbv2.DescribeTagsOutput{
 		TagDescriptions: descriptions,
 	}, nil
+}
+
+// tagsFromSDK converts an SDK Tag slice into a tag map, skipping entries with a
+// nil key or value. Returns a non-nil (possibly empty) map for storage.
+func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
+	m := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		if tag.Key != nil && tag.Value != nil {
+			m[*tag.Key] = *tag.Value
+		}
+	}
+	return m
 }
 
 // tagsMapToSDK converts a tag map into the SDK Tag slice with deterministic
@@ -2056,210 +2575,6 @@ func tagsMapToSDK(tags map[string]string) []*elbv2.Tag {
 		out = append(out, &elbv2.Tag{Key: aws.String(k), Value: aws.String(tags[k])})
 	}
 	return out
-}
-
-// --- SDK type conversion helpers ---
-
-func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(input *elbv2.ModifyTargetGroupAttributesInput, accountID string) (*elbv2.ModifyTargetGroupAttributesOutput, error) {
-	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
-	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
-	if err != nil {
-		slog.Error("ModifyTargetGroupAttributes: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if tg == nil || tg.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
-	}
-
-	knownTGAttrs := DefaultTargetGroupAttributes()
-	var submitted []*elbv2.TargetGroupAttribute
-	dirty := false
-	for _, attr := range input.Attributes {
-		if attr == nil {
-			slog.Warn("ModifyTargetGroupAttributes: skipping nil attribute element", "arn", *input.TargetGroupArn)
-			continue
-		}
-		if attr.Key == nil || attr.Value == nil {
-			slog.Warn("ModifyTargetGroupAttributes: skipping attribute with nil Key or Value", "arn", *input.TargetGroupArn)
-			continue
-		}
-		if _, ok := knownTGAttrs[*attr.Key]; !ok {
-			slog.Warn("ModifyTargetGroupAttributes: rejecting unknown attribute key", "arn", *input.TargetGroupArn, "key", *attr.Key)
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
-		submitted = append(submitted, &elbv2.TargetGroupAttribute{
-			Key:   attr.Key,
-			Value: attr.Value,
-		})
-		existing, exists := tg.Attributes[*attr.Key]
-		if exists && existing == *attr.Value {
-			continue // value already matches stored — no mutation needed
-		}
-		if tg.Attributes == nil {
-			tg.Attributes = make(map[string]string)
-		}
-		tg.Attributes[*attr.Key] = *attr.Value
-		dirty = true
-	}
-
-	// If the caller sent attributes but every single one was rejected by the
-	// nil guard above, surface that as an error instead of silently returning
-	// a successful empty response — otherwise the caller thinks the write
-	// landed when nothing was actually applied.
-	if len(input.Attributes) > 0 && len(submitted) == 0 {
-		slog.Warn("ModifyTargetGroupAttributes: all submitted attributes were invalid", "arn", *input.TargetGroupArn, "submitted_count", len(input.Attributes))
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	// Skip the NATS/KV write when nothing changed. Terraform re-applies the same
-	// attribute set on every drift check, so this kills ~all Modify traffic
-	// during steady state and narrows the read-modify-write race window.
-	if dirty {
-		if err := s.store.PutTargetGroup(tg); err != nil {
-			slog.Error("ModifyTargetGroupAttributes: failed to persist TG", "arn", *input.TargetGroupArn, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	return &elbv2.ModifyTargetGroupAttributesOutput{
-		Attributes: submitted,
-	}, nil
-}
-
-func (s *ELBv2ServiceImpl) DescribeTargetGroupAttributes(input *elbv2.DescribeTargetGroupAttributesInput, accountID string) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
-	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
-	tg, err := s.store.GetTargetGroupByArn(*input.TargetGroupArn)
-	if err != nil {
-		slog.Error("DescribeTargetGroupAttributes: failed to get TG", "arn", *input.TargetGroupArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if tg == nil || tg.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2TargetGroupNotFound)
-	}
-
-	merged := DefaultTargetGroupAttributes()
-	maps.Copy(merged, tg.Attributes)
-
-	// Sort keys for deterministic output — Terraform diffs and snapshot tests
-	// depend on stable attribute ordering.
-	keys := slices.Sorted(maps.Keys(merged))
-	attrs := make([]*elbv2.TargetGroupAttribute, 0, len(keys))
-	for _, k := range keys {
-		attrs = append(attrs, &elbv2.TargetGroupAttribute{
-			Key:   aws.String(k),
-			Value: aws.String(merged[k]),
-		})
-	}
-
-	return &elbv2.DescribeTargetGroupAttributesOutput{
-		Attributes: attrs,
-	}, nil
-}
-
-func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(input *elbv2.ModifyLoadBalancerAttributesInput, accountID string) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
-	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
-	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
-	if err != nil {
-		slog.Error("ModifyLoadBalancerAttributes: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if lb == nil || lb.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
-	}
-
-	knownLBAttrs := DefaultLoadBalancerAttributes(lb.Type)
-	var submitted []*elbv2.LoadBalancerAttribute
-	dirty := false
-	for _, attr := range input.Attributes {
-		if attr == nil {
-			slog.Warn("ModifyLoadBalancerAttributes: skipping nil attribute element", "arn", *input.LoadBalancerArn)
-			continue
-		}
-		if attr.Key == nil || attr.Value == nil {
-			slog.Warn("ModifyLoadBalancerAttributes: skipping attribute with nil Key or Value", "arn", *input.LoadBalancerArn)
-			continue
-		}
-		if _, ok := knownLBAttrs[*attr.Key]; !ok {
-			slog.Warn("ModifyLoadBalancerAttributes: rejecting unknown attribute key", "arn", *input.LoadBalancerArn, "key", *attr.Key, "lbType", lb.Type)
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
-		submitted = append(submitted, &elbv2.LoadBalancerAttribute{
-			Key:   attr.Key,
-			Value: attr.Value,
-		})
-		existing, exists := lb.Attributes[*attr.Key]
-		if exists && existing == *attr.Value {
-			continue
-		}
-		if lb.Attributes == nil {
-			lb.Attributes = make(map[string]string)
-		}
-		lb.Attributes[*attr.Key] = *attr.Value
-		dirty = true
-	}
-
-	// If the caller sent attributes but every single one was rejected by the
-	// nil guard above, surface that as an error instead of silently returning
-	// a successful empty response.
-	if len(input.Attributes) > 0 && len(submitted) == 0 {
-		slog.Warn("ModifyLoadBalancerAttributes: all submitted attributes were invalid", "arn", *input.LoadBalancerArn, "submitted_count", len(input.Attributes))
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	// Skip the NATS/KV write when nothing changed. See
-	// ModifyTargetGroupAttributes for the Terraform-drift-check motivation.
-	if dirty {
-		if err := s.store.PutLoadBalancer(lb); err != nil {
-			slog.Error("ModifyLoadBalancerAttributes: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-	}
-
-	return &elbv2.ModifyLoadBalancerAttributesOutput{
-		Attributes: submitted,
-	}, nil
-}
-
-func (s *ELBv2ServiceImpl) DescribeLoadBalancerAttributes(input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {
-	if input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
-	}
-
-	lb, err := s.store.GetLoadBalancerByArn(*input.LoadBalancerArn)
-	if err != nil {
-		slog.Error("DescribeLoadBalancerAttributes: failed to get LB", "arn", *input.LoadBalancerArn, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if lb == nil || lb.AccountID != accountID {
-		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
-	}
-
-	merged := DefaultLoadBalancerAttributes(lb.Type)
-	maps.Copy(merged, lb.Attributes)
-
-	// Sort keys for deterministic output — Terraform diffs and snapshot tests
-	// depend on stable attribute ordering.
-	keys := slices.Sorted(maps.Keys(merged))
-	attrs := make([]*elbv2.LoadBalancerAttribute, 0, len(keys))
-	for _, k := range keys {
-		attrs = append(attrs, &elbv2.LoadBalancerAttribute{
-			Key:   aws.String(k),
-			Value: aws.String(merged[k]),
-		})
-	}
-
-	return &elbv2.DescribeLoadBalancerAttributesOutput{
-		Attributes: attrs,
-	}, nil
 }
 
 func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalancer {
@@ -2357,12 +2672,59 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 	}
 
 	for _, a := range r.DefaultActions {
-		action := &elbv2.Action{
-			Type:           aws.String(a.Type),
-			TargetGroupArn: aws.String(a.TargetGroupArn),
-		}
-		listener.DefaultActions = append(listener.DefaultActions, action)
+		listener.DefaultActions = append(listener.DefaultActions, listenerActionToSDK(a))
+	}
+
+	if len(r.Certificates) > 0 {
+		listener.Certificates = listenerCertsToSDK(r.Certificates)
+	}
+	if r.SslPolicy != "" {
+		listener.SslPolicy = aws.String(r.SslPolicy)
 	}
 
 	return listener
+}
+
+// listenerActionToSDK converts a stored action into the AWS SDK shape,
+// preserving forward / fixed-response / redirect detail so DescribeListeners
+// and DescribeRules round-trip cleanly. Shared by listeners and rules.
+func listenerActionToSDK(a ListenerAction) *elbv2.Action {
+	action := &elbv2.Action{Type: aws.String(a.Type)}
+	if a.TargetGroupArn != "" {
+		action.TargetGroupArn = aws.String(a.TargetGroupArn)
+	}
+	if a.FixedResponse != nil {
+		fr := &elbv2.FixedResponseActionConfig{
+			StatusCode: aws.String(a.FixedResponse.StatusCode),
+		}
+		if a.FixedResponse.ContentType != "" {
+			fr.ContentType = aws.String(a.FixedResponse.ContentType)
+		}
+		if a.FixedResponse.MessageBody != "" {
+			fr.MessageBody = aws.String(a.FixedResponse.MessageBody)
+		}
+		action.FixedResponseConfig = fr
+	}
+	if a.Redirect != nil {
+		rd := &elbv2.RedirectActionConfig{
+			StatusCode: aws.String(a.Redirect.StatusCode),
+		}
+		if a.Redirect.Protocol != "" {
+			rd.Protocol = aws.String(a.Redirect.Protocol)
+		}
+		if a.Redirect.Host != "" {
+			rd.Host = aws.String(a.Redirect.Host)
+		}
+		if a.Redirect.Port != "" {
+			rd.Port = aws.String(a.Redirect.Port)
+		}
+		if a.Redirect.Path != "" {
+			rd.Path = aws.String(a.Redirect.Path)
+		}
+		if a.Redirect.Query != "" {
+			rd.Query = aws.String(a.Redirect.Query)
+		}
+		action.RedirectConfig = rd
+	}
+	return action
 }

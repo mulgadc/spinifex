@@ -15,22 +15,21 @@ import (
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
 	for vpcID, spec := range intent.VPCs {
 		routerName := topology.VPCRouter(vpcID)
-		if _, ok := actual.Routers[routerName]; ok {
-			continue
+		if _, ok := actual.Routers[routerName]; !ok {
+			lr := &nbdb.LogicalRouter{
+				Name: routerName,
+				ExternalIDs: map[string]string{
+					"spinifex:vpc_id": vpcID,
+					"spinifex:cidr":   spec.CIDR.String(),
+				},
+			}
+			if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
+				slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
+				continue
+			}
+			actual.Routers[routerName] = struct{}{}
+			slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 		}
-		lr := &nbdb.LogicalRouter{
-			Name: routerName,
-			ExternalIDs: map[string]string{
-				"spinifex:vpc_id": vpcID,
-				"spinifex:cidr":   spec.CIDR.String(),
-			},
-		}
-		if _, err := r.ovn.EnsureLogicalRouter(ctx, lr); err != nil {
-			slog.Error("reconcile/apply: ensure VPC router failed", "vpc_id", vpcID, "err", err)
-			continue
-		}
-		actual.Routers[routerName] = struct{}{}
-		slog.Info("reconcile/apply: ensured VPC router", "vpc_id", vpcID, "router", routerName)
 	}
 }
 
@@ -88,7 +87,9 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 				Name:      switchRouterPortName,
 				Type:      "router",
 				Addresses: []string{"router"},
-				Options:   map[string]string{"router-port": routerPortName},
+				Options: map[string]string{
+					"router-port": routerPortName,
+				},
 				ExternalIDs: map[string]string{
 					"spinifex:subnet_id": subnetID,
 					"spinifex:vpc_id":    spec.VPCID,
@@ -97,6 +98,14 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			if err := r.ovn.CreateLogicalSwitchPort(ctx, switchName, lsp); err != nil {
 				slog.Error("reconcile/apply: create subnet router-LSP failed", "subnet_id", subnetID, "err", err)
 				continue
+			}
+		}
+
+		// The IMDS localport rides on the subnet switch (idempotent via the
+		// subnet-veth bucket gate); the switch must exist first.
+		if r.imds != nil {
+			if _, err := r.imds.EnsureForSubnet(ctx, subnetID, spec.VPCID, spec.CIDR); err != nil {
+				slog.Error("reconcile/apply: IMDS EnsureForSubnet failed", "subnet_id", subnetID, "err", err)
 			}
 		}
 

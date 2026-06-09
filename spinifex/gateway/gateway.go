@@ -75,6 +75,8 @@ var supportedServices = map[string]bool{
 	"account":              true,
 	"elasticloadbalancing": true,
 	"eks":                  true,
+	"acm":                  true,
+	"tagging":              true,
 	"spinifex":             true,
 }
 
@@ -134,19 +136,37 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 		r.Use(slogRequestLogger)
 	}
 
-	// AWS SigV4 authentication middleware
-	r.Use(gw.SigV4AuthMiddleware())
+	// Anonymous STS bootstrap (AssumeRoleWithWebIdentity) is dispatched here,
+	// ahead of the SigV4 surface — these calls hold no AWS credentials, only a
+	// web-identity JWT in the body. Signed requests pass straight through.
+	r.Use(gw.anonymousSTSInterceptor)
 
-	// API request throttling (post-auth, per-account+action token bucket)
-	if gw.Throttler != nil {
-		r.Use(gw.Throttler.Middleware(
-			gw.throttleKeyFuncs(),
-			gw.writeThrottleError,
-		))
-	}
+	// Public, unauthenticated OIDC discovery endpoints (IRSA). They serve the
+	// per-cluster issuer discovery document + JWKS so AWS STS / SDKs can
+	// validate ServiceAccount tokens. These carry no SigV4 and must bypass the
+	// auth + throttle middleware, so they live in their own group registered
+	// ahead of the authenticated surface.
+	r.Group(func(pub chi.Router) {
+		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/.well-known/openid-configuration", gw.OIDCDiscoveryDocument)
+		pub.Get("/oidc/eks/{region}/{accountID}/{clusterName}/keys", gw.OIDCJWKS)
+	})
 
-	// Catch-all routes
-	r.HandleFunc("/*", gw.Request)
+	// Authenticated AWS API surface.
+	r.Group(func(auth chi.Router) {
+		// AWS SigV4 authentication middleware
+		auth.Use(gw.SigV4AuthMiddleware())
+
+		// API request throttling (post-auth, per-account+action token bucket)
+		if gw.Throttler != nil {
+			auth.Use(gw.Throttler.Middleware(
+				gw.throttleKeyFuncs(),
+				gw.writeThrottleError,
+			))
+		}
+
+		// Catch-all routes
+		auth.HandleFunc("/*", gw.Request)
+	})
 
 	return r
 }
@@ -305,6 +325,10 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 		err = gw.ELBv2_Request(w, r)
 	case "eks":
 		err = gw.EKS_Request(w, r)
+	case "acm":
+		err = gw.ACM_Request(w, r)
+	case "tagging":
+		err = gw.Tagging_Request(w, r)
 	case "spinifex":
 		err = gw.Spinifex_Request(w, r)
 	default:
@@ -457,9 +481,12 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 		errorMsg.HTTPCode = 500
 	}
 
-	if svc == "eks" {
+	// EKS, ACM, and the Resource Groups Tagging API all use the AWS JSON 1.1
+	// error envelope ({"__type":"<Code>Exception","message":...}, Content-Type
+	// application/x-amz-json-1.1). Query/XML services fall through below.
+	if svc == "eks" || svc == "acm" || svc == "tagging" {
 		body := GenerateEKSErrorResponse(err.Error(), errorMsg.Message, requestId)
-		slog.Debug("Generated EKS error response", "error", err.Error(), "json", string(body), "requestId", requestId)
+		slog.Debug("Generated JSON error response", "service", svc, "error", err.Error(), "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {

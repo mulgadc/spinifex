@@ -508,6 +508,11 @@ func TestGetService(t *testing.T) {
 			ctxVal:  "account",
 			wantSvc: "account",
 		},
+		{
+			name:    "tagging service",
+			ctxVal:  "tagging",
+			wantSvc: "tagging",
+		},
 	}
 
 	for _, tc := range tests {

@@ -2,6 +2,7 @@ package vpcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -506,6 +508,8 @@ func launchService(cfg *Config) error {
 	natMgr, err := policy.NewNATManager(liveClient, natMode,
 		policy.WithFlowsBarrier(waitForFlowsHV),
 		policy.WithGARPEmitter(injectGARPEmitter()),
+		policy.WithNeighFlusher(neighFlusher(wanBridge)),
+		policy.WithNeighPrimer(neighPrimer(wanBridge)),
 	)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
@@ -522,6 +526,42 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("get JetStream context: %w", err)
 	}
+
+	// IMDS per-subnet localport installer. Create the KV bucket at a single
+	// replica; the daemon's deferred upgradeJetStreamReplicas bumps all KV_*
+	// streams to the cluster size once the cluster is ready. Using the chassis
+	// count here requested more replicas than a single-node JetStream could
+	// satisfy (chassis count can exceed NATS node count), failing the create
+	// with "bucket not found".
+	imdsVethKV, _, err := handlers_imds.InitBuckets(js, 1)
+	if err != nil {
+		return fmt.Errorf("init imds buckets: %w", err)
+	}
+	imdsTopoMgr, err := external.NewIMDSTopologyManager(liveClient, handlers_imds.NewVethStore(imdsVethKV))
+	if err != nil {
+		return fmt.Errorf("construct IMDS topology manager: %w", err)
+	}
+
+	// IMDS host-served datapath. vpcd holds the network capabilities the listener
+	// stack needs (the awsgw sandbox can't grant them); STS/IAM stay in awsgw over
+	// NATS RPCs. Run blocks, so it gets its own goroutine.
+	imdsCtx, cancelIMDS := context.WithCancel(ctx)
+	defer cancelIMDS()
+	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+		nc,
+		handlers_imds.NewNATSSTSAssumer(nc),
+		handlers_imds.NewNATSProfileLookup(nc),
+		max(len(chassisNames), 1),
+		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
+	)
+	if err != nil {
+		return fmt.Errorf("construct IMDS service: %w", err)
+	}
+	go func() {
+		if err := imdsSvc.Run(imdsCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("vpcd: IMDS service exited", "err", err)
+		}
+	}()
 
 	dhcpMgr, dhcpSubs, err := startDHCPManagerIfNeeded(ctx, nc, js, cfg)
 	if err != nil {
@@ -574,6 +614,7 @@ func launchService(cfg *Config) error {
 		EIP:      eipMgr,
 		NATGW:    natgwMgr,
 		IGW:      igwMgr,
+		IMDS:     imdsTopoMgr,
 	})
 	if err != nil {
 		return fmt.Errorf("construct subscriber: %w", err)
@@ -596,6 +637,7 @@ func launchService(cfg *Config) error {
 		Routes:       routeMgr,
 		IGW:          igwMgr,
 		Topology:     topoMgr,
+		IMDS:         imdsTopoMgr,
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
@@ -774,6 +816,39 @@ func injectGARPEmitter() policy.GARPEmitter {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return host.InjectGARP(ctx, nil, port)
+	}
+}
+
+// neighFlusher builds the post-AddEIP / post-DeleteEIP host ARP-flush hook. It
+// flushes the kernel neighbour entry for the external IP on the Linux WAN
+// bridge so a recycled IP re-resolves L2 against the current owner — the
+// inject-garp-independent path that keeps EIPs reachable on OVN builds whose
+// ovn-controller lacks inject-garp. No-op when wanBridge is unset.
+func neighFlusher(wanBridge string) policy.NeighFlusher {
+	return func(externalIP string) error {
+		if wanBridge == "" {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return host.FlushNeigh(ctx, nil, wanBridge, externalIP)
+	}
+}
+
+// neighPrimer builds the post-AddEIP host ARP-prime hook for distributed EIPs.
+// It programs the kernel neighbour entry for the external IP to the EIP's
+// external_mac on the Linux WAN bridge, so a recycled IP is reachable
+// immediately without an ARP reply — needed on OVN builds whose ovn-controller
+// lacks inject-garp and therefore never advertises the new MAC. No-op when
+// wanBridge or the MAC is unset.
+func neighPrimer(wanBridge string) policy.NeighPrimer {
+	return func(eip policy.EIPSpec) error {
+		if wanBridge == "" || eip.MAC == "" {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return host.ReplaceNeigh(ctx, nil, wanBridge, eip.ExternalIP, eip.MAC)
 	}
 }
 

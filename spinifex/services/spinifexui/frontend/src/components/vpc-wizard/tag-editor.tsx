@@ -1,5 +1,6 @@
 import { Plus, Trash2 } from "lucide-react"
 import type { UseFormReturn } from "react-hook-form"
+import { useWatch } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,7 +11,7 @@ interface TagEditorProps {
 }
 
 export function TagEditor({ form }: TagEditorProps) {
-  const tags = form.watch("tags")
+  const tags = useWatch({ control: form.control, name: "tags" })
 
   function addTag() {
     form.setValue("tags", [...tags, { key: "", value: "" }])

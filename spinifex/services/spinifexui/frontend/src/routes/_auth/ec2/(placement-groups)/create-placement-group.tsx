@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -46,7 +46,6 @@ function CreatePlacementGroup() {
     control,
     handleSubmit,
     register,
-    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreatePlacementGroupFormData>({
     resolver: zodResolver(createPlacementGroupSchema),
@@ -55,6 +54,10 @@ function CreatePlacementGroup() {
       strategy: "spread",
     },
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreatePlacementGroupFormData) => {
     const result = await createMutation.mutateAsync(data)
@@ -122,7 +125,9 @@ function CreatePlacementGroup() {
           <FieldError errors={[errors.strategy]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreatePlacementGroupCommands(watch)} />
+        <CliCommandPanel
+          commands={buildCreatePlacementGroupCommands(cliWatch)}
+        />
 
         <FormActions
           isPending={createMutation.isPending}

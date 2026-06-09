@@ -130,7 +130,8 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, err
 	}
 
-	cred, plainSecret, plainToken, err := s.mintSessionCredential(role, roleAccountID, sessionName, claims.Subject, duration)
+	env := assumedRoleEnvelope(role, roleAccountID, sessionName, claims.Subject)
+	cred, plainSecret, plainToken, err := s.mintSession(env, duration)
 	if err != nil {
 		return nil, err
 	}

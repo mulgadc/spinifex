@@ -42,6 +42,19 @@ func TestMultinodePreflight(t *testing.T) {
 	runPreflight(t, requireMultiNodeFixture(t))
 }
 
+// Fresh-install reachability baselines run right after preflight and before
+// any test calls needInstanceTrio (which authorizes SSH on the default SG),
+// so the default SG / subnet / route table are exercised pristine. Both own
+// their mutable resources (dedicated SGs, self-cleaning instances) and never
+// mutate a default resource.
+func TestMultinodeDefaultSGReachabilityBaseline(t *testing.T) {
+	runMultinodeDefaultSGReachabilityBaseline(t, requireMultiNodeFixture(t))
+}
+
+func TestMultinodeSameSGCrossHostComms(t *testing.T) {
+	runMultinodeSameSGCrossHostComms(t, requireMultiNodeFixture(t))
+}
+
 func TestMultinodeClusterHealth(t *testing.T) {
 	t.Parallel()
 	runClusterHealth(t, requireMultiNodeFixture(t))

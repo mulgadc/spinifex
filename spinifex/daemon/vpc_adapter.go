@@ -39,6 +39,22 @@ func (a *daemonENICreator) GetSubnet(accountID, subnetID string) (*handlers_ec2_
 	}, nil
 }
 
+func (a *daemonENICreator) GetENI(accountID, eniID string) (*handlers_ec2_instance.ENIInfo, error) {
+	rec, err := a.d.vpcService.GetENIRecord(accountID, eniID)
+	if err != nil {
+		return nil, err
+	}
+	return &handlers_ec2_instance.ENIInfo{
+		NetworkInterfaceID: rec.NetworkInterfaceId,
+		SubnetID:           rec.SubnetId,
+		VpcID:              rec.VpcId,
+		PrivateIpAddress:   rec.PrivateIpAddress,
+		MacAddress:         rec.MacAddress,
+		Status:             rec.Status,
+		SecurityGroupIDs:   rec.SecurityGroupIds,
+	}, nil
+}
+
 func (a *daemonENICreator) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	return a.d.vpcService.CreateNetworkInterface(input, accountID)
 }

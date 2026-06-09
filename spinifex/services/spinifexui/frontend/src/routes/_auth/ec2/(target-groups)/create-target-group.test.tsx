@@ -114,6 +114,36 @@ describe("create-target-group route", () => {
     })
   })
 
+  it("creates a TCP target group with a TCP health check and no path/matcher", async () => {
+    const user = userEvent.setup()
+    sdk.setHandler("CreateTargetGroupCommand", () => ({
+      TargetGroups: [{ TargetGroupArn: "arn:tg:tcp" }],
+    }))
+
+    setup()
+
+    await user.type(await screen.findByLabelText("Name"), "tcp-tg")
+    await user.click(screen.getByLabelText("Protocol"))
+    await user.click(await screen.findByRole("option", { name: "TCP" }))
+    await user.click(
+      screen.getByRole("button", { name: "Create Target Group" }),
+    )
+
+    await waitFor(() => {
+      expect(sdk.send).toHaveBeenCalledOnce()
+    })
+    const input = sdk.send.mock.calls[0]?.[0].input as {
+      Protocol: string
+      HealthCheckProtocol: string
+      HealthCheckPath?: string
+      Matcher?: unknown
+    }
+    expect(input.Protocol).toBe("TCP")
+    expect(input.HealthCheckProtocol).toBe("TCP")
+    expect(input.HealthCheckPath).toBeUndefined()
+    expect(input.Matcher).toBeUndefined()
+  })
+
   it("blocks submit and shows a validation error when the name is empty", async () => {
     const user = userEvent.setup()
     setup()

@@ -82,22 +82,23 @@ func TestEIP_Release(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Verify IP returned to pool by allocating again — should get same IP
+	// Round-robin: re-allocating does NOT hand back the just-released IP
+	// (siv-246); the cursor advances, so the new EIP differs.
 	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, allocatedIP, *out2.PublicIp)
+	assert.NotEqual(t, allocatedIP, *out2.PublicIp, "released EIP must not be reused immediately")
 
-	// Verify the pool shows the IP was released and re-allocated
+	// The released IP stays free (not re-allocated) until the cursor cycles.
 	record, err := ipam.GetPoolRecord("test-pool")
 	require.NoError(t, err)
-	_, allocated := record.Allocated[allocatedIP]
-	// After re-allocation, IP should be allocated again by the EIP service
-	// but let's just verify the release worked by checking describe returns nothing for old alloc
+	_, stillAllocated := record.Allocated[allocatedIP]
+	assert.False(t, stillAllocated, "released IP stays free until the cursor cycles the range")
+
+	// The released allocation is gone; describing it by its old ID errors.
 	_, descErr := svc.DescribeAddresses(&ec2.DescribeAddressesInput{
 		AllocationIds: []*string{out.AllocationId},
 	}, testAccountID)
 	assert.Error(t, descErr)
-	_ = allocated // suppress unused
 }
 
 func TestEIP_ReleaseWhileAssociated(t *testing.T) {

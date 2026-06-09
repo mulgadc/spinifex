@@ -325,6 +325,7 @@ func init() {
 	imagesImportCmd.Flags().String("tmp-dir", os.TempDir(), "Temporary directory for image import processing")
 
 	imagesImportCmd.Flags().String("name", "", "Import specified image by name")
+	imagesImportCmd.Flags().String("ami-name", "", "Override the registered AMI name (DescribeImages name). Defaults to ami-{distro}-{version}-{arch}. Use for locally-built appliances (e.g. --ami-name spinifex-eks-node).")
 	imagesImportCmd.Flags().String("file", "", "Import file from specified path (raw, qcow2, compressed)")
 	imagesImportCmd.Flags().String("distro", "", "Specified distro name (e.g debian)")
 	imagesImportCmd.Flags().String("version", "", "Specified distro version (e.g 12)")
@@ -380,6 +381,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// and the file is used directly (no download). When only --file is set,
 	// metadata comes from flags and no catalog tags are applied.
 	imageName, _ := cmd.Flags().GetString("name")
+	amiNameOverride, _ := cmd.Flags().GetString("ami-name")
 	localFile, _ := cmd.Flags().GetString("file")
 
 	if imageName == "" && localFile == "" {
@@ -535,6 +537,9 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// Calculate the size
 
 	manifest.AMIMetadata.Name = fmt.Sprintf("ami-%s-%s-%s", image.Distro, image.Version, image.Arch)
+	if amiNameOverride != "" {
+		manifest.AMIMetadata.Name = amiNameOverride
+	}
 	volumeId := utils.GenerateResourceID("ami")
 	manifest.AMIMetadata.ImageID = volumeId
 

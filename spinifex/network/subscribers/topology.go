@@ -31,7 +31,8 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 		}
 		spec.CIDR = cidr
 	}
-	if err := s.topology.EnsureVPC(context.Background(), spec); err != nil {
+	ctx := context.Background()
+	if err := s.topology.EnsureVPC(ctx, spec); err != nil {
 		slog.Error("subscribers: EnsureVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
@@ -46,7 +47,8 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.topology.DeleteVPC(context.Background(), evt.VpcId); err != nil {
+	ctx := context.Background()
+	if err := s.topology.DeleteVPC(ctx, evt.VpcId); err != nil {
 		slog.Error("subscribers: DeleteVPC failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
 		return
@@ -85,6 +87,14 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
+	// The IMDS localport lives on every subnet switch (guests reach metadata over
+	// one L2 hop). Install is best-effort — the reconciler re-ensures it
+	// idempotently, so a transient OVN failure here must not fail CreateSubnet.
+	if s.imds != nil {
+		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, evt.VpcId, cidr); err != nil {
+			slog.Warn("subscribers: IMDS EnsureForSubnet failed; reconciler will converge", "subnet_id", evt.SubnetId, "err", err)
+		}
+	}
 	respond(msg, nil)
 }
 
@@ -101,7 +111,17 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 			spec.CIDR = cidr
 		}
 	}
-	if err := s.topology.DeleteSubnet(context.Background(), spec); err != nil {
+	ctx := context.Background()
+	// Remove the IMDS localport before the subnet switch goes away — the
+	// localport lives on subnet-{subnetID}.
+	if s.imds != nil {
+		if err := s.imds.RemoveForSubnet(ctx, evt.SubnetId); err != nil {
+			slog.Error("subscribers: IMDS RemoveForSubnet failed", "subnet_id", evt.SubnetId, "err", err)
+			respond(msg, err)
+			return
+		}
+	}
+	if err := s.topology.DeleteSubnet(ctx, spec); err != nil {
 		slog.Error("subscribers: DeleteSubnet failed", "subnet_id", evt.SubnetId, "err", err)
 		respond(msg, err)
 		return
@@ -249,7 +269,7 @@ func (s *Subscriber) handleDeleteNAT(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.eip.DetachEIP(context.Background(), evt.VpcId, evt.LogicalIP); err != nil {
+	if err := s.eip.DetachEIP(context.Background(), evt.VpcId, evt.ExternalIP, evt.LogicalIP); err != nil {
 		slog.Error("subscribers: DeleteEIP failed",
 			"vpc_id", evt.VpcId, "logical_ip", evt.LogicalIP, "err", err)
 		respond(msg, err)
@@ -308,6 +328,41 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 	slog.Info("subscribers: installed NATGW route policy",
 		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "cidr", destCidr,
 		"natgw_id", evt.NatGatewayId)
+}
+
+func (s *Subscriber) handleAddSystemEgress(msg *nats.Msg) {
+	var evt SystemEgressEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.add-system-egress event", "err", err)
+		return
+	}
+	ctx := context.Background()
+	if err := s.igw.EnsureSystemInstanceEgress(ctx, evt.VpcId, evt.SubnetId, evt.InstanceIp, evt.ExternalIp); err != nil {
+		slog.Error("subscribers: EnsureSystemInstanceEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+			"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp, "err", err)
+		return
+	}
+	slog.Info("subscribers: system instance egress installed",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+		"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp)
+}
+
+func (s *Subscriber) handleDeleteSystemEgress(msg *nats.Msg) {
+	var evt SystemEgressEvent
+	if err := json.Unmarshal(msg.Data, &evt); err != nil {
+		slog.Error("subscribers: failed to unmarshal vpc.delete-system-egress event", "err", err)
+		return
+	}
+	ctx := context.Background()
+	if err := s.igw.RemoveSystemInstanceEgress(ctx, evt.VpcId, evt.SubnetId, evt.InstanceIp, evt.ExternalIp); err != nil {
+		slog.Error("subscribers: RemoveSystemInstanceEgress failed",
+			"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId,
+			"instance_ip", evt.InstanceIp, "external_ip", evt.ExternalIp, "err", err)
+		return
+	}
+	slog.Info("subscribers: system instance egress removed",
+		"vpc_id", evt.VpcId, "subnet_id", evt.SubnetId, "instance_ip", evt.InstanceIp)
 }
 
 func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {

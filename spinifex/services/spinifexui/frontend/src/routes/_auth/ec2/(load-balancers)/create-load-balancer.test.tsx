@@ -96,6 +96,8 @@ function seedClient() {
   qc.setQueryData(["ec2", "subnets"], { Subnets: SUBNETS })
   qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: SGS })
   qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [EXISTING_TG] })
+  qc.setQueryData(["acm", "certificates"], { CertificateSummaryList: [] })
+  qc.setQueryData(["elbv2", "sslPolicies"], { SslPolicies: [] })
   return qc
 }
 
@@ -222,6 +224,70 @@ describe("create-load-balancer route", () => {
     expect(listenerInput.DefaultActions).toStrictEqual([
       { Type: "forward", TargetGroupArn: "arn:tg:existing" },
     ])
+  })
+
+  it("selecting Network creates an NLB with a TCP listener and target group", async () => {
+    const user = userEvent.setup()
+    sdk.setHandler("CreateTargetGroupCommand", () => ({
+      TargetGroups: [{ TargetGroupArn: "arn:tg:new" }],
+    }))
+    sdk.setHandler("CreateLoadBalancerCommand", () => ({
+      LoadBalancers: [{ LoadBalancerArn: "arn:lb:new" }],
+    }))
+    sdk.setHandler("CreateListenerCommand", () => ({
+      Listeners: [{ ListenerArn: "arn:listener:new" }],
+    }))
+
+    renderWithClient(<CreateLoadBalancerPage />, seedClient())
+
+    await user.click(screen.getByLabelText("Network Load Balancer"))
+
+    await user.type(
+      screen.getByLabelText("Name", { selector: "#lb-name" }),
+      "my-nlb",
+    )
+    await user.type(
+      screen.getByLabelText("Name", { selector: "#tg-name" }),
+      "my-tg",
+    )
+    await selectSubnets(user)
+
+    await user.click(
+      screen.getByRole("button", { name: "Create Load Balancer" }),
+    )
+
+    await waitFor(() => {
+      expect(routerState.navigate).toHaveBeenCalled()
+    })
+
+    const createCalls = sdk.send.mock.calls.filter((call) =>
+      (
+        call[0] as { constructor: { name: string } }
+      ).constructor.name.startsWith("Create"),
+    )
+    const byName = (name: string) =>
+      createCalls.find(
+        (call) =>
+          (call[0] as { constructor: { name: string } }).constructor.name ===
+          name,
+      )?.[0].input as Record<string, unknown> | undefined
+
+    expect(byName("CreateLoadBalancerCommand")).toMatchObject({
+      Type: "network",
+    })
+    // NLB hides the security-group field, so none are submitted.
+    expect(byName("CreateLoadBalancerCommand")?.SecurityGroups).toBeUndefined()
+    expect(byName("CreateTargetGroupCommand")).toMatchObject({
+      Protocol: "TCP",
+      HealthCheckProtocol: "TCP",
+    })
+    // TCP health checks have neither an HTTP path nor a matcher.
+    expect(byName("CreateTargetGroupCommand")?.Matcher).toBeUndefined()
+    expect(byName("CreateTargetGroupCommand")?.HealthCheckPath).toBeUndefined()
+    expect(byName("CreateListenerCommand")).toMatchObject({
+      Protocol: "TCP",
+      Port: 80,
+    })
   })
 
   it("surfaces wizard failure with partial cleanup guidance when LB step fails", async () => {

@@ -1,7 +1,0 @@
----
-galaxy_info:
-  role_name: init
-  description: Run spx admin init, install CA trust, start services, import LB image.
-  license: BSD-3-Clause
-  min_ansible_version: "2.14"
-dependencies: []

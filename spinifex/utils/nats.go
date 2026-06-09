@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -230,12 +231,30 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 // AWS account ID from the gateway to daemon handlers.
 const AccountIDHeader = "X-Account-ID"
 
+// PrincipalARNHeader carries the caller's resolved IAM principal ARN from the
+// gateway to daemon handlers that attribute an action to its caller (e.g. the
+// EKS bootstrap-creator-admin AccessEntry).
+const PrincipalARNHeader = "X-Principal-ARN"
+
+// NATSHeader is an extra request header passed to NATSRequest beyond the
+// always-set X-Account-ID.
+type NATSHeader struct{ Key, Value string }
+
+// PrincipalARNFromMsg extracts the caller's principal ARN from a NATS message
+// header. Returns "" when absent.
+func PrincipalARNFromMsg(msg *nats.Msg) string {
+	if msg == nil || msg.Header == nil {
+		return ""
+	}
+	return msg.Header.Get(PrincipalARNHeader)
+}
+
 // NATSRequest performs a NATS request-response with JSON marshaling.
 // It marshals the input, sends to the given subject with the X-Account-ID
-// header, validates the response for error payloads, and unmarshals the
-// successful response into Out. Handlers can ignore the account ID if the
-// operation is unscoped (e.g. DescribeInstanceTypes).
-func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string) (*Out, error) {
+// header (plus any extra headers), validates the response for error payloads,
+// and unmarshals the successful response into Out. Handlers can ignore the
+// account ID if the operation is unscoped (e.g. DescribeInstanceTypes).
+func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
 	}
@@ -248,6 +267,11 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
 	reqMsg.Header.Set(AccountIDHeader, accountID)
+	for _, h := range headers {
+		if h.Key != "" {
+			reqMsg.Header.Set(h.Key, h.Value)
+		}
+	}
 
 	msg, err := conn.RequestMsg(reqMsg, timeout)
 	if err != nil {
@@ -268,6 +292,34 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	}
 
 	return &output, nil
+}
+
+// ServeNATSRequest is the responder-side counterpart to NATSRequest: it unmarshals
+// the request payload into *I, invokes fn, and replies with the JSON result or an
+// awserrors envelope. The payload carries its own context; no X-Account-ID header.
+func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
+	input := new(I)
+	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		respondNATS(msg, errResp)
+		return
+	}
+	out, err := fn(input)
+	if err != nil {
+		respondNATS(msg, GenerateErrorPayload(awserrors.ValidErrorCode(err.Error())))
+		return
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
+		return
+	}
+	respondNATS(msg, data)
+}
+
+func respondNATS(msg *nats.Msg, data []byte) {
+	if err := msg.Respond(data); err != nil {
+		slog.Error("failed to respond to NATS request", "subject", msg.Subject, "err", err)
+	}
 }
 
 const (

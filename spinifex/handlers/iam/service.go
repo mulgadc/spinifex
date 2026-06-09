@@ -54,6 +54,14 @@ type IAMService interface {
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
 	RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error)
 
+	// OIDC identity-provider registry — account-scoped. Registers a cluster
+	// issuer as a trusted federated IdP so STS AssumeRoleWithWebIdentity will
+	// honour tokens it signs (IRSA).
+	CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error)
+	GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProviderInput) (*iam.GetOpenIDConnectProviderOutput, error)
+	ListOpenIDConnectProviders(accountID string, input *iam.ListOpenIDConnectProvidersInput) (*iam.ListOpenIDConnectProvidersOutput, error)
+	DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput) (*iam.DeleteOpenIDConnectProviderOutput, error)
+
 	// ResolveInstanceProfile dereferences a RunInstancesInput.IamInstanceProfile
 	// reference (name or ARN) to the canonical InstanceProfile record. Used by
 	// EC2 paths only. Cross-account ARNs are rejected as a defence-in-depth

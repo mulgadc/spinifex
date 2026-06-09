@@ -154,6 +154,20 @@ var iamActions = map[string]IAMHandler{
 	"RemoveRoleFromInstanceProfile": iamHandler(func(accountID string, input *iam.RemoveRoleFromInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.RemoveRoleFromInstanceProfile(accountID, input, gw.IAMService)
 	}),
+
+	// OIDC identity-provider registry (IRSA)
+	"CreateOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.CreateOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.CreateOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"GetOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.GetOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.GetOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
+	"ListOpenIDConnectProviders": iamHandler(func(accountID string, input *iam.ListOpenIDConnectProvidersInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListOpenIDConnectProviders(accountID, input, gw.IAMService)
+	}),
+	"DeleteOpenIDConnectProvider": iamHandler(func(accountID string, input *iam.DeleteOpenIDConnectProviderInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.DeleteOpenIDConnectProvider(accountID, input, gw.IAMService)
+	}),
 }
 
 func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {

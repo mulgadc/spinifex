@@ -1,14 +1,20 @@
 package lbagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mulgadc/predastore/auth"
 )
 
 func TestNew(t *testing.T) {
@@ -65,6 +71,53 @@ func TestNew_SocketPath(t *testing.T) {
 	expected := "/tmp/spinifex-haproxy/lb-lb-sock123.sock"
 	if agent.socketPath != expected {
 		t.Errorf("socketPath = %q, want %q", agent.socketPath, expected)
+	}
+}
+
+// TestSignedPost_ProducesVerifiableSignature confirms the migrated signing path
+// (predastore/auth.SignReq over aws-sdk-go-v2) produces a request the gateway's
+// SigV4 verifier accepts, including a body-hash that matches X-Amz-Content-Sha256.
+func TestSignedPost_ProducesVerifiableSignature(t *testing.T) {
+	const (
+		accessKey = "AKIAIOSFODNN7EXAMPLE"
+		secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		region    = "us-east-1"
+	)
+
+	var parsed bool
+	var verifyErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sum := sha256.Sum256(body)
+		req, err := auth.ParseReq(r)
+		if err != nil {
+			verifyErr = err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		parsed = true
+		verifyErr = req.Verify(secretKey, "elasticloadbalancing", region,
+			auth.WithBodyHash(hex.EncodeToString(sum[:])))
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	agent, err := New("lb-sig", srv.URL, accessKey, secretKey, region)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := agent.signedPost(url.Values{
+		"Action":         {"LBAgentHeartbeat"},
+		"LoadBalancerId": {"lb-sig"},
+	}); err != nil {
+		t.Fatalf("signedPost: %v", err)
+	}
+	if !parsed {
+		t.Fatal("gateway did not parse a SigV4 Authorization header")
+	}
+	if verifyErr != nil {
+		t.Fatalf("signed request failed server-side verification: %v", verifyErr)
 	}
 }
 
@@ -298,6 +351,100 @@ func TestHeartbeat_StatsError(t *testing.T) {
 
 	// Should still send heartbeat with empty servers, not panic
 	agent.tick()
+}
+
+func TestEnginePaths_Nginx(t *testing.T) {
+	agent := newTestAgent(t, "http://example.invalid")
+	var nginxCalled, haproxyCalled bool
+	agent.reloadNginxFn = func(_, _ string) error { nginxCalled = true; return nil }
+	agent.reloadFn = func(_, _ string) error { haproxyCalled = true; return nil }
+
+	cfg, pid, certDir, reload := agent.enginePaths(EngineNginx)
+	if cfg != NginxConfigPath || pid != NginxPIDPath || certDir != NginxCertDir {
+		t.Errorf("nginx paths = %q,%q,%q want %q,%q,%q", cfg, pid, certDir, NginxConfigPath, NginxPIDPath, NginxCertDir)
+	}
+	_ = reload("", "")
+	if !nginxCalled || haproxyCalled {
+		t.Errorf("nginx engine routed to wrong reload (nginx=%v haproxy=%v)", nginxCalled, haproxyCalled)
+	}
+}
+
+func TestEnginePaths_HAProxyDefault(t *testing.T) {
+	agent := newTestAgent(t, "http://example.invalid")
+	var nginxCalled, haproxyCalled bool
+	agent.reloadNginxFn = func(_, _ string) error { nginxCalled = true; return nil }
+	agent.reloadFn = func(_, _ string) error { haproxyCalled = true; return nil }
+
+	// Both explicit haproxy and an empty engine fall through to HAProxy.
+	for _, engine := range []string{EngineHAProxy, ""} {
+		cfg, pid, certDir, reload := agent.enginePaths(engine)
+		if cfg != agent.configPath || pid != agent.pidPath || certDir != agent.certDir {
+			t.Errorf("engine %q paths = %q,%q,%q want haproxy defaults", engine, cfg, pid, certDir)
+		}
+		_ = reload("", "")
+	}
+	if nginxCalled || !haproxyCalled {
+		t.Errorf("haproxy/empty engine routed to wrong reload (nginx=%v haproxy=%v)", nginxCalled, haproxyCalled)
+	}
+}
+
+func TestTick_NginxSkipsStats(t *testing.T) {
+	gw := fakeGateway(t, "h1", "", "active")
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	agent.localConfigHash = "h1"
+	agent.engine = EngineNginx // stats poll is HAProxy-only
+	statsCalled := false
+	agent.statsFn = func(_ string) ([]ServerStatus, error) {
+		statsCalled = true
+		return nil, nil
+	}
+
+	agent.tick()
+
+	if statsCalled {
+		t.Error("nginx engine must not poll HAProxy stats")
+	}
+}
+
+func TestTick_NginxProbesHealthTargets(t *testing.T) {
+	var receivedServer, receivedStatus string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		if r.FormValue("Action") == "LBAgentHeartbeat" {
+			receivedServer = r.FormValue("Servers.member.1.Server")
+			receivedStatus = r.FormValue("Servers.member.1.Status")
+			fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash>h1</ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
+			return
+		}
+		http.Error(w, "unexpected", http.StatusBadRequest)
+	}))
+	defer gw.Close()
+
+	agent := newTestAgent(t, gw.URL)
+	agent.localConfigHash = "h1" // match to avoid config fetch
+	agent.engine = EngineNginx
+	agent.healthTargets = []HealthTarget{{ServerName: "srv_i-web1", Address: "10.0.0.5:80", Protocol: "TCP"}}
+	statsCalled := false
+	agent.statsFn = func(_ string) ([]ServerStatus, error) { statsCalled = true; return nil, nil }
+	probedTargets := 0
+	agent.probeFn = func(targets []HealthTarget) []ServerStatus {
+		probedTargets = len(targets)
+		return []ServerStatus{{Server: "srv_i-web1", Status: "UP"}}
+	}
+
+	agent.tick()
+
+	if statsCalled {
+		t.Error("nginx engine must not poll HAProxy stats")
+	}
+	if probedTargets != 1 {
+		t.Errorf("probeFn saw %d targets, want 1", probedTargets)
+	}
+	if receivedServer != "srv_i-web1" || receivedStatus != "UP" {
+		t.Errorf("heartbeat server/status = %q/%q, want srv_i-web1/UP", receivedServer, receivedStatus)
+	}
 }
 
 func TestHeartbeat_EmptyConfigHash(t *testing.T) {

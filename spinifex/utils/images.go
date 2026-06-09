@@ -462,6 +462,27 @@ var AvailableImages = map[string]Images{
 		BootMode:     "uefi",
 		Tags:         map[string]string{"gpu-vendor": "amd"},
 	},
+
+	// EKS node system AMI. The control-plane + node-group launchers resolve the
+	// boot AMI by the spinifex:managed-by=eks tag (not by name), so importing
+	// this catalog entry — which copies the tag onto the AMI — is enough for
+	// CreateCluster/CreateNodegroup to find it. Built from
+	// scripts/images/eks-node/manifest.conf (Alpine bios base); published to R2
+	// with scripts/publish-system-image.sh.
+	"spinifex-eks-node": {
+		Name:         "spinifex-eks-node",
+		Description:  "Mulga EKS node image — Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook (server|agent role selected at first boot)",
+		Distro:       "alpine",
+		Version:      "3.21.7",
+		Arch:         "x86_64",
+		Platform:     "Linux/UNIX",
+		CreatedAt:    time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+		URL:          "https://iso.mulgadc.com/system-ami/spinifex-eks-node-x86_64.qcow2",
+		Checksum:     "https://iso.mulgadc.com/system-ami/spinifex-eks-node-x86_64.qcow2.sha256",
+		ChecksumType: "sha256",
+		BootMode:     "bios",
+		Tags:         map[string]string{"spinifex:managed-by": "eks"},
+	},
 }
 
 // AMI / image extraction utils

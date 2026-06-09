@@ -5,7 +5,7 @@ import {
   type SearchSchemaInput,
   useNavigate,
 } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -58,7 +58,6 @@ function CreateSnapshot() {
     control,
     handleSubmit,
     register,
-    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreateSnapshotFormData>({
     resolver: zodResolver(createSnapshotSchema),
@@ -67,6 +66,10 @@ function CreateSnapshot() {
       description: "",
     },
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSnapshotFormData) => {
     await createMutation.mutateAsync(data)
@@ -133,7 +136,7 @@ function CreateSnapshot() {
           />
         </Field>
 
-        <CliCommandPanel commands={buildCreateSnapshotCommands(watch)} />
+        <CliCommandPanel commands={buildCreateSnapshotCommands(cliWatch)} />
 
         <FormActions
           isPending={createMutation.isPending}

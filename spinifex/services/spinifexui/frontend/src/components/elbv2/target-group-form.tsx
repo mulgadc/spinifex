@@ -1,7 +1,7 @@
 import type { Vpc } from "@aws-sdk/client-ec2"
 import { Plus, Trash2 } from "lucide-react"
 import type { UseFormReturn } from "react-hook-form"
-import { Controller } from "react-hook-form"
+import { Controller, useWatch } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -24,18 +24,39 @@ import type { CreateTargetGroupFormData } from "@/types/elbv2"
 interface TargetGroupFormProps {
   form: UseFormReturn<CreateTargetGroupFormData>
   vpcs: Vpc[]
+  allowedProtocols?: readonly string[]
 }
 
-export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
+export function TargetGroupForm({
+  form,
+  vpcs,
+  allowedProtocols = ["HTTP", "HTTPS", "TCP", "UDP", "TLS", "TCP_UDP"],
+}: TargetGroupFormProps) {
   const {
     control,
     register,
-    watch,
     setValue,
     getValues,
     formState: { errors },
   } = form
-  const tags = watch("tags")
+  const tags = useWatch({ control, name: "tags" })
+  const protocol = useWatch({ control, name: "protocol" })
+  // Path + Matcher only apply to HTTP(S) health checks; L4 target groups (TCP/
+  // UDP/TLS) use a TCP health check that has neither.
+  const httpHealthCheck = protocol === "HTTP" || protocol === "HTTPS"
+
+  // Keep the health-check protocol consistent with the target-group protocol so
+  // L4 groups submit a TCP health check and L7 groups submit an HTTP one.
+  const handleProtocolChange = (
+    next: CreateTargetGroupFormData["protocol"] | null,
+  ) => {
+    if (!next) {
+      return
+    }
+    setValue("protocol", next)
+    const layer7 = next === "HTTP" || next === "HTTPS"
+    setValue("healthCheck.protocol", layer7 ? "HTTP" : "TCP")
+  }
 
   return (
     <>
@@ -60,12 +81,16 @@ export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
           control={control}
           name="protocol"
           render={({ field }) => (
-            <Select onValueChange={field.onChange} value={field.value}>
+            <Select onValueChange={handleProtocolChange} value={field.value}>
               <SelectTrigger className="w-full" id="tg-protocol">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="HTTP">HTTP</SelectItem>
+                {allowedProtocols.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
@@ -132,18 +157,20 @@ export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
           Health check settings
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3 space-y-4 border-l-2 border-muted pl-4">
-          <Field>
-            <FieldTitle>
-              <label htmlFor="hc-path">Path</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.healthCheck?.path}
-              id="hc-path"
-              placeholder="/"
-              {...register("healthCheck.path")}
-            />
-            <FieldError errors={[errors.healthCheck?.path]} />
-          </Field>
+          {httpHealthCheck && (
+            <Field>
+              <FieldTitle>
+                <label htmlFor="hc-path">Path</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.healthCheck?.path}
+                id="hc-path"
+                placeholder="/"
+                {...register("healthCheck.path")}
+              />
+              <FieldError errors={[errors.healthCheck?.path]} />
+            </Field>
+          )}
 
           <Field>
             <FieldTitle>
@@ -224,18 +251,20 @@ export function TargetGroupForm({ form, vpcs }: TargetGroupFormProps) {
             />
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="hc-matcher">Matcher (HTTP codes)</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.healthCheck?.matcher}
-              id="hc-matcher"
-              placeholder="200 or 200-299 or 200,201"
-              {...register("healthCheck.matcher")}
-            />
-            <FieldError errors={[errors.healthCheck?.matcher]} />
-          </Field>
+          {httpHealthCheck && (
+            <Field>
+              <FieldTitle>
+                <label htmlFor="hc-matcher">Matcher (HTTP codes)</label>
+              </FieldTitle>
+              <Input
+                aria-invalid={!!errors.healthCheck?.matcher}
+                id="hc-matcher"
+                placeholder="200 or 200-299 or 200,201"
+                {...register("healthCheck.matcher")}
+              />
+              <FieldError errors={[errors.healthCheck?.matcher]} />
+            </Field>
+          )}
         </CollapsibleContent>
       </Collapsible>
 

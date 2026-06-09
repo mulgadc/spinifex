@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -58,7 +58,6 @@ function CreateSubnet() {
     control,
     handleSubmit,
     register,
-    watch,
     formState: { errors, isSubmitting },
   } = useForm<CreateSubnetFormData>({
     resolver: zodResolver(createSubnetSchema),
@@ -69,6 +68,10 @@ function CreateSubnet() {
       mapPublicIpOnLaunch: false,
     },
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateSubnetFormData) => {
     const result = await createMutation.mutateAsync(data)

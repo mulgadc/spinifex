@@ -43,10 +43,22 @@ const (
 // persisted; only an HMAC of it is stored, so a bucket read by a process that
 // lacks the master key cannot recover the token.
 type SessionCredential struct {
-	AccessKeyID       string    `json:"access_key_id"`
-	SecretEncrypted   string    `json:"secret_encrypted"`
-	SessionTokenHMAC  string    `json:"session_token_hmac"`
-	AccountID         string    `json:"account_id"`
+	AccessKeyID      string `json:"access_key_id"`
+	SecretEncrypted  string `json:"secret_encrypted"`
+	SessionTokenHMAC string `json:"session_token_hmac"`
+	AccountID        string `json:"account_id"`
+
+	// PrincipalType records what kind of identity this session represents:
+	// "assumed-role" (minted by AssumeRole) or "user" (minted by
+	// GetSessionToken, resolving back to the calling IAM user). It governs how
+	// the SigV4 ASIA path rebuilds the caller identity and evaluates policy.
+	//
+	// Backward compat: an empty/absent value is treated as "assumed-role".
+	// Records are write-once and expire within hours (default 12h, max 36h),
+	// so no bucket-version bump or data migration is needed — the empty-string
+	// default covers any in-flight records minted before this field existed.
+	PrincipalType string `json:"principal_type,omitempty"`
+
 	AssumedRoleARN    string    `json:"assumed_role_arn"`
 	UnderlyingRoleARN string    `json:"underlying_role_arn"`
 	RoleID            string    `json:"role_id"`

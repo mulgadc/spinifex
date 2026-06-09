@@ -94,6 +94,22 @@ func TestClusterStatsCLI(t *testing.T) {
 	runClusterStatsCLI(t, requireSingleNodeFixture(t))
 }
 
+// Fresh-install reachability baselines run right after the 0-VM cluster-stats
+// gate and before the singleton launch. They own all mutable resources
+// (dedicated SG / subnet / self-cleaning instance) and never mutate the
+// default SG, subnet, or route table.
+func TestDefaultSGReachabilityBaseline(t *testing.T) {
+	runDefaultSGReachabilityBaseline(t, requireSingleNodeFixture(t))
+}
+
+func TestNewVPCEgressBaseline(t *testing.T) {
+	runNewVPCEgressBaseline(t, requireSingleNodeFixture(t))
+}
+
+func TestSameSGComms(t *testing.T) {
+	runSameSGComms(t, requireSingleNodeFixture(t))
+}
+
 func TestInstanceLaunch(t *testing.T) {
 	runInstanceLaunch(t, requireSingleNodeFixture(t))
 }
@@ -223,6 +239,16 @@ func TestIAMInstanceProfileAssociation(t *testing.T) {
 // so trust-policy mutations don't race a parallel AssumeRole.
 func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	runSTS(t, requireSingleNodeFixture(t))
+}
+
+// TestIMDS exercises the host-served IMDSv2 surface end-to-end: token
+// issuance, the v2-only stance, the metadata surface, the
+// instance-role credential path + wire round-trip, the per-subnet L2 localport
+// datapath (ovn-trace round-trip), and cross-VPC source-IP isolation. Owns its
+// own role/profile + a second VPC, but sequential: it launches profile-bound VMs
+// and a fresh VPC, so it must not race the singleton-mutation tests above.
+func TestIMDS(t *testing.T) {
+	runIMDS(t, requireSingleNodeFixture(t))
 }
 
 // TestFinalClusterStats runs as the last sequential test (parallel bucket

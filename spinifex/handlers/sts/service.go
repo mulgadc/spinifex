@@ -17,6 +17,11 @@ type STSService interface {
 	// strings to keep the handler unit-testable.
 	AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 
+	// AssumeRoleForInstance mints role-bound temporary credentials for an EC2 instance.
+	// It is the in-process IMDS entry point, NOT reachable over HTTPS: the caller is the
+	// synthesised EC2 service principal (trust must allow Service ec2.amazonaws.com).
+	AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
+
 	// AssumeRoleWithWebIdentity exchanges an OIDC ID token (typically a
 	// projected K8s ServiceAccount token signed by an EKS cluster's
 	// per-cluster signing key) for short-lived AWS credentials bound to the
@@ -28,6 +33,14 @@ type STSService interface {
 	// UserId. AWS allows every authenticated principal to call this; the
 	// gateway does not gate it with checkPolicy.
 	GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+
+	// GetSessionToken exchanges the calling IAM user's long-lived credentials for
+	// short-lived session credentials bound to the SAME user identity — resolving
+	// back to arn:aws:iam::A:user/N, unlike AssumeRole. callerPrincipalType and
+	// callerAccessKeyID let the handler enforce that only a long-lived user
+	// (never a session) may call it. The gateway resolves these from the SigV4
+	// context.
+	GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
 
 	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for
 	// the sts:GetCallerIdentity action — the token shape produced by `aws

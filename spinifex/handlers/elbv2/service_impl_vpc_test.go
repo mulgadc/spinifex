@@ -139,7 +139,7 @@ func TestCreateLoadBalancer_MultipleSubnets(t *testing.T) {
 
 // TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher verifies that
 // every subnet's ENI is threaded through to SystemInstanceInput, not just
-// the first one. Regression guard for mulga-929.
+// the first one.
 func TestCreateLoadBalancer_MultiSubnet_AllENIsPassedToLauncher(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 

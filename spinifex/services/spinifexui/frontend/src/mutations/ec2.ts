@@ -6,6 +6,7 @@ import {
   type Tenancy,
   AllocateAddressCommand,
   AssociateAddressCommand,
+  AssociateIamInstanceProfileCommand,
   AssociateRouteTableCommand,
   AttachInternetGatewayCommand,
   AttachVolumeCommand,
@@ -37,6 +38,7 @@ import {
   DeleteVpcCommand,
   DetachInternetGatewayCommand,
   DisassociateAddressCommand,
+  DisassociateIamInstanceProfileCommand,
   DisassociateRouteTableCommand,
   DetachVolumeCommand,
   ReleaseAddressCommand,
@@ -78,6 +80,7 @@ import type {
   ModifyVolumeParams,
   SecurityGroupRuleFormData,
 } from "@/types/ec2"
+import type { AssociateInstanceProfileParams } from "@/types/iam"
 
 const WHITESPACE_REGEX = /\s+/
 
@@ -922,6 +925,54 @@ export function useDisassociateAddress() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "addresses"] })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useAssociateIamInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: AssociateInstanceProfileParams) => {
+      const command = new AssociateIamInstanceProfileCommand({
+        InstanceId: params.instanceId,
+        IamInstanceProfile: { Name: params.instanceProfileName },
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ec2",
+          "iam-instance-profile-associations",
+          params.instanceId,
+        ],
+      })
+      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+  })
+}
+
+export function useDisassociateIamInstanceProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (params: {
+      associationId: string
+      instanceId: string
+    }) => {
+      const command = new DisassociateIamInstanceProfileCommand({
+        AssociationId: params.associationId,
+      })
+      return await getEc2Client().send(command)
+    },
+    onSuccess: (_data, params) => {
+      void queryClient.invalidateQueries({
+        queryKey: [
+          "ec2",
+          "iam-instance-profile-associations",
+          params.instanceId,
+        ],
+      })
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
     },
   })

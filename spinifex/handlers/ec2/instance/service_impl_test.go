@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gpu"
+	"github.com/mulgadc/spinifex/spinifex/tags"
 	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
@@ -383,6 +384,8 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		assert.Contains(t, wf, "dhcp-client-id=mac")
 		assert.Contains(t, wf, "method=auto")
 		assert.NotContains(t, wf, "never-default")
+		// The IMDS on-link route rides vpc0 even with no dev NIC / extra ENIs.
+		assert.Contains(t, wf, "route1=169.254.169.254/32", "vpc0 must carry the IMDS on-link route")
 		assert.Contains(t, rc, "  - [ restorecon, -R, /etc/NetworkManager/system-connections/ ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, reload ]")
 		assert.Contains(t, rc, "  - [ nmcli, connection, up, vpc0 ]")
@@ -415,6 +418,18 @@ func TestBuildRHELCloudInit(t *testing.T) {
 		// Empty slot is skipped, but index advances — second valid MAC is vpc2.
 		assert.NotContains(t, wf, "vpc1.nmconnection")
 		assert.Contains(t, wf, "vpc2.nmconnection")
+	})
+
+	t.Run("vpc0 carries on-link IMDS route, others do not", func(t *testing.T) {
+		wf, _ := buildRHELCloudInit(
+			"02:00:00:00:00:01",
+			"02:00:00:00:00:99",
+			"", "",
+			[]string{"02:00:00:00:00:02"},
+		)
+		assert.Contains(t, wf, "route1=169.254.169.254/32")
+		// Primary NIC only — not extra VPC NICs or the dev NIC.
+		assert.Equal(t, 1, strings.Count(wf, "route1=169.254.169.254/32"))
 	})
 }
 
@@ -648,7 +663,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 
 func TestCloudInitNetworkConfigWildcard(t *testing.T) {
 	// No MACs → wildcard config (non-VPC or VPC without DEV_NETWORKING)
-	cfg := generateNetworkConfig("", "", "", "", nil)
+	cfg := generateNetworkConfig("", "", "", "", nil, true)
 	assert.Contains(t, cfg, "version: 2")
 	assert.Contains(t, cfg, "dhcp4: true")
 	assert.Contains(t, cfg, "dhcp-identifier: mac")
@@ -660,7 +675,7 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 	eniMAC := "02:00:00:61:ef:c2"
 	devMAC := "02:de:00:60:83:0d"
 
-	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil)
+	cfg := generateNetworkConfig(eniMAC, devMAC, "", "", nil, true)
 
 	// Both MACs present in config
 	assert.Contains(t, cfg, eniMAC)
@@ -680,12 +695,12 @@ func TestCloudInitNetworkConfigDualNIC(t *testing.T) {
 
 func TestCloudInitNetworkConfigPartialMAC(t *testing.T) {
 	// Only ENI MAC (VPC without dev) → per-interface config with VPC NIC only
-	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil)
+	cfg := generateNetworkConfig("02:00:00:61:ef:c2", "", "", "", nil, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "dev0:")
 
 	// Only dev MAC (shouldn't happen, but defensive) → wildcard
-	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil)
+	cfg = generateNetworkConfig("", "02:de:00:60:83:0d", "", "", nil, true)
 	assert.Contains(t, cfg, `name: "e*"`)
 	assert.NotContains(t, cfg, "use-routes")
 }
@@ -696,7 +711,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 		"02:00:00:bb:bb:bb",
 		"02:00:00:cc:cc:cc",
 	}
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras)
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", extras, true)
 
 	assert.Contains(t, cfg, "vpc0:")
 	assert.Contains(t, cfg, "vpc1:")
@@ -715,7 +730,7 @@ func TestCloudInitNetworkConfigMultiVPCNICs(t *testing.T) {
 func TestCloudInitNetworkConfigEmptyExtraMACSkipped(t *testing.T) {
 	// Empty strings inside the extras slice are ignored rather than producing
 	// a malformed ethernets block.
-	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""})
+	cfg := generateNetworkConfig("02:00:00:aa:aa:aa", "", "", "", []string{""}, true)
 	assert.Contains(t, cfg, "vpc0:")
 	assert.NotContains(t, cfg, "vpc1:")
 }
@@ -1067,6 +1082,70 @@ func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
 	assert.Empty(t, out.Reservations)
 }
 
+// EKS control-plane VMs are owned by the customer account (their ENI lives in
+// the customer VPC) but are platform-managed system instances, so they must be
+// hidden from the owning customer's DescribeInstances the same way LB VMs are.
+func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-ekscp",
+		AccountID: owner,
+		ManagedBy: tags.ManagedByEKS,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-ekscp"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
+}
+
+// Root/operator callers still see managed system VMs.
+func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-lb",
+		AccountID: utils.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-lb"),
+			OwnerId:       aws.String(utils.GlobalAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+// A customer's own unmanaged instance (no ManagedBy) stays visible — confirms
+// the exclusion keys on ManagedBy, not on account scope. Future EKS worker
+// nodes (customer-owned, no ManagedBy tag) follow this path.
+func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-worker",
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-worker"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
+}
+
 func TestDescribeInstances_MalformedID(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
 	input := &ec2.DescribeInstancesInput{
@@ -1129,7 +1208,10 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 		ID:           id,
 		InstanceType: "t3.large",
 		AccountID:    owner,
-		UserData:     "raw-user-data",
+		RunInstancesInput: &ec2.RunInstancesInput{
+			// base64("raw-user-data") — DescribeInstanceAttribute returns user-data base64-encoded.
+			UserData: aws.String("cmF3LXVzZXItZGF0YQ=="),
+		},
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
 
@@ -1151,7 +1233,7 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 			attribute: ec2.InstanceAttributeNameUserData,
 			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
 				require.NotNil(t, out.UserData)
-				assert.Equal(t, "raw-user-data", *out.UserData.Value)
+				assert.Equal(t, "cmF3LXVzZXItZGF0YQ==", *out.UserData.Value)
 			},
 		},
 		{
@@ -1530,7 +1612,6 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 			ID:        id,
 			Status:    vm.StateStopped,
 			AccountID: "acc",
-			UserData:  "old",
 			RunInstancesInput: &ec2.RunInstancesInput{
 				UserData: aws.String("b2xk"),
 			},
@@ -1548,7 +1629,6 @@ func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
 
 	updated := store.wroteStopped[id]
 	require.NotNil(t, updated)
-	assert.Equal(t, newContent, updated.UserData)
 	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
 }
 
@@ -2451,7 +2531,10 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 type fakeENICreator struct {
 	defaultSubnet *SubnetInfo
 	subnet        *SubnetInfo
+	getENIByID    map[string]*ENIInfo
+	getENIErr     error
 	createOut     *ec2.CreateNetworkInterfaceOutput
+	createCalls   int
 	createErr     error
 	attachErr     error
 	attachCalls   int
@@ -2474,7 +2557,22 @@ func (f *fakeENICreator) GetSubnet(_, _ string) (*SubnetInfo, error) {
 	return f.subnet, nil
 }
 
+func (f *fakeENICreator) GetENI(_, eniID string) (*ENIInfo, error) {
+	if f.getENIErr != nil {
+		return nil, f.getENIErr
+	}
+	if f.getENIByID == nil {
+		return nil, errors.New("no ENI configured")
+	}
+	info, ok := f.getENIByID[eniID]
+	if !ok {
+		return nil, errors.New("eni not found")
+	}
+	return info, nil
+}
+
 func (f *fakeENICreator) CreateNetworkInterface(_ *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	f.createCalls++
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -3187,4 +3285,116 @@ func TestInstanceArchitecture(t *testing.T) {
 			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
 		})
 	}
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				Status:             "available",
+				SecurityGroupIDs:   []string{"sg-pre"},
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+			DeviceIndex:        aws.Int64(0),
+		}},
+	}, "acc")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-pre", instances[0].ENIId)
+	assert.Equal(t, "aa:bb:cc:dd:ee:01", instances[0].ENIMac)
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-busy": {
+				NetworkInterfaceID: "eni-busy",
+				Status:             "in-use",
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-busy"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceInUse, err.Error())
+	assert.Equal(t, 0, eni.attachCalls, "in-use ENI must not be attached")
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENILookupErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-ghost"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, err.Error())
+	assert.Equal(t, 0, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				Status:             "available",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+			},
+		},
+		attachErr: errors.New(awserrors.ErrorServerInternal),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(&ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+		}},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
 }

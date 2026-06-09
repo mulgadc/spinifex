@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -23,10 +25,16 @@ import (
 // the local Spinifex AWS gateway. Region is fixed to ap-southeast-2 to match
 // the bash scripts; override via SPINIFEX_AWS_REGION.
 type AWSClient struct {
-	EC2   *ec2.EC2
-	ELBv2 *elbv2.ELBV2
-	IAM   *iam.IAM
-	STS   *sts.STS
+	// EC2 is wrapped so RunInstances auto-serialises against cluster capacity
+	// (see capacityRetryEC2). EC2Conf is the underlying SDK client, kept for
+	// the few call sites that read its Config (region, creds, transport) or
+	// mutate it (IgnoreCertErrors); both share one *ec2.EC2.
+	EC2     ec2iface.EC2API
+	EC2Conf *ec2.EC2
+	ELBv2   *elbv2.ELBV2
+	IAM     *iam.IAM
+	STS     *sts.STS
+	EKS   *eks.EKS
 }
 
 // NewAWSClient builds clients pointed at https://<endpoint>:<port>/ using the
@@ -122,11 +130,14 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		t.Fatalf("AWS session: %v", err)
 	}
 
+	rawEC2 := ec2.New(sess)
 	return &AWSClient{
-		EC2:   ec2.New(sess),
-		ELBv2: elbv2.New(sess),
-		IAM:   iam.New(sess),
-		STS:   sts.New(sess),
+		EC2:     &capacityRetryEC2{EC2API: rawEC2},
+		EC2Conf: rawEC2,
+		ELBv2:   elbv2.New(sess),
+		IAM:     iam.New(sess),
+		STS:     sts.New(sess),
+		EKS:   eks.New(sess),
 	}
 }
 
@@ -135,8 +146,9 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 func (c *AWSClient) IgnoreCertErrors() {
 	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	hc := &http.Client{Transport: tr}
-	c.EC2.Config.HTTPClient = hc
+	c.EC2Conf.Config.HTTPClient = hc
 	c.ELBv2.Config.HTTPClient = hc
+	c.EKS.Config.HTTPClient = hc
 	c.IAM.Config.HTTPClient = hc
 	c.STS.Config.HTTPClient = hc
 	_ = (*x509.CertPool)(nil) // silence unused-import on hardened paths

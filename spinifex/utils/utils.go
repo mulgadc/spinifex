@@ -326,6 +326,16 @@ func HashMAC(id string) string {
 	return net.HardwareAddr(b).String()
 }
 
+// ClientIP returns the IP from a RemoteAddr, stripping the port. Handles both
+// IPv4 and IPv6, and tolerates a RemoteAddr that is already a bare IP (no port).
+func ClientIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {

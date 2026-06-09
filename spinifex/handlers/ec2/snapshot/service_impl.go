@@ -181,16 +181,7 @@ func snapshotConfigToEC2(cfg *SnapshotConfig) *ec2.Snapshot {
 		OwnerId:     aws.String(cfg.OwnerID),
 	}
 
-	if len(cfg.Tags) > 0 {
-		tags := make([]*ec2.Tag, 0, len(cfg.Tags))
-		for key, value := range cfg.Tags {
-			tags = append(tags, &ec2.Tag{
-				Key:   aws.String(key),
-				Value: aws.String(value),
-			})
-		}
-		snapshot.Tags = tags
-	}
+	snapshot.Tags = utils.MapToEC2Tags(cfg.Tags)
 
 	return snapshot
 }

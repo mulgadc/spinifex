@@ -144,6 +144,15 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Maintain the eni-by-vpc-ip reverse index after the source-of-truth ENI
+	// write. A failure here leaves IMDS returning safe 404s for this IP rather
+	// than phantom permissions, so it is logged, not fatal.
+	if s.eniIndex != nil {
+		if err := s.eniIndex.Put(subnet.VpcId, privateIP, eniId, accountID); err != nil {
+			slog.Warn("CreateNetworkInterface: eni-by-ip index write failed", "eniId", eniId, "vpcId", subnet.VpcId, "ip", privateIP, "err", err)
+		}
+	}
+
 	slog.Info("CreateNetworkInterface completed", "eniId", eniId, "subnetId", subnetId, "ip", privateIP, "accountID", accountID)
 
 	// Send vpc.create-port synchronously so vpcd OVSDB errors surface to the
@@ -211,6 +220,15 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 
 	if err := s.eniKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Drop the eni-by-vpc-ip reverse index entry. Idempotent and non-fatal:
+	// the source-of-truth ENI is already gone, so a stale index entry would
+	// only resolve to a now-missing ENI and surface as a safe 404.
+	if s.eniIndex != nil {
+		if err := s.eniIndex.Delete(record.VpcId, record.PrivateIpAddress); err != nil {
+			slog.Warn("DeleteNetworkInterface: eni-by-ip index delete failed", "eniId", eniId, "vpcId", record.VpcId, "ip", record.PrivateIpAddress, "err", err)
+		}
 	}
 
 	slog.Info("DeleteNetworkInterface completed", "eniId", eniId, "accountID", accountID)

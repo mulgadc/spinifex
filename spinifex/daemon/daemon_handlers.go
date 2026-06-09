@@ -58,6 +58,28 @@ func handleNATSRequest[I any, O any](msg *nats.Msg, serviceFn func(*I, string) (
 	respondWithJSON(msg, output)
 }
 
+// handleNATSRequestWithPrincipal is handleNATSRequest for service methods that
+// also need the caller's IAM principal ARN (X-Principal-ARN header) — e.g. EKS
+// CreateCluster, which mints the bootstrap-creator-admin AccessEntry for the
+// caller.
+func handleNATSRequestWithPrincipal[I any, O any](msg *nats.Msg, serviceFn func(*I, string, string) (*O, error)) {
+	accountID := utils.AccountIDFromMsg(msg)
+	principalARN := utils.PrincipalARNFromMsg(msg)
+	input := new(I)
+	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		if err := msg.Respond(errResp); err != nil {
+			slog.Error("Failed to respond to NATS request", "err", err)
+		}
+		return
+	}
+	output, err := serviceFn(input, accountID, principalARN)
+	if err != nil {
+		respondWithError(msg, awserrors.ValidErrorCode(err.Error()))
+		return
+	}
+	respondWithJSON(msg, output)
+}
+
 // handleEC2Events processes incoming EC2 instance events (start, stop, terminate, attach-volume)
 func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 	var command types.EC2InstanceCommand

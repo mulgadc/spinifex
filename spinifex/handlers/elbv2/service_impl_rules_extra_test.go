@@ -87,9 +87,10 @@ func TestDeleteRule_InputValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MissingParameter")
 
-	_, err = env.svc.DeleteRule(&elbv2.DeleteRuleInput{RuleArn: aws.String("arn:none")}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "RuleNotFound")
+	// AWS ELBv2 delete is idempotent: absent rule -> success, not NotFound.
+	out, err := env.svc.DeleteRule(&elbv2.DeleteRuleInput{RuleArn: aws.String("arn:none")}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDescribeRules_InputValidation(t *testing.T) {
@@ -377,11 +378,23 @@ func TestHAProxyRender_UnsupportedField(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestBuildHAProxyRule_RejectsNonForward(t *testing.T) {
-	_, err := buildHAProxyRule(&RuleRecord{
+func TestBuildHAProxyRule_RoutesToBackend(t *testing.T) {
+	rule, err := buildHAProxyRule(&RuleRecord{
+		RuleID:     "r1",
+		Conditions: []RuleCondition{{Field: RuleFieldPathPattern, Values: []string{"/a"}}},
+	}, "bk_target")
+	require.NoError(t, err)
+	assert.Equal(t, "bk_target", rule.Backend)
+}
+
+func TestRegisterRuleBackend_RejectsUnknownAction(t *testing.T) {
+	noopBackend := func(string) {}
+	noopFixed := func(string, *FixedResponseAction) {}
+	noopRedirect := func(string, *HAProxyRedirect) {}
+	_, err := registerRuleBackend(&RuleRecord{
 		RuleID:  "r1",
-		Actions: []ListenerAction{{Type: "redirect"}},
-	})
+		Actions: []ListenerAction{{Type: "authenticate-cognito"}},
+	}, &ListenerRecord{Protocol: ProtocolHTTP}, noopBackend, noopFixed, noopRedirect)
 	require.Error(t, err)
 }
 

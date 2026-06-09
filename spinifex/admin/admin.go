@@ -409,8 +409,28 @@ func UpdateAWSINIFile(path, section string, values map[string]string) error {
 		sec.Key(key).SetValue(value)
 	}
 
-	// Save with proper permissions
-	return cfg.SaveTo(path)
+	// Write atomically with 0600. ini.SaveTo uses os.Create (0666 & ~umask,
+	// typically 0644), which leaves ~/.aws/credentials world-readable. Render
+	// to a sibling temp file (os.CreateTemp is 0600) and rename into place so
+	// the secrets are never exposed, even briefly.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".aws-ini-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp INI file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := cfg.WriteTo(tmp); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write INI file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close INI file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("failed to rename INI file into place: %w", err)
+	}
+	return nil
 }
 
 // generateAWSAccessKey generates an AWS-style access key

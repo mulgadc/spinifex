@@ -30,11 +30,11 @@ func TestGatewayWrappers_Cluster(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubEKSResponder(t, nc)
 
-	out1, err := CreateCluster(nc, acct, []byte(`{"name":"alpha"}`))
+	out1, err := CreateCluster(nc, acct, "arn:aws:iam::111122223333:role/dev", []byte(`{"name":"alpha"}`))
 	require.NoError(t, err)
 	assert.NotNil(t, out1)
 
-	out2, err := CreateCluster(nc, acct, nil)
+	out2, err := CreateCluster(nc, acct, "", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out2)
 
@@ -71,7 +71,7 @@ func TestGatewayWrappers_Cluster_BadJSON(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubEKSResponder(t, nc)
 
-	_, err := CreateCluster(nc, acct, []byte(`{not-json`))
+	_, err := CreateCluster(nc, acct, "", []byte(`{not-json`))
 	require.Error(t, err)
 	_, err = UpdateClusterConfig(nc, acct, "alpha", []byte(`{not-json`))
 	require.Error(t, err)
@@ -207,7 +207,7 @@ func TestGatewayWrappers_Addons(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubEKSResponder(t, nc)
 
-	out1, err := ListAddons(nc, acct)
+	out1, err := ListAddons(nc, acct, "alpha")
 	require.NoError(t, err)
 	assert.NotNil(t, out1)
 

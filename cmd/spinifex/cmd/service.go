@@ -538,7 +538,7 @@ var awsgwStartCmd = &cobra.Command{
 		awsgwHost := viper.GetString("host")
 		if awsgwHost != "" {
 			fmt.Println("Overwriting awsgw host to:", awsgwHost)
-			//nodeConfig.AWSGW.Host = awsgwHost
+			nodeConfig.AWSGW.Host = awsgwHost
 		}
 
 		awsgwTlsCert := viper.GetString("tls-cert")

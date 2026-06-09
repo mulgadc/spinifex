@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { useForm } from "react-hook-form"
+import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
@@ -40,11 +40,15 @@ function CreateKeyPair() {
   const {
     handleSubmit,
     register,
-    watch,
+    control,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createKeyPairSchema),
   })
+
+  const values = useWatch({ control })
+  const cliWatch = (name?: string): unknown =>
+    name ? (values as Record<string, unknown>)[name] : undefined
 
   const onSubmit = async (data: CreateKeyPairData) => {
     const response = await createMutation.mutateAsync(data)
@@ -85,7 +89,7 @@ function CreateKeyPair() {
           <FieldError errors={[errors.keyName]} />
         </Field>
 
-        <CliCommandPanel commands={buildCreateKeyPairCommands(watch)} />
+        <CliCommandPanel commands={buildCreateKeyPairCommands(cliWatch)} />
 
         {/* Actions */}
         <FormActions

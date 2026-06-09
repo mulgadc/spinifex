@@ -90,6 +90,17 @@ fi
 echo "=== Building and installing microVM artifacts ==="
 cd "$PROJECT_ROOT" && make build-lb-agent install-microvm
 
+# Unified EKS node AMI (server + agent; role chosen at first boot). Heavy (full
+# Alpine + K3s build, needs sudo + network), so it is opt-in: set
+# DEV_INSTALL_EKS=1 to build + register it. Without it, `aws eks create-cluster`
+# fails AMI resolution until the operator runs `make import-eks-node-image`.
+if [ "${DEV_INSTALL_EKS:-0}" = "1" ]; then
+    echo "=== Building + importing eks-node AMI ==="
+    cd "$PROJECT_ROOT" && make import-eks-node-image
+else
+    echo "=== Skipping eks-node AMI (set DEV_INSTALL_EKS=1 to enable, or run 'make import-eks-node-image') ==="
+fi
+
 echo "=== Done ==="
 echo "Services: sudo systemctl status spinifex.target"
 echo "Logs:     journalctl -u 'spinifex-*' -f"

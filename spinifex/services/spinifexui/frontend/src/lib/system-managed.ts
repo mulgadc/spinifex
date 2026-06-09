@@ -8,3 +8,17 @@ export const SYSTEM_MANAGED_TAG_KEY = "spinifex:managed-by"
 export function isSystemManagedImage(image: Image): boolean {
   return image.Tags?.some((tag) => tag.Key === SYSTEM_MANAGED_TAG_KEY) ?? false
 }
+
+// Tag value identifying the EKS node system image (K3s server+agent),
+// applied by `spx admin images import --tag spinifex:managed-by=eks`.
+export const EKS_SYSTEM_IMAGE_TAG_VALUE = "eks"
+
+export function isEksSystemImage(image: Image): boolean {
+  return (
+    image.Tags?.some(
+      (tag) =>
+        tag.Key === SYSTEM_MANAGED_TAG_KEY &&
+        tag.Value === EKS_SYSTEM_IMAGE_TAG_VALUE,
+    ) ?? false
+  )
+}

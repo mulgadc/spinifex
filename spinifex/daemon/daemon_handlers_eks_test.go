@@ -26,8 +26,10 @@ func setupEKSDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 }
 
 // requestEKS publishes a request on the given subject and returns the response
-// payload. Every EKS handler in this branch returns NotImplemented, so the
-// payload always decodes to that error code.
+// payload. Proves a responder is wired for the subject and dispatched to the
+// service. The expected Code per case is asserted by the caller; the empty `{}`
+// body steers implemented handlers into a deterministic validation/dispatch
+// error so the wiring is provable without a full orchestration graph.
 func requestEKS(t *testing.T, nc *nats.Conn, subject string) []byte {
 	t.Helper()
 	msg := nats.NewMsg(subject)
@@ -38,59 +40,72 @@ func requestEKS(t *testing.T, nc *nats.Conn, subject string) []byte {
 	return resp.Data
 }
 
-func assertNotImpl(t *testing.T, payload []byte) {
+// assertErrorCode decodes the error envelope and asserts the AWS error Code.
+func assertErrorCode(t *testing.T, payload []byte, want string) {
 	t.Helper()
 	var env struct {
 		Code *string `json:"Code"`
 	}
 	require.NoError(t, json.Unmarshal(payload, &env), "decode payload %q", payload)
 	require.NotNil(t, env.Code, "payload %q has no Code field", payload)
-	assert.Equal(t, awserrors.ErrorNotImplemented, *env.Code)
+	assert.Equal(t, want, *env.Code)
 }
 
 func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	d, nc := setupEKSDaemon(t)
 
+	// wantCode is the error Code an empty-body request must elicit, proving the
+	// subject dispatched to its service method. Access-entry handlers are
+	// implemented (Sprint 6c): an empty body fails input/cluster validation with
+	// InvalidParameterValue. ListAccessPolicies returns the static catalogue with
+	// no error, so wantCode is "" (success — assert a non-error payload).
+	notImpl := awserrors.ErrorNotImplemented
+	invalid := awserrors.ErrorInvalidParameterValue
+	// Nodegroup mutators gate on orchestration deps, which the shim service
+	// lacks → ServiceUnavailable. The read paths reach input validation and an
+	// empty body fails with InvalidParameterValue. UpdateNodegroupVersion stays
+	// NotImplemented (v1 doesn't do AMI upgrades).
+	unavailable := awserrors.ErrorServiceUnavailable
 	cases := []struct {
-		subject string
-		handler nats.MsgHandler
+		subject  string
+		handler  nats.MsgHandler
+		wantCode string
 	}{
-		{"eks.CreateCluster", d.handleEKSCreateCluster},
-		{"eks.DescribeCluster", d.handleEKSDescribeCluster},
-		{"eks.ListClusters", d.handleEKSListClusters},
-		{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig},
-		{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion},
-		{"eks.DeleteCluster", d.handleEKSDeleteCluster},
-		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup},
-		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup},
-		{"eks.ListNodegroups", d.handleEKSListNodegroups},
-		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig},
-		{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion},
-		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup},
-		{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry},
-		{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry},
-		{"eks.ListAccessEntries", d.handleEKSListAccessEntries},
-		{"eks.UpdateAccessEntry", d.handleEKSUpdateAccessEntry},
-		{"eks.DeleteAccessEntry", d.handleEKSDeleteAccessEntry},
-		{"eks.AssociateAccessPolicy", d.handleEKSAssociateAccessPolicy},
-		{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy},
-		{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies},
-		{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies},
-		{"eks.ListAddons", d.handleEKSListAddons},
-		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions},
-		{"eks.CreateAddon", d.handleEKSCreateAddon},
-		{"eks.DeleteAddon", d.handleEKSDeleteAddon},
-		{"eks.DescribeAddon", d.handleEKSDescribeAddon},
-		{"eks.UpdateAddon", d.handleEKSUpdateAddon},
-		{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig},
-		{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig},
-		{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs},
-		{"eks.DisassociateIdentityProviderConfig", d.handleEKSDisassociateIdentityProviderConfig},
-		{"eks.TagResource", d.handleEKSTagResource},
-		{"eks.UntagResource", d.handleEKSUntagResource},
-		{"eks.ListTagsForResource", d.handleEKSListTagsForResource},
+		{"eks.UpdateClusterConfig", d.handleEKSUpdateClusterConfig, notImpl},
+		{"eks.UpdateClusterVersion", d.handleEKSUpdateClusterVersion, notImpl},
+		{"eks.CreateNodegroup", d.handleEKSCreateNodegroup, unavailable},
+		{"eks.DescribeNodegroup", d.handleEKSDescribeNodegroup, invalid},
+		{"eks.ListNodegroups", d.handleEKSListNodegroups, invalid},
+		{"eks.UpdateNodegroupConfig", d.handleEKSUpdateNodegroupConfig, unavailable},
+		{"eks.UpdateNodegroupVersion", d.handleEKSUpdateNodegroupVersion, notImpl},
+		{"eks.DeleteNodegroup", d.handleEKSDeleteNodegroup, unavailable},
+		{"eks.CreateAccessEntry", d.handleEKSCreateAccessEntry, invalid},
+		{"eks.DescribeAccessEntry", d.handleEKSDescribeAccessEntry, invalid},
+		{"eks.ListAccessEntries", d.handleEKSListAccessEntries, invalid},
+		{"eks.UpdateAccessEntry", d.handleEKSUpdateAccessEntry, invalid},
+		{"eks.DeleteAccessEntry", d.handleEKSDeleteAccessEntry, invalid},
+		{"eks.AssociateAccessPolicy", d.handleEKSAssociateAccessPolicy, invalid},
+		{"eks.DisassociateAccessPolicy", d.handleEKSDisassociateAccessPolicy, invalid},
+		{"eks.ListAssociatedAccessPolicies", d.handleEKSListAssociatedAccessPolicies, invalid},
+		{"eks.ListAccessPolicies", d.handleEKSListAccessPolicies, ""},
+		// Addon handlers are implemented (Sprint 6 P1): an empty body fails
+		// cluster validation with InvalidParameterValue, except
+		// DescribeAddonVersions which returns the static catalogue (success).
+		{"eks.ListAddons", d.handleEKSListAddons, invalid},
+		{"eks.DescribeAddonVersions", d.handleEKSDescribeAddonVersions, ""},
+		{"eks.CreateAddon", d.handleEKSCreateAddon, invalid},
+		{"eks.DeleteAddon", d.handleEKSDeleteAddon, invalid},
+		{"eks.DescribeAddon", d.handleEKSDescribeAddon, invalid},
+		{"eks.UpdateAddon", d.handleEKSUpdateAddon, invalid},
+		{"eks.AssociateIdentityProviderConfig", d.handleEKSAssociateIdentityProviderConfig, notImpl},
+		{"eks.DescribeIdentityProviderConfig", d.handleEKSDescribeIdentityProviderConfig, notImpl},
+		{"eks.ListIdentityProviderConfigs", d.handleEKSListIdentityProviderConfigs, notImpl},
+		{"eks.DisassociateIdentityProviderConfig", d.handleEKSDisassociateIdentityProviderConfig, notImpl},
+		{"eks.TagResource", d.handleEKSTagResource, notImpl},
+		{"eks.UntagResource", d.handleEKSUntagResource, notImpl},
+		{"eks.ListTagsForResource", d.handleEKSListTagsForResource, notImpl},
 	}
-	require.Equal(t, 34, len(cases), "expected exactly one handler per AWS EKS action")
+	require.Equal(t, 30, len(cases), "expected exactly one handler per non-lifecycle AWS EKS action")
 
 	for _, c := range cases {
 		t.Run(c.subject, func(t *testing.T) {
@@ -99,7 +114,16 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 			t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 			payload := requestEKS(t, nc, c.subject)
-			assertNotImpl(t, payload)
+			if c.wantCode == "" {
+				// Success payload: dispatch is proven by a decodable non-error body.
+				var env struct {
+					Code *string `json:"Code"`
+				}
+				require.NoError(t, json.Unmarshal(payload, &env), "decode payload %q", payload)
+				assert.Nil(t, env.Code, "expected success, got error %q", payload)
+				return
+			}
+			assertErrorCode(t, payload, c.wantCode)
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package handlers_elbv2
 
 import (
+	"encoding/xml"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,10 @@ func setupTestService(t *testing.T) *ELBv2ServiceImpl {
 
 	svc, err := NewELBv2ServiceImplWithNATS(nil, nc)
 	require.NoError(t, err)
+	// Seed the certificate ARNs the listener tests attach so the fail-closed
+	// cert validation in Create/Modify/AddListenerCertificates resolves them.
+	putTestCert(t, svc, testCertArn, testAccountID, "LEAF", "", "KEY")
+	putTestCert(t, svc, testCertArn2, testAccountID, "LEAF", "", "KEY")
 	return svc
 }
 
@@ -142,7 +147,7 @@ func TestCreateLoadBalancer_NetworkType_RejectsSecurityGroups(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidConfigurationRequest")
 }
 
-func TestCreateLoadBalancer_CrossZoneAttributes(t *testing.T) {
+func TestCreateLoadBalancer_NLBCrossZoneAttribute(t *testing.T) {
 	svc := setupTestService(t)
 
 	// NLB: no stored attributes, Describe should return default cross-zone=false.
@@ -164,6 +169,10 @@ func TestCreateLoadBalancer_CrossZoneAttributes(t *testing.T) {
 		nlbAttrs[*a.Key] = *a.Value
 	}
 	assert.Equal(t, "false", nlbAttrs["load_balancing.cross_zone.enabled"])
+}
+
+func TestCreateLoadBalancer_ALBCrossZoneAttribute(t *testing.T) {
+	svc := setupTestService(t)
 
 	// ALB: no stored attributes either, Describe should return default cross-zone=true.
 	albOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
@@ -229,15 +238,16 @@ func TestDeleteLoadBalancer(t *testing.T) {
 	assert.Empty(t, desc.LoadBalancers)
 }
 
-func TestDeleteLoadBalancer_NotFound(t *testing.T) {
+func TestDeleteLoadBalancer_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+	out, err := svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/nope/xyz"),
 	}, testAccountID)
 
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "LoadBalancerNotFound")
+	// AWS ELBv2 delete is idempotent: absent LB -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDeleteLoadBalancer_CleansUpListeners(t *testing.T) {
@@ -696,14 +706,15 @@ func TestDeleteTargetGroup_InUse(t *testing.T) {
 	assert.Contains(t, err.Error(), "ResourceInUse")
 }
 
-func TestDeleteTargetGroup_NotFound(t *testing.T) {
+func TestDeleteTargetGroup_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
+	out, err := svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{
 		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/nope/xyz"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "TargetGroupNotFound")
+	// AWS ELBv2 delete is idempotent: absent TG -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestDescribeTargetGroups_FilterByLBArn(t *testing.T) {
@@ -761,6 +772,93 @@ func TestRegisterTargets(t *testing.T) {
 	// Second target should use override port
 	assert.Equal(t, "i-bbb222", *health.TargetHealthDescriptions[1].Target.Id)
 	assert.Equal(t, int64(8080), *health.TargetHealthDescriptions[1].Target.Port)
+}
+
+func TestRegisterTargets_IPType(t *testing.T) {
+	svc := setupTestService(t)
+
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("ip-tg"),
+		Port:       aws.Int64(80),
+		TargetType: aws.String("ip"),
+	}, testAccountID)
+	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+	assert.Equal(t, "ip", *tgOut.TargetGroups[0].TargetType)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets: []*elbv2.TargetDescription{
+			{Id: aws.String("10.0.1.20")},
+			{Id: aws.String("10.0.1.21"), Port: aws.Int64(8080)},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// ip targets must carry the supplied IP as PrivateIP, not an empty
+	// ENI-resolution result — otherwise HAProxy/health-check silently drop them.
+	tg, err := svc.store.GetTargetGroupByArn(*tgArn)
+	require.NoError(t, err)
+	require.Len(t, tg.Targets, 2)
+	ipByID := make(map[string]string)
+	for _, target := range tg.Targets {
+		ipByID[target.Id] = target.PrivateIP
+	}
+	assert.Equal(t, "10.0.1.20", ipByID["10.0.1.20"])
+	assert.Equal(t, "10.0.1.21", ipByID["10.0.1.21"])
+
+	health, err := svc.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+		TargetGroupArn: tgArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, health.TargetHealthDescriptions, 2)
+}
+
+func TestRegisterTargets_IPType_RejectsNonIP(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("ip-tg-bad"),
+		TargetType: aws.String("ip"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-notanip")}},
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestRegisterTargets_InstanceType_RejectsIP(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("inst-tg-badid"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RegisterTargets(&elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("10.0.0.5")}},
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateTargetGroup_RejectsUnsupportedTargetType(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name:       aws.String("lambda-tg"),
+		TargetType: aws.String("lambda"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}
+
+func TestCreateTargetGroup_DefaultsToInstanceType(t *testing.T) {
+	svc := setupTestService(t)
+	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
+		Name: aws.String("default-tt"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "instance", *tgOut.TargetGroups[0].TargetType)
 }
 
 func TestRegisterTargets_Idempotent(t *testing.T) {
@@ -865,6 +963,127 @@ func TestCreateListener(t *testing.T) {
 	assert.Equal(t, "forward", *l.DefaultActions[0].Type)
 }
 
+func TestCreateListener_RedirectDefault(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redir-lb")}, testAccountID)
+
+	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				Port:       aws.String("443"),
+				StatusCode: aws.String("HTTP_301"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Listeners, 1)
+	require.Len(t, out.Listeners[0].DefaultActions, 1)
+	a := out.Listeners[0].DefaultActions[0]
+	assert.Equal(t, "redirect", *a.Type)
+	require.NotNil(t, a.RedirectConfig)
+	assert.Equal(t, "HTTPS", *a.RedirectConfig.Protocol)
+	assert.Equal(t, "HTTP_301", *a.RedirectConfig.StatusCode)
+}
+
+func TestCreateListener_RedirectFullFields(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("redirfull-lb")}, testAccountID)
+
+	out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type: aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{
+				Protocol:   aws.String("HTTPS"),
+				Host:       aws.String("new.example.com"),
+				Port:       aws.String("8443"),
+				Path:       aws.String("/moved"),
+				Query:      aws.String("ref=1"),
+				StatusCode: aws.String("HTTP_302"),
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	rc := out.Listeners[0].DefaultActions[0].RedirectConfig
+	require.NotNil(t, rc)
+	assert.Equal(t, "new.example.com", *rc.Host)
+	assert.Equal(t, "8443", *rc.Port)
+	assert.Equal(t, "/moved", *rc.Path)
+	assert.Equal(t, "ref=1", *rc.Query)
+	assert.Equal(t, "HTTP_302", *rc.StatusCode)
+
+	// Read back through Describe to exercise the stored→SDK path.
+	desc, err := svc.DescribeListeners(&elbv2.DescribeListenersInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Listeners, 1)
+	assert.Equal(t, "new.example.com", *desc.Listeners[0].DefaultActions[0].RedirectConfig.Host)
+}
+
+func TestModifyListener_ToRedirect(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("mod-redir-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("mod-redir-tg")}, testAccountID)
+
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{Protocol: aws.String("HTTPS"), StatusCode: aws.String("HTTP_301")},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "redirect", *out.Listeners[0].DefaultActions[0].Type)
+
+	// A bad redirect on modify is rejected.
+	_, err = svc.ModifyListener(&elbv2.ModifyListenerInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{StatusCode: aws.String("HTTP_999")},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestCreateListener_RejectsBadRedirect(t *testing.T) {
+	svc := setupTestService(t)
+
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("badredir-lb")}, testAccountID)
+
+	_, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{{
+			Type:           aws.String("redirect"),
+			RedirectConfig: &elbv2.RedirectActionConfig{StatusCode: aws.String("HTTP_500")},
+		}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidParameterValue")
+}
+
 func TestCreateListener_DuplicatePort(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -924,14 +1143,15 @@ func TestDeleteListener(t *testing.T) {
 	assert.Empty(t, desc.Listeners)
 }
 
-func TestDeleteListener_NotFound(t *testing.T) {
+func TestDeleteListener_IdempotentOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	_, err := svc.DeleteListener(&elbv2.DeleteListenerInput{
+	out, err := svc.DeleteListener(&elbv2.DeleteListenerInput{
 		ListenerArn: aws.String("arn:nonexistent"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ListenerNotFound")
+	// AWS ELBv2 delete is idempotent: absent listener -> success, not NotFound.
+	require.NoError(t, err)
+	assert.NotNil(t, out)
 }
 
 func TestModifyListener_Port(t *testing.T) {
@@ -980,8 +1200,9 @@ func TestModifyListener_Protocol(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
-		ListenerArn: lstOut.Listeners[0].ListenerArn,
-		Protocol:    aws.String("HTTPS"),
+		ListenerArn:  lstOut.Listeners[0].ListenerArn,
+		Protocol:     aws.String("HTTPS"),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "HTTPS", *out.Listeners[0].Protocol)
@@ -1204,10 +1425,14 @@ func TestModifyListener_NLB_AcceptsAllProtocols(t *testing.T) {
 			}, testAccountID)
 			require.NoError(t, err)
 
-			out, err := svc.ModifyListener(&elbv2.ModifyListenerInput{
+			modIn := &elbv2.ModifyListenerInput{
 				ListenerArn: lstOut.Listeners[0].ListenerArn,
 				Protocol:    aws.String(tc.listenerProto),
-			}, testAccountID)
+			}
+			if protocolRequiresCert(tc.listenerProto) {
+				modIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
+			}
+			out, err := svc.ModifyListener(modIn, testAccountID)
 			require.NoError(t, err)
 			assert.Equal(t, tc.listenerProto, *out.Listeners[0].Protocol)
 		})
@@ -1389,14 +1614,18 @@ func TestCreateListener_NLB_AllProtocols(t *testing.T) {
 				Port:     aws.Int64(8080),
 			}, testAccountID)
 
-			out, err := svc.CreateListener(&elbv2.CreateListenerInput{
+			createIn := &elbv2.CreateListenerInput{
 				LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 				Protocol:        aws.String(proto),
 				Port:            aws.Int64(8080),
 				DefaultActions: []*elbv2.Action{
 					{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
 				},
-			}, testAccountID)
+			}
+			if protocolRequiresCert(proto) {
+				createIn.Certificates = []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}}
+			}
+			out, err := svc.CreateListener(createIn, testAccountID)
 
 			require.NoError(t, err)
 			assert.Equal(t, proto, *out.Listeners[0].Protocol)
@@ -1492,6 +1721,7 @@ func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {
 		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
 		Protocol:        aws.String("TLS"),
 		Port:            aws.Int64(443),
+		Certificates:    []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 		DefaultActions: []*elbv2.Action{
 			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
 		},
@@ -1817,6 +2047,91 @@ func TestGetLBConfig_ReturnsStoredConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "global\n    log stdout\n", *out.ConfigText)
 	assert.Equal(t, "deadbeef", *out.ConfigHash)
+}
+
+func TestGetLBConfig_DeliversHealthTargetsForNLB(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/nlb-hc/lb-nlbhc",
+		LoadBalancerID:  "lb-nlbhc",
+		Name:            "nlb-hc",
+		Type:            LoadBalancerTypeNetwork,
+		State:           StateActive,
+		ConfigText:      "stream {}\n",
+		ConfigHash:      "hc1",
+		AccountID:       testAccountID,
+		HealthTargets: []HealthTargetSpec{
+			{ServerName: "srv_i-1", Address: "10.0.0.1:80", Protocol: ProtocolTCP},
+		},
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(lb))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-nlbhc")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, EngineNginx, *out.Engine)
+	require.Len(t, out.HealthTargets, 1)
+	assert.Equal(t, "srv_i-1", *out.HealthTargets[0].ServerName)
+	assert.Equal(t, "10.0.0.1:80", *out.HealthTargets[0].Address)
+	assert.Equal(t, ProtocolTCP, *out.HealthTargets[0].Protocol)
+}
+
+func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
+	svc := setupTestService(t)
+	require.NoError(t, svc.store.PutLoadBalancer(&LoadBalancerRecord{
+		LoadBalancerID: "lb-wire",
+		Type:           LoadBalancerTypeNetwork,
+		AccountID:      testAccountID,
+		ConfigText:     "stream {}\n",
+		ConfigHash:     "w1",
+		HealthTargets: []HealthTargetSpec{
+			{ServerName: "srv_i-1", Address: "10.0.0.1:80", Protocol: ProtocolHTTP, Path: "/healthz"},
+		},
+	}))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-wire")}, testAccountID)
+	require.NoError(t, err)
+
+	// Confirm the marshalled member shape matches what the lb-agent parses
+	// (GetLBConfigResult>HealthTargets>member>{ServerName,Address,Protocol,Path}).
+	payload := utils.GenerateIAMXMLPayload("GetLBConfig", *out)
+	xmlBytes, err := utils.MarshalToXML(payload)
+	require.NoError(t, err)
+	var parsed struct {
+		Members []struct {
+			ServerName string `xml:"ServerName"`
+			Address    string `xml:"Address"`
+			Protocol   string `xml:"Protocol"`
+			Path       string `xml:"Path"`
+		} `xml:"GetLBConfigResult>HealthTargets>member"`
+	}
+	require.NoError(t, xml.Unmarshal(xmlBytes, &parsed))
+	require.Len(t, parsed.Members, 1)
+	assert.Equal(t, "srv_i-1", parsed.Members[0].ServerName)
+	assert.Equal(t, "10.0.0.1:80", parsed.Members[0].Address)
+	assert.Equal(t, ProtocolHTTP, parsed.Members[0].Protocol)
+	assert.Equal(t, "/healthz", parsed.Members[0].Path)
+}
+
+func TestGetLBConfig_NoHealthTargetsForALB(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb-hc/lb-albhc",
+		LoadBalancerID:  "lb-albhc",
+		Name:            "alb-hc",
+		Type:            LoadBalancerTypeApplication,
+		State:           StateActive,
+		ConfigText:      "global\n",
+		ConfigHash:      "hc2",
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(lb))
+
+	out, err := svc.GetLBConfig(&GetLBConfigInput{LBID: aws.String("lb-albhc")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, EngineHAProxy, *out.Engine)
+	assert.Empty(t, out.HealthTargets) // ALBs report health via HAProxy stats
 }
 
 func TestGetLBConfig_MissingLBID(t *testing.T) {
@@ -2181,7 +2496,11 @@ func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
 	for _, a := range out.Attributes {
 		attrMap[*a.Key] = *a.Value
 	}
-	// ALB default cross-zone is true — comes from the per-type default, not seeding.
+	// Every default key/value must round-trip through Describe, not just
+	// cross-zone. ALB default cross-zone is true — from the per-type default.
+	for k, v := range defaults {
+		assert.Equal(t, v, attrMap[k], "default mismatch for key %s", k)
+	}
 	assert.Equal(t, "true", attrMap["load_balancing.cross_zone.enabled"])
 }
 
@@ -2273,8 +2592,8 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 }
 
 // TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey is a regression
-// guard for mulga-931: terraform sends connection_logs.s3.enabled on every
-// aws_lb apply and the handler must accept it.
+// guard: terraform sends connection_logs.s3.enabled on every aws_lb apply and
+// the handler must accept it.
 func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
@@ -2295,70 +2614,33 @@ func TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey(t *testing.T) {
 	require.NoError(t, err, "terraform-sent attribute keys must be accepted")
 }
 
-func TestModifyDescribeTargetGroupAttributes_RoundTrip(t *testing.T) {
+// TestModifyLoadBalancerAttributes_EmptyStringClears verifies that a non-nil
+// empty-string Value is treated as a real value, not skipped as invalid. AWS
+// uses "" to clear access_logs.s3.bucket, so the handler must persist it.
+func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-rt")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("alb-clear")}, testAccountID)
 	require.NoError(t, err)
-	arn := tgOut.TargetGroups[0].TargetGroupArn
+	arn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	modOut, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("60")},
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
+	// Set a bucket, then clear it with an empty string.
+	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+		LoadBalancerArn: arn,
+		Attributes: []*elbv2.LoadBalancerAttribute{
+			{Key: aws.String("access_logs.s3.bucket"), Value: aws.String("my-logs")},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	// Assert the exact echoed key/value pairs, not just the length — a regression
-	// that pointed at the wrong source or dropped Value would pass a length check.
-	require.Len(t, modOut.Attributes, 2)
-	modMap := make(map[string]string, len(modOut.Attributes))
-	for _, a := range modOut.Attributes {
-		require.NotNil(t, a.Key)
-		require.NotNil(t, a.Value)
-		modMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "60", modMap["deregistration_delay.timeout_seconds"])
-	assert.Equal(t, "true", modMap["stickiness.enabled"])
-
-	descOut, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap := make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "60", attrMap["deregistration_delay.timeout_seconds"])
-	assert.Equal(t, "true", attrMap["stickiness.enabled"])
-	// Unmodified defaults should still be present
-	assert.Equal(t, "lb_cookie", attrMap["stickiness.type"])
-}
-
-func TestModifyDescribeLoadBalancerAttributes_RoundTrip(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-attr-rt")}, testAccountID)
-	require.NoError(t, err)
-	arn := lbOut.LoadBalancers[0].LoadBalancerArn
 
 	modOut, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
 		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("120")},
-			{Key: aws.String("deletion_protection.enabled"), Value: aws.String("true")},
+			{Key: aws.String("access_logs.s3.bucket"), Value: aws.String("")},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	// Assert the exact echoed key/value pairs, not just the length.
-	require.Len(t, modOut.Attributes, 2)
-	modMap := make(map[string]string, len(modOut.Attributes))
-	for _, a := range modOut.Attributes {
-		require.NotNil(t, a.Key)
-		require.NotNil(t, a.Value)
-		modMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "120", modMap["idle_timeout.timeout_seconds"])
-	assert.Equal(t, "true", modMap["deletion_protection.enabled"])
+	require.Len(t, modOut.Attributes, 1, "empty-string Value must be echoed, not skipped")
+	assert.Equal(t, "", *modOut.Attributes[0].Value)
 
 	descOut, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
@@ -2368,560 +2650,455 @@ func TestModifyDescribeLoadBalancerAttributes_RoundTrip(t *testing.T) {
 	for _, a := range descOut.Attributes {
 		attrMap[*a.Key] = *a.Value
 	}
-	assert.Equal(t, "120", attrMap["idle_timeout.timeout_seconds"])
-	assert.Equal(t, "true", attrMap["deletion_protection.enabled"])
-	// Unmodified defaults should still be present
-	assert.Equal(t, "true", attrMap["routing.http2.enabled"])
+	assert.Equal(t, "", attrMap["access_logs.s3.bucket"], "empty-string clear must persist")
 }
 
-func TestModifyTargetGroupAttributes_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/missing/tg-missing"),
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
+// --- Attribute mirror-pair tests (table-driven over TG/LB) ---
+//
+// ModifyTargetGroupAttributes/ModifyLoadBalancerAttributes (and their Describe
+// counterparts) are mirror pairs differing only by record type, store methods,
+// default set and not-found error. The behavioural tests below run once per
+// kind via t.Run instead of being hand-copied per resource.
+
+// rawAttr models one submitted SDK attribute, including the invalid shapes a
+// handler must skip: a nil slice element, a nil Key, or a nil Value.
+type rawAttr struct {
+	nilElem bool
+	key     *string
+	val     *string
 }
 
-func TestDescribeTargetGroupAttributes_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/missing/tg-missing"),
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
-}
+func kvAttr(k, v string) rawAttr { return rawAttr{key: aws.String(k), val: aws.String(v)} }
 
-func TestModifyLoadBalancerAttributes_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-missing"),
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("30")},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorELBv2LoadBalancerNotFound)
-}
-
-func TestDescribeLoadBalancerAttributes_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-		LoadBalancerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-missing"),
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorELBv2LoadBalancerNotFound)
-}
-
-func TestModifyTargetGroupAttributes_MissingArn(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
-func TestDescribeTargetGroupAttributes_MissingArn(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
-func TestModifyLoadBalancerAttributes_MissingArn(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("30")},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
-func TestDescribeLoadBalancerAttributes_MissingArn(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
-func TestModifyTargetGroupAttributes_WrongAccount(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-wrong-acct")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, "999999999999")
-	assert.EqualError(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
-}
-
-func TestDescribeTargetGroupAttributes_WrongAccount(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-desc-attr-wrong-acct")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
-	}, "999999999999")
-	assert.EqualError(t, err, awserrors.ErrorELBv2TargetGroupNotFound)
-}
-
-func TestModifyLoadBalancerAttributes_WrongAccount(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-attr-wrong-acct")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("30")},
-		},
-	}, "999999999999")
-	assert.EqualError(t, err, awserrors.ErrorELBv2LoadBalancerNotFound)
-}
-
-func TestDescribeLoadBalancerAttributes_WrongAccount(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-desc-attr-wrong-acct")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
-	}, "999999999999")
-	assert.EqualError(t, err, awserrors.ErrorELBv2LoadBalancerNotFound)
-}
-
-// TestModifyTargetGroupAttributes_SkipsInvalidEntries verifies that nil slice
-// elements, nil Keys, and nil Values are skipped (with a warning) rather than
-// panicking or being silently dropped. Valid attributes in the same call must
-// still be applied.
-func TestModifyTargetGroupAttributes_SkipsInvalidEntries(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-skip")}, testAccountID)
-	require.NoError(t, err)
-	arn := tgOut.TargetGroups[0].TargetGroupArn
-
-	modOut, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			nil, // nil element must not panic
-			{Key: nil, Value: aws.String("v")},
-			{Key: aws.String("k"), Value: nil},
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-	// Only the one valid attribute should be returned.
-	require.Len(t, modOut.Attributes, 1)
-	assert.Equal(t, "stickiness.enabled", *modOut.Attributes[0].Key)
-	assert.Equal(t, "true", *modOut.Attributes[0].Value)
-
-	// The valid attribute should have been persisted.
-	descOut, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap := make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
+func kvAttrs(kv ...[2]string) []rawAttr {
+	out := make([]rawAttr, len(kv))
+	for i, p := range kv {
+		out[i] = kvAttr(p[0], p[1])
 	}
-	assert.Equal(t, "true", attrMap["stickiness.enabled"])
+	return out
 }
 
-// TestModifyLoadBalancerAttributes_SkipsInvalidEntries mirrors the TG case for
-// the LB handler: nil elements and nil Key/Value fields must be skipped, not
-// panic or swallow valid attributes in the same request.
-func TestModifyLoadBalancerAttributes_SkipsInvalidEntries(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-attr-skip")}, testAccountID)
-	require.NoError(t, err)
-	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+type echoPair struct{ Key, Val string }
 
-	modOut, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			nil, // nil element must not panic
-			{Key: nil, Value: aws.String("v")},
-			{Key: aws.String("k"), Value: nil},
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("75")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, modOut.Attributes, 1)
-	assert.Equal(t, "idle_timeout.timeout_seconds", *modOut.Attributes[0].Key)
-	assert.Equal(t, "75", *modOut.Attributes[0].Value)
-
-	descOut, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap := make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
+func echoMap(pairs []echoPair) map[string]string {
+	m := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		m[p.Key] = p.Val
 	}
-	assert.Equal(t, "75", attrMap["idle_timeout.timeout_seconds"])
+	return m
 }
 
-// TestModifyTargetGroupAttributes_AllInvalidReturnsError guards against the
-// silent-success case where every submitted attribute trips the nil guard and
-// the handler returned 200 OK with an empty response body — the caller would
-// think the write landed when nothing was actually applied.
-func TestModifyTargetGroupAttributes_AllInvalidReturnsError(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-all-invalid")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			nil,
-			{Key: nil, Value: aws.String("v")},
-			{Key: aws.String("k"), Value: nil},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
-}
-
-// TestModifyLoadBalancerAttributes_AllInvalidReturnsError mirrors the TG case.
-func TestModifyLoadBalancerAttributes_AllInvalidReturnsError(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-all-invalid")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			nil,
-			{Key: nil, Value: aws.String("v")},
-			{Key: aws.String("k"), Value: nil},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
-}
-
-// TestModifyTargetGroupAttributes_SequentialMerge verifies that successive
-// Modify calls accumulate keys instead of replacing the entire attribute map.
-// A future refactor that did `tg.Attributes = newMap` would pass every other
-// test (single-call round-trip covers the happy path) but silently wipe
-// previous attributes on every subsequent Modify — the most likely real-world
-// ALB/TG bug.
-func TestModifyTargetGroupAttributes_SequentialMerge(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-seq-merge")}, testAccountID)
-	require.NoError(t, err)
-	arn := tgOut.TargetGroups[0].TargetGroupArn
-
-	// Call 1: set deregistration_delay.timeout_seconds.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("45")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Call 2: set a different key; must not wipe the first one.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	descOut, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap := make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
+// attrArnPtr returns nil for an empty ARN so the MissingArn cases exercise the
+// real "no ARN supplied" path rather than an empty-string ARN.
+func attrArnPtr(arn string) *string {
+	if arn == "" {
+		return nil
 	}
-	assert.Equal(t, "45", attrMap["deregistration_delay.timeout_seconds"], "first-call key must survive second Modify")
-	assert.Equal(t, "true", attrMap["stickiness.enabled"], "second-call key must be present")
-
-	// Call 3: overwrite the same key with a new value.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("false")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	descOut, err = svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap = make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "false", attrMap["stickiness.enabled"], "same-key overwrite must replace the value")
-	assert.Equal(t, "45", attrMap["deregistration_delay.timeout_seconds"], "unrelated key must still survive")
+	return aws.String(arn)
 }
 
-// TestModifyLoadBalancerAttributes_SequentialMerge mirrors the TG case.
-func TestModifyLoadBalancerAttributes_SequentialMerge(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-seq-merge")}, testAccountID)
-	require.NoError(t, err)
-	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+// attrKind bundles everything the table-driven attribute tests need to drive
+// one resource type (target group or load balancer).
+type attrKind struct {
+	name       string
+	notFound   string
+	missingArn string
 
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("120")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
+	keyA, valA, valA2 string // primary key, value, and an overwrite value
+	keyB, valB        string // secondary key/value
+	defaultKey        string // a default present after create
+	defaultVal        string
+	unknownKey        string // a key the handler must reject
 
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("deletion_protection.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	descOut, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap := make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "120", attrMap["idle_timeout.timeout_seconds"], "first-call key must survive second Modify")
-	assert.Equal(t, "true", attrMap["deletion_protection.enabled"], "second-call key must be present")
-
-	// Same-key overwrite.
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("90")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	descOut, err = svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-	}, testAccountID)
-	require.NoError(t, err)
-	attrMap = make(map[string]string)
-	for _, a := range descOut.Attributes {
-		attrMap[*a.Key] = *a.Value
-	}
-	assert.Equal(t, "90", attrMap["idle_timeout.timeout_seconds"], "same-key overwrite must replace the value")
-	assert.Equal(t, "true", attrMap["deletion_protection.enabled"], "unrelated key must still survive")
+	create   func(t *testing.T, svc *ELBv2ServiceImpl, name string) string
+	modify   func(svc *ELBv2ServiceImpl, arn, accountID string, attrs []rawAttr) ([]echoPair, error)
+	describe func(svc *ELBv2ServiceImpl, arn, accountID string) ([]echoPair, error)
+	revision func(t *testing.T, svc *ELBv2ServiceImpl, arn string) uint64
 }
 
-// TestModifyTargetGroupAttributes_NoopSkipsPersist verifies that a
-// re-submission of the same attribute values does not bump the underlying KV
-// revision — Terraform's drift check hits Modify on every apply, so the
-// steady-state path must be a no-op at the storage layer.
-func TestModifyTargetGroupAttributes_NoopSkipsPersist(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-noop")}, testAccountID)
-	require.NoError(t, err)
-	tgArn := tgOut.TargetGroups[0].TargetGroupArn
-
-	// First modify — must hit the store.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgArn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
+func attrKinds() []attrKind {
+	return []attrKind{
+		{
+			name:       "TargetGroup",
+			notFound:   awserrors.ErrorELBv2TargetGroupNotFound,
+			missingArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/missing/tg-missing",
+			keyA:       "deregistration_delay.timeout_seconds", valA: "45", valA2: "30",
+			keyB: "stickiness.enabled", valB: "true",
+			defaultKey: "stickiness.type", defaultVal: "lb_cookie",
+			unknownKey: "stickness.enabled", // typo of "stickiness"
+			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
+				out, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String(name)}, testAccountID)
+				require.NoError(t, err)
+				return *out.TargetGroups[0].TargetGroupArn
+			},
+			modify: func(svc *ELBv2ServiceImpl, arn, accountID string, attrs []rawAttr) ([]echoPair, error) {
+				sdk := make([]*elbv2.TargetGroupAttribute, len(attrs))
+				for i, a := range attrs {
+					if a.nilElem {
+						continue
+					}
+					sdk[i] = &elbv2.TargetGroupAttribute{Key: a.key, Value: a.val}
+				}
+				out, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
+					TargetGroupArn: attrArnPtr(arn), Attributes: sdk,
+				}, accountID)
+				if err != nil {
+					return nil, err
+				}
+				pairs := make([]echoPair, len(out.Attributes))
+				for i, a := range out.Attributes {
+					pairs[i] = echoPair{*a.Key, *a.Value}
+				}
+				return pairs, nil
+			},
+			describe: func(svc *ELBv2ServiceImpl, arn, accountID string) ([]echoPair, error) {
+				out, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
+					TargetGroupArn: attrArnPtr(arn),
+				}, accountID)
+				if err != nil {
+					return nil, err
+				}
+				pairs := make([]echoPair, len(out.Attributes))
+				for i, a := range out.Attributes {
+					pairs[i] = echoPair{*a.Key, *a.Value}
+				}
+				return pairs, nil
+			},
+			revision: func(t *testing.T, svc *ELBv2ServiceImpl, arn string) uint64 {
+				tg, err := svc.store.GetTargetGroupByArn(arn)
+				require.NoError(t, err)
+				entry, err := svc.store.kv.Get(KeyPrefixTG + tg.TargetGroupID)
+				require.NoError(t, err)
+				return entry.Revision()
+			},
 		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Capture KV revision after the first write.
-	tg, err := svc.store.GetTargetGroupByArn(*tgArn)
-	require.NoError(t, err)
-	entry, err := svc.store.kv.Get(KeyPrefixTG + tg.TargetGroupID)
-	require.NoError(t, err)
-	revBefore := entry.Revision()
-
-	// Second modify with identical values — must skip the Put.
-	modOut, err := svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgArn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
+		{
+			name:       "LoadBalancer",
+			notFound:   awserrors.ErrorELBv2LoadBalancerNotFound,
+			missingArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/missing/lb-missing",
+			keyA:       "idle_timeout.timeout_seconds", valA: "120", valA2: "90",
+			keyB: "deletion_protection.enabled", valB: "true",
+			defaultKey: "routing.http2.enabled", defaultVal: "true",
+			unknownKey: "stickiness.enabled", // valid TG key — cross-product mistake
+			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
+				out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String(name)}, testAccountID)
+				require.NoError(t, err)
+				return *out.LoadBalancers[0].LoadBalancerArn
+			},
+			modify: func(svc *ELBv2ServiceImpl, arn, accountID string, attrs []rawAttr) ([]echoPair, error) {
+				sdk := make([]*elbv2.LoadBalancerAttribute, len(attrs))
+				for i, a := range attrs {
+					if a.nilElem {
+						continue
+					}
+					sdk[i] = &elbv2.LoadBalancerAttribute{Key: a.key, Value: a.val}
+				}
+				out, err := svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
+					LoadBalancerArn: attrArnPtr(arn), Attributes: sdk,
+				}, accountID)
+				if err != nil {
+					return nil, err
+				}
+				pairs := make([]echoPair, len(out.Attributes))
+				for i, a := range out.Attributes {
+					pairs[i] = echoPair{*a.Key, *a.Value}
+				}
+				return pairs, nil
+			},
+			describe: func(svc *ELBv2ServiceImpl, arn, accountID string) ([]echoPair, error) {
+				out, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
+					LoadBalancerArn: attrArnPtr(arn),
+				}, accountID)
+				if err != nil {
+					return nil, err
+				}
+				pairs := make([]echoPair, len(out.Attributes))
+				for i, a := range out.Attributes {
+					pairs[i] = echoPair{*a.Key, *a.Value}
+				}
+				return pairs, nil
+			},
+			revision: func(t *testing.T, svc *ELBv2ServiceImpl, arn string) uint64 {
+				lb, err := svc.store.GetLoadBalancerByArn(arn)
+				require.NoError(t, err)
+				entry, err := svc.store.kv.Get(KeyPrefixLB + lb.LoadBalancerID)
+				require.NoError(t, err)
+				return entry.Revision()
+			},
 		},
-	}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, modOut.Attributes, 1)
-
-	entry, err = svc.store.kv.Get(KeyPrefixTG + tg.TargetGroupID)
-	require.NoError(t, err)
-	assert.Equal(t, revBefore, entry.Revision(), "identical modify must not increment KV revision")
-
-	// Empty attribute list is also a no-op.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgArn,
-	}, testAccountID)
-	require.NoError(t, err)
-	entry, err = svc.store.kv.Get(KeyPrefixTG + tg.TargetGroupID)
-	require.NoError(t, err)
-	assert.Equal(t, revBefore, entry.Revision(), "empty modify must not increment KV revision")
-}
-
-// TestModifyLoadBalancerAttributes_NoopSkipsPersist mirrors the TG case.
-func TestModifyLoadBalancerAttributes_NoopSkipsPersist(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-noop")}, testAccountID)
-	require.NoError(t, err)
-	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
-
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: lbArn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("75")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	lb, err := svc.store.GetLoadBalancerByArn(*lbArn)
-	require.NoError(t, err)
-	entry, err := svc.store.kv.Get(KeyPrefixLB + lb.LoadBalancerID)
-	require.NoError(t, err)
-	revBefore := entry.Revision()
-
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: lbArn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("75")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	entry, err = svc.store.kv.Get(KeyPrefixLB + lb.LoadBalancerID)
-	require.NoError(t, err)
-	assert.Equal(t, revBefore, entry.Revision(), "identical modify must not increment KV revision")
-}
-
-// TestModifyTargetGroupAttributes_RejectsUnknownKey guards against silently
-// persisting typo'd or cross-product attribute keys. AWS rejects unknown keys
-// with ValidationError; we must match that so Terraform surfaces the typo at
-// plan time instead of letting it drift into KV forever.
-func TestModifyTargetGroupAttributes_RejectsUnknownKey(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-unknown-key")}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickness.enabled"), Value: aws.String("true")}, // typo of "stickiness"
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorValidationError)
-
-	// The rejected key must not have been persisted.
-	descOut, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
-	}, testAccountID)
-	require.NoError(t, err)
-	for _, a := range descOut.Attributes {
-		assert.NotEqual(t, "stickness.enabled", *a.Key, "unknown key must not appear in Describe")
 	}
 }
 
-// TestModifyLoadBalancerAttributes_RejectsUnknownKey mirrors the TG case.
-func TestModifyLoadBalancerAttributes_RejectsUnknownKey(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-unknown-key")}, testAccountID)
-	require.NoError(t, err)
+func TestAttributeRoundTrip(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-rt")
 
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			// Valid TG attribute key sent to LB handler — common cross-product mistake.
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorValidationError)
-}
+			// Assert the exact echoed key/value pairs, not just the length — a
+			// regression that pointed at the wrong source or dropped Value would
+			// pass a length check.
+			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}, [2]string{k.keyB, k.valB}))
+			require.NoError(t, err)
+			require.Len(t, echoed, 2)
+			em := echoMap(echoed)
+			assert.Equal(t, k.valA, em[k.keyA])
+			assert.Equal(t, k.valB, em[k.keyB])
 
-// TestDescribeTargetGroupAttributes_SortedOrder verifies that attributes are
-// returned in a stable, sorted-by-key order. Go map iteration is randomised,
-// so without explicit sorting Terraform would see spurious plan diffs between
-// back-to-back describe calls.
-func TestDescribeTargetGroupAttributes_SortedOrder(t *testing.T) {
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-sorted")}, testAccountID)
-	require.NoError(t, err)
-	arn := tgOut.TargetGroups[0].TargetGroupArn
-
-	// Modify a few attributes to ensure the merged map contains both defaults
-	// and overrides.
-	_, err = svc.ModifyTargetGroupAttributes(&elbv2.ModifyTargetGroupAttributesInput{
-		TargetGroupArn: arn,
-		Attributes: []*elbv2.TargetGroupAttribute{
-			{Key: aws.String("stickiness.enabled"), Value: aws.String("true")},
-			{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("45")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
-
-	// Call Describe multiple times; each result must be identical and sorted.
-	var firstKeys []string
-	for i := range 5 {
-		descOut, err := svc.DescribeTargetGroupAttributes(&elbv2.DescribeTargetGroupAttributesInput{
-			TargetGroupArn: arn,
-		}, testAccountID)
-		require.NoError(t, err)
-
-		keys := make([]string, len(descOut.Attributes))
-		for j, a := range descOut.Attributes {
-			keys[j] = *a.Key
-		}
-		assert.True(t, sort.StringsAreSorted(keys), "attributes must be sorted by key, got %v", keys)
-		if i == 0 {
-			firstKeys = keys
-		} else {
-			assert.Equal(t, firstKeys, keys, "attribute order must be stable across calls")
-		}
+			desc, err := k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			dm := echoMap(desc)
+			assert.Equal(t, k.valA, dm[k.keyA])
+			assert.Equal(t, k.valB, dm[k.keyB])
+			// Unmodified defaults should still be present.
+			assert.Equal(t, k.defaultVal, dm[k.defaultKey])
+		})
 	}
 }
 
-// TestDescribeLoadBalancerAttributes_SortedOrder mirrors the TG test: LB
-// describe responses must be sorted and stable across repeated calls.
-func TestDescribeLoadBalancerAttributes_SortedOrder(t *testing.T) {
-	svc := setupTestService(t)
-	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("lb-attr-sorted")}, testAccountID)
-	require.NoError(t, err)
-	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+func TestAttributeNotFound(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
 
-	_, err = svc.ModifyLoadBalancerAttributes(&elbv2.ModifyLoadBalancerAttributesInput{
-		LoadBalancerArn: arn,
-		Attributes: []*elbv2.LoadBalancerAttribute{
-			{Key: aws.String("idle_timeout.timeout_seconds"), Value: aws.String("90")},
-			{Key: aws.String("deletion_protection.enabled"), Value: aws.String("true")},
-		},
-	}, testAccountID)
-	require.NoError(t, err)
+			_, err := k.modify(svc, k.missingArn, testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
+			assert.EqualError(t, err, k.notFound)
 
-	var firstKeys []string
-	for i := range 5 {
-		descOut, err := svc.DescribeLoadBalancerAttributes(&elbv2.DescribeLoadBalancerAttributesInput{
-			LoadBalancerArn: arn,
-		}, testAccountID)
-		require.NoError(t, err)
+			_, err = k.describe(svc, k.missingArn, testAccountID)
+			assert.EqualError(t, err, k.notFound)
+		})
+	}
+}
 
-		keys := make([]string, len(descOut.Attributes))
-		for j, a := range descOut.Attributes {
-			keys[j] = *a.Key
-		}
-		assert.True(t, sort.StringsAreSorted(keys), "attributes must be sorted by key, got %v", keys)
-		if i == 0 {
-			firstKeys = keys
-		} else {
-			assert.Equal(t, firstKeys, keys, "attribute order must be stable across calls")
-		}
+func TestAttributeMissingArn(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+
+			_, err := k.modify(svc, "", testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
+			assert.EqualError(t, err, awserrors.ErrorMissingParameter)
+
+			_, err = k.describe(svc, "", testAccountID)
+			assert.EqualError(t, err, awserrors.ErrorMissingParameter)
+		})
+	}
+}
+
+func TestAttributeWrongAccount(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-wrong-acct")
+
+			_, err := k.modify(svc, arn, "999999999999", kvAttrs([2]string{k.keyB, k.valB}))
+			assert.EqualError(t, err, k.notFound)
+
+			_, err = k.describe(svc, arn, "999999999999")
+			assert.EqualError(t, err, k.notFound)
+
+			// The rejected modify must not have mutated the record — read back as
+			// the real owner and confirm keyB is still at its default, not valB.
+			desc, err := k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			assert.NotEqual(t, k.valB, echoMap(desc)[k.keyB], "wrong-account modify must not mutate the record")
+		})
+	}
+}
+
+// TestAttributeCrossAccountIsolation verifies that two accounts each holding a
+// resource never see each other's attributes: a Modify by account A must not be
+// visible to a Describe by account B, even for similarly-named resources.
+func TestAttributeCrossAccountIsolation(t *testing.T) {
+	const accountB = "222222222222"
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svcA := setupTestService(t)
+			arnA := k.create(t, svcA, "attr-iso")
+
+			// Account A sets keyB.
+			_, err := k.modify(svcA, arnA, testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
+			require.NoError(t, err)
+
+			// Account B cannot see or describe A's resource at all.
+			_, err = k.describe(svcA, arnA, accountB)
+			assert.EqualError(t, err, k.notFound)
+			_, err = k.modify(svcA, arnA, accountB, kvAttrs([2]string{k.keyB, "false"}))
+			assert.EqualError(t, err, k.notFound)
+
+			// A's value is untouched.
+			desc, err := k.describe(svcA, arnA, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, k.valB, echoMap(desc)[k.keyB])
+		})
+	}
+}
+
+// TestAttributeSkipsInvalidEntries verifies that nil slice elements, nil Keys,
+// and nil Values are skipped (with a warning) rather than panicking or being
+// silently dropped. Valid attributes in the same call must still be applied.
+func TestAttributeSkipsInvalidEntries(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-skip")
+
+			echoed, err := k.modify(svc, arn, testAccountID, []rawAttr{
+				{nilElem: true}, // nil element must not panic
+				{key: nil, val: aws.String("v")},
+				{key: aws.String("k"), val: nil},
+				kvAttr(k.keyB, k.valB),
+			})
+			require.NoError(t, err)
+			// Only the one valid attribute should be returned.
+			require.Len(t, echoed, 1)
+			assert.Equal(t, k.keyB, echoed[0].Key)
+			assert.Equal(t, k.valB, echoed[0].Val)
+
+			// The valid attribute should have been persisted.
+			desc, err := k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, k.valB, echoMap(desc)[k.keyB])
+		})
+	}
+}
+
+// TestAttributeAllInvalidReturnsError guards against the silent-success case
+// where every submitted attribute trips the nil guard and the handler returns
+// 200 OK with an empty body — the caller would think the write landed when
+// nothing was applied.
+func TestAttributeAllInvalidReturnsError(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-all-invalid")
+
+			_, err := k.modify(svc, arn, testAccountID, []rawAttr{
+				{nilElem: true},
+				{key: nil, val: aws.String("v")},
+				{key: aws.String("k"), val: nil},
+			})
+			assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+		})
+	}
+}
+
+// TestAttributeSequentialMerge verifies that successive Modify calls accumulate
+// keys instead of replacing the entire attribute map. A refactor that did
+// `rec.Attributes = newMap` would pass every other test (single-call round-trip
+// covers the happy path) but silently wipe previous attributes on every
+// subsequent Modify — the most likely real-world bug.
+func TestAttributeSequentialMerge(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-seq-merge")
+
+			// Call 1: set keyA.
+			_, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}))
+			require.NoError(t, err)
+			// Call 2: set a different key; must not wipe the first.
+			_, err = k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyB, k.valB}))
+			require.NoError(t, err)
+
+			desc, err := k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			dm := echoMap(desc)
+			assert.Equal(t, k.valA, dm[k.keyA], "first-call key must survive second Modify")
+			assert.Equal(t, k.valB, dm[k.keyB], "second-call key must be present")
+
+			// Call 3: overwrite keyA with a new value.
+			_, err = k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA2}))
+			require.NoError(t, err)
+
+			desc, err = k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			dm = echoMap(desc)
+			assert.Equal(t, k.valA2, dm[k.keyA], "same-key overwrite must replace the value")
+			assert.Equal(t, k.valB, dm[k.keyB], "unrelated key must still survive")
+		})
+	}
+}
+
+// TestAttributeNoopSkipsPersist verifies that re-submitting identical values
+// does not bump the KV revision — Terraform's drift check hits Modify on every
+// apply, so the steady-state path must be a storage-layer no-op.
+func TestAttributeNoopSkipsPersist(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-noop")
+
+			// First modify — must hit the store.
+			_, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}))
+			require.NoError(t, err)
+			revBefore := k.revision(t, svc, arn)
+
+			// Second modify with identical values — must skip the Put.
+			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}))
+			require.NoError(t, err)
+			require.Len(t, echoed, 1)
+			assert.Equal(t, revBefore, k.revision(t, svc, arn), "identical modify must not increment KV revision")
+
+			// Empty attribute list is also a no-op.
+			_, err = k.modify(svc, arn, testAccountID, nil)
+			require.NoError(t, err)
+			assert.Equal(t, revBefore, k.revision(t, svc, arn), "empty modify must not increment KV revision")
+		})
+	}
+}
+
+// TestAttributeRejectsUnknownKey guards against silently persisting typo'd or
+// cross-product attribute keys. AWS rejects unknown keys with ValidationError;
+// we match that so Terraform surfaces the typo at plan time instead of letting
+// it drift into KV forever.
+func TestAttributeRejectsUnknownKey(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-unknown-key")
+
+			_, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.unknownKey, "true"}))
+			assert.EqualError(t, err, awserrors.ErrorValidationError)
+
+			// The rejected key must not have been persisted.
+			desc, err := k.describe(svc, arn, testAccountID)
+			require.NoError(t, err)
+			_, present := echoMap(desc)[k.unknownKey]
+			assert.False(t, present, "unknown key must not appear in Describe")
+		})
+	}
+}
+
+// TestAttributeSortedOrder verifies attributes are returned in a stable,
+// sorted-by-key order. Go map iteration is randomised, so without explicit
+// sorting Terraform would see spurious plan diffs between describe calls.
+func TestAttributeSortedOrder(t *testing.T) {
+	for _, k := range attrKinds() {
+		t.Run(k.name, func(t *testing.T) {
+			svc := setupTestService(t)
+			arn := k.create(t, svc, "attr-sorted")
+
+			// Modify a couple of attributes so the merged map mixes defaults and
+			// overrides.
+			_, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}, [2]string{k.keyB, k.valB}))
+			require.NoError(t, err)
+
+			var firstKeys []string
+			for i := range 5 {
+				desc, err := k.describe(svc, arn, testAccountID)
+				require.NoError(t, err)
+				keys := make([]string, len(desc))
+				for j, p := range desc {
+					keys[j] = p.Key
+				}
+				assert.True(t, sort.StringsAreSorted(keys), "attributes must be sorted by key, got %v", keys)
+				if i == 0 {
+					firstKeys = keys
+				} else {
+					assert.Equal(t, firstKeys, keys, "attribute order must be stable across calls")
+				}
+			}
+		})
 	}
 }
 
@@ -2968,9 +3145,9 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Listeners don't store tags yet — must still return a TagDescription
-	// (with an empty Tags slice), not an error. This is the case the
-	// Terraform AWS provider hits during post-create refresh.
+	// Listener created without tags must still return a TagDescription (with an
+	// empty Tags slice), not an error. This is the case the Terraform AWS
+	// provider hits during post-create refresh.
 	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
 		ResourceArns: []*string{lstOut.Listeners[0].ListenerArn},
 	}, testAccountID)
@@ -2978,6 +3155,55 @@ func TestDescribeTags_Listener_NoTags(t *testing.T) {
 	require.Len(t, out.TagDescriptions, 1)
 	assert.Equal(t, *lstOut.Listeners[0].ListenerArn, *out.TagDescriptions[0].ResourceArn)
 	assert.Empty(t, out.TagDescriptions[0].Tags)
+}
+
+func TestDescribeTags_ListenerRule_NoTags(t *testing.T) {
+	svc := setupTestService(t)
+	lbOut, _ := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("tags-rule-lb")}, testAccountID)
+	tgOut, _ := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("tags-rule-tg")}, testAccountID)
+	lstOut, err := svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	ruleOut, err := svc.CreateRule(&elbv2.CreateRuleInput{
+		ListenerArn: lstOut.Listeners[0].ListenerArn,
+		Priority:    aws.Int64(10),
+		Conditions: []*elbv2.RuleCondition{
+			{Field: aws.String("host-header"), Values: aws.StringSlice([]string{"app.example.com"})},
+		},
+		Actions: []*elbv2.Action{
+			{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Rule created without tags must still return a TagDescription (with an
+	// empty Tags slice), not an error. This is the case the Terraform AWS
+	// provider hits during post-create refresh of aws_lb_listener_rule.
+	out, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{ruleOut.Rules[0].RuleArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TagDescriptions, 1)
+	assert.Equal(t, *ruleOut.Rules[0].RuleArn, *out.TagDescriptions[0].ResourceArn)
+	assert.Empty(t, out.TagDescriptions[0].Tags)
+}
+
+func TestDescribeTags_RuleNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeTags(&elbv2.DescribeTagsInput{
+		ResourceArns: []*string{
+			aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:listener-rule/app/missing/lb-x/lst-y/rule-deadbeef"),
+		},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorELBv2RuleNotFound)
 }
 
 func TestDescribeTags_MultipleArns(t *testing.T) {

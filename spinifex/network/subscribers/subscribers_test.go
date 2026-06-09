@@ -98,6 +98,7 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 		TopicAddNATGateway, TopicDeleteNATGateway,
 		TopicAddIGWRoute, TopicDeleteIGWRoute,
 		TopicGateSubnetEgress, TopicUngateSubnetEgress,
+		TopicAddSystemEgress, TopicDeleteSystemEgress,
 		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
 	}
 	if len(subs) != len(wantTopics) {
@@ -171,6 +172,66 @@ func TestHandleAddNATGateway_InstallsPerSubnetEgress(t *testing.T) {
 		policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 		return err == nil && len(policies) == 0
 	}, 2*time.Second, 20*time.Millisecond, "NATGW egress policy must be removed on delete event")
+}
+
+// TestHandleSystemEgress_InstallsAndRemoves drives the full event path: a
+// vpc.add-system-egress event installs the /32 reroute + snat-only NAT, and
+// vpc.delete-system-egress tears both down.
+func TestHandleSystemEgress_InstallsAndRemoves(t *testing.T) {
+	ctx := context.Background()
+	_, nc := testutil.StartTestNATS(t)
+	sub, m := newTestSubscriber(t)
+	subs, err := sub.Subscribe(nc)
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	}()
+
+	require.NoError(t, m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{
+		Name:        topology.VPCRouter("vpc-1"),
+		ExternalIDs: map[string]string{"spinifex:vpc_id": "vpc-1"},
+	}))
+	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+
+	evt := SystemEgressEvent{
+		VpcId:      "vpc-1",
+		SubnetId:   "subnet-k3s",
+		InstanceIp: "10.0.4.10",
+		ExternalIp: "192.168.1.60",
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	require.NoError(t, nc.Publish(TopicAddSystemEgress, data))
+
+	require.Eventually(t, func() bool {
+		policies, perr := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+		if perr != nil || len(policies) != 1 {
+			return false
+		}
+		return policies[0].Priority == policy.SystemInstanceEgressPriority
+	}, 2*time.Second, 20*time.Millisecond, "system egress reroute must be installed")
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Contains(t, policies[0].Match, "ip4.src == 10.0.4.10/32")
+
+	snat, err := m.FindNATByExternalIP(ctx, "snat", "192.168.1.60")
+	require.NoError(t, err)
+	require.NotNil(t, snat)
+	assert.Equal(t, "10.0.4.10/32", snat.LogicalIP)
+
+	require.NoError(t, nc.Publish(TopicDeleteSystemEgress, data))
+	require.Eventually(t, func() bool {
+		policies, perr := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+		if perr != nil || len(policies) != 0 {
+			return false
+		}
+		got, gerr := m.FindNATByExternalIP(ctx, "snat", "192.168.1.60")
+		return gerr == nil && got == nil
+	}, 2*time.Second, 20*time.Millisecond, "system egress reroute + snat must be removed on delete")
 }
 
 // TestHandleAddNATGateway_InvalidCIDRSkipsPolicy: the SNAT install must still

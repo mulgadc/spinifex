@@ -52,6 +52,12 @@ type PoolRecord struct {
 	GwLrpRangeStart string                          `json:"gw_lrp_range_start,omitempty"`
 	GwLrpRangeEnd   string                          `json:"gw_lrp_range_end,omitempty"`
 	Allocated       map[string]ExternalIPAllocation `json:"allocated"`
+	// Cursor is the last address handed out. Allocation resumes just past it
+	// and wraps at RangeEnd, so a released IP is not reused until the cursor
+	// cycles the whole range — by which time the host ARP cache for the prior
+	// owner has decayed and its OVN gateway state is gone. Empty on a fresh
+	// pool (older records unmarshal with no cursor) → first cycle is lowest-free.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // StaticPoolAllocator implements Allocator backed by a NATS JetStream KV
@@ -114,6 +120,7 @@ func (a *StaticPoolAllocator) Allocate(_ context.Context, req AllocateRequest) (
 			ENIId:        req.ENIID,
 			InstanceId:   req.InstanceID,
 		}
+		record.Cursor = ip
 
 		data, err := json.Marshal(record)
 		if err != nil {
@@ -274,8 +281,12 @@ func (a *StaticPoolAllocator) getRecord(poolName string) (*PoolRecord, uint64, e
 }
 
 // nextAvailableIP picks the next unallocated address in the pool's range,
-// skipping addresses inside [GwLrpRangeStart, GwLrpRangeEnd]. Carved from
-// the pre-Q1 handlers/ec2/vpc.nextAvailableExternalIP.
+// skipping addresses inside [GwLrpRangeStart, GwLrpRangeEnd]. Allocation
+// resumes one past record.Cursor and wraps at RangeEnd so a just-released IP
+// is not handed straight back — it only becomes a candidate again after the
+// cursor cycles the whole range. An empty cursor (fresh pool, or an older KV
+// record) starts at RangeStart, preserving lowest-free order for the first
+// cycle. Carved from the pre-Q1 handlers/ec2/vpc.nextAvailableExternalIP.
 func nextAvailableIP(record *PoolRecord) (string, error) {
 	startIP := net.ParseIP(record.RangeStart).To4()
 	endIP := net.ParseIP(record.RangeEnd).To4()
@@ -297,16 +308,28 @@ func nextAvailableIP(record *PoolRecord) (string, error) {
 
 	startInt := ipv4ToUint32(startIP)
 	endInt := ipv4ToUint32(endIP)
+	if endInt < startInt {
+		return "", fmt.Errorf("invalid IP range: %s - %s", record.RangeStart, record.RangeEnd)
+	}
+	total := endInt - startInt + 1
 
-	for i := startInt; ; i++ {
-		if !hasGwLrp || i < gwLrpStart || i > gwLrpEnd {
-			candidate := uint32ToIPv4(i).String()
-			if _, taken := record.Allocated[candidate]; !taken {
-				return candidate, nil
-			}
+	// Resume just past the cursor; empty/out-of-range cursor → start of range.
+	offset := uint32(0)
+	if c := net.ParseIP(record.Cursor).To4(); c != nil {
+		ci := ipv4ToUint32(c)
+		if ci >= startInt && ci <= endInt {
+			offset = ((ci - startInt) + 1) % total
 		}
-		if i == endInt {
-			break
+	}
+
+	for k := range total {
+		i := startInt + (offset+k)%total
+		if hasGwLrp && i >= gwLrpStart && i <= gwLrpEnd {
+			continue
+		}
+		candidate := uint32ToIPv4(i).String()
+		if _, taken := record.Allocated[candidate]; !taken {
+			return candidate, nil
 		}
 	}
 

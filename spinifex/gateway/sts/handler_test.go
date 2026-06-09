@@ -20,6 +20,7 @@ import (
 type stubSTSService struct {
 	assumeRoleFn        func(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
+	getSessionTokenFn   func(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
 	lookupSessionFn     func(akid string) (*handlers_sts.SessionCredential, error)
 }
 
@@ -32,6 +33,13 @@ func (s *stubSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity s
 	return &sts.AssumeRoleOutput{}, nil
 }
 
+// AssumeRoleForInstance is the in-process IMDS entry point and is never
+// dispatched over the HTTPS gateway; the stub exists only to satisfy the
+// interface.
+func (s *stubSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
+	return &sts.AssumeRoleOutput{}, nil
+}
+
 func (s *stubSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	if s.getCallerIdentityFn != nil {
 		return s.getCallerIdentityFn(callerAccountID, callerARN, callerUserID, input)
@@ -41,6 +49,13 @@ func (s *stubSTSService) GetCallerIdentity(callerAccountID, callerARN, callerUse
 		Arn:     aws.String(callerARN),
 		UserId:  aws.String(callerUserID),
 	}, nil
+}
+
+func (s *stubSTSService) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+	if s.getSessionTokenFn != nil {
+		return s.getSessionTokenFn(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID, input)
+	}
+	return &sts.GetSessionTokenOutput{}, nil
 }
 
 func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.SessionCredential, error) {
@@ -420,4 +435,46 @@ func TestGetCallerIdentity_UnknownPrincipalType(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+}
+
+func TestGetSessionToken_ForwardsCallerFields(t *testing.T) {
+	var got struct {
+		accountID     string
+		userName      string
+		principalType string
+		accessKeyID   string
+	}
+	svc := &stubSTSService{
+		getSessionTokenFn: func(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+			got.accountID = callerAccountID
+			got.userName = callerUserName
+			got.principalType = callerPrincipalType
+			got.accessKeyID = callerAccessKeyID
+			return &sts.GetSessionTokenOutput{
+				Credentials: &sts.Credentials{AccessKeyId: aws.String("ASIAEXAMPLE")},
+			}, nil
+		},
+	}
+	// The wrapper's job is to forward c.identity as the user name, plus
+	// c.principalType and c.accessKey, through to the service so the handler can
+	// enforce its user-only / no-session rule; assert that mapping holds.
+	out, err := GetSessionToken("000000000000", "alice", PrincipalTypeUser, "AKIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "ASIAEXAMPLE", aws.StringValue(out.Credentials.AccessKeyId))
+	assert.Equal(t, "000000000000", got.accountID)
+	assert.Equal(t, "alice", got.userName)
+	assert.Equal(t, PrincipalTypeUser, got.principalType)
+	assert.Equal(t, "AKIAEXAMPLE", got.accessKeyID)
+}
+
+func TestGetSessionToken_PropagatesServiceError(t *testing.T) {
+	svc := &stubSTSService{
+		getSessionTokenFn: func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+			return nil, errors.New(awserrors.ErrorAccessDenied)
+		},
+	}
+	_, err := GetSessionToken("000000000000", "s1", PrincipalTypeAssumedRole, "ASIAEXAMPLE", &sts.GetSessionTokenInput{}, svc)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 }

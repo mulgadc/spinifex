@@ -131,7 +131,16 @@ jobs:
       REPO: ${{ github.repository }}
     steps:
       - name: Clean Workspace
-        run: rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # This runner (ci-single) is shared with the iso job, which mounts a
+          # kernel-global devtmpfs at <workspace>/mulga/scripts/iso-builder/.cache/rootfs/dev.
+          # If that job is killed its EXIT-trap unmount never runs and the bind
+          # leaks; a plain rm -rf then traverses it and deletes the host's /dev
+          # (wipes /dev/null, wedges the box). Detach any leaked mounts under the
+          # workspace first, then forbid rm from crossing a mount boundary.
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -169,8 +178,36 @@ jobs:
           TARBALL=$(find "${GITHUB_WORKSPACE}/release-assets" -name "*-linux-amd64.tar.gz" | head -1)
           ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" "$SETUP_SH" "$TARBALL"
 
+      - name: Teardown
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
+          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
+          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
+
+  # Bare-metal single-node suite on the real ISO/squashfs + PXE-boot path —
+  # the only release check that exercises hardware install. Runs in parallel
+  # with `verify` (both need: release). Promotion and ISO upload both hard-gate
+  # on this passing.
+  baremetal:
+    needs: release
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/e2e-baremetal.yml
+    secrets: inherit
+
+  # Promote the draft only after BOTH the tofu install (`verify`) and the
+  # bare-metal hardware boot (`baremetal`) pass — runs only if both succeed.
+  promote:
+    needs: [ verify, baremetal ]
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+    steps:
       - name: Promote Release
-        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -182,29 +219,31 @@ jobs:
             echo "Release ${TAG} promoted to latest"
           fi
 
+  # Annotate the (still-draft) release if either gate failed.
+  mark-failed:
+    needs: [ verify, baremetal ]
+    if: failure()
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+    steps:
       - name: Mark Release Failed
-        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           EXISTING_BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
           NOTES_FILE=$(mktemp)
-          printf 'Verification failed — see workflow run for details.\n\n%s' "$EXISTING_BODY" > "$NOTES_FILE"
+          printf 'Verification failed (tofu install or bare-metal boot) — see workflow run for details.\n\n%s' "$EXISTING_BODY" > "$NOTES_FILE"
           gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_FILE"
           rm -f "$NOTES_FILE"
-
-      - name: Teardown
-        if: always()
-        working-directory: mulga/scripts/tofu-cluster
-        run: |
-          tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
-          tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
-          ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
   iso:
     needs: release
     runs-on: [ self-hosted, ci-single ]
-    timeout-minutes: 90
+    # ISO build (~60-90m) overlaps the parallel baremetal run (~120m); the
+    # upload gate then waits for baremetal to finish, so the job must outlast it.
+    timeout-minutes: 180
     steps:
       - name: Clean Workspace
         run: |
@@ -216,7 +255,7 @@ jobs:
           sudo umount -l "${ROOTFS}/dev" 2>/dev/null || true
           sudo umount -l "${ROOTFS}/sys" 2>/dev/null || true
           sudo umount -l "${ROOTFS}/proc" 2>/dev/null || true
-          sudo rm -rf "$GITHUB_WORKSPACE"/*
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         id: app-token
@@ -289,24 +328,28 @@ jobs:
             SPINIFEX_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spx" \
             INSTALLER_BIN="${GITHUB_WORKSPACE}/spinifex/bin/spinifex-installer"
 
-      - name: Wait for verify
+      - name: Wait for verify + baremetal
         id: wait-verify
         if: steps.build-iso.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Waiting for verify job to complete..."
+          # Gate the R2 upload on BOTH the tofu install (`verify`) and the
+          # real-hardware boot (`baremetal`, a reusable workflow whose job shows
+          # as "baremetal / ..."). Upload only if both conclude success.
+          echo "Waiting for verify + baremetal jobs to complete..."
           while true; do
-            CONCLUSION=$(gh api \
-              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
-              --jq '.jobs[] | select(.name == "verify") | .conclusion // empty')
-            if [ -n "$CONCLUSION" ]; then
-              echo "Verify conclusion: $CONCLUSION"
-              [ "$CONCLUSION" = "success" ] && exit 0
+            JOBS=$(gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate)
+            VERIFY=$(echo "$JOBS" | jq -r '.jobs[] | select(.name == "verify") | .conclusion // empty')
+            BAREMETAL=$(echo "$JOBS" | jq -r '.jobs[] | select(.name | startswith("baremetal")) | .conclusion // empty')
+            if [ -n "$VERIFY" ] && [ -n "$BAREMETAL" ]; then
+              echo "verify=$VERIFY baremetal=$BAREMETAL"
+              { [ "$VERIFY" = "success" ] && [ "$BAREMETAL" = "success" ]; } && exit 0
               exit 1
             fi
-            echo "Verify still running, retrying in 30s..."
+            echo "Still waiting (verify=${VERIFY:-pending} baremetal=${BAREMETAL:-pending}), retry 30s..."
             sleep 30
           done
 
@@ -327,14 +370,13 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
           CF_R2_ENDPOINT_URL: ${{ secrets.CF_R2_ENDPOINT_URL }}
-          VERSION: ${{ github.ref_name }}
         run: |
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
-            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso" \
-                  "s3://spinifex-iso/spinifex-${VERSION}.iso"
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex.iso" \
+                  "s3://spinifex-iso/spinifex.iso"
           aws --endpoint-url="${CF_R2_ENDPOINT_URL}" \
-            s3 cp "mulga/scripts/iso-builder/dist/spinifex-${VERSION}.iso.sha256" \
-                  "s3://spinifex-iso/spinifex-${VERSION}.iso.sha256"
+            s3 cp "mulga/scripts/iso-builder/dist/spinifex.iso.sha256" \
+                  "s3://spinifex-iso/spinifex.iso.sha256"
 
       - name: Mark ISO failed
         if: always() && (steps.build-iso.outcome == 'failure' || steps.upload.outcome == 'failure')

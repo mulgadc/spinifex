@@ -4,9 +4,7 @@ package harness
 
 import (
 	"bytes"
-	"fmt"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,59 +26,27 @@ type SSHTarget struct {
 	KeyPath string
 }
 
-// InstancePublicSSHHost returns (host, port) for an SSH connection to inst.
+// InstancePublicSSHHost returns (host, 22) for an SSH connection to inst's
+// public IP.
 //
-// Preference order matches run-e2e.sh:
-//  1. Instance's public IP on port 22, when assigned (external networking).
-//  2. QEMU hostfwd discovered by scanning `ps -ef` for the qemu process whose
-//     command line contains the instance ID and a `hostfwd=tcp:<ip>:<port>-:22`
-//     argument (dev_networking mode).
-//
-// t.Fatal on neither resolving — both phases need a usable SSH endpoint.
+// There is deliberately NO qemu-hostfwd fallback. hostfwd (127.0.0.1 ->
+// guest:22) is a dev_networking shortcut that bypasses the OVN datapath
+// entirely — no SG ACL, no IGW, no SNAT/DNAT — so a test that reached a guest
+// through it would validate nothing real and mask exactly the networking
+// regressions these tests exist to catch. An instance with no public IP is a
+// hard failure: the routing it depends on is broken or unconfigured.
 func InstancePublicSSHHost(t *testing.T, inst *ec2.Instance) (string, int) {
 	t.Helper()
 	if inst == nil {
 		t.Fatalf("InstancePublicSSHHost: nil instance")
 	}
-	if pub := aws.StringValue(inst.PublicIpAddress); pub != "" && pub != "None" {
-		return pub, 22
+	pub := aws.StringValue(inst.PublicIpAddress)
+	if pub == "" || pub == "None" {
+		t.Fatalf("InstancePublicSSHHost: instance %s has no public IP; "+
+			"qemu-hostfwd fallback is disabled (it bypasses the OVN datapath)",
+			aws.StringValue(inst.InstanceId))
 	}
-	id := aws.StringValue(inst.InstanceId)
-	host, port, err := discoverHostfwd(id)
-	if err != nil {
-		t.Fatalf("InstancePublicSSHHost: %v", err)
-	}
-	return host, port
-}
-
-// hostfwd=tcp:HOST:PORT-:22 — HOST may be empty (qemu defaults to 127.0.0.1).
-// Anchor on -:22 so we ignore other hostfwd rules (e.g. metadata, serial).
-var hostfwdRE = regexp.MustCompile(`hostfwd=tcp:([^:]*):([0-9]+)-:22`)
-
-func discoverHostfwd(instanceID string) (string, int, error) {
-	out, err := exec.Command("ps", "-eo", "args=").CombinedOutput()
-	if err != nil {
-		return "", 0, fmt.Errorf("ps: %w", err)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.Contains(line, instanceID) || !strings.Contains(line, "qemu") {
-			continue
-		}
-		m := hostfwdRE.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		host := m[1]
-		if host == "" {
-			host = "127.0.0.1"
-		}
-		port, err := strconv.Atoi(m[2])
-		if err != nil {
-			return "", 0, fmt.Errorf("parse hostfwd port %q: %w", m[2], err)
-		}
-		return host, port, nil
-	}
-	return "", 0, fmt.Errorf("no qemu hostfwd found for %s", instanceID)
+	return pub, 22
 }
 
 // LsblkRootGiB SSHes into the VM and returns the root disk size in GiB,

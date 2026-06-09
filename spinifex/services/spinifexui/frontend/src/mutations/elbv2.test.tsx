@@ -292,6 +292,7 @@ describe("useCreateLoadBalancerWizard", () => {
 
   const lbBase = {
     name: "my-alb",
+    type: "application" as const,
     scheme: "internet-facing" as const,
     vpcId: "vpc-123",
     subnetIds: ["subnet-a", "subnet-b"],

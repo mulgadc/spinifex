@@ -1,6 +1,8 @@
 package handlers_eks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,13 @@ import (
 const (
 	KVBucketEKSAccountPrefix  = "eks-account-"
 	KVBucketEKSAccountVersion = 1
+
+	// KVBucketEKSAccountHistory pins the per-account bucket to one revision per
+	// key. This MUST stay 1: ZeroizeClusterOIDCKey relies on Purge dropping the
+	// key's whole history so no prior revision of the encrypted OIDC signing key
+	// survives a DeleteCluster. Keep this decoupled from the schema version so a
+	// future version bump can't silently widen history and resurrect ciphertext.
+	KVBucketEKSAccountHistory = 1
 
 	KVBucketEKSLeader        = "spinifex-eks-leader"
 	KVBucketEKSLeaderVersion = 1
@@ -47,14 +56,34 @@ func ClusterMetaKey(name string) string {
 	return fmt.Sprintf("clusters/%s/meta", name)
 }
 
+// NodegroupsPrefix returns the KV key prefix under which all of a cluster's
+// nodegroup records live. Used by ListNodegroups to enumerate.
+func NodegroupsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/nodegroups/", cluster)
+}
+
 // NodegroupKey returns the KV key for a nodegroup record under a cluster.
 func NodegroupKey(cluster, ng string) string {
-	return fmt.Sprintf("clusters/%s/nodegroups/%s", cluster, ng)
+	return NodegroupsPrefix(cluster) + ng
+}
+
+// AccessEntriesPrefix returns the KV key prefix under which all of a cluster's
+// AccessEntry records live. Used by ListAccessEntries to enumerate.
+func AccessEntriesPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/access-entries/", cluster)
 }
 
 // AccessEntryKey returns the KV key for an AccessEntry record under a cluster.
+// The principal ARN is hashed because IAM ARNs contain ':' which is not a legal
+// NATS JetStream KV key character; the record itself carries the plaintext ARN.
 func AccessEntryKey(cluster, principalARN string) string {
-	return fmt.Sprintf("clusters/%s/access-entries/%s", cluster, principalARN)
+	return AccessEntriesPrefix(cluster) + PrincipalARNHash(principalARN)
+}
+
+// PrincipalARNHash maps an IAM principal ARN to a KV-key-safe token.
+func PrincipalARNHash(principalARN string) string {
+	sum := sha256.Sum256([]byte(principalARN))
+	return hex.EncodeToString(sum[:])
 }
 
 // OIDCProviderKey returns the KV key for a registered OIDC provider config
@@ -74,6 +103,15 @@ func OIDCJWKSKey(cluster string) string {
 	return fmt.Sprintf("clusters/%s/oidc-jwks.json", cluster)
 }
 
+// OIDCJWKSVerifiedKey returns the KV key marking that the K3s-VM-published JWKS
+// passed the controller cross-check (kid + kty match the controller-generated
+// keypair). The reconciler gates the ACTIVE transition on this marker, NOT on
+// OIDCJWKSKey — the controller pre-seeds OIDCJWKSKey at create time, so its
+// presence proves nothing about the running cluster's actual signing key.
+func OIDCJWKSVerifiedKey(cluster string) string {
+	return fmt.Sprintf("clusters/%s/oidc-jwks-verified", cluster)
+}
+
 // AdminKubeconfigKey returns the KV key for a cluster's encrypted admin
 // kubeconfig (used by the spinifex-side nodegroup reconciler).
 func AdminKubeconfigKey(cluster string) string {
@@ -89,6 +127,23 @@ func NodeTokenKey(cluster string) string {
 // EventKey returns the KV key for a cluster-scoped event record.
 func EventKey(cluster, ts string) string {
 	return fmt.Sprintf("clusters/%s/events/%s", cluster, ts)
+}
+
+// AddonsPrefix returns the KV key prefix under which all of a cluster's managed
+// add-on records live. Used by ListAddons to enumerate.
+func AddonsPrefix(cluster string) string {
+	return fmt.Sprintf("clusters/%s/addons/", cluster)
+}
+
+// AddonKey returns the KV key for a managed add-on record under a cluster.
+func AddonKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon
+}
+
+// AddonManifestKey returns the KV key under which the rendered manifest for a
+// managed add-on is staged for the VM-side delivery transport to consume.
+func AddonManifestKey(cluster, addon string) string {
+	return AddonsPrefix(cluster) + addon + "/manifest"
 }
 
 // Store is the per-daemon EKS KV handle. Per-account and leader buckets are
@@ -118,7 +173,7 @@ func AccountBucketName(accountID string) string {
 // accountID return the existing handle.
 func GetOrCreateAccountBucket(js nats.JetStreamContext, accountID string) (nats.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountVersion)
+	kv, err := utils.GetOrCreateKVBucket(js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}

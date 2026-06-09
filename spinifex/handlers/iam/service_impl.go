@@ -87,6 +87,10 @@ type IAMServiceImpl struct {
 	instanceProfilesBucket nats.KeyValue
 	masterKey              []byte
 	decrypter              *Decrypter
+	// replicas is the JetStream replication factor for lazily-created
+	// per-account buckets (the OIDC-provider registry). Matches the factor
+	// the eagerly-created buckets above were built with.
+	replicas int
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
@@ -189,6 +193,7 @@ func NewIAMServiceImpl(natsConn *nats.Conn, masterKey []byte, clusterSize int) (
 		instanceProfilesBucket: instanceProfilesBucket,
 		masterKey:              masterKey,
 		decrypter:              decrypter,
+		replicas:               replicas,
 	}, nil
 }
 
@@ -205,6 +210,18 @@ func getOrCreateBucket(js nats.JetStreamContext, name string, history uint8, rep
 		}
 	}
 	return kv, nil
+}
+
+// copyTags converts SDK IAM tags into the stored Tag slice, skipping entries
+// with a nil key or value. Returns a non-nil (possibly empty) slice.
+func copyTags(tags []*iam.Tag) []Tag {
+	out := make([]Tag, 0, len(tags))
+	for _, tag := range tags {
+		if tag.Key != nil && tag.Value != nil {
+			out = append(out, Tag{Key: *tag.Key, Value: *tag.Value})
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -239,14 +256,8 @@ func (s *IAMServiceImpl) CreateUser(accountID string, input *iam.CreateUserInput
 		Path:             path,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AccessKeys:       []string{},
-		Tags:             []Tag{},
+		Tags:             copyTags(input.Tags),
 		AttachedPolicies: []string{},
-	}
-
-	for _, tag := range input.Tags {
-		if tag.Key != nil && tag.Value != nil {
-			user.Tags = append(user.Tags, Tag{Key: *tag.Key, Value: *tag.Value})
-		}
 	}
 
 	data, err := json.Marshal(user)

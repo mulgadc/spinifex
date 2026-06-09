@@ -19,14 +19,21 @@ INITTAB="$BUILD_DIR/inittab"
 
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
-ALPINE_PACKAGES="busybox linux-virt haproxy iproute2 ca-certificates"
+# haproxy: ALB (L7) data plane. nginx + nginx-mod-stream: NLB (L4) data plane —
+# the `stream` module (a separate Alpine package) load-balances TCP/UDP/TLS,
+# which haproxy cannot do for UDP.
+ALPINE_PACKAGES="busybox linux-virt haproxy nginx nginx-mod-stream iproute2 ca-certificates"
 
 echo "[build-microvm-image] repo root: $REPO_ROOT"
 echo "[build-microvm-image] build dir: $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 # --- Verify non-negotiable tools ---
-for tool in cpio gzip find; do
+# fakeroot is mandatory: device nodes are written into the cpio archive inside a
+# faked-root environment so no real device node is ever created on the host
+# filesystem (which previously required sudo mknod and risked clobbering host
+# /dev/null on cleanup).
+for tool in cpio gzip find fakeroot; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required tool not found: $tool" >&2
         exit 1
@@ -35,6 +42,13 @@ done
 
 # --- Create chroot ---
 CHROOT_DIR=$(mktemp -d)
+# Guard: every destructive op below targets "$CHROOT_DIR/...". An empty or
+# unexpected value would aim rm -rf at the host (e.g. /dev). Refuse anything that
+# is not a freshly-created temp dir.
+case "${CHROOT_DIR:?mktemp -d returned empty}" in
+    /tmp/*|/var/tmp/*|"${TMPDIR:-/nonexistent}"/*) ;;
+    *) echo "ERROR: refusing to use unexpected CHROOT_DIR: $CHROOT_DIR" >&2; exit 1 ;;
+esac
 CONTAINER_TOOL=""
 CONTAINER_CID=""
 cleanup() {
@@ -93,16 +107,14 @@ else
     $CONTAINER_TOOL export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
 fi
 
-# --- Fix /dev device nodes ---
+# --- /dev: empty mountpoint only ---
 # tar extraction without root silently creates 0-byte regular files for device
-# nodes (mknod requires CAP_MKNOD). The kernel opens /dev/console to wire
-# init's stdio to the serial console; a regular file there causes all init
-# output to be silently discarded. Recreate the two nodes needed before
-# devtmpfs mounts (which provides the rest at runtime).
-rm -rf "$CHROOT_DIR/dev"
+# nodes. Drop them and leave an empty /dev mountpoint. The two static nodes the
+# kernel needs (/dev/console to wire init's stdio, /dev/null) are written into
+# the cpio archive under fakeroot at pack time — NOT created on the host. init
+# mounts devtmpfs over /dev as its first action for everything else at runtime.
+rm -rf "${CHROOT_DIR:?}/dev"
 mkdir "$CHROOT_DIR/dev"
-sudo mknod -m 600 "$CHROOT_DIR/dev/console" c 5 1
-sudo mknod -m 666 "$CHROOT_DIR/dev/null"    c 1 3
 
 # --- Place init script ---
 echo "[build-microvm-image] installing init.sh as /init..."
@@ -161,6 +173,21 @@ else
     echo "[build-microvm-image] fw_cfg: module found in lib/modules"
 fi
 
+# --- Assert nginx + stream module (NLB L4 data plane) ---
+# The lb-agent runs `nginx -c` with a config that `load_module`s the stream
+# module; if either the binary or the .so is missing the agent never enters
+# nginx mode, never probes, and NLB targets stay at 0/N healthy. Fail the build
+# loudly here rather than discover it as an opaque e2e health timeout.
+if [ ! -x "$CHROOT_DIR/usr/sbin/nginx" ] && [ ! -x "$CHROOT_DIR/usr/bin/nginx" ]; then
+    echo "ERROR: nginx binary missing from image — NLB data plane will not start" >&2
+    exit 1
+fi
+if ! find "$CHROOT_DIR/usr/lib/nginx/modules" -name "ngx_stream_module.so" 2>/dev/null | grep -q .; then
+    echo "ERROR: ngx_stream_module.so missing from image — NLB stream config fails to load" >&2
+    exit 1
+fi
+echo "[build-microvm-image] nginx: binary + stream module present"
+
 # --- Strip kernel modules (Phase 2 keep-list approach) ---
 # Only modules needed by a virtio-mmio microvm guest are kept:
 #   virtio*.ko*    — virtio bus, net, blk, rng, console, and helpers
@@ -197,8 +224,34 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     done)
     rm -rf "$tmp_keep"
 
-    # Regenerate module dependency map from the surviving modules.
-    depmod -b "$CHROOT_DIR" "$kver" 2>/dev/null || true
+    # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
+    # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently
+    # produces an EMPTY modules.dep from compressed modules — the guest's
+    # modprobe then no-ops and qemu_fw_cfg never loads. Plain .ko sidesteps the
+    # host-kmod dependency entirely and the guest needs no decompressor either.
+    find "$kernel_dir" -name "*.ko.gz" -exec gunzip -f {} +
+
+    # Regenerate the module dependency map when a host depmod is available. A
+    # populated modules.dep lets the guest init's load_mod() resolve modules via
+    # modprobe; without it, load_mod() falls back to insmod-by-path (see
+    # build/microvm/init.sh), so modules.dep is an optimisation, not a boot
+    # requirement. depmod (kmod) is absent on some self-hosted CI runners and
+    # cannot be apt-installed there — skip rather than hard-fail. When depmod
+    # IS present, still assert a non-empty result so the trixie-kmod-can't-read
+    # -compressed-modules bug (empty modules.dep from .ko.gz) fails loudly.
+    if command -v depmod >/dev/null 2>&1; then
+        if ! depmod -b "$CHROOT_DIR" "$kver"; then
+            echo "ERROR: depmod failed for $kver" >&2
+            exit 1
+        fi
+        if [ ! -s "$kver_dir/modules.dep" ]; then
+            echo "ERROR: ${kver_dir}modules.dep missing or empty after depmod" >&2
+            exit 1
+        fi
+    else
+        echo "[build-microvm-image] depmod not found; skipping modules.dep" \
+             "(guest init load_mod() will insmod modules by path)" >&2
+    fi
 done
 
 # --- Strip package-manager artifacts (not needed at runtime) ---
@@ -238,10 +291,15 @@ rm -rf "$CHROOT_DIR/boot"
 # --- Build initramfs ---
 INITRAMFS_OUT="$BUILD_DIR/initramfs.cpio.gz"
 echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
-(
-    cd "$CHROOT_DIR"
-    find . | cpio --quiet -o -H newc | gzip -9 > "$INITRAMFS_OUT"
-)
+# Create the static device nodes and pack the archive inside a single fakeroot
+# session: mknod/cpio see faked device entries and write real char-device
+# records into the cpio, while the host filesystem never gets an actual node.
+fakeroot sh -c '
+    cd "$1" || exit 1
+    mknod -m 600 dev/console c 5 1
+    mknod -m 666 dev/null    c 1 3
+    find . | cpio --quiet -o -H newc | gzip -9 > "$2"
+' _ "$CHROOT_DIR" "$INITRAMFS_OUT"
 
 # --- Log artifact sizes ---
 echo ""

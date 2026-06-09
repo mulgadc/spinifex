@@ -34,7 +34,7 @@ resources:
 ## Overview
 
 This guide assumes Spinifex is already installed and running. If not, follow one of the installation guides first:
-- [Single-Node Install)](/docs/install)
+- [Single-Node Install](/docs/install)
 - [Multi-Node Install](/docs/install-multi-node)
 - [Source Install](/docs/install-source)
 
@@ -50,7 +50,9 @@ export AWS_PROFILE=spinifex
 
 ## 1. Import an AMI
 
-List available images and import one matching your architecture:
+### Option A: Import a bundled image
+
+List the bundled images and import one matching your architecture:
 
 ```bash
 spx admin images list
@@ -64,13 +66,11 @@ ubuntu-26.04-arm64      | ubuntu | 26.04   | arm64  | uefi
 ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | uefi
 ```
 
-Import an image:
-
 ```bash
 spx admin images import --name ubuntu-26.04-x86_64
 ```
 
-Or import a local image file:
+### Option B: Import a local image file
 
 ```bash
 spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --version 26.04 --arch x86_64 --boot-mode uefi
@@ -79,7 +79,7 @@ spx admin images import --file ~/images/ubuntu-26.04.img --distro ubuntu --versi
 Verify the import and note the AMI ID:
 
 ```bash
-aws ec2 describe-images
+AMI_ID=$(aws ec2 describe-images --query 'Images[0].ImageId' --output text)
 ```
 
 ## 2. Create an SSH Key
@@ -115,8 +115,6 @@ aws ec2 describe-key-pairs
 ```bash
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.200.0.0/16 \
   --query 'Vpc.VpcId' --output text)
-
-echo "VPC: $VPC_ID"
 ```
 
 ### Create an Internet Gateway
@@ -130,68 +128,95 @@ IGW_ID=$(aws ec2 create-internet-gateway \
 aws ec2 attach-internet-gateway \
   --internet-gateway-id $IGW_ID \
   --vpc-id $VPC_ID
-
-echo "IGW: $IGW_ID (attached to $VPC_ID)"
 ```
 
-### Create a Public Subnet
+### Create a Subnet
 
-A public subnet auto-assigns a routable IP to each instance, making it directly reachable from your network.
+Create the subnet your instances will launch into. The routing and public-IP steps below are what make it a *public* subnet.
 
 ```bash
 SUBNET_ID=$(aws ec2 create-subnet \
   --vpc-id $VPC_ID \
   --cidr-block 10.200.1.0/24 \
   --query 'Subnet.SubnetId' --output text)
+```
 
-# Enable auto-assign public IP
+### Create a Route Table
+
+A subnet is only **public** if its route table has a default route to the Internet Gateway. Spinifex does **not** add this route automatically — a new VPC's route table only routes traffic within the VPC (matching AWS). Without a `0.0.0.0/0` route to the IGW, instances in the subnet cannot reach the internet (and inbound connections cannot complete) even with a public IP assigned.
+
+```bash
+RT_ID=$(aws ec2 create-route-table \
+  --vpc-id $VPC_ID \
+  --query 'RouteTable.RouteTableId' --output text)
+
+# Default route to the internet via the IGW
+aws ec2 create-route \
+  --route-table-id $RT_ID \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id $IGW_ID
+
+# Associate the route table with the subnet
+aws ec2 associate-route-table \
+  --route-table-id $RT_ID \
+  --subnet-id $SUBNET_ID
+```
+
+### Enable Auto-Assign Public IP
+
+Give every instance launched into the subnet a routable public IP, making it directly reachable from your network.
+
+```bash
 aws ec2 modify-subnet-attribute \
   --subnet-id $SUBNET_ID \
   --map-public-ip-on-launch
-
-echo "Subnet: $SUBNET_ID (public)"
 ```
+
+### Allow SSH and ICMP
+
+Every VPC gets a default security group that **blocks inbound traffic from outside the group** (matching AWS). Instances launched without an explicit security group use this default, so you must authorize ingress before you can SSH or ping the instance.
+
+```bash
+SG_ID=$(aws ec2 describe-security-groups \
+  --filters Name=vpc-id,Values=$VPC_ID \
+  --query 'SecurityGroups[0].GroupId' --output text)
+
+# Allow SSH from anywhere
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+# Allow ICMP (ping) from anywhere
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol icmp --port -1 --cidr 0.0.0.0/0
+```
+
+**Note:** `0.0.0.0/0` opens these ports to every source. For anything beyond a quick evaluation, scope the `--cidr` to a trusted range. Rule changes apply immediately — no instance restart needed.
 
 ### Verify
 
 ```bash
 aws ec2 describe-vpcs --vpc-ids $VPC_ID
 aws ec2 describe-subnets --subnet-ids $SUBNET_ID
+aws ec2 describe-route-tables --route-table-ids $RT_ID
+aws ec2 describe-security-groups --group-ids $SG_ID
 ```
 
 ## 4. Launch an Instance
 
-Query available instance types for your hardware:
+Launch an instance in the public subnet on a `t3.micro` (2 vCPU / 1 GiB).
+
+> **Note:** On an **arm64** host, use `t4g.micro` instead of `t3.micro`.
 
 ```bash
-aws ec2 describe-instance-types
-```
-
-Launch an instance in the public subnet, note this will select an instance type with 2 VCPU and 1024MB of memory.
-
-> **Note:** Replace `AMI_NAME` with the previously imported image above with the `ami-` prefix.
-
-```bash
-AMI_NAME="ami-ubuntu-26.04-x86_64"
-
-AMI_ID=$(aws ec2 describe-images \
-  --filters "Name=name,Values=$AMI_NAME" \
-  --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
-  --output text)
-
-INSTANCE_TYPE=$(aws ec2 describe-instance-types \
-  --query "sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus==\`2\` && MemoryInfo.SizeInMiB>=\`1024\`], &MemoryInfo.SizeInMiB)[0].InstanceType" \
-  --output text)
-
 INSTANCE_ID=$(aws ec2 run-instances \
   --image-id $AMI_ID \
-  --instance-type $INSTANCE_TYPE \
+  --instance-type t3.micro \
   --key-name spinifex-key \
   --subnet-id $SUBNET_ID \
   --count 1 \
   --query 'Instances[0].InstanceId' --output text)
-
-echo "Instance: $INSTANCE_ID"
 ```
 
 Wait for the instance to reach `running` state:
@@ -328,7 +353,36 @@ PRIVATE_SUBNET=$(aws ec2 create-subnet \
   --query 'Subnet.SubnetId' --output text)
 ```
 
-Instances in private subnets get a private IP only. They can still reach the internet via SNAT through the VPC router, but are not directly reachable from your network.
+Instances in a private subnet get a private IP only and are not reachable from your network. By default they also have **no internet access**: with no `0.0.0.0/0` route in the subnet's route table, Spinifex gates egress with a drop policy — matching AWS, where a private subnet has no route off the VPC. They can still reach other instances in the same VPC.
+
+To give a private subnet outbound-only internet access, deploy a NAT Gateway in a public subnet and point the private subnet's default route at it (the AWS pattern):
+
+```bash
+# Allocate an Elastic IP for the NAT Gateway
+NAT_EIP=$(aws ec2 allocate-address --query AllocationId --output text)
+
+# Create the NAT Gateway in the PUBLIC subnet (the one with the IGW route)
+NATGW_ID=$(aws ec2 create-nat-gateway \
+  --subnet-id $SUBNET_ID \
+  --allocation-id $NAT_EIP \
+  --query 'NatGateway.NatGatewayId' --output text)
+
+# Give the private subnet its own route table with a default route to the NAT Gateway
+PRIVATE_RT=$(aws ec2 create-route-table \
+  --vpc-id $VPC_ID \
+  --query 'RouteTable.RouteTableId' --output text)
+
+aws ec2 create-route \
+  --route-table-id $PRIVATE_RT \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NATGW_ID
+
+aws ec2 associate-route-table \
+  --route-table-id $PRIVATE_RT \
+  --subnet-id $PRIVATE_SUBNET
+```
+
+Instances in the private subnet now reach the internet outbound through the NAT Gateway's public IP, but remain unreachable from the WAN.
 
 ### Multiple Accounts
 
@@ -348,12 +402,26 @@ journalctl -u spinifex-daemon -f
 aws ec2 describe-images
 ```
 
-### SSH Connection Refused
+### SSH Connection Refused or Times Out
 
 cloud-init needs 30-60 seconds after boot. Check instance state:
 
 ```bash
 aws ec2 describe-instances --instance-ids $INSTANCE_ID
+```
+
+A connection that **times out** (rather than being refused) usually means the security group is blocking port 22. Confirm the default security group allows SSH ingress:
+
+```bash
+aws ec2 describe-security-groups --group-ids $SG_ID \
+  --query 'SecurityGroups[0].IpPermissions'
+```
+
+If there are no rules for TCP 22, authorize it (see [Allow SSH and ICMP](#allow-ssh-and-icmp)):
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
 ```
 
 ### No Public IP Assigned
@@ -378,7 +446,23 @@ aws ec2 describe-internet-gateways
 
 ### Instance Has No Internet Access
 
-Check the VPC router's NAT rules (from the host):
+First confirm the subnet's route table has a default route to the IGW. Spinifex gates a subnet's egress with a drop policy when this route is missing, so an instance with a public IP still cannot reach the internet:
+
+```bash
+aws ec2 describe-route-tables \
+  --filters Name=association.subnet-id,Values=$SUBNET_ID \
+  --query 'RouteTables[0].Routes'
+# Expect a 0.0.0.0/0 route with a GatewayId of igw-...
+```
+
+If the route is missing, add it (see [Create a Route Table](#create-a-route-table)):
+
+```bash
+aws ec2 create-route --route-table-id $RT_ID \
+  --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID
+```
+
+If the route is present, check the VPC router's NAT rules (from the host):
 
 ```bash
 sudo ovn-nbctl lr-nat-list $(sudo ovn-nbctl lr-list | awk '{print $2}' | head -1)

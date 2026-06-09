@@ -36,6 +36,12 @@ func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
 // external switch onto the host uplink.
 func ExternalLocalnetPort(vpcID string) string { return "ext-port-" + vpcID }
 
+// IMDSPort is the host-owned localport LSP that claims 169.254.169.254 directly
+// on the subnet switch (SubnetSwitch). ovn-controller binds it on every chassis
+// with a matching iface-id OVS port, so each chassis self-serves IMDS for its
+// local VMs over a single L2 hop on the guest's own broadcast domain.
+func IMDSPort(subnetID string) string { return "imds-port-" + subnetID }
+
 // SecurityGroupPortGroup is the OVN port group name for an SG.
 // OVN names match [a-zA-Z_][a-zA-Z0-9_]*, so hyphens become underscores.
 func SecurityGroupPortGroup(sgID string) string {

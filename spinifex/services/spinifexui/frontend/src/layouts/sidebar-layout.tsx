@@ -3,11 +3,13 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router"
 import {
   Activity,
   BookOpen,
+  Boxes,
   Camera,
   Crosshair,
   Globe,
   HardDrive,
   Home,
+  IdCard,
   Image,
   Key,
   Layers,
@@ -20,6 +22,7 @@ import {
   Server,
   Shield,
   ShieldCheck,
+  UserCog,
   Users,
   Waypoints,
 } from "lucide-react"
@@ -329,6 +332,26 @@ export function SidebarLayout() {
         </SidebarGroup>
 
         <SidebarGroup>
+          <SidebarGroupLabel>EKS</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/eks/list-clusters">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/eks/list-clusters") ||
+                    pathname.startsWith("/eks/create-cluster")
+                  }
+                  tooltip="Clusters"
+                >
+                  <Boxes className="size-4" />
+                  <span>Clusters</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
           <SidebarGroupLabel>IAM</SidebarGroupLabel>
           <SidebarMenu>
             <SidebarMenuItem>
@@ -357,6 +380,36 @@ export function SidebarLayout() {
                 >
                   <Shield className="size-4" />
                   <span>Policies</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-roles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-roles") ||
+                    pathname.startsWith("/iam/create-role")
+                  }
+                  tooltip="Roles"
+                >
+                  <UserCog className="size-4" />
+                  <span>Roles</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <Link to="/iam/list-instance-profiles">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/iam/list-instance-profiles") ||
+                    pathname.startsWith("/iam/create-instance-profile")
+                  }
+                  tooltip="Instance Profiles"
+                >
+                  <IdCard className="size-4" />
+                  <span>Instance Profiles</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

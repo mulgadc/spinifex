@@ -99,6 +99,12 @@ var elbv2Actions = map[string]ELBv2Handler{
 	"DescribeTags": elbv2Handler(func(input *elbv2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeTags(input, gw.NATSConn, accountID)
 	}),
+	"AddTags": elbv2Handler(func(input *elbv2.AddTagsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.AddTags(input, gw.NATSConn, accountID)
+	}),
+	"RemoveTags": elbv2Handler(func(input *elbv2.RemoveTagsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.RemoveTags(input, gw.NATSConn, accountID)
+	}),
 	"LBAgentHeartbeat": elbv2Handler(func(input *handlers_elbv2.LBAgentHeartbeatInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.LBAgentHeartbeat(input, gw.NATSConn, accountID)
 	}),
@@ -119,6 +125,27 @@ var elbv2Actions = map[string]ELBv2Handler{
 	}),
 	"DescribeLoadBalancerAttributes": elbv2Handler(func(input *elbv2.DescribeLoadBalancerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeLoadBalancerAttributes(input, gw.NATSConn, accountID)
+	}),
+	"SetSecurityGroups": elbv2Handler(func(input *elbv2.SetSecurityGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetSecurityGroups(input, gw.NATSConn, accountID)
+	}),
+	"SetIpAddressType": elbv2Handler(func(input *elbv2.SetIpAddressTypeInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetIpAddressType(input, gw.NATSConn, accountID)
+	}),
+	"SetSubnets": elbv2Handler(func(input *elbv2.SetSubnetsInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.SetSubnets(input, gw.NATSConn, accountID)
+	}),
+	"AddListenerCertificates": elbv2Handler(func(input *elbv2.AddListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.AddListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"RemoveListenerCertificates": elbv2Handler(func(input *elbv2.RemoveListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.RemoveListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"DescribeListenerCertificates": elbv2Handler(func(input *elbv2.DescribeListenerCertificatesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeListenerCertificates(input, gw.NATSConn, accountID)
+	}),
+	"DescribeSSLPolicies": elbv2Handler(func(input *elbv2.DescribeSSLPoliciesInput, gw *GatewayConfig, accountID string) (any, error) {
+		return gateway_elbv2.DescribeSSLPolicies(input, gw.NATSConn, accountID)
 	}),
 	"DescribeListenerAttributes": elbv2Handler(func(input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListenerAttributes(input, accountID)

@@ -80,6 +80,7 @@ describe("createLoadBalancerSchema", () => {
   it("accepts a valid ALB with 2+ subnets", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "my-alb",
+      type: "application",
       scheme: "internet-facing",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a", "subnet-b"],
@@ -90,12 +91,27 @@ describe("createLoadBalancerSchema", () => {
     expect(result.success).toBeTruthy()
   })
 
-  it("rejects <2 subnets", () => {
+  it("accepts a single subnet", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "my-alb",
+      type: "application",
       scheme: "internet-facing",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a"],
+      securityGroupIds: [],
+      tags: [],
+      listener: baseListener,
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("rejects zero subnets", () => {
+    const result = createLoadBalancerSchema.safeParse({
+      name: "my-alb",
+      type: "application",
+      scheme: "internet-facing",
+      vpcId: "vpc-1",
+      subnetIds: [],
       securityGroupIds: [],
       tags: [],
       listener: baseListener,
@@ -106,6 +122,7 @@ describe("createLoadBalancerSchema", () => {
   it("rejects names starting with 'internal-'", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "internal-abc",
+      type: "application",
       scheme: "internal",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a", "subnet-b"],
@@ -119,6 +136,7 @@ describe("createLoadBalancerSchema", () => {
   it("accepts listener with mode=new without existingTargetGroupArn", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "my-alb",
+      type: "application",
       scheme: "internet-facing",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a", "subnet-b"],
@@ -136,6 +154,7 @@ describe("createLoadBalancerSchema", () => {
   it("rejects listener with mode=existing but no existingTargetGroupArn", () => {
     const result = createLoadBalancerSchema.safeParse({
       name: "my-alb",
+      type: "application",
       scheme: "internet-facing",
       vpcId: "vpc-1",
       subnetIds: ["subnet-a", "subnet-b"],

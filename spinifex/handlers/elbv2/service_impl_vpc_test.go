@@ -1,7 +1,9 @@
 package handlers_elbv2
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -9,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -444,6 +447,63 @@ func TestDeleteLoadBalancer_TerminatesVM_WithPublicIP(t *testing.T) {
 	// Verify ENIs were cleaned up (detach + delete happens in DeleteLoadBalancer)
 	eniDesc, _ = vpcSvc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	assert.Empty(t, eniDesc.NetworkInterfaces)
+}
+
+func TestDeleteLoadBalancer_ReapsFloatingIPNAT(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnets.Subnets[0].SubnetId
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{
+			InstanceID: "i-alb-nat",
+			PrivateIP:  "10.0.1.9",
+			PublicIP:   "203.0.113.60",
+		},
+		terminateDone: make(chan struct{}),
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	// Capture the vpc.delete-nat event the teardown must publish.
+	type natEvent struct {
+		VpcId      string `json:"vpc_id"`
+		ExternalIP string `json:"external_ip"`
+		LogicalIP  string `json:"logical_ip"`
+	}
+	gotNAT := make(chan natEvent, 4)
+	sub, err := svc.nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		var evt natEvent
+		if json.Unmarshal(msg.Data, &evt) == nil {
+			gotNAT <- evt
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("nat-reap-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	select {
+	case evt := <-gotNAT:
+		assert.Equal(t, "203.0.113.60", evt.ExternalIP, "floating IP reaped as external_ip")
+		assert.Equal(t, "10.0.1.9", evt.LogicalIP, "LB VM VPC IP reaped as logical_ip")
+		assert.NotEmpty(t, evt.VpcId)
+	case <-time.After(3 * time.Second):
+		t.Fatal("DeleteLoadBalancer did not publish vpc.delete-nat for the LB floating IP")
+	}
 }
 
 func TestDescribeLoadBalancers_InternetFacing_IncludesPublicIP(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -1343,6 +1344,13 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		}
 	}
 
+	// Reap the LB VM's floating-IP dnat_and_snat deterministically. The VM/ENI
+	// teardown paths reap it only conditionally — DeleteNetworkInterface defers
+	// EIP-owned addresses to the EIP lifecycle, and that lifecycle's reap runs
+	// in the async terminate goroutine below — so without this, stale rules
+	// accumulate on the VPC router across repeated create/delete cycles.
+	s.reapFloatingIPNAT(lb)
+
 	// Terminate ALB VM in background (VM termination also cleans up tap device).
 	// Must be async because VM shutdown can take seconds (QMP powerdown + QEMU exit)
 	// and we don't want to block the NATS request handler.
@@ -1379,6 +1387,31 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	slog.Info("DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
+}
+
+// reapFloatingIPNAT removes the OVN dnat_and_snat rule mapping an
+// internet-facing LB's floating (public) IP to its VM's VPC IP. DeleteEIP
+// matches on external_ip+logical_ip and is idempotent, so a redundant publish
+// from the EIP/ENI teardown paths is harmless. Internal LBs carry no floating
+// IP and are a no-op.
+func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
+	publicIP := ""
+	for _, az := range lb.AvailZones {
+		if az.PublicIP != "" {
+			publicIP = az.PublicIP
+			break
+		}
+	}
+	if publicIP == "" || lb.VPCIP == "" || lb.VpcId == "" {
+		return
+	}
+	portName := ""
+	if len(lb.ENIs) > 0 {
+		portName = topology.Port(lb.ENIs[0])
+	}
+	utils.PublishNATEvent(s.nc, "vpc.delete-nat", lb.VpcId, publicIP, lb.VPCIP, portName, "")
+	slog.Info("DeleteLoadBalancer: reaped floating-IP NAT",
+		"lbId", lb.LoadBalancerID, "externalIp", publicIP, "logicalIp", lb.VPCIP)
 }
 
 func (s *ELBv2ServiceImpl) DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {

@@ -1000,6 +1000,9 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*vipe
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to read config body: %w", err)
 	}
+	// Unwrap the at-rest encryption envelope (authenticated-but-plaintext
+	// metadata); no-op for unencrypted volumes.
+	body = viperblock.StateBody(body)
 
 	// Try full VBState first (matches mergeVolumeConfig's careful decode
 	// pattern). A populated BlockSize is the marker that the blob is a full
@@ -1062,10 +1065,11 @@ func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.
 		return nil, fmt.Errorf("failed to read existing config: %w", err)
 	}
 
-	// Use Decoder (not Unmarshal): a trailing AES-GCM tag must not cause a parse error
-	// that would silently route to the wrapper-only path and brick the volume.
+	// StateBody unwraps the at-rest encryption envelope so the guard below sees
+	// the real VBState. Without it the wrapper decodes to a zero-valued state
+	// (BlockSize==0), routing to the wrapper-only path and bricking the volume.
 	var state viperblock.VBState
-	if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&state); decodeErr != nil || state.BlockSize == 0 {
+	if decodeErr := json.Unmarshal(viperblock.StateBody(body), &state); decodeErr != nil || state.BlockSize == 0 {
 		// Not a full VBState (new volume or wrapper-only) -- write wrapper
 		return json.Marshal(volumeConfigWrapper{VolumeConfig: *cfg})
 	}

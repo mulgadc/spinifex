@@ -170,11 +170,13 @@ func (s *ImageServiceImpl) DescribeImages(input *ec2.DescribeImagesInput, accoun
 			continue
 		}
 
-		// Parse the viperblock config which contains VolumeConfig with AMIMetadata
+		// Parse the viperblock config which contains VolumeConfig with AMIMetadata.
+		// StateBody unwraps the at-rest encryption envelope (the metadata ships
+		// authenticated-but-plaintext); it is a no-op for unencrypted volumes.
 		var vbConfig struct {
 			VolumeConfig viperblock.VolumeConfig `json:"VolumeConfig"`
 		}
-		if err := json.Unmarshal(body, &vbConfig); err != nil {
+		if err := json.Unmarshal(viperblock.StateBody(body), &vbConfig); err != nil {
 			slog.Debug("Failed to unmarshal config", "key", configKey, "err", err)
 			continue
 		}
@@ -580,8 +582,12 @@ func (s *ImageServiceImpl) getVolumeConfig(volumeID string) (*viperblock.VolumeC
 	}
 	defer result.Body.Close()
 
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, err
+	}
 	var vbState viperblock.VBState
-	if err := json.NewDecoder(result.Body).Decode(&vbState); err != nil {
+	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
 		return nil, err
 	}
 	return &vbState.VolumeConfig, nil
@@ -616,10 +622,13 @@ func (s *ImageServiceImpl) amiNameExists(name string) (bool, error) {
 			return false, fmt.Errorf("amiNameExists: failed to read %s: %w", configKey, err)
 		}
 
-		var vbState viperblock.VBState
-		decodeErr := json.NewDecoder(result.Body).Decode(&vbState)
+		body, readErr := io.ReadAll(result.Body)
 		_ = result.Body.Close()
-		if decodeErr != nil {
+		if readErr != nil {
+			return false, fmt.Errorf("amiNameExists: failed to read %s: %w", configKey, readErr)
+		}
+		var vbState viperblock.VBState
+		if decodeErr := json.Unmarshal(viperblock.StateBody(body), &vbState); decodeErr != nil {
 			return false, fmt.Errorf("amiNameExists: failed to decode %s: %w", configKey, decodeErr)
 		}
 
@@ -649,8 +658,12 @@ func (s *ImageServiceImpl) GetAMIConfig(imageID string) (viperblock.AMIMetadata,
 	}
 	defer result.Body.Close()
 
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
+	}
 	var vbState viperblock.VBState
-	if err := json.NewDecoder(result.Body).Decode(&vbState); err != nil {
+	if err := json.Unmarshal(viperblock.StateBody(body), &vbState); err != nil {
 		return viperblock.AMIMetadata{}, fmt.Errorf("%w: %s: %v", ErrCorruptAMIConfig, configKey, err)
 	}
 	return vbState.VolumeConfig.AMIMetadata, nil

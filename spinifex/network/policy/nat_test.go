@@ -88,15 +88,15 @@ func TestNATManager_AddEIP_IdempotentSkip(t *testing.T) {
 	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
 }
 
-func TestNATManager_AddEIP_GARP_FiresDistributed(t *testing.T) {
+func TestNATManager_AddEIP_IdempotentSkip_RePrimesReachability(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
-	var got []EIPSpec
-	nm, err := NewNATManager(m, NATModeDistributed, WithGARPEmitter(func(spec EIPSpec) error {
-		got = append(got, spec)
-		return nil
-	}))
+	var primed []EIPSpec
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithFlowsBarrier(func() error { barrierCalls++; return nil }),
+		WithNeighPrimer(func(eip EIPSpec) error { primed = append(primed, eip); return nil }))
 	require.NoError(t, err)
 
 	spec := EIPSpec{
@@ -104,40 +104,13 @@ func TestNATManager_AddEIP_GARP_FiresDistributed(t *testing.T) {
 		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
 	}
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	require.Len(t, got, 1, "GARPEmitter must fire once per AddEIP")
-	assert.Equal(t, spec, got[0], "emitter must receive the full EIPSpec so it can derive the chassisredirect port")
-}
-
-func TestNATManager_AddEIP_GARP_FiresCentralized(t *testing.T) {
-	ctx := context.Background()
-	m := mock.New()
-	seedRouter(t, m, "vpc-1")
-	var got []EIPSpec
-	nm, err := NewNATManager(m, NATModeCentralized, WithGARPEmitter(func(spec EIPSpec) error {
-		got = append(got, spec)
-		return nil
-	}))
-	require.NoError(t, err)
-
-	spec := EIPSpec{VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5"}
+	// Re-attach the same EIP (stop->start / reboot-recovery): the DNAT row is
+	// unchanged so the row write is skipped, but reachability must be re-primed
+	// or the host neigh entry goes dark until the kernel ARP times out.
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	require.Len(t, got, 1, "GARPEmitter must fire in centralized mode too")
-	assert.Empty(t, got[0].PortName, "centralized AddEIP carries no LSP — emitter must derive cr-gw-<vpc> itself")
-}
 
-func TestNATManager_AddEIP_GARP_FailureNonFatal(t *testing.T) {
-	ctx := context.Background()
-	m := mock.New()
-	seedRouter(t, m, "vpc-1")
-	nm, err := NewNATManager(m, NATModeDistributed, WithGARPEmitter(func(EIPSpec) error {
-		return assert.AnError
-	}))
-	require.NoError(t, err)
-
-	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
-		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
-	}), "GARP emitter failure must not propagate")
-	assert.NotNil(t, findNAT(m, "dnat_and_snat", "10.0.0.5"), "NAT row must persist despite GARP failure")
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+	assert.Equal(t, []EIPSpec{spec, spec}, primed, "neighbour prime must re-fire on the idempotent-skip path")
 }
 
 func TestNATManager_NeighPrime_OnDistributedAttach_FlushOnDetach(t *testing.T) {

@@ -10,11 +10,9 @@ import (
 // packet to ip re-resolves L2. Wraps `ip neigh flush to <ip> dev <dev>`, which
 // is idempotent — flushing zero entries still succeeds.
 //
-// inject-garp-independent ARP refresh for EIP recycle: ovn-controller emits its
-// automatic GARP only on LSP binding-chassis migration, and the explicit
-// `ovn-appctl inject-garp` refresh (see InjectGARP) is unavailable on OVN builds
-// without that appctl. Without either, a same-chassis external_ip rebind leaves
-// the host neighbour cache pointed at the prior owner's MAC until the kernel ARP
+// ARP refresh for EIP recycle: ovn-controller emits its automatic GARP only on
+// LSP binding-chassis migration, so a same-chassis external_ip rebind leaves the
+// host neighbour cache pointed at the prior owner's MAC until the kernel ARP
 // timeout (60-300s). Flushing the entry on EIP attach and detach forces a fresh
 // resolution against the current owner.
 //
@@ -40,11 +38,10 @@ func FlushNeigh(ctx context.Context, runner Runner, dev, ip string) error {
 //
 // This is the deterministic counterpart to FlushNeigh for EIP attach: when an
 // external IP is recycled onto a new owner, OVN advertises the new MAC only via
-// a GARP it emits on LSP binding-chassis migration — a same-chassis rebind
-// emits none, and `ovn-appctl inject-garp` is absent on older OVN builds, so no
-// node answers the host's re-ARP. Flushing then waits for an ARP reply that
-// never comes; programming the known external_mac directly skips the round-trip,
-// and inbound traffic refreshes the entry from there on.
+// a GARP it emits on LSP binding-chassis migration — a same-chassis rebind emits
+// none, so no node answers the host's re-ARP. Flushing then waits for an ARP
+// reply that never comes; programming the known external_mac directly skips the
+// round-trip, and inbound traffic refreshes the entry from there on.
 //
 // L0 method (ADR-0006 S2) — only network/host/ may shell out to host tools.
 // Best-effort: callers must treat errors as warnings, not failures.

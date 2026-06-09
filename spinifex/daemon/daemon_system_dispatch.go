@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
+
+// nodeSystemLaunchTimeout caps a node-targeted system.LaunchInstance round
+// trip. Sized for a full-AMI control-plane VM boot (clone root + cloud-init
+// seed + QEMU start) on a remote host, well above the local microVM path.
+const nodeSystemLaunchTimeout = 5 * time.Minute
 
 // systemInstanceLaunchEnvelope is the wire format for
 // system.LaunchInstance.{type}[.{nodeID}] replies. Either Output or Error
@@ -56,6 +62,47 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
 	}
 
 	respondWithSystemLaunchOutput(msg, output)
+}
+
+// LaunchSystemInstanceOnNode launches a system VM on a specific Spinifex host.
+// An empty nodeID or the local node runs the launch in-process (matching
+// LaunchSystemInstance); any other node is reached over the node-targeted
+// system.LaunchInstance.{type}.{nodeID} subject, where the receiving daemon
+// runs the launch locally and binds the per-instance terminate subscription
+// (handleSystemLaunchInstance). The VM stays bound to the node that runs it.
+func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
+	if nodeID == "" || nodeID == d.node {
+		return d.LaunchSystemInstance(input)
+	}
+	if d.natsConn == nil {
+		return nil, fmt.Errorf("system instance: cannot target node %s without a NATS connection", nodeID)
+	}
+	if input == nil || input.InstanceType == "" {
+		return nil, fmt.Errorf("system instance input missing InstanceType")
+	}
+
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("marshal SystemInstanceInput: %w", err)
+	}
+
+	subject := fmt.Sprintf("system.LaunchInstance.%s.%s", input.InstanceType, nodeID)
+	reply, err := d.natsConn.Request(subject, payload, nodeSystemLaunchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("nats request %s: %w", subject, err)
+	}
+
+	var env systemInstanceLaunchEnvelope
+	if err := json.Unmarshal(reply.Data, &env); err != nil {
+		return nil, fmt.Errorf("decode launch reply: %w", err)
+	}
+	if env.Error != "" {
+		return nil, fmt.Errorf("%s", env.Error)
+	}
+	if env.Output == nil {
+		return nil, fmt.Errorf("launch reply missing output payload")
+	}
+	return env.Output, nil
 }
 
 // subscribeSystemTerminate registers an owning-node subscription for

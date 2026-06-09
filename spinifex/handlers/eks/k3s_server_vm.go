@@ -41,6 +41,10 @@ type k3sVPCProvisioner interface {
 // *daemon.Daemon satisfies this interface.
 type k3sInstanceLauncher interface {
 	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	// LaunchSystemInstanceOnNode places the VM on a specific Spinifex host for
+	// HA control-plane spread. An empty nodeID (or the local node) launches
+	// in-process, matching LaunchSystemInstance.
+	LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
 }
 
@@ -51,10 +55,12 @@ type k3sAMIResolver interface {
 }
 
 const (
-	// defaultK3sServerInstanceType is the spinifex instance type closest to
-	// the AWS EKS minimum control-plane footprint (2 vCPU / 8 GB / 40 GB).
-	// Callers can override via K3sServerInput.InstanceType.
-	defaultK3sServerInstanceType = "t3.medium"
+	// defaultK3sServerInstanceType is the internal system type the k3s
+	// control-plane VM boots as (2 vCPU / 4 GB / 40 GB root). A sys.* type
+	// keeps the CP VM out of customer DescribeInstanceTypes and lets the daemon
+	// register the node-targeted system.LaunchInstance.{type}.{nodeID} subject
+	// the HA spread path uses. Callers can override via K3sServerInput.InstanceType.
+	defaultK3sServerInstanceType = "sys.medium"
 
 	// k3sOIDCSigningKeyPath is the on-VM path where cloud-init drops the
 	// per-cluster OIDC private key PEM. K3s reads it via the
@@ -137,6 +143,10 @@ type K3sServerInput struct {
 	SecretKey     string
 	GatewayCACert string
 	InstanceType  string
+	// TargetNodeID pins the control-plane VM to a specific Spinifex host for HA
+	// spread across distinct failure domains. Empty launches on the local
+	// daemon node (the single-CP default).
+	TargetNodeID string
 	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (interim
 	// in-VPC app exposure). When false the config disables them for AWS parity,
 	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
@@ -208,7 +218,7 @@ func LaunchK3sServerVM(
 
 	userData := buildK3sUserData(in)
 
-	sysOut, err := instSvc.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
+	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
 		BootMode:     sysinstance.BootAMI,
 		ManagedBy:    tags.ManagedByEKS,
 		InstanceType: instanceType,

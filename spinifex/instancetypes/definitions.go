@@ -295,7 +295,8 @@ var p5eSizes = []instanceSize{
 // systemSizes defines internal-only instance types for system VMs (LB, NAT GW, etc.).
 // These are registered in the type map for allocation but excluded from DescribeInstanceTypes.
 var systemSizes = []instanceSize{
-	{"micro", 1, 0.125}, // 1 vCPU, 128 MB
+	{"micro", 1, 0.125}, // 1 vCPU, 128 MB — ELBv2 LB microVMs
+	{"medium", 2, 4},    // 2 vCPU, 4 GB — EKS k3s control-plane VMs
 }
 
 // instanceFamilyDefs defines all supported instance families with their vendor and sizes.

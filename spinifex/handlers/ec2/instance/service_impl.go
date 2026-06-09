@@ -1056,8 +1056,10 @@ func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC
 	slog.Info("StartInstance: starting instance", "id", command.ID)
 
 	status := s.vmMgr.Status(instance)
-	if status != vm.StateStopped {
-		slog.Error("StartInstance: instance not in stopped state", "instanceId", command.ID, "status", status)
+	// StateError is startable: a crash/recovery-failed instance can be manually
+	// recovered. The manager transitions Error->Pending before relaunch.
+	if status != vm.StateStopped && status != vm.StateError {
+		slog.Error("StartInstance: instance not in a startable state", "instanceId", command.ID, "status", status)
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
 	}
 
@@ -2260,7 +2262,7 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 				instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
 			}
 
-			if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+			if info, ok := vm.EC2APIState(instance.Status); ok {
 				instanceCopy.State.SetCode(info.Code)
 				instanceCopy.State.SetName(info.Name)
 			} else {
@@ -2397,7 +2399,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstanc
 
 		instanceCopy := *instance.Instance
 		instanceCopy.State = &ec2.InstanceState{}
-		if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+		if info, ok := vm.EC2APIState(instance.Status); ok {
 			instanceCopy.State.SetCode(info.Code)
 			instanceCopy.State.SetName(info.Name)
 		} else {

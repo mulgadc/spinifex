@@ -36,6 +36,21 @@ var EC2StateCodes = map[InstanceState]EC2StateInfo{
 	StateError:        {Code: 0, Name: "error"},
 }
 
+// EC2APIState returns the AWS-API-facing state code and name for status,
+// projecting Spinifex-internal states with no AWS equivalent onto the closest
+// valid lifecycle state. AWS InstanceStateName is a closed enum, so leaking the
+// internal "error" label breaks SDK/UI clients. A StateError instance (crash or
+// recovery-failed: QEMU dead, resources released, volumes unmounted) is, to the
+// outside world, stopped — it can be started or terminated. ok is false only for
+// a status with no mapping, letting callers apply their own fallback.
+func EC2APIState(status InstanceState) (EC2StateInfo, bool) {
+	if status == StateError {
+		return EC2StateCodes[StateStopped], true
+	}
+	info, ok := EC2StateCodes[status]
+	return info, ok
+}
+
 // ValidTransitions defines the allowed state transitions for an instance.
 // StateTerminated is intentionally absent — it is a terminal state with no valid transitions.
 var ValidTransitions = map[InstanceState][]InstanceState{

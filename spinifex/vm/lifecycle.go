@@ -39,6 +39,15 @@ func (m *Manager) Start(id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
+	// A crash/recovery-failed instance sits in StateError, which launchStillValid
+	// rejects. Move it to pending first (the same Error->Pending step the
+	// auto-restart path takes) so launch proceeds; resource re-allocation is the
+	// caller's responsibility, mirroring the stopped-start flow.
+	if m.Status(instance) == StateError && m.deps.TransitionState != nil {
+		if err := m.deps.TransitionState(instance, StatePending); err != nil {
+			return err
+		}
+	}
 	return m.launch(instance)
 }
 

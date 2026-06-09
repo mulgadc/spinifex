@@ -53,6 +53,7 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 
 type fakeK3sInst struct {
 	launchCalls    []*sysinstance.SystemInstanceInput
+	launchNodes    []string // TargetNodeID per launch (parallel to launchCalls)
 	terminateCalls []string
 
 	launchOut    *sysinstance.SystemInstanceOutput
@@ -63,7 +64,12 @@ type fakeK3sInst struct {
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
 
 func (f *fakeK3sInst) LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+	return f.LaunchSystemInstanceOnNode("", input)
+}
+
+func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	f.launchCalls = append(f.launchCalls, input)
+	f.launchNodes = append(f.launchNodes, nodeID)
 	if f.launchErr != nil {
 		return nil, f.launchErr
 	}
@@ -244,6 +250,38 @@ func TestLaunchK3sServerVM_HonorsCustomInstanceType(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, inst.launchCalls, 1)
 	assert.Equal(t, "t3.large", inst.launchCalls[0].InstanceType)
+}
+
+func TestLaunchK3sServerVM_DefaultsToSystemInstanceType(t *testing.T) {
+	// The control-plane VM defaults to a sys.* type so the daemon registers the
+	// node-targeted system.LaunchInstance subject the HA spread path depends on.
+	assert.Equal(t, "sys.medium", defaultK3sServerInstanceType)
+
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+	assert.Equal(t, "sys.medium", inst.launchCalls[0].InstanceType)
+}
+
+func TestLaunchK3sServerVM_NoTargetNodeLaunchesLocal(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, validK3sInput())
+	require.NoError(t, err)
+	require.Len(t, inst.launchNodes, 1)
+	assert.Empty(t, inst.launchNodes[0], "empty TargetNodeID launches on the local node")
+}
+
+func TestLaunchK3sServerVM_TargetNodeIDRoutedToLauncher(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+	in := validK3sInput()
+	in.TargetNodeID = "node-c"
+
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchNodes, 1)
+	assert.Equal(t, "node-c", inst.launchNodes[0], "TargetNodeID pins placement to a specific host")
 }
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {

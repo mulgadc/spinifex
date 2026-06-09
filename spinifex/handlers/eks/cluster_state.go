@@ -65,6 +65,16 @@ type ClusterMeta struct {
 	// resolve or route to the VPC-internal NLB DNS endpoint, so it probes
 	// /healthz on this host-reachable address instead.
 	ControlPlaneMgmtIP string `json:"controlPlaneMgmtIp,omitempty"`
+	// ControlPlaneNodes lists the placed control-plane server VMs. HA spread
+	// holds one entry per distinct host; the single-CP path holds one. [0] is the
+	// primary the NLB target + egress SNAT wire to until per-node NLB
+	// registration (231.7.3). The scalar ControlPlane* fields above mirror [0]
+	// for readers that predate this field (reconciler, teardown) and for clusters
+	// persisted before HA spread existed (empty ControlPlaneNodes).
+	ControlPlaneNodes []ControlPlaneNode `json:"controlPlaneNodes,omitempty"`
+	// ControlPlaneSpreadGroup is the spread placement-group name reserving the CP
+	// hosts; "" for the single-CP fallback. DeleteCluster releases + deletes it.
+	ControlPlaneSpreadGroup string `json:"controlPlaneSpreadGroup,omitempty"`
 	// EgressEIPAllocationID / EgressEIPPublicIP track the hidden pool address
 	// SNAT'd to the control-plane VM for egress-only internet (image pulls).
 	// Released + the snat removed on DeleteCluster.
@@ -91,6 +101,17 @@ type ClusterMeta struct {
 	// managed-ingress tag at CreateCluster. Default false = AWS parity (built-ins
 	// disabled; ingress via the AWS Load Balancer Controller).
 	BuiltinIngress bool `json:"builtinIngress,omitempty"`
+}
+
+// ControlPlaneNode identifies one placed control-plane server VM and the host
+// it landed on. NodeID is the Spinifex host — distinct per entry under HA
+// spread, empty for a single control plane launched on the local node.
+type ControlPlaneNode struct {
+	NodeID     string `json:"nodeId,omitempty"`
+	InstanceID string `json:"instanceId"`
+	ENIID      string `json:"eniId,omitempty"`
+	ENIIP      string `json:"eniIp,omitempty"`
+	MgmtIP     string `json:"mgmtIp,omitempty"`
 }
 
 // ErrClusterNotFound is returned by GetClusterMeta / SetClusterStatus /

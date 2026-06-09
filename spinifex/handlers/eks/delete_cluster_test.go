@@ -71,6 +71,8 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		Image:            ami,
 		EIP:              eip,
 		Worker:           worker,
+		PlacementGroup:   &fakePlacer{},
+		Scheduler:        &fakeHostScheduler{},
 	})
 	require.NoError(t, err)
 	t.Cleanup(svc.Shutdown)

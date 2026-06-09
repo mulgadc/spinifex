@@ -294,6 +294,67 @@ func TestSubscribeSystemTerminate_Idempotent(t *testing.T) {
 	assert.Same(t, first, second, "second call must be a no-op and keep the original subscription")
 }
 
+func TestLaunchSystemInstanceOnNode_RemoteRoundTrip(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	// Stand in for the remote node's owning daemon on the node-targeted subject.
+	gotCh := make(chan *handlers_elbv2.SystemInstanceInput, 1)
+	sub, err := nc.Subscribe("system.LaunchInstance.sys.medium.node-b", func(msg *nats.Msg) {
+		var in handlers_elbv2.SystemInstanceInput
+		_ = json.Unmarshal(msg.Data, &in)
+		gotCh <- &in
+		payload, _ := json.Marshal(systemInstanceLaunchEnvelope{
+			Output: &handlers_elbv2.SystemInstanceOutput{InstanceID: "i-remote", PrivateIP: "10.0.2.7"},
+		})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	out, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{
+		InstanceType: "sys.medium", ImageID: "ami-x",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "i-remote", out.InstanceID)
+
+	select {
+	case in := <-gotCh:
+		assert.Equal(t, "sys.medium", in.InstanceType, "node-targeted launch carries the CP instance type")
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote node never received the node-targeted launch")
+	}
+}
+
+func TestLaunchSystemInstanceOnNode_RemoteErrorPropagated(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	sub, err := nc.Subscribe("system.LaunchInstance.sys.medium.node-b", func(msg *nats.Msg) {
+		payload, _ := json.Marshal(systemInstanceLaunchEnvelope{Error: "insufficient capacity"})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	_, err = d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insufficient capacity")
+}
+
+func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
+	d := &Daemon{node: "node-a"}
+	_, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	require.Error(t, err, "remote placement requires a NATS connection")
+}
+
 // msgWithConn returns msg with its internal connection set so msg.Respond
 // publishes through nc. nats.Msg.Respond requires a backing connection set
 // either via Subscribe delivery or by hand for synthetic test messages.

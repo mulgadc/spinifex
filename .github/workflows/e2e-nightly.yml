@@ -262,17 +262,27 @@ jobs:
           ssh "${SSH_OPTS[@]}" tf-user@${NODE1_IP} "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
             | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
 
-          # LB/system microVM serial consoles — the lb-agent logs nginx/HAProxy
-          # activation + health-probe results here (the cell-18/cell-9 blind spot).
-          # Pulled per node since the LB VM may be hosted on any node.
+          # All VM serial consoles (LB/system microVMs + guest instances) — the
+          # lb-agent logs nginx/HAProxy activation + health probes here, and guest
+          # cloud-init/sshd bring-up lands here too (the cell-18 LB-datapath +
+          # cell-9/10 guest-ssh blind spots). Pulled per node since any VM may be
+          # hosted on any node.
           for i in $(seq 0 $((NODE_COUNT - 1))); do
             IP=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip"); idx=$((i + 1))
-            mkdir -p "${ARTIFACT_DIR}/lb-console-node${idx}"
+            mkdir -p "${ARTIFACT_DIR}/vm-console-node${idx}"
             ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo sh -c "cd /run/spinifex 2>/dev/null && tar -cf - console-*.log 2>/dev/null"' \
-              | tar -C "${ARTIFACT_DIR}/lb-console-node${idx}" -xf - 2>/dev/null
+              | tar -C "${ARTIFACT_DIR}/vm-console-node${idx}" -xf - 2>/dev/null
             ssh "${SSH_OPTS[@]}" tf-user@${IP} 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "60 min ago"' \
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
           done
+
+          # Canonical journal the e2e-analyze bundler slices into each failure
+          # bundle as journal.log — it reads "${ARTIFACT_DIR}/spinifex-journal.log".
+          # Concat every node: SliceJournal filters by each line's short-iso
+          # timestamp, so cross-node interleaving is fine and the failing node's
+          # elbv2/vpcd/daemon lines land in the failure window regardless of host.
+          cat "${ARTIFACT_DIR}"/spinifex-journal-node*.log \
+            > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || true
           echo "collected: $(ls "${ARTIFACT_DIR}" 2>/dev/null | wc -l) entries"
 
       - name: Install go-junit-report

@@ -6,17 +6,12 @@ ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
   GO_ARCH := amd64
   AWS_ARCH := x86_64
-  # On x86, we can run ARM VMs via emulation
-  QEMU_PACKAGES := qemu-system-x86 qemu-system-arm
 else ifeq ($(ARCH),aarch64)
   GO_ARCH := arm64
   AWS_ARCH := aarch64
-  # On ARM, we can run x86 VMs via emulation
-  QEMU_PACKAGES := qemu-system-aarch64 qemu-system-x86
 else ifeq ($(ARCH),arm64)
   GO_ARCH := arm64
   AWS_ARCH := aarch64
-  QEMU_PACKAGES := qemu-system-aarch64 qemu-system-x86
 else
   $(error Unsupported architecture: $(ARCH). Only x86_64 and aarch64/arm64 are supported.)
 endif
@@ -192,11 +187,10 @@ clean:
 
 install-system:
 	@echo -e "\n....Installing system dependencies for $(ARCH)...."
-	@echo "QEMU packages: $(QEMU_PACKAGES)"
 	sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 		-o Dpkg::Options::="--force-confdef" \
 		-o Dpkg::Options::="--force-confold" \
-		nbdkit nbdkit-plugin-dev pkg-config $(QEMU_PACKAGES) qemu-utils qemu-kvm \
+		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils qemu-kvm \
 		ovmf qemu-efi-aarch64 \
 		libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
 		iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \
@@ -225,19 +219,15 @@ install-aws:
 quickinstall: install-system install-go install-aws
 	@echo -e "\n✅ Quickinstall complete for $(ARCH)."
 	@echo "   Please ensure /usr/local/go/bin is in your PATH."
-	@echo "   Installed: Go ($(GO_ARCH)), AWS CLI ($(AWS_ARCH)), QEMU ($(QEMU_PACKAGES))"
 
-# Lint all Go code via golangci-lint (replaces check-format, vet, gosec, staticcheck)
 lint:
 	@echo "Running golangci-lint..."
 	$(_Q)golangci-lint run ./...
 	@echo "  golangci-lint ok"
 
-# Auto-fix all linter issues that have fixers
 fix:
 	golangci-lint run --fix ./...
 
-# Govulncheck — dependency vulnerability scanning (not covered by golangci-lint)
 govulncheck:
 	@echo "Running govulncheck..."
 	$(_Q)go tool govulncheck ./...

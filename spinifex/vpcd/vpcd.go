@@ -507,7 +507,6 @@ func launchService(cfg *Config) error {
 	sgMgr := policy.NewSecurityGroupManager(liveClient)
 	natMgr, err := policy.NewNATManager(liveClient, natMode,
 		policy.WithFlowsBarrier(waitForFlowsHV),
-		policy.WithGARPEmitter(injectGARPEmitter()),
 		policy.WithNeighFlusher(neighFlusher(wanBridge)),
 		policy.WithNeighPrimer(neighPrimer(wanBridge)),
 	)
@@ -797,33 +796,11 @@ func resolveBridgeConfig(cfgBridgeMode, externalIface string) (string, string) {
 	return bridgeMode, "br-wan"
 }
 
-// injectGARPEmitter builds the post-AddEIP GARP hook. Picks the right OVN
-// port for inject-garp based on whether the EIP was installed with a
-// distributed-NAT logical_port:
-//
-//   - distributed (eip.PortName set): inject-garp on the LSP itself. OVN
-//     fires GARP from the LSP-binding chassis with the external_mac, which
-//     is the MAC upstream should learn for the EIP.
-//   - centralized (no PortName): inject-garp on "cr-gw-<vpcID>" — the
-//     chassisredirect port for the VPC's gateway LRP. OVN fires GARP from
-//     the gw chassis with the LRP MAC.
-func injectGARPEmitter() policy.GARPEmitter {
-	return func(spec policy.EIPSpec) error {
-		port := spec.PortName
-		if port == "" {
-			port = "cr-" + topology.GatewayRouterPort(spec.VPCID)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return host.InjectGARP(ctx, nil, port)
-	}
-}
-
 // neighFlusher builds the post-AddEIP / post-DeleteEIP host ARP-flush hook. It
 // flushes the kernel neighbour entry for the external IP on the Linux WAN
-// bridge so a recycled IP re-resolves L2 against the current owner — the
-// inject-garp-independent path that keeps EIPs reachable on OVN builds whose
-// ovn-controller lacks inject-garp. No-op when wanBridge is unset.
+// bridge so a recycled IP re-resolves L2 against the current owner, keeping
+// EIPs reachable without waiting on the kernel ARP timeout. No-op when
+// wanBridge is unset.
 func neighFlusher(wanBridge string) policy.NeighFlusher {
 	return func(externalIP string) error {
 		if wanBridge == "" {
@@ -838,9 +815,8 @@ func neighFlusher(wanBridge string) policy.NeighFlusher {
 // neighPrimer builds the post-AddEIP host ARP-prime hook for distributed EIPs.
 // It programs the kernel neighbour entry for the external IP to the EIP's
 // external_mac on the Linux WAN bridge, so a recycled IP is reachable
-// immediately without an ARP reply — needed on OVN builds whose ovn-controller
-// lacks inject-garp and therefore never advertises the new MAC. No-op when
-// wanBridge or the MAC is unset.
+// immediately without an ARP reply that no node sends for a same-chassis
+// recycled IP. No-op when wanBridge or the MAC is unset.
 func neighPrimer(wanBridge string) policy.NeighPrimer {
 	return func(eip policy.EIPSpec) error {
 		if wanBridge == "" || eip.MAC == "" {

@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+type recordingRunner struct {
+	args [][]string
+	out  []byte
+	err  error
+}
+
+func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	full := append([]string{name}, args...)
+	r.args = append(r.args, full)
+	return r.out, r.err
+}
+
 func TestFlushNeigh_ShellOutShape(t *testing.T) {
 	r := &recordingRunner{}
 	if err := FlushNeigh(context.Background(), r, "br-wan", "192.168.0.231"); err != nil {

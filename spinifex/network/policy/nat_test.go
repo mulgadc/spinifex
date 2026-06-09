@@ -88,6 +88,34 @@ func TestNATManager_AddEIP_IdempotentSkip(t *testing.T) {
 	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
 }
 
+func TestNATManager_AddEIP_IdempotentSkip_RePrimesReachability(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var garps []EIPSpec
+	var primed []EIPSpec
+	var barrierCalls int
+	nm, err := NewNATManager(m, NATModeDistributed,
+		WithFlowsBarrier(func() error { barrierCalls++; return nil }),
+		WithGARPEmitter(func(eip EIPSpec) error { garps = append(garps, eip); return nil }),
+		WithNeighPrimer(func(eip EIPSpec) error { primed = append(primed, eip); return nil }))
+	require.NoError(t, err)
+
+	spec := EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
+	}
+	require.NoError(t, nm.AddEIP(ctx, spec))
+	// Re-attach the same EIP (stop->start / reboot-recovery): the DNAT row is
+	// unchanged so the row write is skipped, but reachability must be re-primed
+	// or the host neigh entry goes dark until the kernel ARP times out.
+	require.NoError(t, nm.AddEIP(ctx, spec))
+
+	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
+	assert.Equal(t, []EIPSpec{spec, spec}, garps, "GARP must re-fire on the idempotent-skip path")
+	assert.Equal(t, []EIPSpec{spec, spec}, primed, "neighbour prime must re-fire on the idempotent-skip path")
+}
+
 func TestNATManager_AddEIP_GARP_FiresDistributed(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

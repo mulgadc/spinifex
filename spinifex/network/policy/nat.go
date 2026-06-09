@@ -209,8 +209,13 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 		(!distributed ||
 			(existing.ExternalMAC != nil && *existing.ExternalMAC == eip.MAC &&
 				existing.LogicalPort != nil && *existing.LogicalPort == eip.PortName)) {
-		slog.Info("policy: AddEIP idempotent skip — rule already current",
+		slog.Info("policy: AddEIP idempotent skip — rule current, re-priming reachability",
 			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
+		// Skip the delete-then-add row churn, but still re-announce on the wire:
+		// a stop->start or daemon reboot-recovery re-attaches the same EIP, and
+		// without a fresh prime the host neigh / OVS datapath stays dark until
+		// the kernel ARP entry times out (60-300s).
+		m.primeReachability(eip, distributed)
 		return nil
 	}
 
@@ -228,13 +233,20 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
+	m.primeReachability(eip, distributed)
+	return nil
+}
+
+// primeReachability re-announces an EIP on the wire so the host neigh table and
+// OVS datapath learn its external_mac. Distributed mode programs the neighbour
+// entry directly instead of flushing and waiting on an ARP reply no node sends
+// when inject-garp is unavailable; centralised mode (no known MAC) falls back to
+// a flush. Best-effort — every step is logged, none fatal — so it is safe to run
+// on the idempotent-skip path as well as after a fresh AddNAT.
+func (m *natManager) primeReachability(eip EIPSpec, distributed bool) {
 	if err := m.garp(eip); err != nil {
 		slog.Warn("policy: AddEIP gratuitous-ARP emission failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
-	// Distributed mode: the external_mac is known, so program the host
-	// neighbour entry directly instead of flushing and waiting on an ARP reply
-	// no node sends when inject-garp is unavailable. Fall back to a flush when
-	// the MAC is absent (centralised shape).
 	if distributed {
 		if err := m.neighPrime(eip); err != nil {
 			slog.Warn("policy: AddEIP neighbour prime failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
@@ -242,7 +254,6 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	} else if err := m.neigh(eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP neighbour flush failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
-	return nil
 }
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {

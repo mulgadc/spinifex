@@ -106,10 +106,8 @@ func clampGetSessionTokenDuration(requested int64) int64 {
 	return requested
 }
 
-// userEnvelope derives the session envelope for a GetSessionToken user session:
-// PrincipalType "user", SessionName = the IAM user name, and no assumed-role
-// fields. resolveSessionAKID reads PrincipalType back to rebuild the caller as
-// arn:aws:iam::A:user/N rather than synthesising an assumed-role ARN.
+// userEnvelope is the session envelope for a GetSessionToken user session:
+// PrincipalType "user", SessionName = the IAM user name, no assumed-role fields.
 func userEnvelope(accountID, userName string) sessionEnvelope {
 	return sessionEnvelope{
 		PrincipalType: principalTypeUser,

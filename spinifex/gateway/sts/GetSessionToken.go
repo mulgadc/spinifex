@@ -5,19 +5,10 @@ import (
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
-// GetSessionToken exchanges the caller's long-lived user credentials for
-// short-lived session credentials for the SAME identity. Like GetCallerIdentity
-// it is NOT gated by checkPolicy at the dispatcher (see stsSkipPolicyCheck) so
-// SDK/console init flows are not blocked; the authoritative authorization check
-// lives in the handler, which accepts only a long-lived user principal and
-// rejects assumed-role callers (by principal type) and session callers (by the
-// ASIA access-key prefix) per AWS semantics.
-//
-// The dispatcher supplies the caller fields from the SigV4 context —
-// callerUserName is c.identity, callerPrincipalType is c.principalType,
-// callerAccessKeyID is c.accessKey. The handler validates the all-optional
-// input (duration clamp, MFA rejection), so this wrapper is a thin, uniform
-// passthrough mirroring the other STS actions.
+// GetSessionToken delegates to the STSService. Like GetCallerIdentity it is not
+// gated by checkPolicy at the dispatcher (see stsSkipPolicyCheck); the handler
+// holds the authoritative user-only check. Caller fields come from the SigV4
+// context: callerUserName is c.identity, callerAccessKeyID is c.accessKey.
 func GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput, svc handlers_sts.STSService) (*sts.GetSessionTokenOutput, error) {
 	return svc.GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID, input)
 }

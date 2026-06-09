@@ -192,13 +192,23 @@ jobs:
       - name: Run Tofu Workbooks
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'tofu-examples'
         working-directory: mulga/scripts/tofu-cluster
+        # The driver emits go test -v markers per workbook; teeing to
+        # test-tofu.log feeds the same go-junit-report -> e2e-analyze -> upload
+        # chain the Go suites use, so cell 17 produces an RCA bundle too.
         run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
           INVENTORY=$(tofu output -json inventory)
           WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "${ARTIFACT_DIR}/test-tofu.start"
           ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
-            "cd ~/e2e-tests && ./run-tofu-examples-e2e.sh"
+            "cd ~/e2e-tests && ./run-tofu-examples-e2e.sh" \
+            2>&1 | tee "${ARTIFACT_DIR}/test-tofu.log"
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ]; then echo "tofu: FAILED" >> "${ARTIFACT_DIR}/suite-status.txt"; fi
+          exit $rc
 
       - name: Run Reboot Resilience E2E
         if: steps.gate.outputs.selected == 'true' && matrix.extra == 'reboot-single'

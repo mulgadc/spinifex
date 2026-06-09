@@ -338,12 +338,33 @@ if [ -z "$INSTANCE_TYPE" ] || [ "$INSTANCE_TYPE" = "None" ]; then
 fi
 log "Using instance_type=${INSTANCE_TYPE}"
 
+# Each workbook is emitted as a top-level `go test -v` testcase
+# (=== RUN / --- PASS|FAIL / package trailer) so go-junit-report converts the
+# tee'd log into junit-tofu.xml and the e2e-analyze action produces the same
+# RCA bundle the Go suites do (nightly cell 17). The per-workbook log() output
+# between RUN and the result line is captured as the failure diagnostics.
+SUITE_RC=0
 for workbook in nginx-alb bastion-private-subnet nginx-webserver s3-webapp; do
-    if ! run_workbook "$workbook"; then
+    tname="TestTofuWorkbook_${workbook//-/_}"
+    wb_start=$SECONDS
+    echo "=== RUN   ${tname}"
+    if run_workbook "$workbook"; then
+        printf -- '--- PASS: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
+    else
+        printf -- '--- FAIL: %s (%d.00s)\n' "$tname" "$((SECONDS - wb_start))"
         log "FAIL ${workbook} — aborting remaining workbooks"
-        exit 1
+        SUITE_RC=1
+        break
     fi
 done
 
 CURRENT_WORKBOOK=""
-log "All workbooks passed"
+if [ "$SUITE_RC" -eq 0 ]; then
+    log "All workbooks passed"
+    echo "PASS"
+    printf 'ok  \ttofu-examples\t%d.000s\n' "$SECONDS"
+else
+    echo "FAIL"
+    printf 'FAIL\ttofu-examples\t%d.000s\n' "$SECONDS"
+fi
+exit "$SUITE_RC"

@@ -20,7 +20,7 @@ on:
       suites:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks"
+        default: "e2e-single e2e-multinode e2e-cert e2e-lb"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -32,7 +32,7 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks' }}
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:

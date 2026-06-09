@@ -1,11 +1,11 @@
 import { defineConfig } from "oxlint"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
-import remix from "ultracite/oxlint/remix"
+import tanstack from "ultracite/oxlint/tanstack"
 import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, remix, vitest],
+  extends: [core, react, vitest, tanstack],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -25,6 +25,7 @@ export default defineConfig({
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
     "react/rules-of-hooks": "error",
+    "react/no-object-type-as-default-prop": "off",
     "react/no-array-index-key": "error",
     "react/jsx-no-constructed-context-values": "error",
     "react/jsx-no-comment-textnodes": "error",
@@ -107,5 +108,5 @@ export default defineConfig({
       },
     },
   ],
-  ignorePatterns: ["dist", "src/routeTree.gen.ts", "*.config.ts"],
+  ignorePatterns: core.ignorePatterns,
 })

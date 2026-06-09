@@ -49,6 +49,39 @@ func TestInvariant_SessionCredentialsBucket_AcceptsASIAPrefix(t *testing.T) {
 	require.NoError(t, putSessionCredential(bucket, cred))
 }
 
+// User sessions (minted by GetSessionToken) write to the same bucket through
+// the same putSessionCredential helper as assumed-role sessions, so the
+// ASIA-prefix invariant must be principal-type-agnostic. This pins that: a
+// PrincipalType="user" credential is accepted iff its AKID is ASIA-prefixed,
+// exactly like a role session — the writer guard must never special-case the
+// principal type, or a user session could land in the wrong bucket and bypass
+// the ASIA dispatch path's invariants.
+func TestInvariant_SessionCredentialsBucket_UserSessionPrefixEnforced(t *testing.T) {
+	bucket := setupBucket(t)
+
+	userCred := func(akid string) *SessionCredential {
+		now := time.Now().UTC()
+		return &SessionCredential{
+			AccessKeyID:      akid,
+			SecretEncrypted:  "ciphertext-base64",
+			SessionTokenHMAC: "hmac-base64",
+			AccountID:        "000000000000",
+			PrincipalType:    principalTypeUser,
+			SessionName:      "alice",
+			ExpiresAt:        now.Add(time.Hour),
+			CreatedAt:        now,
+		}
+	}
+
+	// A non-ASIA user AKID is rejected at the writer, same as any other prefix.
+	err := putSessionCredential(bucket, userCred("AKIA0123456789ABCDEF"))
+	require.Error(t, err, "putSessionCredential accepted a non-ASIA user session")
+	assert.Contains(t, err.Error(), SessionAccessKeyIDPrefix)
+
+	// An ASIA user AKID is accepted, just like an assumed-role session.
+	require.NoError(t, putSessionCredential(bucket, userCred(SessionAccessKeyIDPrefix+"USERSESSION00001")))
+}
+
 // Cross-cluster anti-replay invariant. A presigned sts:GetCallerIdentity URL
 // signed under cluster-A's name MUST NOT verify when presented to cluster-B.
 // The defence is the X-K8s-Aws-Id header participating in SigV4

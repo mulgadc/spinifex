@@ -1571,6 +1571,9 @@ func (m *mockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.As
 func (m *mockSTSService) GetCallerIdentity(_, _, _ string, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	return nil, nil
 }
+func (m *mockSTSService) GetSessionToken(_, _, _, _ string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+	return nil, nil
+}
 func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
 	m.lookups.Add(1)
 	if m.lookupErr != nil {
@@ -1629,6 +1632,7 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock", // mock verifies by plaintext map
 		AccountID:         "123456789012",
+		PrincipalType:     principalTypeAssumedRole,
 		AssumedRoleARN:    testAssumedARN,
 		UnderlyingRoleARN: testRoleARN,
 		RoleID:            "AROAEXAMPLEAAAAAA",
@@ -1637,10 +1641,22 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 		ExpiresAt:         expiresAt,
 		CreatedAt:         time.Now().UTC().Add(-time.Minute),
 	}
+	return mountSessionGateway(t, cred)
+}
+
+// mountSessionGateway wires the SigV4 middleware over a handler that echoes the
+// resolved principal context, backed by a mock STS service seeded with cred.
+// The stored secret is real (AES-GCM under testMasterKey), so the verify path
+// exercises the same decrypt code as production; tests vary cred to drive the
+// principal-type branch in resolveSessionAKID.
+func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (http.Handler, *mockSTSService) {
+	t.Helper()
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
 
 	stsMock := &mockSTSService{
-		sessions: map[string]*handlers_sts.SessionCredential{testSessionAKID: cred},
-		tokens:   map[string]string{testSessionAKID: testSessionToken},
+		sessions: map[string]*handlers_sts.SessionCredential{cred.AccessKeyID: cred},
+		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
 	}
 
 	iamMock := &mockIAMService{
@@ -1701,6 +1717,76 @@ func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 	bodyStr := string(body)
 	assert.Contains(t, bodyStr, "identity=test-session")
 	assert.Contains(t, bodyStr, "accountId=123456789012")
+	assert.Contains(t, bodyStr, "principalType=assumed-role")
+	assert.Contains(t, bodyStr, "assumedRoleARN="+testAssumedARN)
+}
+
+func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
+	// A GetSessionToken-minted session (PrincipalType "user") must resolve back
+	// to the IAM user: user identity, user principal type, and NO assumed-role
+	// fields — so buildCallerARN yields arn:aws:iam::A:user/N and downstream
+	// policy is evaluated against the user.
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	cred := &handlers_sts.SessionCredential{
+		AccessKeyID:      testSessionAKID,
+		SecretEncrypted:  encryptedSecret,
+		SessionTokenHMAC: "ignored-in-mock",
+		AccountID:        "123456789012",
+		PrincipalType:    principalTypeUser,
+		SessionName:      "alice",
+		ExpiresAt:        time.Now().UTC().Add(time.Hour),
+		CreatedAt:        time.Now().UTC().Add(-time.Minute),
+	}
+	handler, _ := mountSessionGateway(t, cred)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "identity=alice")
+	assert.Contains(t, bodyStr, "accountId=123456789012")
+	assert.Contains(t, bodyStr, "principalType=user")
+	// A user session carries no assumed-role ARN, so the context value is unset.
+	assert.Contains(t, bodyStr, "assumedRoleARN=<nil>")
+}
+
+func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
+	// Backward compat: records minted before PrincipalType existed have an empty
+	// value and MUST still resolve as an assumed-role session, never as a user.
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	cred := &handlers_sts.SessionCredential{
+		AccessKeyID:       testSessionAKID,
+		SecretEncrypted:   encryptedSecret,
+		SessionTokenHMAC:  "ignored-in-mock",
+		AccountID:         "123456789012",
+		PrincipalType:     "", // pre-migration record
+		AssumedRoleARN:    testAssumedARN,
+		UnderlyingRoleARN: testRoleARN,
+		RoleID:            "AROAEXAMPLEAAAAAA",
+		AssumedRoleID:     "AROAEXAMPLEAAAAAA:test-session",
+		SessionName:       "test-session",
+		ExpiresAt:         time.Now().UTC().Add(time.Hour),
+		CreatedAt:         time.Now().UTC().Add(-time.Minute),
+	}
+	handler, _ := mountSessionGateway(t, cred)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+	resp := doRequest(handler, req)
+	body, _ := io.ReadAll(resp.Body)
+
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "identity=test-session")
 	assert.Contains(t, bodyStr, "principalType=assumed-role")
 	assert.Contains(t, bodyStr, "assumedRoleARN="+testAssumedARN)
 }

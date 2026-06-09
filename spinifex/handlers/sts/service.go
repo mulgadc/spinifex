@@ -34,6 +34,14 @@ type STSService interface {
 	// gateway does not gate it with checkPolicy.
 	GetCallerIdentity(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 
+	// GetSessionToken exchanges the calling IAM user's long-lived credentials for
+	// short-lived session credentials bound to the SAME user identity — resolving
+	// back to arn:aws:iam::A:user/N, unlike AssumeRole. callerPrincipalType and
+	// callerAccessKeyID let the handler enforce that only a long-lived user
+	// (never a session) may call it. The gateway resolves these from the SigV4
+	// context.
+	GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
+
 	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for
 	// the sts:GetCallerIdentity action — the token shape produced by `aws
 	// eks get-token` — and resolves the calling principal. The EKS token

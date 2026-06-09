@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 )
@@ -336,6 +337,17 @@ func NewNATSHostScheduler(nc *nats.Conn) HostScheduler {
 }
 
 func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
+	// The control-plane VM is a system type (sys.*), which node.status omits from
+	// its per-type capacity list (system types are hidden from customers). A
+	// system VM still consumes host vCPU/memory like any guest, so size the fit
+	// against each node's raw schedulable headroom and the type's footprint.
+	vcpu, memGB, ok := instancetypes.SpecForSystemType(instanceType)
+	if !ok {
+		slog.Warn("SchedulableHosts: unknown system instance type, no schedulable hosts",
+			"instanceType", instanceType)
+		return nil
+	}
+
 	var hosts []string
 	seen := make(map[string]bool)
 	h.fanout("spinifex.node.status", func(data []byte) {
@@ -343,15 +355,21 @@ func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
 		if json.Unmarshal(data, &st) != nil || st.Node == "" || seen[st.Node] {
 			return
 		}
-		for _, c := range st.InstanceTypes {
-			if c.Name == instanceType && c.Available >= 1 {
-				seen[st.Node] = true
-				hosts = append(hosts, st.Node)
-				return
-			}
+		if nodeFitsSystemInstance(st, vcpu, memGB) {
+			seen[st.Node] = true
+			hosts = append(hosts, st.Node)
 		}
 	})
 	return hosts
+}
+
+// nodeFitsSystemInstance reports whether a node's schedulable headroom
+// (Total - Reserved - Alloc, the same arithmetic node.status documents for guest
+// scheduling) admits at least one VM of the given vCPU/memory footprint.
+func nodeFitsSystemInstance(st types.NodeStatusResponse, vcpu int, memGB float64) bool {
+	remainVCPU := st.TotalVCPU - st.ReservedVCPU - st.AllocVCPU
+	remainMem := st.TotalMemGB - st.ReservedMemGB - st.AllocMemGB
+	return remainVCPU >= vcpu && remainMem >= memGB
 }
 
 func (h *natsHostScheduler) InstanceHosts(instanceIDs []string) map[string]string {

@@ -12,6 +12,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -424,4 +426,51 @@ func TestTeardownSpreadGroup(t *testing.T) {
 	svc2.teardownSpreadGroup(&ClusterMeta{})
 	assert.Empty(t, noGroup.removeInputs)
 	assert.Empty(t, noGroup.deleteGroups)
+}
+
+func TestNodeFitsSystemInstance(t *testing.T) {
+	// sys.medium = 2 vCPU / 4 GB.
+	vcpu, memGB, ok := instancetypes.SpecForSystemType("sys.medium")
+	require.True(t, ok)
+	require.Equal(t, 2, vcpu)
+	require.Equal(t, 4.0, memGB)
+
+	tests := []struct {
+		name string
+		st   types.NodeStatusResponse
+		want bool
+	}{
+		{
+			name: "ample headroom",
+			st:   types.NodeStatusResponse{TotalVCPU: 16, TotalMemGB: 64},
+			want: true,
+		},
+		{
+			name: "exact fit after reserve+alloc",
+			st:   types.NodeStatusResponse{TotalVCPU: 8, ReservedVCPU: 2, AllocVCPU: 4, TotalMemGB: 12, ReservedMemGB: 4, AllocMemGB: 4},
+			want: true, // remain 2 vCPU / 4 GB == footprint
+		},
+		{
+			name: "vcpu exhausted",
+			st:   types.NodeStatusResponse{TotalVCPU: 8, AllocVCPU: 7, TotalMemGB: 64},
+			want: false, // remain 1 vCPU < 2
+		},
+		{
+			name: "memory exhausted",
+			st:   types.NodeStatusResponse{TotalVCPU: 16, TotalMemGB: 8, AllocMemGB: 5},
+			want: false, // remain 3 GB < 4
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, nodeFitsSystemInstance(tt.st, vcpu, memGB))
+		})
+	}
+}
+
+func TestSpecForSystemType_RejectsNonSystem(t *testing.T) {
+	_, _, ok := instancetypes.SpecForSystemType("t3.medium")
+	assert.False(t, ok, "customer types are not system types")
+	_, _, ok = instancetypes.SpecForSystemType("sys.nonexistent")
+	assert.False(t, ok, "unknown system size has no spec")
 }

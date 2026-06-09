@@ -104,6 +104,12 @@ type ConfigSettings struct {
 	// IPSecEnabled toggles cluster-wide OVN native IPsec on intra-AZ Geneve.
 	// Written under [network] in spinifex.toml; daemon reads it via cluster config.
 	IPSecEnabled bool
+
+	// EncryptionKeyFile is the path to the cluster-wide viperblock at-rest
+	// encryption key, rendered into [nodes.X.viperblock].encryption_key_file.
+	// Empty means no key was provisioned and volumes are written cleartext
+	// (legacy mode); the template omits the field entirely in that case.
+	EncryptionKeyFile string
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.

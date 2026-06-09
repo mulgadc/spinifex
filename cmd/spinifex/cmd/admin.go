@@ -1127,6 +1127,17 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
 	fmt.Printf("   Key: %s\n", predastoreKeyPath)
 
+	// Viperblock at-rest encryption key is cluster-wide; on a single-node init
+	// there are no joiners, so generate it locally and enable encryption by
+	// default for all volumes created on this install.
+	viperblockKeyPath, err := writeViperblockEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating viperblock encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Generated viperblock at-rest encryption key")
+	fmt.Printf("   Key: %s\n", viperblockKeyPath)
+
 	fmt.Printf("\n🔑 Generated admin credentials (save these — they won't be shown again):\n")
 	fmt.Printf("   Access Key:  %s\n", bootstrapResult.AdminAccessKey)
 	fmt.Printf("   Secret Key:  %s\n", bootstrapResult.AdminSecretKey)
@@ -1314,6 +1325,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		GPUPassthrough: gpuPassthrough,
 		IPSecEnabled:   ipsecEnabled,
+
+		EncryptionKeyFile: viperblockKeyPath,
 	}
 
 	// Print external networking summary
@@ -1422,6 +1435,22 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	fmt.Println("\n🔐 Generated predastore encryption key (per-node, never transmitted)")
 	fmt.Printf("   Key: %s\n", predastoreKeyPath)
 
+	// Viperblock at-rest encryption key is cluster-wide and shared: the leader
+	// generates it once and distributes it to joiners via the formation server
+	// so a volume sealed on any node can be opened on any other.
+	viperblockKey, err := handlers_iam.GenerateMasterKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error generating viperblock encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	viperblockKeyPath, err := saveViperblockEncryptionKey(configDir, viperblockKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error saving viperblock encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Generated viperblock at-rest encryption key (cluster-wide, shared with joiners)")
+	fmt.Printf("   Key: %s\n", viperblockKeyPath)
+
 	// Read CA cert/key for distribution to joining nodes
 	caCertData, err := os.ReadFile(filepath.Join(configDir, "ca.pem"))
 	if err != nil {
@@ -1449,6 +1478,9 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 
 	// Include master key in formation server for distribution to joining nodes
 	fs.SetMasterKey(base64.StdEncoding.EncodeToString(masterKey))
+
+	// Distribute the cluster-wide viperblock encryption key to joiners
+	fs.SetViperblockKey(base64.StdEncoding.EncodeToString(viperblockKey))
 
 	// Register self (init node) as the first node
 	selfNode := formation.NodeInfo{
@@ -1556,6 +1588,8 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 		RemoteNodes:      buildRemoteNodes(allNodes, node),
 
 		OperatorEmail: email,
+
+		EncryptionKeyFile: viperblockKeyPath,
 
 		// Init node runs ovn-central locally
 		OVNNBAddr: "tcp:127.0.0.1:6641",
@@ -1902,6 +1936,28 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 	fmt.Printf("✅ Predastore encryption key generated: %s\n", predastoreKeyPath)
 
+	// Viperblock at-rest encryption key is cluster-wide: receive it from the
+	// leader rather than generating one, so this node can open volumes sealed
+	// elsewhere. Lenient on absence — an older leader that predates key
+	// distribution returns nothing; fall back to cleartext rather than fail
+	// the join.
+	var viperblockKeyPath string
+	if statusResp.ViperblockKey == "" {
+		fmt.Println("⚠️  Leader did not provide a viperblock encryption key; at-rest encryption disabled on this node")
+	} else {
+		viperblockKeyBytes, err := base64.StdEncoding.DecodeString(statusResp.ViperblockKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error decoding viperblock encryption key: %v\n", err)
+			os.Exit(1)
+		}
+		viperblockKeyPath, err = saveViperblockEncryptionKey(configDir, viperblockKeyBytes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error saving viperblock encryption key: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Viperblock encryption key received from leader: %s\n", viperblockKeyPath)
+	}
+
 	// Generate server cert signed by CA with this node's bind IP
 	if err := admin.GenerateServerCertOnly(configDir, bindIP); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
@@ -1992,6 +2048,8 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 		RemoteNodes:      buildRemoteNodes(statusResp.Nodes, node),
 
 		OperatorEmail: email,
+
+		EncryptionKeyFile: viperblockKeyPath,
 
 		// Joining nodes connect to the init node's OVN NB/SB DB
 		OVNNBAddr: fmt.Sprintf("tcp:%s:6641", leaderIP),
@@ -2278,6 +2336,7 @@ func runCertRenew(cmd *cobra.Command, _ []string) {
 type configDirs struct {
 	AWSGW      string
 	Predastore string
+	Viperblock string
 	NATS       string
 	Spinifex   string
 }
@@ -2287,10 +2346,11 @@ func createConfigSubdirs(configDir string) (configDirs, error) {
 	dirs := configDirs{
 		AWSGW:      filepath.Join(configDir, "awsgw"),
 		Predastore: filepath.Join(configDir, "predastore"),
+		Viperblock: filepath.Join(configDir, "viperblock"),
 		NATS:       filepath.Join(configDir, "nats"),
 		Spinifex:   filepath.Join(configDir, "spinifex"),
 	}
-	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.NATS, dirs.Spinifex} {
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -2408,6 +2468,43 @@ func writePredastoreEncryptionKey(configDir string) (string, error) {
 	keyPath := filepath.Join(predastoreDir, "encryption.key")
 	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
 		return "", fmt.Errorf("save predastore encryption key: %w", err)
+	}
+	return keyPath, nil
+}
+
+// writeViperblockEncryptionKey generates a fresh 32-byte AES-256 master key for
+// viperblock at-rest encryption and writes it to
+// <configDir>/viperblock/encryption.key with mode 0600. Unlike the predastore
+// key, this key is cluster-wide and shared: the leader generates it once at init
+// and distributes it to joiners via the formation server, so a volume sealed on
+// any node can be opened on any other. Loaded at startup via masterkey.LoadShared.
+func writeViperblockEncryptionKey(configDir string) (string, error) {
+	viperblockDir := filepath.Join(configDir, "viperblock")
+	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
+		return "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	key, err := handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return "", fmt.Errorf("generate viperblock encryption key: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return "", fmt.Errorf("save viperblock encryption key: %w", err)
+	}
+	return keyPath, nil
+}
+
+// saveViperblockEncryptionKey writes an already-generated 32-byte viperblock
+// master key (received from the formation leader) to
+// <configDir>/viperblock/encryption.key with mode 0600.
+func saveViperblockEncryptionKey(configDir string, key []byte) (string, error) {
+	viperblockDir := filepath.Join(configDir, "viperblock")
+	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
+		return "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return "", fmt.Errorf("save viperblock encryption key: %w", err)
 	}
 	return keyPath, nil
 }

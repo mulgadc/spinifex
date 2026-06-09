@@ -463,3 +463,111 @@ func TestResolveHostVCPU(t *testing.T) {
 		})
 	}
 }
+
+func TestLiveMemCount(t *testing.T) {
+	tests := []struct {
+		name                             string
+		n                                int
+		availMemGB, reservedMemGB, memGB float64
+		want                             int
+	}{
+		{"live looser than accounting keeps n", 3, 20, 2, 4, 3},
+		{"live tighter clamps below n", 5, 10, 2, 4, 2},      // (10-2)/4 = 2
+		{"live exactly meets n", 2, 10, 2, 4, 2},             // (10-2)/4 = 2
+		{"headroom below one guest yields 0", 3, 5, 2, 4, 0}, // (5-2)/4 = 0
+		{"available below reserve yields 0", 3, 1, 2, 4, 0},  // negative headroom
+		{"zero count stays zero", 0, 100, 2, 4, 0},
+		{"zero memGB is a no-op (returns n)", 3, 1, 2, 0, 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := liveMemCount(tc.n, tc.availMemGB, tc.reservedMemGB, tc.memGB)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestParseMemAvailableKB(t *testing.T) {
+	meminfo := "MemTotal:       16384000 kB\n" +
+		"MemFree:         1048576 kB\n" +
+		"MemAvailable:    8388608 kB\n" +
+		"Buffers:          204800 kB\n"
+	tests := []struct {
+		name   string
+		data   string
+		wantKB int64
+		wantOK bool
+	}{
+		{"present", meminfo, 8388608, true},
+		{"absent", "MemTotal: 16384000 kB\nMemFree: 1048576 kB\n", 0, false},
+		{"malformed value", "MemAvailable:    notanumber kB\n", 0, false},
+		{"empty", "", 0, false},
+		{"first match wins", "MemAvailable: 100 kB\nMemAvailable: 200 kB\n", 100, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kb, ok := parseMemAvailableKB([]byte(tc.data))
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantKB, kb)
+		})
+	}
+}
+
+func TestLiveMemAdmissionEnabled(t *testing.T) {
+	tests := []struct {
+		env  string
+		want bool
+	}{
+		{"", true},
+		{"1", true},
+		{"true", true},
+		{"anything", true},
+		{"0", false},
+		{"false", false},
+		{"off", false},
+		{"no", false},
+		{" OFF ", false},
+		{"FALSE", false},
+	}
+	for _, tc := range tests {
+		t.Run("env="+tc.env, func(t *testing.T) {
+			got := liveMemAdmissionEnabled(func(string) string { return tc.env })
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestLiveMemGate(t *testing.T) {
+	it := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("t3.medium"),
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)}, // 4 GB
+	}
+
+	t.Run("nil reader is a no-op", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2}
+		assert.Equal(t, 5, rm.liveMemGate(5, it))
+	})
+
+	t.Run("read failure fails open", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 0, false }}
+		assert.Equal(t, 5, rm.liveMemGate(5, it))
+	})
+
+	t.Run("live availability clamps below accounting", func(t *testing.T) {
+		// MemAvailable 11 GB, reserve 2 -> 9 GB headroom / 4 GB = 2 guests.
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 11, true }}
+		assert.Equal(t, 2, rm.liveMemGate(5, it))
+	})
+
+	t.Run("host below reserve refuses all", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 1, true }}
+		assert.Equal(t, 0, rm.liveMemGate(5, it))
+	})
+
+	t.Run("zero count short-circuits before read", func(t *testing.T) {
+		called := false
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { called = true; return 100, true }}
+		assert.Equal(t, 0, rm.liveMemGate(0, it))
+		assert.False(t, called, "reader must not be called when n<=0")
+	})
+}

@@ -100,6 +100,14 @@ type ResourceManager struct {
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
+	// readMemAvailableGB is the live second admission gate. The static accounting
+	// above counts only guest -m, so co-located storage VMs, nbdkit (grows with
+	// guest disk I/O), the daemon stack and page cache are invisible to it.
+	// MemAvailable sees all of them and already nets reclaimable cache, catching
+	// real overcommit the accounting would greenlight. nil disables the gate
+	// (SPINIFEX_ADMISSION_LIVE_MEM=0); a read failure fails open.
+	readMemAvailableGB func() (float64, bool)
+
 	// Dynamic instance-type subscription management
 	subsMu        sync.Mutex
 	natsConn      *nats.Conn
@@ -515,13 +523,21 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))
 
+	// Live-memory admission gate: enabled by default, reads /proc/meminfo
+	// MemAvailable at each admission. nil when disabled so liveMemGate is a no-op.
+	var memReader func() (float64, bool)
+	if liveMemAdmissionEnabled(os.Getenv) {
+		memReader = readMemAvailableGB
+	}
+
 	return &ResourceManager{
-		hostVCPU:      hostVCPU,
-		hostMemGB:     totalMemGB,
-		reservedVCPU:  reservedVCPU,
-		reservedMem:   reservedMem,
-		instanceTypes: instanceTypes,
-		gpuManager:    gpuMgr,
+		hostVCPU:           hostVCPU,
+		hostMemGB:          totalMemGB,
+		reservedVCPU:       reservedVCPU,
+		reservedMem:        reservedMem,
+		instanceTypes:      instanceTypes,
+		gpuManager:         gpuMgr,
+		readMemAvailableGB: memReader,
 	}, nil
 }
 
@@ -2124,7 +2140,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		return count
 	}
 
-	return canAllocateCount(
+	n := canAllocateCount(
 		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
@@ -2132,6 +2148,27 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		count,
 		0, false,
 	)
+	return rm.liveMemGate(n, instanceType)
+}
+
+// liveMemGate clamps an accounting-derived launch count by the host's current
+// MemAvailable, so admission also refuses launches that fit the static -m budget
+// but would overcommit real memory (untracked storage VMs, nbdkit, daemon stack,
+// cache). Returns n unchanged when the gate is disabled (readMemAvailableGB is
+// nil) or the live read fails — failing open keeps a transient /proc/meminfo
+// error from wedging all launches; the accounting gate still applies. The bound
+// holds at least reservedMem physically available after the launch, read live on
+// each call so back-to-back launches see headroom shrink as guests fault in.
+func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo) int {
+	if rm.readMemAvailableGB == nil || n <= 0 {
+		return n
+	}
+	availGB, ok := rm.readMemAvailableGB()
+	if !ok {
+		return n
+	}
+	memGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	return liveMemCount(n, availGB, rm.reservedMem, memGB)
 }
 
 // allocate reserves resources for one instance and updates NATS subscriptions.

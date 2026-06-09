@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -14,18 +17,24 @@ import (
 // cannot be satisfied.
 var errInsufficientCapacity = errors.New("insufficient capacity to satisfy MinCount")
 
-// hostReserve is the fixed amount of host CPU and RAM held back from guest
-// scheduling so the spinifex daemon and co-located services (NATS,
-// predastore, viperblock, vpcd, awsgw, ui) cannot be starved by guest VMs
-// at maximum density. A future `capacity` command will lift this into
-// operator-tunable config.
+// hostReserve is the host CPU and RAM held back from guest scheduling for the
+// always-on infrastructure tier only — the daemon and co-located fixed services
+// (NATS, predastore, viperblock, vpcd, awsgw, ui). It deliberately does NOT
+// cover per-instance consumers such as the nbdkit process backing a guest's
+// volumes: those scale with instance count and disk I/O, so folding them into a
+// fixed reserve makes it unsizable. Per-instance cost is charged to the instance
+// and bounded by the live-memory admission gate (see liveMemGate). Tunable via
+// SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB until a `capacity` command
+// lifts it into config.
 type hostReserve struct {
 	vCPU  int
 	memGB float64
 }
 
-// defaultHostReserve is sized to cover predastore + viperblock under load;
-// the daemon itself needs little.
+// defaultHostReserve covers the fixed infrastructure tier (predastore +
+// viperblock storage VMs under load, plus the daemon/NATS/awsgw/vpcd/ui stack).
+// Size it from the measured fixed-tier footprint of the target host via
+// SPINIFEX_RESERVED_MEM_GB; the default is a conservative floor, not a ceiling.
 var defaultHostReserve = hostReserve{vCPU: 2, memGB: 2.0}
 
 // resolveHostReserve returns defaultHostReserve, with vCPU/memGB overridden
@@ -139,6 +148,78 @@ func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	}
 	result = min(result, maxCount)
 	return max(result, 0)
+}
+
+// liveMemCount clamps an accounting-derived launch count n by live host memory:
+// how many guests of memGB fit in (availMemGB − reservedMemGB) right now, never
+// more than n. Pure function — the live read and instance-type lookup happen in
+// liveMemGate. A negative headroom (host already below the reserve) yields 0, so
+// admission refuses rather than admitting into OOM territory.
+func liveMemCount(n int, availMemGB, reservedMemGB, memGB float64) int {
+	if memGB <= 0 {
+		return n
+	}
+	byLive := int((availMemGB - reservedMemGB) / memGB)
+	return max(0, min(n, byLive))
+}
+
+// liveMemAdmissionEnabled reports whether the live-memory admission gate is on.
+// Default on; SPINIFEX_ADMISSION_LIVE_MEM set to a false-y value ("0", "false",
+// "off", "no") disables it, falling back to pure accounting — a rollback hatch
+// if the live gate proves too conservative on a busy host.
+func liveMemAdmissionEnabled(getenv func(string) string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("SPINIFEX_ADMISSION_LIVE_MEM"))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
+
+// readMemAvailableGB returns the host's current /proc/meminfo MemAvailable in
+// GB. ok=false on non-Linux hosts or any read/parse failure, which disables the
+// live gate for that call (fail open). MemAvailable is the kernel's own estimate
+// of memory available for new workloads without swapping, already netting
+// reclaimable page cache — the figure admission should gate on, and one that
+// already reflects co-located storage VMs, nbdkit, and the daemon stack that the
+// static -m accounting never sees.
+func readMemAvailableGB() (float64, bool) {
+	if runtime.GOOS != "linux" {
+		return 0, false
+	}
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		slog.Warn("live-mem admission gate: read /proc/meminfo failed, falling back to accounting", "err", err)
+		return 0, false
+	}
+	kb, ok := parseMemAvailableKB(data)
+	if !ok {
+		slog.Warn("live-mem admission gate: MemAvailable absent from /proc/meminfo, falling back to accounting")
+		return 0, false
+	}
+	return float64(kb) / (1024 * 1024), true
+}
+
+// parseMemAvailableKB extracts the MemAvailable value (in kB) from /proc/meminfo
+// contents. Returns ok=false when the field is absent or unparseable. Pure —
+// split out for unit-testability without touching the filesystem.
+func parseMemAvailableKB(data []byte) (int64, bool) {
+	for line := range strings.SplitSeq(string(data), "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "MemAvailable" {
+			continue
+		}
+		fields := strings.Fields(val) // "  12345 kB"
+		if len(fields) < 1 {
+			return 0, false
+		}
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return kb, true
+	}
+	return 0, false
 }
 
 // resourceStatsForType computes the InstanceTypeCap for a single instance type

@@ -51,8 +51,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          cache-dependency-path: "spinifex/go.sum"
           go-version-file: "spinifex/go.mod"
+          # Self-hosted runner: the Go module + build cache already persists on
+          # local disk between runs. setup-go's cache-save ("Post Setup Go")
+          # otherwise re-uploads hundreds of MB to the Actions cache backend,
+          # taking longer than the build itself.
+          cache: false
 
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore

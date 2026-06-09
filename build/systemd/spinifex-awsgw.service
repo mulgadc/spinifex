@@ -6,6 +6,7 @@ Wants=spinifex-nats.service
 
 [Service]
 Type=simple
+Slice=spinifex-system.slice
 User=spinifex-gw
 Group=spinifex
 ExecStartPre=/var/lib/spinifex/wait-for-nats.sh

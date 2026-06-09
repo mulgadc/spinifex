@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router"
 import {
   Activity,
   BookOpen,
+  Boxes,
   Camera,
   Crosshair,
   Globe,
@@ -324,6 +325,26 @@ export function SidebarLayout() {
                 >
                   <Router className="size-4" />
                   <span>NAT Gateways</span>
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>EKS</SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Link to="/eks/list-clusters">
+                <SidebarMenuButton
+                  isActive={
+                    pathname.startsWith("/eks/list-clusters") ||
+                    pathname.startsWith("/eks/create-cluster")
+                  }
+                  tooltip="Clusters"
+                >
+                  <Boxes className="size-4" />
+                  <span>Clusters</span>
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

@@ -193,10 +193,13 @@ jobs:
           scp "${SSH_OPTS[@]}" \
             /tmp/eks-node-image-build/eks-node-alpine.raw \
             "$VM":/tmp/eks-node-alpine.raw
+          # Drop the import progress bar (pterm redraws to stdout — thousands of
+          # lines over the SSH pipe). Errors go to stderr, so they survive; the
+          # exit code still gates the step.
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/eks-node-alpine.raw \
                --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}"
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null
           ok "eks-node AMI imported"
 
       # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full

@@ -291,11 +291,17 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "FAKEPUB")
 
 	assert.Contains(t, udata, "path: "+k3sConfigPath)
+	// The control plane is tainted so user workloads never schedule on it (EKS
+	// parity, and it keeps image pulls off the etcd disk).
+	assert.Contains(t, udata, "node-taint:")
+	assert.Contains(t, udata, "  - CriticalAddonsOnly=true:NoExecute")
 	// Parity default (BuiltinIngress=false): K3s' bundled traefik + servicelb are
 	// disabled; Service type=LoadBalancer / Ingress are the AWS LB Controller's job.
+	// With built-in ingress off there is nothing to defer, so EKS_DEFER_TRAEFIK=0.
 	assert.Contains(t, udata, "disable:")
 	assert.Contains(t, udata, "  - traefik")
 	assert.Contains(t, udata, "  - servicelb")
+	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=0")
 	assert.Contains(t, udata, "tls-san:")
 	assert.Contains(t, udata, "  - eks-alpha-lb-001.us-east-1.elb.spinifex.local")
 	// service-account-key-file must point at the PUBLIC key; the signing key
@@ -330,7 +336,7 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(udata, "\nruncmd:"))
 }
 
-func TestLaunchK3sServerVM_BuiltinIngressOptInKeepsK3sDefaults(t *testing.T) {
+func TestLaunchK3sServerVM_BuiltinIngressOptInDefersTraefik(t *testing.T) {
 	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
 
 	in := validK3sInput()
@@ -340,10 +346,15 @@ func TestLaunchK3sServerVM_BuiltinIngressOptInKeepsK3sDefaults(t *testing.T) {
 	require.Len(t, inst.launchCalls, 1)
 
 	udata := inst.launchCalls[0].UserData
-	// Opted in: leave K3s' traefik + servicelb running, so no disable block.
+	// Opted in: traefik stays ENABLED in config so k3s writes traefik.yaml, but
+	// it is deferred — k3s.initd stages a .skip marker and the state-reporter
+	// removes it once the apiserver is stable, gated by EKS_DEFER_TRAEFIK=1.
+	// Disabling traefik would leave no manifest to un-skip, so the config must
+	// carry no disable block at all. servicelb is lazy and likewise enabled.
 	assert.NotContains(t, udata, "disable:")
-	assert.NotContains(t, udata, "- traefik")
-	assert.NotContains(t, udata, "- servicelb")
+	assert.NotContains(t, udata, "  - traefik")
+	assert.NotContains(t, udata, "  - servicelb")
+	assert.Contains(t, udata, "EKS_DEFER_TRAEFIK=1")
 }
 
 func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {

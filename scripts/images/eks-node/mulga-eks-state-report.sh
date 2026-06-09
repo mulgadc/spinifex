@@ -35,6 +35,36 @@ set +a
 KUBECONFIG=${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}
 export KUBECONFIG
 
+# --- Deferred built-in ingress enable -------------------------------------
+# traefik is deferred at boot (its helm-install Job overloads the embedded etcd
+# during bootstrap and can crash the control plane). k3s writes traefik.yaml but
+# k3s.initd pre-stages a <name>.yaml.skip marker the deploy controller honours,
+# so traefik is not applied. Once the apiserver has been healthy for
+# TRAEFIK_ENABLE_AFTER consecutive reports — a crash resets the streak, so this
+# only fires post-stabilisation — remove the skip markers so the deploy
+# controller installs traefik with etcd headroom. Gated on EKS_DEFER_TRAEFIK=1
+# (set only for clusters that want built-in ingress) and run once via a sentinel.
+TRAEFIK_ENABLE_AFTER=${TRAEFIK_ENABLE_AFTER:-4}
+TRAEFIK_ENABLED_SENTINEL=/var/lib/spinifex-eks/traefik-enabled
+K3S_MANIFESTS=/var/lib/rancher/k3s/server/manifests
+healthy_streak=0
+
+maybe_enable_traefik() {
+    [ "${EKS_DEFER_TRAEFIK:-0}" = "1" ] || return 0
+    [ -f "${TRAEFIK_ENABLED_SENTINEL}" ] && return 0
+    if [ "${1}" = "ok" ]; then
+        healthy_streak=$((healthy_streak + 1))
+    else
+        healthy_streak=0
+        return 0
+    fi
+    [ "${healthy_streak}" -ge "${TRAEFIK_ENABLE_AFTER}" ] || return 0
+    rm -f "${K3S_MANIFESTS}/traefik.yaml.skip" "${K3S_MANIFESTS}/traefik-crd.yaml.skip"
+    : > "${TRAEFIK_ENABLED_SENTINEL}"
+    logger -t mulga-eks-state-report \
+        "enabled deferred built-in ingress (traefik) after ${healthy_streak} healthy reports"
+}
+
 publish_report() {
     if curl -sk --max-time 3 https://127.0.0.1:6443/healthz | grep -q '^ok$'; then
         health=ok
@@ -54,6 +84,7 @@ publish_report() {
 if [ -n "${STATE_REPORT_INTERVAL:-}" ] && [ "${STATE_REPORT_INTERVAL}" -gt 0 ] 2>/dev/null; then
     while true; do
         publish_report
+        maybe_enable_traefik "${health}"
         sleep "${STATE_REPORT_INTERVAL}"
     done
 else

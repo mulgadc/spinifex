@@ -133,6 +133,12 @@ func TestEKS(t *testing.T) {
 
 		// Auth + reachability: poll until the apiserver answers and reports a
 		// Ready node. A 401 here means the get-token webhook chain regressed.
+		// Generous envelope: the cluster flips ACTIVE as soon as the apiserver
+		// first answers, but k3s can crash once during bootstrap (embedded-etcd
+		// fsync latency under I/O contention blows the apiserver/leaderelection
+		// deadlines) and is respawned by supervise-daemon. The control plane
+		// then stabilises once etcd latency settles — a few minutes on a busy
+		// node — so wait well past the first ACTIVE before failing.
 		harness.EventuallyErr(t, func() error {
 			out, err := kc.Run(30*time.Second, "get", "nodes",
 				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
@@ -143,7 +149,7 @@ func TestEKS(t *testing.T) {
 				return fmt.Errorf("no Ready node yet:\n%s", out)
 			}
 			return nil
-		}, 3*time.Minute, 5*time.Second)
+		}, 6*time.Minute, 5*time.Second)
 
 		out, _ := kc.Run(30*time.Second, "get", "nodes", "-o", "wide")
 		t.Logf("kubectl get nodes:\n%s", out)

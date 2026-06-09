@@ -377,6 +377,14 @@ func validateK3sServerInput(in K3sServerInput) error {
 	return nil
 }
 
+// boolFlag renders a bool as the "1"/"0" string the shell first-boot env reads.
+func boolFlag(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
 // userDataFile is one entry in the cloud-config write_files block.
 type userDataFile struct {
 	Path  string
@@ -404,6 +412,10 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
+		// Gate deferred built-in ingress: k3s.initd stages a traefik .skip marker
+		// before boot and the state-reporter removes it once the apiserver is
+		// stable. Set only for clusters that want built-in ingress.
+		"EKS_DEFER_TRAEFIK=" + boolFlag(in.BuiltinIngress),
 	}, "\n")
 
 	// cluster-init selects the embedded etcd datastore (required for multi-server
@@ -417,16 +429,42 @@ func buildK3sUserData(in K3sServerInput) string {
 	// reachable; the default RBAC binds only the health/version non-resource
 	// paths to system:unauthenticated, so this exposes nothing else.
 	// In real EKS neither traefik nor servicelb exists; Service type=LoadBalancer
-	// and Ingress are reconciled by the AWS Load Balancer Controller. Disable the
-	// K3s built-ins by default for parity. A cluster opted into built-in ingress
-	// (dev / interim) keeps them so apps are reachable in-VPC before the
-	// controller add-on lands.
+	// and Ingress are reconciled by the AWS Load Balancer Controller. When a
+	// cluster does not opt into built-in ingress (BuiltinIngress=false) the K3s
+	// built-ins are disabled outright for parity.
+	//
+	// When a cluster DOES want built-in ingress (dev / interim, until the AWS LB
+	// controller add-on lands) traefik stays ENABLED in config so k3s writes its
+	// manifest — but its helm-install Job (klipper-helm image pull + chart
+	// install) hammers the embedded etcd during the fragile bootstrap window,
+	// which can tip etcd fsync latency past the apiserver / leaderelection
+	// deadlines and crash the control plane. So traefik is deferred, NOT disabled:
+	// k3s.initd stages a deploy-controller .skip marker before the apiserver
+	// starts (EKS_DEFER_TRAEFIK gates it), and the state-reporter removes that
+	// marker once the apiserver is sustainedly healthy — traefik then installs
+	// with etcd headroom. Disabling traefik (`disable: traefik`) is wrong for this:
+	// k3s never writes traefik.yaml, leaving no manifest to un-skip. servicelb
+	// (klipper) is lazy — it acts only when a LoadBalancer Service exists — so it
+	// carries no bootstrap cost and stays enabled whenever built-in ingress is on.
 	configLines := []string{
 		"cluster-init: true",
 		"etcd-expose-metrics: true",
+		// Keep user workloads off the control plane (EKS parity — the CP is never
+		// a worker). Critical here because the server node is schedulable by
+		// default: a workload landing on the CP pulls its images onto the same
+		// NBD/viperblock disk the embedded etcd fsyncs to, starving etcd until the
+		// apiserver crashes and the VM OOMs. k3s' packaged addons tolerate
+		// CriticalAddonsOnly, so they still run (here, draining to the nodegroup);
+		// NoExecute also evicts anything already scheduled, not just future pods.
+		"node-taint:",
+		"  - CriticalAddonsOnly=true:NoExecute",
 	}
 	if !in.BuiltinIngress {
-		configLines = append(configLines, "disable:", "  - traefik", "  - servicelb")
+		configLines = append(configLines,
+			"disable:",
+			"  - traefik",
+			"  - servicelb",
+		)
 	}
 	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
 	// The reachable front-end IP must be a cert SAN so kubectl reaching the

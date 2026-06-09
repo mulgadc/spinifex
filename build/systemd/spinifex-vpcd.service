@@ -17,45 +17,23 @@ OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/vpcd/
 
-# vpcd MUST share the HOST mount namespace. IMDS binds one listener per VPC inside
-# a per-VPC netns entered in-process via setns(CLONE_NEWNET); the /run/netns/<vpc>
-# bind-mount that `ip netns add` creates must be host-visible (for diagnostics) and
-# must survive a vpcd restart (so the listener can rebind). ANY filesystem-sandbox
-# directive — ProtectSystem / ProtectHome / PrivateTmp / ProtectKernel* /
-# ProtectControlGroups / ProtectProc / Read{Only,Write}Paths — forks a PRIVATE
-# mount namespace that traps that bind-mount inside vpcd, leaving the host a stale
-# handle that fails setns(2) with EINVAL (CI runs 26920490454, 26922587471). Those
-# directives are therefore omitted by design, and so is the MountFlags=shared /
-# spinifex-netns.service propagation workaround they required.
-#
-# Boundary that REMAINS: DAC (User=spinifex-vpcd) plus the seccomp / capability /
-# namespace / address-family restrictions below. The durable fix that restores
-# filesystem sandboxing AND drops CAP_SYS_ADMIN is the process-per-netns model
-# (`ip netns exec` helper instead of in-process setns) — see
-# docs/development/improvements/imds-l2-datapath.md Phase 5.
+# RG-9: network tier. vpcd MUST share the host mount namespace — IMDS enters
+# per-VPC netns via setns(), and any filesystem-sandbox directive (ProtectSystem/
+# Home, PrivateTmp, ProtectKernel*, ProtectControlGroups/Proc, Read*Paths) forks a
+# private mount ns that traps the /run/netns bind-mount and breaks setns(2). Those,
+# plus MemoryDenyWriteExecute, are omitted by design — not regressions.
 PrivateDevices=no
-
-# Hardening that does NOT fork a mount namespace (kept)
 RestrictSUIDSGID=no
 LockPersonality=yes
 RestrictRealtime=yes
 ProtectClock=yes
-# IMDS enters the per-VPC netns via setns(CLONE_NEWNET); the `ip -n <netns>` /
-# `ip netns exec` plumbing also unshares a mount namespace (CLONE_NEWNS, to give
-# the netns its own /sys), so `mnt` must be allowlisted alongside `net` or the
-# first in-netns command fails with EPERM.
+# mnt alongside net: in-netns `ip` unshares a mount ns for its own /sys
 RestrictNamespaces=net mnt
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=no
-# AF_PACKET: required by the in-process DHCP client (github.com/insomniacslk/dhcp
-# / nclient4) for raw L2 BOOTP on br-wan before an IP is configured on the
-# interface. See docs/development/bugs/dhcp-allocate-error.md.
+# AF_PACKET: raw L2 BOOTP for the in-process DHCP client before the iface has an IP
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
-# CAP_NET_RAW: open AF_PACKET sockets.
-# CAP_NET_BIND_SERVICE: covers unicast RENEW to UDP :68.
-# CAP_NET_ADMIN: already used for ovs-vsctl / ip link wiring on the bridge.
-# CAP_SYS_ADMIN: setns(CLONE_NEWNET) into per-VPC IMDS netns to bind the listener.
-# Note, disabled for now, sudo issue with ovs
+# Caps: NET_ADMIN (ovs/ip), NET_RAW (AF_PACKET), NET_BIND_SERVICE (:68), SETUID/SETGID, SYS_ADMIN (setns into VPC netns)
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SYS_ADMIN
 NoNewPrivileges=no

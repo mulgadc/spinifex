@@ -115,10 +115,6 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
 
-go_run:
-	@echo -e "\n....Running $(GO_PROJECT_NAME)...."
-	$(GOPATH)/bin/$(GO_PROJECT_NAME)
-
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
@@ -168,12 +164,7 @@ diff-coverage: test-cover
 
 bench:
 	@echo -e "\n....Running benchmarks for $(GO_PROJECT_NAME)...."
-	$(MAKE) easyjson
 	LOG_IGNORE=1 go test -benchmem -run=. -bench=. ./...
-
-run:
-	$(MAKE) go_build
-	$(MAKE) go_run
 
 # Fast iteration: build + install binary + restart all services.
 # Microvm artifacts are reinstalled when they already exist on disk — the rule's
@@ -353,7 +344,7 @@ ansible-cluster-bootstrap:
 		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
 		$(_ANSIBLE_EXTRA)
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build go_run preflight test test-cover test-race diff-coverage bench run test-actions test-harness manifest-check diff-coverage bench run \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

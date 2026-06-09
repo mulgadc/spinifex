@@ -64,6 +64,12 @@ type EKSServiceDeps struct {
 	EIP       eipProvisioner
 	Worker    WorkerLauncher
 
+	// PlacementGroup reserves distinct hosts for HA control-plane spread;
+	// Scheduler answers the capacity + placement fan-out the spread path needs.
+	// The daemon wires the NATS implementations.
+	PlacementGroup controlPlanePlacer
+	Scheduler      HostScheduler
+
 	// AddonInstaller delivers managed-addon manifests to clusters. Optional:
 	// when nil the service defaults to the KV staging installer
 	// (newStagingInstaller) bound to NATSConn.
@@ -254,6 +260,12 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	if s.deps.Worker == nil {
 		missing = append(missing, "Worker")
 	}
+	if s.deps.PlacementGroup == nil {
+		missing = append(missing, "PlacementGroup")
+	}
+	if s.deps.Scheduler == nil {
+		missing = append(missing, "Scheduler")
+	}
 	if len(s.deps.MasterKey) == 0 {
 		missing = append(missing, "MasterKey")
 	}
@@ -438,7 +450,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "derive OIDC public key", err)
 	}
 
-	k3sOut, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, K3sServerInput{
+	cpNodes, spreadGroup, err := s.placeControlPlane(accountID, name, K3sServerInput{
 		AccountID:         accountID,
 		ClusterName:       name,
 		Region:            region,
@@ -466,10 +478,16 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			"cluster", name, "accountID", accountID, "err", err)
 		return nil, fmt.Errorf("launch K3s VM: %w", err)
 	}
-	meta.ControlPlaneInstanceID = k3sOut.InstanceID
-	meta.ControlPlaneENIID = k3sOut.ENIID
-	meta.ControlPlaneENIIP = k3sOut.ENIIP
-	meta.ControlPlaneMgmtIP = k3sOut.MgmtIP
+	// Mirror the primary ([0]) into the scalar fields the reconciler, NLB
+	// registration, egress wiring, and teardown read today. Until per-node NLB
+	// registration (231.7.3) only the primary is target-registered + egress-wired.
+	primary := cpNodes[0]
+	meta.ControlPlaneNodes = cpNodes
+	meta.ControlPlaneSpreadGroup = spreadGroup
+	meta.ControlPlaneInstanceID = primary.InstanceID
+	meta.ControlPlaneENIID = primary.ENIID
+	meta.ControlPlaneENIIP = primary.ENIIP
+	meta.ControlPlaneMgmtIP = primary.MgmtIP
 
 	// Egress: the control-plane VM must pull container images. Allocate a
 	// hidden pool address and wire an egress-only SNAT for its /32 (no DNAT —
@@ -484,7 +502,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	utils.PublishEvent(s.deps.NATSConn, "vpc.add-system-egress", systemEgressEvent{
 		VpcId:      vpcID,
 		SubnetId:   subnetIDs[0],
-		InstanceIp: k3sOut.ENIIP,
+		InstanceIp: primary.ENIIP,
 		ExternalIp: egressIP,
 	})
 
@@ -495,7 +513,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
 	}
 
-	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, k3sOut.ENIIP); err != nil {
+	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, primary.ENIIP); err != nil {
 		s.markFailed(acctKV, name)
 		return nil, logCreateErr(name, accountID, "register NLB target", err)
 	}
@@ -697,10 +715,10 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		}
 	}
 
-	if meta.ControlPlaneInstanceID != "" || meta.ControlPlaneENIID != "" {
+	for _, cp := range controlPlaneTeardownNodes(meta) {
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
-			accountID, meta.ControlPlaneInstanceID, meta.ControlPlaneENIID); err != nil {
-			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM: %w", err))
+			accountID, cp.InstanceID, cp.ENIID); err != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
 		}
 	}
 
@@ -739,6 +757,11 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
 		}
 	}
+
+	// Release + delete the HA spread placement group (no-op for single-CP
+	// clusters). Best-effort: the VMs are already gone, so a leaked internal
+	// group strands nothing.
+	s.teardownSpreadGroup(meta)
 
 	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
 	if err := DeleteClusterPrefix(acctKV, name); err != nil {

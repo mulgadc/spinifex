@@ -69,6 +69,74 @@ func runSTS(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "arn", aws.StringValue(who.Arn),
 		"user_id", aws.StringValue(who.UserId))
 
+	// GetSessionToken: exchange the bootstrap user's long-lived (AKIA) creds for
+	// short-lived ASIA session creds bound to the SAME identity. Unlike
+	// AssumeRole, the session must resolve back to the original caller ARN, not
+	// an assumed-role ARN. This is the behaviour unit tests cannot fully prove —
+	// real HMAC token verification + wire round-trip + the user-principal branch
+	// in resolveSessionAKID.
+	harness.Step(t, "get-session-token (user creds → ASIA)")
+	beforeGST := time.Now().UTC()
+	gstOut, err := fix.AWS.STS.GetSessionToken(&sts.GetSessionTokenInput{})
+	require.NoError(t, err, "get-session-token")
+	gstCreds := gstOut.Credentials
+	require.NotNil(t, gstCreds, "GetSessionToken returned nil Credentials")
+	gstAKID := aws.StringValue(gstCreds.AccessKeyId)
+	gstSecret := aws.StringValue(gstCreds.SecretAccessKey)
+	gstToken := aws.StringValue(gstCreds.SessionToken)
+	require.True(t, strings.HasPrefix(gstAKID, "ASIA"),
+		"session AKID must start with ASIA, got %q", gstAKID)
+	require.NotEmpty(t, gstSecret, "empty SecretAccessKey")
+	require.NotEmpty(t, gstToken, "empty SessionToken")
+	require.NotNil(t, gstCreds.Expiration, "nil Expiration")
+
+	// Default DurationSeconds is 43200 (12h). Bound loosely so runner latency
+	// doesn't flake CI.
+	gstExpiresIn := gstCreds.Expiration.Sub(beforeGST)
+	require.Greater(t, gstExpiresIn, 11*time.Hour,
+		"get-session-token expiration too soon: %v (akid=%s)", gstExpiresIn, gstAKID)
+	require.LessOrEqual(t, gstExpiresIn, 12*time.Hour+5*time.Minute,
+		"get-session-token expiration too far: %v (akid=%s)", gstExpiresIn, gstAKID)
+	harness.Detail(t, "gst_akid", gstAKID, "gst_expires_in", gstExpiresIn.String())
+
+	// Drive the ASIA SigV4 path with the session creds: GetCallerIdentity must
+	// return the ORIGINAL caller identity (same Account/Arn/UserId as the
+	// bootstrap user), proving the user-principal branch resolves back to the
+	// user rather than synthesising an assumed-role ARN.
+	harness.Step(t, "get-caller-identity with get-session-token creds (expect same user)")
+	gstCli := harness.NewAWSClientWithSessionCreds(t, fix.Env, gstAKID, gstSecret, gstToken)
+	gstWho, err := gstCli.STS.GetCallerIdentity(&sts.GetCallerIdentityInput{})
+	require.NoError(t, err, "get-caller-identity (get-session-token)")
+	require.Equal(t, aws.StringValue(who.Account), aws.StringValue(gstWho.Account),
+		"get-session-token session account must match the calling user")
+	require.Equal(t, aws.StringValue(who.Arn), aws.StringValue(gstWho.Arn),
+		"get-session-token session must resolve to the user ARN, not an assumed-role ARN")
+	require.Equal(t, aws.StringValue(who.UserId), aws.StringValue(gstWho.UserId),
+		"get-session-token session UserId must match the calling user")
+
+	// The user session must be authorised AS THE USER for non-STS actions:
+	// drive a real EC2 endpoint with the GetSessionToken creds and assert it is
+	// NOT denied. This is the only wire-level proof that gateway.checkPolicy
+	// evaluates policy against the user principal — the assumed-role path below
+	// hard-denies, so a unit test cannot exercise ctxPrincipalType=user reaching
+	// the EC2 dispatcher.
+	harness.Step(t, "ec2 describe-instances with get-session-token creds (expect authorised)")
+	_, err = gstCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
+	require.NoError(t, err, "user session must be authorised for ec2:DescribeInstances as the user")
+
+	// GetSessionToken is long-lived-user-only: a GetSessionToken session
+	// resolves back to principalType "user", so its ASIA access-key prefix is
+	// the only signal that it is a temporary credential. Replaying it into
+	// GetSessionToken must be denied — otherwise a captured session could roll
+	// its own lifetime forward forever. The wire path proves the handler's
+	// ASIA-prefix guard sees c.accessKey from the SigV4 context, which a unit
+	// test of the handler cannot exercise.
+	harness.Step(t, "get-session-token with get-session-token creds (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := gstCli.STS.GetSessionToken(&sts.GetSessionTokenInput{})
+		return e
+	})
+
 	// Defensive sweep + parent-scoped cleanup so a mid-test panic still
 	// removes the role. iamDeleteRoleAndProfilesBestEffort tolerates a
 	// missing role. Cleans up every role the suite might create — the
@@ -168,6 +236,18 @@ func runSTS(t *testing.T, fix *Fixture) {
 	harness.Step(t, "ec2 describe-regions with assumed-role creds (expect AccessDenied)")
 	harness.ExpectError(t, "AccessDenied", func() error {
 		_, e := sessionCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
+		return e
+	})
+
+	// GetSessionToken is user-only: an assumed-role (ASIA) session must NOT be
+	// able to mint a user session. AWS forbids calling GetSessionToken with
+	// temporary credentials; the handler enforces it via the resolved principal
+	// type. The wire path proves ctxPrincipalType=assumed-role reaches the
+	// handler's guard — a unit test of the handler cannot exercise that
+	// propagation from the SigV4 ASIA verifier.
+	harness.Step(t, "get-session-token with assumed-role creds (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := sessionCli.STS.GetSessionToken(&sts.GetSessionTokenInput{})
 		return e
 	})
 

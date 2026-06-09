@@ -1,0 +1,10 @@
+[Unit]
+Description=Spinifex control/infra tier (NATS, predastore, viperblock, daemon, awsgw, vpcd, ui)
+Before=slices.target
+
+[Slice]
+# Child of spinifex.slice by name (spinifex-system -> spinifex) — inherits the
+# parent ceiling, no extra limit. Holds the 7 control/infra services (and, until
+# the guest sub-slice lands, the daemon-forked QEMU guests under
+# spinifex-daemon.service). Exists now so a future spinifex-guests.slice can
+# become a sibling without re-editing the service units.

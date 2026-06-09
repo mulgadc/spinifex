@@ -16,6 +16,7 @@ Wants=openvswitch-ipsec.service
 
 [Service]
 Type=simple
+Slice=spinifex-system.slice
 User=spinifex-daemon
 Group=spinifex
 # DDIL Tier 1 (siv-17): no ExecStartPre wait-for-nats. The daemon starts in

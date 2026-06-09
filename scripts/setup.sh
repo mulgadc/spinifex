@@ -599,6 +599,20 @@ install_systemd() {
         info "  /etc/systemd/system/$(basename "$unit")"
     done
 
+    # Reserve RAM + CPU priority for system.slice (sshd, journald, the operator)
+    # so a maxed spinifex.slice cannot starve them — the "stay sshable" guarantee.
+    # Generated here rather than shipped as a staged file because the packaging
+    # globs flatten the systemd/ dir and would skip a nested drop-in directory;
+    # this mirrors the sshd-keygen drop-in pattern in build-rootfs.sh. MemoryMin
+    # is a guaranteed-unreclaimable floor, not a cap.
+    $SUDO mkdir -p /etc/systemd/system/system.slice.d
+    $SUDO tee /etc/systemd/system/system.slice.d/spinifex-reserve.conf > /dev/null << 'EOF'
+[Slice]
+MemoryMin=1G
+CPUWeight=300
+EOF
+    info "  /etc/systemd/system/system.slice.d/spinifex-reserve.conf"
+
     # daemon-reload / enable require a running systemd — skip inside the ISO
     # chroot. Unit files are still dropped into place; firstboot enables them.
     if [ "${ISO_BUILD:-0}" = "1" ]; then

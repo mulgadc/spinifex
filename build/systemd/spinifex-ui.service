@@ -5,6 +5,7 @@ After=spinifex-awsgw.service
 
 [Service]
 Type=simple
+Slice=spinifex-system.slice
 User=spinifex-ui
 Group=spinifex
 ExecStart=/usr/local/bin/spx service spinifex-ui start

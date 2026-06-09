@@ -5,6 +5,7 @@ Before=spinifex-predastore.service spinifex-daemon.service spinifex-awsgw.servic
 
 [Service]
 Type=simple
+Slice=spinifex-system.slice
 User=spinifex-nats
 Group=spinifex
 ExecStart=/usr/local/bin/spx service nats start

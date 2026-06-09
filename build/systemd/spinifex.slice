@@ -1,0 +1,23 @@
+[Unit]
+Description=Spinifex resource-bounded slice (host ceiling)
+Before=slices.target
+
+[Slice]
+# No CPUWeight — inherits the default 100. The slice roots
+# (system/user/spinifex/init.scope) are siblings; capping spinifex below the
+# default would let a stray user.slice job out-prioritize the VM fleet under
+# contention, and CPUWeight only bites under contention anyway (idle host =>
+# spinifex still gets 100% of cores). Operator/sshd CPU priority is bought on
+# system.slice instead (see system.slice.d/spinifex-reserve.conf).
+#
+# Memory: throttle+reclaim at High, hard wall at Max. Percentages are of
+# physical RAM (systemd native, auto-scales with host size). Override per host
+# via a spinifex.slice.d/*.conf drop-in + `systemctl daemon-reload`.
+MemoryHigh=80%
+MemoryMax=90%
+# Host swap is an 8G swapfile (provisioned by setup.sh). Let spinifex spill to
+# the full swap device for graceful degradation before the MemoryMax wall. With
+# vm.swappiness=10 the kernel only swaps under real pressure, so this is a safety
+# buffer, not a routine path. Matched to the swap device size; raise both
+# together if the swapfile grows.
+MemorySwapMax=8G

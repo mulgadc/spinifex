@@ -6,6 +6,7 @@ Wants=spinifex-nats.service ovn-controller.service
 
 [Service]
 Type=simple
+Slice=spinifex-system.slice
 User=spinifex-vpcd
 Group=spinifex
 ExecStartPre=/var/lib/spinifex/wait-for-nats.sh

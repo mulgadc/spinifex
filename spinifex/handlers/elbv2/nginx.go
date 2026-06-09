@@ -184,7 +184,7 @@ func generateNLBStreamConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord
 // nginxCertPath is the stable absolute PEM path for a TLS listener under the
 // agent's nginx cert dir. Daemon-rendered and agent-written paths must match.
 func nginxCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
-	return filepath.Join(lbagent.NginxCertDir, fmt.Sprintf("lb-%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+	return filepath.Join(lbagent.NginxCertDir, fmt.Sprintf("%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
 }
 
 // buildNLBHealthTargets computes the active health-check targets for an NLB's

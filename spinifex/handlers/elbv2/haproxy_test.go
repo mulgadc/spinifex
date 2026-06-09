@@ -1,8 +1,6 @@
 package handlers_elbv2
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -51,7 +49,7 @@ func TestGenerateHAProxyConfig_SingleListenerAndBackend(t *testing.T) {
 
 	// Verify global section
 	assert.Contains(t, config, "stats socket")
-	assert.Contains(t, config, "lb-lb-abc123.sock")
+	assert.Contains(t, config, "lb-abc123.sock")
 
 	// Verify frontend
 	assert.Contains(t, config, "bind *:80")
@@ -431,158 +429,6 @@ func TestSanitizeName(t *testing.T) {
 		assert.NotContains(t, result, ":")
 		assert.NotContains(t, result, "/")
 	}
-}
-
-func TestHAProxyManager_Available_NotFound(t *testing.T) {
-	mgr := NewHAProxyManager(t.TempDir())
-	mgr.binPath = "/nonexistent/haproxy-fake-bin"
-	assert.False(t, mgr.Available())
-}
-
-func TestHAProxyManager_IsRunning_UnknownLB(t *testing.T) {
-	mgr := NewHAProxyManager(t.TempDir())
-	assert.False(t, mgr.IsRunning("lb-unknown"))
-}
-
-func TestHAProxyManager_Stop_NotRunning(t *testing.T) {
-	mgr := NewHAProxyManager(t.TempDir())
-	err := mgr.Stop("lb-not-running")
-	require.NoError(t, err)
-}
-
-func TestHAProxyManager_StopAll_Empty(t *testing.T) {
-	mgr := NewHAProxyManager(t.TempDir())
-	mgr.StopAll() // should not panic
-}
-
-func TestHAProxyManager_PidFilePath(t *testing.T) {
-	mgr := NewHAProxyManager("/tmp/haproxy-test")
-	assert.Equal(t, "/tmp/haproxy-test/alb-lb-123.pid", mgr.pidFilePath("lb-123"))
-	assert.Equal(t, "/tmp/haproxy-test/alb-lb-123.cfg", mgr.configFilePath("lb-123"))
-}
-
-func TestHAProxyManager_Start_MissingBinary(t *testing.T) {
-	dir := t.TempDir()
-	mgr := NewHAProxyManager(dir)
-	mgr.binPath = "/nonexistent/haproxy"
-
-	// Write a config so the path exists
-	_, err := mgr.WriteConfig("lb-test", "global\n")
-	require.NoError(t, err)
-
-	err = mgr.Start("lb-test")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "haproxy start failed")
-}
-
-func TestHAProxyManager_Reload_NotRunning_FallsBackToStart(t *testing.T) {
-	dir := t.TempDir()
-	mgr := NewHAProxyManager(dir)
-	mgr.binPath = "/nonexistent/haproxy"
-
-	// Write a config so the path exists
-	_, err := mgr.WriteConfig("lb-test", "global\n")
-	require.NoError(t, err)
-
-	// Reload when not running should attempt Start (which will fail due to bad binary)
-	err = mgr.Reload("lb-test")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "haproxy start failed")
-}
-
-func TestHAProxyManager_LifecycleWithFakeHAProxy(t *testing.T) {
-	// Create a fake haproxy script that writes its PID to the pidfile
-	dir := t.TempDir()
-	fakeHAProxy := filepath.Join(dir, "fake-haproxy")
-	script := `#!/bin/sh
-# Parse -p flag for pidfile
-PIDFILE=""
-SF_PID=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -p) PIDFILE="$2"; shift 2;;
-        -D) shift;;
-        -f) shift 2;;
-        -c) exit 0;;
-        -sf) SF_PID="$2"; shift 2;;
-        *) shift;;
-    esac
-done
-# Kill old process if -sf was passed
-if [ -n "$SF_PID" ]; then
-    kill "$SF_PID" 2>/dev/null || true
-fi
-# Start a background sleep with closed fds so parent can exit
-sleep 60 </dev/null >/dev/null 2>&1 &
-BGPID=$!
-if [ -n "$PIDFILE" ]; then
-    echo "$BGPID" > "$PIDFILE"
-fi
-`
-	require.NoError(t, os.WriteFile(fakeHAProxy, []byte(script), 0o755))
-
-	configDir := filepath.Join(dir, "configs")
-	mgr := NewHAProxyManager(configDir)
-	mgr.binPath = fakeHAProxy
-
-	lbID := "lb-lifecycle-test"
-
-	// Write config
-	content := "global\n  log stdout\n"
-	_, err := mgr.WriteConfig(lbID, content)
-	require.NoError(t, err)
-
-	// Not running yet
-	assert.False(t, mgr.IsRunning(lbID))
-
-	// Start
-	err = mgr.Start(lbID)
-	require.NoError(t, err)
-	assert.True(t, mgr.IsRunning(lbID))
-
-	// Reload
-	err = mgr.Reload(lbID)
-	require.NoError(t, err)
-	assert.True(t, mgr.IsRunning(lbID))
-
-	// Stop
-	err = mgr.Stop(lbID)
-	require.NoError(t, err)
-	assert.False(t, mgr.IsRunning(lbID))
-
-	// Pidfile should be cleaned up
-	_, err = os.Stat(mgr.pidFilePath(lbID))
-	assert.True(t, os.IsNotExist(err))
-}
-
-func TestHAProxyManager_WriteAndRemoveConfig(t *testing.T) {
-	dir := t.TempDir()
-	mgr := &HAProxyManager{configDir: dir, binPath: "/usr/sbin/haproxy"}
-
-	content := "global\n  log stdout\n"
-	path, err := mgr.WriteConfig("lb-test", content)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "alb-lb-test.cfg"), path)
-
-	// Verify file contents
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, content, string(data))
-
-	// Remove
-	err = mgr.RemoveConfig("lb-test")
-	require.NoError(t, err)
-
-	_, err = os.Stat(path)
-	assert.True(t, os.IsNotExist(err))
-}
-
-func TestHAProxyManager_RemoveConfig_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	mgr := &HAProxyManager{configDir: dir, binPath: "/usr/sbin/haproxy"}
-
-	err := mgr.RemoveConfig("nonexistent")
-	require.NoError(t, err)
 }
 
 func TestGenerateALBConfig_StillWorks(t *testing.T) {

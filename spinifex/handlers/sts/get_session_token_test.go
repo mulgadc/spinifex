@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ import (
 func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
-	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser,
+	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 		&sts.GetSessionTokenInput{})
 	require.NoError(t, err)
 	require.NotNil(t, out)
@@ -68,7 +67,7 @@ func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
-	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, nil)
+	out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, nil)
 	require.NoError(t, err)
 	require.NotNil(t, out.Credentials)
 
@@ -91,7 +90,7 @@ func TestGetSessionToken_DurationClamp(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser,
+			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(tc.requested)})
 			require.NoError(t, err)
 			assertStoredDuration(t, svc, out, tc.want)
@@ -99,14 +98,26 @@ func TestGetSessionToken_DurationClamp(t *testing.T) {
 	}
 }
 
-func TestGetSessionToken_RejectsNonUserPrincipal(t *testing.T) {
+func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
-	// AWS forbids GetSessionToken with anything but a long-lived user. Every
-	// other principal type the gateway can resolve must be denied.
-	for _, principalType := range []string{principalTypeAssumedRole, "root", ""} {
-		t.Run(fmt.Sprintf("principalType=%q", principalType), func(t *testing.T) {
-			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalType,
+	// Only a long-lived user (AKIA + principalType "user") may call
+	// GetSessionToken. Assumed-role callers are denied by principal type;
+	// session callers are denied by their ASIA access-key prefix — including a
+	// GetSessionToken session, which resolves back to principalType "user" and
+	// would otherwise roll its own lifetime forward indefinitely.
+	cases := []struct {
+		name          string
+		principalType string
+		accessKeyID   string
+	}{
+		{"assumed_role_session", principalTypeAssumedRole, "ASIAEXAMPLEAAAAAAAAA"},
+		{"user_session", principalTypeUser, "ASIAEXAMPLEAAAAAAAAA"},
+		{"empty_principal_type", "", testCallerAccessKeyID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, tc.principalType, tc.accessKeyID,
 				&sts.GetSessionTokenInput{})
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
@@ -127,7 +138,7 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, tc.input)
+			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, tc.input)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 			assert.Nil(t, out)
@@ -138,7 +149,7 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 func TestGetSessionToken_RejectsMissingUserName(t *testing.T) {
 	svc, _ := newTestSetup(t)
 
-	out, err := svc.GetSessionToken(testCallerAccountID, "", principalTypeUser, &sts.GetSessionTokenInput{})
+	out, err := svc.GetSessionToken(testCallerAccountID, "", principalTypeUser, testCallerAccessKeyID, &sts.GetSessionTokenInput{})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Nil(t, out)

@@ -3,6 +3,7 @@ package handlers_sts
 import (
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -25,11 +26,12 @@ const (
 // in as plain strings to keep the handler unit-testable.
 //
 // AWS forbids calling GetSessionToken with temporary credentials, so only a
-// long-lived user principal (AKIA → principalType "user") is accepted; assumed
-// -role, root, and session callers are denied. The gateway derives
-// callerPrincipalType from the SigV4 envelope, so an ASIA caller never presents
-// as a user here.
-func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+// long-lived user principal (AKIA → principalType "user") is accepted. Assumed
+// -role callers are rejected by principal type; session callers — including a
+// GetSessionToken session, which resolves back to principalType "user" — are
+// rejected by their ASIA access-key prefix. Root is a long-lived user and, per
+// AWS, may call GetSessionToken.
+func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
 	if input == nil {
 		// `aws sts get-session-token` with no arguments sends an empty body;
 		// an absent input is the common case, not an error.
@@ -39,6 +41,15 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 	if callerPrincipalType != principalTypeUser {
 		slog.Warn("GetSessionToken denied: caller is not a long-lived user principal",
 			"account_id", callerAccountID, "principal_type", callerPrincipalType)
+		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+	if strings.HasPrefix(callerAccessKeyID, SessionAccessKeyIDPrefix) {
+		// A GetSessionToken session resolves back to principalType "user", so the
+		// check above cannot catch it — the ASIA prefix is the only signal that
+		// the caller holds temporary credentials. Rejecting it stops a session
+		// from minting a fresh session and rolling its lifetime forward forever.
+		slog.Warn("GetSessionToken denied: caller is using temporary (session) credentials",
+			"account_id", callerAccountID, "akid", callerAccessKeyID)
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 	if callerAccountID == "" || callerUserName == "" {

@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	testCallerAccountID = utils.GlobalAccountID
-	testCallerUserName  = "alice"
-	testCrossAccountID  = "999999999999"
+	testCallerAccountID   = utils.GlobalAccountID
+	testCallerUserName    = "alice"
+	testCallerAccessKeyID = "AKIAIOSFODNN7EXAMPLE"
+	testCrossAccountID    = "999999999999"
 )
 
 func testCallerARN() string {

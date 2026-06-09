@@ -25,7 +25,7 @@ import (
 type flexMockSTSService struct {
 	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
-	getSessionTokenFn   func(string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
+	getSessionTokenFn   func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
 	lookupSessionFn     func(string) (*handlers_sts.SessionCredential, error)
 }
 
@@ -55,9 +55,9 @@ func (m *flexMockSTSService) GetCallerIdentity(callerAccountID, callerARN, calle
 	}, nil
 }
 
-func (m *flexMockSTSService) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+func (m *flexMockSTSService) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
 	if m.getSessionTokenFn != nil {
-		return m.getSessionTokenFn(callerAccountID, callerUserName, callerPrincipalType, input)
+		return m.getSessionTokenFn(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID, input)
 	}
 	return &sts.GetSessionTokenOutput{}, nil
 }
@@ -225,13 +225,15 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 		accountID     string
 		userName      string
 		principalType string
+		accessKeyID   string
 		duration      int64
 	}
 	svc := &flexMockSTSService{
-		getSessionTokenFn: func(accountID, userName, principalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+		getSessionTokenFn: func(accountID, userName, principalType, accessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
 			got.accountID = accountID
 			got.userName = userName
 			got.principalType = principalType
+			got.accessKeyID = accessKeyID
 			got.duration = aws.Int64Value(input.DurationSeconds)
 			return &sts.GetSessionTokenOutput{
 				Credentials: &sts.Credentials{
@@ -262,13 +264,15 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "GetSessionTokenResult")
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
-	// The dispatcher must forward the SigV4 user name (c.identity) and principal
-	// type so the handler can enforce its user-only constraint, plus the parsed
-	// DurationSeconds. GetSessionToken is in stsSkipPolicyCheck, so reaching the
-	// service at all also confirms it is not blocked by checkPolicy.
+	// The dispatcher must forward the SigV4 user name (c.identity), principal
+	// type, and access key (c.accessKey) so the handler can enforce its
+	// user-only / no-session constraint, plus the parsed DurationSeconds.
+	// GetSessionToken is in stsSkipPolicyCheck, so reaching the service at all
+	// also confirms it is not blocked by checkPolicy.
 	assert.Equal(t, utils.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)
+	assert.Equal(t, "AKIAEXAMPLE", got.accessKeyID)
 	assert.Equal(t, int64(3600), got.duration)
 }
 

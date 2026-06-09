@@ -37,11 +37,14 @@ type STSService interface {
 	// GetSessionToken exchanges the calling IAM user's long-lived credentials
 	// for short-lived session credentials bound to the SAME user identity —
 	// resolving back to arn:aws:iam::A:user/N, unlike AssumeRole. AWS forbids
-	// calling it with temporary credentials, so callerPrincipalType lets the
-	// handler accept only a long-lived user and deny assumed-role, root, and
-	// session callers. The gateway resolves the caller fields from the SigV4
-	// context and passes them as plain strings to keep the handler testable.
-	GetSessionToken(callerAccountID, callerUserName, callerPrincipalType string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
+	// calling it with temporary credentials: callerPrincipalType lets the
+	// handler reject assumed-role callers, and callerAccessKeyID lets it reject
+	// session callers — a GetSessionToken session resolves back to
+	// principalType "user", so its ASIA prefix is the only signal that it is a
+	// temporary credential. The gateway resolves the caller fields from the
+	// SigV4 context and passes them as plain strings to keep the handler
+	// testable.
+	GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
 
 	// VerifyPresignedGetCallerIdentity validates a SigV4-presigned URL for
 	// the sts:GetCallerIdentity action — the token shape produced by `aws

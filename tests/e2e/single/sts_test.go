@@ -114,6 +114,29 @@ func runSTS(t *testing.T, fix *Fixture) {
 	require.Equal(t, aws.StringValue(who.UserId), aws.StringValue(gstWho.UserId),
 		"get-session-token session UserId must match the calling user")
 
+	// The user session must be authorised AS THE USER for non-STS actions:
+	// drive a real EC2 endpoint with the GetSessionToken creds and assert it is
+	// NOT denied. This is the only wire-level proof that gateway.checkPolicy
+	// evaluates policy against the user principal — the assumed-role path below
+	// hard-denies, so a unit test cannot exercise ctxPrincipalType=user reaching
+	// the EC2 dispatcher.
+	harness.Step(t, "ec2 describe-instances with get-session-token creds (expect authorised)")
+	_, err = gstCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
+	require.NoError(t, err, "user session must be authorised for ec2:DescribeInstances as the user")
+
+	// GetSessionToken is long-lived-user-only: a GetSessionToken session
+	// resolves back to principalType "user", so its ASIA access-key prefix is
+	// the only signal that it is a temporary credential. Replaying it into
+	// GetSessionToken must be denied — otherwise a captured session could roll
+	// its own lifetime forward forever. The wire path proves the handler's
+	// ASIA-prefix guard sees c.accessKey from the SigV4 context, which a unit
+	// test of the handler cannot exercise.
+	harness.Step(t, "get-session-token with get-session-token creds (expect AccessDenied)")
+	harness.ExpectError(t, "AccessDenied", func() error {
+		_, e := gstCli.STS.GetSessionToken(&sts.GetSessionTokenInput{})
+		return e
+	})
+
 	// Defensive sweep + parent-scoped cleanup so a mid-test panic still
 	// removes the role. iamDeleteRoleAndProfilesBestEffort tolerates a
 	// missing role. Cleans up every role the suite might create — the

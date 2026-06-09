@@ -1571,7 +1571,7 @@ func (m *mockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.As
 func (m *mockSTSService) GetCallerIdentity(_, _, _ string, _ *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error) {
 	return nil, nil
 }
-func (m *mockSTSService) GetSessionToken(_, _, _ string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
+func (m *mockSTSService) GetSessionToken(_, _, _, _ string, _ *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
 	return nil, nil
 }
 func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {

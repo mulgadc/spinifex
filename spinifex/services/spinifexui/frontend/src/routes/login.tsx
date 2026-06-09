@@ -1,4 +1,3 @@
-import { DescribeInstancesCommand } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import {
   createFileRoute,
@@ -23,13 +22,13 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
-  type AwsCredentials,
+  type AwsCredentialsInput,
   awsCredentialsSchema,
-  clearCredentials,
   getCredentials,
-  setCredentials,
+  setSessionCredentials,
 } from "@/lib/auth"
-import { clearClients, getEc2Client } from "@/lib/awsClient"
+import { clearClients } from "@/lib/awsClient"
+import { exchangeForSession } from "@/lib/sts"
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: { reason?: string } & SearchSchemaInput) => ({
@@ -54,17 +53,18 @@ function LoginPage() {
     resolver: zodResolver(awsCredentialsSchema),
   })
 
-  async function onSubmit(data: AwsCredentials) {
+  async function onSubmit(data: AwsCredentialsInput) {
     setAuthError(null)
-    // Clear cached clients so the new creds are picked up
-    clearClients()
-    setCredentials(data)
     try {
-      await getEc2Client().send(new DescribeInstancesCommand({}))
+      // Exchange the long-lived creds for short-lived session creds; this both
+      // validates them and yields the session token. The long-lived secret is
+      // never persisted.
+      const session = await exchangeForSession(data)
+      setSessionCredentials(session)
+      // Drop cached clients so they rebuild with the new session creds.
+      clearClients()
       window.location.href = "/"
     } catch {
-      clearCredentials()
-      clearClients()
       setAuthError(
         "Invalid credentials. Please check your Access Key ID and Secret Access Key.",
       )

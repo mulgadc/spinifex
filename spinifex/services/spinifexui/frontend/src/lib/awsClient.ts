@@ -36,6 +36,7 @@ export function getEc2Client(): EC2Client {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     })
     ec2Client.middlewareStack.add(
@@ -65,6 +66,7 @@ export function getEksClient(): EKSClient {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     })
     eksClient.middlewareStack.add(
@@ -94,6 +96,7 @@ export function getElbv2Client(): ElasticLoadBalancingV2Client {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     })
     elbv2Client.middlewareStack.add(
@@ -123,6 +126,7 @@ export function getAcmClient(): ACMClient {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     })
     acmClient.middlewareStack.add(
@@ -152,6 +156,7 @@ export function getIamClient(): IAMClient {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     })
     iamClient.middlewareStack.add(
@@ -181,6 +186,7 @@ export function getS3Client(): S3Client {
       credentials: {
         accessKeyId: credentials.accessKeyId,
         secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
       forcePathStyle: true,
     })

@@ -33,30 +33,6 @@ func spinifexRequest(t *testing.T, gw *GatewayConfig, action, accountID, identit
 	return w
 }
 
-func TestSpinifex_GetCallerIdentity_Admin(t *testing.T) {
-	gw := &GatewayConfig{
-		DisableLogging: true,
-		Version:        "v0.5.0",
-		Commit:         "abc123",
-	}
-	w := spinifexRequest(t, gw, "GetCallerIdentity", admin.DefaultAccountID(), "admin")
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"account_id":"000000000001"`)
-	assert.Contains(t, w.Body.String(), `"user_name":"admin"`)
-}
-
-func TestSpinifex_GetCallerIdentity_NonAdmin(t *testing.T) {
-	gw := &GatewayConfig{
-		DisableLogging: true,
-		Version:        "v0.5.0",
-		Commit:         "abc123",
-	}
-	w := spinifexRequest(t, gw, "GetCallerIdentity", "000000000002", "alice")
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), `"account_id":"000000000002"`)
-	assert.Contains(t, w.Body.String(), `"user_name":"alice"`)
-}
-
 func TestSpinifex_GetVersion_Admin(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -117,7 +93,7 @@ func TestSpinifex_MissingAction(t *testing.T) {
 
 func TestSpinifex_NoAccountID(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
-	body := "Action=GetCallerIdentity"
+	body := "Action=GetVersion"
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	ctx := context.WithValue(req.Context(), ctxService, "spinifex")
 	req = req.WithContext(ctx)

@@ -45,7 +45,6 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		slog.Error("Spinifex_Request: no account ID in auth context")
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	identity, _ := r.Context().Value(ctxIdentity).(string)
 
 	// Enforce admin-only on restricted actions
 	if spinifexAdminActions[action] && accountID != admin.DefaultAccountID() {
@@ -55,8 +54,6 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 
 	var output any
 	switch action {
-	case "GetCallerIdentity":
-		output, err = gateway_spx.GetCallerIdentity(accountID, identity)
 	case "GetVersion":
 		output, err = gateway_spx.GetVersion(gw.Version, gw.Commit)
 	case "GetNodes":

@@ -97,6 +97,12 @@ type ResourceManager struct {
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
+	// nbdkitMainMiB / nbdkitAuxMiB are the per-volume nbdkit memory charges
+	// (main vs aux), added to every instance's guest -m at admission so the
+	// nbdkit processes backing its volumes are accounted, not absorbed by the
+	// fixed reserve. See resolveNbdkitCharge / instanceMemChargeMiB. RG-6.
+	nbdkitMainMiB int
+	nbdkitAuxMiB  int
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
@@ -530,11 +536,15 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		memReader = readMemAvailableGB
 	}
 
+	nbdkitMainMiB, nbdkitAuxMiB := resolveNbdkitCharge(os.Getenv)
+
 	return &ResourceManager{
 		hostVCPU:           hostVCPU,
 		hostMemGB:          totalMemGB,
 		reservedVCPU:       reservedVCPU,
 		reservedMem:        reservedMem,
+		nbdkitMainMiB:      nbdkitMainMiB,
+		nbdkitAuxMiB:       nbdkitAuxMiB,
 		instanceTypes:      instanceTypes,
 		gpuManager:         gpuMgr,
 		readMemAvailableGB: memReader,
@@ -555,6 +565,16 @@ func instanceTypeMemoryMiB(it *ec2.InstanceTypeInfo) int64 {
 		return *it.MemoryInfo.SizeInMiB
 	}
 	return 0
+}
+
+// instanceMemChargeMiB is the full memory admission charges one instance of it:
+// its guest -m plus the nbdkit processes backing its volumes (RG-6). Every
+// accounting gate (both canAllocateCount sites, liveMemGate, allocate,
+// deallocate) divides remaining memory by — or moves the running total by —
+// this value, so the charge and release can never drift.
+func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 {
+	return instanceTypeMemoryMiB(it) +
+		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
 }
 
 // GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility
@@ -618,7 +638,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		count := canAllocateCount(
 			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
-			vCPUs, memMiB,
+			vCPUs, rm.instanceMemChargeMiB(it),
 			1<<30, // effectively unlimited — let resources be the constraint
 			0, false,
 		)
@@ -2144,7 +2164,7 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
-		instanceTypeMemoryMiB(instanceType),
+		rm.instanceMemChargeMiB(instanceType),
 		count,
 		0, false,
 	)
@@ -2167,7 +2187,7 @@ func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo
 	if !ok {
 		return n
 	}
-	memGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	return liveMemCount(n, availGB, rm.reservedMem, memGB)
 }
 
@@ -2187,7 +2207,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 		return fmt.Errorf("insufficient resources for instance type %s", instanceTypeName)
 	}
 	vCPUs := instanceTypeVCPUs(instanceType)
-	memoryGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)
 	rm.allocatedMem += memoryGB
 	rm.mu.Unlock()
@@ -2200,7 +2220,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.mu.Lock()
 	vCPUs := instanceTypeVCPUs(instanceType)
-	memoryGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU -= int(vCPUs)
 	rm.allocatedMem -= memoryGB
 	rm.mu.Unlock()

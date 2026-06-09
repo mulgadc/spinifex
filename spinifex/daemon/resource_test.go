@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCanAllocateCount(t *testing.T) {
@@ -570,4 +571,76 @@ func TestLiveMemGate(t *testing.T) {
 		assert.Equal(t, 0, rm.liveMemGate(0, it))
 		assert.False(t, called, "reader must not be called when n<=0")
 	})
+}
+
+func TestResolveNbdkitCharge(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		main, aux := resolveNbdkitCharge(func(string) string { return "" })
+		assert.Equal(t, defaultNbdkitMainMiB, main)
+		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+	})
+
+	t.Run("env overrides both", func(t *testing.T) {
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "1024", "SPINIFEX_NBDKIT_AUX_MIB": "0"}
+		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
+		assert.Equal(t, 1024, main)
+		assert.Equal(t, 0, aux)
+	})
+
+	t.Run("invalid and negative values ignored", func(t *testing.T) {
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "nope", "SPINIFEX_NBDKIT_AUX_MIB": "-50"}
+		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
+		assert.Equal(t, defaultNbdkitMainMiB, main)
+		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+	})
+}
+
+func TestNbdkitChargeMiB(t *testing.T) {
+	// Default layout: 1 main + 2 aux at the measured per-class figures.
+	assert.Equal(t, int64(768+2*96), nbdkitChargeMiB(1, 2, 768, 96))
+	// Aux-only / main-only decompose linearly.
+	assert.Equal(t, int64(192), nbdkitChargeMiB(0, 2, 768, 96))
+	assert.Equal(t, int64(768), nbdkitChargeMiB(1, 0, 768, 96))
+	// Zeroed charges (struct-literal RM in other tests) cost nothing.
+	assert.Equal(t, int64(0), nbdkitChargeMiB(1, 2, 0, 0))
+}
+
+// TestRG6_FullCostCharge asserts RG-6: an instance's admission charge is its
+// guest -m PLUS one nbdkit process per volume (main 768 MiB, aux 96 MiB over the
+// default 1-main+2-aux layout), and an allocate/deallocate round-trip restores
+// the exact baseline with no drift.
+func TestRG6_FullCostCharge(t *testing.T) {
+	rm, err := NewResourceManager(nil, nil, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, defaultNbdkitMainMiB, rm.nbdkitMainMiB)
+	require.Equal(t, defaultNbdkitAuxMiB, rm.nbdkitAuxMiB)
+
+	it := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("t3.medium"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)},
+	}
+
+	wantCharge := int64(4096) + nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
+	assert.Equal(t, wantCharge, rm.instanceMemChargeMiB(it),
+		"RG-6: charge must be guest -m + nbdkit per volume, not guest -m alone")
+	assert.Greater(t, rm.instanceMemChargeMiB(it), instanceTypeMemoryMiB(it),
+		"RG-6: nbdkit must add to the charge — bare guest -m undercounts and overcommits")
+
+	// Round-trip: allocate then deallocate restores the baseline exactly.
+	rm.mu.Lock()
+	rm.hostVCPU, rm.hostMemGB = 64, 256
+	rm.reservedVCPU, rm.reservedMem = 0, 0
+	rm.allocatedVCPU, rm.allocatedMem = 0, 0
+	rm.readMemAvailableGB = nil // isolate accounting from the live gate
+	rm.mu.Unlock()
+
+	require.NoError(t, rm.allocate(it))
+	assert.InDelta(t, float64(wantCharge)/1024.0, rm.allocatedMem, 1e-9,
+		"RG-6: allocate must charge guest + nbdkit")
+
+	rm.deallocate(it)
+	assert.InDelta(t, 0.0, rm.allocatedMem, 1e-9,
+		"RG-6: deallocate must restore the baseline — no accounting drift")
 }

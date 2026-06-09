@@ -222,6 +222,54 @@ func parseMemAvailableKB(data []byte) (int64, bool) {
 	return 0, false
 }
 
+// nbdkit runs one process per attached volume (spinifex/nbd). Measured on a live
+// host: a main volume's nbdkit climbs to ~0.75 GB under guest I/O (128 MiB cache
+// + plugin working set + in-flight buffers); aux volumes (-cloudinit, -efi; 0
+// cache) stay flat ~32-68 MB. Charged per instance so a busy nbdkit can't
+// overcommit memory the static -m budget never saw. Env-tunable; RG-6.
+const (
+	defaultNbdkitMainMiB = 768
+	defaultNbdkitAuxMiB  = 96
+)
+
+// defaultMainVolumes / defaultAuxVolumes is the volume layout every instance
+// gets: one main root volume plus -cloudinit and -efi aux volumes. Block-device
+// mappings add main volumes the static charge can't see at admission; the live
+// MemAvailable gate (RG-8) is the backstop for those. RG-6.
+const (
+	defaultMainVolumes = 1
+	defaultAuxVolumes  = 2
+)
+
+// resolveNbdkitCharge returns the per-volume nbdkit memory charge in MiB, with
+// main/aux overridable via SPINIFEX_NBDKIT_MAIN_MIB / SPINIFEX_NBDKIT_AUX_MIB so
+// an operator can retune from their own nbdkit RSS characterisation without a
+// rebuild. Invalid or negative values are logged and ignored.
+func resolveNbdkitCharge(getenv func(string) string) (mainMiB, auxMiB int) {
+	mainMiB, auxMiB = defaultNbdkitMainMiB, defaultNbdkitAuxMiB
+	if v := getenv("SPINIFEX_NBDKIT_MAIN_MIB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			mainMiB = n
+		} else {
+			slog.Warn("ignoring SPINIFEX_NBDKIT_MAIN_MIB", "value", v, "err", err)
+		}
+	}
+	if v := getenv("SPINIFEX_NBDKIT_AUX_MIB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			auxMiB = n
+		} else {
+			slog.Warn("ignoring SPINIFEX_NBDKIT_AUX_MIB", "value", v, "err", err)
+		}
+	}
+	return mainMiB, auxMiB
+}
+
+// nbdkitChargeMiB is the per-instance nbdkit charge — one process per volume over
+// the default layout (mainVols main + auxVols aux). Pure; RG-6.
+func nbdkitChargeMiB(mainVols, auxVols, mainMiB, auxMiB int) int64 {
+	return int64(mainVols*mainMiB + auxVols*auxMiB)
+}
+
 // resourceStatsForType computes the InstanceTypeCap for a single instance type
 // given the remaining host resources. Pure function — no locks or side effects.
 // Callers are responsible for alarming on negative remainVCPU/remainMem

@@ -314,6 +314,7 @@ func SetServiceOwnership() {
 		"/var/lib/spinifex/nats":       "spinifex-nats",
 		"/etc/spinifex/predastore":     "spinifex-storage",
 		"/var/lib/spinifex/predastore": "spinifex-storage",
+		"/etc/spinifex/viperblock":     "spinifex-viperblock",
 		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
 		"/var/lib/spinifex/viperblock": "spinifex-viperblock",
 		"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
@@ -348,11 +349,12 @@ func SetServiceOwnership() {
 	// bootstrap.json lives in the awsgw data dir (not /etc/spinifex),
 	// so /etc/spinifex stays at 0750 (no group-write needed).
 	for path, mode := range map[string]os.FileMode{
-		"/etc/spinifex/spinifex.toml": 0640,
-		"/etc/spinifex/master.key":    0640,
-		"/etc/spinifex/server.pem":    0644,
-		"/etc/spinifex/server.key":    0640,
-		"/etc/spinifex/ca.pem":        0644,
+		"/etc/spinifex/spinifex.toml":             0640,
+		"/etc/spinifex/master.key":                0640,
+		"/etc/spinifex/viperblock/encryption.key": 0640,
+		"/etc/spinifex/server.pem":                0644,
+		"/etc/spinifex/server.key":                0640,
+		"/etc/spinifex/ca.pem":                    0644,
 	} {
 		if _, err := os.Stat(path); err != nil {
 			continue

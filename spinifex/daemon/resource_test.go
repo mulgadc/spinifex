@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCanAllocateCount(t *testing.T) {
@@ -462,4 +463,184 @@ func TestResolveHostVCPU(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestLiveMemCount(t *testing.T) {
+	tests := []struct {
+		name                             string
+		n                                int
+		availMemGB, reservedMemGB, memGB float64
+		want                             int
+	}{
+		{"live looser than accounting keeps n", 3, 20, 2, 4, 3},
+		{"live tighter clamps below n", 5, 10, 2, 4, 2},      // (10-2)/4 = 2
+		{"live exactly meets n", 2, 10, 2, 4, 2},             // (10-2)/4 = 2
+		{"headroom below one guest yields 0", 3, 5, 2, 4, 0}, // (5-2)/4 = 0
+		{"available below reserve yields 0", 3, 1, 2, 4, 0},  // negative headroom
+		{"zero count stays zero", 0, 100, 2, 4, 0},
+		{"zero memGB is a no-op (returns n)", 3, 1, 2, 0, 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := liveMemCount(tc.n, tc.availMemGB, tc.reservedMemGB, tc.memGB)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestParseMemAvailableKB(t *testing.T) {
+	meminfo := "MemTotal:       16384000 kB\n" +
+		"MemFree:         1048576 kB\n" +
+		"MemAvailable:    8388608 kB\n" +
+		"Buffers:          204800 kB\n"
+	tests := []struct {
+		name   string
+		data   string
+		wantKB int64
+		wantOK bool
+	}{
+		{"present", meminfo, 8388608, true},
+		{"absent", "MemTotal: 16384000 kB\nMemFree: 1048576 kB\n", 0, false},
+		{"malformed value", "MemAvailable:    notanumber kB\n", 0, false},
+		{"empty", "", 0, false},
+		{"first match wins", "MemAvailable: 100 kB\nMemAvailable: 200 kB\n", 100, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kb, ok := parseMemAvailableKB([]byte(tc.data))
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantKB, kb)
+		})
+	}
+}
+
+func TestLiveMemAdmissionEnabled(t *testing.T) {
+	tests := []struct {
+		env  string
+		want bool
+	}{
+		{"", true},
+		{"1", true},
+		{"true", true},
+		{"anything", true},
+		{"0", false},
+		{"false", false},
+		{"off", false},
+		{"no", false},
+		{" OFF ", false},
+		{"FALSE", false},
+	}
+	for _, tc := range tests {
+		t.Run("env="+tc.env, func(t *testing.T) {
+			got := liveMemAdmissionEnabled(func(string) string { return tc.env })
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestLiveMemGate(t *testing.T) {
+	it := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("t3.medium"),
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)}, // 4 GB
+	}
+
+	t.Run("nil reader is a no-op", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2}
+		assert.Equal(t, 5, rm.liveMemGate(5, it))
+	})
+
+	t.Run("read failure fails open", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 0, false }}
+		assert.Equal(t, 5, rm.liveMemGate(5, it))
+	})
+
+	t.Run("live availability clamps below accounting", func(t *testing.T) {
+		// MemAvailable 11 GB, reserve 2 -> 9 GB headroom / 4 GB = 2 guests.
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 11, true }}
+		assert.Equal(t, 2, rm.liveMemGate(5, it))
+	})
+
+	t.Run("host below reserve refuses all", func(t *testing.T) {
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { return 1, true }}
+		assert.Equal(t, 0, rm.liveMemGate(5, it))
+	})
+
+	t.Run("zero count short-circuits before read", func(t *testing.T) {
+		called := false
+		rm := &ResourceManager{reservedMem: 2, readMemAvailableGB: func() (float64, bool) { called = true; return 100, true }}
+		assert.Equal(t, 0, rm.liveMemGate(0, it))
+		assert.False(t, called, "reader must not be called when n<=0")
+	})
+}
+
+func TestResolveNbdkitCharge(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		main, aux := resolveNbdkitCharge(func(string) string { return "" })
+		assert.Equal(t, defaultNbdkitMainMiB, main)
+		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+	})
+
+	t.Run("env overrides both", func(t *testing.T) {
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "1024", "SPINIFEX_NBDKIT_AUX_MIB": "0"}
+		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
+		assert.Equal(t, 1024, main)
+		assert.Equal(t, 0, aux)
+	})
+
+	t.Run("invalid and negative values ignored", func(t *testing.T) {
+		env := map[string]string{"SPINIFEX_NBDKIT_MAIN_MIB": "nope", "SPINIFEX_NBDKIT_AUX_MIB": "-50"}
+		main, aux := resolveNbdkitCharge(func(k string) string { return env[k] })
+		assert.Equal(t, defaultNbdkitMainMiB, main)
+		assert.Equal(t, defaultNbdkitAuxMiB, aux)
+	})
+}
+
+func TestNbdkitChargeMiB(t *testing.T) {
+	// Default layout: 1 main + 2 aux at the measured per-class figures.
+	assert.Equal(t, int64(768+2*96), nbdkitChargeMiB(1, 2, 768, 96))
+	// Aux-only / main-only decompose linearly.
+	assert.Equal(t, int64(192), nbdkitChargeMiB(0, 2, 768, 96))
+	assert.Equal(t, int64(768), nbdkitChargeMiB(1, 0, 768, 96))
+	// Zeroed charges (struct-literal RM in other tests) cost nothing.
+	assert.Equal(t, int64(0), nbdkitChargeMiB(1, 2, 0, 0))
+}
+
+// TestRG6_FullCostCharge asserts RG-6: an instance's admission charge is its
+// guest -m PLUS one nbdkit process per volume (main 768 MiB, aux 96 MiB over the
+// default 1-main+2-aux layout), and an allocate/deallocate round-trip restores
+// the exact baseline with no drift.
+func TestRG6_FullCostCharge(t *testing.T) {
+	rm, err := NewResourceManager(nil, nil, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, defaultNbdkitMainMiB, rm.nbdkitMainMiB)
+	require.Equal(t, defaultNbdkitAuxMiB, rm.nbdkitAuxMiB)
+
+	it := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("t3.medium"),
+		VCpuInfo:     &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)},
+		MemoryInfo:   &ec2.MemoryInfo{SizeInMiB: aws.Int64(4096)},
+	}
+
+	wantCharge := int64(4096) + nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
+	assert.Equal(t, wantCharge, rm.instanceMemChargeMiB(it),
+		"RG-6: charge must be guest -m + nbdkit per volume, not guest -m alone")
+	assert.Greater(t, rm.instanceMemChargeMiB(it), instanceTypeMemoryMiB(it),
+		"RG-6: nbdkit must add to the charge — bare guest -m undercounts and overcommits")
+
+	// Round-trip: allocate then deallocate restores the baseline exactly.
+	rm.mu.Lock()
+	rm.hostVCPU, rm.hostMemGB = 64, 256
+	rm.reservedVCPU, rm.reservedMem = 0, 0
+	rm.allocatedVCPU, rm.allocatedMem = 0, 0
+	rm.readMemAvailableGB = nil // isolate accounting from the live gate
+	rm.mu.Unlock()
+
+	require.NoError(t, rm.allocate(it))
+	assert.InDelta(t, float64(wantCharge)/1024.0, rm.allocatedMem, 1e-9,
+		"RG-6: allocate must charge guest + nbdkit")
+
+	rm.deallocate(it)
+	assert.InDelta(t, 0.0, rm.allocatedMem, 1e-9,
+		"RG-6: deallocate must restore the baseline — no accounting drift")
 }

@@ -97,8 +97,22 @@ type ResourceManager struct {
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
+	// nbdkitMainMiB / nbdkitAuxMiB are the per-volume nbdkit memory charges
+	// (main vs aux), added to every instance's guest -m at admission so the
+	// nbdkit processes backing its volumes are accounted, not absorbed by the
+	// fixed reserve. See resolveNbdkitCharge / instanceMemChargeMiB. RG-6.
+	nbdkitMainMiB int
+	nbdkitAuxMiB  int
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
+
+	// readMemAvailableGB is the live second admission gate. The static accounting
+	// above counts only guest -m, so co-located storage VMs, nbdkit (grows with
+	// guest disk I/O), the daemon stack and page cache are invisible to it.
+	// MemAvailable sees all of them and already nets reclaimable cache, catching
+	// real overcommit the accounting would greenlight. nil disables the gate
+	// (SPINIFEX_ADMISSION_LIVE_MEM=0); a read failure fails open.
+	readMemAvailableGB func() (float64, bool)
 
 	// Dynamic instance-type subscription management
 	subsMu        sync.Mutex
@@ -515,13 +529,25 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))
 
+	// Live-memory admission gate: enabled by default, reads /proc/meminfo
+	// MemAvailable at each admission. nil when disabled so liveMemGate is a no-op.
+	var memReader func() (float64, bool)
+	if liveMemAdmissionEnabled(os.Getenv) {
+		memReader = readMemAvailableGB
+	}
+
+	nbdkitMainMiB, nbdkitAuxMiB := resolveNbdkitCharge(os.Getenv)
+
 	return &ResourceManager{
-		hostVCPU:      hostVCPU,
-		hostMemGB:     totalMemGB,
-		reservedVCPU:  reservedVCPU,
-		reservedMem:   reservedMem,
-		instanceTypes: instanceTypes,
-		gpuManager:    gpuMgr,
+		hostVCPU:           hostVCPU,
+		hostMemGB:          totalMemGB,
+		reservedVCPU:       reservedVCPU,
+		reservedMem:        reservedMem,
+		nbdkitMainMiB:      nbdkitMainMiB,
+		nbdkitAuxMiB:       nbdkitAuxMiB,
+		instanceTypes:      instanceTypes,
+		gpuManager:         gpuMgr,
+		readMemAvailableGB: memReader,
 	}, nil
 }
 
@@ -539,6 +565,16 @@ func instanceTypeMemoryMiB(it *ec2.InstanceTypeInfo) int64 {
 		return *it.MemoryInfo.SizeInMiB
 	}
 	return 0
+}
+
+// instanceMemChargeMiB is the full memory admission charges one instance of it:
+// its guest -m plus the nbdkit processes backing its volumes (RG-6). Every
+// accounting gate (both canAllocateCount sites, liveMemGate, allocate,
+// deallocate) divides remaining memory by — or moves the running total by —
+// this value, so the charge and release can never drift.
+func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 {
+	return instanceTypeMemoryMiB(it) +
+		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
 }
 
 // GetInstanceTypeInfos returns all instance types as ec2.InstanceTypeInfo for AWS API compatibility
@@ -602,7 +638,7 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 		count := canAllocateCount(
 			rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 			rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
-			vCPUs, memMiB,
+			vCPUs, rm.instanceMemChargeMiB(it),
 			1<<30, // effectively unlimited — let resources be the constraint
 			0, false,
 		)
@@ -2124,14 +2160,35 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 		return count
 	}
 
-	return canAllocateCount(
+	n := canAllocateCount(
 		rm.hostVCPU-rm.reservedVCPU, rm.allocatedVCPU,
 		rm.hostMemGB-rm.reservedMem, rm.allocatedMem,
 		instanceTypeVCPUs(instanceType),
-		instanceTypeMemoryMiB(instanceType),
+		rm.instanceMemChargeMiB(instanceType),
 		count,
 		0, false,
 	)
+	return rm.liveMemGate(n, instanceType)
+}
+
+// liveMemGate clamps an accounting-derived launch count by the host's current
+// MemAvailable, so admission also refuses launches that fit the static -m budget
+// but would overcommit real memory (untracked storage VMs, nbdkit, daemon stack,
+// cache). Returns n unchanged when the gate is disabled (readMemAvailableGB is
+// nil) or the live read fails — failing open keeps a transient /proc/meminfo
+// error from wedging all launches; the accounting gate still applies. The bound
+// holds at least reservedMem physically available after the launch, read live on
+// each call so back-to-back launches see headroom shrink as guests fault in.
+func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo) int {
+	if rm.readMemAvailableGB == nil || n <= 0 {
+		return n
+	}
+	availGB, ok := rm.readMemAvailableGB()
+	if !ok {
+		return n
+	}
+	memGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
+	return liveMemCount(n, availGB, rm.reservedMem, memGB)
 }
 
 // allocate reserves resources for one instance and updates NATS subscriptions.
@@ -2150,7 +2207,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 		return fmt.Errorf("insufficient resources for instance type %s", instanceTypeName)
 	}
 	vCPUs := instanceTypeVCPUs(instanceType)
-	memoryGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU += int(vCPUs)
 	rm.allocatedMem += memoryGB
 	rm.mu.Unlock()
@@ -2163,7 +2220,7 @@ func (rm *ResourceManager) allocate(instanceType *ec2.InstanceTypeInfo) error {
 func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.mu.Lock()
 	vCPUs := instanceTypeVCPUs(instanceType)
-	memoryGB := float64(instanceTypeMemoryMiB(instanceType)) / 1024.0
+	memoryGB := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0
 	rm.allocatedVCPU -= int(vCPUs)
 	rm.allocatedMem -= memoryGB
 	rm.mu.Unlock()

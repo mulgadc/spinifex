@@ -2,67 +2,29 @@
 Description=Spinifex Daemon (VM Orchestration)
 PartOf=spinifex.target
 After=spinifex-nats.service spinifex-viperblock.service openvswitch-switch.service ovn-controller.service openvswitch-ipsec.service
-# Wants=openvswitch-ipsec.service so systemd brings the IPsec userspace
-# daemon up before spinifex flips other_config:ipsec_encapsulation=true.
-# Without that daemon, OVS holds the cert pointers unused and strongSwan
-# never gets IKE config — tunnel traffic is encrypted with no SAs and
-# silently dropped. Wants= (not Requires=) keeps daemon bootable on
-# single-node / lab hosts where the package is intentionally absent.
+# Wants (not Requires): stay bootable when openvswitch-ipsec is absent
 Wants=openvswitch-ipsec.service
-# No Wants=spinifex-nats.service: Wants= reactivates a stopped unit during
-# `systemctl restart spinifex-daemon`, which would mask the standalone-startup
-# path the Tier 1 DDIL Scenario B exercises. spinifex.target Wants= covers
-# cold boot.
 
 [Service]
 Type=simple
 Slice=spinifex-system.slice
 User=spinifex-daemon
 Group=spinifex
-# DDIL Tier 1 (siv-17): no ExecStartPre wait-for-nats. The daemon starts in
-# standalone mode and reconnects to NATS in the background — process-exiting
-# on a missing NATS would kill the local VM management plane.
-#
-# Opt-in strict-startup (§1d-strict, siv-44): set SPINIFEX_REQUIRE_NATS=1 to
-# restore pre-DDIL fail-fast UX. First NATS connect uses a ~30s bounded retry
-# and the daemon aborts on timeout. Intended for dev/test/single-node deploys
-# where silent NATS misconfig is more confusing than helpful. Do NOT set this
-# in the shipped unit — it re-introduces the SPOF that Tier 1 removed.
 ExecStart=/usr/local/bin/spx service spinifex start
 Restart=on-failure
 RestartSec=5
-# DDIL Tier 1: KillMode=process so systemd only signals the
-# daemon's main PID, not the cgroup. QEMU children stay alive across
-# `systemctl restart spinifex-daemon` and the new daemon reattaches to them
-# via the persisted local state file + pidfile + QMP socket. With the
-# default control-group mode, restart would terminate every guest VM —
-# defeating Scenario B's "daemon restart preserves running instances".
+# KillMode=process: guest QEMU survives daemon restart; the new daemon reattaches (DDIL)
 KillMode=process
-# 15s upper bound on the SIGTERM grace window. The new SIGTERM handler
-# skips VM teardown (it now just persists state and exits), so 15s is
-# plenty of slack for the cluster-manager + NATS unsubscribe path.
 TimeoutStopSec=15
+# RG-4: infra tier — reaped only after every guest
 OOMScoreAdjust=-500
 Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
 Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/spinifex/
 Environment=SPINIFEX_WAL_DIR=/var/lib/spinifex/spinifex/
-# DDIL Tier 1: QEMU pidfiles, QMP sockets, and the
-# shared qemu.log all resolve via utils.pidPath() — which falls back
-# to os.TempDir() (=/tmp) when $HOME/spinifex doesn't exist. With
-# PrivateTmp=yes, each daemon start gets a fresh /tmp namespace, so
-# pidfiles written by QEMU (running in the OLD daemon's namespace)
-# are invisible to the new daemon. The /local/instances handler then
-# reports PID=0 and Scenario B fails its "live QEMU PID" assertion.
-# Pin XDG_RUNTIME_DIR to the host-wide tmpfs at /run/spinifex (created
-# by tmpfiles.d, already in ReadWritePaths) so pidPath() returns a
-# stable, namespace-independent path that both daemon incarnations and
-# QEMU children resolve identically.
+# Pin to host tmpfs: QEMU pidfiles/QMP sockets must survive PrivateTmp namespace churn (DDIL)
 Environment=XDG_RUNTIME_DIR=/run/spinifex
 
-# Filesystem access — NoNewPrivileges omitted (daemon uses sudo for ip, ovs-vsctl, dhcpcd)
-# CAP_SYS_ADMIN: required for GPU passthrough sysfs operations (vfio group management).
-# CAP_DAC_OVERRIDE: sysfs driver bind/unbind paths (/sys/bus/pci/drivers/vfio-pci/bind,
-# unbind) are root:root 0200; non-root processes need CAP_DAC_OVERRIDE to open them.
+# RG-9: daemon tier — privileged by necessity (GPU vfio). NoNewPrivileges omitted (RG-10: sudo ip/ovs-vsctl/dhcpcd)
 AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 ProtectSystem=full
 PrivateDevices=no
@@ -74,7 +36,7 @@ DeviceAllow=/dev/vfio/vfio rw
 ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/server.pem /etc/spinifex/server.key /etc/spinifex/ca.pem
 ReadWritePaths=/var/lib/spinifex/spinifex /var/log/spinifex /run/spinifex /run/spinifex/nbd
 
-# Hardening
+# RG-9: hardening baseline
 ProtectHome=yes
 PrivateTmp=yes
 RestrictSUIDSGID=yes
@@ -89,8 +51,6 @@ ProtectControlGroups=yes
 ProtectProc=invisible
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
-# DHCP lease acquisition moved to spinifex-vpcd (see dhcp-allocate-error.md);
-# the daemon no longer needs AF_PACKET or the softened kernel protections.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 ProtectHostname=yes
 KeyringMode=private
@@ -98,8 +58,7 @@ RemoveIPC=yes
 LimitCORE=0
 LimitNOFILE=65536
 LimitNPROC=4096
-# VFIO GPU passthrough requires locking all guest RAM into physical memory.
-# Without this, QEMU fails with RLIMIT_MEMLOCK exceeded when pinning guest pages.
+# LimitMEMLOCK=infinity: VFIO pins all guest RAM
 LimitMEMLOCK=infinity
 
 [Install]

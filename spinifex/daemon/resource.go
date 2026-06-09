@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -14,18 +17,24 @@ import (
 // cannot be satisfied.
 var errInsufficientCapacity = errors.New("insufficient capacity to satisfy MinCount")
 
-// hostReserve is the fixed amount of host CPU and RAM held back from guest
-// scheduling so the spinifex daemon and co-located services (NATS,
-// predastore, viperblock, vpcd, awsgw, ui) cannot be starved by guest VMs
-// at maximum density. A future `capacity` command will lift this into
-// operator-tunable config.
+// hostReserve is the host CPU and RAM held back from guest scheduling for the
+// always-on infrastructure tier only — the daemon and co-located fixed services
+// (NATS, predastore, viperblock, vpcd, awsgw, ui). It deliberately does NOT
+// cover per-instance consumers such as the nbdkit process backing a guest's
+// volumes: those scale with instance count and disk I/O, so folding them into a
+// fixed reserve makes it unsizable. Per-instance cost is charged to the instance
+// and bounded by the live-memory admission gate (see liveMemGate). Tunable via
+// SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB until a `capacity` command
+// lifts it into config.
 type hostReserve struct {
 	vCPU  int
 	memGB float64
 }
 
-// defaultHostReserve is sized to cover predastore + viperblock under load;
-// the daemon itself needs little.
+// defaultHostReserve covers the fixed infrastructure tier (predastore +
+// viperblock storage VMs under load, plus the daemon/NATS/awsgw/vpcd/ui stack).
+// Size it from the measured fixed-tier footprint of the target host via
+// SPINIFEX_RESERVED_MEM_GB; the default is a conservative floor, not a ceiling.
 var defaultHostReserve = hostReserve{vCPU: 2, memGB: 2.0}
 
 // resolveHostReserve returns defaultHostReserve, with vCPU/memGB overridden
@@ -139,6 +148,126 @@ func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	}
 	result = min(result, maxCount)
 	return max(result, 0)
+}
+
+// liveMemCount clamps an accounting-derived launch count n by live host memory:
+// how many guests of memGB fit in (availMemGB − reservedMemGB) right now, never
+// more than n. Pure function — the live read and instance-type lookup happen in
+// liveMemGate. A negative headroom (host already below the reserve) yields 0, so
+// admission refuses rather than admitting into OOM territory.
+func liveMemCount(n int, availMemGB, reservedMemGB, memGB float64) int {
+	if memGB <= 0 {
+		return n
+	}
+	byLive := int((availMemGB - reservedMemGB) / memGB)
+	return max(0, min(n, byLive))
+}
+
+// liveMemAdmissionEnabled reports whether the live-memory admission gate is on.
+// Default on; SPINIFEX_ADMISSION_LIVE_MEM set to a false-y value ("0", "false",
+// "off", "no") disables it, falling back to pure accounting — a rollback hatch
+// if the live gate proves too conservative on a busy host.
+func liveMemAdmissionEnabled(getenv func(string) string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("SPINIFEX_ADMISSION_LIVE_MEM"))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
+
+// readMemAvailableGB returns the host's current /proc/meminfo MemAvailable in
+// GB. ok=false on non-Linux hosts or any read/parse failure, which disables the
+// live gate for that call (fail open). MemAvailable is the kernel's own estimate
+// of memory available for new workloads without swapping, already netting
+// reclaimable page cache — the figure admission should gate on, and one that
+// already reflects co-located storage VMs, nbdkit, and the daemon stack that the
+// static -m accounting never sees.
+func readMemAvailableGB() (float64, bool) {
+	if runtime.GOOS != "linux" {
+		return 0, false
+	}
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		slog.Warn("live-mem admission gate: read /proc/meminfo failed, falling back to accounting", "err", err)
+		return 0, false
+	}
+	kb, ok := parseMemAvailableKB(data)
+	if !ok {
+		slog.Warn("live-mem admission gate: MemAvailable absent from /proc/meminfo, falling back to accounting")
+		return 0, false
+	}
+	return float64(kb) / (1024 * 1024), true
+}
+
+// parseMemAvailableKB extracts the MemAvailable value (in kB) from /proc/meminfo
+// contents. Returns ok=false when the field is absent or unparseable. Pure —
+// split out for unit-testability without touching the filesystem.
+func parseMemAvailableKB(data []byte) (int64, bool) {
+	for line := range strings.SplitSeq(string(data), "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "MemAvailable" {
+			continue
+		}
+		fields := strings.Fields(val) // "  12345 kB"
+		if len(fields) < 1 {
+			return 0, false
+		}
+		kb, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return kb, true
+	}
+	return 0, false
+}
+
+// nbdkit runs one process per attached volume (spinifex/nbd). Measured on a live
+// host: a main volume's nbdkit climbs to ~0.75 GB under guest I/O (128 MiB cache
+// + plugin working set + in-flight buffers); aux volumes (-cloudinit, -efi; 0
+// cache) stay flat ~32-68 MB. Charged per instance so a busy nbdkit can't
+// overcommit memory the static -m budget never saw. Env-tunable; RG-6.
+const (
+	defaultNbdkitMainMiB = 768
+	defaultNbdkitAuxMiB  = 96
+)
+
+// defaultMainVolumes / defaultAuxVolumes is the volume layout every instance
+// gets: one main root volume plus -cloudinit and -efi aux volumes. Block-device
+// mappings add main volumes the static charge can't see at admission; the live
+// MemAvailable gate (RG-8) is the backstop for those. RG-6.
+const (
+	defaultMainVolumes = 1
+	defaultAuxVolumes  = 2
+)
+
+// resolveNbdkitCharge returns the per-volume nbdkit memory charge in MiB, with
+// main/aux overridable via SPINIFEX_NBDKIT_MAIN_MIB / SPINIFEX_NBDKIT_AUX_MIB so
+// an operator can retune from their own nbdkit RSS characterisation without a
+// rebuild. Invalid or negative values are logged and ignored.
+func resolveNbdkitCharge(getenv func(string) string) (mainMiB, auxMiB int) {
+	mainMiB, auxMiB = defaultNbdkitMainMiB, defaultNbdkitAuxMiB
+	if v := getenv("SPINIFEX_NBDKIT_MAIN_MIB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			mainMiB = n
+		} else {
+			slog.Warn("ignoring SPINIFEX_NBDKIT_MAIN_MIB", "value", v, "err", err)
+		}
+	}
+	if v := getenv("SPINIFEX_NBDKIT_AUX_MIB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			auxMiB = n
+		} else {
+			slog.Warn("ignoring SPINIFEX_NBDKIT_AUX_MIB", "value", v, "err", err)
+		}
+	}
+	return mainMiB, auxMiB
+}
+
+// nbdkitChargeMiB is the per-instance nbdkit charge — one process per volume over
+// the default layout (mainVols main + auxVols aux). Pure; RG-6.
+func nbdkitChargeMiB(mainVols, auxVols, mainMiB, auxMiB int) int64 {
+	return int64(mainVols*mainMiB + auxVols*auxMiB)
 }
 
 // resourceStatsForType computes the InstanceTypeCap for a single instance type

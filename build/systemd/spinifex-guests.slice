@@ -1,0 +1,8 @@
+[Unit]
+Description=Spinifex guest VM tier
+Before=slices.target
+
+[Slice]
+# RG-3: child of spinifex.slice (spinifex-guests -> spinifex), sibling of
+# spinifex-system. Parent for the per-instance spinifex-instance-<id>.slice
+# leaves (0002 RG-7). Inherits the spinifex.slice ceiling; no extra limit here.

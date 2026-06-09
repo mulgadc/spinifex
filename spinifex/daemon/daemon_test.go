@@ -216,12 +216,9 @@ func TestResourceManager(t *testing.T) {
 	if instanceType.VCpuInfo != nil && instanceType.VCpuInfo.DefaultVCpus != nil {
 		vCPUs = *instanceType.VCpuInfo.DefaultVCpus
 	}
-	memoryGB := float64(0)
-	if instanceType.MemoryInfo != nil && instanceType.MemoryInfo.SizeInMiB != nil {
-		memoryGB = float64(*instanceType.MemoryInfo.SizeInMiB) / 1024.0
-	}
+	expectedMem := float64(rm.instanceMemChargeMiB(instanceType)) / 1024.0 // guest -m + nbdkit (RG-6)
 	assert.Equal(t, int(vCPUs), rm.allocatedVCPU)
-	assert.Equal(t, memoryGB, rm.allocatedMem)
+	assert.Equal(t, expectedMem, rm.allocatedMem)
 
 	// Deallocate
 	rm.deallocate(instanceType)
@@ -233,6 +230,7 @@ func TestResourceManager(t *testing.T) {
 		// Fresh resource manager for predictable testing
 		rm, err := NewResourceManager(nil, nil, nil)
 		require.NoError(t, err)
+		rm.readMemAvailableGB = nil // accounting test: decrement must track allocations, not live /proc
 
 		// Find a .micro instance type
 		var microType *ec2.InstanceTypeInfo
@@ -631,16 +629,16 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		err = json.Unmarshal(reply.Data, &output)
 		require.NoError(t, err)
 
-		// With 2 vCPUs and 16GB, every type with 2 vCPUs and <=16GB memory should have 1 slot.
-		// Calculate expected by counting fitting types directly.
+		// With 2 vCPUs and 16GB, every type whose full charge (guest -m + nbdkit,
+		// RG-6) fits 2 vCPUs / 16GB should have 1 slot. Calculate expected directly.
 		expectedSlots := 0
 		for name, it := range daemon.resourceMgr.instanceTypes {
 			if instancetypes.IsSystemType(name) {
 				continue
 			}
 			vcpus := *it.VCpuInfo.DefaultVCpus
-			memGB := float64(*it.MemoryInfo.SizeInMiB) / 1024.0
-			if vcpus <= 2 && memGB <= 16.0 {
+			chargeGB := float64(daemon.resourceMgr.instanceMemChargeMiB(it)) / 1024.0
+			if vcpus <= 2 && chargeGB <= 16.0 {
 				expectedSlots++
 			}
 		}
@@ -752,7 +750,7 @@ func TestDaemon_BootAllocation(t *testing.T) {
 	// Verify only i-running was allocated
 	instanceType := daemon.resourceMgr.instanceTypes[vms["i-running"].InstanceType]
 	expectedVCPU := int(*instanceType.VCpuInfo.DefaultVCpus)
-	expectedMem := float64(*instanceType.MemoryInfo.SizeInMiB) / 1024.0
+	expectedMem := float64(daemon.resourceMgr.instanceMemChargeMiB(instanceType)) / 1024.0 // guest -m + nbdkit (RG-6)
 
 	assert.Equal(t, expectedVCPU, daemon.resourceMgr.allocatedVCPU)
 	assert.Equal(t, expectedMem, daemon.resourceMgr.allocatedMem)
@@ -858,6 +856,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 		rm.hostMemGB = 32.0
 		rm.reservedVCPU = 0
 		rm.reservedMem = 0
+		rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
 		rm.mu.Unlock()
 
 		initial := rm.canAllocate(microType, 100)
@@ -963,7 +962,9 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	require.NotNil(t, microType, "test requires a .micro instance type")
 
 	vCPUs := int(instanceTypeVCPUs(microType))
-	memGB := float64(instanceTypeMemoryMiB(microType)) / 1024.0
+	// Size the pool on the full per-instance charge (guest -m + nbdkit, RG-6),
+	// not bare guest -m, so capacityFor slots still fit exactly after RG-6.
+	memGB := float64(rm.instanceMemChargeMiB(microType)) / 1024.0
 	require.Greater(t, vCPUs, 0, "micro type must report vCPU count")
 	require.Greater(t, memGB, float64(0), "micro type must report memory")
 
@@ -976,6 +977,7 @@ func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
 	rm.reservedMem = 0
 	rm.allocatedVCPU = 0
 	rm.allocatedMem = 0
+	rm.readMemAvailableGB = nil // accounting test: pin to synthetic host, not live /proc
 	rm.mu.Unlock()
 
 	require.Equal(t, capacityFor, rm.canAllocate(microType, goroutines),
@@ -1396,10 +1398,11 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		handler := func(msg *nats.Msg) {}
 		rm.initSubscriptions(nc, handler, nil, "test-node")
 
-		// Leave only 2 vCPUs and 1 GB schedulable — enough for nano/micro but not larger types.
+		// Leave only 2 vCPUs and 2.5 GB schedulable — enough for a nano/micro plus
+		// its nbdkit charge (RG-6), but not larger types.
 		rm.mu.Lock()
 		rm.allocatedVCPU = (rm.hostVCPU - rm.reservedVCPU) - 2
-		rm.allocatedMem = (rm.hostMemGB - rm.reservedMem) - 1.0
+		rm.allocatedMem = (rm.hostMemGB - rm.reservedMem) - 2.5
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
 

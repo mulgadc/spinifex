@@ -450,6 +450,15 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "derive OIDC public key", err)
 	}
 
+	// Shared cluster token seeded into every control-plane server so the HA
+	// spread's servers 2..N join the first server's etcd quorum (and workers
+	// register). Single-CP clusters carry it too — harmless, one code path.
+	joinToken, err := GenerateK3sClusterToken()
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "generate k3s cluster token", err)
+	}
+
 	cpNodes, spreadGroup, err := s.placeControlPlane(accountID, name, K3sServerInput{
 		AccountID:         accountID,
 		ClusterName:       name,
@@ -466,6 +475,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
 		BuiltinIngress:    meta.BuiltinIngress,
+		JoinToken:         joinToken,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)

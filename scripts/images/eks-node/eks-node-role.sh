@@ -10,8 +10,13 @@ set -eu
 # ROLE_FILE so later boots and the etcd-snapshot cron can branch without
 # re-parsing, then removes itself from the runlevel so it runs exactly once.
 #
-#   server → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap publish)
-#   agent  → k3s-agent
+#   server      → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap
+#                 publish), mulga-eks-state-report
+#   server-join → eks-token-webhook, k3s (server, joins the first server's etcd
+#                 quorum), mulga-eks-state-report. NO k3s-first-boot: the first
+#                 server already publishes the cluster-identical bootstrap
+#                 artifacts; a join re-publish only races the bootstrap bus.
+#   agent       → k3s-agent
 #
 # Paths are overridable via env so the selection logic is unit-testable (bats)
 # without root or a real /etc.
@@ -53,6 +58,15 @@ case "${ROLE}" in
         rc-service eks-token-webhook start
         rc-service k3s start
         rc-service k3s-first-boot start
+        rc-service mulga-eks-state-report start
+        ;;
+    server-join)
+        log "configuring server-join role"
+        rc-update add eks-token-webhook default
+        rc-update add k3s default
+        rc-update add mulga-eks-state-report default
+        rc-service eks-token-webhook start
+        rc-service k3s start
         rc-service mulga-eks-state-report start
         ;;
     agent)

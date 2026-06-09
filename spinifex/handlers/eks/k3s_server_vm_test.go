@@ -128,6 +128,7 @@ func validK3sInput() K3sServerInput {
 		AccessKey:         "AKIAEXAMPLE",
 		SecretKey:         "s3cr3t-key",
 		GatewayCACert:     "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		JoinToken:         "clustertok-deadbeef",
 	}
 }
 
@@ -407,6 +408,69 @@ func TestLaunchK3sServerVM_UsesEmbeddedEtcd(t *testing.T) {
 	// etcd-expose-metrics surfaces wal_fsync/backend_commit on 127.0.0.1:2381.
 	assert.Contains(t, udata, "cluster-init: true")
 	assert.Contains(t, udata, "etcd-expose-metrics: true")
+}
+
+func TestLaunchK3sServerVM_FirstServerTokenNoServerURL(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = "sharedtok123"
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// First server: cluster-inits the datastore, carries the shared token so
+	// servers 2..N and workers join, and boots the full server role.
+	assert.Contains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "token: sharedtok123")
+	assert.NotContains(t, udata, "server: https://")
+	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server\n")
+}
+
+func TestLaunchK3sServerVM_JoinServerRendersServerAndJoinRole(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = "sharedtok123"
+	in.ServerURL = "https://10.0.1.7:6443"
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.NoError(t, err)
+	require.Len(t, inst.launchCalls, 1)
+
+	udata := inst.launchCalls[0].UserData
+	// Join server: registers at the first server's endpoint with the shared
+	// token, WITHOUT cluster-init, and boots the join role (no bootstrap publish).
+	assert.Contains(t, udata, "server: https://10.0.1.7:6443")
+	assert.Contains(t, udata, "token: sharedtok123")
+	assert.NotContains(t, udata, "cluster-init: true")
+	assert.Contains(t, udata, "SPINIFEX_K3S_ROLE=server-join")
+	assert.NotContains(t, udata, "SPINIFEX_K3S_ROLE=server\n")
+}
+
+func TestLaunchK3sServerVM_JoinServerRequiresToken(t *testing.T) {
+	vpc, inst, ami := &fakeK3sVPC{}, &fakeK3sInst{}, &fakeK3sAMI{}
+
+	in := validK3sInput()
+	in.JoinToken = ""
+	in.ServerURL = "https://10.0.1.7:6443" // ServerURL set, token cleared
+	_, err := LaunchK3sServerVM(vpc, inst, ami, in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JoinToken")
+	assert.Empty(t, inst.launchCalls)
+}
+
+func TestGenerateK3sClusterToken_UniqueHex(t *testing.T) {
+	a, err := GenerateK3sClusterToken()
+	require.NoError(t, err)
+	b, err := GenerateK3sClusterToken()
+	require.NoError(t, err)
+	assert.Len(t, a, 64) // 32 bytes hex
+	assert.NotEqual(t, a, b)
+}
+
+func TestK3sServerJoinURL(t *testing.T) {
+	assert.Equal(t, "https://10.0.1.7:6443", k3sServerJoinURL("10.0.1.7"))
 }
 
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {

@@ -1,6 +1,8 @@
 package handlers_eks
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -147,6 +149,16 @@ type K3sServerInput struct {
 	// spread across distinct failure domains. Empty launches on the local
 	// daemon node (the single-CP default).
 	TargetNodeID string
+	// JoinToken is the shared k3s cluster token (server secret). Set on every
+	// control-plane server so servers 2..N authenticate into the first server's
+	// embedded-etcd quorum and workers continue to register. Empty preserves
+	// k3s' per-server auto-generated token (pre-HA single-CP behaviour).
+	JoinToken string
+	// ServerURL, when set, boots this VM as a JOIN server: it registers with the
+	// existing control plane at this https://<first-server-ip>:6443 endpoint and
+	// joins the etcd quorum WITHOUT cluster-init. Empty = the first server, which
+	// cluster-inits the datastore. A non-empty ServerURL requires JoinToken.
+	ServerURL string
 	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (interim
 	// in-VPC app exposure). When false the config disables them for AWS parity,
 	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
@@ -383,8 +395,30 @@ func validateK3sServerInput(in K3sServerInput) error {
 		return errors.New("eks: K3sServerInput empty SecretKey")
 	case strings.TrimSpace(in.GatewayCACert) == "":
 		return errors.New("eks: K3sServerInput empty GatewayCACert")
+	case in.ServerURL != "" && in.JoinToken == "":
+		return errors.New("eks: K3sServerInput join server (ServerURL set) requires JoinToken")
 	}
 	return nil
+}
+
+// GenerateK3sClusterToken mints the shared k3s cluster token (256 bits of
+// crypto-random, hex-encoded) seeded into every control-plane server so servers
+// 2..N join the first server's etcd quorum and workers register. Generated per
+// CreateCluster; not persisted (the node-token derived from it is published on
+// the bootstrap bus for workers).
+func GenerateK3sClusterToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("eks: generate k3s cluster token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// k3sServerJoinURL builds the registration endpoint a join server dials: the
+// first server's ENI private IP on the k3s supervisor port. Token-based join is
+// trust-on-first-use, so the IP need not be in the apiserver cert SANs.
+func k3sServerJoinURL(ip string) string {
+	return "https://" + net.JoinHostPort(ip, "6443")
 }
 
 // boolFlag renders a bool as the "1"/"0" string the shell first-boot env reads.
@@ -408,11 +442,18 @@ type userDataFile struct {
 func buildK3sUserData(in K3sServerInput) string {
 	nlbEndpoint := "https://" + net.JoinHostPort(in.NLBDNS, strconv.FormatInt(clusterNLBListenPort, 10))
 
+	// Role the eks-node-role first-boot selector reads to enable the
+	// control-plane services. The first server is "server" (cluster-init +
+	// bootstrap publisher); servers 2..N are "server-join" (register into the
+	// existing quorum, no bootstrap re-publish). Nodegroup workers seed "agent"
+	// through their own path.
+	role := "server"
+	if in.ServerURL != "" {
+		role = "server-join"
+	}
+
 	envBody := strings.Join([]string{
-		// Role the eks-node-role first-boot selector reads to enable the
-		// control-plane services (k3s server + token webhook + bootstrap
-		// publisher). Nodegroup workers seed "agent" through their own path.
-		"SPINIFEX_K3S_ROLE=server",
+		"SPINIFEX_K3S_ROLE=" + role,
 		"EKS_GATEWAY_URL=" + in.GatewayURL,
 		"EKS_GATEWAY_CA=" + k3sGatewayCAPath,
 		"EKS_ACCESS_KEY=" + in.AccessKey,
@@ -428,8 +469,10 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_DEFER_TRAEFIK=" + boolFlag(in.BuiltinIngress),
 	}, "\n")
 
-	// cluster-init selects the embedded etcd datastore (required for multi-server
-	// HA). etcd-expose-metrics surfaces etcd's own wal_fsync_duration_seconds and
+	// cluster-init (first server) selects the embedded etcd datastore (required
+	// for multi-server HA); servers 2..N instead carry `server: <first>` + the
+	// shared token and join the quorum without cluster-init.
+	// etcd-expose-metrics surfaces etcd's own wal_fsync_duration_seconds and
 	// backend_commit_duration_seconds on 127.0.0.1:2381/metrics so control-plane
 	// commit latency is measurable directly, not inferred.
 	//
@@ -456,8 +499,16 @@ func buildK3sUserData(in K3sServerInput) string {
 	// k3s never writes traefik.yaml, leaving no manifest to un-skip. servicelb
 	// (klipper) is lazy — it acts only when a LoadBalancer Service exists — so it
 	// carries no bootstrap cost and stays enabled whenever built-in ingress is on.
-	configLines := []string{
-		"cluster-init: true",
+	var configLines []string
+	if in.ServerURL == "" {
+		configLines = append(configLines, "cluster-init: true")
+	} else {
+		configLines = append(configLines, "server: "+in.ServerURL)
+	}
+	if in.JoinToken != "" {
+		configLines = append(configLines, "token: "+in.JoinToken)
+	}
+	configLines = append(configLines,
 		"etcd-expose-metrics: true",
 		// Keep user workloads off the control plane (EKS parity — the CP is never
 		// a worker). Critical here because the server node is schedulable by
@@ -468,7 +519,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		// NoExecute also evicts anything already scheduled, not just future pods.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",
-	}
+	)
 	if !in.BuiltinIngress {
 		configLines = append(configLines,
 			"disable:",

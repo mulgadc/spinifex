@@ -21,6 +21,25 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 )
 
+// RG-4 guest OOM tiers. Under host memory pressure the kernel reaps a user
+// guest QEMU first; system instances (ELBv2 LB-VMs, EKS control-plane nodes)
+// back many user VMs, so they rank above user guests but below the infra tier
+// (units carry OOMScoreAdjust=-500). The host system.slice is reserved below all.
+const (
+	oomScoreUserGuest      = 500 // ManagedBy == "" — customer instance, reaped first
+	oomScoreSystemInstance = 0   // ManagedBy != "" — elbv2 / eks, protected above user guests
+)
+
+// guestOOMScore returns the oom_score_adj for a guest QEMU per the RG-4 ladder,
+// keyed on whether the instance is platform-managed (ManagedBy set). Pure —
+// split out for unit-testability of the tiering.
+func guestOOMScore(managedBy string) int {
+	if managedBy == "" {
+		return oomScoreUserGuest
+	}
+	return oomScoreSystemInstance
+}
+
 // Run launches a VM through the manager's lifecycle pipeline: validate state,
 // mount volumes, exec QEMU, attach QMP, transition to Running, fire
 // OnInstanceUp. The instance need not be in the manager's map yet — Run
@@ -386,8 +405,9 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 		slog.Info("VM started successfully", "pid", cmd.Process.Pid)
 
-		if err := utils.SetOOMScore(cmd.Process.Pid, 500); err != nil {
-			slog.Warn("Failed to set QEMU OOM score", "pid", cmd.Process.Pid, "err", err)
+		oomScore := guestOOMScore(instance.ManagedBy)
+		if err := utils.SetOOMScore(cmd.Process.Pid, oomScore); err != nil {
+			slog.Warn("Failed to set QEMU OOM score", "pid", cmd.Process.Pid, "score", oomScore, "err", err)
 		}
 
 		go func() {

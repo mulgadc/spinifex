@@ -26,7 +26,7 @@ concurrency:
 jobs:
   publish:
     name: Build + publish eks-node AMI
-    runs-on: [ self-hosted, ci-single-1 ]
+    runs-on: [ self-hosted, ci-single ]
 
     steps:
       - name: Checkout Spinifex

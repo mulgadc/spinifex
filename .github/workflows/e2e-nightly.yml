@@ -61,7 +61,16 @@ jobs:
 
       - name: Clean Workspace
         if: steps.gate.outputs.selected == 'true'
-        run: sudo rm -rf "$GITHUB_WORKSPACE"/*
+        run: |
+          # Self-heal a host whose /dev was clobbered by a leaked iso-builder
+          # devtmpfs mount (see mulga build-rootfs.sh): detach any leftover
+          # rootfs mounts and recreate /dev/null before anything runs `go build`,
+          # which otherwise dies "open /dev/null: no such file or directory".
+          sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
+          if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
+          # --one-file-system stops rm descending into a still-mounted fs (e.g. a
+          # leaked devtmpfs) and deleting host device nodes.
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
         if: steps.gate.outputs.selected == 'true'

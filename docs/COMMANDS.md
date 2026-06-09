@@ -543,7 +543,7 @@ bypasses policy evaluation entirely.
 |---------|-------------------|--------------------------------------|--------|
 | `get-caller-identity` | — | — | **DONE** |
 | `assume-role` | `--role-arn`, `--role-session-name`, `--duration-seconds` (900–min(role MaxSessionDuration, 43200)) | `--policy`, `--policy-arns` (→ `PackedPolicyTooLarge`); `--tags`, `--transitive-tag-keys` (→ `InvalidParameterValue`); `--serial-number`, `--token-code` (→ `InvalidParameterValue`); `--external-id`, `--source-identity` (accepted and logged, **not enforced** — no Condition evaluator in v1) | **DONE** |
-| `get-session-token` | — | `--duration-seconds`, `--serial-number`, `--token-code` | **NOT STARTED** |
+| `get-session-token` | `--duration-seconds` (900–129600, default 43200 = 12h; clamped, not rejected) | `--serial-number`, `--token-code` (MFA → `InvalidParameterValue`) | **DONE** |
 | `assume-role-with-web-identity` | — | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--provider-id`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
 | `assume-role-with-saml` | — | `--role-arn`, `--principal-arn`, `--saml-assertion`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
 | `get-access-key-info` | — | `--access-key-id` | **NOT STARTED** |

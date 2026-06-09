@@ -273,8 +273,9 @@ func (d *Daemon) handleEC2DescribeInstances(msg *nats.Msg) {
 					instanceCopy.PublicIpAddress = aws.String(instance.PublicIP)
 				}
 
-				// Map internal status to EC2 state codes using the centralized mapping
-				if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+				// Map internal status to AWS state, projecting Spinifex-only states
+				// (e.g. error -> stopped) so SDK/UI clients see a valid label.
+				if info, ok := vm.EC2APIState(instance.Status); ok {
 					instanceCopy.State.SetCode(info.Code)
 					instanceCopy.State.SetName(info.Name)
 				} else {
@@ -510,7 +511,7 @@ func (d *Daemon) describeInstancesFromKV(msg *nats.Msg, listFn func() ([]*vm.VM,
 
 		instanceCopy := *instance.Instance
 		instanceCopy.State = &ec2.InstanceState{}
-		if info, ok := vm.EC2StateCodes[instance.Status]; ok {
+		if info, ok := vm.EC2APIState(instance.Status); ok {
 			instanceCopy.State.SetCode(info.Code)
 			instanceCopy.State.SetName(info.Name)
 		} else {

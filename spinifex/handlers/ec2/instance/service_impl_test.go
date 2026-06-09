@@ -2993,6 +2993,27 @@ func TestStartInstance_AllocateFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
 
+// TestStartInstance_ErrorStateStartable verifies a crash/recovery-failed
+// instance (StateError) is accepted past the startability guard. Reaching the
+// resource Allocate step (here forced to fail) proves the guard did not reject
+// it with IncorrectInstanceState — manual recovery of errored instances works.
+func TestStartInstance_ErrorStateStartable(t *testing.T) {
+	id := "i-err"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateError, InstanceType: "t3.micro"},
+	})
+	v, _ := mgr.Get(id)
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		allocateErr:   errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
+	err := svc.StartInstance(v, spxtypes.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
 func TestRebootInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)

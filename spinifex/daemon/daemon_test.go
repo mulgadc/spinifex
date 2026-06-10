@@ -539,16 +539,19 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 		capMsgData, err := json.Marshal(capInput)
 		require.NoError(t, err)
 
-		// Pick a 2-vCPU type from the capacity-aware set so we know the
-		// host has room for it — the raw instanceTypes map contains
-		// entries (e.g. r5.large at 16 GiB) that exceed schedulable
-		// memory on small test hosts.
+		// Pick the smallest-memory 2-vCPU type from the capacity-aware set
+		// so it is guaranteed to fit the host. Selecting the first match by
+		// map-iteration order is non-deterministic and intermittently picks a
+		// type near the schedulable-memory boundary that the allocator then
+		// rejects, flaking the test on small hosts.
 		var instanceType2CPU *ec2.InstanceTypeInfo
-		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(false) {
-			if it.VCpuInfo != nil && it.VCpuInfo.DefaultVCpus != nil && *it.VCpuInfo.DefaultVCpus == 2 &&
-				it.MemoryInfo != nil && it.MemoryInfo.SizeInMiB != nil {
+		for _, it := range daemon.resourceMgr.GetAvailableInstanceTypeInfos(true) {
+			if it.VCpuInfo == nil || it.VCpuInfo.DefaultVCpus == nil || *it.VCpuInfo.DefaultVCpus != 2 ||
+				it.MemoryInfo == nil || it.MemoryInfo.SizeInMiB == nil {
+				continue
+			}
+			if instanceType2CPU == nil || *it.MemoryInfo.SizeInMiB < *instanceType2CPU.MemoryInfo.SizeInMiB {
 				instanceType2CPU = it
-				break
 			}
 		}
 		require.NotNil(t, instanceType2CPU, "Should find a 2-vCPU type that fits the host")

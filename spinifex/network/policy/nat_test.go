@@ -220,6 +220,39 @@ func TestNATManager_AddEIP_Distributed_SetsPortAndMAC(t *testing.T) {
 	assert.Equal(t, "aa:bb:cc:dd:ee:ff", *got.ExternalMAC)
 }
 
+func TestNATManager_AddEIP_Distributed_ResolvesMACFromLSP(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	// The ENI port carries the authoritative MAC in port_security. When the
+	// caller supplies no MAC (reconcile / auto-assigned / ELBv2 floating IP on
+	// host-reboot recovery), AddEIP must resolve it from there and still program
+	// the distributed shape.
+	require.NoError(t, m.CreateLogicalSwitch(ctx, &nbdb.LogicalSwitch{Name: "ls-subnet-1"}))
+	require.NoError(t, m.CreateLogicalSwitchPort(ctx, "ls-subnet-1", &nbdb.LogicalSwitchPort{
+		Name:         "port-eni-abc",
+		Addresses:    []string{"aa:bb:cc:dd:ee:ff 10.0.0.5"},
+		PortSecurity: []string{"aa:bb:cc:dd:ee:ff 10.0.0.5"},
+	}))
+	nm, err := NewNATManager(m, NATModeDistributed)
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID:      "vpc-1",
+		ExternalIP: "1.2.3.4",
+		LogicalIP:  "10.0.0.5",
+		PortName:   "port-eni-abc",
+		// MAC intentionally empty — resolved from the LSP.
+	}))
+
+	got := findNAT(m, "dnat_and_snat", "10.0.0.5")
+	require.NotNil(t, got)
+	require.NotNil(t, got.ExternalMAC)
+	require.NotNil(t, got.LogicalPort)
+	assert.Equal(t, "aa:bb:cc:dd:ee:ff", *got.ExternalMAC)
+	assert.Equal(t, "port-eni-abc", *got.LogicalPort)
+}
+
 func TestNATManager_AddEIP_Centralized_LeavesPortAndMACUnset(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

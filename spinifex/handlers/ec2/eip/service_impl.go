@@ -213,7 +213,6 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 	record.InstanceId = instanceID
 	record.PrivateIp = privateIP
 	record.VpcId = vpcID
-	record.MacAddress = macAddr
 	record.State = "associated"
 
 	data, err := json.Marshal(record)
@@ -271,7 +270,6 @@ func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput
 	record.InstanceId = ""
 	record.PrivateIp = ""
 	record.VpcId = ""
-	record.MacAddress = ""
 	record.State = "allocated"
 
 	data, err := json.Marshal(record)

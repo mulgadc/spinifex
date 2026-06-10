@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
@@ -165,6 +166,25 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 			"spinifex:public_ip": eip.ExternalIP,
 		},
 	}
+
+	// Distributed dnat_and_snat binds per-chassis via the ENI's MAC + logical
+	// port. The authoritative MAC is the ENI port's port_security (ADR-0006
+	// I1/I2), so resolve it from OVN when the caller didn't supply one — this is
+	// what lets auto-assigned and ELBv2 floating IPs recover the distributed
+	// shape after a host reboot, not just store-backed EIPs. Resolving before
+	// the idempotency check also means a stale centralised row no longer matches
+	// the distributed predicate, forcing the delete-then-add upgrade.
+	if m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC == "" {
+		if lsp, err := m.ovn.GetLogicalSwitchPort(ctx, eip.PortName); err != nil {
+			slog.Warn("policy: AddEIP MAC resolve failed — applying centralised shape",
+				"external_ip", eip.ExternalIP, "port", eip.PortName, "err", err)
+		} else if len(lsp.PortSecurity) > 0 {
+			if fields := strings.Fields(lsp.PortSecurity[0]); len(fields) > 0 {
+				eip.MAC = fields[0]
+			}
+		}
+	}
+
 	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
 	if distributed {
 		mac := eip.MAC

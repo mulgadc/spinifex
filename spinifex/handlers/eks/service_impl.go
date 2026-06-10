@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -326,27 +327,6 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
 
-	if existing, err := GetClusterMeta(acctKV, name); err == nil {
-		if existing.Status != ClusterStatusFailed {
-			slog.Info("CreateCluster: cluster already exists",
-				"name", name, "accountID", accountID, "status", existing.Status)
-			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
-		}
-		// A prior attempt failed. Reclaim whatever it left behind and clear its
-		// state so this create starts clean — makes a retry (including the
-		// SDK's own auto-retry) idempotent instead of masking the original
-		// failure with a spurious "already exists" error. If teardown of the
-		// failed attempt's resources fails, surface that rather than recreating
-		// on top of orphans.
-		slog.Info("CreateCluster: reclaiming FAILED cluster before recreate",
-			"name", name, "accountID", accountID)
-		if perr := s.purgeClusterInfra(accountID, name, existing, acctKV); perr != nil {
-			return nil, logCreateErr(name, accountID, "reclaim failed cluster", perr)
-		}
-	} else if !errors.Is(err, ErrClusterNotFound) {
-		return nil, logCreateErr(name, accountID, "preflight get meta", err)
-	}
-
 	vpcID, err := s.deps.VPCSubnet.GetSubnetVPC(accountID, subnetIDs[0])
 	if err != nil {
 		// Subnet is a caller-supplied parameter — a resolve failure is a client
@@ -379,8 +359,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		BuiltinIngress: builtinIngressEnabled(input.Tags),
 		CreatedAt:      time.Now().UTC(),
 	}
-	if err := PutClusterMeta(acctKV, meta); err != nil {
-		return nil, logCreateErr(name, accountID, "persist initial meta", err)
+	// Atomically claim the cluster name before any launching/fallible work. A
+	// duplicate CreateCluster (the SDK's own retry, or a gateway re-publish that
+	// spawns a second concurrent handler) loses the claim and is rejected — or,
+	// for a prior FAILED attempt, reclaims it — so exactly one handler ever
+	// launches control-plane VMs for a given name.
+	if err := s.claimClusterName(accountID, acctKV, meta); err != nil {
+		return nil, err
 	}
 
 	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, accountID, name, vpcID)
@@ -708,13 +693,87 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	}
 	meta.Status = ClusterStatusDeleting
 
-	if err := s.purgeClusterInfra(accountID, name, meta, acctKV); err != nil {
+	if err := s.purgeClusterInfra(accountID, name, meta, acctKV, true); err != nil {
 		slog.Error("DeleteCluster: teardown incomplete; leaving cluster DELETING for retry",
 			"cluster", name, "err", err)
 		return nil, fmt.Errorf("eks: DeleteCluster %s: %w", name, err)
 	}
 
 	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+}
+
+// claimClusterName atomically takes ownership of the cluster's meta key before
+// CreateCluster does any launching work, closing the duplicate-handler race (an
+// SDK retry or a gateway re-publish spawning a second concurrent CreateCluster).
+// The fresh CREATING meta is laid down with kv.Create: the winner owns it. A
+// loser finds the key already present and either rejects (a live cluster) or,
+// for a prior FAILED attempt, reclaims it — flipping FAILED→CREATING via CAS so
+// exactly one concurrent reclaimer wins, then purging the old attempt's infra
+// (keeping the meta key as its lock) before laying down the fresh record. The
+// old resource refs stay in the record until teardown confirms the infra is
+// gone, so a crash mid-purge leaves them recoverable rather than orphaned.
+// Returns an AWS-shaped error ready to hand back to the caller.
+func (s *EKSServiceImpl) claimClusterName(accountID string, acctKV nats.KeyValue, meta *ClusterMeta) error {
+	name := meta.Name
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return logCreateErr(name, accountID, "marshal initial meta", err)
+	}
+
+	if _, cerr := acctKV.Create(ClusterMetaKey(name), data); cerr == nil {
+		return nil // won a fresh claim
+	} else if !errors.Is(cerr, nats.ErrKeyExists) {
+		return logCreateErr(name, accountID, "claim cluster name", cerr)
+	}
+
+	// Key already present. Reclaim only a prior FAILED attempt; flip its status
+	// to CREATING via CAS so exactly one concurrent reclaimer wins. The mutate
+	// changes only Status, so the old resource refs survive in the record for
+	// teardown below (and for a retry if we crash before clearing them).
+	var oldRefs *ClusterMeta
+	reclaimed := false
+	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+		// casUpdateMeta re-runs this closure on every CAS-conflict retry, so reset
+		// the outputs each pass: a retry that now observes CREATING (a concurrent
+		// reclaimer won) must leave reclaimed=false, or we double-own the cluster.
+		reclaimed = false
+		oldRefs = nil
+		if m.Status != ClusterStatusFailed {
+			return false
+		}
+		snapshot := *m
+		oldRefs = &snapshot
+		m.Status = ClusterStatusCreating
+		reclaimed = true
+		return true
+	}); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			// The FAILED record was swept underneath us (a concurrent reclaim or
+			// delete). Treat as in-use; the caller may retry.
+			return errors.New(awserrors.ErrorEKSResourceInUse)
+		}
+		return logCreateErr(name, accountID, "reclaim failed cluster", err)
+	}
+	if !reclaimed {
+		slog.Info("CreateCluster: cluster already exists",
+			"name", name, "accountID", accountID)
+		return errors.New(awserrors.ErrorEKSResourceInUse)
+	}
+
+	slog.Info("CreateCluster: reclaiming FAILED cluster before recreate",
+		"name", name, "accountID", accountID)
+	// Purge the failed attempt's infra but KEEP the meta claim (deleteMeta=false)
+	// — the CREATING record is our lock for the rest of this create.
+	if perr := s.purgeClusterInfra(accountID, name, oldRefs, acctKV, false); perr != nil {
+		s.markFailed(acctKV, name)
+		return logCreateErr(name, accountID, "reclaim failed cluster", perr)
+	}
+	// Infra gone: overwrite with the fresh CREATING meta (clears the old refs).
+	if err := PutClusterMeta(acctKV, meta); err != nil {
+		s.markFailed(acctKV, name)
+		return logCreateErr(name, accountID, "persist reclaimed meta", err)
+	}
+	return nil
 }
 
 // purgeClusterInfra tears down a cluster's live AWS resources and erases its
@@ -724,7 +783,7 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 // without the meta record that owns its ARNs/IDs. SG cleanup is best-effort
 // (a leaked SG strands no owning record). Shared by DeleteCluster and the
 // FAILED-cluster reclaim path in CreateCluster.
-func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue) error {
+func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue, deleteMeta bool) error {
 	s.registry.Stop(accountID, name)
 
 	var teardownErrs []error
@@ -806,8 +865,13 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	s.teardownSpreadGroup(meta)
 
 	// Only now, with NLB + VM confirmed gone, erase the meta + per-cluster KV.
-	if err := DeleteClusterPrefix(acctKV, name); err != nil {
-		return fmt.Errorf("delete cluster prefix: %w", err)
+	// The reclaim path passes deleteMeta=false: it has already CAS-claimed the
+	// meta key (status CREATING) as its lock for the recreate, so the key must
+	// survive — only the failed attempt's infra is purged here.
+	if deleteMeta {
+		if err := DeleteClusterPrefix(acctKV, name); err != nil {
+			return fmt.Errorf("delete cluster prefix: %w", err)
+		}
 	}
 	return nil
 }

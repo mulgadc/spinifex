@@ -22,6 +22,15 @@ const (
 	KeyPrefixTG       = "tg."
 	KeyPrefixListener = "listener."
 	KeyPrefixRule     = "rule."
+	// KeyPrefixLBName is the per-account LB-name claim used for
+	// CreateLoadBalancer idempotency: it makes the LB name (not the generated
+	// lbID) an atomically claimable identity so concurrent same-name creates
+	// cannot both launch an LB VM.
+	KeyPrefixLBName = "lbname."
+
+	// maxLBNameClaimRetries bounds the crash-orphan CAS-reclaim loop in
+	// ClaimLBName (Create raced a delete, or a CAS-reclaim lost the revision).
+	maxLBNameClaimRetries = 5
 )
 
 // Store provides CRUD operations for ELBv2 resources backed by JetStream KV.
@@ -50,6 +59,64 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 }
 
 // --- Load Balancer CRUD ---
+
+// LBNameKey returns the per-account name-claim key for an LB name.
+func LBNameKey(name, accountID string) string {
+	return KeyPrefixLBName + accountID + "." + name
+}
+
+// ClaimLBName atomically claims the LB name for accountID with lbID as owner.
+// ok=true ⇒ this caller owns the name and may proceed. dup=true ⇒ a live LB
+// already holds the name (a genuine duplicate). A name claim whose owner lbID
+// resolves to no live record is a crashed prior create — it is reclaimed for
+// this caller (ok=true). This is the idempotency barrier for CreateLoadBalancer:
+// a duplicate concurrent create loses the claim and never launches a VM.
+func (s *Store) ClaimLBName(name, accountID, lbID string) (ok bool, dup bool, err error) {
+	key := LBNameKey(name, accountID)
+	for range maxLBNameClaimRetries {
+		if _, cerr := s.kv.Create(key, []byte(lbID)); cerr == nil {
+			return true, false, nil
+		} else if !errors.Is(cerr, nats.ErrKeyExists) {
+			return false, false, fmt.Errorf("kv create %s: %w", key, cerr)
+		}
+		entry, gerr := s.kv.Get(key)
+		if gerr != nil {
+			if errors.Is(gerr, nats.ErrKeyNotFound) {
+				continue // raced vanish; retry the create
+			}
+			return false, false, fmt.Errorf("kv get %s: %w", key, gerr)
+		}
+		ownerID := string(entry.Value())
+		if ownerID != "" && ownerID != lbID {
+			rec, rerr := s.GetLoadBalancer(ownerID)
+			if rerr != nil {
+				return false, false, fmt.Errorf("resolve LB name owner %s: %w", ownerID, rerr)
+			}
+			if rec != nil {
+				return false, true, nil // live LB holds the name
+			}
+		}
+		// Orphaned (crashed prior create) or already ours: CAS-take the claim.
+		if _, uerr := s.kv.Update(key, []byte(lbID), entry.Revision()); uerr != nil {
+			if errors.Is(uerr, nats.ErrKeyExists) {
+				continue // lost the CAS race; re-read
+			}
+			return false, false, fmt.Errorf("kv update %s: %w", key, uerr)
+		}
+		return true, false, nil
+	}
+	return false, false, fmt.Errorf("elbv2: claim LB name %s exhausted retries", name)
+}
+
+// ReleaseLBName deletes the name claim. A missing key is success (idempotent),
+// so create-rollback paths and DeleteLoadBalancer can call it unconditionally.
+func (s *Store) ReleaseLBName(name, accountID string) error {
+	key := LBNameKey(name, accountID)
+	if err := s.kv.Delete(key); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+		return fmt.Errorf("kv delete %s: %w", key, err)
+	}
+	return nil
+}
 
 // PutLoadBalancer stores a load balancer record.
 func (s *Store) PutLoadBalancer(lb *LoadBalancerRecord) error {

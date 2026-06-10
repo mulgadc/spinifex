@@ -54,6 +54,25 @@ func PutNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) error {
 	return nil
 }
 
+// ClaimNodegroupRecord atomically creates the nodegroup record, returning
+// owned=false when a record already exists. This is the idempotency barrier for
+// CreateNodegroup — a duplicate request loses the claim and never launches
+// workers. Owner updates after the claim use PutNodegroupRecord.
+func ClaimNodegroupRecord(kv nats.KeyValue, rec *NodegroupRecord) (bool, error) {
+	if rec == nil {
+		return false, errors.New("eks: ClaimNodegroupRecord nil record")
+	}
+	if rec.ClusterName == "" || rec.Name == "" {
+		return false, errors.New("eks: ClaimNodegroupRecord missing cluster or name")
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
+	}
+	owned, _, _, err := claimKey(kv, NodegroupKey(rec.ClusterName, rec.Name), data)
+	return owned, err
+}
+
 // GetNodegroupRecord reads one record. Returns ErrNodegroupNotFound if absent.
 func GetNodegroupRecord(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
 	if cluster == "" || ng == "" {
@@ -207,16 +226,28 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		ModifiedAt:     now,
 	}
 
+	// Atomically claim the nodegroup record before any SG provisioning or worker
+	// launch. This is the idempotency barrier: a duplicate CreateNodegroup (SDK
+	// retry / gateway re-publish that spawned a second handler) loses the claim
+	// here and returns without doing any provisioning work, so concurrent creates
+	// cannot double-launch workers. The L169 read above stays only as a cheap
+	// fast-path reject.
+	owned, err := ClaimNodegroupRecord(acctKV, rec)
+	if err != nil {
+		return nil, err
+	}
+	if !owned {
+		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+	}
+
 	cpSGID, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
+		s.markNodegroupFailed(acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
 		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
 	}
 	if err := EnsureNodegroupSGRules(s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
+		s.markNodegroupFailed(acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
 		return nil, fmt.Errorf("ensure nodegroup SG rules: %w", err)
-	}
-
-	if err := PutNodegroupRecord(acctKV, rec); err != nil {
-		return nil, err
 	}
 
 	token, err := s.decryptNodeToken(acctKV, cluster)

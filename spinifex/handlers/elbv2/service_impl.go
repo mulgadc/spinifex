@@ -1142,6 +1142,23 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	}
 	dnsName := fmt.Sprintf("%s%s-%s.%s.elb.spinifex.local", dnsPrefix, name, lbID, s.region)
 
+	// Atomically claim the LB name before any ENI/VM work. A duplicate
+	// CreateLoadBalancer (SDK retry / gateway re-publish that spawned a second
+	// handler) loses the claim and never launches an LB VM; a claim left by a
+	// crashed prior create (no live record) is reclaimed. Every failure path
+	// below releases the claim so a failed create does not block the name.
+	claimOK, claimDup, claimErr := s.store.ClaimLBName(name, accountID, lbID)
+	if claimErr != nil {
+		slog.Error("CreateLoadBalancer: name claim failed", "name", name, "err", claimErr)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if claimDup {
+		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
+	}
+	if !claimOK {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	var subnets []string
 	for _, sn := range input.Subnets {
 		if sn != nil {
@@ -1173,6 +1190,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
 			if sgErr != nil {
 				slog.Error("CreateLoadBalancer: failed to create managed NLB SG", "lbId", lbID, "err", sgErr)
+				s.releaseLBNameClaim(name, accountID)
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 			nlbManagedSGID = sgID
@@ -1211,6 +1229,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 					}
 				}
 				s.deleteNLBManagedSG(nlbManagedSGID, accountID)
+				s.releaseLBNameClaim(name, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
@@ -1298,6 +1317,7 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 
 	if err := s.store.PutLoadBalancer(record); err != nil {
 		slog.Error("CreateLoadBalancer: failed to persist record", "lbId", lbID, "err", err)
+		s.releaseLBNameClaim(name, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1384,9 +1404,22 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	// Release the name claim so the name is reusable. Idempotent on a missing
+	// key, so a delete that races the record removal still converges.
+	s.releaseLBNameClaim(lb.Name, accountID)
+
 	slog.Info("DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
+}
+
+// releaseLBNameClaim drops the per-account LB name claim. Failure is logged but
+// not fatal: a leaked claim is reclaimed by the crash-orphan path on the next
+// same-name create (its owner lbID resolves to no live record).
+func (s *ELBv2ServiceImpl) releaseLBNameClaim(name, accountID string) {
+	if err := s.store.ReleaseLBName(name, accountID); err != nil {
+		slog.Warn("failed to release LB name claim", "name", name, "accountID", accountID, "err", err)
+	}
 }
 
 // reapFloatingIPNAT removes the OVN dnat_and_snat rule mapping an

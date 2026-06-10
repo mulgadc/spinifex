@@ -36,6 +36,43 @@ env:
   TEST_RUN: ${{ inputs.test_run || '' }}
 
 jobs:
+  # Shadow-mode suite selector (Bead 4, mulga-siv-278). Computes which suites
+  # the diff *would* run and logs it to the job summary. Does NOT gate or
+  # override the real SUITES env yet — it runs alongside the full matrix so we
+  # can compare predicted vs actual before flipping it on (Bead 6).
+  select_suites:
+    name: Select Suites (shadow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Compute targeted suite selection
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+          # First push to a branch reports an all-zero before-SHA; fall back to
+          # the first parent so the diff is still meaningful.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="${HEAD}~1"
+          fi
+          echo "## Targeted suite selection (shadow)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "base=$BASE head=$HEAD" >> "$GITHUB_STEP_SUMMARY"
+          go run ./tests/e2e/select-suites/cmd/select-suites \
+            --manifest docs/service-interfaces.yaml \
+            --base-sha "$BASE" --head-sha "$HEAD" --repo-root . \
+            2>>"$GITHUB_STEP_SUMMARY" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Shadow only — actual run uses SUITES='${SUITES}'." >> "$GITHUB_STEP_SUMMARY"
+
   e2e_single:
     name: Single-Node E2E
     # Skip when the dispatch input requests no in-VM suites (e.g.

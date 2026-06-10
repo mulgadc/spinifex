@@ -1230,16 +1230,9 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			}
 			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
-				// Rollback: delete any ENIs already created
-				for _, rollbackENI := range eniIDs {
-					if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-						NetworkInterfaceId: aws.String(rollbackENI),
-					}, accountID); delErr != nil {
-						slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", rollbackENI, "err", delErr)
-					}
-				}
-				s.deleteNLBManagedSG(nlbManagedSGID, accountID)
-				s.releaseLBNameClaim(name, accountID)
+				// All-or-nothing: tear down the ENIs/SG already created so a
+				// failed create leaks nothing and frees the name claim.
+				s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 			}
@@ -1318,7 +1311,9 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 
 	if err := s.store.PutLoadBalancer(record); err != nil {
 		slog.Error("CreateLoadBalancer: failed to persist record", "lbId", lbID, "err", err)
-		s.releaseLBNameClaim(name, accountID)
+		// The ENIs and managed SG exist but no record was persisted to own them —
+		// roll them back so they are not orphaned.
+		s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -1387,6 +1382,26 @@ func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
 		slog.Error("CreateLoadBalancer: async launch failed to persist launch result", "lbArn", lc.lbArn, "err", putErr)
 	}
+}
+
+// rollbackLBInfra tears down the infrastructure a partial CreateLoadBalancer
+// created before it could persist an owning record: every ENI minted so far, the
+// NLB managed front-end SG (if any), and the name claim. Without this an
+// ENI/SG-create-then-persist-fail path orphans those resources with no record
+// for DeleteLoadBalancer or any reclaim to reach. Each step is best-effort and
+// idempotent — a NotFound is success.
+func (s *ELBv2ServiceImpl) rollbackLBInfra(eniIDs []string, nlbManagedSGID, name, accountID string) {
+	if s.VPCService != nil {
+		for _, eniID := range eniIDs {
+			if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+				NetworkInterfaceId: aws.String(eniID),
+			}, accountID); delErr != nil {
+				slog.Error("CreateLoadBalancer: rollback failed to delete ENI", "eni", eniID, "err", delErr)
+			}
+		}
+	}
+	s.deleteNLBManagedSG(nlbManagedSGID, accountID)
+	s.releaseLBNameClaim(name, accountID)
 }
 
 // markLBFailed reloads the LB record and flips it to the failed state, used by
@@ -2302,21 +2317,26 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	// Open the listener port on the NLB's managed front-end SG so inbound
 	// traffic from the configured client CIDRs is admitted by the OVN ACL
 	// (NLB ENIs would otherwise sit in the intra-SG-only default SG).
+	var authorizedCIDRs []string
 	if lb.Type == LoadBalancerTypeNetwork && lb.NLBManagedSGID != "" && s.VPCService != nil {
 		cidrs, cidrErr := s.resolveNLBIngressCIDRs(lb)
 		if cidrErr != nil {
 			slog.Error("CreateListener: resolve ingress CIDRs failed", "lbArn", lb.LoadBalancerArn, "err", cidrErr)
+			s.rollbackListener(record, lb, protocol, port, nil, accountID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if authErr := s.authorizeNLBListenerPort(lb, protocol, port, cidrs, accountID); authErr != nil {
 			slog.Error("CreateListener: authorize listener port failed", "lbArn", lb.LoadBalancerArn, "port", port, "err", authErr)
+			s.rollbackListener(record, lb, protocol, port, nil, accountID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		authorizedCIDRs = cidrs
 	}
 
 	// Start or reload HAProxy now that a listener exists
 	if err := s.updateStoredConfig(lb); err != nil {
 		slog.Error("CreateListener: failed to update config", "listenerId", listenerID, "err", err)
+		s.rollbackListener(record, lb, protocol, port, authorizedCIDRs, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2325,6 +2345,22 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	return &elbv2.CreateListenerOutput{
 		Listeners: []*elbv2.Listener{s.listenerRecordToSDK(record)},
 	}, nil
+}
+
+// rollbackListener removes a just-persisted listener whose post-persist
+// data-plane wiring failed, so a failed CreateListener leaves no orphan record
+// and no dangling SG authorization. authorizedCIDRs is non-empty only when the
+// NLB front-end port was already opened (config-update failure path), in which
+// case the port is revoked first. Best-effort: cleanup errors are logged.
+func (s *ELBv2ServiceImpl) rollbackListener(record *ListenerRecord, lb *LoadBalancerRecord, protocol string, port int64, authorizedCIDRs []string, accountID string) {
+	if len(authorizedCIDRs) > 0 {
+		if err := s.revokeNLBListenerPort(lb, protocol, port, authorizedCIDRs, accountID); err != nil {
+			slog.Error("CreateListener: rollback failed to revoke listener port", "lbArn", lb.LoadBalancerArn, "port", port, "err", err)
+		}
+	}
+	if err := s.deleteListenerCascade(record); err != nil {
+		slog.Error("CreateListener: rollback failed to delete listener", "listenerArn", record.ListenerArn, "err", err)
+	}
 }
 
 // deleteListenerCascade removes a listener and all of its rules. Shared by

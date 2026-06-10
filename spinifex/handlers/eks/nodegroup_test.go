@@ -230,6 +230,8 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(in, testAccountID)
 	require.NoError(t, err)
 
+	f.svc.WaitLaunches()
+
 	require.Len(t, f.worker.runCalls, 1)
 	bdm := f.worker.runCalls[0].BlockDeviceMappings
 	require.Len(t, bdm, 1)
@@ -243,6 +245,8 @@ func TestCreateNodegroup_NoDiskSizeOmitsBlockDeviceMapping(t *testing.T) {
 
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
+
+	f.svc.WaitLaunches()
 
 	require.Len(t, f.worker.runCalls, 1)
 	// No DiskSize requested → leave the launch path on its default sizing.

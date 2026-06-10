@@ -105,32 +105,9 @@ func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc hand
 	// Hash the request BEFORE any mutation (resolveAndAuthorizeInstanceProfile
 	// rewrites IamInstanceProfile) so the same token+params always matches.
 	paramHash := clientTokenParamHash(input)
-	replay, owned, cerr := store.Claim(accountID, token, paramHash)
-	if cerr != nil {
-		if errors.Is(cerr, errIdempotentParamMismatch) {
-			return reservation, errors.New(awserrors.ErrorIdempotentParameterMismatch)
-		}
-		slog.Error("RunInstances: client-token claim failed", "token", token, "err", cerr)
-		return reservation, errors.New(awserrors.ErrorServerInternal)
-	}
-	if replay != nil {
-		return *replay, nil
-	}
-	if !owned {
-		return reservation, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	res, rerr := runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
-	if rerr != nil {
-		store.Abort(accountID, token)
-		return reservation, rerr
-	}
-	if ferr := store.Finalize(accountID, token, paramHash, &res); ferr != nil {
-		// Launch succeeded; failing to persist the replay record only weakens a
-		// future retry's dedup, so do not fail the response.
-		slog.Warn("RunInstances: failed to finalize client-token record", "token", token, "err", ferr)
-	}
-	return res, nil
+	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+	})
 }
 
 // runInstancesInner performs the actual launch (profile resolution, placement

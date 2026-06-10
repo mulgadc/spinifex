@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -23,13 +24,16 @@ const (
 	// (winner died mid-launch) ages out and frees the token for a fresh launch.
 	clientTokenTTL = 15 * time.Minute
 
-	// clientTokenWaitTimeout caps how long a duplicate caller polls an
-	// in-flight winner before giving up (the SDK retries the whole call).
-	clientTokenWaitTimeout = 30 * time.Second
-	clientTokenPollStep    = 250 * time.Millisecond
-
 	tokenStatusInFlight = "in-flight"
 	tokenStatusDone     = "done"
+)
+
+// clientTokenWaitTimeout caps how long a duplicate caller polls an in-flight
+// winner before giving up (the SDK retries the whole call); clientTokenPollStep
+// is the inter-poll sleep. Vars (not consts) so tests can shrink them.
+var (
+	clientTokenWaitTimeout = 30 * time.Second
+	clientTokenPollStep    = 250 * time.Millisecond
 )
 
 // errIdempotentParamMismatch signals the same token was reused with different
@@ -186,6 +190,46 @@ func (c *ClientTokenStore) Finalize(accountID, token, paramHash string, res *ec2
 		return fmt.Errorf("clienttoken finalize put %s: %w", key, err)
 	}
 	return nil
+}
+
+// runInstancesWithClientToken wraps a launch in ClientToken idempotency: it
+// claims the token, replays a completed reservation, or (as the owner) runs
+// launch and finalizes the result — aborting the token on a launch failure so a
+// retry can re-launch. AWS error codes are mapped here; the launch closure
+// returns the raw reservation/error. Extracted from RunInstances so the
+// idempotency flow is unit-testable without a live gateway.
+func runInstancesWithClientToken(
+	store *ClientTokenStore,
+	accountID, token, paramHash string,
+	launch func() (ec2.Reservation, error),
+) (ec2.Reservation, error) {
+	var zero ec2.Reservation
+	replay, owned, cerr := store.Claim(accountID, token, paramHash)
+	if cerr != nil {
+		if errors.Is(cerr, errIdempotentParamMismatch) {
+			return zero, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+		}
+		slog.Error("RunInstances: client-token claim failed", "token", token, "err", cerr)
+		return zero, errors.New(awserrors.ErrorServerInternal)
+	}
+	if replay != nil {
+		return *replay, nil
+	}
+	if !owned {
+		return zero, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	res, rerr := launch()
+	if rerr != nil {
+		store.Abort(accountID, token)
+		return zero, rerr
+	}
+	if ferr := store.Finalize(accountID, token, paramHash, &res); ferr != nil {
+		// Launch succeeded; failing to persist the replay record only weakens a
+		// future retry's dedup, so do not fail the response.
+		slog.Warn("RunInstances: failed to finalize client-token record", "token", token, "err", ferr)
+	}
+	return res, nil
 }
 
 // Abort drops an in-flight token after a launch failure so a retry with the

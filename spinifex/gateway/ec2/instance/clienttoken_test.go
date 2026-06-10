@@ -1,12 +1,15 @@
 package gateway_ec2_instance
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -135,4 +138,114 @@ func TestClientTokenParamHash_IgnoresTokenReflectsParams(t *testing.T) {
 		"token must not affect the param hash")
 	assert.NotEqual(t, clientTokenParamHash(base), clientTokenParamHash(&diffParams),
 		"a real param change must change the hash")
+}
+
+// --- runInstancesWithClientToken (extracted orchestration) ---
+
+// A completed token replays its reservation and must NOT invoke the launcher.
+func TestRunInstancesWithClientToken_ReplaySkipsLaunch(t *testing.T) {
+	store := newTestClientTokenStore(t)
+	const tok, hash = "rt-1", "h"
+	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	require.NoError(t, err)
+	require.True(t, owned)
+	require.NoError(t, store.Finalize(ctTestAccount, tok, hash, &ec2.Reservation{ReservationId: aws.String("r-x")}))
+
+	launched := false
+	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+		launched = true
+		return ec2.Reservation{}, nil
+	})
+	require.NoError(t, err)
+	assert.False(t, launched, "replay must not launch")
+	assert.Equal(t, "r-x", aws.StringValue(res.ReservationId))
+}
+
+// The owner launches once and finalizes; a duplicate replays without launching.
+func TestRunInstancesWithClientToken_OwnerLaunchesOnceThenReplay(t *testing.T) {
+	store := newTestClientTokenStore(t)
+	const tok, hash = "rt-2", "h"
+	launches := 0
+	launch := func() (ec2.Reservation, error) {
+		launches++
+		return ec2.Reservation{ReservationId: aws.String("r-own")}, nil
+	}
+
+	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, launch)
+	require.NoError(t, err)
+	assert.Equal(t, "r-own", aws.StringValue(res.ReservationId))
+
+	res2, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, launch)
+	require.NoError(t, err)
+	assert.Equal(t, "r-own", aws.StringValue(res2.ReservationId))
+	assert.Equal(t, 1, launches, "duplicate must replay, not relaunch")
+}
+
+// A launch failure aborts the token so a retry re-launches.
+func TestRunInstancesWithClientToken_LaunchFailureAborts(t *testing.T) {
+	store := newTestClientTokenStore(t)
+	const tok, hash = "rt-3", "h"
+
+	_, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+		return ec2.Reservation{}, errors.New("no capacity")
+	})
+	require.Error(t, err)
+
+	relaunched := false
+	res, err := runInstancesWithClientToken(store, ctTestAccount, tok, hash, func() (ec2.Reservation, error) {
+		relaunched = true
+		return ec2.Reservation{ReservationId: aws.String("r-retry")}, nil
+	})
+	require.NoError(t, err)
+	assert.True(t, relaunched, "after abort the retry must launch")
+	assert.Equal(t, "r-retry", aws.StringValue(res.ReservationId))
+}
+
+// Token reuse with different params maps to the AWS IdempotentParameterMismatch
+// error code and never launches.
+func TestRunInstancesWithClientToken_ParamMismatchMapsAWSError(t *testing.T) {
+	store := newTestClientTokenStore(t)
+	const tok = "rt-4"
+	_, owned, err := store.Claim(ctTestAccount, tok, "hA")
+	require.NoError(t, err)
+	require.True(t, owned)
+	require.NoError(t, store.Finalize(ctTestAccount, tok, "hA", &ec2.Reservation{ReservationId: aws.String("r")}))
+
+	launched := false
+	_, err = runInstancesWithClientToken(store, ctTestAccount, tok, "hB", func() (ec2.Reservation, error) {
+		launched = true
+		return ec2.Reservation{}, nil
+	})
+	require.EqualError(t, err, awserrors.ErrorIdempotentParameterMismatch)
+	assert.False(t, launched)
+}
+
+// getClientTokenStore binds the process-wide store once and returns the same
+// instance on subsequent calls.
+func TestGetClientTokenStore_BindsOnce(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	s1, err := getClientTokenStore(nc)
+	require.NoError(t, err)
+	require.NotNil(t, s1)
+	s2, err := getClientTokenStore(nc)
+	require.NoError(t, err)
+	assert.Same(t, s1, s2, "store binds once")
+}
+
+// A duplicate caller polling an in-flight winner that never finishes bails out
+// with the wait-timeout sentinel (exercises the Claim poll loop + deadline).
+func TestClientToken_InFlightWaitTimesOut(t *testing.T) {
+	store := newTestClientTokenStore(t)
+	const tok, hash = "wt-1", "h"
+
+	_, owned, err := store.Claim(ctTestAccount, tok, hash)
+	require.NoError(t, err)
+	require.True(t, owned, "owner holds the in-flight record and never finalizes")
+
+	origTimeout, origStep := clientTokenWaitTimeout, clientTokenPollStep
+	clientTokenWaitTimeout, clientTokenPollStep = 30*time.Millisecond, 10*time.Millisecond
+	defer func() { clientTokenWaitTimeout, clientTokenPollStep = origTimeout, origStep }()
+
+	_, _, err = store.Claim(ctTestAccount, tok, hash)
+	assert.ErrorIs(t, err, errClientTokenWaitTimeout)
 }

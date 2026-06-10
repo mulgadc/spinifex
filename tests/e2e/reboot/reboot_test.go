@@ -595,8 +595,24 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	// 8.4 ALB active
 	harness.WaitForLBActive(t, fix.aws, fix.albArn, "ALB post-reboot", fix.timeouts.lbRecover)
 
-	// 8.5 targets healthy
-	harness.WaitForTargetsHealthy(t, fix.aws, fix.tgArn, 2, "ALB post-reboot", fix.timeouts.lbRecover)
+	// 8.5 targets healthy — on timeout, capture diagnostics BEFORE failing.
+	// The lb-agent's "context deadline exceeded while awaiting headers" symptom
+	// cannot, on its own, tell a network-level drop from an app/gateway stall.
+	// The heartbeat capture watches both the real heartbeat path (gateway port
+	// on any iface) and the north-south floating-IP path on br-wan; the OVN
+	// dataplane capture then shows whether br-int is actually forwarding
+	// external->tap traffic (flows installed) or only the control-plane/NAT
+	// config + neigh recovered while forwarding stays dead.
+	if !pollTargetsHealthy(fix.aws, fix.tgArn, 2, fix.timeouts.lbRecover) {
+		harness.Step(t, "ALB post-reboot: targets NOT healthy — capturing diagnostics")
+		dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
+		dumpHeartbeatDiagnostics(dctx, t, fix)
+		dumpOVNDataplane(dctx, t, fix)
+		dumpAppDiagnostics(t, fix)
+		dcancel()
+		t.Fatalf("ALB post-reboot: targets not healthy within %s (see diag-heartbeat.txt / diag-ovn-flows.txt / diag-host-net.txt)", fix.timeouts.lbRecover)
+	}
+	harness.Step(t, "ALB post-reboot: 2 targets healthy")
 
 	// 8.6 ALB actually serves traffic from BOTH backends.
 	// WaitForTargetsHealthy reads cached state from spinifex's TG store —
@@ -921,6 +937,130 @@ sudo ovs-vsctl list-ports br-int 2>&1
 	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)
 	if err != nil {
 		harness.Detail(t, "host-net", fmt.Sprintf("dump err: %v", err))
+	}
+}
+
+// pollTargetsHealthy is the non-fatal twin of harness.WaitForTargetsHealthy:
+// returns true once `expected` targets report healthy, false on timeout — so the
+// caller can capture failure-time diagnostics before aborting.
+func pollTargetsHealthy(c *harness.AWSClient, tgArn string, expected int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+			TargetGroupArn: aws.String(tgArn),
+		})
+		if err == nil {
+			healthy := 0
+			for _, th := range out.TargetHealthDescriptions {
+				if aws.StringValue(th.TargetHealth.State) == "healthy" {
+					healthy++
+				}
+			}
+			if healthy >= expected {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// dumpHeartbeatDiagnostics captures, at post-reboot failure time, whether the
+// ALB system-VM lb-agent's heartbeat to the gateway (:AWSGWPort) is failing at
+// the NETWORK layer or the APP/GATEWAY layer. The lb-agent posts to the host
+// gateway endpoint on whatever host interface holds the advertise IP — NOT the
+// ALB floating IP, and NOT necessarily br-wan — so the primary tcpdump watches
+// the gateway port on `any`. A second tcpdump on br-wan for the ALB floating IP
+// covers the north-south path. It then pulls the lb-agent console lines and the
+// awsgw journal to see whether the gateway even received the heartbeat. Gateway
+// packets seen + gateway answering => app/gateway-layer; silence on the gateway
+// port => network-level drop (corroborate with diag-ovn-flows.txt).
+func dumpHeartbeatDiagnostics(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	if fix.albPublicIP == "" {
+		harness.Detail(t, "heartbeat", "no ALB public IP captured")
+		return
+	}
+	bundle := fmt.Sprintf(`set +e
+echo "=== tcpdump ANY iface, gateway port :%[2]d (real heartbeat path), 14s ==="
+sudo timeout 14 tcpdump -ni any -c 80 "tcp port %[2]d" 2>&1
+echo "=== tcpdump br-wan ALB floating IP %[1]s + ARP (north-south), 8s ==="
+sudo timeout 8 tcpdump -ni br-wan -c 40 "host %[1]s or (arp and host %[1]s)" 2>&1
+echo "=== neigh for ALB floating IP %[1]s ==="
+ip neigh show %[1]s 2>&1 || ip neigh show 2>&1 | grep -F %[1]s
+echo "=== conntrack for gateway port %[2]d ==="
+sudo conntrack -L 2>/dev/null | grep -E "dport=%[2]d|sport=%[2]d" | head || echo "(no conntrack entries / tool absent)"
+echo "=== lb-agent console: Heartbeat / Config / Agent lines ==="
+sudo grep -aE "Heartbeat|Config (hash|applied)|Agent started" /run/spinifex/console-*.log 2>/dev/null | tail -25
+echo "=== awsgw journal: did the gateway RECEIVE heartbeats? ==="
+sudo journalctl -u spinifex-awsgw --no-pager --since "3 min ago" 2>/dev/null | grep -iE "heartbeat|lb-agent|/lb/|target.?health" | tail -20
+`, fix.albPublicIP, fix.env.AWSGWPort)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-heartbeat.txt", out)
+	if err != nil {
+		harness.Detail(t, "heartbeat", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	// "IP a.b.c.d.<port> >" appears for any L4 packet on the gateway port.
+	sawGatewayL4 := strings.Contains(body, fmt.Sprintf(".%d:", fix.env.AWSGWPort)) ||
+		strings.Contains(body, fmt.Sprintf(".%d >", fix.env.AWSGWPort)) ||
+		strings.Contains(body, fmt.Sprintf("> %s.%d", fix.env.WANHost, fix.env.AWSGWPort))
+	switch {
+	case sawGatewayL4:
+		harness.Detail(t, "heartbeat", "gateway-port PACKETS FLOW — network path healthy; failure is app/gateway-layer (TLS/HTTP/gateway state)")
+	default:
+		harness.Detail(t, "heartbeat", "NO packets on gateway port — network-level drop; check diag-ovn-flows.txt for br-int forwarding")
+	}
+}
+
+// dumpOVNDataplane captures the OVN/OVS dataplane state at post-reboot failure
+// time so a network-level heartbeat drop can be pinned to the restore step:
+// control-plane/NAT config + neigh recovered, but br-int flows never reprogrammed
+// for the restored taps. It dumps ovs-vsctl topology, br-int OpenFlow flows,
+// ovn-controller chassis + port bindings, the dnat_and_snat NAT rows, and the
+// host neigh table, then probes reachability of the ALB floating IP from the
+// host. Flows present + reachable => forwarding OK (look elsewhere); config
+// present but flows/forwarding absent => br-int flow-restore gap.
+func dumpOVNDataplane(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	bundle := fmt.Sprintf(`set +e
+echo "=== ovs-vsctl show (bridges + ports) ==="
+sudo ovs-vsctl show 2>&1 | head -120
+echo "=== ovs-ofctl dump-flows br-int (forwarding flows) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | head -200
+echo "=== ovn-sbctl chassis + port bindings ==="
+sudo ovn-sbctl --no-leader-only show 2>&1 | head -80
+echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
+sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -80
+echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
+sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
+echo "=== host neigh (all floating IPs) ==="
+ip neigh show 2>&1 | grep -E "br-wan|br-int" | head -40
+echo "=== host->ALB floating IP %[1]s reachability ==="
+ping -c 2 -W 2 %[1]s 2>&1
+sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail -20 || echo "(ofproto/trace unavailable)"
+`, fix.albPublicIP)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-ovn-flows.txt", out)
+	if err != nil {
+		harness.Detail(t, "ovn", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	reachable := strings.Contains(body, " 0% packet loss")
+	hasFlows := strings.Contains(body, "cookie=") && strings.Contains(body, "table=")
+	switch {
+	case reachable:
+		harness.Detail(t, "ovn", "ALB floating IP reachable from host — forwarding OK, failure is elsewhere")
+	case hasFlows:
+		harness.Detail(t, "ovn", "br-int has flows but floating IP unreachable — flow/forwarding mismatch (inspect dump-flows + ofproto/trace)")
+	default:
+		harness.Detail(t, "ovn", "br-int flows MISSING and floating IP unreachable — dataplane flow-restore gap post-reboot")
 	}
 }
 

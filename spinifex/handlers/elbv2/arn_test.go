@@ -137,6 +137,7 @@ func TestCreateLoadBalancer_DeliversCACert(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, "-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----\n",
@@ -158,6 +159,7 @@ func TestCreateLoadBalancer_Microvm_LBAgentEnv(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 
 	envBlob := mock.launchCalls[0].LBAgentEnv
@@ -185,6 +187,7 @@ func TestCreateLoadBalancer_Microvm_NICs(t *testing.T) {
 		Subnets: []*string{aws.String(subnetID)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	require.Len(t, mock.launchCalls, 1)
 
 	nics := mock.launchCalls[0].NICs

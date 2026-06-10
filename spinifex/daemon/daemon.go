@@ -156,6 +156,14 @@ type Daemon struct {
 	cancel                context.CancelFunc
 	shutdownWg            sync.WaitGroup
 
+	// systemDispatchWg tracks in-flight host-pinned system.LaunchInstance /
+	// system.TerminateInstance handlers. Each request runs in its own goroutine
+	// so a long VM boot never head-of-line blocks the responder's subscription
+	// (267.4). Not awaited at shutdown — these are request-scoped and the reply
+	// is bounded by the requester's timeout; the WaitGroup exists so tests can
+	// deterministically await dispatch completion.
+	systemDispatchWg sync.WaitGroup
+
 	// vmMgr owns the in-memory map of VMs running on this node.
 	vmMgr *vm.Manager
 
@@ -2296,7 +2304,9 @@ func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHand
 // node that processed the upstream CreateLoadBalancer call.
 //
 // NATS only routes requests to nodes whose subscription is live, so capacity
-// pressure naturally re-distributes load when a host fills up.
+// pressure on the queue (anycast) subject naturally re-distributes load when a
+// host fills up. The node-targeted (unicast) subject is deliberately exempt
+// from that gating — see the per-subject rationale below.
 func (rm *ResourceManager) updateInstanceSubscriptions() {
 	if rm.natsConn == nil {
 		return
@@ -2341,9 +2351,20 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 		}
 
 		if rm.nodeID != "" {
+			// The node-targeted (unicast) launch subject stays subscribed for any
+			// type this node can ever host, independent of current free capacity.
+			// Unlike the queue (anycast) subject above — where dropping the
+			// subscription when full lets NATS reroute the launch to a node with
+			// room — a node-targeted request names THIS node specifically (a
+			// committed spread/placement reservation, e.g. an EKS HA control-plane
+			// leg). If the subscription were torn down under capacity pressure that
+			// request would fail with 'no responders' instead of reaching the
+			// daemon, even when the reserved slot is still good. Capacity is
+			// enforced at launch time by allocate(), which rejects an over-capacity
+			// launch with an insufficient-capacity error the caller can act on.
+			// Subscribe once when the type first fits; never drop it on capacity.
 			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
-			_, nodeSubscribed := rm.instanceSubs[nodeTopic]
-			if canFit && !nodeSubscribed {
+			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
 				sub, err := rm.natsConn.Subscribe(nodeTopic, handler)
 				if err != nil {
 					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
@@ -2351,12 +2372,6 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 				}
 				rm.instanceSubs[nodeTopic] = sub
 				slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
-			} else if !canFit && nodeSubscribed {
-				if err := rm.instanceSubs[nodeTopic].Unsubscribe(); err != nil {
-					slog.Error("Failed to unsubscribe from node-specific topic", "topic", nodeTopic, "err", err)
-				}
-				delete(rm.instanceSubs, nodeTopic)
-				slog.Info("Unsubscribed from node-specific instance type (capacity full)", "topic", nodeTopic)
 			}
 		}
 	}

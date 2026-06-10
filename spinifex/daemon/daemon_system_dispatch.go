@@ -37,7 +37,27 @@ type systemInstanceTerminateEnvelope struct {
 // subscription is hit) runs LaunchSystemInstance locally and the resulting
 // VM stays bound to this node — see handleSystemTerminateInstance for the
 // matching teardown path.
+//
+// The launch runs in its own goroutine so the subscription's delivery goroutine
+// returns immediately: a multi-minute VM boot must not head-of-line block the
+// host-pinned launch subject, or concurrent launches to the same node fail with
+// 'no responders' even though the daemon is up (267.4). The NATS request/reply
+// contract is preserved — the goroutine responds with the launch result.
 func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
+	d.systemDispatchWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("system.LaunchInstance: handler panic", "subject", msg.Subject, "panic", r)
+				respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
+			}
+		}()
+		d.serveSystemLaunchInstance(msg)
+	})
+}
+
+// serveSystemLaunchInstance is the synchronous body of handleSystemLaunchInstance,
+// run on a per-request goroutine.
+func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
 	input := new(handlers_elbv2.SystemInstanceInput)
 	if err := json.Unmarshal(msg.Data, input); err != nil {
 		slog.Error("system.LaunchInstance: invalid JSON payload", "subject", msg.Subject, "err", err)
@@ -138,7 +158,24 @@ func (d *Daemon) subscribeSystemTerminateLocked(instanceID string) error {
 // handleSystemTerminateInstance is the NATS subscriber for
 // system.TerminateInstance.{instanceID}. Only the daemon that owns the VM
 // has a subscription on this subject — other daemons never see the request.
+//
+// Like the launch path, teardown runs in its own goroutine so a slow terminate
+// never head-of-line blocks the responder (267.4).
 func (d *Daemon) handleSystemTerminateInstance(msg *nats.Msg) {
+	d.systemDispatchWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("system.TerminateInstance: handler panic", "subject", msg.Subject, "panic", r)
+				respondWithSystemTerminateError(msg, awserrors.ErrorServerInternal)
+			}
+		}()
+		d.serveSystemTerminateInstance(msg)
+	})
+}
+
+// serveSystemTerminateInstance is the synchronous body of
+// handleSystemTerminateInstance, run on a per-request goroutine.
+func (d *Daemon) serveSystemTerminateInstance(msg *nats.Msg) {
 	// Subject suffix is the instance ID; payload is unused but reserved for
 	// future flags. Tolerate empty payloads.
 	parts := splitSubjectTail(msg.Subject, "system.TerminateInstance.")

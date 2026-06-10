@@ -131,7 +131,17 @@ type ELBv2ServiceImpl struct {
 
 	recoveryLBIndexMu sync.Mutex
 	recoveryLBIndex   map[string]*LoadBalancerRecord
+
+	// launchWG tracks in-flight asynchronous LB-VM launches spawned by
+	// CreateLoadBalancer. Not awaited at shutdown (a multi-minute boot must not
+	// block Close); exposed via WaitLaunches purely so tests can join the
+	// background launch deterministically.
+	launchWG sync.WaitGroup
 }
+
+// WaitLaunches blocks until every in-flight asynchronous LB-VM launch started by
+// CreateLoadBalancer has finished. Test-only join point.
+func (s *ELBv2ServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 // NewELBv2ServiceImplWithNATS creates an ELBv2 service backed by JetStream KV.
 func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2ServiceImpl, error) {
@@ -1251,30 +1261,24 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	// Launch ALB VM with every ENI (when instance launcher is available).
-	// The first ENI is the primary NIC; any additional ENIs are passed as
-	// ExtraENIs so the daemon sets up a tap + QEMU NIC for each, giving the
-	// ALB VM data-plane presence in every subnet the LB spans.
-	launch := s.launchLBVM(lbID, scheme, eniIDs, subnets, accountID)
-	albInstanceID := launch.instanceID
-	albVPCIP := launch.vpcIP
-	hostPorts := launch.hostPorts
-	launchFailed := launch.failed
-	// Record public IP on the first AZ entry for internet-facing LBs.
-	if launch.publicIP != "" && len(availZones) > 0 {
-		availZones[0].PublicIP = launch.publicIP
-	}
-
-	// ALB starts in provisioning until the agent inside the VM connects and
-	// responds to a ping. If no VM was launched (no launcher/AMI or launch
-	// failed), set state to failed so the API reflects the broken data-plane.
+	// Determine the data-plane state synchronously. When a launcher is configured
+	// the LB is backed by a system VM whose boot is a multi-minute job: running it
+	// inline head-of-line blocks the shared gateway responder and the gateway
+	// times out and re-publishes the create (267.4). So the VM boot runs on a
+	// background goroutine and the create returns provisioning immediately, which
+	// matches AWS (CreateLoadBalancer returns the LB provisioning; the AZ/VpcId in
+	// the response come from the ENIs created synchronously above). Launcher-less
+	// deployments (no InstanceLauncher / no ENIs) have no data plane to boot and
+	// are active on the spot.
 	state := StateActive
-	if albInstanceID != "" {
+	willLaunch := s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0
+	if willLaunch {
 		state = StateProvisioning
 		// Internal LBs only leave provisioning once the lb-agent heartbeats,
 		// which needs the mgmt return route. If it can't be resolved the LB
-		// hangs in provisioning forever — fail loud instead so the broken
-		// return path is visible immediately rather than as a generic timeout.
+		// hangs in provisioning forever — record the failed state up front so the
+		// broken return path is visible immediately. The VM still boots (matching
+		// the synchronous path) so the data plane exists for diagnosis.
 		if scheme == SchemeInternal {
 			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
 				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
@@ -1284,13 +1288,13 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 				state = StateFailed
 			}
 		}
-	} else if launchFailed {
-		state = StateFailed
 	}
 
 	// Attributes are intentionally left nil — DescribeLoadBalancerAttributes
 	// derives per-type defaults from lb.Type via DefaultLoadBalancerAttributes.
 	// Callers that want a non-default value must call ModifyLoadBalancerAttributes.
+	// InstanceID/VPCIP/HostPorts and the per-AZ PublicIP are filled in by the
+	// asynchronous launch below once the VM boots.
 	record := &LoadBalancerRecord{
 		LoadBalancerArn: lbArn,
 		LoadBalancerID:  lbID,
@@ -1305,9 +1309,6 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		Subnets:         subnets,
 		AvailZones:      availZones,
 		ENIs:            eniIDs,
-		InstanceID:      albInstanceID,
-		VPCIP:           albVPCIP,
-		HostPorts:       hostPorts,
 		IPAddressType:   IPAddressTypeIPv4,
 		NodeID:          s.nodeID,
 		Tags:            tags,
@@ -1321,13 +1322,84 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if willLaunch {
+		// Snapshot the launch inputs; the goroutine must not read the record the
+		// caller is about to return.
+		lc := lbLaunchCtx{lbID: lbID, lbArn: lbArn, scheme: scheme, eniIDs: eniIDs, subnets: subnets, accountID: accountID}
+		s.launchWG.Go(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
+					s.markLBFailed(lc.lbArn)
+				}
+			}()
+			s.launchLBVMAsync(lc)
+		})
+	}
+
 	// Agent heartbeat will transition provisioning → active on first contact.
 
-	slog.Info("CreateLoadBalancer completed", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", state, "accountID", accountID)
+	slog.Info("CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", state, "accountID", accountID)
 
 	return &elbv2.CreateLoadBalancerOutput{
 		LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(record)},
 	}, nil
+}
+
+// lbLaunchCtx carries the immutable inputs for an asynchronous LB-VM launch.
+type lbLaunchCtx struct {
+	lbID      string
+	lbArn     string
+	scheme    string
+	eniIDs    []string
+	subnets   []string
+	accountID string
+}
+
+// launchLBVMAsync boots the LB-VM on a background goroutine and folds the result
+// back into the persisted record: on success the instance/VPC-IP/host-ports (and
+// the per-AZ public IP) are recorded and the LB stays provisioning until the
+// lb-agent heartbeats; on failure the record is marked failed so the API
+// reflects the broken data plane. Runs after CreateLoadBalancer has returned.
+func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
+	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID)
+
+	record, err := s.store.GetLoadBalancerByArn(lc.lbArn)
+	if err != nil || record == nil {
+		slog.Error("CreateLoadBalancer: async launch cannot reload record", "lbArn", lc.lbArn, "err", err)
+		return
+	}
+
+	if launch.failed {
+		record.State = StateFailed
+		if putErr := s.store.PutLoadBalancer(record); putErr != nil {
+			slog.Error("CreateLoadBalancer: async launch failed to persist failed state", "lbArn", lc.lbArn, "err", putErr)
+		}
+		return
+	}
+
+	record.InstanceID = launch.instanceID
+	record.VPCIP = launch.vpcIP
+	record.HostPorts = launch.hostPorts
+	if launch.publicIP != "" && len(record.AvailZones) > 0 {
+		record.AvailZones[0].PublicIP = launch.publicIP
+	}
+	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
+		slog.Error("CreateLoadBalancer: async launch failed to persist launch result", "lbArn", lc.lbArn, "err", putErr)
+	}
+}
+
+// markLBFailed reloads the LB record and flips it to the failed state, used by
+// the async launch panic recovery.
+func (s *ELBv2ServiceImpl) markLBFailed(lbArn string) {
+	record, err := s.store.GetLoadBalancerByArn(lbArn)
+	if err != nil || record == nil {
+		return
+	}
+	record.State = StateFailed
+	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
+		slog.Error("CreateLoadBalancer: failed to persist failed state", "lbArn", lbArn, "err", putErr)
+	}
 }
 
 func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error) {

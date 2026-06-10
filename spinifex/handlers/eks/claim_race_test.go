@@ -45,6 +45,7 @@ func TestCreateCluster_ConcurrentSameNameSingleOwner(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	f.svc.WaitLaunches()
 
 	ok, inUse := classifyCreateErrs(t, errs)
 	assert.Equal(t, 1, ok, "exactly one create owns the name")
@@ -76,6 +77,7 @@ func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	f.svc.WaitLaunches()
 
 	ok, inUse := classifyCreateErrs(t, errs)
 	assert.Equal(t, 1, ok, "exactly one retry reclaims the FAILED cluster")
@@ -105,6 +107,7 @@ func TestCreateNodegroup_ConcurrentSameNameSingleOwner(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	f.svc.WaitLaunches()
 
 	ok, inUse := classifyCreateErrs(t, errs)
 	assert.Equal(t, 1, ok, "exactly one create owns the nodegroup")

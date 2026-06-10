@@ -491,6 +491,10 @@ func loadEIPs(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[s
 		if rec.ENIId != "" {
 			spec.PortName = topology.Port(rec.ENIId)
 		}
+		// MAC drives the distributed dnat_and_snat shape in policy.AddEIP; an
+		// empty MAC re-applies the rule centralised (external_mac/logical_port
+		// unset), which is the host-reboot connectivity regression this avoids.
+		spec.MAC = rec.MacAddress
 		out[rec.PrivateIp] = spec
 	}
 	return nil

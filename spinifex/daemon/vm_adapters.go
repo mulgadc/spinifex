@@ -442,7 +442,18 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// Idempotent: vpcd's handler deletes-then-adds (topology.go:1297),
 		// so this is a no-op on fresh launches where the initial publish
 		// already fired.
-		if d.natsConn != nil && instance.PublicIP != "" && instance.ENIId != "" && instance.Instance != nil {
+		//
+		// instance.PublicIP only carries auto-assigned public IPs; an
+		// associated Elastic IP lives in the EIP store, so resolve it from
+		// there when the instance field is empty — otherwise a rebooted host
+		// never re-announces the EIP's NAT and the VM loses connectivity.
+		if d.natsConn != nil && instance.ENIId != "" && instance.Instance != nil {
+			publicIP := instance.PublicIP
+			if publicIP == "" && d.eipService != nil {
+				if eipIP, ok := d.eipService.AssociatedPublicIPForInstance(instance.AccountID, instance.ID); ok {
+					publicIP = eipIP
+				}
+			}
 			vpcID := ""
 			privateIP := ""
 			if instance.Instance.VpcId != nil {
@@ -451,9 +462,9 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			if instance.Instance.PrivateIpAddress != nil {
 				privateIP = *instance.Instance.PrivateIpAddress
 			}
-			if vpcID != "" && privateIP != "" {
+			if publicIP != "" && vpcID != "" && privateIP != "" {
 				portName := topology.Port(instance.ENIId)
-				utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, instance.PublicIP, privateIP, portName, instance.ENIMac)
+				utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
 			}
 		}
 		return nil

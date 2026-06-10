@@ -126,6 +126,9 @@ var iamActions = map[string]IAMHandler{
 	"ListAttachedRolePolicies": iamHandler(func(accountID string, input *iam.ListAttachedRolePoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListAttachedRolePolicies(accountID, input, gw.IAMService)
 	}),
+	"ListRolePolicies": iamHandler(func(accountID string, input *iam.ListRolePoliciesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListRolePolicies(accountID, input, gw.IAMService)
+	}),
 
 	// Instance profile CRUD
 	"CreateInstanceProfile": iamHandler(func(accountID string, input *iam.CreateInstanceProfileInput, gw *GatewayConfig) (any, error) {

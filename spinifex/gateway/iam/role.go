@@ -79,3 +79,15 @@ func ListAttachedRolePolicies(accountID string, input *iam.ListAttachedRolePolic
 	}
 	return svc.ListAttachedRolePolicies(accountID, input)
 }
+
+// ListRolePolicies lists inline role policies. Spinifex only ever attaches
+// managed policies (AttachRolePolicy), never inline, so this always returns an
+// empty list — enough to satisfy the AWS provider's aws_iam_role read-back.
+func ListRolePolicies(accountID string, input *iam.ListRolePoliciesInput, svc handlers_iam.IAMService) (*iam.ListRolePoliciesOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return &iam.ListRolePoliciesOutput{
+		PolicyNames: []*string{},
+	}, nil
+}

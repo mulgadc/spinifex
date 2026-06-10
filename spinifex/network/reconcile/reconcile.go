@@ -27,6 +27,23 @@ type Reconciler interface {
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
+// GatewayClaimVerifier confirms that ovn-controller has claimed the Southbound
+// Port_Binding for a gateway router port, and nudges a recompute when it has
+// not. After a host reboot the Northbound gateway_chassis intent can be correct
+// while the SB binding is left unclaimed — ovn-controller then installs no
+// logical flows for the centralised gateway redirect and the VPC's floating IPs
+// go dark. The reconciler runs this after SetGatewayChassis to drive the binding
+// to claimed. Implementations shell out to ovn-sbctl/ovn-appctl; the
+// compile-time check lives at the wiring site (vpcd) since the host
+// implementation cannot import this cross-cutter package.
+type GatewayClaimVerifier interface {
+	// GatewayPortClaimed reports whether the SB Port_Binding for lrpName has a
+	// non-empty chassis.
+	GatewayPortClaimed(ctx context.Context, lrpName string) (bool, error)
+	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
+	NudgeRecompute(ctx context.Context) error
+}
+
 // Config is the construction-time bag for the reconciler. All fields except
 // Chassis are required.
 type Config struct {
@@ -45,6 +62,10 @@ type Config struct {
 	NodeHostname string
 	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
 	Chassis []string
+	// GatewayClaim verifies/repairs the Southbound chassis claim for gateway
+	// ports after rebinding. Optional: nil skips the post-reboot claim check
+	// (focused reconcile tests leave it unset; production wires the host prober).
+	GatewayClaim GatewayClaimVerifier
 	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}") emitted on
 	// subnet DHCPOptions rows. Empty falls back to the topology default, so the
 	// reconciler and live topology paths emit the same value (no drift).
@@ -62,6 +83,7 @@ type reconciler struct {
 	localAZ   string
 	host      string
 	chassis   []string
+	gwClaim   GatewayClaimVerifier
 	dnsServer string
 }
 
@@ -101,6 +123,7 @@ func New(cfg Config) (Reconciler, error) {
 		localAZ:   cfg.LocalAZ,
 		host:      cfg.NodeHostname,
 		chassis:   cfg.Chassis,
+		gwClaim:   cfg.GatewayClaim,
 		dnsServer: dnsServer,
 	}, nil
 }

@@ -213,6 +213,34 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 }
 
+func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	in := createNGInput("c1", "ng1", 1)
+	in.DiskSize = aws.Int64(30)
+	_, err := f.svc.CreateNodegroup(in, testAccountID)
+	require.NoError(t, err)
+
+	require.Len(t, f.worker.runCalls, 1)
+	bdm := f.worker.runCalls[0].BlockDeviceMappings
+	require.Len(t, bdm, 1)
+	require.NotNil(t, bdm[0].Ebs)
+	assert.Equal(t, int64(30), aws.Int64Value(bdm[0].Ebs.VolumeSize))
+}
+
+func TestCreateNodegroup_NoDiskSizeOmitsBlockDeviceMapping(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+
+	require.Len(t, f.worker.runCalls, 1)
+	// No DiskSize requested → leave the launch path on its default sizing.
+	assert.Empty(t, f.worker.runCalls[0].BlockDeviceMappings)
+}
+
 func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	require.NoError(t, PutClusterMeta(f.kv, &ClusterMeta{

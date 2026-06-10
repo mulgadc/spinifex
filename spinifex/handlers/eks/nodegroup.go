@@ -327,6 +327,12 @@ func (s *EKSServiceImpl) launchWorkers(accountID string, rec *NodegroupRecord, m
 				},
 			}},
 		}
+		if rec.DiskSize > 0 {
+			runInput.BlockDeviceMappings = []*ec2.BlockDeviceMapping{{
+				DeviceName: aws.String("/dev/vda"),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
+			}}
+		}
 		res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
 		if err != nil {
 			return ids, fmt.Errorf("run worker %d/%d: %w", i+1, count, err)

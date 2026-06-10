@@ -1292,6 +1292,20 @@ func TestRunInstances_CountValidation(t *testing.T) {
 	})
 }
 
+// countSubsBySuffix splits a subscription map into (without-suffix, with-suffix)
+// counts. Node-targeted (unicast) topics carry the node ID as a trailing
+// suffix; queue (anycast) topics do not — so this distinguishes the two.
+func countSubsBySuffix(subs map[string]*nats.Subscription, suffix string) (without, with int) {
+	for topic := range subs {
+		if strings.HasSuffix(topic, suffix) {
+			with++
+		} else {
+			without++
+		}
+	}
+	return without, with
+}
+
 // TestInstanceTypeSubscriptions tests dynamic NATS subscription management
 // based on node capacity.
 func TestInstanceTypeSubscriptions(t *testing.T) {
@@ -1353,8 +1367,15 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 		rm.updateInstanceSubscriptions()
 
-		assert.Equal(t, 0, len(rm.instanceSubs),
-			"should unsubscribe from all types when node is full")
+		// Queue (anycast) subscriptions drop when the node fills so NATS reroutes
+		// launches to a node with room. Node-targeted (unicast) subscriptions
+		// persist regardless of capacity so a committed placement that names this
+		// node still reaches a responder — capacity is enforced at launch time.
+		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs,
+			"queue subscriptions should drop when the node is full")
+		assert.Greater(t, nodeSubs, 0,
+			"node-targeted subscriptions persist regardless of capacity")
 	})
 
 	t.Run("ResubscribesWhenFreed", func(t *testing.T) {
@@ -1375,7 +1396,9 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
-		assert.Equal(t, 0, len(rm.instanceSubs))
+		queueSubs, nodeSubs := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs, "queue subscriptions drop when the node is full")
+		assert.Greater(t, nodeSubs, 0, "node-targeted subscriptions persist when full")
 
 		// Free all resources
 		rm.mu.Lock()
@@ -1478,15 +1501,63 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
 		rm.mu.Unlock()
 		rm.updateInstanceSubscriptions()
-		assert.Equal(t, 0, len(rm.instanceSubs))
+		queueSubs, _ := countSubsBySuffix(rm.instanceSubs, ".test-node")
+		assert.Equal(t, 0, queueSubs, "queue subscriptions drop when the node is full")
 
-		// Publishing to an instance type topic should get no responders
+		// Publishing to an instance type's queue (anycast) topic should get no
+		// responders — that subject is torn down on capacity so launches reroute.
 		instanceType := getTestInstanceType(t)
 		topic := fmt.Sprintf("ec2.RunInstances.%s", instanceType)
 
 		_, err = nc.Request(topic, []byte("{}"), 500*time.Millisecond)
 		assert.ErrorIs(t, err, nats.ErrNoResponders,
 			"request to a type with no subscribed nodes should return ErrNoResponders")
+	})
+
+	// A full node must still answer a node-targeted (unicast) launch: a committed
+	// placement reservation names this node specifically, so dropping the
+	// subscription would turn a real capacity decision into 'no responders' and
+	// fail the reservation spuriously (e.g. an EKS HA control-plane leg).
+	t.Run("NodeTargetedRespondsWhenFull", func(t *testing.T) {
+		rm, err := NewResourceManager(nil, nil, nil)
+		require.NoError(t, err)
+		nc, err := nats.Connect(natsURL)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		handler := func(msg *nats.Msg) {}
+		rm.initSubscriptions(nc, handler, nil, "test-node")
+
+		// Pick a type that fits at init so it gets both a queue and a
+		// node-targeted subscription.
+		var fitType string
+		for key, it := range rm.instanceTypes {
+			if !instancetypes.IsSystemType(key) && rm.canAllocate(it, 1) >= 1 {
+				fitType = key
+				break
+			}
+		}
+		require.NotEmpty(t, fitType, "host must fit at least one instance type")
+		queueTopic := fmt.Sprintf("ec2.RunInstances.%s", fitType)
+		nodeTopic := fmt.Sprintf("ec2.RunInstances.%s.test-node", fitType)
+		require.Contains(t, rm.instanceSubs, queueTopic)
+		require.Contains(t, rm.instanceSubs, nodeTopic)
+
+		// Fill the node completely.
+		rm.mu.Lock()
+		rm.allocatedVCPU = rm.hostVCPU - rm.reservedVCPU
+		rm.allocatedMem = rm.hostMemGB - rm.reservedMem
+		rm.mu.Unlock()
+		rm.updateInstanceSubscriptions()
+
+		// A live entry in instanceSubs is a live NATS subscription on nc, so a
+		// request to that subject reaches a responder. The queue (anycast) subject
+		// drops so launches reroute; the node-targeted (unicast) subject persists
+		// so a committed placement still gets a real capacity decision.
+		assert.NotContains(t, rm.instanceSubs, queueTopic,
+			"queue subject should be unsubscribed when the node is full")
+		assert.Contains(t, rm.instanceSubs, nodeTopic,
+			"node-targeted subject must stay subscribed when the node is full")
 	})
 }
 

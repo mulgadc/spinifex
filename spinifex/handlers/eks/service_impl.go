@@ -764,7 +764,18 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 			if _, err := s.deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{
 				AllocationId: aws.String(meta.EgressEIPAllocationID),
 			}, accountID); err != nil {
-				teardownErrs = append(teardownErrs, fmt.Errorf("release egress EIP: %w", err))
+				switch {
+				case awserrors.IsErrorCode(err, awserrors.ErrorInvalidAllocationIDNotFound),
+					awserrors.IsErrorCode(err, awserrors.ErrorInvalidAddressIDNotFound),
+					awserrors.IsErrorCode(err, awserrors.ErrorInvalidAddressNotFound):
+					// A prior retry (or the egress-delete cascade) already released
+					// the allocation. Idempotent success — must NOT block the SG +
+					// KV sweep, or the cluster wedges in DELETING permanently.
+					slog.Debug("purgeClusterInfra: egress EIP already released",
+						"cluster", name, "allocationId", meta.EgressEIPAllocationID)
+				default:
+					teardownErrs = append(teardownErrs, fmt.Errorf("release egress EIP: %w", err))
+				}
 			}
 		}
 	}

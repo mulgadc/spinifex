@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -89,6 +90,7 @@ type deleteClusterFixture struct {
 	nlb  *fakeNLBProvisioner
 	inst *fakeK3sInst
 	vpc  *fakeK3sVPC
+	eip  *fakeEIPProvisioner
 }
 
 func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFixture {
@@ -103,13 +105,15 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	meta.ControlPlaneInstanceID = "i-aaa111"
 	meta.ControlPlaneENIID = "eni-aaa111"
 	meta.ResourcesVpcConfig.VpcId = "vpc-aaa"
+	meta.EgressEIPPublicIP = "203.0.113.50"
+	meta.EgressEIPAllocationID = "eipalloc-fake01"
 	require.NoError(t, PutClusterMeta(kv, meta))
 
 	// Real OIDC key so ZeroizeClusterOIDCKey has material to wipe.
 	_, _, err := GenerateClusterOIDCKeypair(kv, clusterName, bootstrapTestMasterKey)
 	require.NoError(t, err)
 
-	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc}
+	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip}
 }
 
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
@@ -155,4 +159,35 @@ func TestDeleteCluster_VMTerminateFailureLeavesMeta(t *testing.T) {
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, getErr)
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+}
+
+// A prior retry (or the egress-delete cascade) already released the allocation,
+// so ReleaseAddress returns InvalidAllocationID.NotFound. That is idempotent
+// success — teardown must complete and sweep the KV, not wedge in DELETING.
+func TestDeleteCluster_EgressEIPAlreadyReleasedSweepsKV(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	f.eip.releaseErr = errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+
+	out, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	require.Len(t, f.eip.releaseCalls, 1, "release must still be attempted")
+	_, getErr := GetClusterMeta(f.kv, "alpha")
+	assert.ErrorIs(t, getErr, ErrClusterNotFound, "NotFound release must not block the KV sweep")
+}
+
+// A genuine release failure (not a NotFound) is retryable and must still wedge
+// the cluster in DELETING so the billable EIP is not orphaned.
+func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+	f.eip.releaseErr = errors.New("AddressLimitExceeded")
+
+	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.Error(t, err)
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, ClusterStatusDeleting, meta.Status)
+	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
 }

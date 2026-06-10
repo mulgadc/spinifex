@@ -186,6 +186,7 @@ func (m *Manager) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 	subs := []sub{
 		{TopicAcquire, m.handleAcquireMsg},
 		{TopicRelease, m.handleReleaseMsg},
+		{TopicDrain, m.handleDrainMsg},
 	}
 	var out []*nats.Subscription
 	for _, s := range subs {
@@ -484,6 +485,51 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	}
 	m.spawnLoop(entry, false)
 	return &entry, nil
+}
+
+// DrainAll DHCPRELEASEs every lease currently held in this vpcd's per-AZ
+// store and deletes the KV records. Best-effort: a per-lease release
+// failure is logged and skipped so one stuck lease can't block the rest.
+// Returns the number of leases successfully released. Used by the teardown
+// path so an env reset returns its leases to the upstream pool rather than
+// stranding them until TTL (Stop() deliberately preserves leases for
+// adopt-on-reboot, which is wrong on a destructive teardown).
+func (m *Manager) DrainAll(ctx context.Context) (int, error) {
+	entries, err := m.store.List()
+	if err != nil {
+		return 0, fmt.Errorf("list leases for drain: %w", err)
+	}
+	released := 0
+	for _, e := range entries {
+		if e.Lease == nil {
+			continue
+		}
+		if relErr := m.handleRelease(ctx, e.Lease.ClientID); relErr != nil {
+			slog.Warn("dhcp manager: drain release failed", "client_id", e.Lease.ClientID, "err", relErr)
+			continue
+		}
+		released++
+	}
+	slog.Info("dhcp manager: drained leases", "released", released, "total", len(entries))
+	return released, nil
+}
+
+func (m *Manager) handleDrainMsg(msg *nats.Msg) {
+	if msg.Reply == "" {
+		slog.Warn("dhcp manager: drain request missing reply subject; dropping")
+		return
+	}
+	n, err := m.DrainAll(context.Background())
+	reply := drainWireReply{Released: n}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	body, mErr := json.Marshal(reply)
+	if mErr != nil {
+		slog.Warn("dhcp manager: encode drain reply failed", "err", mErr)
+		return
+	}
+	_ = msg.Respond(body)
 }
 
 func (m *Manager) handleRelease(ctx context.Context, clientID string) error {

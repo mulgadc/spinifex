@@ -14,6 +14,10 @@ import (
 const (
 	TopicAcquire = "vpc.dhcp.acquire"
 	TopicRelease = "vpc.dhcp.release"
+	// TopicDrain asks the bridge-owning vpcd to DHCPRELEASE every lease it
+	// currently holds. Invoked on cluster teardown so an env reset returns
+	// its leases to the upstream pool instead of stranding them until TTL.
+	TopicDrain = "vpc.dhcp.drain"
 )
 
 // acquireWireRequest is the JSON payload sent by daemon-side
@@ -49,6 +53,14 @@ type releaseWireRequest struct {
 
 type releaseWireReply struct {
 	Error string `json:"error,omitempty"`
+}
+
+// drainWireReply reports how many leases the responding vpcd released. The
+// drain request itself carries no body — the manager drains its entire
+// per-AZ lease store, so there are no parameters.
+type drainWireReply struct {
+	Released int    `json:"released"`
+	Error    string `json:"error,omitempty"`
 }
 
 // wireLease is Lease in JSON-friendly form: dotted-quad IPs, MAC string,

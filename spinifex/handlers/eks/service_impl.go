@@ -402,6 +402,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		s.markFailed(acctKV, name)
 		return nil, logCreateErr(name, accountID, "ensure control-plane ingress", err)
 	}
+	// HA control planes run servers 2..N as join servers whose embedded etcd must
+	// peer with the quorum; without these self-referencing CP-SG rules a join
+	// registers but its etcd never replicates, so the node never reports Ready.
+	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, accountID, cpSG); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "ensure control-plane HA ingress", err)
+	}
 
 	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
 	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).

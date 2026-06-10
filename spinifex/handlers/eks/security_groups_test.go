@@ -234,6 +234,65 @@ func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
 	assert.Contains(t, err.Error(), "sg-cp-001")
 }
 
+func TestEnsureControlPlaneHAIngress_AuthorizesEtcdAndKubeletSelfReferenced(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	require.NoError(t, err)
+
+	require.Len(t, sgp.authorizeCalls, 2, "etcd peer/client + kubelet")
+
+	// Collect the authorized (proto, from, to) tuples and assert each rule is
+	// self-referencing on the control-plane SG (source == target group).
+	type portRange struct {
+		proto    string
+		from, to int64
+	}
+	got := map[portRange]bool{}
+	for _, in := range sgp.authorizeCalls {
+		assert.Equal(t, "sg-cp-001", aws.StringValue(in.GroupId))
+		require.Len(t, in.IpPermissions, 1)
+		perm := in.IpPermissions[0]
+		assert.Empty(t, perm.IpRanges, "HA rules are group-referenced, not CIDR")
+		require.Len(t, perm.UserIdGroupPairs, 1)
+		assert.Equal(t, "sg-cp-001", aws.StringValue(perm.UserIdGroupPairs[0].GroupId),
+			"control-plane SG must reference itself so the rule survives CP churn")
+		got[portRange{
+			aws.StringValue(perm.IpProtocol),
+			aws.Int64Value(perm.FromPort),
+			aws.Int64Value(perm.ToPort),
+		}] = true
+	}
+
+	// 2380 (etcd peer) is the port whose absence silently breaks the join quorum.
+	assert.True(t, got[portRange{"tcp", 2379, 2380}], "etcd client+peer 2379-2380 must be opened")
+	assert.True(t, got[portRange{"tcp", 10250, 10250}], "kubelet 10250 must be opened")
+}
+
+func TestEnsureControlPlaneHAIngress_EmptyInputRejected(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+
+	require.Error(t, EnsureControlPlaneHAIngress(sgp, "111122223333", ""))
+	assert.Empty(t, sgp.authorizeCalls)
+}
+
+func TestEnsureControlPlaneHAIngress_DuplicateTolerated(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+
+	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	require.NoError(t, err, "a duplicate rule on re-run must be treated as success")
+}
+
+func TestEnsureControlPlaneHAIngress_AuthorizeErrorSurfaced(t *testing.T) {
+	sgp := newFakeSGProvisioner()
+	sgp.authorizeErr = errors.New("vpcd unavailable")
+
+	err := EnsureControlPlaneHAIngress(sgp, "111122223333", "sg-cp-001")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sg-cp-001")
+}
+
 func assertSGCreateTagged(t *testing.T, in *ec2.CreateSecurityGroupInput, name, vpcID, clusterName, role string) {
 	t.Helper()
 	require.NotNil(t, in)

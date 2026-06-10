@@ -492,6 +492,17 @@ func phase5Snapshot(t *testing.T, fix *fixture) {
 	fix.preSwitches, fix.prePorts = countOVN(string(out))
 	harness.Detail(t, "pre_switches", fix.preSwitches, "pre_ports", fix.prePorts)
 	harness.DumpFile(t, fix.artifacts, "ovn-pre.txt", out)
+
+	// Capture the OVN chassis identity + claim state PRE-reboot so the
+	// post-reboot dump can be diffed against it. The post-reboot claim failure
+	// (run 27254808154) shows the SB Chassis _uuid churns across reboot while
+	// SB persists, orphaning every Port_Binding claim. The pre value is the
+	// baseline that proves (or refutes) the churn.
+	cstate, err := fix.ssh.Run(ctx, fix.env.WANHost, ovnChassisStateBundle)
+	if err != nil {
+		t.Logf("ovn chassis pre-snapshot: %v (non-fatal)", err)
+	}
+	harness.DumpFile(t, fix.artifacts, "ovn-pre-chassis.txt", cstate)
 }
 
 func phase6Reboot(t *testing.T, fix *fixture) {
@@ -608,9 +619,10 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 		dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
 		dumpHeartbeatDiagnostics(dctx, t, fix)
 		dumpOVNDataplane(dctx, t, fix)
+		dumpOVNClaimState(dctx, t, fix)
 		dumpAppDiagnostics(t, fix)
 		dcancel()
-		t.Fatalf("ALB post-reboot: targets not healthy within %s (see diag-heartbeat.txt / diag-ovn-flows.txt / diag-host-net.txt)", fix.timeouts.lbRecover)
+		t.Fatalf("ALB post-reboot: targets not healthy within %s (see diag-heartbeat.txt / diag-ovn-flows.txt / diag-ovn-claim.txt / diag-host-net.txt)", fix.timeouts.lbRecover)
 	}
 	harness.Step(t, "ALB post-reboot: 2 targets healthy")
 
@@ -1061,6 +1073,66 @@ sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail
 		harness.Detail(t, "ovn", "br-int has flows but floating IP unreachable — flow/forwarding mismatch (inspect dump-flows + ofproto/trace)")
 	default:
 		harness.Detail(t, "ovn", "br-int flows MISSING and floating IP unreachable — dataplane flow-restore gap post-reboot")
+	}
+}
+
+// ovnChassisStateBundle captures the OVN chassis identity + SB chassis records.
+// Run both pre-reboot (phase5Snapshot) and post-reboot (dumpOVNClaimState) so
+// the two can be diffed: if the SB Chassis _uuid (or the OVS system-id) differs
+// across the reboot, the chassis identity churned and every persisted
+// Port_Binding claim is orphaned — the root-cause signal for the post-reboot
+// "claims nothing" failure.
+const ovnChassisStateBundle = `set +e
+echo "=== OVS system-id (chassis identity; must be stable across reboot) ==="
+sudo cat /etc/openvswitch/system-id.conf 2>&1
+sudo ovs-vsctl get Open_vSwitch . external_ids:system-id 2>&1
+echo "=== ovn-sbctl list Chassis (name/_uuid/hostname/encaps) ==="
+sudo ovn-sbctl --no-leader-only list Chassis 2>&1 | grep -E "_uuid|name|hostname|ip " | head -40
+echo "=== ovn-sbctl list Chassis_Private (claimed-by + nb_cfg) ==="
+sudo ovn-sbctl --no-leader-only list Chassis_Private 2>&1 | grep -E "_uuid|name|chassis|nb_cfg" | head -40
+echo "=== ovn get-connection (did set-connection persist?) ==="
+sudo ovn-nbctl get-connection 2>&1
+sudo ovn-sbctl get-connection 2>&1
+`
+
+// dumpOVNClaimState captures, at post-reboot failure time, the evidence needed
+// to explain WHY ovn-controller on the live chassis is not claiming local
+// Port_Bindings (run 27254808154: ENIs stuck on a dead chassis, cr-gw chassis
+// empty, NAT external_mac empty, all while NB intent is correct and the taps
+// carry the right iface-id). The ovn-controller vlog lives under /var/log/ovn
+// (NOT journald), so it is invisible to the systemd-journal artifacts; this
+// pulls it directly, plus the controller's SB connection state and the
+// ovn-central-vs-ovn-controller boot ordering — disambiguating chassis-identity
+// churn from an SB/NB startup-ordering race.
+func dumpOVNClaimState(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	bundle := ovnChassisStateBundle + `echo "=== ovn-controller SB connection-status ==="
+sudo env OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller connection-status 2>&1
+echo "=== ovn-controller debug/status ==="
+sudo env OVS_RUNDIR=/var/run/ovn ovs-appctl -t ovn-controller debug/status 2>&1 | head -20
+echo "=== gw/eni Port_Binding claim detail (chassis/up/requested_chassis) ==="
+sudo ovn-sbctl --no-leader-only --columns=logical_port,type,chassis,up,requested_chassis find Port_Binding 2>&1 | grep -A4 -E "gw-vpc|port-eni" | head -60
+echo "=== ovn-central vs ovn-controller boot ordering ==="
+systemctl show ovn-central ovn-controller openvswitch-switch -p Id -p ActiveEnterTimestamp -p ExecMainStartTimestamp 2>&1
+echo "=== tail /var/log/ovn/ovn-controller.log ==="
+sudo tail -n 60 /var/log/ovn/ovn-controller.log 2>&1
+echo "=== tail /var/log/ovn/ovn-northd.log ==="
+sudo tail -n 40 /var/log/ovn/ovn-northd.log 2>&1
+`
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-ovn-claim.txt", out)
+	if err != nil {
+		harness.Detail(t, "ovn-claim", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	switch {
+	case strings.Contains(body, "not connected"):
+		harness.Detail(t, "ovn-claim", "ovn-controller NOT connected to SB — claim failure is an SB-connection/ordering issue")
+	case strings.Contains(body, "chassis             : []"), strings.Contains(body, "chassis : []"):
+		harness.Detail(t, "ovn-claim", "gw/eni Port_Binding unclaimed (chassis empty) — diff ovn-pre-chassis.txt vs this for identity churn")
+	default:
+		harness.Detail(t, "ovn-claim", "see diag-ovn-claim.txt — compare Chassis _uuid against ovn-pre-chassis.txt")
 	}
 }
 

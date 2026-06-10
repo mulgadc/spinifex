@@ -242,6 +242,64 @@ func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR str
 	return nil
 }
 
+// EnsureControlPlaneHAIngress authorizes the server-to-server ingress an HA
+// control plane needs so a join server's embedded etcd can peer with the rest
+// of the quorum. The control-plane SG is self-referencing here: every rule's
+// source and target are the same group, so the rules stay correct as CP VMs are
+// launched, lost, and rebuilt. A single cluster-init server never exercises
+// these ports, which is why they were absent until multi-server HA: the join
+// server registers over the supervisor port (already admitted) but its etcd
+// member can never replicate the raft log without the peer port, so the quorum
+// silently never forms and the node never reports Ready.
+//
+// Rules (cpSG → cpSG):
+//   - etcd client+peer: 2379-2380/tcp — embedded-etcd quorum replication
+//   - kubelet: 10250/tcp — server-to-server kubelet (metrics, logs, exec)
+//
+// The supervisor/apiserver port (6443) is already admitted from the VPC CIDR by
+// EnsureControlPlaneIngress, which covers the CP peers, so it is not repeated.
+// Idempotent: the InvalidPermission.Duplicate error a re-run triggers for an
+// already-authorized rule is treated as success.
+func EnsureControlPlaneHAIngress(sgp sgProvisioner, accountID, cpSGID string) error {
+	if cpSGID == "" {
+		return errors.New("eks: EnsureControlPlaneHAIngress empty control-plane SG id")
+	}
+
+	type rule struct {
+		proto string
+		from  int64
+		to    int64
+		desc  string
+	}
+	rules := []rule{
+		{"tcp", 2379, 2380, "EKS etcd client+peer control-plane to control-plane"},
+		{"tcp", 10250, 10250, "EKS kubelet control-plane to control-plane"},
+	}
+
+	for _, r := range rules {
+		perm := &ec2.IpPermission{
+			IpProtocol: aws.String(r.proto),
+			FromPort:   aws.Int64(r.from),
+			ToPort:     aws.Int64(r.to),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{
+				GroupId:     aws.String(cpSGID),
+				Description: aws.String(r.desc),
+			}},
+		}
+		_, err := sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       aws.String(cpSGID),
+			IpPermissions: []*ec2.IpPermission{perm},
+		}, accountID)
+		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+				continue
+			}
+			return fmt.Errorf("authorize %s ingress on %s: %w", r.desc, cpSGID, err)
+		}
+	}
+	return nil
+}
+
 func lookupSGByName(sgp sgProvisioner, accountID, vpcID, name string) (string, error) {
 	out, err := sgp.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{

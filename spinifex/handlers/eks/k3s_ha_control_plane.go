@@ -162,25 +162,47 @@ type cpLaunchResult struct {
 	err  error
 }
 
-// launchControlPlaneSpread launches one server VM per reserved node in parallel
-// (each remote launch blocks on a full-AMI boot round trip, so sequential would
-// be N×). Results stay index-aligned with nodes.
+// launchControlPlaneSpread launches the reserved nodes as one etcd quorum:
+// nodes[0] is the first server (cluster-init), and its ENI IP is the join
+// endpoint the remaining servers register against — so it must come up first.
+// nodes[1..] then launch in parallel as join servers (each remote launch blocks
+// on a full-AMI boot round trip, so sequential joins would be N×). Results stay
+// index-aligned with nodes. If the first server fails, the joins are skipped
+// (no endpoint to join) so the caller's all-or-nothing rollback fires.
 func (s *EKSServiceImpl) launchControlPlaneSpread(tmpl K3sServerInput, nodes []string) []cpLaunchResult {
 	results := make([]cpLaunchResult, len(nodes))
+
+	first := tmpl
+	first.TargetNodeID = nodes[0]
+	out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, first)
+	results[0] = cpLaunchResult{node: nodes[0], out: out, err: err}
+	if err != nil {
+		for i := 1; i < len(nodes); i++ {
+			results[i] = cpLaunchResult{node: nodes[i], err: errFirstServerFailed}
+		}
+		return results
+	}
+
+	joinURL := k3sServerJoinURL(out.ENIIP)
 	var wg sync.WaitGroup
-	for i, node := range nodes {
+	for i := 1; i < len(nodes); i++ {
 		wg.Add(1)
 		go func(idx int, nodeID string) {
 			defer wg.Done()
 			in := tmpl
 			in.TargetNodeID = nodeID
-			out, err := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
-			results[idx] = cpLaunchResult{node: nodeID, out: out, err: err}
-		}(i, node)
+			in.ServerURL = joinURL
+			o, e := LaunchK3sServerVM(s.deps.VPCK3s, s.deps.Instance, s.deps.Image, in)
+			results[idx] = cpLaunchResult{node: nodeID, out: o, err: e}
+		}(i, nodes[i])
 	}
 	wg.Wait()
 	return results
 }
+
+// errFirstServerFailed marks join-server results skipped when the cluster-init
+// server never came up — the joins have no endpoint to register against.
+var errFirstServerFailed = errors.New("eks: first control-plane server failed; join servers skipped")
 
 // verifyControlPlaneSpread confirms every launched VM sits on its reserved host
 // and that no two share a host. A VM not yet visible to the fan-out is tolerated

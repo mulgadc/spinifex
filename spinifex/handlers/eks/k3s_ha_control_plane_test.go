@@ -83,6 +83,7 @@ type seqK3sInst struct {
 	nodes      []string
 	terminated []string
 	failNodes  map[string]bool
+	userData   map[string]string // nodeID -> rendered cloud-init
 }
 
 var _ k3sInstanceLauncher = (*seqK3sInst)(nil)
@@ -91,12 +92,16 @@ func (i *seqK3sInst) LaunchSystemInstance(in *sysinstance.SystemInstanceInput) (
 	return i.LaunchSystemInstanceOnNode("", in)
 }
 
-func (i *seqK3sInst) LaunchSystemInstanceOnNode(nodeID string, _ *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (i *seqK3sInst) LaunchSystemInstanceOnNode(nodeID string, in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.failNodes[nodeID] {
 		return nil, errors.New("InsufficientInstanceCapacity")
 	}
+	if i.userData == nil {
+		i.userData = map[string]string{}
+	}
+	i.userData[nodeID] = in.UserData
 	i.nodes = append(i.nodes, nodeID)
 	id := "i-" + nodeID
 	if nodeID == "" {
@@ -256,6 +261,57 @@ func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"node-a", "node-b", "node-c"}, inst.nodes)
 	assert.Empty(t, inst.terminated)
+}
+
+func TestPlaceControlPlane_SpreadFirstInitsRestJoin(t *testing.T) {
+	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
+	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
+	vpc := &seqK3sVPC{}
+	inst := &seqK3sInst{}
+	svc := newPlacerService(sched, placer, vpc, inst)
+
+	tmpl := validK3sInput()
+	tmpl.JoinToken = "sharedtok123"
+	_, _, err := svc.placeControlPlane(testHAAccountID, "alpha", tmpl)
+	require.NoError(t, err)
+
+	// node-a is reserved[0] → the first server: cluster-inits, no join URL.
+	first := inst.userData["node-a"]
+	assert.Contains(t, first, "cluster-init: true")
+	assert.NotContains(t, first, "server: https://")
+	assert.Contains(t, first, "SPINIFEX_K3S_ROLE=server\n")
+	assert.Contains(t, first, "token: sharedtok123")
+
+	// node-b/node-c join the first server's ENI IP (sequential first launch ⇒
+	// the first ENI, 10.0.1.11) with the shared token, without cluster-init.
+	for _, n := range []string{"node-b", "node-c"} {
+		join := inst.userData[n]
+		assert.Contains(t, join, "server: https://10.0.1.11:6443", n)
+		assert.Contains(t, join, "token: sharedtok123", n)
+		assert.NotContains(t, join, "cluster-init: true", n)
+		assert.Contains(t, join, "SPINIFEX_K3S_ROLE=server-join", n)
+	}
+}
+
+func TestPlaceControlPlane_FirstServerFailureRollsBackNoJoins(t *testing.T) {
+	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
+	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
+	inst := &seqK3sInst{failNodes: map[string]bool{"node-a": true}}
+	svc := newPlacerService(sched, placer, &seqK3sVPC{}, inst)
+
+	nodes, group, err := svc.placeControlPlane(testHAAccountID, "alpha", validK3sInput())
+	require.Error(t, err)
+	assert.Nil(t, nodes)
+	assert.Equal(t, "", group)
+
+	// The first server never came up, so no join servers were launched and there
+	// is nothing to terminate; the reservation + group are still cleaned up.
+	assert.Empty(t, inst.terminated)
+	assert.NotContains(t, inst.nodes, "node-b")
+	assert.NotContains(t, inst.nodes, "node-c")
+	require.Len(t, placer.releaseInputs, 1)
+	assert.Len(t, placer.deleteGroups, 1)
+	assert.Empty(t, placer.finalizeInputs)
 }
 
 func TestPlaceControlPlane_FallbackUnderThreeHosts(t *testing.T) {

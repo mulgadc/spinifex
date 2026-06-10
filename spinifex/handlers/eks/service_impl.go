@@ -402,6 +402,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		s.markFailed(acctKV, name)
 		return nil, logCreateErr(name, accountID, "ensure control-plane ingress", err)
 	}
+	// HA control planes run servers 2..N as join servers whose embedded etcd must
+	// peer with the quorum; without these self-referencing CP-SG rules a join
+	// registers but its etcd never replicates, so the node never reports Ready.
+	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, accountID, cpSG); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "ensure control-plane HA ingress", err)
+	}
 
 	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
 	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).
@@ -450,6 +457,15 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "derive OIDC public key", err)
 	}
 
+	// Shared cluster token seeded into every control-plane server so the HA
+	// spread's servers 2..N join the first server's etcd quorum (and workers
+	// register). Single-CP clusters carry it too — harmless, one code path.
+	joinToken, err := GenerateK3sClusterToken()
+	if err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "generate k3s cluster token", err)
+	}
+
 	cpNodes, spreadGroup, err := s.placeControlPlane(accountID, name, K3sServerInput{
 		AccountID:         accountID,
 		ClusterName:       name,
@@ -466,6 +482,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		SecretKey:         s.deps.SystemSecretKey,
 		GatewayCACert:     s.deps.GatewayCACert,
 		BuiltinIngress:    meta.BuiltinIngress,
+		JoinToken:         joinToken,
 	})
 	if err != nil {
 		s.markFailed(acctKV, name)
@@ -478,9 +495,9 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			"cluster", name, "accountID", accountID, "err", err)
 		return nil, fmt.Errorf("launch K3s VM: %w", err)
 	}
-	// Mirror the primary ([0]) into the scalar fields the reconciler, NLB
-	// registration, egress wiring, and teardown read today. Until per-node NLB
-	// registration (231.7.3) only the primary is target-registered + egress-wired.
+	// Mirror the primary ([0]) into the scalar fields the reconciler, egress
+	// wiring, and teardown read today. All CP nodes are NLB target-registered
+	// (failover); egress is still primary-only (separate hidden-pool /32 wire).
 	primary := cpNodes[0]
 	meta.ControlPlaneNodes = cpNodes
 	meta.ControlPlaneSpreadGroup = spreadGroup
@@ -513,9 +530,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
 	}
 
-	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, primary.ENIIP); err != nil {
+	cpENIIPs := make([]string, 0, len(cpNodes))
+	for _, n := range cpNodes {
+		cpENIIPs = append(cpENIIPs, n.ENIIP)
+	}
+	if err := RegisterClusterTargets(s.deps.NLB, accountID, nlb.TargetGroupArn, cpENIIPs); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, logCreateErr(name, accountID, "register NLB target", err)
+		return nil, logCreateErr(name, accountID, "register NLB targets", err)
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {

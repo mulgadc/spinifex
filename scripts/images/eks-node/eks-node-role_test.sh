@@ -66,6 +66,20 @@ check "server: starts k3s" "yes" "$(grep -q 'rc-service k3s start' "${CALLS}" &&
 check "server: no k3s-agent" "no" "$(grep -q 'k3s-agent' "${CALLS}" && echo yes || echo no)"
 check "server: self-disables" "yes" "$(grep -q 'rc-update del eks-node-role default' "${CALLS}" && echo yes || echo no)"
 
+# --- Case 1b: explicit server-join role ---
+run_case server_join
+printf 'SPINIFEX_K3S_ROLE=server-join\nEKS_CLUSTER_NAME=alpha\n' > "${EKS_NODE_ENVFILE}"
+invoke
+check "server-join: exit 0" 0 "${rc}"
+check "server-join: role file" "server-join" "$(cat "${ROLE_FILE}")"
+check "server-join: enables webhook" "yes" "$(grep -q 'rc-update add eks-token-webhook default' "${CALLS}" && echo yes || echo no)"
+check "server-join: enables k3s" "yes" "$(grep -q 'rc-update add k3s default' "${CALLS}" && echo yes || echo no)"
+check "server-join: enables state-report" "yes" "$(grep -q 'rc-update add mulga-eks-state-report default' "${CALLS}" && echo yes || echo no)"
+# Join servers must NOT re-publish bootstrap; the first server already did.
+check "server-join: no k3s-first-boot" "no" "$(grep -q 'k3s-first-boot' "${CALLS}" && echo yes || echo no)"
+check "server-join: no k3s-agent" "no" "$(grep -q 'k3s-agent' "${CALLS}" && echo yes || echo no)"
+check "server-join: self-disables" "yes" "$(grep -q 'rc-update del eks-node-role default' "${CALLS}" && echo yes || echo no)"
+
 # --- Case 2: explicit agent role ---
 run_case agent_explicit
 printf 'SPINIFEX_K3S_ROLE=agent\n' > "${EKS_NODE_ENVFILE}"

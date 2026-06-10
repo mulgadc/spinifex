@@ -2,6 +2,7 @@ package gateway_ec2_instance
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -83,12 +84,36 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 // unit tests that don't exercise the policy path).
 func RunInstances(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
 	// Validate input
-	err = ValidateRunInstancesInput(input)
-
-	if err != nil {
+	if err = ValidateRunInstancesInput(input); err != nil {
 		return reservation, err
 	}
 
+	// No ClientToken ⇒ no idempotency contract; launch directly.
+	token := aws.StringValue(input.ClientToken)
+	if token == "" {
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+	}
+
+	// ClientToken set: dedup concurrent/retried launches. The caller asked for
+	// idempotency, so a store failure fails the call rather than risking a
+	// double launch on their retry.
+	store, serr := getClientTokenStore(natsConn)
+	if serr != nil {
+		slog.Error("RunInstances: client-token store unavailable", "err", serr)
+		return reservation, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Hash the request BEFORE any mutation (resolveAndAuthorizeInstanceProfile
+	// rewrites IamInstanceProfile) so the same token+params always matches.
+	paramHash := clientTokenParamHash(input)
+	return runInstancesWithClientToken(store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+		return runInstancesInner(input, natsConn, iamSvc, accountID, passRoleCheck)
+	})
+}
+
+// runInstancesInner performs the actual launch (profile resolution, placement
+// routing, capacity-aware distribution). It is wrapped by RunInstances, which
+// layers ClientToken idempotency on top.
+func runInstancesInner(input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err

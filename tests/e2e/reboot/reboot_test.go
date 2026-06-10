@@ -595,8 +595,21 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	// 8.4 ALB active
 	harness.WaitForLBActive(t, fix.aws, fix.albArn, "ALB post-reboot", fix.timeouts.lbRecover)
 
-	// 8.5 targets healthy
-	harness.WaitForTargetsHealthy(t, fix.aws, fix.tgArn, 2, "ALB post-reboot", fix.timeouts.lbRecover)
+	// 8.5 targets healthy — on timeout, capture heartbeat-path diagnostics
+	// BEFORE failing. The lb-agent's "context deadline exceeded while awaiting
+	// headers" symptom cannot, on its own, tell a network-level drop (no packets
+	// on br-wan / unanswered ARP for the ALB floating IP) from an app/gateway
+	// stall (packets flow, gateway answers, HTTP exchange hangs). The capture
+	// disambiguates so the fix lands at the right layer (mulga-siv-265).
+	if !pollTargetsHealthy(fix.aws, fix.tgArn, 2, fix.timeouts.lbRecover) {
+		harness.Step(t, "ALB post-reboot: targets NOT healthy — capturing heartbeat diagnostics")
+		dctx, dcancel := context.WithTimeout(context.Background(), 90*time.Second)
+		dumpHeartbeatDiagnostics(dctx, t, fix)
+		dumpAppDiagnostics(t, fix)
+		dcancel()
+		t.Fatalf("ALB post-reboot: targets not healthy within %s (see diag-heartbeat.txt / diag-host-net.txt)", fix.timeouts.lbRecover)
+	}
+	harness.Step(t, "ALB post-reboot: 2 targets healthy")
 
 	// 8.6 ALB actually serves traffic from BOTH backends.
 	// WaitForTargetsHealthy reads cached state from spinifex's TG store —
@@ -921,6 +934,79 @@ sudo ovs-vsctl list-ports br-int 2>&1
 	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)
 	if err != nil {
 		harness.Detail(t, "host-net", fmt.Sprintf("dump err: %v", err))
+	}
+}
+
+// pollTargetsHealthy is the non-fatal twin of harness.WaitForTargetsHealthy:
+// returns true once `expected` targets report healthy, false on timeout — so the
+// caller can capture failure-time diagnostics before aborting.
+func pollTargetsHealthy(c *harness.AWSClient, tgArn string, expected int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := c.ELBv2.DescribeTargetHealth(&elbv2.DescribeTargetHealthInput{
+			TargetGroupArn: aws.String(tgArn),
+		})
+		if err == nil {
+			healthy := 0
+			for _, th := range out.TargetHealthDescriptions {
+				if aws.StringValue(th.TargetHealth.State) == "healthy" {
+					healthy++
+				}
+			}
+			if healthy >= expected {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// dumpHeartbeatDiagnostics captures, at post-reboot failure time, whether the
+// ALB system-VM lb-agent's heartbeat to the gateway (:AWSGWPort) is failing at
+// the NETWORK layer or the APP/GATEWAY layer. It tcpdumps br-wan for the
+// heartbeat 5-tuple (ALB floating IP <-> gateway port) plus ARP for the floating
+// IP, then pulls the lb-agent console lines and the awsgw journal to see whether
+// the gateway even received the heartbeat. Packets flowing + gateway answering =>
+// app/gateway-layer (TLS/HTTP/state), not NAT; silence / unanswered ARP =>
+// network-level drop. mulga-siv-265.
+func dumpHeartbeatDiagnostics(ctx context.Context, t *testing.T, fix *fixture) {
+	t.Helper()
+	if fix.albPublicIP == "" {
+		harness.Detail(t, "heartbeat", "no ALB public IP captured")
+		return
+	}
+	bundle := fmt.Sprintf(`set +e
+echo "=== tcpdump br-wan heartbeat (%[1]s <-> :%[2]d) + ARP, 14s ==="
+sudo timeout 14 tcpdump -ni br-wan -c 60 "(host %[1]s and port %[2]d) or (arp and host %[1]s)" 2>&1
+echo "=== br-wan neigh for ALB floating IP %[1]s ==="
+ip neigh show %[1]s dev br-wan 2>&1 || ip neigh show 2>&1 | grep -F %[1]s
+echo "=== conntrack for heartbeat 5-tuple ==="
+sudo conntrack -L 2>/dev/null | grep -F %[1]s | grep -E "dport=%[2]d|sport=%[2]d" | head || echo "(no conntrack entries / tool absent)"
+echo "=== lb-agent console: Heartbeat / Config / Agent lines ==="
+sudo grep -aE "Heartbeat|Config (hash|applied)|Agent started" /run/spinifex/console-*.log 2>/dev/null | tail -25
+echo "=== awsgw journal: did the gateway RECEIVE heartbeats? ==="
+sudo journalctl -u spinifex-awsgw --no-pager --since "3 min ago" 2>/dev/null | grep -iE "heartbeat|lb-agent|/lb/|target.?health" | tail -20
+`, fix.albPublicIP, fix.env.AWSGWPort)
+
+	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
+	harness.DumpFile(t, fix.artifacts, "diag-heartbeat.txt", out)
+	if err != nil {
+		harness.Detail(t, "heartbeat", fmt.Sprintf("dump err: %v", err))
+		return
+	}
+	body := string(out)
+	sawL4 := strings.Contains(body, "IP ") && strings.Contains(body, fmt.Sprintf(".%d", fix.env.AWSGWPort))
+	sawARPReply := strings.Contains(body, "ARP, Reply "+fix.albPublicIP)
+	switch {
+	case sawL4:
+		harness.Detail(t, "heartbeat", "PACKETS FLOW on br-wan — network path healthy; failure is app/gateway-layer (TLS/HTTP/gateway state), NOT NAT priming")
+	case sawARPReply:
+		harness.Detail(t, "heartbeat", "ARP answered but no L4 heartbeat packets — floating IP resolves, datapath silent (partial)")
+	default:
+		harness.Detail(t, "heartbeat", "NO heartbeat packets and no ARP reply for ALB floating IP — network-level drop (NAT/neigh priming)")
 	}
 }
 

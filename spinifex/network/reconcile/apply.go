@@ -11,13 +11,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// Bounds for the post-rebind Southbound chassis-claim wait. A host reboot's SB
-// claim normally converges within a few seconds once ovn-controller reconnects;
-// the recompute nudge covers the stuck case. Package vars so tests can shorten.
-var (
-	gatewayClaimTimeout  = 30 * time.Second
-	gatewayClaimInterval = 2 * time.Second
-)
+// gatewayClaimRecheck is how long to wait after the recompute nudge before
+// re-reading the SB claim once. Best-effort: the nudge is the active repair;
+// the recheck only confirms/logs. Package var so tests can shorten.
+var gatewayClaimRecheck = 3 * time.Second
 
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
@@ -267,49 +264,54 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 	r.ensureGatewayClaimed(ctx, gwPortName)
 }
 
-// ensureGatewayClaimed drives the gateway port's Southbound Port_Binding to a
-// claimed chassis after SetGatewayChassis. SetGatewayChassis only asserts the
+// ensureGatewayClaimed best-effort repairs the gateway port's Southbound
+// Port_Binding after SetGatewayChassis. SetGatewayChassis only asserts the
 // Northbound intent; after a host reboot ovn-controller can leave the SB binding
-// unclaimed, installing no flows for the centralised gateway redirect so every
-// floating IP on the VPC is unreachable. This polls the SB claim and, once,
-// nudges ovn-controller to recompute, then logs and returns on timeout rather
-// than blocking reconcile indefinitely. No-op when no verifier is wired (the
-// steady-state path is a single claimed check per gateway port per cycle).
+// unclaimed, installing no flows for the centralised gateway redirect so the
+// VPC's floating IPs are unreachable. When the binding looks unclaimed this
+// nudges ovn-controller to recompute exactly once and re-reads after a short
+// delay — the nudge is the active repair; the re-read only confirms and logs.
+// The raw Port_Binding row is logged both times so the true
+// claimed-vs-forwarding signal for this gateway shape can be confirmed from a
+// live run before the predicate is hardened. No spin, no fatal: a still-
+// unconfirmed claim is a single WARN, not a blocking error. No-op when no
+// verifier is wired.
 func (r *reconciler) ensureGatewayClaimed(ctx context.Context, gwPortName string) {
 	if r.gwClaim == nil {
 		return
 	}
-	deadline := time.Now().Add(gatewayClaimTimeout)
-	nudged := false
-	for {
-		claimed, err := r.gwClaim.GatewayPortClaimed(ctx, gwPortName)
-		if err != nil {
-			slog.Warn("reconcile/apply: gateway SB claim check failed", "port", gwPortName, "err", err)
-			return
-		}
-		if claimed {
-			if nudged {
-				slog.Info("reconcile/apply: gateway SB chassis claim converged after recompute", "port", gwPortName)
-			}
-			return
-		}
-		if !nudged {
-			slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute", "port", gwPortName)
-			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
-				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", gwPortName, "err", err)
-			}
-			nudged = true
-		}
-		if time.Now().After(deadline) {
-			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
-				"port", gwPortName, "timeout", gatewayClaimTimeout)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(gatewayClaimInterval):
-		}
+	claimed, detail, err := r.gwClaim.GatewayPortClaim(ctx, gwPortName)
+	if err != nil {
+		slog.Warn("reconcile/apply: gateway SB claim check failed", "port", gwPortName, "err", err)
+		return
+	}
+	slog.Debug("reconcile/apply: gateway SB claim", "port", gwPortName, "claimed", claimed, "binding", detail)
+	if claimed {
+		return
+	}
+
+	slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute",
+		"port", gwPortName, "binding", detail)
+	if nerr := r.gwClaim.NudgeRecompute(ctx); nerr != nil {
+		slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", gwPortName, "err", nerr)
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(gatewayClaimRecheck):
+	}
+
+	claimed, detail, err = r.gwClaim.GatewayPortClaim(ctx, gwPortName)
+	switch {
+	case err != nil:
+		slog.Warn("reconcile/apply: gateway SB claim recheck failed", "port", gwPortName, "err", err)
+	case claimed:
+		slog.Info("reconcile/apply: gateway SB chassis claim converged after recompute", "port", gwPortName)
+	default:
+		slog.Warn("reconcile/apply: gateway SB claim unconfirmed after recompute (verify signal may differ for this gateway shape)",
+			"port", gwPortName, "binding", detail)
 	}
 }
 

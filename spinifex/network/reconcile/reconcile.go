@@ -37,9 +37,10 @@ type Reconciler interface {
 // compile-time check lives at the wiring site (vpcd) since the host
 // implementation cannot import this cross-cutter package.
 type GatewayClaimVerifier interface {
-	// GatewayPortClaimed reports whether the SB Port_Binding for lrpName has a
-	// non-empty chassis.
-	GatewayPortClaimed(ctx context.Context, lrpName string) (bool, error)
+	// GatewayPortClaim reports whether the SB Port_Binding for lrpName looks
+	// claimed by ovn-controller, plus a raw detail string (the Port_Binding row)
+	// the caller logs for diagnosis.
+	GatewayPortClaim(ctx context.Context, lrpName string) (claimed bool, detail string, err error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
 }

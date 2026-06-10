@@ -101,6 +101,46 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	assert.ErrorIs(t, getErr, ErrClusterNotFound)
 }
 
+// A post-placement failure (egress allocation) must leave the just-launched
+// control-plane VM refs persisted in the FAILED meta. Otherwise the live
+// sys.medium VMs are unrecorded and neither DeleteCluster nor the FAILED-cluster
+// reclaim can reach them — they leak.
+func TestCreateCluster_EgressFailureLeavesControlPlaneRecorded(t *testing.T) {
+	f := newEKSServiceFixture(t)
+
+	// Placement succeeds and launches the CP VM, then egress allocation fails.
+	f.eip.allocateErr = errors.New("no addresses in hidden pool")
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	require.Error(t, err)
+	require.NotEmpty(t, f.inst.launchCalls, "control-plane VM was launched before the egress step")
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "meta must remain so the leaked CP VM has an owning record")
+	assert.Equal(t, ClusterStatusFailed, meta.Status)
+	assert.NotEmpty(t, meta.ControlPlaneInstanceID, "CP instance ID must be persisted before the egress step")
+	assert.NotEmpty(t, meta.ControlPlaneNodes, "CP node list must be persisted before the egress step")
+}
+
+// End-to-end: a create that fails at egress, then delete-cluster, must terminate
+// the control-plane VM the partial create launched — driven by the CP refs the
+// early persist recorded.
+func TestCreateCluster_EgressFailedThenDeleteTerminatesControlPlane(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.eip.allocateErr = errors.New("no addresses in hidden pool")
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	require.Error(t, err)
+	require.NotEmpty(t, f.inst.launchCalls, "create launched a CP VM")
+
+	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, f.inst.terminateCalls, "DeleteCluster must terminate the CP VM recorded by the failed create")
+	_, getErr := GetClusterMeta(f.kv, "alpha")
+	assert.ErrorIs(t, getErr, ErrClusterNotFound)
+}
+
 // A live (CREATING/ACTIVE) cluster of the same name blocks create with a
 // cluster-scoped ResourceInUseException, not the ELBv2 target-group message.
 func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {

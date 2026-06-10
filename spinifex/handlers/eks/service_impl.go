@@ -506,6 +506,16 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	meta.ControlPlaneENIIP = primary.ENIIP
 	meta.ControlPlaneMgmtIP = primary.MgmtIP
 
+	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
+	// step. The VMs are live the moment placeControlPlane returns; without this a
+	// failure between here and the next PutClusterMeta (e.g. egress allocation)
+	// leaves them launched but unrecorded, so neither DeleteCluster nor the
+	// FAILED-cluster reclaim could reach them and the sys.medium VMs leak.
+	if err := PutClusterMeta(acctKV, meta); err != nil {
+		s.markFailed(acctKV, name)
+		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
+	}
+
 	// Egress: the control-plane VM must pull container images. Allocate a
 	// hidden pool address and wire an egress-only SNAT for its /32 (no DNAT —
 	// the VM stays unreachable inbound; the NLB is its only front door).
@@ -523,11 +533,11 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		ExternalIp: egressIP,
 	})
 
-	// Record the VM + ENI + egress IP before registering the target so a failed
-	// register (or anything after) leaves them recoverable by DeleteCluster.
+	// Record the egress allocation before registering the target so a failed
+	// register (or anything after) leaves it recoverable by DeleteCluster.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
+		return nil, logCreateErr(name, accountID, "persist egress allocation", err)
 	}
 
 	cpENIIPs := make([]string, 0, len(cpNodes))

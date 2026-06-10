@@ -813,7 +813,27 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 					az := s.config.AZ
 					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
 					if allocErr != nil {
-						slog.Warn("PrepareRunInstances: failed to allocate public IP", "instanceId", instance.ID, "err", allocErr)
+						// No qemu-hostfwd fallback exists: an instance on a
+						// MapPublicIpOnLaunch subnet with no public IP is
+						// unreachable, so fail the launch instead of booting a
+						// running-but-unreachable instance. The ENI is attached
+						// with a primary IP — detach before delete (in-use ENIs
+						// reject deletion).
+						slog.Error("PrepareRunInstances: public IP allocation failed — aborting launch",
+							"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
+						if detErr := s.eniCreator.DetachENI(accountID, *eni.NetworkInterfaceId); detErr != nil {
+							slog.Warn("PrepareRunInstances: failed to detach ENI after public-IP allocation failure",
+								"eniId", *eni.NetworkInterfaceId, "err", detErr)
+						}
+						if _, delErr := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+							NetworkInterfaceId: eni.NetworkInterfaceId,
+						}, accountID); delErr != nil {
+							slog.Warn("PrepareRunInstances: failed to delete ENI after public-IP allocation failure",
+								"eniId", *eni.NetworkInterfaceId, "err", delErr)
+						}
+						lastRunErr = errors.New(awserrors.ErrorInsufficientAddressCapacity)
+						s.resourceMgr.Deallocate(instanceType)
+						continue
 					} else {
 						if updateErr := s.eniCreator.UpdateENIPublicIP(accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
 							slog.Warn("PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)

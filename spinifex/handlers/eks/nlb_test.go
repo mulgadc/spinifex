@@ -440,6 +440,52 @@ func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
 	assert.Empty(t, nlbp.registerCalls)
 }
 
+func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+
+	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
+		[]string{"10.0.1.10", "10.0.2.11", "10.0.3.12"})
+	require.NoError(t, err)
+	require.Len(t, nlbp.registerCalls, 1)
+
+	in := nlbp.registerCalls[0]
+	assert.Equal(t, "arn:tg/alpha", aws.StringValue(in.TargetGroupArn))
+	require.Len(t, in.Targets, 3)
+	for i, ip := range []string{"10.0.1.10", "10.0.2.11", "10.0.3.12"} {
+		assert.Equal(t, ip, aws.StringValue(in.Targets[i].Id))
+		assert.Equal(t, k3sAPIServerPort, aws.Int64Value(in.Targets[i].Port))
+	}
+}
+
+func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+
+	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha",
+		[]string{"10.0.1.10", "", "10.0.3.12"})
+	require.NoError(t, err)
+	require.Len(t, nlbp.registerCalls, 1)
+	require.Len(t, nlbp.registerCalls[0].Targets, 2)
+	assert.Equal(t, "10.0.1.10", aws.StringValue(nlbp.registerCalls[0].Targets[0].Id))
+	assert.Equal(t, "10.0.3.12", aws.StringValue(nlbp.registerCalls[0].Targets[1].Id))
+}
+
+func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "", []string{"10.0.1.10"}))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", nil))
+	require.Error(t, RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"", ""}))
+	assert.Empty(t, nlbp.registerCalls)
+}
+
+func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.registerErr = errors.New("TargetGroupNotFound")
+
+	err := RegisterClusterTargets(nlbp, "111122223333", "arn:tg/alpha", []string{"10.0.1.10"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "arn:tg/alpha")
+}
+
 func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
 

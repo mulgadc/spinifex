@@ -174,25 +174,43 @@ func frontendIPFromLB(lb *elbv2.LoadBalancer, internetFacing bool) string {
 	return ""
 }
 
-// RegisterClusterTarget attaches the K3s server ENI IP to the cluster TG so
-// the NLB starts forwarding :443 traffic to :6443 on the VM. The ELBv2
-// RegisterTargets impl already dedupes on (id, port), so re-invocation by
-// the reconciler is idempotent.
+// RegisterClusterTarget attaches one K3s server ENI IP to the cluster TG. Thin
+// wrapper over RegisterClusterTargets for callers with a single IP.
 func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
-	if tgArn == "" {
-		return errors.New("eks: RegisterClusterTarget empty TG arn")
-	}
 	if eniIP == "" {
 		return errors.New("eks: RegisterClusterTarget empty ENI IP")
 	}
+	return RegisterClusterTargets(nlbp, accountID, tgArn, []string{eniIP})
+}
+
+// RegisterClusterTargets attaches every control-plane server ENI IP to the
+// cluster TG so the NLB forwards :443 traffic to :6443 on each CP VM. With all
+// N HA servers registered, the TG health check (:6443) drains a member when its
+// node dies and kubectl/apiserver traffic fails over to the survivors. Empty
+// IPs are skipped; the ELBv2 RegisterTargets impl dedupes on (id, port), so
+// re-invocation (e.g. by the reconciler) is idempotent.
+func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs []string) error {
+	if tgArn == "" {
+		return errors.New("eks: RegisterClusterTargets empty TG arn")
+	}
+	targets := make([]*elbv2.TargetDescription, 0, len(eniIPs))
+	for _, ip := range eniIPs {
+		if ip == "" {
+			continue
+		}
+		targets = append(targets, &elbv2.TargetDescription{
+			Id:   aws.String(ip),
+			Port: aws.Int64(k3sAPIServerPort),
+		})
+	}
+	if len(targets) == 0 {
+		return errors.New("eks: RegisterClusterTargets no non-empty ENI IPs")
+	}
 	if _, err := nlbp.RegisterTargets(&elbv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String(tgArn),
-		Targets: []*elbv2.TargetDescription{{
-			Id:   aws.String(eniIP),
-			Port: aws.Int64(k3sAPIServerPort),
-		}},
+		Targets:        targets,
 	}, accountID); err != nil {
-		return fmt.Errorf("register target %s on TG %s: %w", eniIP, tgArn, err)
+		return fmt.Errorf("register %d targets on TG %s: %w", len(targets), tgArn, err)
 	}
 	return nil
 }

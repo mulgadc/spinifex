@@ -495,9 +495,9 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			"cluster", name, "accountID", accountID, "err", err)
 		return nil, fmt.Errorf("launch K3s VM: %w", err)
 	}
-	// Mirror the primary ([0]) into the scalar fields the reconciler, NLB
-	// registration, egress wiring, and teardown read today. Until per-node NLB
-	// registration (231.7.3) only the primary is target-registered + egress-wired.
+	// Mirror the primary ([0]) into the scalar fields the reconciler, egress
+	// wiring, and teardown read today. All CP nodes are NLB target-registered
+	// (failover); egress is still primary-only (separate hidden-pool /32 wire).
 	primary := cpNodes[0]
 	meta.ControlPlaneNodes = cpNodes
 	meta.ControlPlaneSpreadGroup = spreadGroup
@@ -530,9 +530,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		return nil, logCreateErr(name, accountID, "persist control-plane ids", err)
 	}
 
-	if err := RegisterClusterTarget(s.deps.NLB, accountID, nlb.TargetGroupArn, primary.ENIIP); err != nil {
+	cpENIIPs := make([]string, 0, len(cpNodes))
+	for _, n := range cpNodes {
+		cpENIIPs = append(cpENIIPs, n.ENIIP)
+	}
+	if err := RegisterClusterTargets(s.deps.NLB, accountID, nlb.TargetGroupArn, cpENIIPs); err != nil {
 		s.markFailed(acctKV, name)
-		return nil, logCreateErr(name, accountID, "register NLB target", err)
+		return nil, logCreateErr(name, accountID, "register NLB targets", err)
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {

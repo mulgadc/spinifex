@@ -87,6 +87,10 @@ func sudoCommand(name string, args ...string) *exec.Cmd {
 
 var serviceName = "vpcd"
 
+// host.GatewayClaimProber backs the reconciler's SB chassis-claim verifier; the
+// check lives here because host (L0) cannot import reconcile (cross-cutter).
+var _ reconcile.GatewayClaimVerifier = (*host.GatewayClaimProber)(nil)
+
 // BootstrapVPC holds the default VPC infrastructure IDs from spinifex.toml.
 // vpcd uses this to ensure OVN topology exists on first boot (before NATS KV
 // has any data) and on subsequent boots where OVN state may have been lost.
@@ -640,6 +644,7 @@ func launchService(cfg *Config) error {
 		LocalAZ:      cfg.AZ,
 		NodeHostname: holder,
 		Chassis:      chassisNames,
+		GatewayClaim: host.NewGatewayClaimProber(cfg.OVNSBAddr),
 		DNSServer:    pickDNSServer(cfg.ExternalPools),
 	})
 	if err != nil {

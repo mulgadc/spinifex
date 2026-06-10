@@ -184,9 +184,17 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	out, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 2), testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.Nodegroup)
-	assert.Equal(t, eks.NodegroupStatusActive, aws.StringValue(out.Nodegroup.Status))
+	// The create accepts the request as CREATING; worker launch runs async.
+	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
 	assert.Equal(t, int64(2), aws.Int64Value(out.Nodegroup.ScalingConfig.DesiredSize))
 	assert.Contains(t, aws.StringValue(out.Nodegroup.NodegroupArn), ":nodegroup/c1/ng1/")
+
+	f.svc.WaitLaunches()
+
+	// The async launch transitions the record to ACTIVE once workers run.
+	active, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, active.Status)
 
 	// Two workers launched and tracked.
 	assert.Len(t, f.worker.runCalls, 2)
@@ -237,6 +245,7 @@ func TestDescribeAndListNodegroups(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	desc, err := f.svc.DescribeNodegroup(&eks.DescribeNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
@@ -260,6 +269,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 	require.Len(t, f.worker.runCalls, 1)
 
 	// Scale up 1 → 3: two new workers launched.
@@ -294,6 +304,7 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 2), testAccountID)
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	_, err = f.svc.DeleteNodegroup(&eks.DeleteNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),

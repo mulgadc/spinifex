@@ -240,32 +240,79 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 	}
 
+	// Claim won — the nodegroup is now CREATING. SG provisioning, token decrypt,
+	// AMI lookup and worker launch are a multi-minute job that must not run in the
+	// gateway request path (it head-of-line blocks the shared responder and the
+	// gateway times out and re-publishes — 267.4). Snapshot the CREATING reply
+	// before the launch, which mutates rec (InstanceIDs/Status), then run the
+	// provisioning on a background goroutine. Failures surface via the record's
+	// CREATE_FAILED status, which DeleteNodegroup reclaims.
+	out := &eks.CreateNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}
+
+	s.launchWG.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.markNodegroupFailed(acctKV, cluster, ng, fmt.Sprintf("launch panic: %v", r))
+			}
+		}()
+		s.launchNodegroupInfra(nodegroupLaunchCtx{
+			accountID: accountID,
+			cluster:   cluster,
+			ng:        ng,
+			meta:      meta,
+			rec:       rec,
+			desired:   int(desired),
+			acctKV:    acctKV,
+		})
+	})
+
+	return out, nil
+}
+
+// nodegroupLaunchCtx carries the immutable inputs for an asynchronous nodegroup
+// provisioning launch (launchNodegroupInfra). rec is mutated by the launch and
+// must not be read by the caller after the goroutine starts.
+type nodegroupLaunchCtx struct {
+	accountID string
+	cluster   string
+	ng        string
+	meta      *ClusterMeta
+	rec       *NodegroupRecord
+	desired   int
+	acctKV    nats.KeyValue
+}
+
+// launchNodegroupInfra runs the slow provisioning tail of createNodegroup on a
+// background goroutine after the record claim has been won: ensure SGs, decrypt
+// the node token, resolve the eks-node AMI, launch the workers, and persist the
+// terminal record state. Every failure marks the record CREATE_FAILED so the
+// reclaim path (DeleteNodegroup) can tear it down.
+func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
+	acctKV, accountID, cluster, ng, meta, rec := lc.acctKV, lc.accountID, lc.cluster, lc.ng, lc.meta, lc.rec
+
 	cpSGID, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "ensure cluster SGs: "+err.Error())
-		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
+		return
 	}
 	if err := EnsureNodegroupSGRules(s.deps.VPCSG, accountID, cluster, cpSGID, ngSGID); err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "ensure nodegroup SG rules: "+err.Error())
-		return nil, fmt.Errorf("ensure nodegroup SG rules: %w", err)
+		return
 	}
 
 	token, err := s.decryptNodeToken(acctKV, cluster)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "decrypt node token: "+err.Error())
-		return nil, fmt.Errorf("decrypt node token: %w", err)
+		return
 	}
 
 	amiID, err := lookupEKSServerAMI(s.deps.Image, accountID)
 	if err != nil {
 		s.markNodegroupFailed(acctKV, cluster, ng, "resolve eks-node AMI: "+err.Error())
-		if errors.Is(err, ErrEKSServerAMINotFound) {
-			return nil, errors.New(awserrors.ErrorServiceUnavailable)
-		}
-		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)
+		return
 	}
 
-	instanceIDs, err := s.launchWorkers(accountID, rec, meta, ngSGID, amiID, token, int(desired))
+	instanceIDs, err := s.launchWorkers(accountID, rec, meta, ngSGID, amiID, token, lc.desired)
 	rec.InstanceIDs = instanceIDs
 	if err != nil {
 		// Persist whatever launched so DeleteNodegroup can reclaim it, then fail.
@@ -275,7 +322,7 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
 			slog.Error("createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
 		}
-		return nil, fmt.Errorf("launch workers: %w", err)
+		return
 	}
 
 	// v1 marks ACTIVE on successful RunInstances (instance-level), not on
@@ -284,10 +331,8 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 	rec.Status = eks.NodegroupStatusActive
 	rec.ModifiedAt = time.Now().UTC()
 	if err := PutNodegroupRecord(acctKV, rec); err != nil {
-		return nil, err
+		slog.Error("createNodegroup: persist ACTIVE record", "cluster", cluster, "nodegroup", ng, "err", err)
 	}
-
-	return &eks.CreateNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
 }
 
 // launchWorkers issues count customer-owned RunInstances calls (one per worker

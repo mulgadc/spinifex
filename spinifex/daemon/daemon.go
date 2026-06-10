@@ -156,6 +156,14 @@ type Daemon struct {
 	cancel                context.CancelFunc
 	shutdownWg            sync.WaitGroup
 
+	// systemDispatchWg tracks in-flight host-pinned system.LaunchInstance /
+	// system.TerminateInstance handlers. Each request runs in its own goroutine
+	// so a long VM boot never head-of-line blocks the responder's subscription
+	// (267.4). Not awaited at shutdown — these are request-scoped and the reply
+	// is bounded by the requester's timeout; the WaitGroup exists so tests can
+	// deterministically await dispatch completion.
+	systemDispatchWg sync.WaitGroup
+
 	// vmMgr owns the in-memory map of VMs running on this node.
 	vmMgr *vm.Manager
 

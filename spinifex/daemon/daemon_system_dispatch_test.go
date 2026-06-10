@@ -355,6 +355,100 @@ func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 	require.Error(t, err, "remote placement requires a NATS connection")
 }
 
+// TestHandleSystemLaunchInstance_PanicRecovered drives a valid launch against a
+// daemon with no resourceMgr so LaunchSystemInstance nil-derefs. The per-request
+// goroutine must recover the panic, reply with an error, and drain the dispatch
+// WaitGroup — a panic in a detached launch must never crash the daemon (267.4).
+func TestHandleSystemLaunchInstance_PanicRecovered(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	replyCh := make(chan []byte, 1)
+	sub, err := nc.Subscribe("test.launch.panic.reply", func(msg *nats.Msg) { replyCh <- msg.Data })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	payload, err := json.Marshal(&handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
+	require.NoError(t, err)
+	msg := msgWithConn(nc, &nats.Msg{
+		Subject: "system.LaunchInstance.sys.medium",
+		Reply:   "test.launch.panic.reply",
+		Sub:     sub,
+		Data:    payload,
+	})
+
+	d.handleSystemLaunchInstance(msg)
+
+	select {
+	case data := <-replyCh:
+		var env struct {
+			Error string `json:"error,omitempty"`
+		}
+		require.NoError(t, json.Unmarshal(data, &env))
+		assert.NotEmpty(t, env.Error, "recovered panic must reply with an error envelope")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected error response after recovered panic")
+	}
+
+	drained := make(chan struct{})
+	go func() { d.systemDispatchWg.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("systemDispatchWg did not drain after handler returned")
+	}
+}
+
+// TestHandleSystemLaunchInstance_ConcurrentDispatch fires several launch
+// requests at once and asserts each gets its own reply — the per-request
+// goroutine model must not serialize requests on a single subscription
+// goroutine (the head-of-line block this fix removes).
+func TestHandleSystemLaunchInstance_ConcurrentDispatch(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	const n = 8
+	replyCh := make(chan []byte, n)
+	sub, err := nc.Subscribe("test.launch.concurrent.reply", func(msg *nats.Msg) { replyCh <- msg.Data })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	for i := range n {
+		msg := msgWithConn(nc, &nats.Msg{
+			Subject: "system.LaunchInstance.sys.medium",
+			Reply:   "test.launch.concurrent.reply",
+			Sub:     sub,
+			Data:    []byte("{not valid"),
+		})
+		_ = i
+		d.handleSystemLaunchInstance(msg)
+	}
+
+	got := 0
+	for got < n {
+		select {
+		case <-replyCh:
+			got++
+		case <-time.After(3 * time.Second):
+			t.Fatalf("expected %d replies, got %d", n, got)
+		}
+	}
+
+	drained := make(chan struct{})
+	go func() { d.systemDispatchWg.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("systemDispatchWg did not drain")
+	}
+}
+
 // msgWithConn returns msg with its internal connection set so msg.Respond
 // publishes through nc. nats.Msg.Respond requires a backing connection set
 // either via Subscribe delivery or by hand for synthetic test messages.

@@ -71,8 +71,11 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 	// NLB-arn persist checkpoint, but before the final PutClusterMeta.
 	f.inst.launchErr = errors.New("no capacity")
 
+	// CreateCluster accepts the request (CREATING) and launches asynchronously;
+	// the launch failure surfaces as FAILED status, not the call's return value.
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.Error(t, err)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, getErr, "meta must remain so the leaked NLB has an owning record")
@@ -88,7 +91,8 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	f.inst.launchErr = errors.New("no capacity")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.Error(t, err)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	// The NLB the partial create provisioned exists in the fake.
 	require.NotEmpty(t, f.nlb.createLBCalls, "create provisioned an NLB")
@@ -112,7 +116,8 @@ func TestCreateCluster_EgressFailureLeavesControlPlaneRecorded(t *testing.T) {
 	f.eip.allocateErr = errors.New("no addresses in hidden pool")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.Error(t, err)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 	require.NotEmpty(t, f.inst.launchCalls, "control-plane VM was launched before the egress step")
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
@@ -130,7 +135,8 @@ func TestCreateCluster_EgressFailedThenDeleteTerminatesControlPlane(t *testing.T
 	f.eip.allocateErr = errors.New("no addresses in hidden pool")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.Error(t, err)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 	require.NotEmpty(t, f.inst.launchCalls, "create launched a CP VM")
 
 	_, err = f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
@@ -162,16 +168,19 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
 	f.inst.launchErr = errors.New("no capacity")
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.Error(t, err)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 	failed, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
 	require.Equal(t, ClusterStatusFailed, failed.Status)
 
-	// Retry now succeeds: the reclaim path purges the failed attempt's NLB and
-	// the create starts clean.
+	// Retry now succeeds: the reclaim (in the synchronous claim phase) purges the
+	// failed attempt's NLB and the create starts clean. The relaunch then runs to
+	// completion, leaving the cluster CREATING (ACTIVE is the reconciler's job).
 	f.inst.launchErr = nil
 	_, err = f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	got, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
@@ -231,15 +240,16 @@ func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
 	assert.Nil(t, desc.Cluster.Health, "healthy cluster must not report a ClusterHealth issue")
 }
 
-// A missing eks-server AMI is an operator/config gap, not an unrecoverable
-// internal fault: CreateCluster must surface ServiceUnavailable (not a generic
-// ServerInternal) and mark the half-built cluster FAILED (bead 165.4).
+// A missing eks-server AMI is an operator/config gap surfaced during the async
+// launch: CreateCluster accepts the request (CREATING) and the background launch
+// marks the half-built cluster FAILED so the reclaim path can retry (bead 165.4).
 func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
-	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, getErr)
@@ -252,6 +262,7 @@ func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 	out, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	require.NotNil(t, out)
+	f.svc.WaitLaunches()
 
 	meta, err := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, err)
@@ -270,6 +281,7 @@ func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, caller)
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	rec, err := GetAccessEntryRecord(f.kv, "alpha", caller)
 	require.NoError(t, err)
@@ -289,6 +301,7 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 
 	_, err := f.svc.CreateCluster(in, testAccountID, caller)
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	_, err = GetAccessEntryRecord(f.kv, "alpha", caller)
 	assert.ErrorIs(t, err, ErrAccessEntryNotFound)
@@ -299,6 +312,7 @@ func TestCreateCluster_AllocatesHiddenEgressEIP(t *testing.T) {
 
 	_, err := f.svc.CreateCluster(createInput("egress"), testAccountID, "")
 	require.NoError(t, err)
+	f.svc.WaitLaunches()
 
 	meta, err := GetClusterMeta(f.kv, "egress")
 	require.NoError(t, err)

@@ -185,6 +185,7 @@ func TestSetSubnets_AddSubnet(t *testing.T) {
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 	require.Equal(t, 1, countManagedENIs(t, vpcSvc))
 	require.Len(t, mock.launchCalls, 1)
@@ -217,6 +218,7 @@ func TestSetSubnets_RemoveSubnet(t *testing.T) {
 		Subnets: []*string{aws.String(sub1), aws.String(sub2)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 	require.Equal(t, 2, countManagedENIs(t, vpcSvc))
 
@@ -245,6 +247,7 @@ func TestSetSubnets_Replace(t *testing.T) {
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
 	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
@@ -270,6 +273,7 @@ func TestSetSubnets_TerminateFailureRollsBackNewENIs(t *testing.T) {
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 	require.Equal(t, 1, countManagedENIs(t, vpcSvc))
 
@@ -300,6 +304,7 @@ func TestSetSubnets_Idempotent(t *testing.T) {
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
 	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{
@@ -325,6 +330,7 @@ func TestSetSubnets_SubnetMappings(t *testing.T) {
 		Subnets: []*string{aws.String(sub1)},
 	}, testAccountID)
 	require.NoError(t, err)
+	svc.WaitLaunches()
 	arn := *out.LoadBalancers[0].LoadBalancerArn
 
 	_, err = svc.SetSubnets(&elbv2.SetSubnetsInput{

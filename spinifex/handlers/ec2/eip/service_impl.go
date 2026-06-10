@@ -213,6 +213,7 @@ func (s *EIPServiceImpl) AssociateAddress(input *ec2.AssociateAddressInput, acco
 	record.InstanceId = instanceID
 	record.PrivateIp = privateIP
 	record.VpcId = vpcID
+	record.MacAddress = macAddr
 	record.State = "associated"
 
 	data, err := json.Marshal(record)
@@ -270,6 +271,7 @@ func (s *EIPServiceImpl) DisassociateAddress(input *ec2.DisassociateAddressInput
 	record.InstanceId = ""
 	record.PrivateIp = ""
 	record.VpcId = ""
+	record.MacAddress = ""
 	record.State = "allocated"
 
 	data, err := json.Marshal(record)
@@ -566,6 +568,38 @@ func (s *EIPServiceImpl) findByAssociationID(accountID, associationID string) (*
 	}
 
 	return nil, "", 0, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+}
+
+// AssociatedPublicIPForInstance returns the public IP of the Elastic IP
+// associated with instanceID, if any. The daemon uses it to re-announce a
+// post-launch EIP's dnat_and_snat on VM relaunch, where the instance's own
+// PublicIP field is unset (only auto-assigned public IPs populate it).
+func (s *EIPServiceImpl) AssociatedPublicIPForInstance(accountID, instanceID string) (string, bool) {
+	if instanceID == "" {
+		return "", false
+	}
+	prefix := accountID + "."
+	keys, err := s.eipKV.Keys()
+	if err != nil {
+		return "", false
+	}
+	for _, k := range keys {
+		if k == utils.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.eipKV.Get(k)
+		if err != nil {
+			continue
+		}
+		var record EIPRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			continue
+		}
+		if record.State == "associated" && record.InstanceId == instanceID && record.PublicIp != "" {
+			return record.PublicIp, true
+		}
+	}
+	return "", false
 }
 
 // publishNATEvent publishes a NAT lifecycle event to NATS for vpcd consumption.

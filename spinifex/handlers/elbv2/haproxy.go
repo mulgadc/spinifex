@@ -2,15 +2,11 @@ package handlers_elbv2
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"text/template"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
@@ -185,8 +181,8 @@ func generateALBConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgBy
 // nginx data plane (generateNLBStreamConfig), not this builder.
 func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgByArn map[string]*TargetGroupRecord, rulesByListener map[string][]*RuleRecord, bindAddr string, certPEMByArn map[string]string) (HAProxyConfig, error) {
 	socketDir := filepath.Join(os.TempDir(), "spinifex-haproxy")
-	// Use "lb" prefix for both ALB and NLB — must match the agent's socket path.
-	socketPath := filepath.Join(socketDir, fmt.Sprintf("lb-%s.sock", lb.LoadBalancerID))
+	// LoadBalancerID already carries the "lb-" prefix; must match the agent's socket path.
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("%s.sock", lb.LoadBalancerID))
 
 	cfg := HAProxyConfig{
 		SocketPath: socketPath,
@@ -328,7 +324,7 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 // PEM file under the agent's cert dir. Daemon-rendered and agent-written paths
 // must match exactly.
 func frontendCertPath(lb *LoadBalancerRecord, l *ListenerRecord) string {
-	return filepath.Join(lbagent.CertDir, fmt.Sprintf("lb-%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
+	return filepath.Join(lbagent.CertDir, fmt.Sprintf("%s-%s.pem", lb.LoadBalancerID, l.ListenerID))
 }
 
 // resolveFrontendCert picks a listener's default certificate, resolves its PEM
@@ -696,222 +692,4 @@ func sanitizeName(prefix, id string) string {
 		}
 	}
 	return prefix + "_" + sb.String()
-}
-
-// HAProxyManager manages HAProxy processes for ALBs on this daemon node.
-type HAProxyManager struct {
-	configDir string // Directory for HAProxy config files
-	binPath   string // Path to haproxy binary
-	mu        sync.Mutex
-	pids      map[string]int // lbID → HAProxy PID
-}
-
-// NewHAProxyManager creates a new HAProxy manager.
-func NewHAProxyManager(configDir string) *HAProxyManager {
-	binPath := "/usr/sbin/haproxy"
-	if p, err := exec.LookPath("haproxy"); err == nil {
-		binPath = p
-	}
-	return &HAProxyManager{
-		configDir: configDir,
-		binPath:   binPath,
-		pids:      make(map[string]int),
-	}
-}
-
-// Available returns true if the haproxy binary is found on the system.
-func (m *HAProxyManager) Available() bool {
-	_, err := exec.LookPath(m.binPath)
-	if err != nil {
-		// binPath might be absolute — check directly
-		_, err = os.Stat(m.binPath)
-	}
-	return err == nil
-}
-
-// pidFilePath returns the pidfile path for a given LB.
-func (m *HAProxyManager) pidFilePath(lbID string) string {
-	return filepath.Join(m.configDir, fmt.Sprintf("alb-%s.pid", lbID))
-}
-
-// configFilePath returns the config path for a given LB.
-func (m *HAProxyManager) configFilePath(lbID string) string {
-	return filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
-}
-
-// IsRunning returns true if an HAProxy process is tracked and alive for this LB.
-func (m *HAProxyManager) IsRunning(lbID string) bool {
-	m.mu.Lock()
-	pid, ok := m.pids[lbID]
-	m.mu.Unlock()
-	if !ok || pid <= 0 {
-		return false
-	}
-	// Check if process is alive
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-// Start launches a new HAProxy process for the given LB.
-func (m *HAProxyManager) Start(lbID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.startLocked(lbID)
-}
-
-// startLocked is the lock-free core of Start. Caller must hold m.mu.
-func (m *HAProxyManager) startLocked(lbID string) error {
-	if err := os.MkdirAll(m.configDir, 0o750); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	// Ensure the stats socket directory exists
-	socketDir := filepath.Join(os.TempDir(), "spinifex-haproxy")
-	if err := os.MkdirAll(socketDir, 0o750); err != nil {
-		return fmt.Errorf("create socket dir: %w", err)
-	}
-
-	configPath := m.configFilePath(lbID)
-	pidFile := m.pidFilePath(lbID)
-
-	cmd := exec.Command(m.binPath, "-f", configPath, "-p", pidFile, "-D")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("haproxy start failed: %s: %w", strings.TrimSpace(string(output)), err)
-	}
-
-	// Read PID from pidfile
-	pid, err := m.readPidFile(pidFile)
-	if err != nil {
-		slog.Warn("HAProxy started but could not read pidfile", "lbId", lbID, "err", err)
-		return nil
-	}
-
-	m.pids[lbID] = pid
-	slog.Info("HAProxy started", "lbId", lbID, "pid", pid)
-	return nil
-}
-
-// Reload performs a graceful reload of the HAProxy process for the given LB.
-// The old workers finish in-flight connections while new workers start.
-func (m *HAProxyManager) Reload(lbID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	oldPid, ok := m.pids[lbID]
-	if !ok || oldPid <= 0 {
-		// Not running — do a fresh start instead
-		return m.startLocked(lbID)
-	}
-
-	configPath := m.configFilePath(lbID)
-	pidFile := m.pidFilePath(lbID)
-
-	cmd := exec.Command(m.binPath, "-f", configPath, "-p", pidFile, "-D", "-sf", strconv.Itoa(oldPid))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("haproxy reload failed: %s: %w", strings.TrimSpace(string(output)), err)
-	}
-
-	// Read new PID
-	newPid, err := m.readPidFile(pidFile)
-	if err != nil {
-		slog.Warn("HAProxy reloaded but could not read new pidfile", "lbId", lbID, "err", err)
-		return nil
-	}
-
-	m.pids[lbID] = newPid
-	slog.Info("HAProxy reloaded", "lbId", lbID, "oldPid", oldPid, "newPid", newPid)
-	return nil
-}
-
-// Stop terminates the HAProxy process for the given LB and cleans up files.
-func (m *HAProxyManager) Stop(lbID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	pid, ok := m.pids[lbID]
-	if ok && pid > 0 {
-		proc, err := os.FindProcess(pid)
-		if err == nil {
-			if err := proc.Signal(syscall.SIGTERM); err != nil {
-				slog.Debug("HAProxy SIGTERM failed (may already be stopped)", "lbId", lbID, "pid", pid, "err", err)
-			}
-		}
-	}
-	delete(m.pids, lbID)
-
-	// Clean up pidfile
-	pidFile := m.pidFilePath(lbID)
-	os.Remove(pidFile)
-
-	slog.Info("HAProxy stopped", "lbId", lbID, "pid", pid)
-	return nil
-}
-
-// StopAll terminates all tracked HAProxy processes. Called on daemon shutdown.
-func (m *HAProxyManager) StopAll() {
-	m.mu.Lock()
-	lbIDs := make([]string, 0, len(m.pids))
-	for id := range m.pids {
-		lbIDs = append(lbIDs, id)
-	}
-	m.mu.Unlock()
-
-	for _, id := range lbIDs {
-		if err := m.Stop(id); err != nil {
-			slog.Warn("Failed to stop HAProxy on shutdown", "lbId", id, "err", err)
-		}
-	}
-}
-
-// readPidFile reads and parses a PID from a pidfile.
-func (m *HAProxyManager) readPidFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, fmt.Errorf("parse pid %q: %w", string(data), err)
-	}
-	return pid, nil
-}
-
-// WriteConfig writes an HAProxy config file for the given load balancer.
-func (m *HAProxyManager) WriteConfig(lbID, configContent string) (string, error) {
-	if err := os.MkdirAll(m.configDir, 0o750); err != nil {
-		return "", fmt.Errorf("create config dir: %w", err)
-	}
-
-	path := filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
-	if err := os.WriteFile(path, []byte(configContent), 0o600); err != nil {
-		return "", fmt.Errorf("write haproxy config: %w", err)
-	}
-
-	slog.Info("Wrote HAProxy config", "path", path, "lbId", lbID)
-	return path, nil
-}
-
-// RemoveConfig removes the HAProxy config file for the given load balancer.
-func (m *HAProxyManager) RemoveConfig(lbID string) error {
-	path := filepath.Join(m.configDir, fmt.Sprintf("alb-%s.cfg", lbID))
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove haproxy config: %w", err)
-	}
-	return nil
-}
-
-// ValidateConfig checks if an HAProxy config file is syntactically valid.
-func (m *HAProxyManager) ValidateConfig(configPath string) error {
-	cmd := exec.Command(m.binPath, "-c", "-f", configPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("haproxy config validation failed: %s: %w", string(output), err)
-	}
-	return nil
 }

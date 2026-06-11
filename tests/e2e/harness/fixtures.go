@@ -67,6 +67,11 @@ type Fixture struct {
 	// namespace-flat).
 	scratch string
 
+	// runID is the cross-process run id (SPINIFEX_E2E_RUN_ID). When set,
+	// Ensure* stamps the e2e:run=<runID> tag on every resource it creates so
+	// the teardown sweep can reclaim them by id. Empty disables tagging.
+	runID string
+
 	mu       sync.Mutex
 	memo     map[string]string
 	cleanups map[string]struct{}
@@ -113,6 +118,7 @@ func NewProcessFixture(aws *AWSClient) (*Fixture, error) {
 		EC2:      aws.EC2,
 		ELBv2:    aws.ELBv2,
 		scratch:  scratch,
+		runID:    os.Getenv(RunIDEnv),
 		memo:     map[string]string{},
 		cleanups: map[string]struct{}{},
 	}, nil
@@ -132,6 +138,7 @@ func newFixture(t *testing.T, ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API) *F
 		EC2:      ec2c,
 		ELBv2:    elbc,
 		scratch:  scratch,
+		runID:    os.Getenv(RunIDEnv),
 		memo:     map[string]string{},
 		cleanups: map[string]struct{}{},
 	}
@@ -311,6 +318,7 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 		if err := os.WriteFile(pemPath, []byte(aws.StringValue(out.KeyMaterial)), 0o600); err != nil {
 			return "", nil, fmt.Errorf("write pem %s: %w", pemPath, err)
 		}
+		fx.tagRunResources(aws.StringValue(out.KeyPairId))
 		return aws.StringValue(out.KeyName), func() error {
 			_, derr := fx.EC2.DeleteKeyPair(&ec2.DeleteKeyPairInput{KeyName: aws.String(name)})
 			return derr
@@ -378,6 +386,7 @@ func EnsureAMI(t *testing.T, fx *Fixture, src AMISource) string {
 				return "", nil, fmt.Errorf("CreateImage: %w", err)
 			}
 			imageID = aws.StringValue(out.ImageId)
+			fx.tagRunResources(imageID)
 		}
 
 		if err := pollUntil(t, 10*time.Minute, 2*time.Second, func() (bool, error) {
@@ -525,6 +534,7 @@ func EnsureSubnet(t *testing.T, fx *Fixture, vpcID, cidr, az string) string {
 			return "", nil, fmt.Errorf("CreateSubnet %s: %w", cidr, err)
 		}
 		subnetID := aws.StringValue(out.Subnet.SubnetId)
+		fx.tagRunResources(subnetID)
 		return subnetID, func() error {
 			_, derr := fx.EC2.DeleteSubnet(&ec2.DeleteSubnetInput{
 				SubnetId: aws.String(subnetID),
@@ -557,6 +567,7 @@ func EnsureSG(t *testing.T, fx *Fixture, vpcID, namePrefix string) string {
 			return "", nil, fmt.Errorf("CreateSecurityGroup %s: %w", name, err)
 		}
 		sgID := aws.StringValue(out.GroupId)
+		fx.tagRunResources(sgID)
 		return sgID, func() error {
 			_, derr := fx.EC2.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
 				GroupId: aws.String(sgID),
@@ -621,6 +632,7 @@ func EnsureInstance(t *testing.T, fx *Fixture, spec InstanceSpec) string {
 			return "", nil, fmt.Errorf("RunInstances returned 0 instances")
 		}
 		instID := aws.StringValue(out.Instances[0].InstanceId)
+		fx.tagRunResources(instID)
 
 		if err := pollUntil(t, 5*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
@@ -672,6 +684,7 @@ func EnsureVolume(t *testing.T, fx *Fixture, az string, sizeGiB int64) string {
 			return "", nil, fmt.Errorf("CreateVolume: %w", err)
 		}
 		volID := aws.StringValue(out.VolumeId)
+		fx.tagRunResources(volID)
 
 		if err := pollUntil(t, 5*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeVolumes(&ec2.DescribeVolumesInput{
@@ -738,6 +751,7 @@ func EnsureSnapshot(t *testing.T, fx *Fixture, spec SnapshotSpec) string {
 			return "", nil, fmt.Errorf("CreateSnapshot: %w", err)
 		}
 		snapID := aws.StringValue(out.SnapshotId)
+		fx.tagRunResources(snapID)
 
 		if err := pollUntil(t, 10*time.Minute, 2*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeSnapshots(&ec2.DescribeSnapshotsInput{
@@ -795,6 +809,7 @@ func EnsureNATGateway(t *testing.T, fx *Fixture, subnetID, allocationID string) 
 			return "", nil, fmt.Errorf("CreateNatGateway: %w", err)
 		}
 		ngwID := aws.StringValue(out.NatGateway.NatGatewayId)
+		fx.tagRunResources(ngwID)
 
 		if err := pollUntil(t, 5*time.Minute, 5*time.Second, func() (bool, error) {
 			d, derr := fx.EC2.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
@@ -869,6 +884,7 @@ func EnsureLoadBalancer(t *testing.T, fx *Fixture, spec LoadBalancerSpec) string
 			return "", nil, fmt.Errorf("CreateLoadBalancer returned 0 LBs")
 		}
 		lbARN := aws.StringValue(out.LoadBalancers[0].LoadBalancerArn)
+		fx.tagRunELB(lbARN)
 
 		if err := pollUntil(t, 10*time.Minute, 5*time.Second, func() (bool, error) {
 			d, derr := fx.ELBv2.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{

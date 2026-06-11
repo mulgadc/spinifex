@@ -113,7 +113,7 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # Preflight — runs the same checks as GitHub Actions (lint + vuln + tests).
 # Use this before committing to catch CI failures locally.
 preflight:
-	@$(MAKE) --no-print-directory QUIET=1 manifest-check lint govulncheck test-cover diff-coverage test-race test-harness
+	@$(MAKE) --no-print-directory QUIET=1 manifest-check manifest-lint lint govulncheck test-cover diff-coverage test-race test-harness
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
@@ -129,6 +129,17 @@ test-harness:
 manifest-check:
 	@echo -e "\n....Checking service-interfaces.yaml...."
 	@go run ./tests/e2e/manifest-check/cmd/manifest-check -repo-root . -manifest docs/service-interfaces.yaml
+
+# Drift guards (Bead 5): direct-create fixture lint + NATS subject lint,
+# ratcheted against tests/e2e/manifest-lint/baseline.txt. Fails only on NEW
+# drift beyond the baseline.
+manifest-lint:
+	@echo -e "\n....Linting manifest drift (fixtures + subjects)...."
+	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root .
+
+# Accept current drift into the baseline. Run after an intentional change.
+manifest-lint-update:
+	@go run ./tests/e2e/manifest-lint/cmd/manifest-lint -repo-root . -update
 
 # Run unit tests
 test:
@@ -334,7 +345,7 @@ ansible-cluster-bootstrap:
 		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
 		$(_ANSIBLE_EXTRA)
 
-.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check \
+.PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck \

@@ -1,0 +1,799 @@
+# E2E (per-suite blocks) — EXPERIMENTAL, workflow_dispatch only.
+#
+# Restructures the looped e2e.yml into env-grouped job blocks so each suite
+# surfaces as its own node in the Actions graph (mulga-siv-283):
+#
+#   single_provision ─┬─ single_suite (matrix: single, cert, lb, eks)
+#                     └─ single_teardown (if: always)
+#   multi_provision  ─┬─ multi_suite  (matrix: multinode)
+#                     └─ multi_teardown (if: always)
+#
+# Constraint: tofu state is runner-filesystem-local, so *_provision and
+# *_teardown must execute on the same self-hosted runner (one runner per label
+# today). Teardown reuses the persisted mulga/ tofu-cluster workspace and does
+# NOT re-checkout mulga (that would wipe local state). Suite-matrix legs reach
+# the already-provisioned VM over its WAN IP using the key path the provision
+# job emits; they share the runner home dir, so the key file persists.
+#
+# This file does NOT post the gating `e2e` commit status — it runs alongside
+# e2e.yml for validation. Once green across a few manual runs, fold the
+# triggers from e2e.yml here and retire the loop.
+
+name: E2E (suite blocks)
+
+on:
+  workflow_dispatch:
+    inputs:
+      single_suites:
+        description: "Single-node suites to run as matrix legs"
+        required: false
+        default: "single cert lb eks"
+      run_multinode:
+        description: "Also run the multinode env block"
+        type: boolean
+        required: false
+        default: true
+      test_run:
+        description: "Optional -test.run regex (empty = all tests in suite)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  GIT_BRANCH: ${{ github.ref_name }}
+  TEST_RUN: ${{ inputs.test_run || '' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Single-node env
+  # ---------------------------------------------------------------------------
+  single_provision:
+    name: Single env · provision
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 40
+    outputs:
+      wan_ip: ${{ steps.vm.outputs.wan_ip }}
+      ssh_key: ${{ steps.vm.outputs.ssh_key }}
+      suites: ${{ steps.suites.outputs.list }}
+      matrix: ${{ steps.suites.outputs.matrix }}
+    env:
+      TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
+    steps:
+      - name: Reap Orphan Procs
+        run: |
+          set +e
+          UID_SELF=$(id -u)
+          WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in
+                "$WS"|"$WS"/*) echo "reap $sig pid=$pid cwd=$cwd"; kill "-$sig" "$pid" 2>/dev/null ;;
+              esac
+            done
+          }
+          reap TERM; sleep 3; reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          true
+
+      - name: Clean Workspace
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/tofu-cluster
+          path: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Re-enable Go toolchain auto-download
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Compute suite matrix
+        id: suites
+        run: |
+          LIST="${{ inputs.single_suites || 'single cert lb eks' }}"
+          echo "list=${LIST}" >> "$GITHUB_OUTPUT"
+          JSON=$(printf '%s\n' $LIST | jq -R . | jq -cs .)
+          echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
+
+      - name: Prune rootless docker cache
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker buildx prune -af --filter "until=24h" || true
+          docker system df || true
+
+      - name: Build Install Artifacts
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          ./build-install-artifacts.sh "${GIT_BRANCH}" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Provision VM
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          export TF_VAR_git_branch="${GIT_BRANCH}"
+          quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
+          quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
+          quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          quiet_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          ok "VM provisioned"
+
+      - name: Bootstrap via Binary Install
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
+          ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Resolve VM SSH details
+        id: vm
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
+          SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
+          echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build eks-node AMI (libguestfs, runner)
+        if: contains(steps.suites.outputs.list, 'eks')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build eks-node AMI (libguestfs — no host devices)"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libguestfs-tools qemu-utils
+          export LIBGUESTFS_BACKEND=direct
+          sudo chmod 0644 /boot/vmlinuz-* || true
+          group_open "make build-eks-node-image"
+          make build-eks-node-image
+          group_close
+          ok "raw: $(du -h /tmp/eks-node-image-build/eks-node-alpine.raw | cut -f1)"
+
+      - name: Import eks-node AMI on VM
+        if: contains(steps.suites.outputs.list, 'eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/eks-node/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import eks-node AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "$VM":/tmp/eks-node-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/eks-node-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null
+          ok "eks-node AMI imported"
+
+      - name: Install kubectl on VM
+        if: contains(steps.suites.outputs.list, 'eks')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "install kubectl on VM (eks data-plane subtest)"
+          ssh "${SSH_OPTS[@]}" "$VM" 'bash -s' <<'EOF'
+          set -euo pipefail
+          KVER=v1.32.5
+          case "$(uname -m)" in
+            x86_64)  ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          cd /tmp
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/${KVER}/bin/linux/${ARCH}/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+          EOF
+          ok "kubectl installed on VM"
+
+      - name: Build E2E test binaries on runner
+        working-directory: spinifex/tests/e2e
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          # teardown always builds: the run-scoped sweep binary runs in the
+          # teardown job, it is never a selectable suite leg.
+          SUITES_BUILD="${{ steps.suites.outputs.list }} teardown"
+          banner "build ${SUITES_BUILD// /, }"
+          group_open "go test -c"
+          make e2e-build SUITES_BUILD="${SUITES_BUILD}"
+          group_close
+          for f in _bin/*.test; do
+            ok "$(basename "$f") $(stat -c '%s' "$f" | numfmt --to=iec)"
+          done
+
+      - name: Ship test binaries to VM
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          ssh "${SSH_OPTS[@]}" "$VM" "rm -rf \$HOME/spinifex-e2e-bin && mkdir -p \$HOME/spinifex-e2e-bin"
+          tar -C spinifex/tests/e2e/_bin -cf - . | ssh "${SSH_OPTS[@]}" "$VM" "tar -xf - -C \$HOME/spinifex-e2e-bin"
+          ok "shipped binaries to $VM"
+
+      - name: Start packet capture on VM br-wan
+        run: |
+          set +e
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          scp "${SSH_OPTS[@]}" \
+            "${GITHUB_WORKSPACE}/spinifex/.github/scripts/start-net-capture.sh" \
+            "$VM":/tmp/start-net-capture.sh
+          ssh "${SSH_OPTS[@]}" "$VM" "bash /tmp/start-net-capture.sh" || true
+
+  single_suite:
+    name: Single env · suite
+    needs: single_provision
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.single_provision.outputs.matrix) }}
+    env:
+      WAN_IP: ${{ needs.single_provision.outputs.wan_ip }}
+      SSH_KEY: ${{ needs.single_provision.outputs.ssh_key }}
+      ARTIFACT_DIR: /tmp/spinifex-e2e-single-${{ github.run_id }}-${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Install go-junit-report
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Run ${{ matrix.suite }}
+        id: e2e
+        run: |
+          set +e
+          SUITE="${{ matrix.suite }}"
+          VM_HOST="tf-user@${WAN_IP}"
+          TEST_RUN_FLAG=""
+          [ -n "${TEST_RUN}" ] && TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+          cleanup_remote() {
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" "$VM_HOST" \
+              "pkill -u tf-user -TERM -f \"/spinifex-e2e-bin/${SUITE}\.test( |\$)\" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f \"/spinifex-e2e-bin/${SUITE}\.test( |\$)\" 2>/dev/null; true" \
+              2>/dev/null || true
+          }
+          trap cleanup_remote EXIT INT TERM
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" "$VM_HOST" \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/spinifex-e2e-bin; \
+             R=\$'\033[0m' B=\$'\033[1m' C=\$'\033[36m' G=\$'\033[32m' RED=\$'\033[31m'; \
+             printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"${SUITE}\" \"\$R\"; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./${SUITE}.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+               2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log' \
+                    | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
+             exit \${PIPESTATUS[0]}"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect suite artifacts from VM
+        if: always()
+        run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${SSH_KEY}")
+          VM=tf-user@${WAN_IP}
+          ssh "${SSH_OPTS[@]}" "$VM" "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
+            | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
+          true
+
+      - name: Convert test log to JUnit XML
+        if: always()
+        run: |
+          shopt -s nullglob
+          for LOG in "${ARTIFACT_DIR}"/test-*.log; do
+            BASE=$(basename "$LOG" .log); SUITE=${BASE#test-}
+            go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-${SUITE}.xml" || true
+          done
+
+      - name: Publish test summary
+        if: always()
+        uses: ./spinifex/.github/actions/junit-report
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          title: "E2E ${{ matrix.suite }} results"
+
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./spinifex/.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "E2E ${{ matrix.suite }} failure analysis"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-single-${{ matrix.suite }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail job if suite failed
+        if: always()
+        run: |
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
+            echo "::error::suite ${{ matrix.suite }} failed (rc=${{ steps.e2e.outputs.rc }})"
+            exit 1
+          fi
+
+  single_teardown:
+    name: Single env · teardown
+    needs: [ single_provision, single_suite ]
+    if: always()
+    runs-on: [ self-hosted, ci-single ]
+    timeout-minutes: 20
+    env:
+      TOFU_LOG: /tmp/e2e-tofu-single-td-${{ github.run_id }}.log
+      ARTIFACT_DIR: /tmp/spinifex-e2e-single-diag-${{ github.run_id }}
+      WAN_IP: ${{ needs.single_provision.outputs.wan_ip }}
+      SSH_KEY: ${{ needs.single_provision.outputs.ssh_key }}
+    steps:
+      # Reuse the persisted mulga/ tofu-cluster workspace from single_provision.
+      # Re-checkout only spinifex (for ci-fmt + diag scripts); checking out mulga
+      # again would wipe the local tofu state and orphan the VM.
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - name: Capture network/IPsec diagnostics on VM
+        if: ${{ needs.single_provision.result == 'success' && env.WAN_IP != '' }}
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          mkdir -p "${ARTIFACT_DIR}"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}")
+          VM=tf-user@${WAN_IP}
+          scp "${SSH_OPTS[@]}" \
+            "${GITHUB_WORKSPACE}/spinifex/.github/scripts/capture-net-diag.sh" \
+            "$VM":/tmp/capture-net-diag.sh 2>/dev/null
+          ssh "${SSH_OPTS[@]}" "$VM" "bash /tmp/capture-net-diag.sh '${ARTIFACT_DIR}/net-diag'" 2>/dev/null
+          ssh "${SSH_OPTS[@]}" "$VM" 'sudo journalctl -u "spinifex-*" --no-pager --output=short-iso --since "90 min ago"' \
+            > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null
+          mkdir -p "${ARTIFACT_DIR}/lb-console"
+          ssh "${SSH_OPTS[@]}" "$VM" 'sudo sh -c "cd /run/spinifex 2>/dev/null && tar -cf - console-*.log 2>/dev/null"' \
+            | tar -C "${ARTIFACT_DIR}/lb-console" -xf - 2>/dev/null
+          true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-single-diag-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Reclaim any resource leaked by a crashed/interrupted suite before the VM
+      # is destroyed. Scoped to this run's tag, best-effort, never fails the job.
+      - name: Sweep leaked run resources on VM
+        if: ${{ needs.single_provision.result == 'success' && env.WAN_IP != '' }}
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}")
+          VM=tf-user@${WAN_IP}
+          banner "sweep run-tagged resources (run ${{ github.run_id }})"
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "cd \$HOME/spinifex-e2e-bin 2>/dev/null && \
+             SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+             SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+             ./teardown.test -test.v -test.run TestSweepRunResources -test.timeout=10m" \
+            2>&1 || true
+          true
+
+      - name: Teardown VM
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          if [ -n "${WAN_IP}" ] && [ -n "${SSH_KEY}" ]; then
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}" \
+              tf-user@${WAN_IP} \
+              'pkill -u tf-user -TERM -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; true' \
+              2>/dev/null || true
+          fi
+          UID_SELF=$(id -u); WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in "$WS"|"$WS"/*) kill "-$sig" "$pid" 2>/dev/null ;; esac
+            done
+          }
+          reap TERM; sleep 2; reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
+          ok "teardown complete"
+
+  # ---------------------------------------------------------------------------
+  # Multinode env
+  # ---------------------------------------------------------------------------
+  multi_provision:
+    name: Multi env · provision
+    if: ${{ inputs.run_multinode }}
+    runs-on: [ self-hosted, ci-multi ]
+    timeout-minutes: 45
+    outputs:
+      node1_ip: ${{ steps.cluster.outputs.node1_ip }}
+      ssh_key: ${{ steps.cluster.outputs.ssh_key }}
+      nodes_csv: ${{ steps.cluster.outputs.nodes_csv }}
+    env:
+      TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
+    steps:
+      - name: Reap Orphan Procs
+        run: |
+          set +e
+          UID_SELF=$(id -u); WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in "$WS"|"$WS"/*) echo "reap $sig pid=$pid"; kill "-$sig" "$pid" 2>/dev/null ;; esac
+            done
+          }
+          reap TERM; sleep 3; reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          true
+
+      - name: Clean Workspace
+        run: |
+          awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
+            | sort -r | xargs -r -I{} sudo umount -l -R {} || true
+          sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          repository: mulgadc/mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/tofu-cluster
+          path: mulga
+
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Re-enable Go toolchain auto-download
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Prune rootless docker cache
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker buildx prune -af --filter "until=24h" || true
+          docker system df || true
+
+      - name: Build Install Artifacts
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          ./build-install-artifacts.sh "${GIT_BRANCH}" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Provision VMs
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          export TF_VAR_git_branch="${GIT_BRANCH}"
+          quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
+          quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "tofu destroy (pre-clean)" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false || true
+          quiet_run "scrub-env (pre-clean)"    "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}" || true
+          quiet_run "tofu apply"               "$TOFU_LOG" tofu apply -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          ok "3-node cluster provisioned"
+
+      - name: Bootstrap via Binary Install
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          SPX_EXTERNAL_POOL="${SPINIFEX_CI_POOL}" \
+          ./bootstrap-install.sh "${SPINIFEX_CI_ENV}" \
+            "${RUNNER_TEMP}/setup.sh" \
+            "${RUNNER_TEMP}/spinifex-distro.tar.gz" \
+            --test-tar "${RUNNER_TEMP}/spinifex-tests.tar"
+
+      - name: Resolve cluster SSH details
+        id: cluster
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          INVENTORY=$(tofu output -json inventory)
+          NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
+          SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path'); SSH_KEY="${SSH_KEY/#\~/$HOME}"
+          NODE_COUNT=$(echo "$INVENTORY" | jq '.nodes | length')
+          NODES_CSV=""
+          for i in $(seq 0 $((NODE_COUNT - 1))); do
+            ip=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip")
+            if [ -z "$NODES_CSV" ]; then NODES_CSV="$ip"; else NODES_CSV="$NODES_CSV,$ip"; fi
+          done
+          echo "node1_ip=${NODE1_IP}" >> "$GITHUB_OUTPUT"
+          echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
+          echo "nodes_csv=${NODES_CSV}" >> "$GITHUB_OUTPUT"
+
+      - name: Build multinode binary on runner
+        working-directory: spinifex/tests/e2e
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          banner "build multinode, teardown"
+          group_open "go test -c"
+          make e2e-build SUITES_BUILD="multinode teardown"
+          group_close
+          ok "$(basename _bin/multinode.test) $(stat -c '%s' _bin/multinode.test | numfmt --to=iec)"
+
+      - name: Ship test binaries to node1
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.cluster.outputs.node1_ip }}
+          ssh "${SSH_OPTS[@]}" "$VM" "rm -rf \$HOME/spinifex-e2e-bin && mkdir -p \$HOME/spinifex-e2e-bin"
+          tar -C spinifex/tests/e2e/_bin -cf - . | ssh "${SSH_OPTS[@]}" "$VM" "tar -xf - -C \$HOME/spinifex-e2e-bin"
+          ok "shipped binaries to $VM"
+
+      - name: Start packet capture on all nodes
+        run: |
+          set +e
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.cluster.outputs.ssh_key }}")
+          IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
+          for ip in "${NODE_LIST[@]}"; do
+            [ -z "$ip" ] && continue
+            scp "${SSH_OPTS[@]}" \
+              "${GITHUB_WORKSPACE}/spinifex/.github/scripts/start-net-capture.sh" \
+              tf-user@"$ip":/tmp/start-net-capture.sh
+            ssh "${SSH_OPTS[@]}" tf-user@"$ip" "bash /tmp/start-net-capture.sh" || true
+          done
+
+  multi_suite:
+    name: Multi env · suite
+    needs: multi_provision
+    runs-on: [ self-hosted, ci-multi ]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [ multinode ]
+    env:
+      NODE1_IP: ${{ needs.multi_provision.outputs.node1_ip }}
+      SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}
+      NODES_CSV: ${{ needs.multi_provision.outputs.nodes_csv }}
+      ARTIFACT_DIR: /tmp/spinifex-e2e-multi-${{ github.run_id }}-${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spinifex/go.mod
+          cache: false
+
+      - name: Install go-junit-report
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Run ${{ matrix.suite }}
+        id: e2e
+        run: |
+          set +e
+          SUITE="${{ matrix.suite }}"
+          VM_HOST="tf-user@${NODE1_IP}"
+          TEST_RUN_FLAG=""
+          [ -n "${TEST_RUN}" ] && TEST_RUN_FLAG="-test.run=${TEST_RUN}"
+          cleanup_remote() {
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" "$VM_HOST" \
+              "pkill -u tf-user -TERM -f \"/spinifex-e2e-bin/${SUITE}\.test( |\$)\" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f \"/spinifex-e2e-bin/${SUITE}\.test( |\$)\" 2>/dev/null; true" \
+              2>/dev/null || true
+          }
+          trap cleanup_remote EXIT INT TERM
+          ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" "$VM_HOST" \
+            "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/spinifex-e2e-bin; \
+             printf '\n━━ suite %s ━━\n' \"${SUITE}\"; \
+             date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
+             GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+               SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
+               SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
+               ARTIFACT_DIR='${ARTIFACT_DIR}' \
+               ./${SUITE}.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
+               2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log' \
+                    | sed -uE 's/^[[:space:]]+([a-zA-Z0-9_]+_test\.go:[0-9]+: )?//'; \
+             exit \${PIPESTATUS[0]}"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect suite artifacts from node1
+        if: always()
+        run: |
+          set +e
+          mkdir -p "${ARTIFACT_DIR}"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${SSH_KEY}")
+          ssh "${SSH_OPTS[@]}" tf-user@${NODE1_IP} "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
+            | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
+          true
+
+      - name: Convert test log to JUnit XML
+        if: always()
+        run: |
+          shopt -s nullglob
+          for LOG in "${ARTIFACT_DIR}"/test-*.log; do
+            BASE=$(basename "$LOG" .log); SUITE=${BASE#test-}
+            go-junit-report -in "$LOG" -out "${ARTIFACT_DIR}/junit-${SUITE}.xml" || true
+          done
+
+      - name: Publish test summary
+        if: always()
+        uses: ./spinifex/.github/actions/junit-report
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          title: "Multi-Node E2E ${{ matrix.suite }} results"
+
+      - name: Analyze e2e failures
+        if: always()
+        uses: ./spinifex/.github/actions/e2e-analyze
+        with:
+          junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
+          log-dir: ${{ env.ARTIFACT_DIR }}
+          title: "Multi-Node E2E ${{ matrix.suite }} failure analysis"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-multi-${{ matrix.suite }}-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail job if suite failed
+        if: always()
+        run: |
+          if [ "${{ steps.e2e.outputs.rc }}" != "0" ]; then
+            echo "::error::suite ${{ matrix.suite }} failed (rc=${{ steps.e2e.outputs.rc }})"
+            exit 1
+          fi
+
+  multi_teardown:
+    name: Multi env · teardown
+    needs: [ multi_provision, multi_suite ]
+    if: always() && inputs.run_multinode
+    runs-on: [ self-hosted, ci-multi ]
+    timeout-minutes: 20
+    env:
+      TOFU_LOG: /tmp/e2e-tofu-multi-td-${{ github.run_id }}.log
+      SSH_KEY: ${{ needs.multi_provision.outputs.ssh_key }}
+      NODES_CSV: ${{ needs.multi_provision.outputs.nodes_csv }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: spinifex
+
+      # Reclaim leaked run-tagged resources before the cluster is destroyed.
+      - name: Sweep leaked run resources on node1
+        if: ${{ needs.multi_provision.result == 'success' && needs.multi_provision.outputs.node1_ip != '' }}
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}")
+          VM=tf-user@${{ needs.multi_provision.outputs.node1_ip }}
+          banner "sweep run-tagged resources (run ${{ github.run_id }})"
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "cd \$HOME/spinifex-e2e-bin 2>/dev/null && \
+             SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+             SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+             ./teardown.test -test.v -test.run TestSweepRunResources -test.timeout=10m" \
+            2>&1 || true
+          true
+
+      - name: Teardown cluster
+        if: always()
+        working-directory: mulga/scripts/tofu-cluster
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          if [ -n "${NODES_CSV}" ] && [ -n "${SSH_KEY}" ]; then
+            IFS=',' read -ra NODE_LIST <<< "${NODES_CSV}"
+            for ip in "${NODE_LIST[@]}"; do
+              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}" \
+                tf-user@"$ip" \
+                'pkill -u tf-user -TERM -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; sleep 1; pkill -u tf-user -KILL -f "/spinifex-e2e-bin/.*\.test( |$)" 2>/dev/null; true' \
+                2>/dev/null || true
+            done
+          fi
+          UID_SELF=$(id -u); WS="${GITHUB_WORKSPACE}"
+          reap() {
+            local sig="$1"
+            for pid in $(pgrep -u "$UID_SELF" -x tofu) $(pgrep -u "$UID_SELF" -x terraform); do
+              cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || continue
+              case "$cwd" in "$WS"|"$WS"/*) kill "-$sig" "$pid" 2>/dev/null ;; esac
+            done
+          }
+          reap TERM; sleep 2; reap KILL
+          find "$WS" -name '.terraform.tfstate.lock.info' -delete 2>/dev/null
+          quiet_run "tofu workspace select" "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
+          quiet_run "tofu destroy"          "$TOFU_LOG" timeout 600 tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
+          quiet_run "scrub-env"             "$TOFU_LOG" ./scrub-env.sh "${SPINIFEX_CI_ENV}"
+          ok "teardown complete"
+
+  e2e_suites_status:
+    name: E2E suite blocks · summary
+    if: always()
+    needs: [ single_suite, multi_suite ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summarize
+        run: |
+          echo "## E2E suite-block results" >> "$GITHUB_STEP_SUMMARY"
+          echo "single_suite: ${{ needs.single_suite.result }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "multi_suite:  ${{ needs.multi_suite.result }}" >> "$GITHUB_STEP_SUMMARY"
+          case "${{ needs.single_suite.result }}" in success|skipped) ;; *) exit 1 ;; esac
+          case "${{ needs.multi_suite.result }}" in success|skipped) ;; *) exit 1 ;; esac

@@ -184,7 +184,7 @@ input but treat it as `uefi` at launch.
 | `attach-volume` | `--volume-id`, `--instance-id`, `--device` (auto-assigns `/dev/sd[f-p]`) | `--dry-run` | **DONE** |
 | `detach-volume` | `--volume-id`, `--instance-id` (optional), `--device`, `--force` | `--dry-run` | **DONE** |
 | `describe-volume-status` | `--volume-ids`, `--filters` (volume-id, volume-status.status, availability-zone) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
-| `describe-volumes-modifications` | — | `--volume-ids`, `--filters`, `--max-results` | **NOT STARTED** |
+| `describe-volumes-modifications` | `--volume-ids`, `--filters` (modification-state, original-iops, original-size, original-volume-type, start-time, target-iops, target-size, target-volume-type, volume-id) | `--max-results`, `--next-token`, `--dry-run` | **DONE** |
 
 ### EC2 — Snapshots
 
@@ -509,6 +509,8 @@ bypasses policy evaluation entirely.
 | `attach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `detach-role-policy` | `--role-name`, `--policy-arn` | — | **DONE** |
 | `list-attached-role-policies` | `--role-name`, `--path-prefix` | `--max-items`, `--marker` | **DONE** |
+| `list-role-policies` | `--role-name` | `--max-items`, `--marker` | **DONE** (gateway stub — inline policies unsupported, always returns empty) |
+| `get-role-policy` / `put-role-policy` / `delete-role-policy` | — | inline role policies | **NOT STARTED** |
 
 ### IAM — Instance Profiles
 
@@ -521,6 +523,19 @@ bypasses policy evaluation entirely.
 | `delete-instance-profile` | `--instance-profile-name` | — | **DONE** |
 | `add-role-to-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
 | `remove-role-from-instance-profile` | `--instance-profile-name`, `--role-name` | — | **DONE** |
+
+### IAM — OIDC Providers
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-open-id-connect-provider` | `--url`, `--client-id-list`, `--thumbprint-list`, `--tags` | — | **DONE** |
+| `get-open-id-connect-provider` | `--open-id-connect-provider-arn` | — | **DONE** |
+| `list-open-id-connect-providers` | — | — | **DONE** |
+| `delete-open-id-connect-provider` | `--open-id-connect-provider-arn` | — | **DONE** |
+| `add-client-id-to-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
+| `remove-client-id-from-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--client-id` | **NOT STARTED** |
+| `update-open-id-connect-provider-thumbprint` | — | `--open-id-connect-provider-arn`, `--thumbprint-list` | **NOT STARTED** |
+| `tag-open-id-connect-provider` / `untag-open-id-connect-provider` | — | `--open-id-connect-provider-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
 
 ### IAM — Groups
 
@@ -546,16 +561,13 @@ bypasses policy evaluation entirely.
 | `get-caller-identity` | — | — | **DONE** |
 | `assume-role` | `--role-arn`, `--role-session-name`, `--duration-seconds` (900–min(role MaxSessionDuration, 43200)) | `--policy`, `--policy-arns` (→ `PackedPolicyTooLarge`); `--tags`, `--transitive-tag-keys` (→ `InvalidParameterValue`); `--serial-number`, `--token-code` (→ `InvalidParameterValue`); `--external-id`, `--source-identity` (accepted and logged, **not enforced** — no Condition evaluator in v1) | **DONE** |
 | `get-session-token` | `--duration-seconds` (900–129600, default 43200 = 12h; clamped, not rejected) | `--serial-number`, `--token-code` (MFA → `InvalidParameterValue`) | **DONE** |
-| `assume-role-with-web-identity` | — | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--provider-id`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
+| `assume-role-with-web-identity` | `--role-arn`, `--role-session-name`, `--web-identity-token`, `--duration-seconds` (900–43200, default 3600) | `--provider-id`; `--policy`, `--policy-arns` (→ `PackedPolicyTooLarge`) | **DONE** |
 | `assume-role-with-saml` | — | `--role-arn`, `--principal-arn`, `--saml-assertion`, `--policy`, `--policy-arns`, `--duration-seconds` | **NOT STARTED** |
 | `get-access-key-info` | — | `--access-key-id` | **NOT STARTED** |
 | `get-federation-token` | — | `--name`, `--policy`, `--policy-arns`, `--duration-seconds`, `--tags` | **NOT STARTED** |
 | `decode-authorization-message` | — | `--encoded-message` | **NOT STARTED** |
 
-Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`,
-`NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty
-`Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no
-Condition evaluator so accepting them would silently allow.
+Trust policies stored on roles (`AssumeRolePolicyDocument`) reject `Condition`, `NotPrincipal`, `NotAction`, empty-string `Action` elements, and empty `Principal` blocks at write time (`MalformedPolicyDocument`) — v1 has no Condition evaluator so accepting them would silently allow.
 
 ---
 
@@ -634,9 +646,53 @@ The data plane uses a system-managed LB VM, launched automatically during `creat
 
 | Command | Implemented Flags | Missing Flags | Status |
 |---------|-------------------|---------------|--------|
-| `create-listener` | `--load-balancer-arn`, `--default-actions` (Type=forward, TargetGroupArn), `--protocol` (HTTP), `--port` | `--ssl-policy`, `--certificates`, `--alpn-policy`, `--mutual-authentication`, `--dry-run` | **DONE** |
+| `create-listener` | `--load-balancer-arn`, `--default-actions` (Type=forward, TargetGroupArn), `--protocol` (HTTP/HTTPS/TLS), `--port`, `--certificates` (HTTPS/TLS), `--ssl-policy` | `--alpn-policy`, `--mutual-authentication`, `--dry-run` | **DONE** |
+| `modify-listener` | `--listener-arn`, `--protocol`, `--port`, `--default-actions`, `--certificates`, `--ssl-policy` | `--alpn-policy`, `--mutual-authentication`, `--dry-run` | **DONE** |
 | `delete-listener` | `--listener-arn` | `--dry-run` | **DONE** |
 | `describe-listeners` | `--load-balancer-arn`, `--listener-arns` | `--page-size`, `--marker`, `--dry-run` | **DONE** |
+
+### ELBv2 — Listener Rules
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `create-rule` | `--listener-arn`, `--priority` (1–50000), `--conditions` (host-header, path-pattern, http-header, http-request-method, query-string, source-ip), `--actions` (forward, redirect, fixed-response), `--tags` | `--dry-run` | **DONE** |
+| `modify-rule` | `--rule-arn`, `--conditions`, `--actions` | `--dry-run` | **DONE** |
+| `delete-rule` | `--rule-arn` | `--dry-run` | **DONE** |
+| `describe-rules` | `--listener-arn`, `--rule-arns` | `--page-size`, `--marker` (parsed, not enforced) | **DONE** |
+| `set-rule-priorities` | `--rule-priorities` (RuleArn, Priority) | — | **DONE** |
+
+A synthetic `default` rule is derived from the listener's `DefaultActions`.
+
+### ELBv2 — Listener Certificates & SSL Policies
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `add-listener-certificates` | `--listener-arn`, `--certificates` | `--dry-run` | **DONE** |
+| `remove-listener-certificates` | `--listener-arn`, `--certificates` | `--dry-run` | **DONE** |
+| `describe-listener-certificates` | `--listener-arn` | `--page-size`, `--marker` | **DONE** |
+| `describe-ssl-policies` | `--names` | `--load-balancer-type`, `--page-size`, `--marker` | **DONE** (static catalog: `ELBSecurityPolicy-FS-1-2-Res-2019-08`, `ELBSecurityPolicy-TLS13-1-2-2021-06` — metadata only, no in-platform TLS termination) |
+
+The default certificate cannot be added/removed via these calls — set it on the listener.
+
+### ELBv2 — Attributes & Modify
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `describe-load-balancer-attributes` | `--load-balancer-arn` | — | **DONE** (stored values over per-type defaults) |
+| `modify-load-balancer-attributes` | `--load-balancer-arn`, `--attributes` | — | **DONE** (unknown keys → `ValidationError`) |
+| `describe-target-group-attributes` | `--target-group-arn` | — | **DONE** |
+| `modify-target-group-attributes` | `--target-group-arn`, `--attributes` (incl. `deregistration_delay.timeout_seconds`, `stickiness.*`) | — | **DONE** |
+| `modify-target-group` | `--target-group-arn`, `--health-check-*`, `--matcher` | `--target-type`/`--protocol`/`--vpc-id` (immutable) | **DONE** |
+| `describe-listener-attributes` | `--listener-arn` | — | **DONE** (stub — returns empty; not persisted) |
+| `modify-listener-attributes` | `--listener-arn`, `--attributes` | — | **DONE** (stub — echoes input; not persisted) |
+
+### ELBv2 — Network & Security
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `set-security-groups` | `--load-balancer-arn`, `--security-groups` | `--enforce-security-group-inbound-rules-on-private-link-traffic` | **DONE** (ALB only — NLB → `InvalidConfigurationRequest`) |
+| `set-subnets` | `--load-balancer-arn`, `--subnets`, `--subnet-mappings` | `--ip-address-type` | **DONE** (live ENI add/remove with rollback) |
+| `set-ip-address-type` | `--load-balancer-arn`, `--ip-address-type` (ipv4) | dualstack/IPv6 (rejected) | **DONE** |
 
 ### ELBv2 — Tags
 
@@ -648,15 +704,29 @@ The data plane uses a system-managed LB VM, launched automatically during `creat
 
 | Feature | Priority | Status |
 |---------|----------|--------|
-| Listener rules (CreateRule, DeleteRule, DescribeRules, ModifyRule) | High | **NOT STARTED** |
-| HTTPS/TLS termination (SSL certificates, policies, ALPN) | High | **NOT STARTED** |
-| Modify operations (`ModifyLoadBalancerAttributes`, `ModifyTargetGroup`, `ModifyTargetGroupAttributes`, `ModifyListener`) | Medium | **NOT STARTED** |
-| Connection draining (deregistration delay) | Medium | **NOT STARTED** |
-| Stickiness / session affinity | Medium | **NOT STARTED** |
-| Active health checking (API-driven, vs. HAProxy-only today) | Medium | **NOT STARTED** |
+| In-platform HTTPS/TLS termination (cert + SSL-policy APIs exist; data-plane TLS not terminated) | High | **NOT STARTED** |
+| ALPN policy, mutual TLS (mTLS) | Medium | **NOT STARTED** |
+| Listener attribute persistence (`Describe/ModifyListenerAttributes` are stubs) | Medium | **NOT STARTED** |
+| Active health checking (API-driven, vs. HAProxy/nginx-only today) | Medium | **NOT STARTED** |
 | IP and Lambda target types | Low | **NOT STARTED** |
 | S3 access log delivery | Low | **NOT STARTED** |
 | WAF integration | Low | **NOT STARTED** |
+
+---
+
+## ACM (AWS Certificate Manager)
+
+Import-only — Spinifex stores externally-issued certificates for ELBv2 listener references; it does not issue certificates or validate domains (`RequestCertificate`). Certs are account-scoped; `describe`/`delete` enforce ownership.
+
+| Command | Implemented Flags | Missing Flags | Status |
+|---------|-------------------|---------------|--------|
+| `import-certificate` | `--certificate`, `--private-key`, `--certificate-chain`, `--certificate-arn` (re-import) | `--tags` | **DONE** |
+| `describe-certificate` | `--certificate-arn` | — | **DONE** |
+| `list-certificates` | — | `--certificate-statuses`, `--includes`, `--max-items`, `--next-token` | **DONE** |
+| `delete-certificate` | `--certificate-arn` | — | **DONE** |
+| `request-certificate` | — | `--domain-name`, `--validation-method`, `--subject-alternative-names`, `--tags` | **NOT STARTED** |
+| `add-tags-to-certificate` / `list-tags-for-certificate` / `remove-tags-from-certificate` | — | `--certificate-arn`, `--tags`/`--tag-keys` | **NOT STARTED** |
+| `export-certificate` | — | `--certificate-arn`, `--passphrase` | **NOT STARTED** |
 
 ---
 

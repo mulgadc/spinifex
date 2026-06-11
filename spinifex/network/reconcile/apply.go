@@ -264,45 +264,48 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 			slog.Warn("reconcile/apply: SetGatewayChassis failed", "vpc_id", vpcID, "chassis", chassis, "err", err)
 		}
 	}
-	r.ensureGatewayClaimed(ctx, gwPortName)
+	r.ensureGatewayClaimed(ctx, topology.GatewayChassisRedirectPort(vpcID))
 }
 
 // ensureGatewayClaimed drives the gateway port's Southbound Port_Binding to a
-// claimed chassis after SetGatewayChassis. SetGatewayChassis only asserts the
-// Northbound intent; after a host reboot ovn-controller can leave the SB binding
-// unclaimed, installing no flows for the centralised gateway redirect so every
-// floating IP on the VPC is unreachable. This polls the SB claim and, once,
-// nudges ovn-controller to recompute, then logs and returns on timeout rather
-// than blocking reconcile indefinitely. No-op when no verifier is wired (the
-// steady-state path is a single claimed check per gateway port per cycle).
-func (r *reconciler) ensureGatewayClaimed(ctx context.Context, gwPortName string) {
+// claimed chassis after SetGatewayChassis. crPortName is the chassisredirect
+// (cr-) port, not the bare LRP: for a distributed gateway port the LRP binding
+// stays distributed/chassis-less, and only the chassisredirect port carries the
+// gateway-chassis claim. SetGatewayChassis only asserts the Northbound intent;
+// after a host reboot ovn-controller can leave the SB binding unclaimed,
+// installing no flows for the gateway redirect so every floating IP on the VPC
+// is unreachable. This polls the SB claim and, once, nudges ovn-controller to
+// recompute, then logs and returns on timeout rather than blocking reconcile
+// indefinitely. No-op when no verifier is wired (the steady-state path is a
+// single claimed check per gateway port per cycle).
+func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string) {
 	if r.gwClaim == nil {
 		return
 	}
 	deadline := time.Now().Add(gatewayClaimTimeout)
 	nudged := false
 	for {
-		claimed, err := r.gwClaim.GatewayPortClaimed(ctx, gwPortName)
+		claimed, err := r.gwClaim.GatewayPortClaimed(ctx, crPortName)
 		if err != nil {
-			slog.Warn("reconcile/apply: gateway SB claim check failed", "port", gwPortName, "err", err)
+			slog.Warn("reconcile/apply: gateway SB claim check failed", "port", crPortName, "err", err)
 			return
 		}
 		if claimed {
 			if nudged {
-				slog.Info("reconcile/apply: gateway SB chassis claim converged after recompute", "port", gwPortName)
+				slog.Info("reconcile/apply: gateway SB chassis claim converged after recompute", "port", crPortName)
 			}
 			return
 		}
 		if !nudged {
-			slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute", "port", gwPortName)
+			slog.Warn("reconcile/apply: gateway SB binding unclaimed; nudging ovn-controller recompute", "port", crPortName)
 			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
-				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", gwPortName, "err", err)
+				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "port", crPortName, "err", err)
 			}
 			nudged = true
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway SB chassis claim did not converge; floating IPs may be unreachable",
-				"port", gwPortName, "timeout", gatewayClaimTimeout)
+				"port", crPortName, "timeout", gatewayClaimTimeout)
 			return
 		}
 		select {

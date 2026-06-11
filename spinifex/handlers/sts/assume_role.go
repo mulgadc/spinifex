@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -143,7 +144,7 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 // (IMDS): resolves the role, validates the duration (0 → default), evaluates the trust
 // policy, and mints credentials. principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
 func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
-	roleAccountID, roleName, err := parseRoleARN(roleARN)
+	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}
@@ -199,33 +200,6 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 		},
 		PackedPolicySize: aws.Int64(0),
 	}, nil
-}
-
-// parseRoleARN extracts the account ID and role name from an IAM role ARN of
-// the form arn:aws:iam::<accountID>:role/<path>/<name> (path optional).
-func parseRoleARN(arnStr string) (accountID, name string, err error) {
-	parts := strings.SplitN(arnStr, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "iam" || parts[3] != "" {
-		return "", "", errors.New("not an IAM ARN")
-	}
-	resource := parts[5]
-	const prefix = "role/"
-	if !strings.HasPrefix(resource, prefix) {
-		return "", "", errors.New("ARN resource is not a role")
-	}
-	pathAndName := resource[len(prefix):]
-	if pathAndName == "" {
-		return "", "", errors.New("role name is empty")
-	}
-	if slash := strings.LastIndex(pathAndName, "/"); slash >= 0 {
-		name = pathAndName[slash+1:]
-	} else {
-		name = pathAndName
-	}
-	if name == "" {
-		return "", "", errors.New("role name is empty")
-	}
-	return parts[4], name, nil
 }
 
 // evalTrustPolicy implements AWS's explicit-deny-wins semantics: a first pass

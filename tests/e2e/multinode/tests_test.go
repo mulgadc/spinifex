@@ -28,13 +28,17 @@ import "testing"
 //     test launches/terminates instances mid-assert, breaking equality.
 //     Bead spec listed it in bucket #1 but the snapshot assumption fails
 //     under parallel state churn; keep sequential.
-//   - TestMultinodeCrossNodeOps          : stops/starts trio[0], would race
-//     TestMultinodeGuestSSH which iterates every trio member. Bead spec
-//     listed it in bucket #1 but the trio mutation makes that unsafe;
-//     keep sequential until bucket #3 reworks shared-state ownership.
+//   - TestMultinodeCrossNodeOps          : stops/starts trio[0]. Only waits
+//     for state "running", not for sshd; GuestSSH must not probe the trio
+//     until the guest has settled. Bead spec listed it in bucket #1 but the
+//     trio mutation makes that unsafe; keep sequential.
 //   - TestMultinodeNodeFailure/Recovery  : StopNode/StartNode mutate cluster.
 //   - TestMultinodeSpread                : owns EIP pool + VPC CIDR
 //     10.100.0.0/16; sub-tests share the setup chain sequentially.
+//   - TestMultinodeGuestSSH              : iterates every trio member over
+//     SSH. Declared last so it runs after CrossNodeOps + NodeFailure/Recovery
+//     + Spread have restabilised the cluster — the restarted trio[0] is then
+//     long-booted and there is no concurrent VM churn to delay sshd.
 
 // TestMultinodePreflight runs sequentially because it initialises the
 // package fixture singleton.
@@ -65,11 +69,6 @@ func TestMultinodeInstanceDistribution(t *testing.T) {
 	runInstanceDistribution(t, requireMultiNodeFixture(t))
 }
 
-func TestMultinodeGuestSSH(t *testing.T) {
-	t.Parallel()
-	runGuestSSH(t, requireMultiNodeFixture(t))
-}
-
 // TestMultinodeVolumeLifecycle is sequential — touches predastore state
 // shared with other suites.
 func TestMultinodeVolumeLifecycle(t *testing.T) {
@@ -83,8 +82,9 @@ func TestMultinodeCrossNodeGateway(t *testing.T) {
 	runCrossNodeGateway(t, requireMultiNodeFixture(t))
 }
 
-// TestMultinodeCrossNodeOps is sequential — stops/starts trio[0], which
-// would race TestMultinodeGuestSSH.
+// TestMultinodeCrossNodeOps is sequential — stops/starts trio[0]. It waits
+// only for state "running", so GuestSSH (declared last) probes the trio after
+// the cluster restabilises rather than racing this restart.
 func TestMultinodeCrossNodeOps(t *testing.T) {
 	runCrossNodeOps(t, requireMultiNodeFixture(t))
 }
@@ -103,6 +103,18 @@ func TestMultinodeNodeRecovery(t *testing.T) {
 // share the setup chain (see placement_nat_test.go).
 func TestMultinodeSpread(t *testing.T) {
 	runSpread(t, requireMultiNodeFixture(t))
+}
+
+// TestMultinodeGuestSSH is sequential and declared last in the sequential
+// bucket so it runs after the cluster has fully restabilised. It iterates
+// every trio member, and CrossNodeOps stop/starts trio[0] — which only waits
+// for state "running", not for sshd to answer. Running parallel, GuestSSH
+// resumed immediately after CrossNodeOps and probed a guest still booting,
+// yielding kex_exchange_identification resets and 2m timeouts. Ordering it
+// after NodeFailure/Recovery + Spread gives every trio member ample settle
+// time and removes concurrent VM churn from the parallel bucket.
+func TestMultinodeGuestSSH(t *testing.T) {
+	runGuestSSH(t, requireMultiNodeFixture(t))
 }
 
 // TestMultinodeVPCNetworking owns its own 10.200.0.0/16 VPC (no EIP use)

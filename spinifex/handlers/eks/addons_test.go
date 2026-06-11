@@ -239,3 +239,48 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 	require.NoError(t, err, "installer must stage a manifest for VM-side delivery")
 	assert.Contains(t, string(entry.Value()), albController)
 }
+
+func TestListStagedAddonManifests(t *testing.T) {
+	svc := setupTestService(t)
+	seedTestCluster(t, svc, "c1")
+
+	// Empty cluster: no staged manifests, no error.
+	out, err := svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Manifests)
+
+	// Stage two addons; reader returns both, sorted by name, with config carried.
+	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String("coredns"),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateAddon(&eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ServiceAccountRoleArn: aws.String("arn:aws:iam::111122223333:role/alb"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Manifests, 2)
+	assert.Equal(t, albController, out.Manifests[0].AddonName, "sorted by addon name")
+	assert.Equal(t, "coredns", out.Manifests[1].AddonName)
+	assert.Equal(t, "arn:aws:iam::111122223333:role/alb", out.Manifests[0].ServiceAccountRoleArn)
+
+	// Deleting an addon unstages its manifest; reader drops it.
+	_, err = svc.DeleteAddon(&eks.DeleteAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "c1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Manifests, 1)
+	assert.Equal(t, "coredns", out.Manifests[0].AddonName)
+
+	// Unknown cluster surfaces ResourceNotFound; empty cluster name is invalid.
+	_, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: "missing"}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	_, err = svc.ListStagedAddonManifests(&ListStagedAddonManifestsInput{ClusterName: ""}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+}

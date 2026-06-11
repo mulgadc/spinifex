@@ -74,11 +74,24 @@ func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) 
 // Post SigV4-signs and sends body to path, returning the response body on 2xx.
 // Errors include the gateway status and body. No retry; callers wrap as needed.
 func (c *Client) Post(path string, body []byte) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	return c.do(http.MethodPost, path, body)
+}
+
+// Get SigV4-signs and sends a single GET to path (e.g.
+// "/clusters/alpha/internal-addons?accountId=..."). Same contract as Post: 2xx
+// body or an error carrying the gateway status. No retry.
+func (c *Client) Get(path string) ([]byte, error) {
+	return c.do(http.MethodGet, path, nil)
+}
+
+func (c *Client) do(method, path string, body []byte) ([]byte, error) {
+	req, err := http.NewRequest(method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	}
 
 	sum := sha256.Sum256(body)
 	if err := auth.SignReq(req, c.accessKey, c.secretKey, hex.EncodeToString(sum[:]), "eks", c.region); err != nil {

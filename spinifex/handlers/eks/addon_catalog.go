@@ -23,6 +23,13 @@ var addonCatalog = buildAddonCatalog(
 	newAddonSpec("coredns", false,
 		"Cluster DNS server.",
 		"1.11.1"),
+	// spinifex-noop is the delivery-transport fixture: a trivial bundle
+	// (Namespace + ConfigMap) used by the addon e2e to prove stage → render →
+	// auto-deploy → ACTIVE → delete round-trips end-to-end without depending on
+	// the CSI or load-balancer-controller manifests. Not a real workload addon.
+	newAddonSpec("spinifex-noop", false,
+		"No-op delivery-transport fixture (Namespace + ConfigMap).",
+		"0.1.0"),
 )
 
 // newAddonSpec builds a spec with DefaultVersion = versions[0]. Panics on empty versions.

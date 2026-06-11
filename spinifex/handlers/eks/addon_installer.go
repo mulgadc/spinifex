@@ -19,9 +19,12 @@ type AddonInstaller interface {
 	Uninstall(accountID, cluster, addon string) error
 }
 
-// stagedManifest is consumed by the VM-side delivery transport: add-on name,
-// version, and operator-supplied config for rendering the Kubernetes objects.
-type stagedManifest struct {
+// StagedAddonManifest is the artifact the VM-side delivery transport consumes.
+// It names the bundled add-on + version and carries the operator-supplied config
+// so the VM can render the final Kubernetes objects from the baked manifests.
+// It is the wire shape the on-VM addon-sync agent fetches via
+// GET /clusters/{name}/internal-addons.
+type StagedAddonManifest struct {
 	AddonName             string `json:"addonName"`
 	AddonVersion          string `json:"addonVersion"`
 	ServiceAccountRoleArn string `json:"serviceAccountRoleArn,omitempty"`
@@ -61,7 +64,7 @@ func (i *stagingInstaller) Install(accountID, cluster string, rec *AddonRecord) 
 	if err != nil {
 		return err
 	}
-	manifest := stagedManifest{
+	manifest := StagedAddonManifest{
 		AddonName:             rec.AddonName,
 		AddonVersion:          rec.AddonVersion,
 		ServiceAccountRoleArn: rec.ServiceAccountRoleArn,

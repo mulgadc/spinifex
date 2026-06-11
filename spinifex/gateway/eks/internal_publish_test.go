@@ -31,6 +31,12 @@ func TestPublishInternal_RelaysToSubjects(t *testing.T) {
 			subject: handlers_eks.StateSubject("111122223333", "alpha"),
 			payload: `{"healthz":"ok","node_count":1,"ts":42}`,
 		},
+		{
+			name:    "addon status report",
+			body:    `{"accountId":"111122223333","channel":"addon","payload":{"addon":"spinifex-noop","version":"0.1.0","phase":"ready","ts":42}}`,
+			subject: handlers_eks.AddonStatusSubject("111122223333", "alpha"),
+			payload: `{"addon":"spinifex-noop","version":"0.1.0","phase":"ready","ts":42}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

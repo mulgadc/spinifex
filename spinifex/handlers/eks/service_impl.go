@@ -1457,9 +1457,11 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
+	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
-			WithStateSource(s.deps.NATSConn, stateSubject))
+			WithStateSource(s.deps.NATSConn, stateSubject),
+			WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject))
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

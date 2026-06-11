@@ -63,6 +63,15 @@ var eksRoutes = []eksRoute{
 		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.WebhookTokenReview(gw.NATSConn, p[0], b)
 		}},
+	// Control-plane VM add-on delivery: the on-VM addon-sync agent GETs the set
+	// of staged add-on manifests for its cluster (system SigV4 creds) to render
+	// the baked bundles into the K3s auto-deploy dir. acct (system account) is
+	// ignored — the cluster account is the {accountId} path segment, since a GET
+	// carries no body to hold it (cf. PublishInternal).
+	{"GET", regexp.MustCompile(`^/clusters/([^/]+)/internal-addons/([^/]+)$`), "ListInternalAddons",
+		func(gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
+			return gateway_eks.ListInternalAddons(gw.NATSConn, p[0], p[1])
+		}},
 
 	// Nodegroup
 	{"POST", regexp.MustCompile(`^/clusters/([^/]+)/node-groups$`), "CreateNodegroup",

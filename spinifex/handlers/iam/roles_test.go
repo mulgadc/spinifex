@@ -518,6 +518,40 @@ func TestAttachRolePolicy_RoleNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+func TestAttachRolePolicy_AWSManagedPolicyNotSeeded(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "eks-node-role")
+	// AWS-managed ARN with no backing policy in the store — stock EKS tooling
+	// attaches these. Must round-trip opaquely, not fail NoSuchEntity.
+	const managedARN = "arn:aws:iam::aws:policy/service-role/AmazonEKS_CNI_Policy"
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, managedARN, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEKS_CNI_Policy", *out.AttachedPolicies[0].PolicyName)
+
+	_, err = svc.DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err = svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.AttachedPolicies)
+}
+
 func TestDetachRolePolicy(t *testing.T) {
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "detach-role")

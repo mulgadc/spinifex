@@ -589,9 +589,13 @@ func TestGetRolePolicies(t *testing.T) {
 
 	docs, err := svc.GetRolePolicies(testAccountID, "eval-role")
 	require.NoError(t, err)
-	assert.Len(t, docs, 2)
-	assert.Equal(t, "2012-10-17", docs[0].Version)
-	assert.Equal(t, "2012-10-17", docs[1].Version)
+	require.Len(t, docs, 2)
+	for _, doc := range docs {
+		assert.Equal(t, "2012-10-17", doc.Version)
+		require.Len(t, doc.Statement, 1)
+		assert.Equal(t, "Allow", doc.Statement[0].Effect)
+		assert.Contains(t, doc.Statement[0].Action, "ec2:DescribeInstances")
+	}
 }
 
 func TestGetRolePolicies_NoPolicies(t *testing.T) {

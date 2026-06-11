@@ -2178,8 +2178,8 @@ func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
 }
 
 // TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll: a role that resolves but
-// has no attached policies can do nothing (decision 5a — assumability does not
-// imply permissions).
+// has no attached policies can do nothing — assumability does not imply
+// permissions.
 func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
@@ -2215,7 +2215,7 @@ func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
 
 // TestCheckPolicy_AssumedRole_EdgeARNs_Denied: a missing/legacy, cross-account,
 // or malformed underlying-role ARN fails closed with AccessDenied (403, not a
-// 500), and never reaches the role resolver (decision 6).
+// 500), and never reaches the role resolver.
 func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -2274,8 +2274,8 @@ func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 }
 
 // TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed locks the
-// iam:PassRole resource match (decision 8): the role's policy scopes PassRole to
-// the exact target role ARN, so passing that role is allowed.
+// iam:PassRole resource match: the role's policy scopes PassRole to the exact
+// target role ARN, so passing that role is allowed.
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
@@ -2303,4 +2303,20 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, string(body), "AccessDenied")
+}
+
+// TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed: a policy
+// granting iam:PassRole on "*" authorises passing any role ARN — the classic
+// wildcard PassRole grant. Locks the wildcard branch of the resource match.
+func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T) {
+	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return allowPolicyResource("iam:PassRole", "*"), nil
+	})
+
+	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
+	resp := doSessionPolicyRequest(t, handler, cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 }

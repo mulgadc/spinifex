@@ -2008,6 +2008,71 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }
 
+// TestLBAgentHeartbeat_BuildsConfigOnActivation covers the create-burst race:
+// the reactive updateStoredConfig calls during CreateListener/RegisterTargets
+// no-op while the LB VM is still launching (InstanceID empty). The agent's
+// first heartbeat (provisioning→active) is the readiness signal that must build
+// the data-plane config from the listeners/targets created during provisioning,
+// so the agent receives a non-empty ConfigHash + backend list on its first poll.
+func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
+	svc := setupTestService(t)
+
+	lb := &LoadBalancerRecord{
+		LoadBalancerArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/act-lb/lb-act1",
+		LoadBalancerID:  "lb-act1",
+		Name:            "act-lb",
+		Type:            LoadBalancerTypeNetwork,
+		Scheme:          SchemeInternal,
+		State:           StateProvisioning,
+		InstanceID:      "i-sys-act1",
+		VPCIP:           "10.0.1.100",
+		AccountID:       testAccountID,
+	}
+	require.NoError(t, svc.store.PutLoadBalancer(lb))
+
+	tg := &TargetGroupRecord{
+		TargetGroupArn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/act-tg/tg-act1",
+		TargetGroupID:  "tg-act1",
+		Protocol:       ProtocolTCP,
+		Port:           80,
+		HealthCheck:    DefaultHealthCheck(),
+		Targets: []Target{
+			{Id: "i-target1", Port: 80, HealthState: TargetHealthInitial, PrivateIP: "10.0.1.20"},
+		},
+		AccountID: testAccountID,
+	}
+	require.NoError(t, svc.store.PutTargetGroup(tg))
+
+	require.NoError(t, svc.store.PutListener(&ListenerRecord{
+		ListenerArn:     lb.LoadBalancerArn + "/listener-1",
+		ListenerID:      "lst-act1",
+		LoadBalancerArn: lb.LoadBalancerArn,
+		Protocol:        ProtocolTCP,
+		Port:            80,
+		DefaultActions:  []ListenerAction{{Type: ActionTypeForward, TargetGroupArn: tg.TargetGroupArn}},
+		AccountID:       testAccountID,
+	}))
+
+	// Pre-condition: config was never built during provisioning.
+	pre, err := svc.store.GetLoadBalancer("lb-act1")
+	require.NoError(t, err)
+	require.Empty(t, pre.ConfigHash, "config must be empty before activation")
+
+	out, err := svc.LBAgentHeartbeat(&LBAgentHeartbeatInput{
+		LBID: aws.String("lb-act1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, StateActive, *out.Status)
+	assert.NotEmpty(t, aws.StringValue(out.ConfigHash), "first heartbeat must return a built ConfigHash")
+
+	stored, err := svc.store.GetLoadBalancer("lb-act1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, stored.ConfigText, "data-plane config must be built on activation")
+	assert.NotEmpty(t, stored.ConfigHash)
+	require.Len(t, stored.HealthTargets, 1, "NLB health target must be populated for the registered backend")
+	assert.Equal(t, "10.0.1.20:80", stored.HealthTargets[0].Address)
+}
+
 func TestLBAgentHeartbeat_MissingLBID(t *testing.T) {
 	svc := setupTestService(t)
 

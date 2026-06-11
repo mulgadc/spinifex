@@ -58,6 +58,9 @@ jobs:
       - name: Build Spinifex
         run: make -C spinifex build
 
+      - name: Manifest check + drift lint
+        run: make -C spinifex manifest-check manifest-lint
+
       - name: Run Tests with Coverage
         run: make -C spinifex test-cover
 

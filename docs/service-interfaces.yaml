@@ -84,6 +84,12 @@ services:
       - "spinifex.node.vms"
       - "spinifex.nodes.discover"
       - "spinifex.cluster.shutdown.progress"
+      # Coordinated cluster-shutdown phases (fan-out, no queue group).
+      - "spinifex.cluster.shutdown.gate"
+      - "spinifex.cluster.shutdown.drain"
+      - "spinifex.cluster.shutdown.storage"
+      - "spinifex.cluster.shutdown.persist"
+      - "spinifex.cluster.shutdown.infra"
       - "spinifex.storage.config"
       # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
       - "elbv2.CreateLoadBalancer"

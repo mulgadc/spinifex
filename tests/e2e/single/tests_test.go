@@ -241,6 +241,15 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	runSTS(t, requireSingleNodeFixture(t))
 }
 
+// TestAssumedRoleControlPlaneEnforcement verifies the gateway evaluates an
+// assumed-role session's managed policies against the control plane: a
+// zero-policy role is denied, and the same live session is permitted once a
+// granting policy is attached. Owns its own role + policy, but sequential so
+// the mid-test grant doesn't race a parallel evaluation.
+func TestAssumedRoleControlPlaneEnforcement(t *testing.T) {
+	runAssumedRoleControlPlaneEnforcement(t, requireSingleNodeFixture(t))
+}
+
 // TestIMDS exercises the host-served IMDSv2 surface end-to-end: token
 // issuance, the v2-only stance, the metadata surface, the
 // instance-role credential path + wire round-trip, the per-subnet L2 localport

@@ -227,12 +227,13 @@ func runSTS(t *testing.T, fix *Fixture) {
 		"UserId for assumed-role must equal AssumedRoleId")
 
 	// Cross-service ASIA SigV4: drive a non-STS endpoint with the assumed
-	// creds. gateway.checkPolicy hard-denies any assumed-role principal
-	// (gateway.go switch on principalTypeAssumedRole) — locking that in
-	// here catches a future refactor that relaxes the gate before the role-
-	// policy evaluator exists. The wire path also proves ctxPrincipalType
-	// propagates beyond the STS service into the EC2 dispatcher; a unit
-	// test of checkPolicy cannot exercise that propagation.
+	// creds. The role here carries no permission policy, so gateway.checkPolicy
+	// resolves its (empty) managed policies and the action falls to an implicit
+	// deny — assumability does not imply permissions. The wire path also proves
+	// ctxPrincipalType + the underlying-role ARN propagate beyond the STS
+	// service into the EC2 dispatcher's policy gate; a unit test of checkPolicy
+	// cannot exercise that propagation. The granted-policy positive case lives
+	// in TestAssumedRoleControlPlaneEnforcement.
 	harness.Step(t, "ec2 describe-regions with assumed-role creds (expect AccessDenied)")
 	harness.ExpectError(t, "AccessDenied", func() error {
 		_, e := sessionCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})

@@ -124,6 +124,10 @@ func (m *flexMockIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.Policy
 	return nil, nil
 }
 
+func (m *flexMockIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
+
 func (m *flexMockIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
 	return nil, errors.New("not implemented")
 }

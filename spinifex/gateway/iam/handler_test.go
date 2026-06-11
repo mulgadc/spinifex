@@ -90,6 +90,10 @@ func (s *stubIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocu
 	return nil, nil
 }
 
+func (s *stubIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
+
 func (s *stubIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
 	return nil, nil
 }

@@ -103,6 +103,9 @@ func (m *mockIAMService) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedU
 func (m *mockIAMService) GetUserPolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
 	return nil, nil
 }
+func (m *mockIAMService) GetRolePolicies(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
 func (m *mockIAMService) DecryptSecret(ciphertext string) (string, error) {
 	return handlers_iam.DecryptSecret(ciphertext, m.masterKey)
 }
@@ -1061,16 +1064,26 @@ func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
 
 // --- Policy Enforcement Tests (checkPolicy) ---
 
-// policyMockIAMService extends mockIAMService with configurable GetUserPolicies.
+// policyMockIAMService extends mockIAMService with configurable GetUserPolicies
+// and GetRolePolicies resolvers, so checkPolicy tests can drive both the user
+// and assumed-role enforcement branches.
 type policyMockIAMService struct {
 	mockIAMService
 
 	getUserPoliciesFn func(accountID, userName string) ([]handlers_iam.PolicyDocument, error)
+	getRolePoliciesFn func(accountID, roleName string) ([]handlers_iam.PolicyDocument, error)
 }
 
 func (m *policyMockIAMService) GetUserPolicies(accountID, userName string) ([]handlers_iam.PolicyDocument, error) {
 	if m.getUserPoliciesFn != nil {
 		return m.getUserPoliciesFn(accountID, userName)
+	}
+	return nil, nil
+}
+
+func (m *policyMockIAMService) GetRolePolicies(accountID, roleName string) ([]handlers_iam.PolicyDocument, error) {
+	if m.getRolePoliciesFn != nil {
+		return m.getRolePoliciesFn(accountID, roleName)
 	}
 	return nil, nil
 }
@@ -1941,17 +1954,22 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 	assert.Contains(t, string(body), "InternalError")
 }
 
-// TestCheckPolicy_SessionNameCollision is the privilege-escalation regression
-// the ctxPrincipalType gate exists to prevent: an IAM user named "alice" has
-// a permissive Allow policy; a session is minted with SessionName="alice". A
-// missing gate would silently pass the session's identity through
-// GetUserPolicies("alice") and inherit alice's permissions. With the gate,
-// the assumed-role principal must fail closed regardless of name collisions.
+// TestCheckPolicy_SessionNameCollision is the load-bearing privilege-escalation
+// regression: an IAM user named "alice" has a permissive Allow policy; a session
+// is minted with SessionName="alice" but an underlying role "some-role" that
+// grants nothing. Evaluating the session against the colliding user name would
+// inherit alice's ec2:* permissions. The enforcement path must instead resolve
+// the session's UNDERLYING role — never the SessionName — so the request is
+// denied and GetUserPolicies is never consulted.
 func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
-	// Real IAM user "alice" with permissive policy.
+	var userPoliciesCalled bool
+	var resolvedRoleName string
+
+	// IAM user "alice" carries a permissive policy. If the SessionName ("alice")
+	// were ever used as the policy-lookup key, the request would inherit ec2:*.
 	iamMock := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
@@ -1965,30 +1983,24 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, userName string) ([]handlers_iam.PolicyDocument, error) {
-			if userName == "alice" {
-				return []handlers_iam.PolicyDocument{
-					{
-						Version: "2012-10-17",
-						Statement: []handlers_iam.Statement{
-							{
-								Effect:   "Allow",
-								Action:   handlers_iam.StringOrArr{"ec2:*"},
-								Resource: handlers_iam.StringOrArr{"*"},
-							},
-						},
-					},
-				}, nil
-			}
+		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+			userPoliciesCalled = true
+			return allowPolicy("ec2:*"), nil
+		},
+		// The underlying role "some-role" grants nothing → implicit deny.
+		getRolePoliciesFn: func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+			resolvedRoleName = roleName
 			return nil, nil
 		},
 	}
 
-	// Session whose SessionName == "alice" — colliding with the IAM user.
+	// Session whose SessionName == "alice" (colliding with the IAM user) but
+	// whose underlying role is "some-role".
 	cred := &handlers_sts.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		AccountID:         "123456789012",
+		PrincipalType:     principalTypeAssumedRole,
 		AssumedRoleARN:    "arn:aws:sts::123456789012:assumed-role/some-role/alice",
 		UnderlyingRoleARN: "arn:aws:iam::123456789012:role/some-role",
 		SessionName:       "alice",
@@ -2016,8 +2028,279 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
 
-	// The collision must NOT escalate to alice's permissions — the gate
-	// rejects the session before it can even consult user policies.
+	// The session is evaluated against its ROLE, which grants nothing → deny.
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
+	// The role — not the colliding user name — drove the lookup...
+	assert.Equal(t, "some-role", resolvedRoleName)
+	// ...and the user-policy resolver was never consulted.
+	assert.False(t, userPoliciesCalled, "priv-esc: assumed-role session must not consult GetUserPolicies")
+}
+
+// allowPolicy returns a single-statement Allow policy granting action on "*".
+func allowPolicy(action string) []handlers_iam.PolicyDocument {
+	return allowPolicyResource(action, "*")
+}
+
+// allowPolicyResource returns a single-statement Allow policy granting action
+// on a specific resource ARN.
+func allowPolicyResource(action, resource string) []handlers_iam.PolicyDocument {
+	return []handlers_iam.PolicyDocument{{
+		Version: "2012-10-17",
+		Statement: []handlers_iam.Statement{{
+			Effect:   "Allow",
+			Action:   handlers_iam.StringOrArr{action},
+			Resource: handlers_iam.StringOrArr{resource},
+		}},
+	}}
+}
+
+// assumedRoleSessionCred builds an assumed-role SessionCredential for the
+// enforcement tests. SecretEncrypted is filled in by the gateway builder.
+func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *handlers_sts.SessionCredential {
+	return &handlers_sts.SessionCredential{
+		AccessKeyID:       testSessionAKID,
+		AccountID:         accountID,
+		PrincipalType:     principalTypeAssumedRole,
+		AssumedRoleARN:    "arn:aws:sts::" + accountID + ":assumed-role/role/" + sessionName,
+		UnderlyingRoleARN: underlyingRoleARN,
+		SessionName:       sessionName,
+		ExpiresAt:         time.Now().UTC().Add(time.Hour),
+		CreatedAt:         time.Now().UTC().Add(-time.Minute),
+	}
+}
+
+// newAssumedRoleEnforcementGateway wires a gateway whose checkPolicy path
+// evaluates an assumed-role session: an STS mock seeded with cred and an IAM
+// mock whose role resolver is getRoleFn. The user resolver fails the test if
+// consulted — an assumed-role principal must never be evaluated as a user.
+func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCredential,
+	getRoleFn func(accountID, roleName string) ([]handlers_iam.PolicyDocument, error),
+) *GatewayConfig {
+	t.Helper()
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	cred.SecretEncrypted = encryptedSecret
+
+	iamMock := &policyMockIAMService{
+		mockIAMService: mockIAMService{masterKey: testMasterKey},
+		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+			t.Errorf("priv-esc: assumed-role principal must not consult GetUserPolicies")
+			return nil, nil
+		},
+		getRolePoliciesFn: getRoleFn,
+	}
+	stsMock := &mockSTSService{
+		sessions: map[string]*handlers_sts.SessionCredential{cred.AccessKeyID: cred},
+		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
+	}
+	return &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		IAMService:     iamMock,
+		STSService:     stsMock,
+	}
+}
+
+// setupPolicyResourceTestHandler is setupPolicyTestHandler for a caller-chosen
+// service/action/resource, used to drive resource-scoped checks (e.g.
+// iam:PassRole on a specific role ARN).
+func setupPolicyResourceTestHandler(gw *GatewayConfig, service, action, resource string) http.Handler {
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", func(w http.ResponseWriter, req *http.Request) {
+		if err := gw.checkPolicyResource(req, service, action, resource); err != nil {
+			gw.ErrorHandler(w, req, err)
+			return
+		}
+		_, _ = w.Write([]byte("OK"))
+	})
+	return r
+}
+
+// doSessionPolicyRequest signs and runs a session-credential request through
+// handler, returning the response.
+func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:9999"
+	signSessionRequest(t, req, nil, akid, testSecretKey, testSessionToken)
+	return doRequest(handler, req)
+}
+
+// TestCheckPolicy_AssumedRole_AllowedByRolePolicy: the underlying role's managed
+// policy grants the action, so the session is allowed — the symmetric twin of
+// predastore's assumed-role S3 enforcement.
+func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+		require.Equal(t, "app-role", roleName)
+		return allowPolicy("ec2:RunInstances"), nil
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+}
+
+// TestCheckPolicy_AssumedRole_ImplicitDeny: the role policy matches neither the
+// action nor an explicit Deny, so the default deny applies.
+func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return allowPolicy("ec2:DescribeInstances"), nil // does not cover RunInstances
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
+}
+
+// TestCheckPolicy_AssumedRole_ExplicitDeny: an explicit Deny in the role policy
+// overrides any Allow.
+func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return []handlers_iam.PolicyDocument{{
+			Version: "2012-10-17",
+			Statement: []handlers_iam.Statement{
+				{Effect: "Allow", Action: handlers_iam.StringOrArr{"ec2:*"}, Resource: handlers_iam.StringOrArr{"*"}},
+				{Effect: "Deny", Action: handlers_iam.StringOrArr{"ec2:RunInstances"}, Resource: handlers_iam.StringOrArr{"*"}},
+			},
+		}}, nil
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
+}
+
+// TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll: a role that resolves but
+// has no attached policies can do nothing (decision 5a — assumability does not
+// imply permissions).
+func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return nil, nil // role exists, zero attached policies
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
+}
+
+// TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass: a session whose
+// attacker-chosen SessionName is "root" in the global account must NOT hit the
+// user-branch root short-circuit; it is evaluated against its role like any
+// other session.
+func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
+	cred := assumedRoleSessionCred("root",
+		"arn:aws:iam::"+utils.GlobalAccountID+":role/sneaky-role", utils.GlobalAccountID)
+	var roleResolved bool
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+		roleResolved = true
+		require.Equal(t, "sneaky-role", roleName)
+		return nil, nil // role grants nothing
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, string(body), "AccessDenied")
+	assert.True(t, roleResolved, "root-named session must be evaluated against its role, not bypassed")
+}
+
+// TestCheckPolicy_AssumedRole_EdgeARNs_Denied: a missing/legacy, cross-account,
+// or malformed underlying-role ARN fails closed with AccessDenied (403, not a
+// 500), and never reaches the role resolver (decision 6).
+func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
+	cases := []struct {
+		name              string
+		underlyingRoleARN string
+	}{
+		{"empty/legacy", ""},
+		{"cross-account", "arn:aws:iam::999999999999:role/other"},
+		{"malformed", "not-an-arn"},
+		{"non-role-resource", "arn:aws:iam::123456789012:user/alice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cred := assumedRoleSessionCred("app", tc.underlyingRoleARN, "123456789012")
+			gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+				t.Errorf("role resolver must not be consulted for an edge-case ARN (%s)", tc.name)
+				return nil, nil
+			})
+
+			resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+			body, _ := io.ReadAll(resp.Body)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode, "must deny, not 500")
+			assert.Contains(t, string(body), "AccessDenied")
+		})
+	}
+}
+
+// TestCheckPolicy_AssumedRole_ResolveError_InternalError: a non-transient role
+// resolve error fails closed — never an allow-on-error.
+func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity) // role deleted after mint
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, string(body), "InternalError")
+}
+
+// TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails: a transient NATS
+// error is retried 3× then fails closed (no allow-on-error).
+func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
+	var calls int
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		calls++
+		return nil, nats.ErrNoResponders
+	})
+
+	resp := doSessionPolicyRequest(t, setupPolicyTestHandler(gw), cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, string(body), "InternalError")
+	assert.Equal(t, 3, calls, "transient NATS error should retry 3×")
+}
+
+// TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed locks the
+// iam:PassRole resource match (decision 8): the role's policy scopes PassRole to
+// the exact target role ARN, so passing that role is allowed.
+func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T) {
+	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return allowPolicyResource("iam:PassRole", targetRoleARN), nil
+	})
+
+	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
+	resp := doSessionPolicyRequest(t, handler, cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+}
+
+// TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied: PassRole scoped
+// to a different role ARN must not authorise passing the target role.
+func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) {
+	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
+	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		return allowPolicyResource("iam:PassRole", "arn:aws:iam::123456789012:role/some-other-role"), nil
+	})
+
+	handler := setupPolicyResourceTestHandler(gw, "iam", "PassRole", targetRoleARN)
+	resp := doSessionPolicyRequest(t, handler, cred.AccessKeyID)
+	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, string(body), "AccessDenied")
 }

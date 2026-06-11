@@ -2,6 +2,7 @@ package dhcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -122,6 +123,123 @@ func TestNATSClientAcquireReleaseRoundtrip(t *testing.T) {
 	_, err = store.Get("eipalloc-A")
 	assert.ErrorIs(t, err, nats.ErrKeyNotFound)
 	assert.Equal(t, 1, fake.ReleaseCount())
+}
+
+func seedLeases(t *testing.T, store *dhcp.Store, ids []string) {
+	t.Helper()
+	hw, _ := net.ParseMAC("02:00:00:aa:bb:cc")
+	for i, id := range ids {
+		lease := &dhcp.Lease{
+			Bridge:        "br-wan",
+			ClientID:      id,
+			HWAddr:        hw,
+			IP:            net.IPv4(192, 0, 2, byte(10+i)),
+			AcquiredAt:    time.Now(),
+			LeaseDuration: time.Hour,
+		}
+		require.NoError(t, store.Put(dhcp.Entry{Purpose: "eip", PoolName: "default", Lease: lease}))
+	}
+}
+
+func TestManagerDrainAll(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+
+	// Seed before Start so the manager adopts them and spawns a renewal
+	// loop per lease — drain must release every lease AND cancel its loop.
+	ids := []string{"eipalloc-1", "eni-2", "i-3", "gw-vpc-4"}
+	seedLeases(t, store, ids)
+	require.NoError(t, mgr.Start(context.Background()))
+	require.Eventually(t, func() bool { return mgr.LoopCount() == len(ids) }, time.Second, 10*time.Millisecond)
+
+	n, err := mgr.DrainAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, len(ids), n)
+	assert.Equal(t, len(ids), fake.ReleaseCount())
+
+	entries, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	assert.Equal(t, 0, mgr.LoopCount())
+}
+
+func TestManagerDrainAllBestEffortOnReleaseError(t *testing.T) {
+	fake := dhcp.NewFake()
+	// A stuck upstream release on one lease must not block draining the rest.
+	fake.ReleaseHook = func(l *dhcp.Lease) error {
+		if l.ClientID == "eni-2" {
+			return errors.New("upstream unreachable")
+		}
+		return nil
+	}
+	mgr, store, _ := newTestManager(t, "az1", fake, time.Now)
+
+	ids := []string{"eipalloc-1", "eni-2", "i-3"}
+	seedLeases(t, store, ids)
+
+	n, err := mgr.DrainAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, len(ids), n)
+	assert.Equal(t, len(ids), fake.ReleaseCount())
+
+	entries, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestManagerDrainMsgWithoutReplyIsDropped(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, nc := newTestManager(t, "az1", fake, time.Now)
+	require.NoError(t, mgr.Start(context.Background()))
+	subs, err := mgr.Subscribe(nc)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	})
+
+	seedLeases(t, store, []string{"eipalloc-x"})
+
+	// A drain publish with no reply subject must be dropped before draining —
+	// the lease stays put and nothing is released.
+	require.NoError(t, nc.Publish(dhcp.TopicDrain, []byte("{}")))
+	require.NoError(t, nc.Flush())
+	time.Sleep(100 * time.Millisecond)
+
+	entries, err := store.List()
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	assert.Equal(t, 0, fake.ReleaseCount())
+}
+
+func TestManagerDrainRPCRoundtrip(t *testing.T) {
+	fake := dhcp.NewFake()
+	mgr, store, nc := newTestManager(t, "az1", fake, time.Now)
+	require.NoError(t, mgr.Start(context.Background()))
+	subs, err := mgr.Subscribe(nc)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for _, s := range subs {
+			_ = s.Unsubscribe()
+		}
+	})
+
+	seedLeases(t, store, []string{"eipalloc-A", "eipalloc-B"})
+
+	msg, err := nc.Request(dhcp.TopicDrain, []byte("{}"), 2*time.Second)
+	require.NoError(t, err)
+	var reply struct {
+		Released int    `json:"released"`
+		Error    string `json:"error,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Data, &reply))
+	assert.Empty(t, reply.Error)
+	assert.Equal(t, 2, reply.Released)
+
+	entries, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 func TestNATSClientAcquireIdempotent(t *testing.T) {

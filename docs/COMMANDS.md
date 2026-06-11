@@ -65,6 +65,7 @@ Operational commands for inspecting cluster state. These fan out NATS requests t
 | Command | Flags | Description |
 |---------|-------|-------------|
 | `spx admin cluster shutdown` | `--force` (shutdown even if nodes don't respond), `--timeout` (max wait per phase, default 120s), `--dry-run` (print phase plan without executing) | Performs coordinated, phased shutdown of entire cluster. Phases execute in order: GATE (stop API/UI) → DRAIN (stop VMs) → STORAGE (stop viperblock) → PERSIST (stop predastore) → INFRA (stop NATS/daemon). Each phase waits for all nodes to ACK before proceeding. Uses JetStream state tracking. |
+| `spx admin cluster drain-dhcp` | `--timeout` (reply-collection window, default 30s) | Asks each vpcd to DHCPRELEASE every external-pool DHCP lease it currently holds, returning them to the upstream DHCP server. Run on teardown before stopping services — an env reset otherwise strands held leases upstream until their TTL expires, eventually exhausting the upstream scope. Best-effort: warns and exits 0 if the cluster is already down. |
 
 ### Certificate Management
 

@@ -115,6 +115,16 @@ Each phase waits for all nodes to ACK before proceeding to the next.`,
 	Run: runClusterShutdown,
 }
 
+var clusterDrainDHCPCmd = &cobra.Command{
+	Use:   "drain-dhcp",
+	Short: "Release all upstream DHCP leases held by vpcd",
+	Long: `Ask each vpcd to DHCPRELEASE every external-pool DHCP lease it currently
+holds, returning them to the upstream DHCP server. Run this on teardown before
+stopping services: an env reset otherwise strands held leases on the upstream
+server until their TTL expires, eventually exhausting the upstream scope.`,
+	Run: runClusterDrainDHCP,
+}
+
 var adminInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize Spinifex platform configuration",
@@ -244,6 +254,9 @@ func init() {
 	clusterShutdownCmd.Flags().Bool("force", false, "Force shutdown even if nodes don't respond")
 	clusterShutdownCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
 	clusterShutdownCmd.Flags().Bool("dry-run", false, "Print phase plan without executing")
+
+	clusterCmd.AddCommand(clusterDrainDHCPCmd)
+	clusterDrainDHCPCmd.Flags().Duration("timeout", 30*time.Second, "Reply-collection window for vpcd drain responders")
 
 	adminCmd.AddCommand(imagesCmd)
 	imagesCmd.AddCommand(imagesImportCmd)

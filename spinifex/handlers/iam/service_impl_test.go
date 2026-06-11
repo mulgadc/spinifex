@@ -1149,6 +1149,32 @@ func TestGetPolicyVersion_PolicyNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+func TestListPolicyVersions(t *testing.T) {
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "ListVersionPolicy")
+
+	out, err := svc.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	assert.False(t, *out.IsTruncated)
+	require.Len(t, out.Versions, 1)
+	assert.Equal(t, "v1", *out.Versions[0].VersionId)
+	assert.True(t, *out.Versions[0].IsDefaultVersion)
+	// AWS omits the document from list entries — callers fetch it via GetPolicyVersion.
+	assert.Nil(t, out.Versions[0].Document)
+}
+
+func TestListPolicyVersions_PolicyNotFound(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
 func TestListPolicies(t *testing.T) {
 	svc := setupTestIAMService(t)
 

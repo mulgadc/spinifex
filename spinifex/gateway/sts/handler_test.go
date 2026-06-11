@@ -124,6 +124,9 @@ func (s *stubIAMService) GetPolicy(string, *iam.GetPolicyInput) (*iam.GetPolicyO
 func (s *stubIAMService) GetPolicyVersion(string, *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
 	panic("unexpected GetPolicyVersion call")
 }
+func (s *stubIAMService) ListPolicyVersions(string, *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	panic("unexpected ListPolicyVersions call")
+}
 func (s *stubIAMService) ListPolicies(string, *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	panic("unexpected ListPolicies call")
 }

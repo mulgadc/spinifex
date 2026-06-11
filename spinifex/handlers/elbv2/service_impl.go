@@ -895,12 +895,26 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 	}
 
 	now := time.Now().UTC()
+	heartbeatStale := now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval
+	lb.LastHeartbeat = now
 
-	// Only persist to KV on state transitions or when the stored heartbeat
-	// timestamp is stale. This avoids writing the full record (including
-	// ConfigText) every 5 seconds when nothing changed.
-	if stateChanged || now.Sub(lb.LastHeartbeat) >= heartbeatPersistInterval {
-		lb.LastHeartbeat = now
+	switch {
+	case stateChanged:
+		// Activation is the LB's readiness signal: InstanceID is set and the
+		// agent is alive to consume config. The reactive updateStoredConfig
+		// calls during the create burst no-op while the VM is still launching
+		// (InstanceID empty), so build the data-plane config now from the
+		// listeners/targets created during provisioning. updateStoredConfig
+		// persists the record (state, config, hash, health targets) in one
+		// write, so the ConfigHash returned below is fresh.
+		if err := s.updateStoredConfig(lb); err != nil {
+			slog.Error("LBAgentHeartbeat: failed to build config on activation", "lbId", lbID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+	case heartbeatStale:
+		// Steady state: refresh the heartbeat timestamp only. Avoids writing
+		// the full record (including ConfigText) every 5 seconds when nothing
+		// changed.
 		if err := s.store.PutLoadBalancer(lb); err != nil {
 			slog.Error("LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)

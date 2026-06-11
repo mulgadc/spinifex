@@ -1089,6 +1089,26 @@ func (s *IAMServiceImpl) GetPolicyVersion(accountID string, input *iam.GetPolicy
 	}, nil
 }
 
+func (s *IAMServiceImpl) ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	policy, err := s.getPolicyByARN(accountID, *input.PolicyArn)
+	if err != nil {
+		return nil, err
+	}
+
+	// CreatePolicyVersion is unrouted, so every policy has exactly one immutable
+	// default version (v1). Real IAM omits the document from list entries —
+	// callers fetch it via GetPolicyVersion — so Document is left nil here.
+	createdAt := parseCreatedAt(policy.CreatedAt)
+	return &iam.ListPolicyVersionsOutput{
+		Versions: []*iam.PolicyVersion{{
+			VersionId:        aws.String(policy.DefaultVersion),
+			IsDefaultVersion: aws.Bool(true),
+			CreateDate:       aws.Time(createdAt),
+		}},
+		IsTruncated: aws.Bool(false),
+	}, nil
+}
+
 func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	keys, err := s.policiesBucket.Keys()
 	if err != nil {

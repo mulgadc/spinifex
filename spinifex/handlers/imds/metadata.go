@@ -25,6 +25,8 @@ const (
 	pathUserData         = "/latest/user-data"
 	prefixSecurityCreds  = "/latest/meta-data/iam/security-credentials/" //nolint:gosec // URL path, not a credential
 	pathSecurityCredsDir = "/latest/meta-data/iam/security-credentials"  //nolint:gosec // URL path, not a credential
+	prefixPublicKeys     = "/latest/meta-data/public-keys/"
+	pathPublicKeysDir    = "/latest/meta-data/public-keys"
 
 	hdrToken    = "X-Aws-Ec2-Metadata-Token"             //nolint:gosec // HTTP header name, not a credential
 	hdrTokenTTL = "X-Aws-Ec2-Metadata-Token-Ttl-Seconds" //nolint:gosec // HTTP header name, not a credential
@@ -141,9 +143,18 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		return
 	}
 
+	// SSH public keys: /public-keys/, /public-keys/0/, /public-keys/0/openssh-key.
+	// The two directory listings resolve from the instance's launch key name; only
+	// the material leaf fetches it. (The bare /public-keys, sans trailing slash, is
+	// handled in the switch below.)
+	if sub, ok := strings.CutPrefix(path, prefixPublicKeys); ok {
+		s.servePublicKeys(w, eni, sub)
+		return
+	}
+
 	switch path {
 	case pathMetaDataRoot, prefixMetaData:
-		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\nsecurity-groups")
+		writeText(w, "ami-id\nhostname\niam/\ninstance-id\ninstance-type\nlocal-hostname\nlocal-ipv4\nmac\nplacement/\npublic-ipv4\npublic-keys/\nsecurity-groups")
 	case prefixMetaData + "instance-id":
 		writeText(w, eni.instanceID)
 	case prefixMetaData + "local-ipv4":
@@ -172,6 +183,8 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 		s.serveIAMInfo(w, eni)
 	case pathSecurityCredsDir, prefixSecurityCreds:
 		s.serveSecurityCredentialsList(w, eni)
+	case pathPublicKeysDir:
+		s.servePublicKeys(w, eni, "")
 	case pathUserData:
 		s.serveUserData(w, eni)
 	default:
@@ -277,6 +290,52 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// servePublicKeys serves the /public-keys subtree, where sub is the path after
+// "/public-keys/" ("" for the bare directory). Spinifex binds one key pair per
+// instance, so the index is always 0:
+//
+//	""              → "0=<keyName>"   (key list)
+//	"0", "0/"       → "openssh-key"   (formats list for index 0)
+//	"0/openssh-key" → the SSH public key material
+//
+// The two listings resolve from the instance's launch key name with no material
+// RPC; only the leaf fetches it. A no-key instance, or any index other than 0,
+// is 404 — matching AWS. On the material path, a deleted key is 404 (definitive
+// absence) but any other backend fault is 500: a 404 tells cloud-init the
+// instance has no key and it boots keyless without retry, so a transient fault
+// must never collapse to 404 (mirrors serveIAMInfo/serveRoleCredentials).
+func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, sub string) {
+	inst := s.instanceFor(w, eni)
+	if inst == nil {
+		return
+	}
+	if inst.keyName == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	switch sub {
+	case "":
+		writeText(w, "0="+inst.keyName)
+	case "0", "0/":
+		writeText(w, "openssh-key")
+	case "0/openssh-key":
+		material, err := s.pubKeys.GetPublicKey(eni.accountID, inst.keyName)
+		if err != nil {
+			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			slog.Error("IMDS: public key material fetch failed", "account_id", eni.accountID, "key_name", inst.keyName, "instance_id", eni.instanceID, "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeText(w, material+"\n")
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
 }
 
 // instanceFor resolves the instance record for an ENI, writing the appropriate

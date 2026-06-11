@@ -607,10 +607,21 @@ curl -i http://169.254.169.254/latest/meta-data/instance-id
 | `/latest/meta-data/iam/info` | GET | `{InstanceProfileArn, InstanceProfileId}`; 404 if no profile | **DONE** |
 | `/latest/meta-data/iam/security-credentials/` | GET | Role name(s) under the profile, one per line; empty body if none | **DONE** |
 | `/latest/meta-data/iam/security-credentials/<role>` | GET | STS `AssumeRoleForInstance` → ASIA-prefixed temporary credential JSON | **DONE** |
+| `/latest/meta-data/public-keys/` | GET | `0=<keyName>` from the launch key pair; 404 if none | **DONE** |
+| `/latest/meta-data/public-keys/0/` | GET | `openssh-key` (format list for index 0) | **DONE** |
+| `/latest/meta-data/public-keys/0/openssh-key` | GET | Launch SSH public key, live-fetched from the key store; 404 if the key was deleted, 500 on backend fault | **DONE** |
 | `/latest/user-data` | GET | `vm.UserData`; 404 if none | **DONE** |
-| `/latest/dynamic/instance-identity/document` | GET | Needs a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
-| `/latest/meta-data/network/interfaces/...` | GET | Multi-ENI rendering | **NOT STARTED** (404) |
-| `/latest/meta-data/tags/...` | GET | Instance-tag metadata | **NOT STARTED** (404) |
+| `/latest/dynamic/instance-identity/document` (+ `signature`, `pkcs7`, `rsa2048`) | GET | Needs a per-cluster signing key | **NOT STARTED** (404; lands with EKS IRSA) |
+| `/latest/meta-data/network/interfaces/macs/<mac>/...` | GET | Multi-ENI rendering (subnet-id, vpc-id, ipv4s, security-group-ids, …) | **NOT STARTED** (404) |
+| `/latest/meta-data/tags/instance/<key>` | GET | Instance-tag metadata; gated on `InstanceMetadataTags` enablement | **NOT STARTED** (404) |
+| `/latest/meta-data/public-hostname` | GET | No public DNS today; would mirror `public-ipv4` | **NOT STARTED** (404) |
+| `/latest/meta-data/reservation-id` | GET | Available on the stored `Reservation`; cheap, not yet surfaced | **NOT STARTED** (404) |
+| `/latest/meta-data/ami-launch-index` | GET | `0` for single-instance launches; trivial once multi-count is exercised | **NOT STARTED** (404) |
+| `/latest/meta-data/block-device-mapping/...` | GET | `ami`/`root`/`ebsN`/`ephemeralN` device map | **NOT STARTED** (404) |
+| `/latest/meta-data/placement/{group-name,partition-number,availability-zone-id,host-id}` | GET | Placement extras beyond `availability-zone`/`region` | **NOT STARTED** (404) |
+| `/latest/meta-data/instance-life-cycle`, `/instance-action` | GET | `on-demand`/`spot`; `none` unless interruptible instances ship | **NOT STARTED** (404) |
+| `/latest/meta-data/services/{domain,partition}` | GET | Static per-deployment values | **NOT STARTED** (404) |
+| `/latest/meta-data/spot/{instance-action,termination-time}` | GET | Only meaningful once Spot is modelled | **NOT STARTED** (404) |
 
 ---
 

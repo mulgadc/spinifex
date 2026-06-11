@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -20,6 +21,10 @@ const (
 	// profileCacheTTL memoises profile/role lookups. Both mappings are effectively
 	// static, so a short TTL keeps the iam/* GETs off a NATS round-trip per request.
 	profileCacheTTL = 5 * time.Minute
+
+	// pubKeyCacheTTL memoises SSH public-key material, immutable for a key's
+	// lifetime; separate from profileCacheTTL so the two are tunable independently.
+	pubKeyCacheTTL = 5 * time.Minute
 )
 
 // NATSSTSAssumer is the NATS-backed stsAssumer. It mints instance-role credentials
@@ -95,6 +100,42 @@ func (p *NATSProfileLookup) GetRole(accountID string, input *iam.GetRoleInput) (
 	}
 	p.roles.put(key, out)
 	return out, nil
+}
+
+// NATSPublicKeyLookup is the NATS-backed publicKeyLookup. It fetches an
+// instance's launch SSH public key from the daemon-side key service via the
+// imds.ec2.get_public_key responder, fronted by a success-only TTL cache so
+// repeat material fetches don't take a round-trip each.
+type NATSPublicKeyLookup struct {
+	nc    *nats.Conn
+	cache *ttlCache[string]
+}
+
+var _ publicKeyLookup = (*NATSPublicKeyLookup)(nil)
+
+// NewNATSPublicKeyLookup constructs a NATSPublicKeyLookup over nc.
+func NewNATSPublicKeyLookup(nc *nats.Conn) *NATSPublicKeyLookup {
+	return &NATSPublicKeyLookup{
+		nc:    nc,
+		cache: newTTLCache[string](pubKeyCacheTTL),
+	}
+}
+
+func (p *NATSPublicKeyLookup) GetPublicKey(accountID, keyName string) (string, error) {
+	key := accountID + "\x00" + keyName
+	if v, ok := p.cache.get(key); ok {
+		return v, nil
+	}
+	out, err := utils.NATSRequest[handlers_ec2_key.GetPublicKeyResponse](p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
+		AccountID: accountID,
+		KeyName:   keyName,
+	}, imdsRPCTimeout, accountID)
+	if err != nil {
+		// Errors are never cached — a transient miss must not pin a key as absent.
+		return "", err
+	}
+	p.cache.put(key, out.OpenSSHKey)
+	return out.OpenSSHKey, nil
 }
 
 // ttlCache is a minimal concurrency-safe map with per-entry expiry, used to

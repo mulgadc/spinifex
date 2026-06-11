@@ -512,6 +512,64 @@ func TestValidateKeyPairExists_NotFound(t *testing.T) {
 }
 
 // ============================================================
+// GetPublicKeyMaterial Tests
+// ============================================================
+
+func TestGetPublicKeyMaterial_Success(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	// Stored exactly as ssh-keygen writes it: the key line plus a trailing newline.
+	keyPath := "keys/" + testAccountID + "/imds-key"
+	_, err := store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(keyPath),
+		Body:   strings.NewReader(testED25519PubKey + "\n"),
+	})
+	require.NoError(t, err)
+
+	material, err := svc.GetPublicKeyMaterial(testAccountID, "imds-key")
+	require.NoError(t, err)
+	// Normalised to a single clean line — no trailing newline (the IMDS handler
+	// adds exactly one).
+	assert.Equal(t, testED25519PubKey, material)
+}
+
+func TestGetPublicKeyMaterial_NotFound(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	_, err := svc.GetPublicKeyMaterial(testAccountID, "ghost-key")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+}
+
+func TestGetPublicKeyMaterial_RoundTripsImport(t *testing.T) {
+	svc, _ := newTestKeyService()
+	importTestKey(t, svc, "imported-imds")
+
+	material, err := svc.GetPublicKeyMaterial(testAccountID, "imported-imds")
+	require.NoError(t, err)
+	assert.Equal(t, testED25519PubKey, material)
+}
+
+func TestGetPublicKeyMaterial_EmptyObject(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	keyPath := "keys/" + testAccountID + "/blank-key"
+	_, err := store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(keyPath),
+		Body:   strings.NewReader("   \n"),
+	})
+	require.NoError(t, err)
+
+	// An empty stored object is corruption, not absence: it must not map to the
+	// NotFound code (which the IMDS handler would render as a keyless 404).
+	_, err = svc.GetPublicKeyMaterial(testAccountID, "blank-key")
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+}
+
+// ============================================================
 // formatFingerprint Tests
 // ============================================================
 

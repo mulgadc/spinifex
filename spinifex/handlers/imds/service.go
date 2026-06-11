@@ -24,6 +24,14 @@ type profileLookup interface {
 	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 }
 
+// publicKeyLookup fetches an instance's launch SSH public key material by
+// (accountID, keyName), serving the public-keys/0/openssh-key path. Narrowed to
+// an interface for unit testing; the production implementation
+// (NATSPublicKeyLookup) fronts the daemon-side key service over a NATS RPC.
+type publicKeyLookup interface {
+	GetPublicKey(accountID, keyName string) (string, error)
+}
+
 // IMDSService is the host-served EC2 Instance Metadata Service. It runs in
 // vpcd on every chassis, serving 169.254.169.254 to local guest VMs over
 // per-subnet veths. Run owns the listener lifecycle and blocks until ctx is done.
@@ -49,6 +57,7 @@ type IMDSServiceImpl struct {
 	tokens   *tokenStore
 	creds    *credCache
 	iam      profileLookup
+	pubKeys  publicKeyLookup
 	bind     *bindManager
 	now      func() time.Time
 }
@@ -56,7 +65,7 @@ type IMDSServiceImpl struct {
 // NewIMDSServiceImpl wires the IMDS service. natsConn backs the KV reads and the
 // account-scoped instance fan-out (sized by expectedNodes); ensureVeth/removeVeth
 // are injected rather than imported to avoid an import cycle via network/host.
-func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
@@ -65,6 +74,9 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 	}
 	if iamSvc == nil {
 		return nil, errors.New("nil IAM service")
+	}
+	if pubKeys == nil {
+		return nil, errors.New("nil public key service")
 	}
 	if ensureVeth == nil || removeVeth == nil {
 		return nil, errors.New("nil veth lifecycle hooks")
@@ -104,10 +116,11 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 			sgKV:   sgKV,
 			lookup: &natsInstanceLookup{nc: natsConn, expectedNodes: expectedNodes},
 		},
-		tokens: newTokenStore(),
-		creds:  newCredCache(sts),
-		iam:    iamSvc,
-		now:    time.Now,
+		tokens:  newTokenStore(),
+		creds:   newCredCache(sts),
+		iam:     iamSvc,
+		pubKeys: pubKeys,
+		now:     time.Now,
 	}
 	svc.bind = newBindManager(vethKV, svc.httpHandler(), ensureVeth, removeVeth, bindLocalListener)
 

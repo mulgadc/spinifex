@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 // IMDS E2E identifiers. The role/profile carry an imds-e2e- prefix so they
@@ -86,7 +88,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	requireSSHHealthy(t)
 
 	adminAccount := iamEnsureAdminAccountID(t, fix)
-	_, keyPath := needKeyPair(t, fix)
+	keyName, keyPath := needKeyPair(t, fix)
 	imdsEnsureRoleProfile(t, fix, adminAccount)
 
 	// Two VPCs, identical subnet CIDR → the first VM in each gets the same IP.
@@ -167,6 +169,23 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	// security-credentials/ lists the role name (not the profile name).
 	require.Equal(t, imdsRoleName, imdsGet(t, tgtX, tokenX, "/latest/meta-data/iam/security-credentials/"),
 		"security-credentials/ must list the resolved role name")
+
+	// --- public-keys ---------------------------------------------------------
+	// The launch key injection path cloud-init's Ec2 datasource queries: the two
+	// directory listings plus the material leaf, served live from the key store.
+	harness.Step(t, "GET /latest/meta-data/public-keys/ subtree")
+	require.Equal(t, "0="+keyName, imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-keys/"),
+		"public-keys/ must list 0=<keyName>")
+	require.Equal(t, "openssh-key", imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-keys/0/"),
+		"public-keys/0/ must list the openssh-key format")
+	gotKey := imdsGet(t, tgtX, tokenX, "/latest/meta-data/public-keys/0/openssh-key")
+	wantType, wantB64 := imdsExpectedPubKey(t, keyPath)
+	gotFields := strings.Fields(gotKey)
+	require.GreaterOrEqualf(t, len(gotFields), 2,
+		"public-keys/0/openssh-key must serve <type> <base64> (got %q)", gotKey)
+	require.Equal(t, wantType, gotFields[0], "public key type mismatch")
+	require.Equal(t, wantB64, gotFields[1],
+		"public-keys/0/openssh-key material must match the launch key pair")
 
 	// --- user-data round-trip ------------------------------------------------
 	harness.Step(t, "GET /latest/user-data round-trips launch user-data")
@@ -511,6 +530,23 @@ func imdsGet(t *testing.T, tgt harness.SSHTarget, token, path string) string {
 	t.Helper()
 	cmd := fmt.Sprintf(`curl -sf -H "X-aws-ec2-metadata-token: %s" %s%s`, token, metaURL, path)
 	return strings.TrimSpace(runSSH(t, tgt, cmd))
+}
+
+// imdsExpectedPubKey derives the OpenSSH public key (type + base64) the IMDS
+// material path must serve, from the launch key pair's PEM. CreateKeyPair returns
+// only the private PEM, so the public key is recomputed from it via ssh.Signer.
+// The stored key carries an empty comment (ssh-keygen -C ""), so callers compare
+// on the type + base64 fields, not the full line.
+func imdsExpectedPubKey(t *testing.T, pemPath string) (keyType, base64Key string) {
+	t.Helper()
+	pem, err := os.ReadFile(pemPath)
+	require.NoErrorf(t, err, "read key PEM %s", pemPath)
+	signer, err := ssh.ParsePrivateKey(pem)
+	require.NoError(t, err, "parse key PEM")
+	authorized := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	fields := strings.Fields(authorized)
+	require.GreaterOrEqualf(t, len(fields), 2, "derived public key malformed: %q", authorized)
+	return fields[0], fields[1]
 }
 
 // imdsCode returns the HTTP status code (as a string) the guest sees for a GET,

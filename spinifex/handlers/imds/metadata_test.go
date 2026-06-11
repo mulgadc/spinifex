@@ -62,6 +62,20 @@ func (f *fakeIAM) GetRole(_ string, _ *iam.GetRoleInput) (*iam.GetRoleOutput, er
 	return &iam.GetRoleOutput{Role: &iam.Role{Arn: aws.String(f.roleARN)}}, nil
 }
 
+// fakePublicKeys is the publicKeyLookup seam for the public-keys path tests. It
+// counts invocations so a test can assert the directory listings never reach the
+// material RPC.
+type fakePublicKeys struct {
+	material string
+	err      error
+	calls    int
+}
+
+func (f *fakePublicKeys) GetPublicKey(_, _ string) (string, error) {
+	f.calls++
+	return f.material, f.err
+}
+
 const (
 	testVPC = "vpc-abc12345"
 	testIP  = "10.0.1.5"
@@ -91,8 +105,17 @@ func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*I
 		tokens:   newTokenStore(),
 		creds:    newCredCache(assumer),
 		iam:      fIAM,
+		pubKeys:  &fakePublicKeys{},
 		now:      func() time.Time { return now },
 	}, now
+}
+
+// newPubKeyTestService builds a service whose publicKeyLookup is the supplied
+// fake, so the public-keys tests can drive the material RPC and assert call counts.
+func newPubKeyTestService(res eniResolver, pk publicKeyLookup) *IMDSServiceImpl {
+	svc, _ := newTestService(res, &fakeIAM{}, &fakeAssumer{})
+	svc.pubKeys = pk
+	return svc
 }
 
 // get issues a token-gated GET with the VPC context + source IP a real listener
@@ -246,6 +269,7 @@ func TestHTTP_DirectoryListing(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "instance-id")
 	assert.Contains(t, rec.Body.String(), "iam/")
+	assert.Contains(t, rec.Body.String(), "public-keys/")
 }
 
 func TestHTTP_UserDataAbsent404(t *testing.T) {
@@ -270,6 +294,108 @@ func TestHTTP_OutOfScopePaths404(t *testing.T) {
 		rec := get(t, h, p, token)
 		assert.Equal(t, http.StatusNotFound, rec.Code, "path=%s", p)
 	}
+}
+
+// ----- public keys -------------------------------------------------------
+
+func TestHTTP_PublicKeys(t *testing.T) {
+	const material = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+	pk := &fakePublicKeys{material: material}
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+
+	// Directory listings — served from the launch key name, no material RPC.
+	listings := []struct{ path, want string }{
+		{prefixPublicKeys, "0=my-key"},           // /public-keys/
+		{pathPublicKeysDir, "0=my-key"},          // /public-keys (no trailing slash)
+		{prefixPublicKeys + "0/", "openssh-key"}, // /public-keys/0/
+		{prefixPublicKeys + "0", "openssh-key"},  // /public-keys/0 (no trailing slash)
+	}
+	for _, c := range listings {
+		rec := get(t, h, c.path, token)
+		assert.Equal(t, http.StatusOK, rec.Code, "path=%s", c.path)
+		assert.Equal(t, c.want, rec.Body.String(), "path=%s", c.path)
+	}
+	assert.Equal(t, 0, pk.calls, "directory listings must not invoke the material RPC")
+
+	// Material leaf — the single OpenSSH line plus exactly one trailing newline.
+	rec := get(t, h, prefixPublicKeys+"0/openssh-key", token)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, material+"\n", rec.Body.String())
+	assert.Equal(t, 1, pk.calls)
+}
+
+func TestHTTP_PublicKeysNoKey404(t *testing.T) {
+	pk := &fakePublicKeys{}
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{}} // no key pair bound
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	for _, p := range []string{
+		prefixPublicKeys,
+		pathPublicKeysDir,
+		prefixPublicKeys + "0/",
+		prefixPublicKeys + "0/openssh-key",
+	} {
+		rec := get(t, h, p, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "path=%s", p)
+	}
+	assert.Equal(t, 0, pk.calls, "a no-key instance must never reach the material RPC")
+}
+
+func TestHTTP_PublicKeysUnknownIndex404(t *testing.T) {
+	pk := &fakePublicKeys{material: "ssh-ed25519 AAAA"}
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	for _, p := range []string{
+		prefixPublicKeys + "1",
+		prefixPublicKeys + "1/openssh-key",
+		prefixPublicKeys + "0/nonsense",
+	} {
+		rec := get(t, h, p, token)
+		assert.Equal(t, http.StatusNotFound, rec.Code, "path=%s", p)
+	}
+	assert.Equal(t, 0, pk.calls, "only index 0's openssh-key leaf may fetch material")
+}
+
+// A deleted key (NoSuchKey, surfaced as InvalidKeyPair.NotFound) is definitive
+// absence → 404; any other backend fault is 500. A 404 tells cloud-init the
+// instance has no key and it boots keyless without retry, so a transient fault
+// must never collapse to 404 (silent-lockout regression guard).
+func TestHTTP_PublicKeysMaterialDeleted404(t *testing.T) {
+	pk := &fakePublicKeys{err: errors.New(awserrors.ErrorInvalidKeyPairNotFound)}
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixPublicKeys+"0/openssh-key", token)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHTTP_PublicKeysMaterialBackendError500(t *testing.T) {
+	pk := &fakePublicKeys{err: errors.New("rpc timeout")}
+	res := &fakeResolver{eni: testENI(), inst: &instanceFacts{keyName: "my-key"}}
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixPublicKeys+"0/openssh-key", token)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// A backend failure resolving the instance (which carries the key name) must be
+// 500 on the listing path too, not a 404 that masks the fault as "no key".
+func TestHTTP_PublicKeysInstanceBackendError500(t *testing.T) {
+	pk := &fakePublicKeys{}
+	res := &fakeResolver{eni: testENI(), instErr: errors.New("backend unavailable")}
+	svc := newPubKeyTestService(res, pk)
+	h := svc.httpHandler()
+	token := issueToken(t, h)
+	rec := get(t, h, prefixPublicKeys, token)
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // ----- IAM / credentials -------------------------------------------------

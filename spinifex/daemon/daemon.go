@@ -818,6 +818,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DeleteKeyPair", d.handleEC2DeleteKeyPair, "spinifex-workers"},
 		{"ec2.DescribeKeyPairs", d.handleEC2DescribeKeyPairs, "spinifex-workers"},
 		{"ec2.ImportKeyPair", d.handleEC2ImportKeyPair, "spinifex-workers"},
+		{"imds.ec2.get_public_key", d.handleIMDSGetPublicKey, "spinifex-workers"},
 		{"ec2.DescribeImages", d.handleEC2DescribeImages, "spinifex-workers"},
 		{"ec2.CreateImage", d.handleEC2CreateImage, ""},
 		{"ec2.DeregisterImage", d.handleEC2DeregisterImage, "spinifex-workers"},

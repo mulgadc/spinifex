@@ -554,6 +554,7 @@ func launchService(cfg *Config) error {
 		nc,
 		handlers_imds.NewNATSSTSAssumer(nc),
 		handlers_imds.NewNATSProfileLookup(nc),
+		handlers_imds.NewNATSPublicKeyLookup(nc),
 		max(len(chassisNames), 1),
 		host.EnsureIMDSVeth, host.RemoveIMDSVeth,
 	)

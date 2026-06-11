@@ -43,6 +43,7 @@ type instanceFacts struct {
 	instanceType          string
 	imageID               string
 	iamInstanceProfileArn string
+	keyName               string
 	userData              []byte
 }
 

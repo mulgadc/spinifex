@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"sort"
 	"strconv"
@@ -310,6 +311,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			PublicAccessCidrs:     publicCidrs,
 		},
 		BuiltinIngress: builtinIngressEnabled(input.Tags),
+		Tags:           aws.StringValueMap(input.Tags),
 		CreatedAt:      time.Now().UTC(),
 	}
 	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
@@ -1226,17 +1228,113 @@ func (s *EKSServiceImpl) DisassociateIdentityProviderConfig(_ *eks.DisassociateI
 }
 
 // --- Tags ---
+//
+// Store-only against the cluster meta record (no enforcement). Together with
+// DescribeCluster echoing create-time tags this gives a stock terraform-aws
+// provider a clean default_tags round-trip instead of perpetual drift. Only
+// cluster ARNs are backed; other EKS resource ARNs return NotImplemented.
 
-func (s *EKSServiceImpl) TagResource(_ *eks.TagResourceInput, _ string) (*eks.TagResourceOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) TagResource(input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error) {
+	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
+	if !ok {
+		return nil, notImpl()
+	}
+	acctKV, err := s.accountBucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	add := aws.StringValueMap(input.Tags)
+	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+		if len(add) == 0 {
+			return false
+		}
+		if m.Tags == nil {
+			m.Tags = make(map[string]string, len(add))
+		}
+		maps.Copy(m.Tags, add)
+		return true
+	}); err != nil {
+		return nil, eksTagErr(err)
+	}
+	return &eks.TagResourceOutput{}, nil
 }
 
-func (s *EKSServiceImpl) UntagResource(_ *eks.UntagResourceInput, _ string) (*eks.UntagResourceOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) UntagResource(input *eks.UntagResourceInput, accountID string) (*eks.UntagResourceOutput, error) {
+	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
+	if !ok {
+		return nil, notImpl()
+	}
+	acctKV, err := s.accountBucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	keys := aws.StringValueSlice(input.TagKeys)
+	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
+		changed := false
+		for _, k := range keys {
+			if _, ok := m.Tags[k]; ok {
+				delete(m.Tags, k)
+				changed = true
+			}
+		}
+		return changed
+	}); err != nil {
+		return nil, eksTagErr(err)
+	}
+	return &eks.UntagResourceOutput{}, nil
 }
 
-func (s *EKSServiceImpl) ListTagsForResource(_ *eks.ListTagsForResourceInput, _ string) (*eks.ListTagsForResourceOutput, error) {
-	return nil, notImpl()
+func (s *EKSServiceImpl) ListTagsForResource(input *eks.ListTagsForResourceInput, accountID string) (*eks.ListTagsForResourceOutput, error) {
+	name, ok := clusterNameFromARN(aws.StringValue(input.ResourceArn))
+	if !ok {
+		return nil, notImpl()
+	}
+	acctKV, err := s.accountBucket(accountID)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := GetClusterMeta(acctKV, name)
+	if err != nil {
+		return nil, eksTagErr(err)
+	}
+	return &eks.ListTagsForResourceOutput{Tags: aws.StringMap(meta.Tags)}, nil
+}
+
+// accountBucket returns the per-account KV bucket for accountID.
+func (s *EKSServiceImpl) accountBucket(accountID string) (nats.KeyValue, error) {
+	js, err := s.deps.NATSConn.JetStream()
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	return GetOrCreateAccountBucket(js, accountID)
+}
+
+// clusterNameFromARN extracts the cluster name from an EKS cluster ARN
+// (arn:aws:eks:<region>:<acct>:cluster/<name>), reporting false for any other
+// ARN shape (e.g. nodegroup) the tag store does not back.
+func clusterNameFromARN(arn string) (string, bool) {
+	const prefix = "arn:aws:eks:"
+	if !strings.HasPrefix(arn, prefix) {
+		return "", false
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 {
+		return "", false
+	}
+	resType, name, found := strings.Cut(parts[5], "/")
+	if !found || resType != "cluster" || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// eksTagErr maps a meta-store error to the AWS-visible tag-op error: a missing
+// cluster surfaces as ResourceNotFound, everything else passes through.
+func eksTagErr(err error) error {
+	if errors.Is(err, ErrClusterNotFound) {
+		return errors.New(awserrors.ErrorEKSResourceNotFound)
+	}
+	return err
 }
 
 // --- helpers ---
@@ -1401,6 +1499,9 @@ func clusterMetaToAWS(meta *ClusterMeta) *eks.Cluster {
 				Message: aws.String(meta.HealthIssue),
 			}},
 		}
+	}
+	if len(meta.Tags) > 0 {
+		out.Tags = aws.StringMap(meta.Tags)
 	}
 	return out
 }

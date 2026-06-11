@@ -164,9 +164,6 @@ data "aws_ami" "ubuntu" {
 
 resource "aws_s3_bucket" "uploads" {
   bucket = var.bucket_name
-
-  # The app uploads objects at runtime; allow destroy to empty the bucket first.
-  force_destroy = true
 }
 
 # ---------------------------------------------------------------------------

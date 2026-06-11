@@ -689,34 +689,6 @@ func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {
 
 // ----- Unit tests for the trust-policy helpers ---------------------------
 
-func TestParseRoleARN(t *testing.T) {
-	cases := []struct {
-		arn         string
-		wantAccount string
-		wantName    string
-		wantErr     bool
-	}{
-		{"arn:aws:iam::000000000000:role/app", "000000000000", "app", false},
-		{"arn:aws:iam::000000000000:role/path/to/app", "000000000000", "app", false},
-		{"arn:aws:iam::000000000000:user/alice", "", "", true},
-		{"arn:aws:iam::000000000000:role/", "", "", true},
-		{"arn:aws:iam:us-east-1:000000000000:role/app", "", "", true},
-		{"not-an-arn", "", "", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.arn, func(t *testing.T) {
-			a, n, err := parseRoleARN(tc.arn)
-			if tc.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantAccount, a)
-			assert.Equal(t, tc.wantName, n)
-		})
-	}
-}
-
 func TestComputeTokenHMAC_Deterministic(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	a := computeTokenHMAC(key, "wire-token")

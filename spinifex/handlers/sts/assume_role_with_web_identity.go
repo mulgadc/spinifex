@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
@@ -61,7 +62,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 		return nil, errors.New(awserrors.ErrorPackedPolicyTooLarge)
 	}
 
-	roleAccountID, roleName, err := parseRoleARN(roleARN)
+	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorValidationError)
 	}

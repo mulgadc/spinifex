@@ -22,11 +22,8 @@ const (
 	// static, so a short TTL keeps the iam/* GETs off a NATS round-trip per request.
 	profileCacheTTL = 5 * time.Minute
 
-	// pubKeyCacheTTL memoises launch SSH public-key material. The material is
-	// immutable for a key's lifetime, so a short TTL keeps repeat
-	// public-keys/0/openssh-key fetches off a NATS round-trip. Same value as
-	// profileCacheTTL but its own named const so the 5-min reuse isn't mistaken
-	// for the profile cache.
+	// pubKeyCacheTTL memoises SSH public-key material, immutable for a key's
+	// lifetime; separate from profileCacheTTL so the two are tunable independently.
 	pubKeyCacheTTL = 5 * time.Minute
 )
 

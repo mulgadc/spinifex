@@ -367,13 +367,10 @@ func (s *KeyServiceImpl) ValidateKeyPairExists(accountID, keyName string) error 
 	return err
 }
 
-// GetPublicKeyMaterial returns the stored OpenSSH public key line for a key pair
-// ("ssh-… AAAA… <comment>"), trimmed to a single clean line. The material lives
-// at keys/<accountID>/<keyName> — the same path CreateKeyPair/ImportKeyPair write.
-// A key deleted from the store maps to ErrorInvalidKeyPairNotFound (the IMDS
-// handler renders that as 404); any other fault is returned as-is so the caller
-// can 500 rather than serve a guest a keyless boot. The trailing newline is the
-// caller's to add.
+// GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a
+// single clean line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; every other
+// fault is returned as-is so the caller can distinguish absence (404) from a
+// backend error (500).
 func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string, error) {
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	result, err := s.store.GetObject(&s3.GetObjectInput{

@@ -160,6 +160,10 @@ func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
 	for range 2 {
 		_, err := lookup.GetPublicKey(imdsTestAccountID, "missing")
 		require.Error(t, err)
+		// The NotFound code must survive the round-trip verbatim: the IMDS
+		// handler's 404-vs-500 split keys off this exact string, so a future
+		// wrap that collapses it to InternalError flips a deleted key to 500.
+		assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
 	}
 	assert.Equal(t, int32(2), atomic.LoadInt32(calls))
 }

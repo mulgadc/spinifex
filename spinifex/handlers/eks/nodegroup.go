@@ -302,10 +302,9 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		return
 	}
 
-	instanceIDs, err := s.launchWorkers(accountID, rec, meta, ngSGID, amiID, token, lc.desired)
-	rec.InstanceIDs = instanceIDs
-	if err != nil {
-		// Persist whatever launched so DeleteNodegroup can reclaim it, then fail.
+	if _, err := s.launchWorkers(acctKV, accountID, rec, meta, ngSGID, amiID, token, lc.desired); err != nil {
+		// launchWorkers persisted each worker it launched (incrementally), so the
+		// reclaim path can already tear them down; just record the terminal failure.
 		rec.Status = eks.NodegroupStatusCreateFailed
 		rec.StatusReason = "launch workers: " + err.Error()
 		rec.ModifiedAt = time.Now().UTC()
@@ -327,13 +326,17 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 // so each gets a distinct node name + node label in its user-data) and returns
 // the launched instance IDs. On a partial failure it returns the IDs that did
 // launch plus the error so the caller can persist them for teardown.
-func (s *EKSServiceImpl) launchWorkers(accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
+func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	instanceType := defaultNodegroupInstanceType
 	if len(rec.InstanceTypes) > 0 {
 		instanceType = rec.InstanceTypes[0]
 	}
 	subnet := rec.Subnets[0]
 
+	// base is the worker set already on the record (non-empty on a scale-up).
+	// Each incremental persist below writes base+newly-launched so the durable
+	// record always reflects every live worker, never just this call's additions.
+	base := append([]string(nil), rec.InstanceIDs...)
 	ids := make([]string, 0, count)
 	for i := range count {
 		shortID := uuid.NewString()[:8]
@@ -374,6 +377,15 @@ func (s *EKSServiceImpl) launchWorkers(accountID string, rec *NodegroupRecord, m
 			if id := aws.StringValue(inst.InstanceId); id != "" {
 				ids = append(ids, id)
 			}
+		}
+		// Persist the launched worker IDs before issuing the next RunInstances so
+		// a crash mid-loop leaves every live worker recorded and reclaimable (by
+		// DeleteNodegroup or the boot reclaim sweep). Without this the record keeps
+		// its claim-time InstanceIDs until the loop's terminal write, which strands
+		// the already-launched workers if the daemon dies in between.
+		rec.InstanceIDs = append(append([]string(nil), base...), ids...)
+		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
+			return ids, fmt.Errorf("persist launched workers %d/%d: %w", i+1, count, perr)
 		}
 	}
 	return ids, nil
@@ -503,9 +515,8 @@ func (s *EKSServiceImpl) reconcileWorkerCount(acctKV nats.KeyValue, accountID st
 		if err != nil {
 			return fmt.Errorf("ensure cluster SGs: %w", err)
 		}
-		newIDs, err := s.launchWorkers(accountID, rec, meta, ngSGID, amiID, token, desired-current)
-		rec.InstanceIDs = append(rec.InstanceIDs, newIDs...)
-		if err != nil {
+		// launchWorkers appends to and persists rec.InstanceIDs incrementally.
+		if _, err := s.launchWorkers(acctKV, accountID, rec, meta, ngSGID, amiID, token, desired-current); err != nil {
 			return fmt.Errorf("launch workers: %w", err)
 		}
 	case desired < current:
@@ -577,6 +588,55 @@ func (s *EKSServiceImpl) decryptNodeToken(kv nats.KeyValue, cluster string) (str
 		return "", errors.New("eks: decrypted node token is empty")
 	}
 	return token, nil
+}
+
+// reclaimOrphanedNodegroups terminates workers stranded by a daemon restart
+// that interrupted createNodegroup. It runs once on boot
+// (SpawnRegisteredReconcilers), before any launch goroutine from this process
+// exists, so a record still in CREATING is definitionally orphaned: its launcher
+// died with the prior process and nothing will ever drive it to a terminal
+// state. Such records — and any CREATE_FAILED record still holding worker IDs —
+// have their recorded workers terminated and the record settled to CREATE_FAILED
+// with InstanceIDs cleared, which is idempotent on the next boot.
+func (s *EKSServiceImpl) reclaimOrphanedNodegroups(accountID string, acctKV nats.KeyValue, cluster string) {
+	recs, err := ListNodegroupRecords(acctKV, cluster)
+	if err != nil {
+		slog.Warn("reclaimOrphanedNodegroups: list records failed", "cluster", cluster, "err", err)
+		return
+	}
+	for _, rec := range recs {
+		stuckCreating := rec.Status == eks.NodegroupStatusCreating
+		failedWithWorkers := rec.Status == eks.NodegroupStatusCreateFailed && len(rec.InstanceIDs) > 0
+		if !stuckCreating && !failedWithWorkers {
+			continue
+		}
+		if len(rec.InstanceIDs) > 0 {
+			if err := s.deps.Worker.TerminateWorkerInstances(rec.InstanceIDs, accountID); err != nil {
+				// Leave the record untouched so the next boot retries the reclaim
+				// rather than orphaning the workers by clearing their IDs.
+				slog.Error("reclaimOrphanedNodegroups: terminate workers failed",
+					"cluster", cluster, "nodegroup", rec.Name, "instances", rec.InstanceIDs, "err", err)
+				continue
+			}
+		}
+		reason := rec.StatusReason
+		if stuckCreating {
+			reason = "create interrupted by daemon restart; stranded workers reclaimed"
+		}
+		priorStatus := rec.Status
+		workerCount := len(rec.InstanceIDs)
+		rec.Status = eks.NodegroupStatusCreateFailed
+		rec.StatusReason = reason
+		rec.InstanceIDs = nil
+		rec.ModifiedAt = time.Now().UTC()
+		if err := PutNodegroupRecord(acctKV, rec); err != nil {
+			slog.Warn("reclaimOrphanedNodegroups: persist settled record failed",
+				"cluster", cluster, "nodegroup", rec.Name, "err", err)
+			continue
+		}
+		slog.Info("reclaimOrphanedNodegroups: reclaimed stranded nodegroup workers",
+			"cluster", cluster, "nodegroup", rec.Name, "priorStatus", priorStatus, "workers", workerCount)
+	}
 }
 
 func (s *EKSServiceImpl) markNodegroupFailed(kv nats.KeyValue, cluster, ng, reason string) {

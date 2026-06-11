@@ -171,6 +171,11 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
+			// Reclaim any nodegroup workers stranded by the restart: a launch that
+			// was in flight when the prior process died left a CREATING (or
+			// partially-launched CREATE_FAILED) record whose workers nothing else
+			// will ever terminate.
+			s.reclaimOrphanedNodegroups(accountID, acctKV, cluster)
 			// Re-subscribe to missing artifacts; K3s publishes each one-shot message once.
 			if meta.Status == ClusterStatusCreating {
 				if pending := BootstrapPendingKinds(acctKV, cluster, meta); len(pending) > 0 {

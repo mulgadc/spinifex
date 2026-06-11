@@ -147,6 +147,29 @@ func TestCreateCluster_EgressFailedThenDeleteTerminatesControlPlane(t *testing.T
 	assert.ErrorIs(t, getErr, ErrClusterNotFound)
 }
 
+// A create whose async launch fails after the NLB is provisioned must eagerly
+// tear down the infra it already built — EKS names are unique per create, so no
+// same-name retry ever fires the FAILED-cluster reclaim, and the internet-facing
+// LB VM would otherwise keep its allocated+associated EIP indefinitely. The
+// FAILED meta is retained for observability; purge is idempotent so a later
+// DeleteCluster re-purge is a no-op (mulga-siv-293).
+func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.inst.launchErr = errors.New("no capacity")
+
+	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	require.NotEmpty(t, f.nlb.createLBCalls, "launch provisioned an NLB before failing")
+	// No DeleteCluster here: the failure handler itself must reap the NLB/LB VM.
+	assert.NotEmpty(t, f.nlb.deleteLBCalls, "failed launch must eagerly tear down the NLB it provisioned")
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "FAILED meta is retained for observability")
+	assert.Equal(t, ClusterStatusFailed, meta.Status)
+}
+
 // A live (CREATING/ACTIVE) cluster of the same name blocks create with a
 // cluster-scoped ResourceInUseException, not the ELBv2 target-group message.
 func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {

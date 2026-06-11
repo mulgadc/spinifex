@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/tags"
@@ -578,4 +579,70 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
 	}
+}
+
+// releaseSystemInstanceEIP must release an eipService-allocated address back to
+// its pool and clear the instance's EIP fields. The vm.Manager teardown
+// (Terminate/MarkFailed → ReleasePublicIP) only knows the externalIPAM path, so
+// without this an internet-facing system VM's allocated+associated EIP would
+// leak when its instance is torn down (mulga-siv-293).
+func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
+	d := createVPCTestDaemon(t)
+
+	jsNS, err := server.NewServer(&server.Options{
+		Host:      "127.0.0.1",
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	})
+	require.NoError(t, err)
+	go jsNS.Start()
+	require.True(t, jsNS.ReadyForConnections(5*time.Second))
+	t.Cleanup(func() { jsNS.Shutdown() })
+
+	jsNC, err := nats.Connect(jsNS.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { jsNC.Close() })
+
+	js, err := jsNC.JetStream()
+	require.NoError(t, err)
+	ipam, err := handlers_ec2_vpc.NewExternalIPAM(js, []handlers_ec2_vpc.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	d.externalIPAM = ipam
+
+	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(jsNC, ipam, d.vpcService)
+	require.NoError(t, err)
+	d.eipService = eipSvc
+
+	// Allocate an EIP the way an internet-facing LB VM launch does, then attach
+	// it to a registered system instance.
+	alloc, err := eipSvc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	allocID := aws.StringValue(alloc.AllocationId)
+	publicIP := aws.StringValue(alloc.PublicIp)
+	require.NotEmpty(t, allocID)
+	require.NotEmpty(t, publicIP)
+
+	inst := &vm.VM{ID: "i-lbvm", AccountID: testAccountID, PublicIP: publicIP, PublicIPAllocID: allocID}
+	d.vmMgr.Insert(inst)
+
+	rec, err := ipam.GetPoolRecord("wan-test")
+	require.NoError(t, err)
+	_, allocated := rec.Allocated[publicIP]
+	require.True(t, allocated, "EIP is held by the pool before release")
+
+	d.releaseSystemInstanceEIP(inst)
+
+	rec, err = ipam.GetPoolRecord("wan-test")
+	require.NoError(t, err)
+	_, stillAllocated := rec.Allocated[publicIP]
+	assert.False(t, stillAllocated, "release must return the EIP to the pool")
+
+	assert.Empty(t, inst.PublicIP, "instance public IP must be cleared")
+	assert.Empty(t, inst.PublicIPAllocID, "instance alloc ID must be cleared so externalIPAM teardown does not double-release")
+	assert.Empty(t, inst.PublicIPAssocID)
 }

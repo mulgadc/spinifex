@@ -331,7 +331,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	s.launchWG.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.failClusterLaunch(acctKV, name, accountID, "launch panic", fmt.Errorf("%v", r))
+				s.failClusterLaunch(acctKV, name, accountID, meta, "launch panic", fmt.Errorf("%v", r))
 			}
 		}()
 		s.launchClusterInfra(clusterLaunchCtx{
@@ -367,9 +367,26 @@ type clusterLaunchCtx struct {
 	acctKV             nats.KeyValue
 }
 
-// failClusterLaunch logs a launch failure and marks the cluster FAILED so DescribeCluster surfaces the cause.
-func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID, stage string, err error) {
+// failClusterLaunch records an asynchronous control-plane launch failure: it
+// marks the cluster FAILED (with reason, so DescribeCluster surfaces the cause
+// and the 267.3 reclaim path can recreate cleanly) and logs the stage. The
+// launch runs after the CREATING response was already sent, so a failure can
+// only surface as status, never as the CreateCluster return value.
+func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID string, meta *ClusterMeta, stage string, err error) {
 	_ = logCreateErr(name, accountID, stage, err)
+	// Release any billable infra already provisioned this launch (LB VM + its
+	// associated EIP, egress EIP, NLB, CP VMs, OIDC) so a failed create never
+	// strands resources. Cluster names are unique, so the same-name reclaim that
+	// would otherwise purge a FAILED attempt never fires — without this, the
+	// internet-facing LB VM's EIP leaks permanently. Operate on the in-memory
+	// meta: a failure in PutClusterMeta itself leaves the freshest refs only
+	// here, not in the KV record. Best-effort; the FAILED status is recorded
+	// regardless (deleteMeta=false keeps the meta for DescribeCluster/reclaim).
+	if meta != nil {
+		if perr := s.purgeClusterInfra(accountID, name, meta, kv, false); perr != nil {
+			slog.Warn("failClusterLaunch: infra purge incomplete", "cluster", name, "stage", stage, "err", perr)
+		}
+	}
 	if mErr := MarkClusterFailed(kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
 		slog.Warn("launchClusterInfra: MarkClusterFailed failed", "cluster", name, "err", mErr)
 	}
@@ -392,22 +409,22 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 
 	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, accountID, name, vpcID)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster SGs", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster SGs", err)
 		return
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
 	vpcCIDR, err := s.deps.VPCSubnet.GetVPCCIDR(accountID, vpcID)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "resolve vpc cidr", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "resolve vpc cidr", err)
 		return
 	}
 	if err := EnsureControlPlaneIngress(s.deps.VPCSG, accountID, cpSG, vpcCIDR); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane ingress", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure control-plane ingress", err)
 		return
 	}
 	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, accountID, cpSG); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane HA ingress", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure control-plane HA ingress", err)
 		return
 	}
 
@@ -418,13 +435,13 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	// gateway LRP); the control-plane NLB is a system instance, so ensure one.
 	if publicAccess && s.deps.IGW != nil {
 		if err := EnsureClusterIGW(s.deps.IGW, accountID, vpcID, name); err != nil {
-			s.failClusterLaunch(acctKV, name, accountID, "ensure cluster IGW", err)
+			s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster IGW", err)
 			return
 		}
 	}
 	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster NLB", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
 	// The reachable front-end IP is the kubeconfig endpoint host so the apiserver
@@ -439,31 +456,31 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 
 	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist NLB arns", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist NLB arns", err)
 		return
 	}
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "build OIDC issuer", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "build OIDC issuer", err)
 		return
 	}
 	meta.OIDCIssuer = oidcIssuer
 
 	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "generate OIDC keypair", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "generate OIDC keypair", err)
 		return
 	}
 	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "derive OIDC public key", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "derive OIDC public key", err)
 		return
 	}
 
 	joinToken, err := GenerateK3sClusterToken()
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "generate k3s cluster token", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "generate k3s cluster token", err)
 		return
 	}
 
@@ -487,10 +504,10 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	})
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
-			s.failClusterLaunch(acctKV, name, accountID, "eks-server AMI not found", err)
+			s.failClusterLaunch(acctKV, name, accountID, meta, "eks-server AMI not found", err)
 			return
 		}
-		s.failClusterLaunch(acctKV, name, accountID, "launch K3s VM", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "launch K3s VM", err)
 		return
 	}
 	// Mirror primary CP ([0]) into scalar fields; all nodes are NLB-registered for failover.
@@ -504,13 +521,13 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 
 	// Persist CP IDs immediately; VMs are live now and must not be orphaned on later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist control-plane ids", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist control-plane ids", err)
 		return
 	}
 
 	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "allocate cluster egress IP", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "allocate cluster egress IP", err)
 		return
 	}
 	meta.EgressEIPAllocationID = egressAllocID
@@ -524,7 +541,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 
 	// Persist egress allocation so DeleteCluster can reclaim it on later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist egress allocation", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist egress allocation", err)
 		return
 	}
 
@@ -533,12 +550,12 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		cpENIIPs = append(cpENIIPs, n.ENIIP)
 	}
 	if err := RegisterClusterTargets(s.deps.NLB, accountID, nlb.TargetGroupArn, cpENIIPs); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "register NLB targets", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "register NLB targets", err)
 		return
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist final meta", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist final meta", err)
 		return
 	}
 
@@ -547,7 +564,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
 			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
 		if err := PutAccessEntryRecord(acctKV, rec); err != nil {
-			s.failClusterLaunch(acctKV, name, accountID, "seed cluster-creator admin access entry", err)
+			s.failClusterLaunch(acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
 		}
 	} else if bootstrapCreatorAdmin(input) {

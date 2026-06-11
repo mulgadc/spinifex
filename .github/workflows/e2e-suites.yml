@@ -232,7 +232,9 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          SUITES_BUILD="${{ steps.suites.outputs.list }}"
+          # teardown always builds: the run-scoped sweep binary runs in the
+          # teardown job, it is never a selectable suite leg.
+          SUITES_BUILD="${{ steps.suites.outputs.list }} teardown"
           banner "build ${SUITES_BUILD// /, }"
           group_open "go test -c"
           make e2e-build SUITES_BUILD="${SUITES_BUILD}"
@@ -309,6 +311,7 @@ jobs:
              printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"${SUITE}\" \"\$R\"; \
              date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
                ./${SUITE}.test -test.v -test.timeout=30m ${TEST_RUN_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log' \
@@ -413,6 +416,24 @@ jobs:
           path: ${{ env.ARTIFACT_DIR }}
           if-no-files-found: ignore
           retention-days: 14
+
+      # Reclaim any resource leaked by a crashed/interrupted suite before the VM
+      # is destroyed. Scoped to this run's tag, best-effort, never fails the job.
+      - name: Sweep leaked run resources on VM
+        if: ${{ needs.single_provision.result == 'success' && env.WAN_IP != '' }}
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}")
+          VM=tf-user@${WAN_IP}
+          banner "sweep run-tagged resources (run ${{ github.run_id }})"
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "cd \$HOME/spinifex-e2e-bin 2>/dev/null && \
+             SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+             SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+             ./teardown.test -test.v -test.run TestSweepRunResources -test.timeout=10m" \
+            2>&1 || true
+          true
 
       - name: Teardown VM
         if: always()
@@ -562,9 +583,9 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
-          banner "build multinode"
+          banner "build multinode, teardown"
           group_open "go test -c"
-          make e2e-build SUITES_BUILD="multinode"
+          make e2e-build SUITES_BUILD="multinode teardown"
           group_close
           ok "$(basename _bin/multinode.test) $(stat -c '%s' _bin/multinode.test | numfmt --to=iec)"
 
@@ -639,6 +660,7 @@ jobs:
              printf '\n━━ suite %s ━━\n' \"${SUITE}\"; \
              date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+               SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
                SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
                SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
@@ -713,6 +735,23 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: spinifex
+
+      # Reclaim leaked run-tagged resources before the cluster is destroyed.
+      - name: Sweep leaked run resources on node1
+        if: ${{ needs.multi_provision.result == 'success' && needs.multi_provision.outputs.node1_ip != '' }}
+        run: |
+          set +e
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY}")
+          VM=tf-user@${{ needs.multi_provision.outputs.node1_ip }}
+          banner "sweep run-tagged resources (run ${{ github.run_id }})"
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "cd \$HOME/spinifex-e2e-bin 2>/dev/null && \
+             SPINIFEX_E2E=1 SPINIFEX_MODE=multinode \
+             SPINIFEX_E2E_RUN_ID='${{ github.run_id }}' \
+             ./teardown.test -test.v -test.run TestSweepRunResources -test.timeout=10m" \
+            2>&1 || true
+          true
 
       - name: Teardown cluster
         if: always()

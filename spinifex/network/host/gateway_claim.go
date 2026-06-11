@@ -23,22 +23,25 @@ func NewGatewayClaimProber(sbAddr string) *GatewayClaimProber {
 	return &GatewayClaimProber{sbAddr: sbAddr}
 }
 
-// GatewayPortClaimed reports whether the SB Port_Binding for lrpName has a
-// non-empty chassis. An unclaimed binding (chassis == []) means ovn-controller
-// has not installed flows for the gateway redirect, so the floating IPs behind
-// it are unreachable. ctx is part of the verifier contract; ovn-sbctl is a
-// short-lived local query and is not cancelled mid-flight.
-func (p *GatewayClaimProber) GatewayPortClaimed(_ context.Context, lrpName string) (bool, error) {
+// GatewayPortClaimed reports whether the SB Port_Binding for crPortName has a
+// non-empty chassis. crPortName is the chassisredirect (cr-) port of a
+// distributed gateway port: the bare LRP binding stays distributed/chassis-less,
+// so the chassisredirect port is the one that carries the gateway-chassis claim.
+// An unclaimed binding (chassis == []) means ovn-controller has not installed
+// flows for the gateway redirect, so the floating IPs behind it are unreachable.
+// ctx is part of the verifier contract; ovn-sbctl is a short-lived local query
+// and is not cancelled mid-flight.
+func (p *GatewayClaimProber) GatewayPortClaimed(_ context.Context, crPortName string) (bool, error) {
 	args := []string{"--no-leader-only"}
 	if p.sbAddr != "" {
 		args = append(args, "--db="+p.sbAddr)
 	}
-	args = append(args, "--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+lrpName)
+	args = append(args, "--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)
 	// Output() not CombinedOutput(): sudo PAM audit noise on stderr would
 	// otherwise be read as a non-empty chassis value.
 	out, err := utils.SudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
-		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", lrpName, err)
+		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", crPortName, err)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
 }

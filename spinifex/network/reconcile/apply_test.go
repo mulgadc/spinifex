@@ -256,6 +256,61 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	}
 }
 
+// TestReconcile_GatewayClaimChecksChassisRedirectPort pins the claim verifier to
+// the chassisredirect (cr-) Port_Binding. The distributed gateway LRP binding is
+// always chassis-less; checking it instead made ensureGatewayClaimed report
+// "unclaimed" forever and fire a recompute every cycle, churning the EIP datapath.
+func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
+	withFastClaimBounds(t)
+	m := mock.New()
+	sg := policy.NewSecurityGroupManager(m)
+	nat, _ := policy.NewNATManager(m, policy.NATModeDistributed)
+	routes := policy.NewRouteManager(m)
+	igw, _ := external.NewIGWManager(external.IGWManagerConfig{
+		OVN: m, Routes: routes, NAT: nat,
+		Allocator: external.LinkLocalAllocator{},
+		NATMode:   policy.NATModeDistributed,
+	})
+	topo := topology.NewLiveManager(m)
+	claim := &fakeClaimVerifier{claimedAfter: 0} // reports claimed immediately
+	rec, err := New(Config{
+		OVN: m, SG: sg, NAT: nat, Routes: routes, IGW: igw, Topology: topo,
+		LocalAZ: "us-east-1a", NodeHostname: "test-host",
+		Chassis: []string{"chassis-1"}, GatewayClaim: claim,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	intent := IntentState{
+		VPCs: map[string]topology.VPCSpec{
+			"vpc-a": {VPCID: "vpc-a", CIDR: netip.MustParsePrefix("10.0.0.0/16"), VNI: 100},
+		},
+		Subnets: map[string]topology.SubnetSpec{},
+		Ports:   map[string]topology.PortSpec{},
+		SGs:     map[string]policy.SGSpec{},
+		IGWs:    map[string]external.IGWSpec{"vpc-a": {VPCID: "vpc-a", InternetGatewayID: "igw-a"}},
+		EIPs:    map[string]policy.EIPSpec{},
+		NATGWs:  map[string]policy.NATGWSpec{},
+	}
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if claim.checks == 0 {
+		t.Fatal("gateway claim verifier never queried; rebind path did not run")
+	}
+	want := topology.GatewayChassisRedirectPort("vpc-a")
+	if claim.lastPort != want {
+		t.Errorf("claim verifier checked %q, want chassisredirect port %q (the LRP %q is always chassis-less)",
+			claim.lastPort, want, topology.GatewayRouterPort("vpc-a"))
+	}
+	if claim.nudges != 0 {
+		t.Errorf("claimed redirect port nudged %d recompute(s), want 0", claim.nudges)
+	}
+}
+
 func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m)

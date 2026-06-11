@@ -16,10 +16,12 @@ type fakeClaimVerifier struct {
 	nudgeErr     error
 	checks       int
 	nudges       int
+	lastPort     string // most recent port name passed to GatewayPortClaimed
 }
 
-func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, _ string) (bool, error) {
+func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (bool, error) {
 	f.checks++
+	f.lastPort = port
 	if f.checkErr != nil {
 		return false, f.checkErr
 	}

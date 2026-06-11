@@ -28,6 +28,12 @@ func GatewayRouterPort(vpcID string) string { return "gw-" + vpcID }
 // peered with GatewayRouterPort.
 func GatewaySwitchPort(vpcID string) string { return "gw-port-" + vpcID }
 
+// GatewayChassisRedirectPort is the OVN chassisredirect Port_Binding for the
+// VPC's distributed gateway port. OVN derives it as "cr-"+LRP when the LRP has a
+// gateway_chassis; it is the only binding that carries the gateway-chassis claim
+// (the LRP binding itself stays distributed/chassis-less).
+func GatewayChassisRedirectPort(vpcID string) string { return "cr-" + GatewayRouterPort(vpcID) }
+
 // ExternalSwitch is the OVN logical switch name for the per-VPC external
 // switch bridging the gateway LRP to the localnet.
 func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }

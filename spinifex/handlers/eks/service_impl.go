@@ -415,12 +415,12 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster NLB", err)
 		return
 	}
-	// Prefer the NLB front-end IP for TLS SAN validation; fall back to DNS name.
-	endpointHost := nlb.FrontendIP
-	if endpointHost == "" {
-		endpointHost = nlb.DNSName
-	}
-	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
+	// The reachable front-end IP is the kubeconfig endpoint host so the apiserver
+	// serving cert (which SANs this IP) validates with TLS verification on.
+	// EnsureClusterNLB guarantees a non-empty FrontendIP (it fails the launch
+	// otherwise), so there is no DNS-name fallback to bake an unresolvable,
+	// non-SANed endpoint.
+	meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
 	meta.EndpointIP = nlb.FrontendIP
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn

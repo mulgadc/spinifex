@@ -1011,7 +1011,28 @@ func isCompatibleProtocol(listenerProto, tgProto string) bool {
 
 // --- Load Balancer operations ---
 
+// CreateLoadBalancer provisions the LB and returns immediately with it in
+// `provisioning` while the data-plane VM boots on a background goroutine
+// (267.4: an inline multi-minute boot head-of-line-blocks the shared gateway
+// responder, which then times out and re-publishes the create). Callers that
+// need the LB's front-end address before proceeding — e.g. EKS, which bakes the
+// IP into the control-plane apiserver cert SAN — must use CreateLoadBalancerSync.
 func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	return s.createLoadBalancer(input, accountID, false)
+}
+
+// CreateLoadBalancerSync creates the LB and drives its data-plane launch
+// synchronously, so the returned LB already carries its LoadBalancerAddresses
+// (LaunchSystemInstance is a bounded request/reply that returns the allocated
+// front-end IP before the multi-minute guest boot). Use only from an
+// off-responder worker — the launch blocks up to the system-instance timeout, so
+// running it on the shared gateway responder would reintroduce 267.4. The LB
+// still flips provisioning → active on the lb-agent's first heartbeat.
+func (s *ELBv2ServiceImpl) CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	return s.createLoadBalancer(input, accountID, true)
+}
+
+func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string, syncLaunch bool) (*elbv2.CreateLoadBalancerOutput, error) {
 	if input.Name == nil || *input.Name == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -1204,20 +1225,40 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	}
 
 	if willLaunch {
-		// Snapshot inputs so the goroutine doesn't alias the caller's record.
+		// Snapshot the launch inputs; the async goroutine must not read the record
+		// the caller is about to return.
 		lc := lbLaunchCtx{lbID: lbID, lbArn: lbArn, scheme: scheme, eniIDs: eniIDs, subnets: subnets, accountID: accountID}
-		s.launchWG.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
-					s.markLBFailed(lc.lbArn)
-				}
-			}()
-			s.launchLBVMAsync(lc)
-		})
+		if syncLaunch {
+			// Drive the data-plane launch inline so the returned record carries the
+			// allocated front-end IP. The caller is off the gateway responder, so
+			// 267.4 does not apply. provisionLBDataPlane leaves the record marked
+			// failed on launch failure for diagnosis.
+			if err := s.provisionLBDataPlane(lc); err != nil {
+				slog.Error("CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			launched, lerr := s.store.GetLoadBalancerByArn(lbArn)
+			if lerr != nil || launched == nil {
+				slog.Error("CreateLoadBalancerSync: reload after launch failed", "lbArn", lbArn, "err", lerr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			record = launched
+		} else {
+			s.launchWG.Go(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("CreateLoadBalancer: async launch panic", "lbId", lc.lbID, "panic", r)
+						s.markLBFailed(lc.lbArn)
+					}
+				}()
+				s.launchLBVMAsync(lc)
+			})
+		}
 	}
 
-	slog.Info("CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", state, "accountID", accountID)
+	// Agent heartbeat will transition provisioning → active on first contact.
+
+	slog.Info("CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", record.State, "accountID", accountID, "sync", syncLaunch)
 
 	return &elbv2.CreateLoadBalancerOutput{
 		LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(record)},
@@ -1234,23 +1275,28 @@ type lbLaunchCtx struct {
 	accountID string
 }
 
-// launchLBVMAsync boots the LB-VM and folds the result into the persisted record.
-// On failure marks the LB failed; on success stays provisioning until lb-agent heartbeats.
-func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
+// provisionLBDataPlane boots the LB-VM and folds the result into the persisted
+// record: on success the instance/VPC-IP/host-ports and the per-AZ front-end IP
+// are recorded and the LB stays provisioning until the lb-agent heartbeats; on
+// failure the record is marked failed so the API reflects the broken data plane.
+// Synchronous — launchLBVM (a bounded LaunchSystemInstance request/reply) returns
+// the allocated front-end IP before the guest boot completes. Callers choose
+// whether to run it inline (CreateLoadBalancerSync) or on a background goroutine
+// (launchLBVMAsync).
+func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
 	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID)
 
 	record, err := s.store.GetLoadBalancerByArn(lc.lbArn)
 	if err != nil || record == nil {
-		slog.Error("CreateLoadBalancer: async launch cannot reload record", "lbArn", lc.lbArn, "err", err)
-		return
+		return fmt.Errorf("reload record for %s: %w", lc.lbArn, err)
 	}
 
 	if launch.failed {
 		record.State = StateFailed
 		if putErr := s.store.PutLoadBalancer(record); putErr != nil {
-			slog.Error("CreateLoadBalancer: async launch failed to persist failed state", "lbArn", lc.lbArn, "err", putErr)
+			return fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
 		}
-		return
+		return fmt.Errorf("lb-vm launch failed for %s", lc.lbArn)
 	}
 
 	record.InstanceID = launch.instanceID
@@ -1260,7 +1306,17 @@ func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
 		record.AvailZones[0].PublicIP = launch.publicIP
 	}
 	if putErr := s.store.PutLoadBalancer(record); putErr != nil {
-		slog.Error("CreateLoadBalancer: async launch failed to persist launch result", "lbArn", lc.lbArn, "err", putErr)
+		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
+	}
+	return nil
+}
+
+// launchLBVMAsync runs provisionLBDataPlane on the background goroutine spawned
+// by CreateLoadBalancer; failures are logged (the record is already marked
+// failed inside provisionLBDataPlane). Runs after CreateLoadBalancer has returned.
+func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
+	if err := s.provisionLBDataPlane(lc); err != nil {
+		slog.Error("CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
 }
 

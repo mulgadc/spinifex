@@ -53,6 +53,7 @@ type EKSServiceDeps struct {
 	Instance  k3sInstanceLauncher
 	Image     k3sAMIResolver
 	EIP       eipProvisioner
+	IGW       igwProvisioner
 	Worker    WorkerLauncher
 
 	// PlacementGroup and Scheduler support HA control-plane spread (NATS-backed).
@@ -410,6 +411,17 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		return
 	}
 
+	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
+	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only). An
+	// internet-facing front-end IP is only answerable on the physical wire once
+	// the VPC has an attached IGW (it builds the OVN external switch + localnet +
+	// gateway LRP); the control-plane NLB is a system instance, so ensure one.
+	if publicAccess && s.deps.IGW != nil {
+		if err := EnsureClusterIGW(s.deps.IGW, accountID, vpcID, name); err != nil {
+			s.failClusterLaunch(acctKV, name, accountID, "ensure cluster IGW", err)
+			return
+		}
+	}
 	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster NLB", err)
@@ -830,6 +842,14 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
+		}
+		// Reclaim the cluster-owned IGW (ownership-scoped: a reused customer IGW
+		// is left intact). Must precede the VPC delete or that delete would hit
+		// DependencyViolation on the still-attached gateway.
+		if s.deps.IGW != nil {
+			if err := DeleteClusterIGW(s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {
+				slog.Warn("purgeClusterInfra: DeleteClusterIGW failed", "cluster", name, "err", err)
+			}
 		}
 	}
 

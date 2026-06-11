@@ -49,6 +49,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		Instance:         d,
 		Image:            d.imageService,
 		EIP:              d.eipService,
+		IGW:              d.igwService,
 		Worker:           d,
 		PlacementGroup:   handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:        handlers_eks.NewNATSHostScheduler(d.natsConn),

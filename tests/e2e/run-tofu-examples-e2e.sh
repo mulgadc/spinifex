@@ -232,15 +232,30 @@ assert_nginx_webserver() {
 }
 
 assert_s3_webapp() {
-    # aws s3 goes to predastore on :8443, not the awsgw on :9999 the default
-    # profile points at — the workbook's provider sets s3 = predastore_endpoint
-    # but the CLI doesn't inherit that.
-    local bucket sentinel endpoint
-    bucket=$(tofu output -raw bucket_name)
-    endpoint="https://${WAN_IP}:8443"
+    # Prove the INSTANCE wrote to S3 with IMDS-sourced STS creds: upload a file
+    # through the app (PutObject), then read it back from the listing (ListBucket
+    # + GetObject link). This exercises the full IMDS -> STS -> IAM ->
+    # predastore-authz path and fails closed if any link regresses — a
+    # harness-side CLI upload would still pass with IMDS broken.
+    local ip sentinel tmp
+    ip=$(tofu output -raw public_ip)
     sentinel="spinifex-nightly-$(date +%s).txt"
-    echo "nightly-smoke" | aws s3 cp --endpoint-url "$endpoint" - "s3://${bucket}/${sentinel}" >/dev/null
-    aws s3 ls --endpoint-url "$endpoint" "s3://${bucket}/" | grep -q "$sentinel"
+
+    wait_for_http_200 "http://${ip}/" || {
+        log "  s3-webapp: webapp not reachable on http://${ip}/"
+        return 1
+    }
+
+    tmp=$(mktemp)
+    echo "nightly-smoke" > "$tmp"
+    if ! curl -sf -F "file=@${tmp};filename=${sentinel}" "http://${ip}/upload" >/dev/null; then
+        rm -f "$tmp"
+        log "  s3-webapp: upload via app failed (IMDS -> STS -> S3 PutObject?)"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    curl -sf "http://${ip}/" | grep -q "$sentinel"
 }
 
 # Pick an instance type available on this cluster. Workbooks default to
@@ -284,8 +299,9 @@ run_workbook() {
         "-var=instance_type=${INSTANCE_TYPE}"
     )
 
-    # s3-webapp has three required-no-default vars; creds come from
-    # AWS_PROFILE=spinifex so the workbook's boto3 client authenticates.
+    # s3-webapp has three required-no-default vars. The s3_access/secret keys are
+    # the operator creds the provider uses to create the bucket + IAM role on
+    # predastore; the instance authenticates to S3 via IMDS, not these keys.
     if [ "$example" = "s3-webapp" ]; then
         local access_key secret_key
         access_key=$(aws configure get aws_access_key_id --profile spinifex)

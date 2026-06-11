@@ -2,6 +2,11 @@
 #
 # The predastore_host must be reachable from INSIDE the VPC guest — not
 # localhost. Use the host's br-wan or LAN IP, e.g. "192.168.1.10:8443".
+#
+# s3_access_key / s3_secret_key are the operator credentials for the Terraform
+# run only — they create the bucket on Predastore and the IAM role/profile.
+# They are NOT passed to the instance; the instance pulls short-lived STS
+# credentials from IMDS via its instance profile.
 
 predastore_host = "192.168.1.10:8443"
 s3_access_key   = "AKIAIOSFODNN7EXAMPLE"

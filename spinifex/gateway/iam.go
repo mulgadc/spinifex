@@ -78,6 +78,9 @@ var iamActions = map[string]IAMHandler{
 	"GetPolicyVersion": iamHandler(func(accountID string, input *iam.GetPolicyVersionInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.GetPolicyVersion(accountID, input, gw.IAMService)
 	}),
+	"ListPolicyVersions": iamHandler(func(accountID string, input *iam.ListPolicyVersionsInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListPolicyVersions(accountID, input, gw.IAMService)
+	}),
 	"ListPolicies": iamHandler(func(accountID string, input *iam.ListPoliciesInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.ListPolicies(accountID, input, gw.IAMService)
 	}),

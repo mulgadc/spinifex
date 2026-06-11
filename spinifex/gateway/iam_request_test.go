@@ -96,6 +96,10 @@ func (m *flexMockIAMService) GetPolicyVersion(_ string, _ *iam.GetPolicyVersionI
 	return &iam.GetPolicyVersionOutput{}, nil
 }
 
+func (m *flexMockIAMService) ListPolicyVersions(_ string, _ *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+	return &iam.ListPolicyVersionsOutput{}, nil
+}
+
 func (m *flexMockIAMService) ListPolicies(_ string, _ *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
 	return &iam.ListPoliciesOutput{}, nil
 }

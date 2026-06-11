@@ -22,6 +22,7 @@ type IAMService interface {
 	CreatePolicy(accountID string, input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error)
 	GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error)
 	GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error)
+	ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error)
 	ListPolicies(accountID string, input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error)
 	DeletePolicy(accountID string, input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error)
 

@@ -489,6 +489,7 @@ bypasses policy evaluation entirely.
 | `create-policy` | `--policy-name`, `--policy-document`, `--path`, `--description` | `--tags` | **DONE** |
 | `get-policy` | `--policy-arn` | — | **DONE** |
 | `get-policy-version` | `--policy-arn`, `--version-id` | — | **DONE** |
+| `list-policy-versions` | `--policy-arn` | `--max-items`, `--marker` | **DONE** |
 | `list-policies` | — | `--scope`, `--only-attached`, `--path-prefix`, `--max-items`, `--marker` | **DONE** |
 | `delete-policy` | `--policy-arn` | — | **DONE** |
 | `attach-user-policy` | `--user-name`, `--policy-arn` | — | **DONE** |

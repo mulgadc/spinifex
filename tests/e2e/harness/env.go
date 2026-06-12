@@ -19,7 +19,6 @@ type Mode string
 
 const (
 	ModeSingle    Mode = "single"
-	ModePseudo    Mode = "pseudo"
 	ModeMultinode Mode = "multinode"
 	ModeBaremetal Mode = "baremetal"
 )

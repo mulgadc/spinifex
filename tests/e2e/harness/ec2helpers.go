@@ -148,8 +148,8 @@ func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID strin
 			break
 		}
 	}
-	// Fall back to the first subnet if none is marked DefaultForAz — pseudo
-	// multinode skips the marker, and callers just need a usable subnet ID.
+	// Fall back to the first subnet if none is marked DefaultForAz; callers
+	// just need a usable subnet ID.
 	if subnetID == "" && len(subnets.Subnets) > 0 {
 		subnetID = aws.StringValue(subnets.Subnets[0].SubnetId)
 	}

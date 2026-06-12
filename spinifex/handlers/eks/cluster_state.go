@@ -53,8 +53,16 @@ type ClusterMeta struct {
 	// ControlPlaneMgmtIP is the CP VM's br-mgmt NIC address, used as the /healthz
 	// probe target until authoritative in-VPC DNS is available.
 	ControlPlaneMgmtIP string `json:"controlPlaneMgmtIp,omitempty"`
-	// ControlPlaneNodes lists placed CP server VMs; [0] is the primary for NLB
-	// and egress. Scalar ControlPlane* fields mirror [0] for back-compat.
+	// ManagedCPVPC holds the system-account control-plane VPC ("Set B") refs the
+	// NLB + CP VMs live in; nil for clusters created before this topology. Torn
+	// down by DeleteCluster.
+	ManagedCPVPC *ManagedCPVPC `json:"managedCpVpc,omitempty"`
+	// ControlPlaneNodes lists the placed control-plane server VMs. HA spread
+	// holds one entry per distinct host; the single-CP path holds one. [0] is the
+	// primary the NLB target + egress SNAT wire to until per-node NLB
+	// registration (231.7.3). The scalar ControlPlane* fields above mirror [0]
+	// for readers that predate this field (reconciler, teardown) and for clusters
+	// persisted before HA spread existed (empty ControlPlaneNodes).
 	ControlPlaneNodes []ControlPlaneNode `json:"controlPlaneNodes,omitempty"`
 	// ControlPlaneSpreadGroup is the spread placement-group name; "" for single-CP.
 	ControlPlaneSpreadGroup string `json:"controlPlaneSpreadGroup,omitempty"`
@@ -82,8 +90,26 @@ type ClusterMeta struct {
 	Tags map[string]string `json:"tags,omitempty"`
 }
 
-// ControlPlaneNode identifies one placed CP server VM. NodeID is the Spinifex
-// host; empty for a single-CP launched on the local node.
+// ManagedCPVPC records the spinifex-managed control-plane VPC ("Set B") built
+// under the system account at CreateCluster: the AWS-managed-account analogue
+// the customer never provisions. Holds the resource IDs DeleteCluster tears down
+// in dependency order (NAT GW + EIP → route tables → subnets → IGW → VPC). The
+// NLB lives in PublicSubnetId; the control-plane VM(s) in PrivateSubnetIds.
+type ManagedCPVPC struct {
+	VpcId               string   `json:"vpcId,omitempty"`
+	IGWId               string   `json:"igwId,omitempty"`
+	PublicSubnetId      string   `json:"publicSubnetId,omitempty"`
+	PublicRouteTableId  string   `json:"publicRouteTableId,omitempty"`
+	PrivateSubnetIds    []string `json:"privateSubnetIds,omitempty"`
+	PrivateRouteTableId string   `json:"privateRouteTableId,omitempty"`
+	NatGatewayId        string   `json:"natGatewayId,omitempty"`
+	NatEIPAllocationID  string   `json:"natEipAllocationId,omitempty"`
+	NatEIPPublicIP      string   `json:"natEipPublicIp,omitempty"`
+}
+
+// ControlPlaneNode identifies one placed control-plane server VM and the host
+// it landed on. NodeID is the Spinifex host — distinct per entry under HA
+// spread, empty for a single control plane launched on the local node.
 type ControlPlaneNode struct {
 	NodeID     string `json:"nodeId,omitempty"`
 	InstanceID string `json:"instanceId"`

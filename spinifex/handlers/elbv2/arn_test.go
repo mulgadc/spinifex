@@ -48,7 +48,8 @@ func TestBuildLBAgentEnv(t *testing.T) {
 		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		region:          "ap-southeast-2",
 	}
-	env := svc.buildLBAgentEnv("lb-abc123")
+	// A customer-account LB heartbeats over the WAN GatewayURL.
+	env := svc.buildLBAgentEnv("lb-abc123", "111122223333")
 
 	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
 	kvs := make(map[string]string, len(lines))
@@ -63,6 +64,26 @@ func TestBuildLBAgentEnv(t *testing.T) {
 	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", kvs["LB_ACCESS_KEY"])
 	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", kvs["LB_SECRET_KEY"])
 	assert.Equal(t, "ap-southeast-2", kvs["LB_REGION"])
+}
+
+// TestBuildLBAgentEnv_SystemAccountUsesMgmtGateway verifies a system-account LB
+// (e.g. the EKS cluster control-plane NLB) heartbeats over the mgmt-bridge URL,
+// not the WAN GatewayURL.
+func TestBuildLBAgentEnv_SystemAccountUsesMgmtGateway(t *testing.T) {
+	svc := &ELBv2ServiceImpl{
+		GatewayURL:      "https://10.0.0.1:9999",
+		MgmtBridgeIP:    "192.168.50.1",
+		SystemAccessKey: "AKIAIOSFODNN7EXAMPLE",
+		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		region:          "ap-southeast-2",
+	}
+	env := svc.buildLBAgentEnv("lb-eks01", "000000000000")
+	assert.Contains(t, env, "LB_GATEWAY_URL=https://192.168.50.1:9999\n")
+
+	// With no mgmt bridge, a system-account LB falls back to the WAN URL.
+	svc.MgmtBridgeIP = ""
+	env = svc.buildLBAgentEnv("lb-eks01", "000000000000")
+	assert.Contains(t, env, "LB_GATEWAY_URL=https://10.0.0.1:9999\n")
 }
 
 // TestSubnetCIDRForIP and TestSubnetGatewayIP cover the CIDR helpers.

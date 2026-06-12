@@ -38,6 +38,10 @@ type eksServiceFixture struct {
 	eip    *fakeEIPProvisioner
 	sg     *fakeSGProvisioner
 	worker *fakeWorkerLauncher
+	vpcMgr *fakeVPCProvisioner
+	igw    *fakeIGWProvisioner
+	ngw    *fakeNatGatewayProvisioner
+	rt     *fakeRouteTableProvisioner
 }
 
 func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
@@ -53,6 +57,10 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	eip := newFakeEIPProvisioner()
 	sg := newFakeSGProvisioner()
 	worker := newFakeWorkerLauncher()
+	vpcMgr := newFakeVPCProvisioner()
+	igw := newFakeIGWProvisioner()
+	ngw := newFakeNatGatewayProvisioner()
+	rt := newFakeRouteTableProvisioner()
 
 	svc, err := NewEKSServiceImpl(EKSServiceDeps{
 		NATSConn:         nc,
@@ -72,13 +80,17 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		Image:            ami,
 		EIP:              eip,
 		Worker:           worker,
+		VPCMgr:           vpcMgr,
+		IGW:              igw,
+		NATGW:            ngw,
+		RouteTable:       rt,
 		PlacementGroup:   &fakePlacer{},
 		Scheduler:        &fakeHostScheduler{},
 	})
 	require.NoError(t, err)
 	t.Cleanup(svc.Shutdown)
 
-	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker}
+	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker, vpcMgr: vpcMgr, igw: igw, ngw: ngw, rt: rt}
 }
 
 // deleteClusterFixture is an eksServiceFixture pre-seeded with a CREATING

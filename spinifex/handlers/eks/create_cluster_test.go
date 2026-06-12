@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/stretchr/testify/assert"
@@ -105,34 +106,34 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 	assert.ErrorIs(t, getErr, ErrClusterNotFound)
 }
 
-// A post-placement failure (egress allocation) must leave the just-launched
+// A post-placement failure (NLB target registration) must leave the just-launched
 // control-plane VM refs persisted in the FAILED meta. Otherwise the live
 // sys.medium VMs are unrecorded and neither DeleteCluster nor the FAILED-cluster
 // reclaim can reach them — they leak.
-func TestCreateCluster_EgressFailureLeavesControlPlaneRecorded(t *testing.T) {
+func TestCreateCluster_PostPlacementFailureLeavesControlPlaneRecorded(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	// Placement succeeds and launches the CP VM, then egress allocation fails.
-	f.eip.allocateErr = errors.New("no addresses in hidden pool")
+	// Placement succeeds and launches the CP VM, then target registration fails.
+	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
-	require.NotEmpty(t, f.inst.launchCalls, "control-plane VM was launched before the egress step")
+	require.NotEmpty(t, f.inst.launchCalls, "control-plane VM was launched before the register-targets step")
 
 	meta, getErr := GetClusterMeta(f.kv, "alpha")
 	require.NoError(t, getErr, "meta must remain so the leaked CP VM has an owning record")
 	assert.Equal(t, ClusterStatusFailed, meta.Status)
-	assert.NotEmpty(t, meta.ControlPlaneInstanceID, "CP instance ID must be persisted before the egress step")
-	assert.NotEmpty(t, meta.ControlPlaneNodes, "CP node list must be persisted before the egress step")
+	assert.NotEmpty(t, meta.ControlPlaneInstanceID, "CP instance ID must be persisted before the register-targets step")
+	assert.NotEmpty(t, meta.ControlPlaneNodes, "CP node list must be persisted before the register-targets step")
 }
 
-// End-to-end: a create that fails at egress, then delete-cluster, must terminate
-// the control-plane VM the partial create launched — driven by the CP refs the
-// early persist recorded.
-func TestCreateCluster_EgressFailedThenDeleteTerminatesControlPlane(t *testing.T) {
+// End-to-end: a create that fails after placement, then delete-cluster, must
+// terminate the control-plane VM the partial create launched — driven by the CP
+// refs the early persist recorded.
+func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *testing.T) {
 	f := newEKSServiceFixture(t)
-	f.eip.allocateErr = errors.New("no addresses in hidden pool")
+	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
 	_, err := f.svc.CreateCluster(createInput("alpha"), testAccountID, "")
 	require.NoError(t, err)
@@ -330,21 +331,37 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAccessEntryNotFound)
 }
 
-func TestCreateCluster_AllocatesHiddenEgressEIP(t *testing.T) {
+// CreateCluster builds the managed control-plane VPC ("Set B") under the system
+// account — the AWS-managed-account analogue the customer never provisions. The
+// control-plane runs in its private subnet and egresses via the CP VPC's NAT
+// gateway (no per-cluster hidden-pool EIP), so the persisted meta carries the CP
+// VPC refs and the NAT gateway is provisioned exactly once.
+func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	_, err := f.svc.CreateCluster(createInput("egress"), testAccountID, "")
+	_, err := f.svc.CreateCluster(createInput("setb"), testAccountID, "")
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
-	meta, err := GetClusterMeta(f.kv, "egress")
+	meta, err := GetClusterMeta(f.kv, "setb")
 	require.NoError(t, err)
-	assert.Equal(t, f.eip.publicIP, meta.EgressEIPPublicIP)
-	assert.Equal(t, f.eip.allocationID, meta.EgressEIPAllocationID)
+	require.NotNil(t, meta.ManagedCPVPC, "managed CP VPC refs must be persisted")
+	assert.NotEmpty(t, meta.ManagedCPVPC.VpcId)
+	assert.NotEmpty(t, meta.ManagedCPVPC.PublicSubnetId)
+	require.NotEmpty(t, meta.ManagedCPVPC.PrivateSubnetIds)
+	assert.NotEmpty(t, meta.ManagedCPVPC.NatGatewayId, "private CP subnet egresses via the NAT gateway")
 
-	require.Len(t, f.eip.allocateCalls, 1)
-	// The pool address is tagged ManagedBy=eks so it stays out of customer
-	// DescribeAddresses listings.
+	// The CP VPC is composed under the system account, not the caller's.
+	require.NotEmpty(t, f.vpcMgr.createVpcAccts)
+	for _, acct := range f.vpcMgr.createVpcAccts {
+		assert.Equal(t, admin.SystemAccountID(), acct, "managed CP VPC must be owned by the system account")
+	}
+	assert.Len(t, f.ngw.createCalls, 1, "exactly one NAT gateway for the CP VPC")
+
+	// No per-cluster hidden-pool egress EIP is allocated anymore; the only EIP is
+	// the NAT gateway's, tagged ManagedBy=eks so it stays out of customer listings.
+	assert.Empty(t, meta.EgressEIPAllocationID, "hidden-pool egress EIP is gone — egress is via the NAT gateway")
+	require.Len(t, f.eip.allocateCalls, 1, "one EIP: the NAT gateway address")
 	tagged := false
 	for _, spec := range f.eip.allocateCalls[0].TagSpecifications {
 		for _, tg := range spec.Tags {
@@ -353,5 +370,5 @@ func TestCreateCluster_AllocatesHiddenEgressEIP(t *testing.T) {
 			}
 		}
 	}
-	assert.True(t, tagged, "egress EIP must carry the ManagedBy=eks tag")
+	assert.True(t, tagged, "NAT gateway EIP must carry the ManagedBy=eks tag")
 }

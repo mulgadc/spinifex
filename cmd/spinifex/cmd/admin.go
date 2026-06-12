@@ -1598,7 +1598,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 	fmt.Println("\n📋 Next steps:")
 	fmt.Println("   1. Start services on ALL nodes:")
-	fmt.Println("      ./scripts/start-dev.sh")
+	fmt.Println("      sudo systemctl start spinifex.target")
 	fmt.Println()
 }
 

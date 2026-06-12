@@ -140,6 +140,13 @@ func (f *fakeStateStore) ListTerminatedInstances() ([]*vm.VM, error) {
 	return out, nil
 }
 
+func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.terminated, id)
+	return nil
+}
+
 var _ vm.StateStore = (*fakeStateStore)(nil)
 
 // daemonWithFakeStateStore returns a daemon wired with an in-memory NATS

@@ -976,6 +976,7 @@ func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
 	f.deletedStopped = append(f.deletedStopped, id)
 	return nil
 }
+func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{}

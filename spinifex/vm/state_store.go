@@ -19,4 +19,5 @@ type StateStore interface {
 
 	WriteTerminatedInstance(id string, v *VM) error
 	ListTerminatedInstances() ([]*VM, error)
+	DeleteTerminatedInstance(id string) error
 }

@@ -62,6 +62,10 @@ func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
 	return a.js.ListTerminatedInstances()
 }
 
+func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
+	return a.js.DeleteTerminatedInstance(id)
+}
+
 // volumeMounterAdapter satisfies vm.VolumeMounter by routing ebs.mount /
 // ebs.unmount NATS requests. Unmount also updates volume state via VolumeStateUpdater.
 type volumeMounterAdapter struct {

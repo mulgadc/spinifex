@@ -1113,6 +1113,7 @@ func (s *signalingStore) DeleteStoppedInstance(string) error        { return nil
 func (s *signalingStore) ListStoppedInstances() ([]*VM, error)      { return nil, nil }
 func (s *signalingStore) WriteTerminatedInstance(string, *VM) error { return nil }
 func (s *signalingStore) ListTerminatedInstances() ([]*VM, error)   { return nil, nil }
+func (s *signalingStore) DeleteTerminatedInstance(string) error     { return nil }
 
 var _ StateStore = (*signalingStore)(nil)
 

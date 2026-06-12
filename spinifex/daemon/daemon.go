@@ -1395,6 +1395,13 @@ func (d *Daemon) startCluster() error {
 	d.startHeartbeat()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
+	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
+	// a node-down mid-cascade and purge completed terminated records.
+	if d.jsManager != nil {
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, d.vmMgr.NewTerminatedTeardownReaper())
+		gc.Start(d.ctx)
+	}
+
 	d.ready.Store(true)
 	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
 

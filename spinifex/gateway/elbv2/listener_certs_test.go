@@ -64,8 +64,7 @@ func TestDescribeListenerCertificates_MissingArn(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
-// Delegation paths: a valid input with no daemon listening fast-fails on the
-// NATS request, exercising the svc.X call + error return in each gateway op.
+// Delegation paths: valid input, no daemon — NATS fast-fails, exercising the error return path.
 
 func TestAddListenerCertificates_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)

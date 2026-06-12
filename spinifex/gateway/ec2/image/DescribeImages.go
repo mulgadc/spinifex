@@ -15,7 +15,6 @@ func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 		return nil
 	}
 
-	// Validate ImageId format if provided
 	if input.ImageIds != nil {
 		for _, imageId := range input.ImageIds {
 			if imageId != nil && !strings.HasPrefix(*imageId, "ami-") {
@@ -28,22 +27,17 @@ func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 }
 
 func DescribeImages(input *ec2.DescribeImagesInput, natsConn *nats.Conn, accountID string) (output ec2.DescribeImagesOutput, err error) {
-	// Validate input
 	err = ValidateDescribeImagesInput(input)
-
 	if err != nil {
 		return output, err
 	}
 
-	// Create NATS service and call handler
 	imageService := handlers_ec2_image.NewNATSImageService(natsConn, 0)
 	result, err := imageService.DescribeImages(input, accountID)
-
 	if err != nil {
 		return output, err
 	}
 
-	// Return result
 	output = *result
 	return output, nil
 }

@@ -22,9 +22,8 @@ import (
 // Maximum request body size for signature validation (10 MB).
 const maxBodySize = 10 * 1024 * 1024
 
-// AKID prefixes. Branching on the prefix BEFORE any IAM/STS lookup eliminates
-// a class of bypass where a misfiled record could be resolved by the wrong
-// path.
+// AKID prefixes. Prefix-first dispatch prevents a misfiled record from being
+// resolved by the wrong lookup path.
 const (
 	longLivedAKIDPrefix = "AKIA"
 	sessionAKIDPrefix   = "ASIA"
@@ -49,18 +48,15 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Reject services the gateway doesn't serve before any crypto:
-			// otherwise Verify re-signs with the client-claimed service and
-			// rubber-stamps the scope.
+			// Reject unknown services before crypto; otherwise Verify re-signs with
+			// the client-claimed service name and rubber-stamps the scope.
 			if !supportedServices[sig.Service] {
 				gw.writeSigV4Error(w, r, awserrors.ErrorSignatureDoesNotMatch)
 				return
 			}
 
-			// Fail fast when NATS is down: LookupAccessKey waits 5s per attempt
-			// before context.DeadlineExceeded, and gateway.Request()'s catch-all
-			// IsConnected check is unreachable from here. Nil NATSConn (test
-			// helpers) skips the short-circuit.
+			// Fail fast when NATS is down; LookupAccessKey would hang 5 s otherwise.
+			// Nil NATSConn (test helpers) skips this check.
 			if gw.NATSConn != nil && !gw.NATSConn.IsConnected() {
 				gw.writeClusterUnavailable(w, r, sig.Service)
 				return
@@ -72,10 +68,6 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Resolve the AKID to a secret + principal context. Prefix-first
-			// dispatch — AWS does not mint AKIDs outside these two namespaces,
-			// and the bucket-prefix invariant guarantees an AKIA AKID cannot
-			// land in the session bucket or vice versa.
 			var (
 				secret     string
 				principal  principalContext
@@ -149,7 +141,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, principal.underlyingRoleARN)
 			}
 
-			// Parse once; dispatchers reuse via ctxQueryArgs. On error, the
+			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
 			// dispatcher re-parses and returns MalformedQueryString.
 			if args, err := ParseAWSQueryArgs(string(body)); err == nil {
 				ctx = context.WithValue(ctx, ctxQueryArgs, args)
@@ -179,8 +171,7 @@ type principalContext struct {
 	underlyingRoleARN string
 }
 
-// resolveLongLivedAKID handles the AKIA path: IAMService lookup, status check,
-// secret decryption. Returns an error code from awserrors on failure.
+// resolveLongLivedAKID handles the AKIA path: IAM lookup, status check, secret decrypt.
 func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (string, principalContext, string) {
 	ak, err := gw.IAMService.LookupAccessKey(accessKeyID)
 	if err != nil {
@@ -199,14 +190,8 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 	}
 	secret, err := gw.IAMService.DecryptSecret(ak.SecretAccessKey)
 	if err != nil {
-		// An undecryptable secret means the stored credential cannot be used to
-		// verify the request — e.g. the IAM master key was rotated out from
-		// under a key record left behind in KV. The credential is unverifiable,
-		// so this is an authentication failure, not a server fault: AWS never
-		// returns InternalError for a bad credential, and InvalidClientTokenId
-		// lets the client re-authenticate instead of retrying a dead request.
-		// The ERROR log preserves the signal for an operator diagnosing a
-		// genuine cipher misconfiguration.
+		// Undecryptable secret (e.g. master key rotated): treat as auth failure, not
+		// server fault, so the client re-authenticates instead of retrying a dead request.
 		slog.Error("Failed to decrypt IAM secret", "accessKeyID", accessKeyID, "err", err)
 		gw.RateLimiter.RecordFailure(clientIP)
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
@@ -219,9 +204,8 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID, clientIP string) (str
 }
 
 // resolveSessionAKID handles the ASIA path: STS lookup, expiry check,
-// X-Amz-Security-Token HMAC verification, secret decryption. A missing STS
-// service is a configuration error and surfaces as InternalError so the
-// problem is loud at startup, not a silent allow.
+// X-Amz-Security-Token HMAC verify, secret decrypt. Nil STSService surfaces
+// as InternalError so misconfiguration is loud at startup.
 func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, clientIP string) (string, principalContext, string) {
 	if gw.STSService == nil {
 		slog.Error("SigV4 auth: STS service not initialized but session AKID presented", "accessKeyID", accessKeyID)
@@ -260,17 +244,13 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 
 	secret, err := gw.IAMService.DecryptSecret(cred.SecretEncrypted)
 	if err != nil {
-		// Unverifiable session secret — treat as an authentication failure for
-		// the same reason as the long-lived path above.
+		// Unverifiable secret: same auth-failure reasoning as resolveLongLivedAKID.
 		slog.Error("Failed to decrypt session secret", "accessKeyID", accessKeyID, "err", err)
 		gw.RateLimiter.RecordFailure(clientIP)
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
 	}
 	if cred.PrincipalType == principalTypeUser {
-		// Minted by GetSessionToken for an IAM user: resolve straight back to
-		// that user so buildCallerARN yields arn:aws:iam::A:user/N and IAM
-		// policy is evaluated against the user, not a synthesised role session.
-		// The assumed-role fields stay empty by construction.
+		// GetSessionToken session: resolve to the user so policy is evaluated as a user.
 		return secret, principalContext{
 			identity:      cred.SessionName,
 			accountID:     cred.AccountID,
@@ -278,9 +258,7 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 		}, ""
 	}
 
-	// "assumed-role" or empty — the latter covers records minted before
-	// PrincipalType existed, so an absent value keeps the original role-session
-	// behaviour (see SessionCredential.PrincipalType backward-compat note).
+	// "assumed-role" or empty (pre-PrincipalType records) — both resolve as role session.
 	return secret, principalContext{
 		identity:          cred.SessionName,
 		accountID:         cred.AccountID,
@@ -309,7 +287,7 @@ func verifySigV4ErrorCode(err error) string {
 	}
 }
 
-// writeSigV4Error writes an EC2-compatible XML error response for authentication failures.
+// writeSigV4Error writes an EC2-compatible XML error response for auth failures.
 func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request, errorCode string) {
 	requestID := uuid.NewString()
 

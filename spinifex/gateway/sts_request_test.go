@@ -20,8 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// flexMockSTSService is a configurable STSService mock with per-method
-// overrides. Mirrors flexMockIAMService for STS-side dispatcher tests.
+// flexMockSTSService is a configurable STSService mock with per-method overrides.
 type flexMockSTSService struct {
 	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
@@ -39,8 +38,7 @@ func (m *flexMockSTSService) AssumeRole(callerAccountID, callerARN, callerIdenti
 	return &sts.AssumeRoleOutput{}, nil
 }
 
-// AssumeRoleForInstance is the in-process IMDS entry point, never dispatched
-// over the HTTPS gateway; the mock exists only to satisfy the interface.
+// AssumeRoleForInstance is an in-process IMDS entry point; the mock satisfies the interface.
 func (m *flexMockSTSService) AssumeRoleForInstance(_, _, _ string, _ int64) (*sts.AssumeRoleOutput, error) {
 	return &sts.AssumeRoleOutput{}, nil
 }
@@ -85,8 +83,7 @@ func (m *flexMockSTSService) VerifyPresignedGetCallerIdentity(string, string) (*
 	return nil, errors.New(awserrors.ErrorNotImplemented)
 }
 
-// stsRequestParams is the set of identity values the dispatcher pulls from
-// SigV4 context. Defaults work for a user principal in the global account.
+// stsRequestParams holds identity values the STS dispatcher reads from SigV4 context.
 type stsRequestParams struct {
 	accountID      string
 	identity       string
@@ -168,8 +165,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 }
 
 func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
-	// AssumedRoleID is propagated by the SigV4 middleware from the resolved
-	// SessionCredential; the dispatcher must NOT re-lookup the session.
+	// AssumedRoleID comes from the resolved SessionCredential; the dispatcher must not re-lookup it.
 	svc := &flexMockSTSService{
 		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
 			t.Fatal("assumed-role GetCallerIdentity must not re-lookup the session credential")
@@ -200,10 +196,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 }
 
 func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
-	// Root must produce {Account, Arn, UserId} without touching IAM. The
-	// flexMockIAMService's GetUser would return a zero-value User and the
-	// resolver would surface InternalError; the root short-circuit skips
-	// that path.
+	// Root short-circuits IAM lookup — flexMockIAMService.GetUser would cause InternalError otherwise.
 	handler := setupSTSRequestHandler(stsRequestParams{
 		accountID:     utils.GlobalAccountID,
 		identity:      "root",
@@ -268,11 +261,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "GetSessionTokenResult")
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
-	// The dispatcher must forward the SigV4 user name (c.identity), principal
-	// type, and access key (c.accessKey) so the handler can enforce its
-	// user-only / no-session constraint, plus the parsed DurationSeconds.
-	// GetSessionToken is in stsSkipPolicyCheck, so reaching the service at all
-	// also confirms it is not blocked by checkPolicy.
+	// Verify forwarded identity fields and that checkPolicy did not block (GetSessionToken is in stsSkipPolicyCheck).
 	assert.Equal(t, utils.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)
@@ -365,9 +354,7 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 }
 
 func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T) {
-	// Confirms that an AccessDenied returned by the handler (trust-policy
-	// denial) reaches the wire with the IAM-style ErrorResponse envelope and
-	// HTTP 403.
+	// AccessDenied from the handler (trust-policy denial) must reach the wire as IAM ErrorResponse + 403.
 	svc := &flexMockSTSService{
 		assumeRoleFn: func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
@@ -393,8 +380,7 @@ func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T)
 }
 
 func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
-	// Sanity check: user principal triggers IAMService.GetUser to resolve
-	// UserId. Uses flexMockIAMService configured to return a fixed UserId.
+	// User principal triggers IAMService.GetUser to resolve UserId.
 	iamSvc := &flexMockIAMService{
 		getUserFn: func(_ string, _ *iam.GetUserInput) (*iam.GetUserOutput, error) {
 			return &iam.GetUserOutput{User: &iam.User{UserId: aws.String("AIDAALICE000")}}, nil

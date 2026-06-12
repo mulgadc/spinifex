@@ -13,10 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAnonymousSTS_WebIdentityNoAuthReachesHandler proves the IRSA bootstrap
-// call — AssumeRoleWithWebIdentity carrying no Authorization header — is routed
-// to the STS dispatcher ahead of the SigV4 middleware, rather than rejected as
-// unauthenticated. The mock asserts the parsed token reached the handler.
+// TestAnonymousSTS_WebIdentityNoAuthReachesHandler proves an unsigned
+// AssumeRoleWithWebIdentity is routed to the STS dispatcher before SigV4, not rejected.
 func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 	var seenToken string
 	gw := &GatewayConfig{
@@ -42,7 +40,7 @@ func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 		"&WebIdentityToken=header.payload.sig"
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// No Authorization header — this is the unsigned bootstrap path.
+	// No Authorization header — unsigned bootstrap path.
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -54,9 +52,8 @@ func TestAnonymousSTS_WebIdentityNoAuthReachesHandler(t *testing.T) {
 	assert.Equal(t, "header.payload.sig", seenToken)
 }
 
-// TestAnonymousSTS_SignedRequestFallsThrough confirms a request bearing an
-// Authorization header is NOT intercepted — it flows to the signed surface, so
-// the anonymous dispatcher never runs and the body is left for the SigV4 path.
+// TestAnonymousSTS_SignedRequestFallsThrough confirms a request with an Authorization
+// header is not intercepted — it passes through to the signed surface.
 func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -80,9 +77,7 @@ func TestAnonymousSTS_SignedRequestFallsThrough(t *testing.T) {
 	assert.True(t, nextCalled, "signed request must pass through to next handler")
 }
 
-// TestAnonymousSTSArgs_Classification covers the body-peek helper: an anonymous
-// action is recognised and the body is restored for the downstream handler; a
-// non-anonymous action is rejected and the body left intact for SigV4.
+// TestAnonymousSTSArgs_Classification covers the body-peek helper for anonymous action detection.
 func TestAnonymousSTSArgs_Classification(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
 

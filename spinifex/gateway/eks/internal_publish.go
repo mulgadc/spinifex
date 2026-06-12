@@ -10,20 +10,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// internalPublishChannels are the two VM→host channels the broker relays.
+// VM→host relay channels.
 const (
 	internalChannelBootstrap = "bootstrap"
 	internalChannelState     = "state"
 )
 
-// internalPublishRequest is the wire shape the on-VM eks-gateway-publish helper
-// POSTs to /clusters/{name}/internal-publish. The control-plane VM holds system
-// SigV4 creds (system account, not the cluster account), so AccountID names the
-// customer cluster account explicitly rather than being taken from the SigV4
-// auth context. Payload is the already-encoded subject body (a BootstrapEnvelope
-// for the bootstrap channel, a ServerStateReport for the state channel) — the
-// broker relays it verbatim onto the existing NATS subject, so the daemon-side
-// subscriber, KV persistence, and reconciler are unchanged.
+// internalPublishRequest is the body POSTed to /clusters/{name}/internal-publish.
+// The VM uses system SigV4 creds, so AccountID names the cluster account
+// explicitly. Payload is the pre-encoded subject body relayed verbatim onto NATS.
 type internalPublishRequest struct {
 	AccountID string          `json:"accountId"`
 	Channel   string          `json:"channel"`
@@ -34,9 +29,8 @@ type internalPublishRequest struct {
 // publishInternalOutput is the empty success body (`{}`).
 type publishInternalOutput struct{}
 
-// validBootstrapKinds is the closed set of bootstrap subject suffixes the broker
-// will relay — a malformed/hostile kind cannot be turned into an arbitrary
-// subject suffix.
+// validBootstrapKinds is the closed set of bootstrap subject suffixes the
+// broker will relay, preventing arbitrary subject injection.
 var validBootstrapKinds = map[string]struct{}{
 	handlers_eks.BootstrapSubjectToken:      {},
 	handlers_eks.BootstrapSubjectKubeconfig: {},
@@ -44,11 +38,9 @@ var validBootstrapKinds = map[string]struct{}{
 	handlers_eks.BootstrapSubjectCA:         {},
 }
 
-// PublishInternal — POST /clusters/{name}/internal-publish. Relays a
-// control-plane VM publication onto the existing bootstrap/state NATS subjects.
-// This is the gateway-broker replacement for the VM dialing core NATS directly:
-// the VM reaches the daemon over the mgmt-reachable AWSGW with SigV4 + retry
-// (DDIL-correct), and NATS stays cluster-internal.
+// PublishInternal — POST /clusters/{name}/internal-publish. Relays a VM
+// publication onto the bootstrap/state NATS subjects via the AWSGW, keeping
+// NATS cluster-internal.
 func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*publishInternalOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)

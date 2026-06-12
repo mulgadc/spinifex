@@ -1,6 +1,5 @@
-// Package spx implements the spinifex platform service handlers for the AWS gateway.
-// These provide platform-level operations (identity, version, cluster status) distinct
-// from AWS-compatible APIs.
+// Package spx implements spinifex platform-level gateway handlers (version,
+// node status, VM inventory) that are distinct from the AWS-compatible APIs.
 package spx
 
 import (

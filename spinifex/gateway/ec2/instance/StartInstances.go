@@ -29,14 +29,8 @@ func ValidateStartInstancesInput(input *ec2.StartInstancesInput) error {
 	return nil
 }
 
-// StartInstances starts the requested instances.
-//
-// A crash/recovery-failed instance stays live in its owner node's vmMgr as
-// StateError, with its per-instance ec2.cmd subscription still active — so it
-// is restarted via the owner-targeted ec2.cmd path. A genuinely stopped
-// instance lives only in the shared stopped-KV with no live owner; for it the
-// ec2.cmd attempt returns ErrNoResponders and we fall back to the ec2.start
-// queue-group path that rehydrates from KV.
+// StartInstances starts the requested instances via the per-instance ec2.cmd topic,
+// falling back to the ec2.start queue-group path (KV rehydration) on ErrNoResponders.
 func StartInstances(input *ec2.StartInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StartInstancesOutput, error) {
 	if err := ValidateStartInstancesInput(input); err != nil {
 		return nil, err
@@ -76,11 +70,8 @@ func StartInstances(input *ec2.StartInstancesInput, natsConn *nats.Conn, account
 	return output, nil
 }
 
-// startLiveInstance restarts an instance still live on its owner node (e.g.
-// StateError after exhausted auto-restart) via the per-instance ec2.cmd topic,
-// reusing the StartInstance handler. handled is false with a nil error when no
-// live owner is subscribed (ErrNoResponders), signalling the caller to fall
-// back to the stopped-KV path.
+// startLiveInstance sends StartInstance via ec2.cmd.{id}. Returns handled=false on
+// ErrNoResponders so the caller can fall back to the stopped-KV path.
 func startLiveInstance(natsConn *nats.Conn, instanceID, accountID string) (*ec2.InstanceStateChange, bool, error) {
 	command := types.EC2InstanceCommand{
 		ID:         instanceID,
@@ -97,8 +88,7 @@ func startLiveInstance(natsConn *nats.Conn, instanceID, accountID string) (*ec2.
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
-		// No live owner subscribed — this is a genuinely stopped instance; let
-		// the caller fall back to the stopped-KV start path.
+		// No live owner subscribed: fall back to the stopped-KV start path.
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, false, nil
 		}
@@ -137,7 +127,6 @@ func startStoppedInstance(natsConn *nats.Conn, instanceID, accountID string) (*e
 		return newStateChange(instanceID, 80, "stopped", 80, "stopped"), nil
 	}
 
-	// Check if the daemon returned an error response
 	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.Error("StartInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 		return nil, errors.New(*responseError.Code)

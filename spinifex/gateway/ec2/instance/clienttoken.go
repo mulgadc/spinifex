@@ -16,21 +16,19 @@ import (
 )
 
 const (
-	// kvBucketClientTokens holds RunInstances ClientToken idempotency records.
+	// kvBucketClientTokens is the JetStream KV bucket for ClientToken records.
 	kvBucketClientTokens = "spinifex-ec2-clienttokens" //nolint:gosec // G101 false positive: KV bucket name, not a credential
 
-	// clientTokenTTL bounds how long a token replays. It must outlast normal
-	// SDK retry windows yet be short enough that a crashed in-flight record
-	// (winner died mid-launch) ages out and frees the token for a fresh launch.
+	// clientTokenTTL must outlast SDK retry windows; short enough that a crashed
+	// in-flight record ages out and frees the token for a fresh launch.
 	clientTokenTTL = 15 * time.Minute
 
 	tokenStatusInFlight = "in-flight"
 	tokenStatusDone     = "done"
 )
 
-// clientTokenWaitTimeout caps how long a duplicate caller polls an in-flight
-// winner before giving up (the SDK retries the whole call); clientTokenPollStep
-// is the inter-poll sleep. Vars (not consts) so tests can shrink them.
+// clientTokenWaitTimeout caps how long a duplicate caller polls an in-flight winner.
+// clientTokenPollStep is the inter-poll sleep. Vars so tests can shrink them.
 var (
 	clientTokenWaitTimeout = 30 * time.Second
 	clientTokenPollStep    = 250 * time.Millisecond
@@ -44,9 +42,7 @@ var errIdempotentParamMismatch = errors.New("clienttoken: idempotent parameter m
 // winner past clientTokenWaitTimeout without the winner finishing.
 var errClientTokenWaitTimeout = errors.New("clienttoken: timed out waiting for in-flight launch")
 
-// tokenRecord is the per-token idempotency record. ParamHash binds the token to
-// the original request so a reuse with different params is rejected; Reservation
-// is populated only once Status is done so a duplicate caller can replay it.
+// tokenRecord is the per-token idempotency record stored in the KV bucket.
 type tokenRecord struct {
 	Status      string           `json:"status"`
 	ParamHash   string           `json:"paramHash"`
@@ -54,10 +50,8 @@ type tokenRecord struct {
 	Reservation *ec2.Reservation `json:"reservation,omitempty"`
 }
 
-// ClientTokenStore implements RunInstances ClientToken idempotency over a
-// dedicated TTL KV bucket. The first caller to Create a token record owns the
-// launch; duplicates either replay the stored reservation (done) or poll until
-// the owner finishes (in-flight).
+// ClientTokenStore implements RunInstances ClientToken idempotency over a TTL KV
+// bucket. The first caller owns the launch; duplicates replay (done) or poll (in-flight).
 type ClientTokenStore struct {
 	kv nats.KeyValue
 }
@@ -68,9 +62,7 @@ var (
 	errCTStoreInit error
 )
 
-// getClientTokenStore lazily opens (or creates) the process-wide client-token
-// store. The gateway holds a single long-lived NATS connection, so a sync.Once
-// bind is sufficient; the bucket is get-or-created with a TTL.
+// getClientTokenStore lazily initialises the process-wide client-token store via sync.Once.
 func getClientTokenStore(nc *nats.Conn) (*ClientTokenStore, error) {
 	ctOnce.Do(func() {
 		js, err := nc.JetStream()
@@ -102,27 +94,23 @@ func clientTokenKey(accountID, token string) string {
 	return accountID + "." + token
 }
 
-// clientTokenParamHash hashes the caller's request, ignoring ClientToken, so the
-// same token with identical params matches and with different params mismatches.
-// It MUST run before any mutation of input (e.g. instance-profile ARN rewrite).
+// clientTokenParamHash hashes the request excluding ClientToken, so the same
+// params always produce the same hash. Must run before any input mutation.
 func clientTokenParamHash(input *ec2.RunInstancesInput) string {
 	clone := *input
 	clone.ClientToken = nil
 	b, err := json.Marshal(&clone)
 	if err != nil {
-		// Marshal of an SDK struct does not fail in practice; fall back to a
-		// constant so a token still claims (idempotency degrades to name-only).
+		// Fallback: idempotency degrades to name-only.
 		b = []byte(clientTokenKey("", ""))
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
-// Claim runs the two-phase token claim. It returns:
-//   - (nil, true, nil)        ⇒ caller owns the launch; must Finalize or Abort.
-//   - (reservation, false, nil) ⇒ replay a completed launch; return it directly.
-//   - (nil, false, err)       ⇒ errIdempotentParamMismatch (token reused with
-//     different params) or errClientTokenWaitTimeout (in-flight winner too slow).
+// Claim attempts to own the launch for this token.
+// Returns (nil, true, nil) when the caller owns the launch (must Finalize or Abort),
+// (reservation, false, nil) to replay a completed launch, or an error on mismatch/timeout.
 func (c *ClientTokenStore) Claim(accountID, token, paramHash string) (*ec2.Reservation, bool, error) {
 	key := clientTokenKey(accountID, token)
 	inflight, err := json.Marshal(tokenRecord{
@@ -144,8 +132,7 @@ func (c *ClientTokenStore) Claim(accountID, token, paramHash string) (*ec2.Reser
 		entry, gerr := c.kv.Get(key)
 		if gerr != nil {
 			if errors.Is(gerr, nats.ErrKeyNotFound) {
-				// Owner aborted (transient launch failure) or the record aged
-				// out: race for ownership again.
+				// Owner aborted or record aged out: race for ownership.
 				if _, rcerr := c.kv.Create(key, inflight); rcerr == nil {
 					return nil, true, nil
 				} else if !errors.Is(rcerr, nats.ErrKeyExists) {
@@ -172,9 +159,7 @@ func (c *ClientTokenStore) Claim(accountID, token, paramHash string) (*ec2.Reser
 	}
 }
 
-// Finalize stamps the token record done with the launched reservation so
-// duplicate callers replay it. The owner is the sole writer, so a plain Put is
-// safe and refreshes the TTL.
+// Finalize marks the token done with the reservation so duplicates can replay it.
 func (c *ClientTokenStore) Finalize(accountID, token, paramHash string, res *ec2.Reservation) error {
 	key := clientTokenKey(accountID, token)
 	data, err := json.Marshal(tokenRecord{
@@ -192,12 +177,9 @@ func (c *ClientTokenStore) Finalize(accountID, token, paramHash string, res *ec2
 	return nil
 }
 
-// runInstancesWithClientToken wraps a launch in ClientToken idempotency: it
-// claims the token, replays a completed reservation, or (as the owner) runs
-// launch and finalizes the result — aborting the token on a launch failure so a
-// retry can re-launch. AWS error codes are mapped here; the launch closure
-// returns the raw reservation/error. Extracted from RunInstances so the
-// idempotency flow is unit-testable without a live gateway.
+// runInstancesWithClientToken wraps a launch in ClientToken idempotency:
+// claims the token, replays a completed reservation, or (as owner) launches,
+// finalizes, and aborts on failure. Extracted for unit-testability.
 func runInstancesWithClientToken(
 	store *ClientTokenStore,
 	accountID, token, paramHash string,
@@ -225,15 +207,13 @@ func runInstancesWithClientToken(
 		return zero, rerr
 	}
 	if ferr := store.Finalize(accountID, token, paramHash, &res); ferr != nil {
-		// Launch succeeded; failing to persist the replay record only weakens a
-		// future retry's dedup, so do not fail the response.
+		// Launch succeeded; finalize failure only weakens future dedup — don't fail.
 		slog.Warn("RunInstances: failed to finalize client-token record", "token", token, "err", ferr)
 	}
 	return res, nil
 }
 
-// Abort drops an in-flight token after a launch failure so a retry with the
-// same token can re-launch instead of replaying a non-existent reservation.
+// Abort drops the in-flight token so a retry can re-launch.
 func (c *ClientTokenStore) Abort(accountID, token string) {
 	key := clientTokenKey(accountID, token)
 	if err := c.kv.Delete(key); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {

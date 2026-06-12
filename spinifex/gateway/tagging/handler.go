@@ -1,9 +1,6 @@
 // Package gateway_tagging is the HTTP-side glue between awsgw and the Resource
-// Groups Tagging API. Like ACM it speaks AWS JSON 1.1 (X-Amz-Target dispatch,
-// Content-Type application/x-amz-json-1.1). GetResources is answered by
-// aggregating the elbv2 and ec2 tag stores over NATS — there is no dedicated
-// tagging store. Error envelopes are emitted centrally by the shared gateway
-// ErrorHandler.
+// Groups Tagging API. Speaks AWS JSON 1.1; GetResources aggregates the elbv2
+// and ec2 tag stores over NATS. Errors are handled by the shared gateway ErrorHandler.
 package gateway_tagging
 
 import (
@@ -19,7 +16,7 @@ import (
 const JSONContentType = "application/x-amz-json-1.1"
 
 // WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the
-// SDK's own marshaler (epoch-seconds timestamps), the same path ACM uses.
+// SDK's own marshaler (epoch-seconds timestamps).
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
 	body, err := jsonutil.BuildJSON(obj)
 	if err != nil {

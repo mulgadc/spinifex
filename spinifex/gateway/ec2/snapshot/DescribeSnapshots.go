@@ -16,7 +16,6 @@ func ValidateDescribeSnapshotsInput(input *ec2.DescribeSnapshotsInput) error {
 		return nil
 	}
 
-	// Validate snapshot IDs if provided
 	for _, id := range input.SnapshotIds {
 		if id != nil && *id != "" && !strings.HasPrefix(*id, "snap-") {
 			return errors.New(awserrors.ErrorInvalidSnapshotIDMalformed)

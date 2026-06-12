@@ -29,8 +29,7 @@ func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	return nil
 }
 
-// TerminateInstances sends terminate commands to specified instances via NATS
-// Uses system_powerdown with stop_instance attribute to prevent restart
+// TerminateInstances sends terminate commands via NATS with stop_instance set to prevent restart.
 func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.TerminateInstancesOutput, error) {
 	if err := ValidateTerminateInstancesInput(input); err != nil {
 		return nil, err
@@ -40,7 +39,6 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 
 	var stateChanges []*ec2.InstanceStateChange
 
-	// Process each instance
 	for _, instanceIDPtr := range input.InstanceIds {
 		if instanceIDPtr == nil {
 			continue
@@ -50,22 +48,18 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 		command := types.EC2InstanceCommand{
 			ID: instanceID,
 			Attributes: types.EC2CommandAttributes{
-				StopInstance:      true, // Prevent restart on daemon/node restart
+				StopInstance:      true,
 				TerminateInstance: true,
 			},
 		}
 
-		// Marshal the command
 		jsonData, err := json.Marshal(command)
 		if err != nil {
 			slog.Error("TerminateInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
 			continue
 		}
 
-		// Send NATS request to the specific instance topic with account ID header.
-		// Retry briefly on ErrNoResponders — after a cluster restart the
-		// per-instance NATS subscription may not have propagated to all
-		// servers yet.
+		// Retry on ErrNoResponders: per-instance NATS subscription may not have propagated yet after a cluster restart.
 		subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
 		var msg *nats.Msg
 		for attempt := range 3 {
@@ -116,7 +110,6 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 			return nil, fmt.Errorf("failed to terminate instance %s: %w", instanceID, err)
 		}
 
-		// Check if the daemon returned an error response (e.g. ownership check failure)
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.Error("TerminateInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)

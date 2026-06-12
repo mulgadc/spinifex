@@ -20,31 +20,25 @@ import (
 // describeTagsBatchSize is the AWS ceiling on ARNs per ELBv2 DescribeTags call.
 const describeTagsBatchSize = 20
 
-// defaultResourcesPerPage caps a page when the caller omits ResourcesPerPage.
-// AWS allows up to 100; matching that keeps the controller's reconcile fast.
+// defaultResourcesPerPage is used when the caller omits ResourcesPerPage (AWS max is 100).
 const defaultResourcesPerPage = 100
 
-// resourceLister fetches an account's tagged resources by family, already
-// shaped as RGT mappings. Splitting the fetch out of getResources keeps the
-// filter/sort/paginate orchestration testable without a live NATS backend.
+// resourceLister fetches an account's tagged resources shaped as RGT mappings,
+// split out so filter/sort/paginate logic can be tested without a live NATS backend.
 type resourceLister interface {
 	listELBv2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
 	listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error)
 }
 
-// GetResources implements the Resource Groups Tagging API GetResources call by
-// aggregating tagged ELBv2 (load balancers + target groups) and EC2 resources
-// for the account, applying the request's resource-type and tag filters. The
-// aws-load-balancer-controller uses this to discover and adopt the resources it
-// manages (filtering on its cluster/stack tags). Pagination is an opaque
-// integer offset into a deterministically ARN-sorted result set.
+// GetResources implements the RGT GetResources call, aggregating tagged ELBv2
+// and EC2 resources for the account with type and tag filtering. Pagination uses
+// an opaque integer offset into a deterministically ARN-sorted result set.
 func GetResources(natsConn *nats.Conn, region, accountID string, body []byte) (any, error) {
 	return getResources(&natsLister{natsConn: natsConn, region: region, accountID: accountID}, body)
 }
 
-// getResources is the protocol-independent core: it parses the request, asks
-// the lister for the in-scope resource families, then applies tag filters,
-// stable ordering, and pagination.
+// getResources is the protocol-independent core: parses the request, collects
+// resource families from the lister, then filters, sorts, and paginates.
 func getResources(lister resourceLister, body []byte) (any, error) {
 	var input rgt.GetResourcesInput
 	if err := unmarshalIfBody(body, &input); err != nil {
@@ -69,7 +63,7 @@ func getResources(lister resourceLister, body []byte) (any, error) {
 
 	mappings = filterByTags(mappings, input.TagFilters)
 
-	// Deterministic order so pagination tokens are stable across pages.
+	// Stable sort so pagination tokens are consistent across pages.
 	sort.Slice(mappings, func(i, j int) bool {
 		return aws.StringValue(mappings[i].ResourceARN) < aws.StringValue(mappings[j].ResourceARN)
 	})
@@ -80,13 +74,11 @@ func getResources(lister resourceLister, body []byte) (any, error) {
 	}
 
 	out := &rgt.GetResourcesOutput{ResourceTagMappingList: page}
-	// AWS returns an empty (not absent) token on the last page.
-	out.PaginationToken = aws.String(next)
+	out.PaginationToken = aws.String(next) // AWS expects empty string, not nil, on last page
 	return out, nil
 }
 
-// natsLister fetches tagged resources from the elbv2 and ec2 tag stores over
-// NATS.
+// natsLister fetches tagged resources from the elbv2 and ec2 tag stores via NATS.
 type natsLister struct {
 	natsConn  *nats.Conn
 	region    string
@@ -106,8 +98,8 @@ func (l *natsLister) listEC2(typeFilters map[string]bool) ([]*rgt.ResourceTagMap
 	return buildEC2Mappings(tagsOut.Tags, l.region, l.accountID, typeFilters), nil
 }
 
-// elbv2Resources lists the account's load balancers and target groups (when the
-// type filters admit them) and attaches their tags via batched DescribeTags.
+// elbv2Resources lists load balancers and target groups admitted by typeFilters,
+// attaching tags via batched DescribeTags.
 func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
 	wantLB := matchesType(typeFilters, "elasticloadbalancing:loadbalancer")
 	wantTG := matchesType(typeFilters, "elasticloadbalancing:targetgroup")
@@ -163,10 +155,9 @@ func elbv2Resources(natsConn *nats.Conn, accountID string, typeFilters map[strin
 	return mappings, nil
 }
 
-// buildEC2Mappings groups EC2 tag descriptions by resource, synthesises an ARN
-// per resource, and keeps those that pass the type filters. EC2 tags carry a
-// bare resource ID and a type word (e.g. "subnet"); the RGT type string is
-// "ec2:<type>". Pure (no NATS) so the grouping/ARN logic is unit-tested.
+// buildEC2Mappings groups EC2 tag descriptions by resource, builds an ARN per
+// resource, and filters by type. EC2 tags use a bare resource ID and type word
+// (e.g. "subnet"); RGT uses "ec2:<type>". Pure function, no NATS dependency.
 func buildEC2Mappings(tagDescriptions []*ec2.TagDescription, region, accountID string, typeFilters map[string]bool) []*rgt.ResourceTagMapping {
 	type resourceTags struct {
 		fullType string
@@ -206,10 +197,8 @@ func ec2ARN(region, accountID, fullType, id string) string {
 	return fmt.Sprintf("arn:aws:ec2:%s:%s:%s/%s", region, accountID, resourceType, id)
 }
 
-// matchesType reports whether a resource of fullType (e.g.
-// "elasticloadbalancing:loadbalancer") passes the request's type filters. An
-// empty filter set admits everything. A service-only filter ("ec2") admits all
-// of that service's types; a fully-qualified filter must match exactly.
+// matchesType reports whether fullType passes typeFilters. An empty filter set
+// admits everything; a service-only filter (e.g. "ec2") admits all subtypes.
 func matchesType(typeFilters map[string]bool, fullType string) bool {
 	if len(typeFilters) == 0 {
 		return true
@@ -225,9 +214,8 @@ func matchesType(typeFilters map[string]bool, fullType string) bool {
 	return false
 }
 
-// filterByTags keeps only resources matching every TagFilter (AND across
-// filters). Within a filter, a non-empty Values list is an OR over values; an
-// empty Values list matches any value for that key.
+// filterByTags keeps resources matching every TagFilter (AND semantics).
+// A non-empty Values list within a filter is an OR; an empty list matches any value.
 func filterByTags(mappings []*rgt.ResourceTagMapping, filters []*rgt.TagFilter) []*rgt.ResourceTagMapping {
 	if len(filters) == 0 {
 		return mappings
@@ -272,8 +260,8 @@ func matchesAllTagFilters(tags []*rgt.Tag, filters []*rgt.TagFilter) bool {
 	return true
 }
 
-// paginate slices an offset-token page out of the sorted mappings and returns
-// the page plus the next token ("" when exhausted).
+// paginate slices a page from the sorted mappings and returns the page and the
+// next token (empty when exhausted).
 func paginate(mappings []*rgt.ResourceTagMapping, token *string, perPage *int64) ([]*rgt.ResourceTagMapping, string, error) {
 	start := 0
 	if token != nil && *token != "" {

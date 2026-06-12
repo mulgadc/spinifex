@@ -16,18 +16,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// fanOutTimeout bounds the wait for each broadcast on the
-// ec2.IamProfileAssociation.* subjects. Daemons always reply (JSON null on
-// no-match), so under healthy conditions the expectedNodes collector exits
-// well before the timeout — the deadline only matters when a daemon is down.
+// fanOutTimeout bounds each broadcast on ec2.IamProfileAssociation.* subjects.
+// Daemons always reply (JSON null on no-match); timeout only applies when a daemon is down.
 const fanOutTimeout = 3 * time.Second
 
-// resolveAndAuthorizeProfile resolves a profile reference (name or ARN) and
-// enforces iam:PassRole on the underlying role. Returns the resolved profile
-// for the caller to use when building the response. Mirrors the gateway-side
-// contract used by RunInstances — profile-with-no-role skips PassRole, missing
-// profile maps to InvalidIamInstanceProfile.NotFound, denied PassRole returns
-// AccessDenied.
+// resolveAndAuthorizeProfile resolves a profile (name or ARN) and enforces iam:PassRole.
+// Profiles without a role skip PassRole; missing profile → InvalidIamInstanceProfile.NotFound.
 func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
 	nameOrARN := profileNameOrARN(spec)
 	if nameOrARN == "" {
@@ -53,11 +47,9 @@ func resolveAndAuthorizeProfile(spec *ec2.IamInstanceProfileSpecification, iamSv
 	return profile, nil
 }
 
-// AssociateIamInstanceProfile attaches an instance profile to a running
-// instance. The gateway resolves the profile and enforces iam:PassRole; the
-// owning daemon validates that the instance currently has no profile (returns
-// IamInstanceProfileAlreadyAssociated otherwise), generates a fresh
-// iip-assoc-… ID, and writes both fields atomically on vm.VM.
+// AssociateIamInstanceProfile attaches a profile to a running instance.
+// The gateway resolves the profile and enforces PassRole; the daemon validates
+// no existing profile and generates a fresh iip-assoc-… ID.
 func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*ec2.AssociateIamInstanceProfileOutput, error) {
 	if input == nil || input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -95,10 +87,8 @@ func AssociateIamInstanceProfile(input *ec2.AssociateIamInstanceProfileInput, na
 	return &ec2.AssociateIamInstanceProfileOutput{IamInstanceProfileAssociation: assoc}, nil
 }
 
-// DisassociateIamInstanceProfile detaches the profile referenced by
-// AssociationId. The gateway broadcasts to all daemons; the owner mutates and
-// returns the populated association. All-null means no live instance carries
-// that ID.
+// DisassociateIamInstanceProfile broadcasts to all daemons; the owner detaches
+// and returns the association. All-null responses mean the ID is unknown.
 func DisassociateIamInstanceProfile(input *ec2.DisassociateIamInstanceProfileInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DisassociateIamInstanceProfileOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -111,10 +101,8 @@ func DisassociateIamInstanceProfile(input *ec2.DisassociateIamInstanceProfileInp
 	return &ec2.DisassociateIamInstanceProfileOutput{IamInstanceProfileAssociation: assoc}, nil
 }
 
-// ReplaceIamInstanceProfileAssociation swaps the profile referenced by an
-// existing AssociationId for a new profile. The gateway resolves the new
-// profile and enforces iam:PassRole on its role; the owning daemon validates
-// the old AssociationId and generates a new one atomically with the swap.
+// ReplaceIamInstanceProfileAssociation swaps the profile for an existing association.
+// The gateway resolves the new profile and enforces PassRole; the daemon swaps atomically.
 func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAssociationInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, expectedNodes int, accountID string, passRoleCheck PassRoleChecker) (*ec2.ReplaceIamInstanceProfileAssociationOutput, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -128,8 +116,7 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 		return nil, err
 	}
 
-	// Normalise the on-wire payload to the resolved canonical ARN — daemons
-	// don't have IAM access and can't dereference a Name reference.
+	// Normalise to canonical ARN; daemons can't dereference a Name.
 	wireInput := &ec2.ReplaceIamInstanceProfileAssociationInput{
 		AssociationId:      input.AssociationId,
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profile.ARN)},
@@ -143,11 +130,8 @@ func ReplaceIamInstanceProfileAssociation(input *ec2.ReplaceIamInstanceProfileAs
 	return &ec2.ReplaceIamInstanceProfileAssociationOutput{IamInstanceProfileAssociation: assoc}, nil
 }
 
-// CountInstanceProfileAssociations returns the number of live associations
-// across all daemons in the caller's account that currently reference
-// profileARN. The IAM DeleteInstanceProfile gateway uses this to refuse delete
-// while the profile is still attached to any instance. Cross-account records
-// are not visible to the daemon walker, so the count is naturally scoped.
+// CountInstanceProfileAssociations returns how many live instances in the account
+// reference profileARN. Used by DeleteInstanceProfile to refuse deletion while attached.
 func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, accountID, profileARN string) (int, error) {
 	associations, err := broadcastDescribeAssociations(natsConn, &ec2.DescribeIamInstanceProfileAssociationsInput{}, expectedNodes, accountID)
 	if err != nil {
@@ -162,10 +146,8 @@ func CountInstanceProfileAssociations(natsConn *nats.Conn, expectedNodes int, ac
 	return count, nil
 }
 
-// DescribeIamInstanceProfileAssociations aggregates associations across all
-// daemons. Filter names are validated at the gateway so bad inputs fail fast
-// without a NATS round-trip; the daemons re-parse the input to do the actual
-// filtering against their local VM records.
+// DescribeIamInstanceProfileAssociations aggregates associations across all daemons.
+// Filter names are validated at the gateway to fail fast before any NATS round-trip.
 func DescribeIamInstanceProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, natsConn *nats.Conn, expectedNodes int, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
 	for _, f := range input.Filters {
 		if f == nil || f.Name == nil {
@@ -185,9 +167,8 @@ func DescribeIamInstanceProfileAssociations(input *ec2.DescribeIamInstanceProfil
 	return &ec2.DescribeIamInstanceProfileAssociationsOutput{IamInstanceProfileAssociations: associations}, nil
 }
 
-// enrichProfileID fills in IamInstanceProfile.Id from the gateway-resolved
-// profile — daemons cannot resolve Id since they have no IAM access. Safe to
-// call with a nil association (no-op).
+// enrichProfileID fills IamInstanceProfile.Id from the resolved profile.
+// Daemons have no IAM access. Safe to call with a nil association.
 func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *handlers_iam.InstanceProfile) {
 	if assoc == nil || profile == nil {
 		return
@@ -198,9 +179,8 @@ func enrichProfileID(assoc *ec2.IamInstanceProfileAssociation, profile *handlers
 	assoc.IamInstanceProfile.Id = aws.String(profile.InstanceProfileID)
 }
 
-// broadcastForAssociation fans out a mutation request to all daemons and
-// returns the first populated response. Returns NoSuchAssociation when every
-// reachable daemon replied with JSON null.
+// broadcastForAssociation fans out a mutation to all daemons and returns the first
+// populated response; returns NoSuchAssociation when all daemons reply null.
 func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, expectedNodes int, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
@@ -246,9 +226,7 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 		responsesReceived++
 
 		if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
-			// A daemon-side error short-circuits the fan-out — it represents a
-			// definitive answer (e.g. IamInstanceProfileAlreadyAssociated would
-			// only come from the owning daemon).
+			// Daemon errors short-circuit — only the owner would return a definitive error.
 			code := awserrors.ErrorServerInternal
 			if errPayload.Code != nil {
 				code = *errPayload.Code
@@ -269,10 +247,8 @@ func broadcastForAssociation(natsConn *nats.Conn, subject string, payload any, e
 	return nil, errors.New(awserrors.ErrorNoSuchAssociation)
 }
 
-// broadcastDescribeAssociations fans out a Describe request and concatenates
-// every daemon's matching records. Daemons always reply (empty slice when
-// no matches), so the expectedNodes collector exits early under healthy
-// conditions; a partial collection is acceptable for Describe semantics.
+// broadcastDescribeAssociations fans out a Describe request and concatenates every
+// daemon's records. Partial collection is acceptable for Describe semantics.
 func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamInstanceProfileAssociationsInput, expectedNodes int, accountID string) ([]*ec2.IamInstanceProfileAssociation, error) {
 	jsonData, err := json.Marshal(input)
 	if err != nil {
@@ -325,12 +301,9 @@ func broadcastDescribeAssociations(natsConn *nats.Conn, input *ec2.DescribeIamIn
 			if errPayload.Code != nil {
 				code = *errPayload.Code
 			}
-			// Capture the first deterministic client error so the caller sees the
-			// invalid-filter response instead of an empty success list. 5xx and
-			// unknown codes are dropped (treated as transient per-daemon noise)
-			// but logged so flaky daemons don't silently corrupt the aggregate
-			// — important for CountInstanceProfileAssociations which feeds
-			// DeleteInstanceProfile's live-instance gate.
+			// Capture first deterministic 4xx (e.g. invalid filter) to return instead of
+			// an empty success. 5xx/unknown codes are dropped as transient noise but logged
+			// — CountInstanceProfileAssociations feeds DeleteInstanceProfile's live-instance gate.
 			if clientError == "" && code != "" {
 				if info, known := awserrors.ErrorLookup[code]; known && info.HTTPCode >= 400 && info.HTTPCode < 500 {
 					clientError = code

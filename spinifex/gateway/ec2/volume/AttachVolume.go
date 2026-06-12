@@ -73,7 +73,6 @@ func AttachVolume(input *ec2.AttachVolumeInput, natsConn *nats.Conn, accountID s
 	if err != nil {
 		slog.Error("AttachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
-			// Check shared KV for stopped instances before returning NotFound
 			if isStoppedInstance(instanceID, natsConn, accountID) {
 				return output, errors.New(awserrors.ErrorIncorrectInstanceState)
 			}

@@ -9,8 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// These tests validate input validation in the gateway layer.
-// They do not require a NATS connection since validation happens before the NATS call.
+// Input-validation tests; no NATS connection needed.
 
 func TestCreateLoadBalancer_NilInput(t *testing.T) {
 	_, err := CreateLoadBalancer(nil, nil, "123456789012")

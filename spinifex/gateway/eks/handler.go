@@ -1,7 +1,6 @@
-// Package gateway_eks holds the HTTP-side glue between awsgw and the EKS
-// handlers package. EKS speaks AWS REST-JSON 1.1 (not the query+XML protocol
-// that EC2 / ELBv2 use), so error envelopes here are JSON and the
-// Content-Type is application/x-amz-json-1.1 throughout.
+// Package gateway_eks is the HTTP-side glue between awsgw and the EKS handlers.
+// EKS speaks AWS REST-JSON 1.1; error envelopes are JSON and Content-Type is
+// application/x-amz-json-1.1 throughout.
 package gateway_eks
 
 import (
@@ -17,24 +16,20 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
-// JSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect on
-// every request and response.
+// JSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
 const JSONContentType = "application/x-amz-json-1.1"
 
-// EKSJSONError is the AWS REST-JSON error envelope. AWS SDKs key off
-// __type to populate awserr.Code() and message to populate awserr.Message().
+// EKSJSONError is the AWS REST-JSON error envelope. SDKs key off __type for
+// awserr.Code() and message for awserr.Message().
 type EKSJSONError struct {
 	Type    string `json:"__type"`
 	Message string `json:"message"`
 }
 
 // GenerateEKSErrorResponse marshals the AWS REST-JSON error envelope.
-// The wire __type carries the trailing "Exception" suffix AWS uses
-// (e.g. ResourceNotFoundException, InvalidParameterException). The suffix is
-// appended idempotently: many awserrors codes already end in "Exception"
-// (e.g. ErrorEKSResourceNotFound = "ResourceNotFoundException"), and adding a
-// second would emit ResourceNotFoundExceptionException, which SDK clients
-// reject when matching eks.ErrCodeResourceNotFoundException.
+// The suffix "Exception" is appended idempotently — codes that already end in
+// it (e.g. "ResourceNotFoundException") are left unchanged to avoid the double
+// "ExceptionException" the SDK rejects.
 func GenerateEKSErrorResponse(code, message string) []byte {
 	if !strings.HasSuffix(code, "Exception") {
 		code += "Exception"
@@ -50,11 +45,9 @@ func GenerateEKSErrorResponse(code, message string) []byte {
 	return body
 }
 
-// WriteJSONResponse serializes obj as AWS REST-JSON and writes it as a 200
-// response. aws-sdk-go *Output structs tag their fields with locationName (the
-// restjson wire name) and carry no json: tags, so encoding/json would emit Go
-// PascalCase keys the AWS SDK cannot parse. jsonutil.BuildJSON is the same
-// marshaler the SDK uses for restjson bodies and honors locationName.
+// WriteJSONResponse serializes obj as AWS REST-JSON and writes a 200 response.
+// Uses jsonutil.BuildJSON (the SDK's own restjson marshaler) to honour
+// locationName tags that encoding/json does not understand.
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
 	body, err := jsonutil.BuildJSON(obj)
 	if err != nil {
@@ -69,9 +62,8 @@ func WriteJSONResponse(w http.ResponseWriter, obj any) {
 	}
 }
 
-// WriteJSONError emits the AWS REST-JSON error envelope with the given AWS
-// error code, message, and HTTP status. The Content-Type matches what real
-// EKS returns.
+// WriteJSONError emits the AWS REST-JSON error envelope with the given code,
+// message, and HTTP status.
 func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int) {
 	body := GenerateEKSErrorResponse(code, message)
 	w.Header().Set("Content-Type", JSONContentType)
@@ -84,9 +76,8 @@ func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int)
 	}
 }
 
-// WriteErrorFromCode looks up an awserrors code, maps it to its HTTP status
-// and message, and writes the JSON envelope. Falls back to a 500 InternalError
-// when the code isn't registered.
+// WriteErrorFromCode looks up an awserrors code and writes the JSON error
+// envelope. Falls back to 500 InternalError for unknown codes.
 func WriteErrorFromCode(w http.ResponseWriter, code string) {
 	msg, ok := awserrors.ErrorLookup[code]
 	if !ok {
@@ -101,10 +92,8 @@ func WriteErrorFromCode(w http.ResponseWriter, code string) {
 	WriteJSONError(w, code, msg.Message, httpStatus)
 }
 
-// ParseJSONBody is the generic helper every per-action handler uses to decode
-// the request body into an aws-sdk-go input struct. Empty bodies are valid
-// for GET / DELETE actions; the returned struct will simply have all
-// zero-valued fields.
+// ParseJSONBody decodes the request body into an aws-sdk-go input struct.
+// Empty bodies (valid for GET/DELETE) return a zero-valued struct.
 func ParseJSONBody[T any](r *http.Request) (*T, error) {
 	out := new(T)
 	if r.Body == nil {

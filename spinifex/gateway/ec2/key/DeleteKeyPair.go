@@ -24,14 +24,12 @@ func ValidateDeleteKeyPairInput(input *ec2.DeleteKeyPairInput) (err error) {
 }
 
 func DeleteKeyPair(input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.DeleteKeyPairOutput, err error) {
-	// Validate input
 	err = ValidateDeleteKeyPairInput(input)
 
 	if err != nil {
 		return output, err
 	}
 
-	// Create NATS key service and call DeleteKeyPair
 	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
 	result, err := keyService.DeleteKeyPair(input, accountID)
 
@@ -40,7 +38,6 @@ func DeleteKeyPair(input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID
 		return output, err
 	}
 
-	// Return the result
 	output = *result
 	return output, nil
 }

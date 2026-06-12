@@ -9,7 +9,6 @@ import (
 
 // DescribeAccountAttributes returns static account attributes for the Spinifex platform
 func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.DescribeAccountAttributesOutput, error) {
-	// Build set of requested attribute names for filtering
 	requestedAttrs := make(map[string]bool)
 	for _, name := range input.AttributeNames {
 		if name != nil {
@@ -17,12 +16,10 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		}
 	}
 
-	// If no specific attributes requested, return all
 	returnAll := len(requestedAttrs) == 0
 
 	var accountAttributes []*ec2.AccountAttribute
 
-	// supported-platforms - VPC only (no EC2-Classic)
 	if returnAll || requestedAttrs["supported-platforms"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("supported-platforms"),
@@ -32,7 +29,6 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		})
 	}
 
-	// default-vpc
 	if returnAll || requestedAttrs["default-vpc"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("default-vpc"),
@@ -42,7 +38,6 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		})
 	}
 
-	// max-instances
 	if returnAll || requestedAttrs["max-instances"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("max-instances"),
@@ -52,7 +47,6 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		})
 	}
 
-	// vpc-max-security-groups-per-interface
 	if returnAll || requestedAttrs["vpc-max-security-groups-per-interface"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("vpc-max-security-groups-per-interface"),
@@ -62,7 +56,6 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		})
 	}
 
-	// max-elastic-ips
 	if returnAll || requestedAttrs["max-elastic-ips"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("max-elastic-ips"),
@@ -72,7 +65,6 @@ func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput) (*ec2.
 		})
 	}
 
-	// vpc-max-elastic-ips
 	if returnAll || requestedAttrs["vpc-max-elastic-ips"] {
 		accountAttributes = append(accountAttributes, &ec2.AccountAttribute{
 			AttributeName: aws.String("vpc-max-elastic-ips"),

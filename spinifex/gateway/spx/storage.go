@@ -52,7 +52,6 @@ var storageHTTPClient = &http.Client{
 // GetStorageStatus fetches predastore topology via NATS, then queries each DB
 // node's /status and /health endpoints in parallel.
 func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
-	// Phase 1: get config from any daemon via NATS
 	msg, err := nc.Request("spinifex.storage.config", []byte("{}"), 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("storage config request: %w", err)
@@ -63,7 +62,6 @@ func GetStorageStatus(nc *nats.Conn) (*StorageStatusOutput, error) {
 		return nil, fmt.Errorf("parse storage config: %w", err)
 	}
 
-	// Phase 2: query each DB node's /status and /health in parallel
 	dbStatuses := make([]DBNodeStatus, len(cfg.DBNodes))
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -108,13 +106,12 @@ type predastoreStatusResponse struct {
 }
 
 func queryDBNodeStatus(ctx context.Context, out *DBNodeStatus, host string, port int) {
-	// Resolve 0.0.0.0 and 127.0.0.1 to localhost for HTTPS
+	// Resolve 0.0.0.0 to a routable address for HTTPS.
 	queryHost := host
 	if queryHost == "0.0.0.0" {
 		queryHost = "127.0.0.1"
 	}
 
-	// Query /health
 	healthURL := "https://" + net.JoinHostPort(queryHost, strconv.Itoa(port)) + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
@@ -128,7 +125,6 @@ func queryDBNodeStatus(ctx context.Context, out *DBNodeStatus, host string, port
 	resp.Body.Close()
 	out.Healthy = resp.StatusCode == http.StatusOK
 
-	// Query /status
 	statusURL := "https://" + net.JoinHostPort(queryHost, strconv.Itoa(port)) + "/status"
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {

@@ -11,23 +11,19 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// tokenReviewVerifyTimeout bounds the host-side STS verify NATS round-trip. The
-// apiserver fails the TokenReview on its own timeout, so keep this tight.
+// tokenReviewVerifyTimeout bounds the host-side STS verify NATS round-trip.
 const tokenReviewVerifyTimeout = 5 * time.Second
 
-// webhookTokenReviewRequest is the body the on-VM eks-token-webhook POSTs to
-// /clusters/{name}/token-review. The webhook holds system SigV4 creds (system
-// account, not the cluster account), so AccountID names the cluster account
-// explicitly — same pattern as PublishInternal.
+// webhookTokenReviewRequest is the body POSTed to /clusters/{name}/token-review.
+// The webhook uses system SigV4 creds, so AccountID names the cluster account explicitly.
 type webhookTokenReviewRequest struct {
 	AccountID string `json:"accountId"`
 	Token     string `json:"token"`
 }
 
 // WebhookTokenReview — POST /clusters/{name}/token-review. Resolves an
-// `aws eks get-token` bearer token to a K8s identity host-side (STS verify +
-// AccessEntry lookup) and returns it. This is the gateway-broker replacement
-// for the webhook dialing core NATS/STS/KV directly.
+// `aws eks get-token` bearer token to a K8s identity (STS verify + AccessEntry
+// lookup) via the AWSGW, keeping STS/KV access cluster-internal.
 func WebhookTokenReview(natsConn *nats.Conn, clusterName string, body []byte) (*handlers_eks.WebhookTokenReviewResult, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)

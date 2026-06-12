@@ -14,8 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateDetachNetworkInterfaceInput validates the input parameters.
-// AttachmentId is required; Force defaults to false.
+// ValidateDetachNetworkInterfaceInput validates DetachNetworkInterface input.
 func ValidateDetachNetworkInterfaceInput(input *ec2.DetachNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -26,10 +25,8 @@ func ValidateDetachNetworkInterfaceInput(input *ec2.DetachNetworkInterfaceInput)
 	return nil
 }
 
-// DetachNetworkInterface looks up the owning instance for the supplied
-// attachment id and dispatches the detach command to that instance's
-// daemon. The AWS API itself does not require the InstanceId, so the
-// gateway resolves it via DescribeNetworkInterfaces over NATS first.
+// DetachNetworkInterface resolves the owning instance via DescribeNetworkInterfaces,
+// then dispatches the detach command to that daemon.
 func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.DetachNetworkInterfaceOutput, error) {
 	var output ec2.DetachNetworkInterfaceOutput
 
@@ -91,9 +88,8 @@ func DetachNetworkInterface(input *ec2.DetachNetworkInterfaceInput, natsConn *na
 	return output, nil
 }
 
-// resolveAttachmentInstance queries DescribeNetworkInterfaces (which fans
-// out to all daemons) to find which ENI carries attachmentID and which
-// instance owns it. Returns InvalidAttachmentID.NotFound when no match.
+// resolveAttachmentInstance fans out DescribeNetworkInterfaces to find the instance
+// owning attachmentID; returns InvalidAttachmentID.NotFound when no match.
 func resolveAttachmentInstance(natsConn *nats.Conn, accountID, attachmentID string) (string, error) {
 	input := &ec2.DescribeNetworkInterfacesInput{}
 	reqData, err := json.Marshal(input)

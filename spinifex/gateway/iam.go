@@ -16,10 +16,8 @@ import (
 // IAMHandler processes parsed query args and returns XML response bytes.
 type IAMHandler func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error)
 
-// iamHandler creates a type-safe IAMHandler that allocates the typed input
-// struct, parses query params into it, calls the handler with the full gateway
-// config (for the rare handler that needs more than gw.IAMService), and
-// marshals the output to XML. Mirrors ec2Handler in ec2.go.
+// iamHandler creates a type-safe IAMHandler: allocates the input struct,
+// parses query params, calls the handler, and marshals output to XML.
 func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) IAMHandler {
 	return func(action string, q map[string]string, gw *GatewayConfig, accountID string) ([]byte, error) {
 		input := new(In)
@@ -202,7 +200,6 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	// Extract account ID from auth context
 	accountID, _ := r.Context().Value(ctxAccountID).(string)
 	if accountID == "" {
 		slog.Error("IAM_Request: no account ID in auth context")

@@ -9,9 +9,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// CreateCluster — POST /clusters. callerPrincipalARN is the resolved caller IAM
-// principal ARN, plumbed through so the control plane can mint the
-// bootstrap-creator-admin AccessEntry for the caller.
+// CreateCluster — POST /clusters. callerPrincipalARN is the resolved IAM
+// principal, used to mint the bootstrap-creator-admin AccessEntry.
 func CreateCluster(natsConn *nats.Conn, accountID, callerPrincipalARN string, body []byte) (*eks.CreateClusterOutput, error) {
 	input := new(eks.CreateClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -57,9 +56,7 @@ func DeleteCluster(natsConn *nats.Conn, accountID, name string) (*eks.DeleteClus
 	return handlers_eks.NewNATSEKSService(natsConn).DeleteCluster(input, accountID)
 }
 
-// unmarshalIfBody decodes body into out only when body is non-empty.
-// Returning a typed empty input on empty body lets us share a single helper
-// across actions that may or may not carry a body.
+// unmarshalIfBody decodes body into out only when non-empty.
 func unmarshalIfBody(body []byte, out any) error {
 	if len(body) == 0 {
 		return nil

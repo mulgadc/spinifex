@@ -7,13 +7,10 @@ import (
 	"net/http"
 )
 
-// anonymousSTSInterceptor routes the credential-bootstrap STS actions
-// (AssumeRoleWithWebIdentity) to the STS dispatcher ahead of the SigV4
-// middleware. These calls carry no AWS credentials — the caller is
-// authenticated by the projected ServiceAccount JWT in the request body — so
-// the signed surface would reject them as unauthenticated. Requests bearing an
-// Authorization header skip this path untouched, keeping the signed hot path
-// free of body buffering.
+// anonymousSTSInterceptor routes unsigned IRSA bootstrap actions
+// (AssumeRoleWithWebIdentity) to the STS dispatcher before the SigV4 middleware.
+// Callers carry no AWS credentials — authentication is via the ServiceAccount JWT
+// in the body. Signed requests (Authorization header present) pass through unchanged.
 func (gw *GatewayConfig) anonymousSTSInterceptor(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.Header.Get("Authorization") == "" {
@@ -31,9 +28,8 @@ func (gw *GatewayConfig) anonymousSTSInterceptor(next http.Handler) http.Handler
 	})
 }
 
-// anonymousSTSArgs buffers and restores the request body, parses the AWS query
-// args, and reports whether Action is an STS action permitted without SigV4. A
-// non-anonymous request flows on unchanged with its body intact.
+// anonymousSTSArgs peeks the request body, parses query args, and reports
+// whether the Action is permitted without SigV4. Non-anonymous requests pass through unchanged.
 func (gw *GatewayConfig) anonymousSTSArgs(r *http.Request) (map[string]string, bool) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

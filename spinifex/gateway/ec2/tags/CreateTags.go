@@ -23,7 +23,6 @@ func ValidateCreateTagsInput(input *ec2.CreateTagsInput) error {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	// Validate each tag has a key
 	for _, tag := range input.Tags {
 		if tag.Key == nil || *tag.Key == "" {
 			return errors.New(awserrors.ErrorInvalidParameterValue)

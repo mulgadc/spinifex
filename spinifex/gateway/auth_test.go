@@ -180,8 +180,8 @@ func init() {
 	}
 }
 
-// signTestRequest signs req in place. body must match what the middleware will read from r.Body —
-// its sha256 populates X-Amz-Content-Sha256.
+// signTestRequest signs req in place using SigV4. body must match what the
+// middleware will read from r.Body so the sha256 matches X-Amz-Content-Sha256.
 func signTestRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret string, optFns ...func(*auth.Options)) {
 	t.Helper()
 	sum := sha256.Sum256(body)
@@ -469,11 +469,8 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 }
 
 func TestSigV4Auth_DecryptFailure(t *testing.T) {
-	// A secret that can't be decrypted (e.g. encrypted under a since-rotated
-	// master key) means the credential is unverifiable. The gateway treats this
-	// as an authentication failure (InvalidClientTokenId / 403), not a server
-	// fault, so clients re-authenticate instead of retrying a dead request.
-	// Encrypt secret with a DIFFERENT master key so decryption fails
+	// Secret encrypted under a rotated master key — unverifiable credential must
+	// return 403 InvalidClientTokenId, not 500, so the client re-authenticates.
 	otherKey, err := handlers_iam.GenerateMasterKey()
 	if err != nil {
 		t.Fatalf("GenerateMasterKey() error: %v", err)
@@ -526,7 +523,6 @@ func TestSigV4Auth_DecryptFailure(t *testing.T) {
 func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// Create a body that exceeds maxBodySize (10 MB + 1 byte)
 	oversizedBody := []byte(strings.Repeat("x", maxBodySize+1))
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversizedBody))
 	req.Host = "localhost:9999"
@@ -550,8 +546,7 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// 6 minutes in the past — exceeds the 5-minute maxClockSkew
-	past := time.Now().UTC().Add(-6 * time.Minute)
+	past := time.Now().UTC().Add(-6 * time.Minute) // exceeds 5-minute maxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(past))
@@ -571,8 +566,7 @@ func TestSigV4Auth_ExpiredTimestamp(t *testing.T) {
 func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// 6 minutes in the future — exceeds the 5-minute maxClockSkew
-	future := time.Now().UTC().Add(6 * time.Minute)
+	future := time.Now().UTC().Add(6 * time.Minute) // exceeds 5-minute maxClockSkew
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(future))
@@ -592,8 +586,7 @@ func TestSigV4Auth_FutureTimestamp(t *testing.T) {
 func TestSigV4Auth_TimestampWithinSkew(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	// 4 minutes ago — within the 5-minute window
-	recent := time.Now().UTC().Add(-4 * time.Minute)
+	recent := time.Now().UTC().Add(-4 * time.Minute) // within the 5-minute window
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
 	signTestRequest(t, req, nil, testAccessKey, testSecretKey, auth.WithTime(recent))
@@ -616,7 +609,7 @@ func TestSigV4Auth_ClockSkewBoundary(t *testing.T) {
 		offset     time.Duration
 		expectPass bool
 	}{
-		// Use 4m59s (not exact 5m) because test execution adds a few ms
+		// 4m59s not 5m to absorb test execution time.
 		{"just within 5 min past", -(4*time.Minute + 59*time.Second), true},
 		{"just beyond 5 min past", -(5*time.Minute + 1*time.Second), false},
 		{"just within 5 min future", 4*time.Minute + 59*time.Second, true},
@@ -1472,11 +1465,10 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 	}
 }
 
-// TestSigV4Auth_RequireSignedHeaders verifies that requests whose SigV4
-// SignedHeaders list omits "host" or "x-amz-date" are rejected with
-// IncompleteSignature, before signature comparison runs. AWS SDKs always
-// sign both; omitting either lets a captured Authorization header replay
-// against a different vhost or outside the X-Amz-Date skew window.
+// TestSigV4Auth_RequireSignedHeaders verifies that omitting "host" or
+// "x-amz-date" from SignedHeaders is rejected with IncompleteSignature before
+// signature comparison. Omitting either enables Authorization header replay
+// across vhosts or outside the clock-skew window.
 func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
@@ -1520,8 +1512,8 @@ func TestSigV4Auth_RequireSignedHeaders(t *testing.T) {
 	}
 }
 
-// With IAMService nil the post-lookup path would return 500 InternalError, so a 503
-// here proves the disconnected-NATS short-circuit fired before the lookup.
+// TestSigV4Auth_NATSDisconnectedShortCircuit: with nil IAMService a post-lookup
+// failure would be 500; a 503 here proves the NATS short-circuit fired first.
 func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 	ns, _ := testutil.StartTestNATS(t)
 	nc, err := nats.Connect(ns.ClientURL())
@@ -1568,9 +1560,8 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 // --- Session credential (ASIA) auth tests ---
 
 // mockSTSService implements handlers_sts.STSService for auth-middleware tests.
-// Only LookupSessionCredential and VerifySessionToken are exercised; the rest
-// of the interface returns nil so a misrouted call surfaces as a test panic
-// rather than a silent allow.
+// Only LookupSessionCredential and VerifySessionToken are exercised; others
+// return nil so a misrouted call panics instead of silently allowing.
 type mockSTSService struct {
 	sessions  map[string]*handlers_sts.SessionCredential
 	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
@@ -1605,10 +1596,8 @@ func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_
 	return cred, nil
 }
 
-// VerifySessionToken mirrors the production semantics (HMAC equivalence under
-// the master key) using plaintext equality. Tests that call this through the
-// production STSServiceImpl would round-trip the actual HMAC; the mock keeps
-// the wiring simple while preserving the contract.
+// VerifySessionToken uses plaintext equality rather than HMAC to keep tests
+// simple while preserving the contract shape.
 func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential, wireToken string) bool {
 	if cred == nil {
 		return false
@@ -1635,9 +1624,8 @@ const (
 	testAssumedARN   = "arn:aws:sts::123456789012:assumed-role/test-role/test-session"
 )
 
-// setupSessionTestApp wires a gateway with both IAM and STS mocks. The session
-// credential's stored secret is real (AES-GCM under testMasterKey) so the
-// SigV4 verify path exercises the same decrypt code as production.
+// setupSessionTestApp wires a gateway with IAM+STS mocks. The stored secret is
+// real AES-GCM so the SigV4 verify path exercises the actual decrypt code.
 func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mockSTSService) {
 	t.Helper()
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
@@ -1660,11 +1648,8 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 	return mountSessionGateway(t, cred)
 }
 
-// mountSessionGateway wires the SigV4 middleware over a handler that echoes the
-// resolved principal context, backed by a mock STS service seeded with cred.
-// The stored secret is real (AES-GCM under testMasterKey), so the verify path
-// exercises the same decrypt code as production; tests vary cred to drive the
-// principal-type branch in resolveSessionAKID.
+// mountSessionGateway wires SigV4 middleware over a handler that echoes the
+// principal context; varies cred to drive the principal-type branch in resolveSessionAKID.
 func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (http.Handler, *mockSTSService) {
 	t.Helper()
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
@@ -1710,9 +1695,8 @@ func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (ht
 	return r, stsMock
 }
 
-// signSessionRequest pre-sets the X-Amz-Security-Token header before signing
-// so the SDK signer includes it in SignedHeaders — matching what the AWS CLI /
-// SDK do when given session credentials.
+// signSessionRequest sets X-Amz-Security-Token before signing so it's included
+// in SignedHeaders, matching what the AWS CLI/SDK do with session credentials.
 func signSessionRequest(t *testing.T, req *http.Request, body []byte, accessKey, secret, sessionToken string) {
 	t.Helper()
 	req.Header.Set("X-Amz-Security-Token", sessionToken)
@@ -1738,10 +1722,8 @@ func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
-	// A GetSessionToken-minted session (PrincipalType "user") must resolve back
-	// to the IAM user: user identity, user principal type, and NO assumed-role
-	// fields — so buildCallerARN yields arn:aws:iam::A:user/N and downstream
-	// policy is evaluated against the user.
+	// GetSessionToken session (PrincipalType "user") must resolve back to the IAM
+	// user with no assumed-role fields, so buildCallerARN yields arn:aws:iam::A:user/N.
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	cred := &handlers_sts.SessionCredential{
@@ -1773,8 +1755,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 }
 
 func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
-	// Backward compat: records minted before PrincipalType existed have an empty
-	// value and MUST still resolve as an assumed-role session, never as a user.
+	// Pre-PrincipalType records have an empty value and must still resolve as assumed-role.
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	cred := &handlers_sts.SessionCredential{
@@ -1808,8 +1789,7 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 }
 
 func TestSigV4Auth_Session_Expired(t *testing.T) {
-	// Past expiry but still within the janitor grace window — record still
-	// resolvable, must reject as ExpiredToken (not InvalidClientTokenId).
+	// Past expiry but within janitor grace window: must reject as ExpiredToken.
 	handler, _ := setupSessionTestApp(t, time.Now().UTC().Add(-time.Minute))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1842,7 +1822,7 @@ func TestSigV4Auth_Session_MissingSecurityToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	// Sign without setting X-Amz-Security-Token — the ASIA path requires it.
+	// No X-Amz-Security-Token — ASIA path requires it.
 	signTestRequest(t, req, nil, testSessionAKID, testSecretKey)
 
 	resp := doRequest(handler, req)
@@ -1871,7 +1851,7 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	// Neither AKIA nor ASIA — must reject without any STS or IAM lookup.
+	// Neither AKIA nor ASIA — must reject without any IAM/STS lookup.
 	signTestRequest(t, req, nil, "ZZIATESTAKIDXXXXXXXX", testSecretKey)
 
 	resp := doRequest(handler, req)
@@ -1883,8 +1863,7 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 }
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
-	// Regression: existing long-lived path must set ctxPrincipalType=user so
-	// downstream policy lookups remain gated correctly.
+	// Long-lived AKIA path must set ctxPrincipalType=user for correct policy gating.
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
@@ -1918,13 +1897,12 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 
 	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
 	assert.Contains(t, string(body), "principalType=user")
-	// ctxAssumedRoleARN should be unset → "<nil>" via fmt %v
+	// ctxAssumedRoleARN unset → "<nil>" via fmt %v
 	assert.Contains(t, string(body), "assumedRoleARN=<nil>")
 }
 
 func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
-	// A session AKID presented to a gateway whose STSService is nil is a
-	// configuration error — fail loud with InternalError.
+	// Session AKID with nil STSService is a misconfiguration — must fail with InternalError.
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	iamMock := &mockIAMService{
@@ -1954,13 +1932,10 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 	assert.Contains(t, string(body), "InternalError")
 }
 
-// TestCheckPolicy_SessionNameCollision is the load-bearing privilege-escalation
-// regression: an IAM user named "alice" has a permissive Allow policy; a session
-// is minted with SessionName="alice" but an underlying role "some-role" that
-// grants nothing. Evaluating the session against the colliding user name would
-// inherit alice's ec2:* permissions. The enforcement path must instead resolve
-// the session's UNDERLYING role — never the SessionName — so the request is
-// denied and GetUserPolicies is never consulted.
+// TestCheckPolicy_SessionNameCollision is the privilege-escalation regression:
+// session SessionName="alice" (colliding with an IAM user) + underlying role "some-role"
+// that grants nothing. The enforcement path must resolve the underlying role —
+// never the SessionName — so the request is denied and GetUserPolicies is never called.
 func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
@@ -1968,8 +1943,8 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	var userPoliciesCalled bool
 	var resolvedRoleName string
 
-	// IAM user "alice" carries a permissive policy. If the SessionName ("alice")
-	// were ever used as the policy-lookup key, the request would inherit ec2:*.
+	// If SessionName were ever used as the policy-lookup key, the request would
+	// inherit alice's ec2:* permissions.
 	iamMock := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
@@ -1987,15 +1962,12 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 			userPoliciesCalled = true
 			return allowPolicy("ec2:*"), nil
 		},
-		// The underlying role "some-role" grants nothing → implicit deny.
 		getRolePoliciesFn: func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
 			resolvedRoleName = roleName
 			return nil, nil
 		},
 	}
 
-	// Session whose SessionName == "alice" (colliding with the IAM user) but
-	// whose underlying role is "some-role".
 	cred := &handlers_sts.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		SecretEncrypted:   encryptedSecret,
@@ -2028,12 +2000,9 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	resp := doRequest(handler, req)
 	body, _ := io.ReadAll(resp.Body)
 
-	// The session is evaluated against its ROLE, which grants nothing → deny.
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Contains(t, string(body), "AccessDenied")
-	// The role — not the colliding user name — drove the lookup...
 	assert.Equal(t, "some-role", resolvedRoleName)
-	// ...and the user-policy resolver was never consulted.
 	assert.False(t, userPoliciesCalled, "priv-esc: assumed-role session must not consult GetUserPolicies")
 }
 
@@ -2042,8 +2011,7 @@ func allowPolicy(action string) []handlers_iam.PolicyDocument {
 	return allowPolicyResource(action, "*")
 }
 
-// allowPolicyResource returns a single-statement Allow policy granting action
-// on a specific resource ARN.
+// allowPolicyResource returns a single-statement Allow policy for action on resource.
 func allowPolicyResource(action, resource string) []handlers_iam.PolicyDocument {
 	return []handlers_iam.PolicyDocument{{
 		Version: "2012-10-17",
@@ -2055,8 +2023,8 @@ func allowPolicyResource(action, resource string) []handlers_iam.PolicyDocument 
 	}}
 }
 
-// assumedRoleSessionCred builds an assumed-role SessionCredential for the
-// enforcement tests. SecretEncrypted is filled in by the gateway builder.
+// assumedRoleSessionCred builds an assumed-role SessionCredential.
+// SecretEncrypted is filled in by the gateway builder.
 func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *handlers_sts.SessionCredential {
 	return &handlers_sts.SessionCredential{
 		AccessKeyID:       testSessionAKID,
@@ -2070,10 +2038,8 @@ func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *h
 	}
 }
 
-// newAssumedRoleEnforcementGateway wires a gateway whose checkPolicy path
-// evaluates an assumed-role session: an STS mock seeded with cred and an IAM
-// mock whose role resolver is getRoleFn. The user resolver fails the test if
-// consulted — an assumed-role principal must never be evaluated as a user.
+// newAssumedRoleEnforcementGateway wires a gateway for assumed-role checkPolicy tests.
+// The user resolver fails the test if called — an assumed-role must never be evaluated as a user.
 func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCredential,
 	getRoleFn func(accountID, roleName string) ([]handlers_iam.PolicyDocument, error),
 ) *GatewayConfig {
@@ -2102,9 +2068,8 @@ func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCr
 	}
 }
 
-// setupPolicyResourceTestHandler is setupPolicyTestHandler for a caller-chosen
-// service/action/resource, used to drive resource-scoped checks (e.g.
-// iam:PassRole on a specific role ARN).
+// setupPolicyResourceTestHandler is setupPolicyTestHandler for resource-scoped
+// checks (e.g. iam:PassRole on a specific role ARN).
 func setupPolicyResourceTestHandler(gw *GatewayConfig, service, action, resource string) http.Handler {
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -2118,8 +2083,7 @@ func setupPolicyResourceTestHandler(gw *GatewayConfig, service, action, resource
 	return r
 }
 
-// doSessionPolicyRequest signs and runs a session-credential request through
-// handler, returning the response.
+// doSessionPolicyRequest signs and runs a session-credential request, returning the response.
 func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *http.Response {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

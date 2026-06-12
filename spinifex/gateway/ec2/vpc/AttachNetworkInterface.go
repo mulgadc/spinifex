@@ -15,8 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ValidateAttachNetworkInterfaceInput validates the input parameters.
-// NetworkInterfaceId, InstanceId, and DeviceIndex are required.
+// ValidateAttachNetworkInterfaceInput validates AttachNetworkInterface input.
 func ValidateAttachNetworkInterfaceInput(input *ec2.AttachNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -33,10 +32,8 @@ func ValidateAttachNetworkInterfaceInput(input *ec2.AttachNetworkInterfaceInput)
 	return nil
 }
 
-// AttachNetworkInterface routes the AWS EC2 AttachNetworkInterface call
-// to the daemon that owns the target instance via the per-instance
-// ec2.cmd.{instanceID} channel. The daemon runs both the KV-side
-// AttachENI and the live QMP hot-plug pipeline.
+// AttachNetworkInterface dispatches to the owning daemon via ec2.cmd.{instanceID};
+// the daemon handles both KV-side AttachENI and QMP hot-plug.
 func AttachNetworkInterface(input *ec2.AttachNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.AttachNetworkInterfaceOutput, error) {
 	var output ec2.AttachNetworkInterfaceOutput
 

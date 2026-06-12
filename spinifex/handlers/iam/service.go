@@ -71,6 +71,10 @@ type IAMService interface {
 
 	// Policy evaluation (internal — used by gateway enforcement)
 	GetUserPolicies(accountID, userName string) ([]PolicyDocument, error)
+	// GetRolePolicies resolves an assumed-role session's permission policies for
+	// gateway enforcement. Managed policies only; inline policies are not yet
+	// supported.
+	GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error)
 
 	// Auth (internal — used by SigV4 middleware and bootstrap, not exposed via gateway)
 	LookupAccessKey(accessKeyID string) (*AccessKey, error)

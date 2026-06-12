@@ -331,6 +331,42 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 	}, nil
 }
 
+// GetRolePolicies resolves the managed policy documents attached to a role,
+// the symmetric twin of GetUserPolicies. The gateway uses it to evaluate an
+// assumed-role session's permissions. Inline role policies do not exist yet,
+// so this resolves attached managed policies only.
+//
+// Fails closed: a missing role (NoSuchEntity) or any unresolvable attached
+// policy returns an error so the caller denies access rather than evaluating
+// against a partial policy set. A role with no attached policies returns no
+// documents, which the evaluator treats as an implicit deny — AWS parity, as
+// assumability does not imply permissions.
+func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDocument, error) {
+	role, err := s.getRole(accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	var docs []PolicyDocument
+	for _, arn := range role.AttachedPolicies {
+		policy, err := s.getPolicyByARN(accountID, arn)
+		if err != nil {
+			// Fail closed: if we can't resolve a policy, we can't make a safe
+			// access decision. Return an error so the caller denies access.
+			return nil, fmt.Errorf("resolve policy %s: %w", arn, err)
+		}
+
+		// policy already validated at creation, so we skip validating again
+		var doc PolicyDocument
+		if err := json.Unmarshal([]byte(policy.PolicyDocument), &doc); err != nil {
+			return nil, fmt.Errorf("parse policy %s: %w", policy.PolicyName, err)
+		}
+		docs = append(docs, doc)
+	}
+
+	return docs, nil
+}
+
 func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
 	entry, err := s.rolesBucket.Get(accountID + "." + roleName)
 	if err != nil {

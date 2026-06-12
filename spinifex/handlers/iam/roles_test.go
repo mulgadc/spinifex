@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -563,6 +564,77 @@ func TestListAttachedRolePolicies_Empty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, out.AttachedPolicies, 0)
+}
+
+// ============================================================================
+// GetRolePolicies (gateway enforcement resolver)
+// ============================================================================
+
+func TestGetRolePolicies(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "eval-role")
+	p1 := createTestPolicy(t, svc, "RolePolicy1")
+	p2 := createTestPolicy(t, svc, "RolePolicy2")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: p1.Arn,
+	})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: p2.Arn,
+	})
+	require.NoError(t, err)
+
+	docs, err := svc.GetRolePolicies(testAccountID, "eval-role")
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	for _, doc := range docs {
+		assert.Equal(t, "2012-10-17", doc.Version)
+		require.Len(t, doc.Statement, 1)
+		assert.Equal(t, "Allow", doc.Statement[0].Effect)
+		assert.Contains(t, doc.Statement[0].Action, "ec2:DescribeInstances")
+	}
+}
+
+func TestGetRolePolicies_NoPolicies(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "bare-role")
+
+	docs, err := svc.GetRolePolicies(testAccountID, "bare-role")
+	require.NoError(t, err)
+	assert.Len(t, docs, 0)
+}
+
+func TestGetRolePolicies_NonexistentRole(t *testing.T) {
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetRolePolicies(testAccountID, "ghost-role")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+// TestGetRolePolicies_UnresolvablePolicy locks the fail-closed contract: a role
+// referencing an attached policy ARN that can no longer be resolved must return
+// an error so the gateway denies rather than evaluating a partial policy set.
+func TestGetRolePolicies_UnresolvablePolicy(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "dangling-role")
+
+	// Overwrite the role record with an attachment to a policy that does not
+	// exist, simulating a managed policy deleted out from under a live
+	// attachment.
+	role, err := svc.getRole(testAccountID, "dangling-role")
+	require.NoError(t, err)
+	role.AttachedPolicies = []string{"arn:aws:iam::" + testAccountID + ":policy/Ghost"}
+	data, err := json.Marshal(role)
+	require.NoError(t, err)
+	_, err = svc.rolesBucket.Put(testAccountID+".dangling-role", data)
+	require.NoError(t, err)
+
+	_, err = svc.GetRolePolicies(testAccountID, "dangling-role")
+	assert.Error(t, err)
 }
 
 // ============================================================================

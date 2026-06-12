@@ -148,6 +148,9 @@ func (f *fakeIAMService) RemoveRoleFromInstanceProfile(string, *iam.RemoveRoleFr
 func (f *fakeIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
 	return nil, nil
 }
+func (f *fakeIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
+	return nil, nil
+}
 func (f *fakeIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) { return nil, nil }
 func (f *fakeIAMService) DecryptSecret(string) (string, error)                    { return "", nil }
 func (f *fakeIAMService) SeedBootstrap(*handlers_iam.BootstrapData) error         { return nil }

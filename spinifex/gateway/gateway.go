@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/mulgadc/predastore/auth"
 	"github.com/mulgadc/predastore/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -40,6 +41,11 @@ const (
 	ctxPrincipalType  contextKey = "sigv4.principalType"
 	ctxAssumedRoleARN contextKey = "sigv4.assumedRoleARN"
 	ctxAssumedRoleID  contextKey = "sigv4.assumedRoleID"
+	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role
+	// session (arn:aws:iam::A:role/Name). Policy enforcement resolves the role
+	// name from this, never from ctxIdentity (= attacker-influenced
+	// RoleSessionName).
+	ctxUnderlyingRoleARN contextKey = "sigv4.underlyingRoleARN"
 )
 
 // Values stored under ctxPrincipalType. The SigV4 middleware sets exactly one
@@ -402,52 +408,77 @@ func (gw *GatewayConfig) checkPolicyResource(r *http.Request, service, action, r
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	// Classify the principal type BEFORE any identity-string-based bypass.
-	// An assumed-role session whose SessionName is "root" must not slip
-	// through the same-account root short-circuit; the identity string is
-	// attacker-influenced via RoleSessionName.
+	// Resolve the IAM action string (e.g. "ec2:RunInstances")
+	iamAction := policy.IAMAction(service, action)
+
+	// Select the policy resolver and log identity from the branch matching the
+	// principal type. Every identity-string-sensitive decision — the root
+	// bypass and the resolver choice — happens INSIDE its branch arm so an
+	// assumed-role session whose attacker-chosen SessionName is "root" can never
+	// reach the user root short-circuit. The shared tail below never reads the
+	// raw identity string.
+	var resolve func() ([]handlers_iam.PolicyDocument, error)
+	var logIdentity string
+
 	principalType, _ := r.Context().Value(ctxPrincipalType).(string)
 	switch principalType {
 	case principalTypeUser:
-		// fall through to identity-based checks and user-policy evaluation
+		if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
+			// root / pre-IAM bypass — USER BRANCH ONLY.
+			return nil
+		}
+		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+			return gw.IAMService.GetUserPolicies(accountID, identity)
+		}
+		logIdentity = identity
 	case principalTypeAssumedRole:
-		slog.Warn("checkPolicy: assumed-role principal denied",
-			"sessionARN", r.Context().Value(ctxAssumedRoleARN),
-			"action", policy.IAMAction(service, action))
-		return errors.New(awserrors.ErrorAccessDenied)
+		// Resolve by the session's UNDERLYING role name — never by SessionName
+		// (= attacker-influenced ctxIdentity). A missing/legacy, cross-account,
+		// or malformed ARN fails closed with AccessDenied: these sessions were
+		// blanket-denied before this change, so denying them now is no
+		// regression, and a 403 (not 500) leaks no internal state.
+		underlyingRoleARN, _ := r.Context().Value(ctxUnderlyingRoleARN).(string)
+		roleAcct, roleName, perr := auth.ParseRoleARN(underlyingRoleARN)
+		if perr != nil || roleAcct != accountID {
+			slog.Warn("checkPolicy: unresolvable or cross-account assumed-role principal denied",
+				"underlyingRoleARN", underlyingRoleARN,
+				"accountID", accountID,
+				"action", iamAction,
+				"err", perr)
+			return errors.New(awserrors.ErrorAccessDenied)
+		}
+		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+			return gw.IAMService.GetRolePolicies(accountID, roleName)
+		}
+		logIdentity, _ = r.Context().Value(ctxAssumedRoleARN).(string)
 	default:
 		slog.Error("checkPolicy: unknown principal type", "principalType", principalType)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if identity == "" || (identity == "root" && accountID == utils.GlobalAccountID) {
-		return nil
-	}
-
-	// Resolve the IAM action string (e.g. "ec2:RunInstances")
-	iamAction := policy.IAMAction(service, action)
-
-	// Retry on transient NATS errors (e.g. during node failure / leader election).
+	// Shared tail: resolve policies (retrying transient NATS errors during node
+	// failure / leader election), then evaluate. Fail-closed on any non-transient
+	// resolve error; never reads the raw identity string.
 	var policies []handlers_iam.PolicyDocument
 	var err error
 	for attempt := range 3 {
-		policies, err = gw.IAMService.GetUserPolicies(accountID, identity)
+		policies, err = resolve()
 		if err == nil || !isNATSTransient(err) {
 			break
 		}
 		if attempt < 2 {
 			slog.Debug("checkPolicy: transient NATS error, retrying",
-				"user", identity, "attempt", attempt+1, "err", err)
+				"identity", logIdentity, "attempt", attempt+1, "err", err)
 			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 		}
 	}
 	if err != nil {
-		slog.Error("checkPolicy: failed to get user policies", "user", identity, "err", err)
+		slog.Error("checkPolicy: failed to resolve policies", "identity", logIdentity, "err", err)
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	if policy.EvaluateAccess(identity, iamAction, resource, policies) == policy.Deny {
-		slog.Info("checkPolicy: access denied", "user", identity, "action", iamAction, "resource", resource)
+	if policy.EvaluateAccess(logIdentity, iamAction, resource, policies) == policy.Deny {
+		slog.Info("checkPolicy: access denied", "identity", logIdentity, "action", iamAction, "resource", resource)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 

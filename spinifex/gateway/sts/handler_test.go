@@ -196,6 +196,9 @@ func (s *stubIAMService) ResolveInstanceProfile(string, string) (*handlers_iam.I
 func (s *stubIAMService) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
 	panic("unexpected GetUserPolicies call")
 }
+func (s *stubIAMService) GetRolePolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
+	panic("unexpected GetRolePolicies call")
+}
 func (s *stubIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) {
 	panic("unexpected LookupAccessKey call")
 }

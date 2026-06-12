@@ -145,6 +145,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			if principal.assumedRoleID != "" {
 				ctx = context.WithValue(ctx, ctxAssumedRoleID, principal.assumedRoleID)
 			}
+			if principal.underlyingRoleARN != "" {
+				ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, principal.underlyingRoleARN)
+			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error, the
 			// dispatcher re-parses and returns MalformedQueryString.
@@ -168,11 +171,12 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 // principalContext is the identity envelope set on the request context after
 // SigV4 verification succeeds.
 type principalContext struct {
-	identity       string
-	accountID      string
-	principalType  string
-	assumedRoleARN string
-	assumedRoleID  string
+	identity          string
+	accountID         string
+	principalType     string
+	assumedRoleARN    string
+	assumedRoleID     string
+	underlyingRoleARN string
 }
 
 // resolveLongLivedAKID handles the AKIA path: IAMService lookup, status check,
@@ -278,11 +282,12 @@ func (gw *GatewayConfig) resolveSessionAKID(r *http.Request, accessKeyID, client
 	// PrincipalType existed, so an absent value keeps the original role-session
 	// behaviour (see SessionCredential.PrincipalType backward-compat note).
 	return secret, principalContext{
-		identity:       cred.SessionName,
-		accountID:      cred.AccountID,
-		principalType:  principalTypeAssumedRole,
-		assumedRoleARN: cred.AssumedRoleARN,
-		assumedRoleID:  cred.AssumedRoleID,
+		identity:          cred.SessionName,
+		accountID:         cred.AccountID,
+		principalType:     principalTypeAssumedRole,
+		assumedRoleARN:    cred.AssumedRoleARN,
+		assumedRoleID:     cred.AssumedRoleID,
+		underlyingRoleARN: cred.UnderlyingRoleARN,
 	}, ""
 }
 

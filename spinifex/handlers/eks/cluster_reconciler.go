@@ -68,6 +68,14 @@ type ClusterReconciler struct {
 	stateSubject    string
 	stateStaleAfter time.Duration
 	latest          atomic.Pointer[ServerStateReport]
+
+	// Add-on delivery status source. When addonStatusSub is non-nil the
+	// reconciler subscribes to the per-cluster add-on status subject and CASes
+	// each AddonRecord (CREATING → ACTIVE/DEGRADED) from the on-VM addon-sync
+	// agent's reports. Add-on lifecycle is tracked per-resource (AWS parity), so
+	// this is a sibling of the cluster state-report, not folded into it.
+	addonStatusSub     natsSubscriber
+	addonStatusSubject string
 }
 
 // ReconcilerOption tunes a ClusterReconciler.
@@ -112,8 +120,19 @@ func WithStateStaleAfter(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.stateStaleAfter = d }
 }
 
-// NewClusterReconciler constructs a ClusterReconciler. healthURL is the probe
-// target or empty to skip /healthz probing (bootstrap state alone drives transitions).
+// WithAddonStatusSource configures the reconciler to consume per-add-on delivery
+// status reports (subject) via sub and CAS the matching AddonRecord. The
+// subscription is opened in Run and closed when it returns.
+func WithAddonStatusSource(sub natsSubscriber, subject string) ReconcilerOption {
+	return func(r *ClusterReconciler) {
+		r.addonStatusSub = sub
+		r.addonStatusSubject = subject
+	}
+}
+
+// NewClusterReconciler constructs a ClusterReconciler. healthURL is the
+// fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
+// to skip /healthz probing (CREATING transitions on bootstrap state alone).
 func NewClusterReconciler(leaderKV, acctKV nats.KeyValue, accountID, clusterName, holderID, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
 	if leaderKV == nil {
 		return nil, errors.New("eks: NewClusterReconciler nil leaderKV")
@@ -216,6 +235,22 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		})
 		if err != nil {
 			return fmt.Errorf("subscribe state report %s: %w", r.stateSubject, err)
+		}
+		defer func() { _ = sub.Unsubscribe() }()
+	}
+
+	if r.addonStatusSub != nil && r.addonStatusSubject != "" {
+		sub, err := r.addonStatusSub.Subscribe(r.addonStatusSubject, func(m *nats.Msg) {
+			report, perr := unmarshalAddonStatusReport(m.Data)
+			if perr != nil {
+				slog.Warn("ClusterReconciler: bad addon status report",
+					"cluster", r.clusterName, "subject", m.Subject, "err", perr)
+				return
+			}
+			r.applyAddonStatusReport(report)
+		})
+		if err != nil {
+			return fmt.Errorf("subscribe addon status %s: %w", r.addonStatusSubject, err)
 		}
 		defer func() { _ = sub.Unsubscribe() }()
 	}

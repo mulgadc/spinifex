@@ -1,8 +1,11 @@
 package handlers_eks
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -99,6 +102,72 @@ func (s *EKSServiceImpl) CreateAddon(input *eks.CreateAddonInput, accountID stri
 		return nil, err
 	}
 	return &eks.CreateAddonOutput{Addon: addonRecordToAWS(cluster, rec)}, nil
+}
+
+// ListStagedAddonManifestsInput names the cluster whose staged add-on manifests
+// to return. It is an internal control-plane request (not an AWS-SDK shape),
+// served over NATS for the on-VM addon-sync agent via the internal-addons
+// gateway route.
+type ListStagedAddonManifestsInput struct {
+	ClusterName string `json:"clusterName"`
+}
+
+// ListStagedAddonManifestsOutput carries the staged manifest descriptors, sorted
+// by add-on name.
+type ListStagedAddonManifestsOutput struct {
+	Manifests []StagedAddonManifest `json:"manifests"`
+}
+
+// ListStagedAddonManifests returns the staged manifest descriptor for every
+// add-on currently staged for delivery to a cluster, sorted by add-on name.
+// The on-VM addon-sync agent fetches these (via the internal-addons gateway
+// route) to render the baked bundles into the K3s auto-deploy dir; an add-on
+// whose record was deleted has its staged manifest removed, so the agent treats
+// absence here as "remove the locally-rendered manifest".
+func (s *EKSServiceImpl) ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error) {
+	if input == nil || input.ClusterName == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	acctKV, err := s.acctKVForCluster(accountID, input.ClusterName)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := acctKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return &ListStagedAddonManifestsOutput{Manifests: []StagedAddonManifest{}}, nil
+		}
+		return nil, err
+	}
+	prefix := AddonsPrefix(input.ClusterName)
+	out := make([]StagedAddonManifest, 0)
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) || !strings.HasSuffix(k, "/manifest") {
+			continue
+		}
+		entry, err := acctKV.Get(k)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		var m StagedAddonManifest
+		if err := json.Unmarshal(entry.Value(), &m); err != nil {
+			return nil, fmt.Errorf("unmarshal staged manifest %s: %w", k, err)
+		}
+		out = append(out, m)
+	}
+	sortStagedManifests(out)
+	return &ListStagedAddonManifestsOutput{Manifests: out}, nil
+}
+
+func sortStagedManifests(m []StagedAddonManifest) {
+	for i := 1; i < len(m); i++ {
+		for j := i; j > 0 && m[j-1].AddonName > m[j].AddonName; j-- {
+			m[j-1], m[j] = m[j], m[j-1]
+		}
+	}
 }
 
 // DescribeAddon returns one installed add-on's record.

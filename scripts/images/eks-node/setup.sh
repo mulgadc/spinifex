@@ -43,9 +43,10 @@ ln -sf /usr/local/bin/k3s /usr/local/bin/ctr
 # Init scripts ship as 0644 from INSTALL_FILES; OpenRC requires 0755. Every
 # role's services are baked; the selector enables the right ones at first boot.
 chmod 0755 /etc/init.d/eks-node-role /etc/init.d/k3s /etc/init.d/k3s-agent \
-    /etc/init.d/eks-token-webhook /etc/init.d/k3s-first-boot /etc/init.d/mulga-eks-state-report
+    /etc/init.d/eks-token-webhook /etc/init.d/k3s-first-boot /etc/init.d/mulga-eks-state-report \
+    /etc/init.d/mulga-eks-addon-sync
 chmod 0755 /usr/local/sbin/eks-node-role /usr/local/sbin/k3s-first-boot \
-    /usr/local/sbin/mulga-eks-state-report
+    /usr/local/sbin/mulga-eks-state-report /usr/local/sbin/mulga-eks-addon-sync
 chmod 0755 /etc/periodic/daily/mulga-eks-etcd-snapshot
 
 # K3s server config — skeleton; cloud-init / first-boot fills in the

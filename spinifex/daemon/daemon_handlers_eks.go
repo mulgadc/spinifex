@@ -118,6 +118,10 @@ func (d *Daemon) handleEKSUpdateAddon(msg *nats.Msg) {
 	handleNATSRequest(msg, d.eksService.UpdateAddon)
 }
 
+func (d *Daemon) handleEKSListStagedAddonManifests(msg *nats.Msg) {
+	handleNATSRequest(msg, d.eksService.ListStagedAddonManifests)
+}
+
 // --- OIDC identity-provider configs ---
 
 func (d *Daemon) handleEKSAssociateIdentityProviderConfig(msg *nats.Msg) {

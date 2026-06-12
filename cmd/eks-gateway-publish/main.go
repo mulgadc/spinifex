@@ -69,7 +69,7 @@ func main() {
 	flag.StringVar(&region, "region", os.Getenv("EKS_REGION"), "AWS region for SigV4 signing")
 	flag.StringVar(&accountID, "account-id", os.Getenv("EKS_ACCOUNT_ID"), "Cluster account ID")
 	flag.StringVar(&clusterName, "cluster", os.Getenv("EKS_CLUSTER_NAME"), "Cluster name")
-	flag.StringVar(&channel, "channel", "", "Publish channel: bootstrap|state")
+	flag.StringVar(&channel, "channel", "", "Publish channel: bootstrap|state|addon")
 	flag.StringVar(&kind, "kind", "", "Bootstrap subject kind (bootstrap channel only)")
 	flag.Parse()
 
@@ -78,8 +78,8 @@ func main() {
 		fatal("--account-id is required (or set EKS_ACCOUNT_ID)")
 	case clusterName == "":
 		fatal("--cluster is required (or set EKS_CLUSTER_NAME)")
-	case channel != "bootstrap" && channel != "state":
-		fatal("--channel must be bootstrap or state")
+	case channel != "bootstrap" && channel != "state" && channel != "addon":
+		fatal("--channel must be bootstrap, state or addon")
 	case channel == "bootstrap" && kind == "":
 		fatal("--kind is required for the bootstrap channel")
 	}

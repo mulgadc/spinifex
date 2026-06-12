@@ -1,0 +1,20 @@
+# spinifex-noop — managed-addon delivery-transport fixture. Two trivial,
+# dependency-free objects the addon e2e asserts on to prove the stage → fetch →
+# render → auto-deploy → ACTIVE → delete round-trip end-to-end, independent of
+# the CSI or load-balancer-controller bundles. Not a real workload.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spinifex-noop
+  labels:
+    app.kubernetes.io/managed-by: spinifex-addon
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spinifex-noop
+  namespace: spinifex-noop
+  labels:
+    app.kubernetes.io/managed-by: spinifex-addon
+data:
+  marker: "spinifex-noop addon delivered"

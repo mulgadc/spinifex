@@ -497,32 +497,8 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was
-	// allocated via AllocateAddress (internet-facing ALBs). Clears the fields
-	// so vm.Manager.Terminate's ReleasePublicIP doesn't double-release the
-	// same IP via externalIPAM.
-	if instance.PublicIPAllocID != "" && d.eipService != nil {
-		eniAccount := instance.AccountID
-		if instance.PublicIPAssocID != "" {
-			if _, err := d.eipService.DisassociateAddress(&ec2.DisassociateAddressInput{
-				AssociationId: aws.String(instance.PublicIPAssocID),
-			}, eniAccount); err != nil {
-				slog.Warn("TerminateSystemInstance: DisassociateAddress failed", "instanceId", instanceID, "associationId", instance.PublicIPAssocID, "err", err)
-			}
-		}
-		if _, err := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
-			AllocationId: aws.String(instance.PublicIPAllocID),
-		}, eniAccount); err != nil {
-			slog.Warn("TerminateSystemInstance: ReleaseAddress failed", "instanceId", instanceID, "allocationId", instance.PublicIPAllocID, "err", err)
-		} else {
-			slog.Info("TerminateSystemInstance: released EIP", "instanceId", instanceID, "ip", instance.PublicIP, "allocationId", instance.PublicIPAllocID)
-		}
-		d.vmMgr.UpdateState(instance.ID, func(v *vm.VM) {
-			v.PublicIP = ""
-			v.PublicIPPool = ""
-			v.PublicIPAllocID = ""
-			v.PublicIPAssocID = ""
-		})
-	}
+	// allocated via AllocateAddress (internet-facing ALBs).
+	d.releaseSystemInstanceEIP(instance)
 
 	if err := d.vmMgr.Terminate(instanceID); err != nil {
 		slog.Error("TerminateSystemInstance: vmMgr.Terminate failed", "instanceId", instanceID, "err", err)
@@ -564,12 +540,51 @@ func (d *Daemon) refreshSystemInstanceState(inst *vm.VM) error {
 	return nil
 }
 
+// releaseSystemInstanceEIP disassociates and releases an eipService-allocated
+// EIP (internet-facing system instances) and clears the instance's EIP fields so
+// a later externalIPAM release path (vm.Manager.Terminate/MarkFailed
+// ReleasePublicIP) does not double-release the same IP. No-op when the instance
+// holds no eipService allocation. Best-effort: each step is logged, none fatal.
+func (d *Daemon) releaseSystemInstanceEIP(instance *vm.VM) {
+	if instance == nil || instance.PublicIPAllocID == "" || d.eipService == nil {
+		return
+	}
+	eniAccount := instance.AccountID
+	if instance.PublicIPAssocID != "" {
+		if _, err := d.eipService.DisassociateAddress(&ec2.DisassociateAddressInput{
+			AssociationId: aws.String(instance.PublicIPAssocID),
+		}, eniAccount); err != nil {
+			slog.Warn("releaseSystemInstanceEIP: DisassociateAddress failed", "instanceId", instance.ID, "associationId", instance.PublicIPAssocID, "err", err)
+		}
+	}
+	if _, err := d.eipService.ReleaseAddress(&ec2.ReleaseAddressInput{
+		AllocationId: aws.String(instance.PublicIPAllocID),
+	}, eniAccount); err != nil {
+		slog.Warn("releaseSystemInstanceEIP: ReleaseAddress failed", "instanceId", instance.ID, "allocationId", instance.PublicIPAllocID, "err", err)
+	} else {
+		slog.Info("releaseSystemInstanceEIP: released EIP", "instanceId", instance.ID, "ip", instance.PublicIP, "allocationId", instance.PublicIPAllocID)
+	}
+	instance.PublicIP = ""
+	instance.PublicIPPool = ""
+	instance.PublicIPAllocID = ""
+	instance.PublicIPAssocID = ""
+	d.vmMgr.UpdateState(instance.ID, func(v *vm.VM) {
+		v.PublicIP = ""
+		v.PublicIPPool = ""
+		v.PublicIPAllocID = ""
+		v.PublicIPAssocID = ""
+	})
+}
+
 // cleanupFailedSystemInstance handles cleanup when a system instance launch
-// fails after partial setup (state added, volumes created, etc). Delegates
-// to vm.Manager.MarkFailed which runs the synchronous teardown chain
-// (volume unmount/delete, tap cleanup, ENI delete, IP release, resource
-// deallocation, state migration to terminated KV).
+// fails after partial setup (state added, volumes created, etc). Releases an
+// eipService-allocated EIP first (MarkFailed's ReleasePublicIP only knows the
+// externalIPAM path, so an associated EIP would otherwise leak), then delegates
+// to vm.Manager.MarkFailed which runs the synchronous teardown chain (volume
+// unmount/delete, tap cleanup, ENI delete, IP release, resource deallocation,
+// state migration to terminated KV).
 func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTypeInfo) {
+	d.releaseSystemInstanceEIP(instance)
 	d.vmMgr.MarkFailed(instance, "system_instance_launch_failed")
 }
 

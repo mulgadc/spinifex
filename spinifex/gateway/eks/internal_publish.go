@@ -14,6 +14,7 @@ import (
 const (
 	internalChannelBootstrap = "bootstrap"
 	internalChannelState     = "state"
+	internalChannelAddon     = "addon"
 )
 
 // internalPublishRequest is the body POSTed to /clusters/{name}/internal-publish.
@@ -68,6 +69,8 @@ func PublishInternal(natsConn *nats.Conn, clusterName string, body []byte) (*pub
 		subject = handlers_eks.BootstrapSubject(req.AccountID, clusterName, req.Kind)
 	case internalChannelState:
 		subject = handlers_eks.StateSubject(req.AccountID, clusterName)
+	case internalChannelAddon:
+		subject = handlers_eks.AddonStatusSubject(req.AccountID, clusterName)
 	default:
 		slog.Debug("PublishInternal: unknown channel", "cluster", clusterName, "channel", req.Channel)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

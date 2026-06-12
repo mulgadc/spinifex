@@ -39,6 +39,10 @@ type EKSService interface {
 	DeleteAddon(input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error)
 	DescribeAddon(input *eks.DescribeAddonInput, accountID string) (*eks.DescribeAddonOutput, error)
 	UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error)
+	// ListStagedAddonManifests is an internal control-plane method (not an
+	// AWS-SDK action): the on-VM addon-sync agent fetches staged manifests for a
+	// cluster via the internal-addons gateway route.
+	ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
 
 	// OIDC identity-provider configs.
 	AssociateIdentityProviderConfig(input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)

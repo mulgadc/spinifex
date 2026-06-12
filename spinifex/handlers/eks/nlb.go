@@ -13,6 +13,7 @@ import (
 // nlbProvisioner is the narrow ELBv2 surface needed by cluster NLB helpers.
 type nlbProvisioner interface {
 	CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
+	CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
 
@@ -61,9 +62,27 @@ func ClusterTargetGroupName(clusterName string) string {
 	return "eks-" + clusterName + "-cp"
 }
 
-// EnsureClusterNLB provisions (or reuses) the cluster NLB, target group, and
-// :443→:6443 TCP listener. Idempotent; ENI registration is done separately by
-// RegisterClusterTarget. publicAccessCidrs narrows ingress for internet-facing LBs.
+// EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +
+// :443→:6443 TCP listener. Idempotent on clusterName: existing resources are
+// reused so DeleteCluster failure-retry and reconciler crash-recovery both
+// converge without duplicate creates.
+//
+// The K3s server VM ENI IP is NOT registered here — Stage 4
+// (k3s_server_vm.go) calls RegisterClusterTarget once the VM has its ENI IP.
+//
+// internetFacing selects the NLB scheme: true ⇒ internet-facing (external-pool
+// front-end IP, LAN-reachable, for a public cluster endpoint); false ⇒ internal
+// (VPC-only). The LB is created synchronously (CreateLoadBalancerSync), so its
+// reachable FrontendIP is known on return and used as the endpoint host + cert
+// SAN. A cluster whose NLB yields no front-end IP has no usable apiserver
+// endpoint, so EnsureClusterNLB fails loud with ErrClusterNLBFrontendIPUnavailable
+// rather than ship the unresolvable DNS-name fallback.
+//
+// publicAccessCidrs narrows who may reach an internet-facing front-end below the
+// scheme default (0.0.0.0/0). It maps the cluster's publicAccessCidrs onto the
+// NLB managed-SG ingress; ignored for an internal NLB (its ingress already
+// tracks the VPC CIDR) and for the wide-open default, which the LB carries out
+// of the box.
 func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
@@ -96,16 +115,25 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 			return nil, fmt.Errorf("eks: set NLB ingress CIDRs for %s: %w", lbName, err)
 		}
 	}
-	// Best-effort front-end IP read-back; caller falls back to DNS name if empty.
-	if lb, err := lookupLBByName(nlbp, accountID, lbName); err == nil && lb != nil {
-		out.FrontendIP = frontendIPFromLB(lb, internetFacing)
-	} else if err != nil {
-		slog.Warn("EnsureClusterNLB: front-end IP read-back failed", "name", lbName, "err", err)
+	// FrontendIP is set synchronously by ensureClusterLB. An empty value means the
+	// backing LB never got a reachable address (e.g. no external IP pool), which
+	// would leave the apiserver cert SANed only to the unresolvable DNS name —
+	// fail the launch loud instead.
+	if out.FrontendIP == "" {
+		return nil, fmt.Errorf("eks: NLB %s: %w", lbName, ErrClusterNLBFrontendIPUnavailable)
 	}
 	return out, nil
 }
 
-// narrowsPublicAccess reports whether publicAccessCidrs restrict below the 0.0.0.0/0 default.
+// ErrClusterNLBFrontendIPUnavailable is returned by EnsureClusterNLB when the
+// cluster's NLB came up without a reachable front-end IP, so no usable apiserver
+// endpoint (with a matching cert SAN) can be published.
+var ErrClusterNLBFrontendIPUnavailable = errors.New("eks: cluster NLB has no reachable front-end IP")
+
+// narrowsPublicAccess reports whether publicAccessCidrs restrict the front-end
+// below the wide-open default an internet-facing NLB already carries. Empty (no
+// override) or the lone 0.0.0.0/0 default are no-ops and skip the extra ELBv2
+// round-trip.
 func narrowsPublicAccess(cidrs []string) bool {
 	if len(cidrs) == 0 {
 		return false
@@ -244,8 +272,11 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 	if lb, err := lookupLBByName(nlbp, accountID, lbName); err != nil {
 		return err
 	} else if lb != nil {
+		// Idempotent re-entry: the LB already exists (and, since creation is
+		// synchronous, has already been launched), so its address is on the record.
 		out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
 		out.DNSName = aws.StringValue(lb.DNSName)
+		out.FrontendIP = frontendIPFromLB(lb, internetFacing)
 		if out.LoadBalancerArn == "" || out.DNSName == "" {
 			return fmt.Errorf("eks: existing NLB %s missing arn or DNS name", lbName)
 		}
@@ -256,7 +287,11 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 	if internetFacing {
 		scheme = elbv2.LoadBalancerSchemeEnumInternetFacing
 	}
-	created, err := nlbp.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+	// Synchronous create: the cluster launch runs off the gateway responder, so it
+	// awaits the data-plane launch and gets back an LB carrying its front-end IP —
+	// which must be baked into the apiserver cert SAN before the control-plane VM
+	// boots (the async CreateLoadBalancer would return before the IP is allocated).
+	created, err := nlbp.CreateLoadBalancerSync(&elbv2.CreateLoadBalancerInput{
 		Name:    aws.String(lbName),
 		Type:    aws.String(elbv2.LoadBalancerTypeEnumNetwork),
 		Scheme:  aws.String(scheme),
@@ -275,6 +310,7 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 	lb := created.LoadBalancers[0]
 	out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
 	out.DNSName = aws.StringValue(lb.DNSName)
+	out.FrontendIP = frontendIPFromLB(lb, internetFacing)
 	if out.LoadBalancerArn == "" || out.DNSName == "" {
 		return fmt.Errorf("eks: CreateLoadBalancer returned empty arn or DNS name for %s", lbName)
 	}

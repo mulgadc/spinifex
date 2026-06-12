@@ -17,9 +17,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -53,9 +53,19 @@ type EKSServiceDeps struct {
 	Instance  k3sInstanceLauncher
 	Image     k3sAMIResolver
 	EIP       eipProvisioner
+	IGW       igwProvisioner
 	Worker    WorkerLauncher
 
-	// PlacementGroup and Scheduler support HA control-plane spread (NATS-backed).
+	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
+	// from the real EC2 VPC-family APIs under the system account. The daemon
+	// adapts its concrete VPC / NAT-gateway / route-table services onto these.
+	VPCMgr     vpcProvisioner
+	NATGW      natGatewayProvisioner
+	RouteTable routeTableProvisioner
+
+	// PlacementGroup reserves distinct hosts for HA control-plane spread;
+	// Scheduler answers the capacity + placement fan-out the spread path needs.
+	// The daemon wires the NATS implementations.
 	PlacementGroup controlPlanePlacer
 	Scheduler      HostScheduler
 
@@ -330,7 +340,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 	s.launchWG.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				s.failClusterLaunch(acctKV, name, accountID, "launch panic", fmt.Errorf("%v", r))
+				s.failClusterLaunch(acctKV, name, accountID, meta, "launch panic", fmt.Errorf("%v", r))
 			}
 		}()
 		s.launchClusterInfra(clusterLaunchCtx{
@@ -366,9 +376,26 @@ type clusterLaunchCtx struct {
 	acctKV             nats.KeyValue
 }
 
-// failClusterLaunch logs a launch failure and marks the cluster FAILED so DescribeCluster surfaces the cause.
-func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID, stage string, err error) {
+// failClusterLaunch records an asynchronous control-plane launch failure: it
+// marks the cluster FAILED (with reason, so DescribeCluster surfaces the cause
+// and the 267.3 reclaim path can recreate cleanly) and logs the stage. The
+// launch runs after the CREATING response was already sent, so a failure can
+// only surface as status, never as the CreateCluster return value.
+func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID string, meta *ClusterMeta, stage string, err error) {
 	_ = logCreateErr(name, accountID, stage, err)
+	// Release any billable infra already provisioned this launch (LB VM + its
+	// associated EIP, egress EIP, NLB, CP VMs, OIDC) so a failed create never
+	// strands resources. Cluster names are unique, so the same-name reclaim that
+	// would otherwise purge a FAILED attempt never fires — without this, the
+	// internet-facing LB VM's EIP leaks permanently. Operate on the in-memory
+	// meta: a failure in PutClusterMeta itself leaves the freshest refs only
+	// here, not in the KV record. Best-effort; the FAILED status is recorded
+	// regardless (deleteMeta=false keeps the meta for DescribeCluster/reclaim).
+	if meta != nil {
+		if perr := s.purgeClusterInfra(accountID, name, meta, kv, false); perr != nil {
+			slog.Warn("failClusterLaunch: infra purge incomplete", "cluster", name, "stage", stage, "err", perr)
+		}
+	}
 	if mErr := MarkClusterFailed(kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
 		slog.Warn("launchClusterInfra: MarkClusterFailed failed", "cluster", name, "err", mErr)
 	}
@@ -381,85 +408,110 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	callerPrincipalARN := lc.callerPrincipalARN
 	name := lc.name
 	region := lc.region
-	subnetIDs := lc.subnetIDs
-	vpcID := lc.vpcID
 	publicAccess := lc.publicAccess
 	publicCidrs := lc.publicCidrs
 	input := lc.input
 	meta := lc.meta
 	acctKV := lc.acctKV
 
-	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, accountID, name, vpcID)
+	// Build the managed control-plane VPC ("Set B") under the system account: the
+	// AWS-managed-account analogue the customer never provisions. The
+	// internet-facing NLB lives in its public subnet and the control-plane VM(s)
+	// in its private subnet, so the NLB→CP hop is in-VPC (unaffected by the
+	// private-subnet egress drop) and the private CP egresses via the NAT gateway
+	// (DNS + docker.io image pulls). Composed from the real EC2 VPC-family APIs,
+	// so the per-subnet egress policies are wired by the topology subscribers.
+	sysAcct := admin.SystemAccountID()
+	cpRefs, err := EnsureClusterCPVPC(s.cpVPCDeps(), sysAcct, name, region, cpVPCPrivateSubnetCount)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster SGs", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure managed CP VPC", err)
+		return
+	}
+	meta.ManagedCPVPC = managedCPVPCFromRefs(cpRefs)
+	// Persist the CP VPC refs before any further fallible step so teardown can
+	// reclaim the VPC/subnets/IGW/NAT GW even if the launch fails after here.
+	if err := PutClusterMeta(acctKV, meta); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist managed CP VPC", err)
+		return
+	}
+
+	cpSG, ngSG, err := EnsureClusterSGs(s.deps.VPCSG, sysAcct, name, cpRefs.VpcID)
+	if err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster SGs", err)
 		return
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
-	vpcCIDR, err := s.deps.VPCSubnet.GetVPCCIDR(accountID, vpcID)
-	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "resolve vpc cidr", err)
+	// The NLB's backing LB VM forwards the published endpoint to the apiserver
+	// from inside the CP VPC, so the control-plane SG must admit that hop (CP VPC
+	// CIDR) or the NLB target stays unhealthy and the endpoint never serves.
+	if err := EnsureControlPlaneIngress(s.deps.VPCSG, sysAcct, cpSG, cpRefs.VpcCIDR); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure control-plane ingress", err)
 		return
 	}
-	if err := EnsureControlPlaneIngress(s.deps.VPCSG, accountID, cpSG, vpcCIDR); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane ingress", err)
-		return
-	}
-	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, accountID, cpSG); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane HA ingress", err)
+	// HA control planes run servers 2..N as join servers whose embedded etcd must
+	// peer with the quorum; without these self-referencing CP-SG rules a join
+	// registers but its etcd never replicates, so the node never reports Ready.
+	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, sysAcct, cpSG); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure control-plane HA ingress", err)
 		return
 	}
 
-	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
+	// The cluster NLB lives in the CP VPC public subnet. publicAccess selects the
+	// scheme (internet-facing external-pool IP vs internal VPC IP); the CP VPC IGW
+	// (attached by EnsureClusterCPVPC) makes an internet-facing front-end IP
+	// answerable on the wire.
+	nlb, err := EnsureClusterNLB(s.deps.NLB, sysAcct, name, []string{cpRefs.PublicSubnetID}, publicAccess, publicCidrs)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster NLB", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
-	// Prefer the NLB front-end IP for TLS SAN validation; fall back to DNS name.
-	endpointHost := nlb.FrontendIP
-	if endpointHost == "" {
-		endpointHost = nlb.DNSName
-	}
-	meta.Endpoint = "https://" + net.JoinHostPort(endpointHost, strconv.FormatInt(clusterNLBListenPort, 10))
+	// The reachable front-end IP is the kubeconfig endpoint host so the apiserver
+	// serving cert (which SANs this IP) validates with TLS verification on.
+	// EnsureClusterNLB guarantees a non-empty FrontendIP (it fails the launch
+	// otherwise), so there is no DNS-name fallback to bake an unresolvable,
+	// non-SANed endpoint.
+	meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
 	meta.EndpointIP = nlb.FrontendIP
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
 	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist NLB arns", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist NLB arns", err)
 		return
 	}
 
 	oidcIssuer, err := ClusterOIDCIssuer(s.deps.GatewayBaseURL, region, accountID, name)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "build OIDC issuer", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "build OIDC issuer", err)
 		return
 	}
 	meta.OIDCIssuer = oidcIssuer
 
 	privPEM, _, err := GenerateClusterOIDCKeypair(acctKV, name, s.deps.MasterKey)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "generate OIDC keypair", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "generate OIDC keypair", err)
 		return
 	}
 	pubPEM, err := PublicKeyPEMFromPrivate(privPEM)
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "derive OIDC public key", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "derive OIDC public key", err)
 		return
 	}
 
 	joinToken, err := GenerateK3sClusterToken()
 	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "generate k3s cluster token", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "generate k3s cluster token", err)
 		return
 	}
 
-	cpNodes, spreadGroup, err := s.placeControlPlane(accountID, name, K3sServerInput{
-		AccountID:         accountID,
+	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
+		AccountID:         sysAcct,
+		ClusterAccountID:  accountID,
 		ClusterName:       name,
 		Region:            region,
-		SubnetID:          subnetIDs[0],
+		SubnetID:          cpRefs.PrivateSubnetIDs[0],
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
 		EndpointIP:        nlb.FrontendIP,
@@ -475,13 +527,14 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	})
 	if err != nil {
 		if errors.Is(err, ErrEKSServerAMINotFound) {
-			s.failClusterLaunch(acctKV, name, accountID, "eks-server AMI not found", err)
+			s.failClusterLaunch(acctKV, name, accountID, meta, "eks-server AMI not found", err)
 			return
 		}
-		s.failClusterLaunch(acctKV, name, accountID, "launch K3s VM", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "launch K3s VM", err)
 		return
 	}
-	// Mirror primary CP ([0]) into scalar fields; all nodes are NLB-registered for failover.
+	// Mirror the primary ([0]) into the scalar fields the reconciler and teardown
+	// read today. All CP nodes are NLB target-registered (failover).
 	primary := cpNodes[0]
 	meta.ControlPlaneNodes = cpNodes
 	meta.ControlPlaneSpreadGroup = spreadGroup
@@ -490,43 +543,31 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	meta.ControlPlaneENIIP = primary.ENIIP
 	meta.ControlPlaneMgmtIP = primary.MgmtIP
 
-	// Persist CP IDs immediately; VMs are live now and must not be orphaned on later failure.
+	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
+	// step. The VMs are live the moment placeControlPlane returns; without this a
+	// failure between here and the next PutClusterMeta leaves them launched but
+	// unrecorded, so neither DeleteCluster nor the FAILED-cluster reclaim could
+	// reach them and the sys.medium VMs leak.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist control-plane ids", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist control-plane ids", err)
 		return
 	}
 
-	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
-	if err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "allocate cluster egress IP", err)
-		return
-	}
-	meta.EgressEIPAllocationID = egressAllocID
-	meta.EgressEIPPublicIP = egressIP
-	utils.PublishEvent(s.deps.NATSConn, "vpc.add-system-egress", systemEgressEvent{
-		VpcId:      vpcID,
-		SubnetId:   subnetIDs[0],
-		InstanceIp: primary.ENIIP,
-		ExternalIp: egressIP,
-	})
-
-	// Persist egress allocation so DeleteCluster can reclaim it on later failure.
-	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist egress allocation", err)
-		return
-	}
-
+	// The control-plane VM pulls container images over the CP VPC's NAT gateway:
+	// it lives in the private subnet whose route table sends 0.0.0.0/0 → NAT GW,
+	// so no per-instance egress wiring is needed (the prior hidden-pool /32 SNAT
+	// bandaid is gone — the topology now expresses egress).
 	cpENIIPs := make([]string, 0, len(cpNodes))
 	for _, n := range cpNodes {
 		cpENIIPs = append(cpENIIPs, n.ENIIP)
 	}
-	if err := RegisterClusterTargets(s.deps.NLB, accountID, nlb.TargetGroupArn, cpENIIPs); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "register NLB targets", err)
+	if err := RegisterClusterTargets(s.deps.NLB, sysAcct, nlb.TargetGroupArn, cpENIIPs); err != nil {
+		s.failClusterLaunch(acctKV, name, accountID, meta, "register NLB targets", err)
 		return
 	}
 
 	if err := PutClusterMeta(acctKV, meta); err != nil {
-		s.failClusterLaunch(acctKV, name, accountID, "persist final meta", err)
+		s.failClusterLaunch(acctKV, name, accountID, meta, "persist final meta", err)
 		return
 	}
 
@@ -535,7 +576,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
 			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
 		if err := PutAccessEntryRecord(acctKV, rec); err != nil {
-			s.failClusterLaunch(acctKV, name, accountID, "seed cluster-creator admin access entry", err)
+			s.failClusterLaunch(acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
 		}
 	} else if bootstrapCreatorAdmin(input) {
@@ -564,26 +605,6 @@ type systemEgressEvent struct {
 	SubnetId   string `json:"subnet_id"`
 	InstanceIp string `json:"instance_ip"`
 	ExternalIp string `json:"external_ip"`
-}
-
-// allocateClusterEgressIP allocates a hidden pool address for the cluster's
-// control-plane VM egress, tagged ManagedBy=eks so it stays out of customer
-// DescribeAddresses listings.
-func (s *EKSServiceImpl) allocateClusterEgressIP(accountID, name string) (publicIP, allocationID string, err error) {
-	out, err := s.deps.EIP.AllocateAddress(&ec2.AllocateAddressInput{
-		Domain: aws.String("vpc"),
-		TagSpecifications: []*ec2.TagSpecification{{
-			ResourceType: aws.String("elastic-ip"),
-			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)}},
-		}},
-	}, accountID)
-	if err != nil {
-		return "", "", err
-	}
-	if out == nil || aws.StringValue(out.PublicIp) == "" || aws.StringValue(out.AllocationId) == "" {
-		return "", "", errors.New("eks: AllocateAddress returned incomplete EIP")
-	}
-	return aws.StringValue(out.PublicIp), aws.StringValue(out.AllocationId), nil
 }
 
 func (s *EKSServiceImpl) DescribeCluster(input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error) {
@@ -760,6 +781,14 @@ func (s *EKSServiceImpl) claimClusterName(accountID string, acctKV nats.KeyValue
 func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *ClusterMeta, acctKV nats.KeyValue, deleteMeta bool) error {
 	s.registry.Stop(accountID, name)
 
+	// infraAcct owns the NLB, CP VMs, and CP VPC. Clusters built with the managed
+	// CP VPC ("Set B") hold them under the system account; legacy clusters
+	// (ManagedCPVPC nil) under the customer account, matching how they launched.
+	infraAcct := accountID
+	if meta.ManagedCPVPC != nil {
+		infraAcct = admin.SystemAccountID()
+	}
+
 	var teardownErrs []error
 
 	if err := ZeroizeClusterOIDCKey(acctKV, name); err != nil {
@@ -770,18 +799,18 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		// Deregister is best-effort: DeleteClusterNLB tears down the whole NLB
 		// + target group, so a stale target registration cannot leak past it.
 		if meta.NLBTargetGroupArn != "" && meta.ControlPlaneENIIP != "" {
-			if err := DeregisterClusterTarget(s.deps.NLB, accountID, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
+			if err := DeregisterClusterTarget(s.deps.NLB, infraAcct, meta.NLBTargetGroupArn, meta.ControlPlaneENIIP); err != nil {
 				slog.Warn("purgeClusterInfra: deregister NLB target failed", "cluster", name, "err", err)
 			}
 		}
-		if err := DeleteClusterNLB(s.deps.NLB, accountID, name); err != nil {
+		if err := DeleteClusterNLB(s.deps.NLB, infraAcct, name); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("delete NLB: %w", err))
 		}
 	}
 
 	for _, cp := range controlPlaneTeardownNodes(meta) {
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
-			accountID, cp.InstanceID, cp.ENIID); err != nil {
+			infraAcct, cp.InstanceID, cp.ENIID); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
 		}
 	}
@@ -827,9 +856,30 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		return errors.Join(teardownErrs...)
 	}
 
-	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+	if meta.ManagedCPVPC != nil && meta.ManagedCPVPC.VpcId != "" {
+		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
+		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
+		// the IGW + VPC after the SGs, so SG cleanup must precede it.
+		if err := DeleteClusterSGs(s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId); err != nil {
+			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
+		}
+		// The CP VPC holds a billable NAT-GW EIP, so a teardown failure is surfaced
+		// (not best-effort): returning before the KV sweep keeps the meta refs alive
+		// for a delete retry rather than orphaning the EIP.
+		if err := DeleteClusterCPVPC(s.cpVPCDeps(), infraAcct, name); err != nil {
+			return fmt.Errorf("delete managed CP VPC: %w", err)
+		}
+	} else if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the
+		// cluster-owned IGW (ownership-scoped — a reused customer IGW is left
+		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
 		if err := DeleteClusterSGs(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
 			slog.Warn("purgeClusterInfra: DeleteClusterSGs failed", "cluster", name, "err", err)
+		}
+		if s.deps.IGW != nil {
+			if err := DeleteClusterIGW(s.deps.IGW, accountID, meta.ResourcesVpcConfig.VpcId, name); err != nil {
+				slog.Warn("purgeClusterInfra: DeleteClusterIGW failed", "cluster", name, "err", err)
+			}
 		}
 	}
 
@@ -1457,9 +1507,11 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
+	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
 	spawn := func(ctx context.Context, _, _ string) (func(), error) {
 		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "",
-			WithStateSource(s.deps.NATSConn, stateSubject))
+			WithStateSource(s.deps.NATSConn, stateSubject),
+			WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject))
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

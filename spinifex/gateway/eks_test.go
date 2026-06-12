@@ -101,6 +101,7 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 		// Internal control-plane broker routes, not AWS-SDK EKS actions.
 		"PublishInternal":                    false,
 		"WebhookTokenReview":                 false,
+		"ListInternalAddons":                 false,
 		"DescribeCluster":                    false,
 		"ListClusters":                       false,
 		"UpdateClusterConfig":                false,

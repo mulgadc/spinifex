@@ -138,6 +138,61 @@ func TestSetSecurityGroups_CrossAccount(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound)
 }
 
+// frontendPublicIP returns the first non-empty public IpAddress across the LB's
+// AZ addresses, or "" when none is set yet.
+func frontendPublicIP(lb *elbv2.LoadBalancer) string {
+	for _, az := range lb.AvailabilityZones {
+		for _, addr := range az.LoadBalancerAddresses {
+			if ip := aws.StringValue(addr.IpAddress); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+func TestCreateLoadBalancerSync_ReturnsFrontendIP(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	mock.launchResult.PublicIP = "203.0.113.9"
+	vid := vpcID(t, vpcSvc)
+	sub := getTestSubnetID(t, vpcSvc, vid, "10.0.30.0/24", "us-east-1a")
+
+	out, err := svc.CreateLoadBalancerSync(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("sync-lb"),
+		Type:    aws.String("network"),
+		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
+		Subnets: []*string{aws.String(sub)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.LoadBalancers, 1)
+	// Sync create drove the launch inline — no WaitLaunches needed — so the
+	// returned LB already carries its front-end IP.
+	require.Len(t, mock.launchCalls, 1)
+	assert.Equal(t, "203.0.113.9", frontendPublicIP(out.LoadBalancers[0]))
+}
+
+func TestCreateLoadBalancer_AsyncDefersFrontendIP(t *testing.T) {
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	mock.launchResult.PublicIP = "203.0.113.9"
+	vid := vpcID(t, vpcSvc)
+	sub := getTestSubnetID(t, vpcSvc, vid, "10.0.31.0/24", "us-east-1a")
+
+	out, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("async-lb"),
+		Type:    aws.String("network"),
+		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
+		Subnets: []*string{aws.String(sub)},
+	}, testAccountID)
+	require.NoError(t, err)
+	// Async create returns provisioning before the launch goroutine runs — the
+	// front-end IP is not yet known (this is the race EKS must not read).
+	assert.Equal(t, StateProvisioning, aws.StringValue(out.LoadBalancers[0].State.Code))
+	assert.Empty(t, frontendPublicIP(out.LoadBalancers[0]))
+	svc.WaitLaunches()
+	// Once the launch settles, the IP is on the persisted record.
+	assert.Equal(t, "203.0.113.9", frontendPublicIP(describeLB(t, svc, *out.LoadBalancers[0].LoadBalancerArn)))
+}
+
 // setupSubnetTestService wires a VPC-backed ELBv2 service with a launcher mock
 // so SetSubnets can exercise ENI create/delete plus the LB-VM relaunch.
 func setupSubnetTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, *mockSystemInstanceLauncher) {

@@ -83,9 +83,16 @@ const (
 	k3sResolvConf = "nameserver 1.1.1.1\nnameserver 8.8.8.8"
 )
 
-// K3sServerInput is the K3s server VM launcher's input shape.
+// K3sServerInput is the launcher's input shape. AccountID is the INFRA account
+// the ENI + VM are created under: the system account, since the control plane
+// lives in the managed CP VPC (Set B). ClusterAccountID is the cluster-OWNER
+// (customer) account that owns the cluster meta and namespaces its mgmt-plane
+// identity — the VM bakes it into EKS_ACCOUNT_ID so its bootstrap publish, state
+// report, and add-on fetch reach the customer cluster, not the system account.
+// Region is carried for future region-aware AMI lookups but not consumed today.
 type K3sServerInput struct {
 	AccountID        string
+	ClusterAccountID string
 	ClusterName      string
 	Region           string
 	SubnetID         string
@@ -304,6 +311,8 @@ func validateK3sServerInput(in K3sServerInput) error {
 	switch {
 	case in.AccountID == "":
 		return errors.New("eks: K3sServerInput empty AccountID")
+	case in.ClusterAccountID == "":
+		return errors.New("eks: K3sServerInput empty ClusterAccountID")
 	case in.ClusterName == "":
 		return errors.New("eks: K3sServerInput empty ClusterName")
 	case in.SubnetID == "":
@@ -381,7 +390,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_ACCESS_KEY=" + in.AccessKey,
 		"EKS_SECRET_KEY=" + in.SecretKey,
 		"EKS_REGION=" + in.Region,
-		"EKS_ACCOUNT_ID=" + in.AccountID,
+		"EKS_ACCOUNT_ID=" + in.ClusterAccountID,
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,

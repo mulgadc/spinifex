@@ -55,10 +55,16 @@ case "${ROLE}" in
         rc-update add k3s default
         rc-update add k3s-first-boot default
         rc-update add mulga-eks-state-report default
+        # Managed-addon delivery runs only on the primary server: it renders
+        # staged addon bundles into the K3s auto-deploy dir, which a single
+        # writer owns. HA multi-server addon delivery is tracked separately
+        # (mulga-siv-231.7); server-join nodes do not run it.
+        rc-update add mulga-eks-addon-sync default
         rc-service eks-token-webhook start
         rc-service k3s start
         rc-service k3s-first-boot start
         rc-service mulga-eks-state-report start
+        rc-service mulga-eks-addon-sync start
         ;;
     server-join)
         log "configuring server-join role"

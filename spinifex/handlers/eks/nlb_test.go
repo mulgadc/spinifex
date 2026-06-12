@@ -14,6 +14,7 @@ import (
 
 type fakeNLBProvisioner struct {
 	createLBCalls       []*elbv2.CreateLoadBalancerInput
+	createLBSyncCalls   []*elbv2.CreateLoadBalancerInput
 	describeLBCalls     []*elbv2.DescribeLoadBalancersInput
 	deleteLBCalls       []*elbv2.DeleteLoadBalancerInput
 	createTGCalls       []*elbv2.CreateTargetGroupInput
@@ -24,6 +25,11 @@ type fakeNLBProvisioner struct {
 	registerCalls       []*elbv2.RegisterTargetsInput
 	deregisterCalls     []*elbv2.DeregisterTargetsInput
 	setIngressCalls     []setIngressCIDRsCall
+
+	// frontendIP is the address CreateLoadBalancerSync stamps onto the launched
+	// LB's AZ addresses (both public + private slots, so frontendIPFromLB resolves
+	// it for either scheme). Empty models a box with no external IP pool.
+	frontendIP string
 
 	lbByName       map[string]*elbv2.LoadBalancer
 	tgByName       map[string]*elbv2.TargetGroup
@@ -51,10 +57,32 @@ var _ nlbProvisioner = (*fakeNLBProvisioner)(nil)
 
 func newFakeNLBProvisioner() *fakeNLBProvisioner {
 	return &fakeNLBProvisioner{
+		frontendIP:     "10.0.0.10",
 		lbByName:       map[string]*elbv2.LoadBalancer{},
 		tgByName:       map[string]*elbv2.TargetGroup{},
 		listenerByPort: map[string]map[int64]*elbv2.Listener{},
 	}
+}
+
+// CreateLoadBalancerSync models the synchronous path: it creates the LB (sharing
+// CreateLoadBalancer's recording + storage) and stamps the launched front-end
+// address onto the returned + stored LB, as a real sync launch would.
+func (f *fakeNLBProvisioner) CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	f.createLBSyncCalls = append(f.createLBSyncCalls, input)
+	out, err := f.CreateLoadBalancer(input, accountID)
+	if err != nil || out == nil || len(out.LoadBalancers) == 0 {
+		return out, err
+	}
+	lb := out.LoadBalancers[0]
+	if f.frontendIP != "" && len(lb.AvailabilityZones) == 0 {
+		lb.AvailabilityZones = []*elbv2.AvailabilityZone{{
+			LoadBalancerAddresses: []*elbv2.LoadBalancerAddress{{
+				IpAddress:          aws.String(f.frontendIP),
+				PrivateIPv4Address: aws.String(f.frontendIP),
+			}},
+		}}
+	}
+	return out, nil
 }
 
 func (f *fakeNLBProvisioner) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, _ string) (*elbv2.CreateLoadBalancerOutput, error) {
@@ -258,6 +286,9 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	assert.NotEmpty(t, out.TargetGroupArn)
 	assert.NotEmpty(t, out.ListenerArn)
 	assert.Contains(t, out.DNSName, "eks-alpha")
+	// Synchronous create returns the launched front-end IP — no read-back race.
+	assert.Equal(t, "10.0.0.10", out.FrontendIP)
+	assert.Len(t, nlbp.createLBSyncCalls, 1)
 
 	require.Len(t, nlbp.createLBCalls, 1)
 	lbIn := nlbp.createLBCalls[0]
@@ -283,6 +314,28 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 	require.Len(t, lstIn.DefaultActions, 1)
 	assert.Equal(t, elbv2.ActionTypeEnumForward, aws.StringValue(lstIn.DefaultActions[0].Type))
 	assert.Equal(t, out.TargetGroupArn, aws.StringValue(lstIn.DefaultActions[0].TargetGroupArn))
+}
+
+func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.frontendIP = "" // no external IP pool → LB comes up without a reachable address
+
+	_, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
+	// The LB was still created (sync attempt) before the loud fail.
+	assert.Len(t, nlbp.createLBSyncCalls, 1)
+}
+
+func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
+	nlbp := newFakeNLBProvisioner()
+	nlbp.frontendIP = "203.0.113.7"
+
+	out, err := EnsureClusterNLB(nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "203.0.113.7", out.FrontendIP)
+	require.Len(t, nlbp.createLBSyncCalls, 1)
+	assert.Equal(t, elbv2.LoadBalancerSchemeEnumInternetFacing, aws.StringValue(nlbp.createLBSyncCalls[0].Scheme))
 }
 
 func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {

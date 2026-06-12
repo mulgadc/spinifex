@@ -30,9 +30,16 @@ const (
 	getTokenTpl   = "k8s-aws-v1."
 )
 
-// TestEKS drives the EKS control-plane lifecycle: VPC/subnet creation, CreateCluster → ACTIVE
-// (K3s VM + NLB boot), kubeconfig artifact assembly, AccessEntry CRUD, get-token, and
-// DeleteCluster. One fixture is shared across subtests to avoid repeated control-plane boot cost.
+// TestEKS drives the EKS control-plane lifecycle against the local awsgw
+// endpoint: a customer VPC/subnet (Set A), CreateCluster → ACTIVE (spinifex
+// auto-builds the managed control-plane VPC — Set B — and spreads the K3s
+// control plane behind an internet-facing NLB), kubeconfig artifact assembly,
+// AccessEntry CRUD, get-token, kubectl reachability against the published
+// endpoint, managed-addon delivery, and DeleteCluster → gone.
+//
+// One cluster fixture is shared across the subtests (create once, delete in
+// Cleanup) — control-plane boot is the slowest step, so re-creating per subtest
+// would blow the suite timeout on dev nodes.
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
 	artifacts := harness.ArtifactDir(t, env)
@@ -139,6 +146,66 @@ func TestEKS(t *testing.T) {
 
 		out, _ := kc.Run(30*time.Second, "get", "nodes", "-o", "wide")
 		t.Logf("kubectl get nodes:\n%s", out)
+	})
+
+	t.Run("AddonDelivery", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		// End-to-end managed-addon delivery: CreateAddon stages a manifest
+		// descriptor host-side; the on-VM addon-sync agent pulls it through the
+		// gateway, renders the baked bundle into the K3s auto-deploy dir, and
+		// reports ready, which flips the record to ACTIVE. spinifex-noop is the
+		// fixture (Namespace + ConfigMap) — no dependency on the CSI/LB bundles.
+		const addon = "spinifex-noop"
+		_, err := c.EKS.CreateAddon(&eks.CreateAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(addon),
+		})
+		require.NoError(t, err, "create-addon")
+
+		// Record reaches ACTIVE once the VM confirms delivery. Generous envelope:
+		// one addon-sync tick (30s) + k3s auto-deploy apply, plus control-plane
+		// stabilisation slack.
+		harness.EventuallyErr(t, func() error {
+			out, derr := c.EKS.DescribeAddon(&eks.DescribeAddonInput{
+				ClusterName: aws.String(fx.ClusterName),
+				AddonName:   aws.String(addon),
+			})
+			if derr != nil {
+				return fmt.Errorf("describe-addon: %w", derr)
+			}
+			if s := aws.StringValue(out.Addon.Status); s != eks.AddonStatusActive {
+				return fmt.Errorf("addon status %q, want ACTIVE", s)
+			}
+			return nil
+		}, 5*time.Minute, 10*time.Second)
+
+		// The fixture's objects must exist on the cluster.
+		kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
+		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
+		out, err := kc.Run(30*time.Second, "get", "configmap", "spinifex-noop",
+			"-n", "spinifex-noop", "-o", `jsonpath={.data.marker}`)
+		require.NoError(t, err, "addon ConfigMap must exist: %s", out)
+		assert.Contains(t, out, "delivered", "addon ConfigMap must carry the marker")
+
+		// DeleteAddon unstages the manifest; the agent GCs the rendered file and
+		// k3s' auto-deploy controller removes the objects.
+		_, err = c.EKS.DeleteAddon(&eks.DeleteAddonInput{
+			ClusterName: aws.String(fx.ClusterName),
+			AddonName:   aws.String(addon),
+		})
+		require.NoError(t, err, "delete-addon")
+
+		harness.EventuallyErr(t, func() error {
+			out, runErr := kc.Run(30*time.Second, "get", "namespace", "spinifex-noop",
+				"--ignore-not-found", "-o", `jsonpath={.metadata.name}`)
+			if runErr != nil {
+				return fmt.Errorf("kubectl get namespace: %v\n%s", runErr, out)
+			}
+			if strings.TrimSpace(out) != "" {
+				return fmt.Errorf("namespace still present")
+			}
+			return nil
+		}, 3*time.Minute, 10*time.Second)
 	})
 
 	t.Run("DeleteCluster", func(t *testing.T) {

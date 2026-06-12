@@ -115,7 +115,8 @@ func (f *fakeK3sAMI) DescribeImages(input *ec2.DescribeImagesInput, _ string) (*
 
 func validK3sInput() K3sServerInput {
 	return K3sServerInput{
-		AccountID:         "111122223333",
+		AccountID:         "000000000000",
+		ClusterAccountID:  "111122223333",
 		ClusterName:       "alpha",
 		Region:            "us-east-1",
 		SubnetID:          "subnet-aaa",
@@ -143,6 +144,7 @@ func TestLaunchK3sServerVM_EmptyInputsRejected(t *testing.T) {
 		in   K3sServerInput
 	}{
 		{"empty AccountID", mk(func(in *K3sServerInput) { in.AccountID = "" })},
+		{"empty ClusterAccountID", mk(func(in *K3sServerInput) { in.ClusterAccountID = "" })},
 		{"empty ClusterName", mk(func(in *K3sServerInput) { in.ClusterName = "" })},
 		{"empty SubnetID", mk(func(in *K3sServerInput) { in.SubnetID = "" })},
 		{"empty ControlPlaneSGID", mk(func(in *K3sServerInput) { in.ControlPlaneSGID = "" })},
@@ -235,7 +237,7 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 	assert.Equal(t, tags.ManagedByEKS, runIn.ManagedBy)
 	assert.Equal(t, "ami-eks-server-001", runIn.ImageID)
 	assert.Equal(t, defaultK3sServerInstanceType, runIn.InstanceType)
-	assert.Equal(t, "111122223333", runIn.AccountID)
+	assert.Equal(t, "000000000000", runIn.AccountID, "VM launches under the infra (system) account")
 	assert.Equal(t, "eni-aaa111", runIn.ENIID)
 	assert.Equal(t, "10.0.1.42", runIn.ENIIP)
 
@@ -315,7 +317,12 @@ func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {
 	assert.Contains(t, udata, "EKS_ACCESS_KEY=AKIAEXAMPLE")
 	assert.Contains(t, udata, "EKS_SECRET_KEY=s3cr3t-key")
 	assert.Contains(t, udata, "EKS_REGION=us-east-1")
+	// EKS_ACCOUNT_ID is the cluster-OWNER account (ClusterAccountID), not the
+	// infra account the VM is launched under — the on-VM agents namespace their
+	// bootstrap publish / state report / add-on fetch by it, so it must reach the
+	// customer cluster, not the system account that owns the CP VPC + VM.
 	assert.Contains(t, udata, "EKS_ACCOUNT_ID=111122223333")
+	assert.NotContains(t, udata, "EKS_ACCOUNT_ID=000000000000")
 	assert.Contains(t, udata, "EKS_CLUSTER_NAME=alpha")
 	assert.Contains(t, udata, "EKS_NLB_ENDPOINT=https://eks-alpha-lb-001.us-east-1.elb.spinifex.local:443")
 	assert.Contains(t, udata, "EKS_OIDC_ISSUER=https://oidc.spinifex.local/clusters/111122223333/alpha")

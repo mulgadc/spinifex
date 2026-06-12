@@ -136,6 +136,10 @@ func (s *NATSEKSService) DescribeAddon(input *eks.DescribeAddonInput, accountID 
 	return utils.NATSRequest[eks.DescribeAddonOutput](s.natsConn, "eks.DescribeAddon", input, defaultTimeout, accountID)
 }
 
+func (s *NATSEKSService) ListStagedAddonManifests(input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error) {
+	return utils.NATSRequest[ListStagedAddonManifestsOutput](s.natsConn, "eks.ListStagedAddonManifests", input, defaultTimeout, accountID)
+}
+
 func (s *NATSEKSService) UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	return utils.NATSRequest[eks.UpdateAddonOutput](s.natsConn, "eks.UpdateAddon", input, defaultTimeout, accountID)
 }

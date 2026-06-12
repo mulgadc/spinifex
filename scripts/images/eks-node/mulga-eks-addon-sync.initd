@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# mulga-eks-addon-sync — server-role service that renders Spinifex managed-addon
+# bundles into the K3s auto-deploy dir and reports per-addon delivery status to
+# the spinifex control plane every ADDON_SYNC_INTERVAL seconds. The host-side
+# daemon stages each addon in KV; the VM pulls the staged set through the AWS
+# gateway (it cannot read NATS/KV directly) and renders the baked bundles.
+# Enabled on the primary server role by eks-node-role.sh.
+
+description="Mulga EKS managed-addon delivery agent"
+command="/usr/local/sbin/mulga-eks-addon-sync"
+command_background="yes"
+pidfile="/run/mulga-eks-addon-sync.pid"
+output_log="/var/log/mulga-eks-addon-sync.log"
+error_log="/var/log/mulga-eks-addon-sync.log"
+
+# Cadence the sync loop sleeps between pulls. 30s keeps CreateAddon→ACTIVE
+# latency low without hammering the gateway.
+export ADDON_SYNC_INTERVAL="${ADDON_SYNC_INTERVAL:-30}"
+
+depend() {
+    need net
+    after k3s
+}
+
+start_pre() {
+    if [ ! -f /etc/spinifex-eks/first-boot.env ]; then
+        eerror "/etc/spinifex-eks/first-boot.env not present — cloud-init did not seed gateway creds"
+        return 1
+    fi
+}

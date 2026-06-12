@@ -13,6 +13,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
+func seedGatewayPort(t *testing.T, m *mock.Client, vpcID, mac string) {
+	t.Helper()
+	require.NoError(t, m.CreateLogicalRouterPort(context.Background(),
+		topology.VPCRouter(vpcID),
+		&nbdb.LogicalRouterPort{Name: topology.GatewayRouterPort(vpcID), MAC: mac}))
+}
+
 func seedRouter(t *testing.T, m *mock.Client, vpcID string) string {
 	t.Helper()
 	name := topology.VPCRouter(vpcID)
@@ -142,10 +149,11 @@ func TestNATManager_NeighPrime_OnDistributedAttach_FlushOnDetach(t *testing.T) {
 		"detach must still flush the released external IP")
 }
 
-func TestNATManager_NeighFlush_OnCentralizedAttach(t *testing.T) {
+func TestNATManager_NeighPrime_OnCentralizedAttach(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedRouter(t, m, "vpc-1")
+	seedGatewayPort(t, m, "vpc-1", "02:gw:00:00:00:01")
 	var primed []EIPSpec
 	var flushed []string
 	nm, err := NewNATManager(m, NATModeCentralized,
@@ -162,9 +170,36 @@ func TestNATManager_NeighFlush_OnCentralizedAttach(t *testing.T) {
 	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
 		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
 	}))
-	assert.Empty(t, primed, "centralized attach has no external_mac to prime")
+	require.Len(t, primed, 1,
+		"centralized attach must prime the host neighbour with the gateway port MAC")
+	assert.Equal(t, "02:gw:00:00:00:01", primed[0].MAC,
+		"centralized prime must use the VPC gateway router-port MAC")
+	assert.Empty(t, flushed, "a successful prime must not also flush")
+}
+
+func TestNATManager_NeighFlush_CentralizedNoGatewayMAC(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1") // no gateway port seeded → MAC unresolvable
+	var primed []EIPSpec
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithNeighPrimer(func(eip EIPSpec) error {
+			primed = append(primed, eip)
+			return nil
+		}),
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
+	require.NoError(t, err)
+
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
+	}))
+	assert.Empty(t, primed, "no gateway MAC to prime")
 	assert.Equal(t, []string{"1.2.3.4"}, flushed,
-		"centralized attach must fall back to a neighbour flush")
+		"centralized attach must fall back to a neighbour flush when no MAC resolves")
 }
 
 func TestNATManager_NeighHooks_FailureNonFatal(t *testing.T) {

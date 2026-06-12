@@ -171,7 +171,7 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
 		// Skip row churn but still re-prime: stop->start re-attaches the same EIP
 		// and the host neigh stays dark until ARP times out without a fresh prime.
-		m.primeReachability(eip, distributed)
+		m.primeReachability(ctx, eip, distributed)
 		return nil
 	}
 
@@ -188,20 +188,40 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddEIP flows barrier failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
-	m.primeReachability(eip, distributed)
+	m.primeReachability(ctx, eip, distributed)
 	return nil
 }
 
-// primeReachability re-announces an EIP: distributed mode programs the ARP entry
-// directly; centralised mode (no MAC) flushes and re-arms ARP. Best-effort.
-func (m *natManager) primeReachability(eip EIPSpec, distributed bool) {
-	if distributed {
-		if err := m.neighPrime(eip); err != nil {
+// primeReachability programs the host neigh entry to the MAC owning the EIP on
+// the WAN segment — external_mac (distributed) or gateway router-port MAC
+// (centralised) — falling back to an ARP flush when no MAC resolves.
+func (m *natManager) primeReachability(ctx context.Context, eip EIPSpec, distributed bool) {
+	primeMAC := eip.MAC
+	if !distributed {
+		primeMAC = m.gatewayPortMAC(ctx, eip.VPCID)
+	}
+	if primeMAC != "" {
+		primed := eip
+		primed.MAC = primeMAC
+		if err := m.neighPrime(primed); err != nil {
 			slog.Warn("policy: AddEIP neighbour prime failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 		}
-	} else if err := m.neigh(eip.ExternalIP); err != nil {
+		return
+	}
+	if err := m.neigh(eip.ExternalIP); err != nil {
 		slog.Warn("policy: AddEIP neighbour flush failed", "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP, "err", err)
 	}
+}
+
+// gatewayPortMAC returns the MAC of the VPC gateway router's external port, the
+// L2 owner of a centralised EIP on the WAN segment. Empty on lookup miss so the
+// caller falls back to an ARP flush.
+func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
+	lrp, err := m.ovn.GetLogicalRouterPort(ctx, topology.GatewayRouterPort(vpcID))
+	if err != nil || lrp == nil {
+		return ""
+	}
+	return lrp.MAC
 }
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {

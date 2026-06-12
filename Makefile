@@ -287,64 +287,6 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-# Ansible dev lifecycle (experimental, parallel to dev-*.sh / reset-dev-env.sh).
-# See scripts/ansible/README.md and docs/development/improvements/ansible-dev-lifecycle.md.
-#
-# Variable overrides: pass EXTRA_VARS="key=val key2=val2" to forward as
-# `--extra-vars` to ansible-playbook. Plain `-e` on the make command line is
-# make's own flag and does NOT reach ansible.
-#   make ansible-dev-install EXTRA_VARS="spinifex_external_pool_start=192.168.1.90 spinifex_external_pool_end=192.168.1.99"
-EXTRA_VARS ?=
-_ANSIBLE_EXTRA = $(if $(strip $(EXTRA_VARS)),--extra-vars "$(EXTRA_VARS)",)
-
-ansible-dev-preflight:
-	cd scripts/ansible && ansible-playbook playbooks/dev-preflight.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-teardown:
-	cd scripts/ansible && ansible-playbook playbooks/dev-teardown.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-install:
-	cd scripts/ansible && ansible-playbook playbooks/dev-install.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-reset:
-	cd scripts/ansible && ansible-playbook playbooks/dev-reset.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-deploy:
-	cd scripts/ansible && ansible-playbook playbooks/dev-deploy.yml $(_ANSIBLE_EXTRA)
-
-ansible-dev-status:
-	cd scripts/ansible && ansible-playbook playbooks/dev-status.yml
-
-ansible-dev-logs:
-	cd scripts/ansible && ansible-playbook playbooks/dev-logs.yml
-
-# Snapshot / restore require an explicit -e snapshot_name=<name>. The
-# wrapper passes ANSIBLE_EXTRA through so devs can run
-# `make ansible-dev-snapshot ANSIBLE_EXTRA='-e snapshot_name=before-merge'`.
-ansible-dev-snapshot:
-	cd scripts/ansible && ansible-playbook playbooks/dev-snapshot.yml $(ANSIBLE_EXTRA)
-
-ansible-dev-restore:
-	cd scripts/ansible && ansible-playbook playbooks/dev-restore.yml $(ANSIBLE_EXTRA)
-
-ansible-dev-version:
-	cd scripts/ansible && ansible-playbook playbooks/dev-version.yml
-
-ansible-dev-vpc:
-	cd scripts/ansible && ansible-playbook playbooks/dev-vpc.yml $(ANSIBLE_EXTRA)
-
-# Multi-node cluster bootstrap against a tofu env (env1, env2, bryn, etc).
-# Inventory is generated from scripts/tofu-cluster/envs/<env>.tfvars.
-#   make ansible-cluster-bootstrap ENV=env1 POOL=192.168.1.150-192.168.1.159
-ENV ?=
-POOL ?=
-ansible-cluster-bootstrap:
-	@test -n "$(ENV)" || { echo "ENV=<env> required (e.g. env1, env2)"; exit 64; }
-	cd scripts/ansible && CLUSTER_ENV=$(ENV) ansible-playbook -i inventory/tofu.py playbooks/cluster-bootstrap.yml \
-		-e cluster_env=$(ENV) \
-		$(if $(POOL),-e cluster_external_pool=$(POOL),) \
-		$(_ANSIBLE_EXTRA)
-
 .PHONY: build build-ui build-installer build-lb-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench test-actions test-harness manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \

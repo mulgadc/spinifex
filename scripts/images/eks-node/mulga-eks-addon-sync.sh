@@ -163,9 +163,9 @@ sync_once() {
     done < "${_staged}"
     rm -f "${_staged}"
 
-    # GC: drop rendered manifests this agent owns whose addon is no longer
-    # staged (DeleteAddon removed its descriptor). K3s' auto-deploy controller
-    # removes the objects when the manifest file disappears.
+    # GC: remove rendered manifests this agent owns whose addon is no longer
+    # staged (DeleteAddon removed its descriptor). K3s does NOT delete the applied
+    # objects when the manifest file disappears, so delete them explicitly.
     for _file in "${DEPLOY_DIR}/${RENDER_PREFIX}"*.yaml; do
         [ -e "${_file}" ] || continue
         _base=$(basename "${_file}")
@@ -173,7 +173,15 @@ sync_once() {
         _name=${_name%.yaml}
         if ! printf '%s\n' "${_names}" | grep -qx "${_name}"; then
             log "unstaging addon ${_name} (no longer staged)"
+            # Copy the manifest aside, drop the original so K3s stops tracking it
+            # (and never re-applies), then delete the objects it rendered.
+            # --wait=false so namespace finalizers don't stall the sync loop.
+            _gc=$(mktemp)
+            cp "${_file}" "${_gc}"
             rm -f "${_file}"
+            kubectl delete -f "${_gc}" --ignore-not-found --wait=false 2>&1 \
+                | logger -t mulga-eks-addon-sync || true
+            rm -f "${_gc}"
         fi
     done
 }

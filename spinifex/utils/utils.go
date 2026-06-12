@@ -137,17 +137,6 @@ func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 	return nil
 }
 
-func MarshalJsonPayload(input any, jsonData []byte) []byte {
-	decoder := json.NewDecoder(bytes.NewReader(jsonData))
-	decoder.DisallowUnknownFields()
-	err := decoder.Decode(input)
-	if err != nil {
-		return GenerateErrorPayload(awserrors.ErrorValidationError)
-	}
-
-	return nil
-}
-
 // ValidateKeyPairName validates that a key pair name contains only [A-Za-z0-9._-].
 // Rejects empty names and returns ErrorInvalidKeyPairFormat on any invalid character.
 func ValidateKeyPairName(name string) error {

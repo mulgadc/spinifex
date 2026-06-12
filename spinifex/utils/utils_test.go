@@ -325,52 +325,6 @@ func TestUnmarshalJsonPayload(t *testing.T) {
 	}
 }
 
-func TestMarshalJsonPayload(t *testing.T) {
-	type TestStruct struct {
-		Name  string `json:"name"`
-		Value int    `json:"value"`
-	}
-
-	tests := []struct {
-		name        string
-		jsonData    string
-		expectError bool
-		validate    func(t *testing.T, result *TestStruct)
-	}{
-		{
-			name:        "Valid JSON",
-			jsonData:    `{"name":"test","value":456}`,
-			expectError: false,
-			validate: func(t *testing.T, result *TestStruct) {
-				assert.Equal(t, "test", result.Name)
-				assert.Equal(t, 456, result.Value)
-			},
-		},
-		{
-			name:        "Invalid JSON",
-			jsonData:    `{"name":"test","value":}`,
-			expectError: true,
-			validate:    nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var result TestStruct
-			errResp := MarshalJsonPayload(&result, []byte(tt.jsonData))
-
-			if tt.expectError {
-				assert.NotNil(t, errResp, "Expected error response")
-			} else {
-				assert.Nil(t, errResp, "Expected no error response")
-				if tt.validate != nil {
-					tt.validate(t, &result)
-				}
-			}
-		})
-	}
-}
-
 func TestGenerateErrorPayload(t *testing.T) {
 	tests := []struct {
 		name     string

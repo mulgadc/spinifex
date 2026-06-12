@@ -20,7 +20,7 @@ import (
 // Validates that server certificates contain the correct SANs and that TLS
 // connections succeed without InsecureSkipVerify when the Spinifex CA is
 // trusted. Assumes the cluster is bootstrapped (services up, certs generated,
-// CA installed in system trust store via bootstrap.sh step 8).
+// CA installed in system trust store during install).
 func TestCertIssuance(t *testing.T) {
 	env := harness.LoadEnv(t)
 	artifacts := harness.ArtifactDir(t, env)

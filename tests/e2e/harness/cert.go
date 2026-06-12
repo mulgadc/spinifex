@@ -42,7 +42,7 @@ func ResolveCACert(env *Env) (string, error) {
 	return "", fmt.Errorf("CA cert not found in any candidate location: %v", candidates)
 }
 
-// SystemCAPath is the canonical install location used by bootstrap.sh.
+// SystemCAPath is the canonical install location used by setup.sh.
 const SystemCAPath = "/usr/local/share/ca-certificates/spinifex-ca.crt"
 
 // ServerCertPath returns the local file path for a node's server cert,

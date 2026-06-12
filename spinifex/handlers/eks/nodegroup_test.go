@@ -86,6 +86,51 @@ func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput 
 	}
 }
 
+func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	const cluster = "toc"
+	seedActiveClusterWithToken(t, f, cluster)
+
+	// CREATING left behind by a crashed launcher, workers already recorded.
+	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+		ClusterName: cluster, Name: "ng-stuck",
+		Status:      eks.NodegroupStatusCreating,
+		InstanceIDs: []string{"i-worker1", "i-worker2"},
+	}))
+	// CREATE_FAILED that still holds a partially-launched worker.
+	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+		ClusterName: cluster, Name: "ng-failed",
+		Status:      eks.NodegroupStatusCreateFailed,
+		InstanceIDs: []string{"i-worker3"},
+	}))
+	// ACTIVE must be left untouched.
+	require.NoError(t, PutNodegroupRecord(f.kv, &NodegroupRecord{
+		ClusterName: cluster, Name: "ng-active",
+		Status:      eks.NodegroupStatusActive,
+		InstanceIDs: []string{"i-worker9"},
+	}))
+
+	f.svc.reclaimOrphanedNodegroups(testAccountID, f.kv, cluster)
+
+	var terminated []string
+	for _, call := range f.worker.terminateCalls {
+		terminated = append(terminated, call...)
+	}
+	assert.ElementsMatch(t, []string{"i-worker1", "i-worker2", "i-worker3"}, terminated)
+
+	for _, ng := range []string{"ng-stuck", "ng-failed"} {
+		got, err := GetNodegroupRecord(f.kv, cluster, ng)
+		require.NoError(t, err)
+		assert.Equal(t, eks.NodegroupStatusCreateFailed, got.Status, ng)
+		assert.Empty(t, got.InstanceIDs, ng)
+	}
+
+	got, err := GetNodegroupRecord(f.kv, cluster, "ng-active")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, got.Status)
+	assert.Equal(t, []string{"i-worker9"}, got.InstanceIDs)
+}
+
 func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	kv, err := GetOrCreateAccountBucket(js, testAccountID)

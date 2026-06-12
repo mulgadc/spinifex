@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -254,6 +255,20 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		slog.Error("EKS_Request: failed to read body", "err", err)
 		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	// Some REST-JSON actions carry their non-path inputs as query params with
+	// an empty body (e.g. UntagResource's tagKeys arrive as
+	// DELETE /tags/{arn}?tagKeys=k1&tagKeys=k2). url.Values is map[string][]string,
+	// so it marshals straight to the JSON the per-action unmarshal expects
+	// ({"tagKeys":["k1","k2"]}). Only folds when the body is empty so it never
+	// shadows a real payload.
+	if len(body) == 0 {
+		if q := r.URL.Query(); len(q) > 0 {
+			if qb, err := json.Marshal(map[string][]string(q)); err == nil {
+				body = qb
+			}
+		}
 	}
 
 	// Best-effort caller ARN; only CreateCluster consumes it, degrades to "".

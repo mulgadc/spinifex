@@ -2,6 +2,7 @@ package handlers_iam
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -518,6 +519,40 @@ func TestAttachRolePolicy_RoleNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+func TestAttachRolePolicy_AWSManagedPolicyNotSeeded(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "eks-node-role")
+	// AWS-managed ARN with no backing policy in the store — stock EKS tooling
+	// attaches these. Must round-trip opaquely, not fail NoSuchEntity.
+	const managedARN = "arn:aws:iam::aws:policy/service-role/AmazonEKS_CNI_Policy"
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, managedARN, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEKS_CNI_Policy", *out.AttachedPolicies[0].PolicyName)
+
+	_, err = svc.DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err = svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.AttachedPolicies)
+}
+
 func TestDetachRolePolicy(t *testing.T) {
 	svc := setupTestIAMService(t)
 	role := createTestRole(t, svc, "detach-role")
@@ -635,6 +670,63 @@ func TestGetRolePolicies_UnresolvablePolicy(t *testing.T) {
 
 	_, err = svc.GetRolePolicies(testAccountID, "dangling-role")
 	assert.Error(t, err)
+}
+
+// TestGetRolePolicies_AWSManagedResolved proves a stock EKS node role — whose
+// grants come entirely from AWS-managed policies — resolves to the builtin
+// grant documents, so assumed-role authorization honours them instead of
+// denying every call (the regression behind mulga-siv-297).
+func TestGetRolePolicies_AWSManagedResolved(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "eks-node-role")
+
+	for _, arn := range []string{
+		"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+		"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+		"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+	} {
+		_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+			RoleName:  role.RoleName,
+			PolicyArn: aws.String(arn),
+		})
+		require.NoError(t, err)
+	}
+
+	docs, err := svc.GetRolePolicies(testAccountID, "eks-node-role")
+	require.NoError(t, err)
+	require.Len(t, docs, 3)
+	assert.True(t, policiesGrant(docs, "ec2:DescribeInstances"), "WorkerNodePolicy")
+	assert.True(t, policiesGrant(docs, "ecr:GetAuthorizationToken"), "ECR ReadOnly")
+	assert.True(t, policiesGrant(docs, "ec2:CreateNetworkInterface"), "CNI")
+}
+
+// TestGetRolePolicies_UnmodeledManagedSkipped proves an AWS-managed ARN Spinifex
+// does not model resolves to no grant (fail-closed deny) rather than erroring
+// the whole request.
+func TestGetRolePolicies_UnmodeledManagedSkipped(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "unknown-managed-role")
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String("arn:aws:iam::aws:policy/SomeUnmodeledPolicy"),
+	})
+	require.NoError(t, err)
+
+	docs, err := svc.GetRolePolicies(testAccountID, "unknown-managed-role")
+	require.NoError(t, err)
+	assert.Empty(t, docs)
+}
+
+// policiesGrant reports whether any statement across docs allows action.
+func policiesGrant(docs []PolicyDocument, action string) bool {
+	for _, d := range docs {
+		for _, st := range d.Statement {
+			if slices.Contains(st.Action, action) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ============================================================================

@@ -268,13 +268,17 @@ func (r *ClusterReconciler) reconcileOnce(ctx context.Context) error {
 	case ClusterStatusCreating:
 		ready, reason := r.bootstrapReady(meta)
 		if !ready {
-			slog.Debug("ClusterReconciler: bootstrap not ready",
+			// Info, not Debug: this is the per-tick reason a CREATING cluster has
+			// not yet flipped ACTIVE. At Debug it is invisible at the default
+			// level, so a cluster that stalls to the create-timeout FAILED gives
+			// no diagnosable cause. Logged only during the CREATING window.
+			slog.Info("ClusterReconciler: bootstrap not ready",
 				"cluster", r.clusterName, "reason", reason)
 			return r.failIfCreateTimedOut(meta, "bootstrap not ready: "+reason)
 		}
 		issue, nodeCount := r.observe(ctx)
 		if issue != "" {
-			slog.Debug("ClusterReconciler: health not ready",
+			slog.Info("ClusterReconciler: health not ready",
 				"cluster", r.clusterName, "issue", issue)
 			return r.failIfCreateTimedOut(meta, "healthz not ready: "+issue)
 		}

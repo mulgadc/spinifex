@@ -75,6 +75,11 @@ type ClusterMeta struct {
 	// BuiltinIngress is true when the cluster opted into K3s' bundled traefik + servicelb.
 	// Default false = AWS parity (ingress via the AWS Load Balancer Controller).
 	BuiltinIngress bool `json:"builtinIngress,omitempty"`
+	// Tags are the create-time resource tags, stored verbatim so DescribeCluster
+	// echoes them back. Without the round-trip a stock terraform-aws provider
+	// reconciling default_tags sees perpetual drift and issues TagResource on
+	// every apply. Store-only; no enforcement.
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // ControlPlaneNode identifies one placed CP server VM. NodeID is the Spinifex

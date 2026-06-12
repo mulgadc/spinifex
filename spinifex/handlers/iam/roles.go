@@ -245,8 +245,15 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
-	if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
-		return nil, err
+	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
+	// in Spinifex; stock EKS tooling attaches them (AmazonEKSClusterPolicy,
+	// AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy, ...). Store them opaquely
+	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
+	// failing NoSuchEntity. Customer-managed ARNs must still exist.
+	if !isAWSManagedPolicyARN(policyARN) {
+		if _, err := s.getPolicyByARN(accountID, policyARN); err != nil {
+			return nil, err
+		}
 	}
 
 	role, err := s.getRole(accountID, roleName)
@@ -314,6 +321,13 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 
 	var attached []*iam.AttachedPolicy
 	for _, arn := range role.AttachedPolicies {
+		if isAWSManagedPolicyARN(arn) {
+			attached = append(attached, &iam.AttachedPolicy{
+				PolicyArn:  aws.String(arn),
+				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
+			})
+			continue
+		}
 		policy, err := s.getPolicyByARN(accountID, arn)
 		if err != nil {
 			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
@@ -342,19 +356,34 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 
 	var docs []PolicyDocument
 	for _, arn := range role.AttachedPolicies {
-		policy, err := s.getPolicyByARN(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
-			return nil, fmt.Errorf("resolve policy %s: %w", arn, err) // fail closed
+			return nil, err // fail closed
 		}
-
-		var doc PolicyDocument
-		if err := json.Unmarshal([]byte(policy.PolicyDocument), &doc); err != nil {
-			return nil, fmt.Errorf("parse policy %s: %w", policy.PolicyName, err)
+		if include {
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
 
 	return docs, nil
+}
+
+// isAWSManagedPolicyARN reports whether arn is an AWS-managed policy ARN
+// (arn:aws:iam::aws:policy/...). These are not provisioned in Spinifex but are
+// stored and round-tripped opaquely so stock EKS tooling that attaches them
+// works without a backing policy document.
+func isAWSManagedPolicyARN(arn string) bool {
+	return strings.HasPrefix(arn, "arn:aws:iam::aws:policy/")
+}
+
+// managedPolicyNameFromARN returns the final path segment of an AWS-managed
+// policy ARN, e.g. .../service-role/AmazonEKS_CNI_Policy -> AmazonEKS_CNI_Policy.
+func managedPolicyNameFromARN(arn string) string {
+	name := strings.TrimPrefix(arn, "arn:aws:iam::aws:policy/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {

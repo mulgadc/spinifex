@@ -1283,17 +1283,14 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 
 	var docs []PolicyDocument
 	for _, arn := range user.AttachedPolicies {
-		policy, err := s.getPolicyByARN(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
 			// Fail closed: unresolvable policy means we cannot make a safe access decision.
-			return nil, fmt.Errorf("resolve policy %s: %w", arn, err)
+			return nil, err
 		}
-
-		var doc PolicyDocument
-		if err := json.Unmarshal([]byte(policy.PolicyDocument), &doc); err != nil {
-			return nil, fmt.Errorf("parse policy %s: %w", policy.PolicyName, err)
+		if include {
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
 
 	return docs, nil

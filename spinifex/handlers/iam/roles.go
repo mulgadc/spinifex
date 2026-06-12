@@ -356,19 +356,13 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 
 	var docs []PolicyDocument
 	for _, arn := range role.AttachedPolicies {
-		if isAWSManagedPolicyARN(arn) {
-			continue
-		}
-		policy, err := s.getPolicyByARN(accountID, arn)
+		doc, include, err := s.resolveAttachedPolicy(accountID, arn)
 		if err != nil {
-			return nil, fmt.Errorf("resolve policy %s: %w", arn, err) // fail closed
+			return nil, err // fail closed
 		}
-
-		var doc PolicyDocument
-		if err := json.Unmarshal([]byte(policy.PolicyDocument), &doc); err != nil {
-			return nil, fmt.Errorf("parse policy %s: %w", policy.PolicyName, err)
+		if include {
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
 
 	return docs, nil

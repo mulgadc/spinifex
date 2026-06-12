@@ -30,9 +30,16 @@ const (
 	getTokenTpl   = "k8s-aws-v1."
 )
 
-// TestEKS drives the EKS control-plane lifecycle: VPC/subnet creation, CreateCluster → ACTIVE
-// (K3s VM + NLB boot), kubeconfig artifact assembly, AccessEntry CRUD, get-token, and
-// DeleteCluster. One fixture is shared across subtests to avoid repeated control-plane boot cost.
+// TestEKS drives the EKS control-plane lifecycle against the local awsgw
+// endpoint: a customer VPC/subnet (Set A), CreateCluster → ACTIVE (spinifex
+// auto-builds the managed control-plane VPC — Set B — and spreads the K3s
+// control plane behind an internet-facing NLB), kubeconfig artifact assembly,
+// AccessEntry CRUD, get-token, kubectl reachability against the published
+// endpoint, managed-addon delivery, and DeleteCluster → gone.
+//
+// One cluster fixture is shared across the subtests (create once, delete in
+// Cleanup) — control-plane boot is the slowest step, so re-creating per subtest
+// would blow the suite timeout on dev nodes.
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
 	artifacts := harness.ArtifactDir(t, env)

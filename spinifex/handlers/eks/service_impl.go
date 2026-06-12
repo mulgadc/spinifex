@@ -508,6 +508,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 
 	cpNodes, spreadGroup, err := s.placeControlPlane(sysAcct, name, K3sServerInput{
 		AccountID:         sysAcct,
+		ClusterAccountID:  accountID,
 		ClusterName:       name,
 		Region:            region,
 		SubnetID:          cpRefs.PrivateSubnetIDs[0],

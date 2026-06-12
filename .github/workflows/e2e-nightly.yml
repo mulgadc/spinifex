@@ -62,14 +62,8 @@ jobs:
       - name: Clean Workspace
         if: steps.gate.outputs.selected == 'true'
         run: |
-          # Self-heal a host whose /dev was clobbered by a leaked iso-builder
-          # devtmpfs mount (see mulga build-rootfs.sh): detach any leftover
-          # rootfs mounts and recreate /dev/null before anything runs `go build`,
-          # which otherwise dies "open /dev/null: no such file or directory".
           sudo umount -R -l /var/cache/spinifex-iso-builder/rootfs 2>/dev/null || true
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
-          # --one-file-system stops rm descending into a still-mounted fs (e.g. a
-          # leaked devtmpfs) and deleting host device nodes.
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
       - uses: actions/create-github-app-token@v3
@@ -88,8 +82,6 @@ jobs:
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      # spinifex tree on the runner for the e2e-analyze / junit-report composite
-      # actions and .github/scripts used by the collect/analyze steps below.
       - uses: actions/checkout@v6
         if: steps.gate.outputs.selected == 'true'
         with:
@@ -149,9 +141,6 @@ jobs:
           WAN_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_KEY=$(echo "$INVENTORY" | jq -r '.ssh_key_path')
           SSH_KEY="${SSH_KEY/#\~/$HOME}"
-          # Go harness (single/cert/lb) run in-VM; the suites use the node's
-          # spinifex AWS profile. Per-suite logs land in ARTIFACT_DIR on the VM
-          # and are pulled back by the Collect step.
           ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${WAN_IP} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
              for SUITE in single cert lb; do \
@@ -181,8 +170,6 @@ jobs:
             NODES_CSV="${NODES_CSV:+$NODES_CSV,}$ip"
           done
 
-          # Go harness (multinode/cert/lb). The multinode suite drives peer nodes
-          # from node1 over $HOME/.ssh/tf-user-ap-southeast-2 (matches e2e.yml).
           ssh -tt -o StrictHostKeyChecking=no -i "$SSH_KEY" tf-user@${NODE1_IP} \
             "set -u; mkdir -p '${ARTIFACT_DIR}'; cd \$HOME/e2e-tests/_bin; FAIL=0; \
              for SUITE in multinode cert lb; do \
@@ -267,15 +254,9 @@ jobs:
           NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
           SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY")
 
-          # In-VM suite artifacts (single/multi write ARTIFACT_DIR on node1; no-op for reboot).
           ssh "${SSH_OPTS[@]}" tf-user@${NODE1_IP} "tar -C '${ARTIFACT_DIR}' -cf - . 2>/dev/null || true" \
             | tar -C "${ARTIFACT_DIR}" -xf - 2>/dev/null
 
-          # All VM serial consoles (LB/system microVMs + guest instances) — the
-          # lb-agent logs nginx/HAProxy activation + health probes here, and guest
-          # cloud-init/sshd bring-up lands here too (the cell-18 LB-datapath +
-          # cell-9/10 guest-ssh blind spots). Pulled per node since any VM may be
-          # hosted on any node.
           for i in $(seq 0 $((NODE_COUNT - 1))); do
             IP=$(echo "$INVENTORY" | jq -r ".nodes[$i].wan_ip"); idx=$((i + 1))
             mkdir -p "${ARTIFACT_DIR}/vm-console-node${idx}"
@@ -285,11 +266,6 @@ jobs:
               > "${ARTIFACT_DIR}/spinifex-journal-node${idx}.log" 2>/dev/null
           done
 
-          # Canonical journal the e2e-analyze bundler slices into each failure
-          # bundle as journal.log — it reads "${ARTIFACT_DIR}/spinifex-journal.log".
-          # Concat every node: SliceJournal filters by each line's short-iso
-          # timestamp, so cross-node interleaving is fine and the failing node's
-          # elbv2/vpcd/daemon lines land in the failure window regardless of host.
           cat "${ARTIFACT_DIR}"/spinifex-journal-node*.log \
             > "${ARTIFACT_DIR}/spinifex-journal.log" 2>/dev/null || true
           echo "collected: $(ls "${ARTIFACT_DIR}" 2>/dev/null | wc -l) entries"
@@ -339,8 +315,7 @@ jobs:
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
-  # Bare-metal single-node suite (PXE-reimaged physical hardware). Doesn't fit
-  # the tofu matrix shape (different runner/provisioning/120m timeout), so it
+  # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it
   # runs as a sibling job via the reusable e2e-baremetal workflow. Gated like a
   # matrix cell ("cell 20"): every weeknight cron, or dispatch with 20 selected
   # (blank cells = all). Tests `dev` on schedule to match GIT_BRANCH above.

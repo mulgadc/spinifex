@@ -34,7 +34,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: "1.26.4"
 
       - name: Build microVM artifacts (lb-agent + kernel + initramfs)
         run: cd spinifex && make build-microvm-image
@@ -132,12 +132,6 @@ jobs:
     steps:
       - name: Clean Workspace
         run: |
-          # This runner (ci-single) is shared with the iso job, which mounts a
-          # kernel-global devtmpfs at <workspace>/mulga/scripts/iso-builder/.cache/rootfs/dev.
-          # If that job is killed its EXIT-trap unmount never runs and the bind
-          # leaks; a plain rm -rf then traverses it and deletes the host's /dev
-          # (wipes /dev/null, wedges the box). Detach any leaked mounts under the
-          # workspace first, then forbid rm from crossing a mount boundary.
           awk -v w="$GITHUB_WORKSPACE" '$2 ~ "^"w {print $2}' /proc/mounts \
             | sort -r | xargs -r -I{} sudo umount -l -R {} || true
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
@@ -186,10 +180,6 @@ jobs:
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
 
-  # Bare-metal single-node suite on the real ISO/squashfs + PXE-boot path —
-  # the only release check that exercises hardware install. Runs in parallel
-  # with `verify` (both need: release). Promotion and ISO upload both hard-gate
-  # on this passing.
   baremetal:
     needs: release
     permissions:
@@ -198,8 +188,6 @@ jobs:
     uses: ./.github/workflows/e2e-baremetal.yml
     secrets: inherit
 
-  # Promote the draft only after BOTH the tofu install (`verify`) and the
-  # bare-metal hardware boot (`baremetal`) pass — runs only if both succeed.
   promote:
     needs: [ verify, baremetal ]
     runs-on: ubuntu-24.04
@@ -248,8 +236,6 @@ jobs:
       - name: Clean Workspace
         run: |
           ROOTFS="${GITHUB_WORKSPACE}/mulga/scripts/iso-builder/.cache/rootfs"
-          # Mirror make clean's umount sequence unconditionally — lazy unmount
-          # detaches immediately even if the mount is busy, so rm -rf is safe.
           sudo umount -l -R "${ROOTFS}" 2>/dev/null || true
           sudo umount -l "${ROOTFS}/dev/pts" 2>/dev/null || true
           sudo umount -l "${ROOTFS}/dev" 2>/dev/null || true
@@ -335,9 +321,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Gate the R2 upload on BOTH the tofu install (`verify`) and the
-          # real-hardware boot (`baremetal`, a reusable workflow whose job shows
-          # as "baremetal / ..."). Upload only if both conclude success.
           echo "Waiting for verify + baremetal jobs to complete..."
           while true; do
             JOBS=$(gh api \

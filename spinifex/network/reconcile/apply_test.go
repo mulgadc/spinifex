@@ -9,6 +9,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
@@ -192,6 +193,44 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	}
 	if _, ok := m.PortGroups["sg_orphan"]; ok {
 		t.Errorf("Reconcile failed to prune orphan after ApplyOnly path")
+	}
+}
+
+// ReconcileApplyOnly must not prune orphan ENI LSPs on startup (in-flight ports
+// before subscribers converge); full Reconcile must prune them.
+func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	intent := freshIntent(t)
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	orphan := &nbdb.LogicalSwitchPort{
+		Name: topology.Port("eni-orphan"),
+		ExternalIDs: map[string]string{
+			"spinifex:eni_id":    "eni-orphan",
+			"spinifex:subnet_id": "subnet-a",
+			"spinifex:vpc_id":    "vpc-a",
+		},
+	}
+	if err := m.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), orphan); err != nil {
+		t.Fatalf("seed orphan LSP: %v", err)
+	}
+
+	if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
+		t.Fatalf("ReconcileApplyOnly: %v", err)
+	}
+	if _, ok := m.Ports[topology.Port("eni-orphan")]; !ok {
+		t.Errorf("ReconcileApplyOnly pruned orphan LSP; startup race fix regressed")
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if _, ok := m.Ports[topology.Port("eni-orphan")]; ok {
+		t.Errorf("Reconcile failed to prune orphan LSP after ApplyOnly path")
 	}
 }
 

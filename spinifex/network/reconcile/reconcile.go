@@ -149,7 +149,7 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyVPCs(ctx, intent, actual)
 	r.applySubnets(ctx, intent, actual)
 	r.applySGs(ctx, intent, actual, pruneOrphans)
-	r.applyPorts(ctx, intent, actual)
+	r.applyPorts(ctx, intent, actual, pruneOrphans)
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)
 	r.applyNATGWs(ctx, intent, actual)

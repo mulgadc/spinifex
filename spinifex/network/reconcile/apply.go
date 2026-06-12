@@ -175,7 +175,9 @@ func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual Ac
 
 // applyPorts ensures each intent ENI has an LSP with PG memberships matching its
 // SGIDs. Existing ports use diff-based UpdatePortGroupMemberships to avoid gaps.
-func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual ActualState) {
+// When pruneOrphans is true, ENI LSPs with no matching intent ENI are torn down;
+// startup passes false so in-flight ports survive until subscribers converge.
+func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual ActualState, pruneOrphans bool) {
 	for portID, spec := range intent.Ports {
 		portName := topology.Port(portID)
 		switchName := topology.SubnetSwitch(spec.SubnetID)
@@ -223,6 +225,38 @@ func (r *reconciler) applyPorts(ctx context.Context, intent IntentState, actual 
 		if err := r.ovn.UpdatePortGroupMemberships(ctx, portName, addPGs, removePGs); err != nil {
 			slog.Warn("reconcile/apply: update port group memberships failed", "port", portName, "err", err)
 		}
+	}
+
+	if !pruneOrphans {
+		return
+	}
+	r.pruneOrphanPorts(ctx, intent)
+}
+
+// pruneOrphanPorts deletes guest LSPs whose spinifex:eni_id has no matching
+// intent ENI, closing the create-only gap that leaks ports across instance
+// terminate and host reinstall. DeletePort clears PG memberships then removes
+// the LSP (composed cascade).
+func (r *reconciler) pruneOrphanPorts(ctx context.Context, intent IntentState) {
+	lsps, err := r.ovn.ListLogicalSwitchPorts(ctx)
+	if err != nil {
+		slog.Warn("reconcile/apply: list LSPs for orphan prune failed", "err", err)
+		return
+	}
+	for i := range lsps {
+		eniID := lsps[i].ExternalIDs["spinifex:eni_id"]
+		if eniID == "" {
+			continue
+		}
+		if _, ok := intent.Ports[eniID]; ok {
+			continue
+		}
+		spec := topology.PortSpec{PortID: eniID, SubnetID: lsps[i].ExternalIDs["spinifex:subnet_id"]}
+		if err := r.topology.DeletePort(ctx, spec); err != nil {
+			slog.Warn("reconcile/apply: orphan ENI DeletePort failed", "port", lsps[i].Name, "err", err)
+			continue
+		}
+		slog.Info("reconcile/apply: removed orphan ENI port", "port", lsps[i].Name, "eni_id", eniID)
 	}
 }
 

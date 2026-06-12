@@ -223,7 +223,12 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 
 	entry, err := s.sgKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		// Idempotent delete: an absent security group is success so destroy
+		// retries converge; a transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return &ec2.DeleteSecurityGroupOutput{}, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record SecurityGroupRecord

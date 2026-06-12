@@ -105,14 +105,6 @@ func TestDeleteNatGateway(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
 }
 
-func TestDeleteNatGateway_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
-		NatGatewayId: aws.String("nat-nope"),
-	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
-}
-
 func TestDescribeNatGateways(t *testing.T) {
 	svc := setupTestService(t)
 	createOut, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{

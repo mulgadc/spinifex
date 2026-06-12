@@ -313,7 +313,12 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 	key := utils.AccountKey(accountID, vpcID)
 
 	if _, err := s.vpcKV.Get(key); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		// Idempotent delete: an absent VPC is success so destroy retries
+		// converge; a transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return &ec2.DeleteVpcOutput{}, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Check for dependent subnets owned by this account
@@ -626,7 +631,12 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	// Read subnet record before deletion (needed for vpcd event)
 	subnetEntry, err := s.subnetKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+		// Idempotent delete: an absent subnet is success so destroy retries
+		// converge; a transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return &ec2.DeleteSubnetOutput{}, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	var subnetRecord SubnetRecord
 	_ = json.Unmarshal(subnetEntry.Value(), &subnetRecord)

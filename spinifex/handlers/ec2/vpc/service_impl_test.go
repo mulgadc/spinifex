@@ -189,14 +189,6 @@ func TestDeleteVpc(t *testing.T) {
 	assert.Nil(t, desc)
 }
 
-func TestDeleteVpc_NotFound(t *testing.T) {
-	svc := setupTestVPCService(t)
-	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{
-		VpcId: aws.String("vpc-nonexistent"),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
-}
-
 func TestDeleteVpc_MissingID(t *testing.T) {
 	svc := setupTestVPCService(t)
 	_, err := svc.DeleteVpc(&ec2.DeleteVpcInput{}, testAccountID)
@@ -381,14 +373,6 @@ func TestDeleteSubnet(t *testing.T) {
 	}, testAccountID)
 	assert.ErrorContains(t, err, "InvalidSubnetID.NotFound")
 	assert.Nil(t, desc)
-}
-
-func TestDeleteSubnet_NotFound(t *testing.T) {
-	svc := setupTestVPCService(t)
-	_, err := svc.DeleteSubnet(&ec2.DeleteSubnetInput{
-		SubnetId: aws.String("subnet-nonexistent"),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnetID.NotFound")
 }
 
 func TestDeleteSubnet_MissingID(t *testing.T) {

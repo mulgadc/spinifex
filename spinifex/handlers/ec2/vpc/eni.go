@@ -181,7 +181,12 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 	// Get the ENI record
 	entry, err := s.eniKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		// Idempotent delete: an absent ENI is success so destroy retries
+		// converge; a transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record ENIRecord

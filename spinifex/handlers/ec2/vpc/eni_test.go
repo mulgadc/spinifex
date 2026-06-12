@@ -118,14 +118,6 @@ func TestDeleteNetworkInterface(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
 }
 
-func TestDeleteNetworkInterface_NotFound(t *testing.T) {
-	svc := setupTestVPCService(t)
-	_, err := svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-		NetworkInterfaceId: aws.String("eni-nonexistent"),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
-}
-
 func TestDeleteNetworkInterface_InUse(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")

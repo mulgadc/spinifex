@@ -35,11 +35,9 @@ func EnableIPSecEncapsulation() error {
 	return nil
 }
 
-// SetNBGlobalIPSec writes NB_Global.ipsec on the local OVN NB DB. Triggers
-// ovn-controller on every chassis to add options:remote_name to Geneve tunnel
-// ports, which is what ovs-monitor-ipsec keys off to materialise strongSwan
-// connections. Only the management node has a local NB socket; callers gate
-// the call on socket presence.
+// SetNBGlobalIPSec writes NB_Global.ipsec on the local OVN NB DB, triggering
+// ovn-controller to add options:remote_name to Geneve tunnels for strongSwan.
+// Only the management node has a local NB socket; callers gate on presence.
 func SetNBGlobalIPSec(enable bool) error {
 	val := "false"
 	if enable {

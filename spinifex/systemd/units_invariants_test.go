@@ -62,11 +62,9 @@ func hasDirective(unit, line string) bool {
 	return false
 }
 
-// TestRG9_TierConfinement asserts the RG-9 per-tier least-privilege contract:
-// the locked-down storage/control tier drops all capabilities; the daemon and
-// vpcd are the two privileged exceptions, each confined to exactly what its role
-// needs and no broader. Adding a capability/device to any tier — or dropping the
-// baseline from the locked-down tier — without updating this test fails CI.
+// TestRG9_TierConfinement asserts the RG-9 least-privilege contract.
+// Storage/control tier drops all caps; daemon and vpcd are the two privileged exceptions.
+// Adding capabilities or weakening the locked-down baseline without updating this test fails CI.
 func TestRG9_TierConfinement(t *testing.T) {
 	dir := unitsDir(t)
 

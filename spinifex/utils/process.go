@@ -31,7 +31,6 @@ func StopProcess(serviceName string) error {
 		return err
 	}
 
-	// Remove PID file
 	err = RemovePidFile(serviceName)
 	if err != nil {
 		return err
@@ -47,13 +46,10 @@ func KillProcess(pid int) error {
 		return err
 	}
 
-	// Send SIGTERM first (graceful)
-	err = process.Signal(syscall.SIGTERM)
+	err = process.Signal(syscall.SIGTERM) // graceful shutdown
 	if err != nil {
 		return err
 	}
-
-	// Check process terminated
 
 	checks := 0
 	for {
@@ -67,15 +63,13 @@ func KillProcess(pid int) error {
 		err = process.Signal(syscall.Signal(0))
 
 		if err != nil {
-			// Signal(0) error means the process has terminated — this is the expected outcome.
-			break
+			break // Signal(0) error means process has terminated
 		}
 
 		checks++
 
-		// If process is still running after 120 seconds, force kill
 		if checks > 120 {
-			err = process.Kill() // SIGKILL
+			err = process.Kill() // SIGKILL after 120 s
 
 			if err != nil {
 				return err

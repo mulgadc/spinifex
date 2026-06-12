@@ -15,18 +15,9 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// Run wraps a scenario with reset-and-retry plus quarantine handling. It is
-// the primary entry point used by the files in scenarios/:
-//
-//	harness.Run(t, cluster, ssh, "A", func(t *testing.T) { ... })
-//
-// Quarantine: scenarios whose letter appears in DDIL_QUARANTINED are skipped
-// instead of executed. Per the design doc, a quarantined scenario must have
-// a linked bead tracking its fix; the live status is tracked in
-// tests/e2e/TEST_COVERAGE.md.
-//
-// Retry: delegates to harness.RetryWithReset so the shared package owns the
-// reset-and-rerun mechanics; only quarantine policy stays DDIL-specific.
+// Run wraps a scenario with reset-and-retry and quarantine handling.
+// Scenarios listed in DDIL_QUARANTINED are skipped; others are delegated to
+// harness.RetryWithReset which owns the reset-and-rerun mechanics.
 func Run(t *testing.T, c *harness.Cluster, ssh harness.SSH, letter string, fn func(*testing.T)) {
 	t.Helper()
 
@@ -38,9 +29,7 @@ func Run(t *testing.T, c *harness.Cluster, ssh harness.SSH, letter string, fn fu
 	harness.RetryWithReset(t, c, ssh, "scenario "+letter, fn)
 }
 
-// IsQuarantined reports whether letter appears in DDIL_QUARANTINED.
-// Comparison is case-insensitive; whitespace and empty entries are tolerated
-// so the env var can be edited by humans without worrying about formatting.
+// IsQuarantined reports whether letter appears in DDIL_QUARANTINED (case-insensitive, comma-separated).
 func IsQuarantined(letter string) bool {
 	raw := os.Getenv("DDIL_QUARANTINED")
 	if raw == "" {

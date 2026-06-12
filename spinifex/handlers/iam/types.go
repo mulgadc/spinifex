@@ -72,8 +72,7 @@ type Statement struct {
 }
 
 // Role is an assumable IAM identity stored in JetStream KV.
-// The trust policy (AssumeRolePolicyDocument) is stored opaque in v1;
-// it is parsed only for shape validation and is not evaluated until STS lands.
+// AssumeRolePolicyDocument is stored opaque; parsed for shape validation only.
 type Role struct {
 	RoleName                 string   `json:"role_name"`
 	RoleID                   string   `json:"role_id"`
@@ -110,13 +109,8 @@ type TrustPolicyDocument struct {
 }
 
 // TrustStatement is a single statement within a trust policy document.
-//
-// NotPrincipal and NotAction are accepted by the JSON unmarshal so the
-// validator can see — and reject — them. Without these fields a policy
-// containing `{"Effect":"Allow","NotPrincipal":{...}}` would unmarshal
-// with NotPrincipal silently dropped, leaving the validator unable to
-// distinguish it from a (still-empty) Principal and effectively turning
-// every NotPrincipal-Allow into a universe-allow at runtime.
+// NotPrincipal and NotAction are present so the validator can detect and reject them;
+// without them a policy with NotPrincipal would silently unmarshal as an empty Principal.
 type TrustStatement struct {
 	Sid          string          `json:"Sid,omitempty"`
 	Effect       string          `json:"Effect"`
@@ -132,14 +126,12 @@ type StringOrArr []string
 
 // UnmarshalJSON implements custom unmarshaling for string-or-array fields.
 func (s *StringOrArr) UnmarshalJSON(data []byte) error {
-	// Try string first
 	var single string
 	if err := json.Unmarshal(data, &single); err == nil {
 		*s = []string{single}
 		return nil
 	}
 
-	// Try array
 	var arr []string
 	if err := json.Unmarshal(data, &arr); err != nil {
 		return err

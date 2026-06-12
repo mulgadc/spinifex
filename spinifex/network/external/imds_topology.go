@@ -16,10 +16,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// IMDSSubnetSpec is the resolved set of OVN + host names for a subnet's IMDS
-// localport. Every field is a deterministic function of the subnet ID, so
-// callers can rebuild it from the subnet ID alone (BindManager does this per
-// bucket entry).
+// IMDSSubnetSpec is the resolved OVN + host names for a subnet's IMDS localport.
+// All fields are deterministic functions of subnetID.
 type IMDSSubnetSpec struct {
 	SubnetID      string
 	ShortSubnetID string // last 8 chars of SubnetID
@@ -30,10 +28,8 @@ type IMDSSubnetSpec struct {
 	HostEndName   string // imds-h-{shortSubnetID}
 }
 
-// IMDSTopologyManager installs and removes the per-subnet localport that claims
-// 169.254.169.254 directly on the guest's subnet switch, so metadata is reached
-// over a single L2 hop on the guest's own broadcast domain — no router in the
-// path. Idempotent.
+// IMDSTopologyManager installs the per-subnet localport for 169.254.169.254
+// on the guest's subnet switch (one L2 hop, no router). Idempotent.
 type IMDSTopologyManager interface {
 	EnsureForSubnet(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) (IMDSSubnetSpec, error)
 	RemoveForSubnet(ctx context.Context, subnetID string) error
@@ -73,12 +69,8 @@ func IMDSSpecForSubnet(subnetID string) IMDSSubnetSpec {
 }
 
 // EnsureForSubnet installs the IMDS localport on subnet-{subnetID} and publishes
-// the subnet-veth record. Idempotent: a present record short-circuits, and the
-// localport is created only when absent so a lost record still converges. The
-// subnet switch must already exist (the subnet lifecycle owns it). cidr is
-// persisted in the record so the host reply path resolves the guest on-link;
-// vpcID is persisted so the IMDS handler can resolve the subnet→VPC mapping the
-// eni-by-vpc-ip index needs (the index stays keyed vpcID/ip).
+// the subnet-veth record. Idempotent: present record short-circuits; lost record
+// reconverges. Subnet switch must already exist; cidr and vpcID are persisted.
 func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) (IMDSSubnetSpec, error) {
 	if subnetID == "" {
 		return IMDSSubnetSpec{}, errors.New("EnsureForSubnet: subnetID required")
@@ -103,11 +95,8 @@ func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID, vpc
 
 	extIDs := map[string]string{"spinifex:subnet_id": subnetID, "spinifex:role": "imds"}
 
-	// Host-owned localport on the guest's subnet switch: no port_security (the
-	// host sources 169.254.169.254 frames, and port_security would make
-	// ovn-controller drop reply frames from the host veth's MAC) and no SG
-	// membership (so the guest's SG ACLs never match it). localport binds on
-	// every chassis.
+	// localport on the guest's switch: no port_security (host sources IMDS frames;
+	// port_security would drop replies) and no SG membership. Binds on every chassis.
 	if _, err := m.ovn.GetLogicalSwitchPort(ctx, spec.LSPName); err != nil {
 		if cErr := m.ovn.CreateLogicalSwitchPort(ctx, spec.LSName, &nbdb.LogicalSwitchPort{
 			Name:        spec.LSPName,
@@ -135,10 +124,8 @@ func (m *imdsTopologyManager) EnsureForSubnet(ctx context.Context, subnetID, vpc
 	return spec, nil
 }
 
-// RemoveForSubnet deletes the IMDS localport and the subnet-veth record. The
-// subnet switch is left in place (the subnet lifecycle owns it). Idempotent and
-// drift-tolerant: a missing localport is logged and skipped so the record delete
-// always runs. Must run before the subnet switch goes away.
+// RemoveForSubnet deletes the IMDS localport and subnet-veth record. Idempotent:
+// missing localport is logged and skipped so the record delete always runs.
 func (m *imdsTopologyManager) RemoveForSubnet(ctx context.Context, subnetID string) error {
 	if subnetID == "" {
 		return errors.New("RemoveForSubnet: subnetID required")

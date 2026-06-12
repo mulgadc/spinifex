@@ -161,10 +161,9 @@ func TestRegisterTargets_MultipleInstances(t *testing.T) {
 	assert.Equal(t, "10.0.1.51", tg.Targets[1].PrivateIP)
 }
 
-// TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial verifies
-// that the startup reset rewrites every non-draining target's HealthState
-// back to "initial" so a daemon restart can't surface stale "healthy" claims
-// before the lb-agent has posted a fresh report.
+// TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial verifies that
+// startup resets non-draining targets to "initial", preventing stale "healthy"
+// claims before the lb-agent has posted a fresh report after a daemon restart.
 func TestResetTargetHealthOnStartup_TransitionsAllNonDrainingToInitial(t *testing.T) {
 	store := setupTestNATS(t)
 	svc := &ELBv2ServiceImpl{store: store}

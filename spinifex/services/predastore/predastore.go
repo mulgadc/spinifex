@@ -82,7 +82,6 @@ func (svc *Service) Start() (int, error) {
 
 	svc.server = server
 
-	// Start server asynchronously
 	if err := server.ListenAndServeAsync(); err != nil {
 		slog.Error("Failed to start predastore server", "error", err)
 		return 0, err

@@ -33,33 +33,16 @@ const (
 // strongSwan config consumes them as-is.
 var oidExtKeyUsageIPSecIKE = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 17}
 
-// IPSecCertPaths returns the canonical paths for the per-node IPsec peer
-// credential pair under configDir. Both paths live in
-// {configDir}/ipsec/. The CA trust anchor is the existing cluster CA in
-// configDir/ca.pem; ovs-monitor-ipsec is pointed at that path directly.
+// IPSecCertPaths returns the canonical cert/key paths for the per-node IPsec peer
+// credential pair under {configDir}/ipsec/.
 func IPSecCertPaths(configDir string) (certPath, keyPath string) {
 	dir := filepath.Join(configDir, ipsecDirName)
 	return filepath.Join(dir, ipsecCertFileName), filepath.Join(dir, ipsecKeyFileName)
 }
 
-// GenerateIPSecPeerCert issues an IKEv2 peer certificate for this node,
-// signed by the existing cluster CA. The cert carries the IPSec-IKE
-// extended key usage so strongSwan accepts it as a peer credential.
-//
-// hostname is the node's primary hostname (used as Common Name + DNS SAN).
-// nodeIP is the node's primary cluster IP (added as an IP SAN). Additional
-// SANs discovered from the local machine's interfaces are not added here —
-// IPSec peer identity should be the explicit cluster identity only, not
-// every interface address, to keep peer-identity matching strict.
-//
-// Cross-cutting invariant: this dnsName SAN must equal the OVS chassis-id
-// (Open_vSwitch.external_ids:system-id) on every node, because
-// ovs-monitor-ipsec generates strongSwan configs with leftid=@<chassis-id>
-// / rightid=@<chassis-id> and charon validates those names against the
-// peer cert's dnsName SAN. setup-ovn.sh pins system-id to `hostname -s`
-// for exactly this reason — see the comment in setup-ovn.sh near
-// `system-id.conf`. Changing the cert identity here without updating
-// setup-ovn.sh (or vice versa) breaks IKE with AUTHENTICATION_FAILED.
+// GenerateIPSecPeerCert issues an IKEv2 peer certificate for this node signed
+// by the existing cluster CA. The cert carries the IPSec-IKE EKU so strongSwan
+// accepts it. The dnsName SAN must equal the OVS chassis-id (system-id).
 func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP string) error {
 	if hostname == "" {
 		return fmt.Errorf("ipsec peer cert: hostname required")
@@ -127,14 +110,8 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return fmt.Errorf("ipsec peer cert: write key: %w", err)
 	}
 
-	// Symlink the cluster CA into charon's default cacerts scan dir.
-	// ovs-monitor-ipsec writes per-conn `cacert=` references, but
-	// strongSwan 6.0 only loads CAs declared in standalone `ca` sections
-	// or files placed in /etc/ipsec.d/cacerts at startup. Without this,
-	// charon authenticates the local side OK but rejects every inbound
-	// peer cert as `no trusted RSA public key found for '<peer>'` and
-	// no SAs negotiate. The dir is on charon's default AppArmor allowlist
-	// so no profile change is needed (unlike /etc/spinifex/).
+	// strongSwan 6.0 only loads CAs placed in /etc/ipsec.d/cacerts at startup;
+	// per-conn cacert= references are insufficient. Install the cluster CA there.
 	if err := installCAIntoCharonTrustStore(caCertPath); err != nil {
 		return fmt.Errorf("ipsec peer cert: install CA into charon trust store: %w", err)
 	}
@@ -166,15 +143,8 @@ func installCAIntoCharonTrustStore(caCertPath string) error {
 		return fmt.Errorf("rename %s -> %s: %w", staging, link, err)
 	}
 
-	// strongSwan scans /etc/ipsec.d/cacerts only at charon startup. If
-	// openvswitch-ipsec.service started before this install (the common
-	// case — the unit is enabled at provision time), charon is running
-	// with zero CAs loaded and every IKE_AUTH ends in `no trusted RSA
-	// public key found for '<peer>'`. Trigger a stroke rereadcacerts so
-	// the symlink we just placed is loaded without bouncing charon.
-	// Silent failure is expected when charon isn't running yet (admin
-	// init can run before setup-ovn.sh enables the unit); a later charon
-	// start will scan cacerts naturally.
+	// Trigger rereadcacerts so charon picks up the symlink without restart.
+	// Silent failure is expected when charon isn't running yet.
 	if err := charonRereadCAs(); err != nil {
 		slog.Debug("ipsec: rereadcacerts skipped", "err", err)
 	}

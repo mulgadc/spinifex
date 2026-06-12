@@ -11,9 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// natsInstanceLookup resolves the instance-only metadata fields via the same
-// account-scoped NATS fan-out the gateway's DescribeInstances path uses, since
-// the instance record lives in each daemon's in-memory manager, not a central KV.
+// natsInstanceLookup resolves instance-only metadata fields via DescribeInstances fan-out.
 type natsInstanceLookup struct {
 	nc            *nats.Conn
 	expectedNodes int
@@ -31,9 +29,7 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 
 	inst := firstInstance(out)
 	if inst == nil {
-		// The ENI references an instance the daemons no longer report (mid
-		// terminate, or not yet visible). Treated as a miss → 404.
-		return nil, nil
+		return nil, nil // terminating or not yet visible; treat as miss
 	}
 
 	facts := &instanceFacts{
@@ -49,9 +45,7 @@ func (l *natsInstanceLookup) describe(accountID, instanceID string) (*instanceFa
 	return facts, nil
 }
 
-// userData fetches the base64 user-data blob via DescribeInstanceAttribute and
-// decodes it. A miss or decode failure yields nil — /latest/user-data then 404s,
-// matching AWS for instances launched without user-data.
+// userData fetches and decodes the instance's base64 user-data, returning nil on miss or error.
 func (l *natsInstanceLookup) userData(accountID, instanceID string) []byte {
 	attr, err := gateway_ec2_instance.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),

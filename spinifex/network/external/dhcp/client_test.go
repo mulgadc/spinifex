@@ -151,10 +151,8 @@ func TestNClient4ValidatesInputs(t *testing.T) {
 	}
 }
 
-// Regression: nightly cell 1 failed with "dhcp acquire: hw_addr is required"
-// because DHCPGatewayLRPAllocator passes only ClientID, never HWAddr. The
-// real client must derive chaddr from the client-id rather than rejecting
-// the request.
+// Regression: NClient4Client must derive chaddr from ClientID when HWAddr is
+// absent — DHCPGatewayLRPAllocator never passes HWAddr.
 func TestDeriveMAC_StableAndLocallyAdministered(t *testing.T) {
 	got1, err := dhcp.DeriveMAC("dhcp-gw-lrp-vpc-1")
 	if err != nil {

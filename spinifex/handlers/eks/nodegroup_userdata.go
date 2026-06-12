@@ -17,21 +17,10 @@ type agentUserDataInput struct {
 	NodeName          string
 }
 
-// buildAgentUserData renders the cloud-config YAML a nodegroup worker consumes
-// at first boot. It mirrors buildK3sUserData: a bootcmd resolver fix, a single
-// write_files block (first-boot.env + agent.env + the IMDS on-link route
-// script), and a runcmd that enables the OpenRC `local` service. Output is
-// unencoded YAML; the caller base64-wraps it for the RunInstances UserData
-// field. The eks-node-role first-boot selector reads SPINIFEX_K3S_ROLE=agent
-// (and the presence of agent.env) to enable the k3s-agent service, which sources
-// agent.env for K3S_URL/K3S_TOKEN.
+// buildAgentUserData renders the cloud-config YAML for a nodegroup worker VM.
+// Mirrors buildK3sUserData structure; SPINIFEX_K3S_ROLE=agent enables k3s-agent.
 func buildAgentUserData(in agentUserDataInput) string {
-	// K3S_URL targets the control-plane ENI's in-VPC private IP on :6443
-	// because the cluster NLB DNS endpoint is not resolvable in-VPC yet.
-	// Workers share the VPC with the server, so this is directly reachable and
-	// TLS-pinned by the join token's CA hash (SAN/hostname irrelevant for the
-	// k3s agent join). Switch to the NLB endpoint on :443 once authoritative
-	// in-VPC DNS is available.
+	// K3S_URL uses the CP ENI IP directly (NLB DNS not yet resolvable in-VPC).
 	k3sURL := "https://" + net.JoinHostPort(in.ControlPlaneENIIP, "6443")
 	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
 
@@ -61,10 +50,7 @@ func buildAgentUserData(in agentUserDataInput) string {
 	var buf strings.Builder
 	buf.WriteString("#cloud-config\n")
 
-	// Resolver fix via bootcmd (not write_files) for the same reason as the
-	// server path: /etc/resolv.conf is a dangling symlink on the Alpine AMI, so
-	// write_files would follow the dead link and abort the whole block.
-	// Containerd needs a working resolver to pull the worker's system images.
+	// bootcmd (not write_files): /etc/resolv.conf is a dangling symlink on Alpine; see buildK3sUserData.
 	buf.WriteString("bootcmd:\n")
 	buf.WriteString("  - rm -f " + k3sResolvConfPath + "\n")
 	fmt.Fprintf(&buf, "  - printf '%s\\n' > %s\n",

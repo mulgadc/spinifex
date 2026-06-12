@@ -1,8 +1,5 @@
-// Package tags defines tag keys and values used to mark
-// Spinifex system-owned resources (ENIs, EC2 instances, AMIs).
-//
-// The UI filters resources carrying these tags out of customer-facing
-// listings. Operators can append ?system=1 to the URL to surface them.
+// Package tags defines tag keys for Spinifex system-owned resources.
+// The UI filters these out of customer-facing listings; operators append ?system=1 to surface them.
 package tags
 
 const (

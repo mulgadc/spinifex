@@ -16,11 +16,9 @@ func hasService(services []string, name string) bool {
 	return slices.Contains(services, name)
 }
 
-// BuildClusterRoutes returns a sorted list of "IP:4248" NATS cluster routes
-// for nodes that run the "nats" service. If ClusterIP is set it is used,
-// otherwise BindIP. Nodes are sorted by name for deterministic ordering.
+// BuildClusterRoutes returns sorted "IP:4248" NATS cluster routes for nodes
+// running the "nats" service. ClusterIP is preferred over BindIP.
 func BuildClusterRoutes(nodes map[string]NodeInfo) []string {
-	// Filter to nodes that run NATS
 	natsNodes := make(map[string]NodeInfo)
 	for k, n := range nodes {
 		if hasService(n.Services, "nats") {
@@ -39,11 +37,9 @@ func BuildClusterRoutes(nodes map[string]NodeInfo) []string {
 	return routes
 }
 
-// BuildPredastoreNodes returns a sorted list of PredastoreNodeConfig with
-// 1-based IDs for nodes that run the "predastore" service.
-// Nodes are sorted by name for deterministic ordering.
+// BuildPredastoreNodes returns sorted PredastoreNodeConfig (1-based IDs) for
+// nodes running the "predastore" service.
 func BuildPredastoreNodes(nodes map[string]NodeInfo) []admin.PredastoreNodeConfig {
-	// Filter to nodes that run Predastore
 	predaNodes := make(map[string]NodeInfo)
 	for k, n := range nodes {
 		if hasService(n.Services, "predastore") {

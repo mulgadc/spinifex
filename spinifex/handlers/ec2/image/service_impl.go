@@ -744,10 +744,9 @@ func (s *ImageServiceImpl) putSnapshotMetadata(snapshotID, volumeID string, volu
 	return handlers_ec2_snapshot.WriteSnapshotConfig(s.store, s.bucketName, snapshotID, &cfg)
 }
 
-// CopyImage clones an AMI same-region, metadata-only: the new snapshot shares
-// the source's VolumeID and a fresh config.json points at it.
-// Source visibility is checked before the O(n) name-uniqueness scan so typos
-// and cross-account sources fast-fail without a full AMI listing.
+// CopyImage clones an AMI same-region, metadata-only: the new snapshot shares the
+// source's VolumeID and a fresh config.json points at it. Source visibility is checked
+// before the name-uniqueness scan so cross-account sources fast-fail.
 func (s *ImageServiceImpl) CopyImage(input *ec2.CopyImageInput, accountID string) (*ec2.CopyImageOutput, error) {
 	if input == nil || input.Name == nil || *input.Name == "" ||
 		input.SourceImageId == nil || *input.SourceImageId == "" {
@@ -779,12 +778,8 @@ func (s *ImageServiceImpl) CopyImage(input *ec2.CopyImageInput, accountID string
 	}
 	srcSnap, err := handlers_ec2_snapshot.ReadSnapshotConfig(s.store, s.bucketName, srcMeta.SnapshotID)
 	if err != nil {
-		// Bundled system AMIs (admin-imported via `spx admin images import`)
-		// store blocks under ami-xxx/ with no standalone snap-xxx/metadata.json
-		// — the SnapshotID field is a viperblock-internal snap reference. To
-		// keep copy-image AWS-compatible (copy of a public/shared AMI must
-		// succeed), synthesize a minimal snap view from the AMI itself: the
-		// bundled prefix IS the volume, so VolumeID = sourceImageID.
+		// Bundled system AMIs have no standalone snap-xxx/metadata.json; synthesize
+		// a minimal snap view using VolumeID = sourceImageID so CopyImage succeeds.
 		if objectstore.IsNoSuchKeyError(err) && srcMeta.ImageOwnerAlias != "" && !utils.IsAccountID(srcMeta.ImageOwnerAlias) {
 			srcSnap = &handlers_ec2_snapshot.SnapshotConfig{
 				SnapshotID: srcMeta.SnapshotID,
@@ -943,10 +938,9 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 	return mkey != nil
 }
 
-// synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from
-// AMIMetadata, or nil for non-EBS AMIs. encrypted reflects the cluster-level
-// encryption-at-rest posture (master key configured) since AMI metadata does
-// not carry a per-image encryption flag of its own.
+// synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
+// or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
+// (master key configured); AMI metadata carries no per-image encryption flag.
 func synthesizeRootBlockDeviceMapping(meta viperblock.AMIMetadata, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil
@@ -1108,10 +1102,8 @@ func (s *ImageServiceImpl) DeregisterImage(input *ec2.DeregisterImageInput, acco
 	return &ec2.DeregisterImageOutput{}, nil
 }
 
-// ModifyImageAttribute writes a modifiable AMI attribute. Gateway normalises
-// into Attribute+Value; only description is writable. Ownership is checked
-// before the attribute switch so cross-account callers always see
-// UnauthorizedOperation.
+// ModifyImageAttribute writes a modifiable AMI attribute; only description is writable.
+// Ownership is checked first so cross-account callers always see UnauthorizedOperation.
 func (s *ImageServiceImpl) ModifyImageAttribute(input *ec2.ModifyImageAttributeInput, accountID string) (*ec2.ModifyImageAttributeOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" ||
 		input.Attribute == nil || *input.Attribute == "" {

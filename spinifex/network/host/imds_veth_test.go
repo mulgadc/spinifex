@@ -109,10 +109,9 @@ func TestEnsureIMDSVeth_Idempotent(t *testing.T) {
 	}
 }
 
-// TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds guards Fix #2: a live
-// OVS port over an unenterable netns (stale /run/netns handle, setns EINVAL)
-// must NOT short-circuit. The inconsistent plumbing is torn down and rebuilt so
-// the IMDS listener becomes bindable again, rather than wedging forever.
+// TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds guards against a live OVS
+// port with an unenterable netns (setns EINVAL): plumbing must be torn down
+// and rebuilt so the IMDS listener is bindable rather than wedging forever.
 func TestEnsureIMDSVeth_StaleNetnsBehindLivePort_Rebuilds(t *testing.T) {
 	calls := recordSudo(t, func(name string, args []string) *exec.Cmd {
 		if name == "ovs-vsctl" && len(args) >= 1 && args[0] == "port-to-br" {
@@ -333,10 +332,9 @@ func TestRemoveIMDSVeth_MissingDeviceIsNotError(t *testing.T) {
 	}
 }
 
-// TestIMDSVethNamesWithinIFNAMSIZ guards the load-bearing constraint that both
-// veth-end names fit Linux's IFNAMSIZ-1 (15 chars). A longer name makes
-// `ip link add` fail with "name too long" for every subnet, silently taking IMDS
-// offline cluster-wide — and the SudoCommand mock would never catch it.
+// TestIMDSVethNamesWithinIFNAMSIZ guards that both veth-end names fit IFNAMSIZ-1
+// (15 chars). A longer name causes `ip link add` to fail cluster-wide, silently
+// taking IMDS offline in a way the SudoCommand mock would never catch.
 func TestIMDSVethNamesWithinIFNAMSIZ(t *testing.T) {
 	const ifnamsizMax = 15
 	for _, subnetID := range []string{

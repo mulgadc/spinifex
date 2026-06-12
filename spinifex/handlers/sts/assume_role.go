@@ -30,19 +30,16 @@ const (
 	stsActionWildcard   = "sts:*"
 	globalWildcard      = "*"
 
-	// principalTypeAssumedRole is the SessionCredential.PrincipalType for a role
-	// session — the default kind, also assumed when a stored value is empty.
+	// principalTypeAssumedRole is the SessionCredential.PrincipalType for a role session;
+	// empty stored values are also treated as this type.
 	principalTypeAssumedRole = "assumed-role"
 
-	// principalTypeUser is the SessionCredential.PrincipalType for a session
-	// minted by GetSessionToken, which resolves back to the calling IAM user.
-	// Mirrors the gateway's principalTypeUser so the ASIA resolve path can map
-	// the stored value straight onto the user principal context.
+	// principalTypeUser is the SessionCredential.PrincipalType for sessions minted by
+	// GetSessionToken, which resolve back to the calling IAM user.
 	principalTypeUser = "user"
 
-	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance — the
-	// only service principal that matches a trust policy in v1. The HTTPS AssumeRole
-	// path supplies an empty principalSource, so service principals never match there.
+	// ec2ServicePrincipal is the synthetic caller used by AssumeRoleForInstance.
+	// The HTTPS AssumeRole path supplies an empty principalSource, so service principals never match there.
 	ec2ServicePrincipal = "ec2.amazonaws.com"
 
 	minDurationSeconds     int64 = 900
@@ -58,10 +55,8 @@ const (
 	mintMaxAttempts = 3
 )
 
-// roleSessionNameRegex enforces AWS's documented session-name character set
-// expressed as a literal ASCII range: `\w` would silently widen to Unicode
-// under a future build tag and is avoided. `:` and `/` are excluded so the
-// synthesised assumed-role ARN and AssumedRoleId stay unambiguously parseable.
+// roleSessionNameRegex enforces AWS's documented session-name character set as a literal
+// ASCII range. `:` and `/` are excluded so the assumed-role ARN stays unambiguously parseable.
 var roleSessionNameRegex = regexp.MustCompile(`^[A-Za-z0-9_+=,.@-]{2,64}$`)
 
 // AssumeRole mints temporary credentials after evaluating the target role's
@@ -114,8 +109,7 @@ func (s *STSServiceImpl) AssumeRole(callerAccountID, callerARN, callerIdentity s
 }
 
 // AssumeRoleForInstance is the in-process IMDS entry point, not reachable over HTTPS.
-// The caller is synthesised as the EC2 service principal (principalSource =
-// ec2.amazonaws.com); the session name is the instanceID, yielding an AWS-style ARN.
+// Caller is synthesised as ec2.amazonaws.com; the session name is the instanceID.
 func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
 	if accountID == "" || roleARN == "" || instanceID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -140,9 +134,9 @@ func (s *STSServiceImpl) AssumeRoleForInstance(accountID, roleARN, instanceID st
 	return out, nil
 }
 
-// assumeRoleForCaller is the shared core of AssumeRole (HTTPS) and AssumeRoleForInstance
-// (IMDS): resolves the role, validates the duration (0 → default), evaluates the trust
-// policy, and mints credentials. principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
+// assumeRoleForCaller is the shared core of AssumeRole and AssumeRoleForInstance:
+// resolves the role, clamps the duration, evaluates the trust policy, and mints credentials.
+// principalSource is "" for HTTPS, ec2.amazonaws.com for IMDS.
 func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, principalSource, roleARN, sessionName, sourceIdentity string, requestedDuration int64) (*sts.AssumeRoleOutput, error) {
 	roleAccountID, roleName, err := auth.ParseRoleARN(roleARN)
 	if err != nil {
@@ -151,10 +145,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 
 	roleOut, err := s.iamSvc.GetRole(roleAccountID, &iam.GetRoleInput{RoleName: aws.String(roleName)})
 	if err != nil {
-		// Same-account miss leaks no information the caller couldn't get via
-		// ListRoles; cross-account miss is masked to AccessDenied to prevent
-		// enumeration. Comparing against the bare error code matches how
-		// IAMService surfaces NoSuchEntity (errors.New(awserrors.ErrorIAMNoSuchEntity)).
+		// Cross-account miss is masked to AccessDenied to prevent role enumeration.
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity && callerAccountID != roleAccountID {
 			return nil, errors.New(awserrors.ErrorAccessDenied)
 		}
@@ -202,16 +193,13 @@ func (s *STSServiceImpl) assumeRoleForCaller(callerAccountID, callerARN, princip
 	}, nil
 }
 
-// evalTrustPolicy implements AWS's explicit-deny-wins semantics: a first pass
-// scans every Deny statement (returning AccessDenied on any match), a second
-// pass scans every Allow statement (returning nil on the first match). A
-// single-pass "return on first Allow" loop would silently skip a later Deny
-// and is a real authorisation bug.
+// evalTrustPolicy implements AWS's explicit-deny-wins semantics: first pass scans all
+// Deny statements, second pass scans all Allows. A single-pass loop would skip a later
+// Deny and silently grant access.
 func evalTrustPolicy(docJSON, callerARN, principalSource string) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
-		// Stored docs were validated at CreateRole / UpdateAssumeRolePolicy
-		// time, so reaching here implies on-disk corruption — fail closed.
+		// Docs are validated at write time; reaching here implies on-disk corruption.
 		return fmt.Errorf("stored trust policy invalid: %w", err)
 	}
 
@@ -259,9 +247,8 @@ func matchTrustAction(actions []string) bool {
 	return false
 }
 
-// matchTrustPrincipal evaluates each top-level Principal key independently (AWS
-// treats the map as an OR). AWS matches callerARN, Service matches principalSource
-// (set only by the IMDS path); unsupported keys (Federated) skip, not fail.
+// matchTrustPrincipal evaluates each Principal key as an OR. AWS matches callerARN;
+// Service matches principalSource (IMDS path only); unsupported keys (Federated) skip.
 func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
@@ -298,10 +285,7 @@ func matchTrustPrincipal(raw json.RawMessage, callerARN, principalSource string)
 }
 
 // matchServicePrincipal matches a Service principal against the synthesised caller.
-// v1 trusts only the EC2 service principal: any other principalSource (including
-// the empty one used by the HTTPS path) is rejected up front, so unsupported
-// service principals are denied even if a future caller synthesised one.
-// Expanding the whitelist (ecs-tasks, lambda) is a one-line change to this guard.
+// Only the EC2 service principal is trusted; any other principalSource is denied.
 func matchServicePrincipal(raw json.RawMessage, principalSource string) (bool, error) {
 	if principalSource != ec2ServicePrincipal {
 		return false, nil
@@ -334,11 +318,8 @@ func matchAWSPrincipal(raw json.RawMessage, callerARN string) (bool, error) {
 	return false, nil
 }
 
-// matchAWSPrincipalEntry resolves one principal clause against the caller's
-// ARN, handling four forms: the wildcard, a bare 12-digit account ID (treated
-// as :root shorthand), exact ARN match, :root in the same account, and the
-// chained-assume auto-expansion where a role ARN matches any session of that
-// role.
+// matchAWSPrincipalEntry resolves one principal clause: wildcard, bare account ID
+// (treated as :root), exact ARN, :root shorthand, and role-ARN session expansion.
 func matchAWSPrincipalEntry(clause, callerARN string) bool {
 	if clause == globalWildcard {
 		return true
@@ -359,17 +340,14 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 		return false
 	}
 
-	// :root → any principal in the same account. Scoped to the IAM service
-	// segment; arn:aws:s3::A:root (or any other service) must not match —
-	// validators upstream do not check service-segment shape, so a malformed
-	// ARN pasted into a trust policy must fail closed here.
+	// :root matches any principal in the same account; scoped to the IAM service
+	// segment so arn:aws:s3::A:root (or any other service) does not match.
 	if clauseARN.service == "iam" && clauseARN.resource == "root" &&
 		clauseARN.account == callerParts.account {
 		return true
 	}
 
-	// Role-ARN auto-expansion: `arn:aws:iam::A:role/.../X` matches
-	// `arn:aws:sts::A:assumed-role/X/<session>` for any session.
+	// Role-ARN auto-expansion: arn:aws:iam::A:role/X matches any assumed-role session of X.
 	if clauseARN.service == "iam" && strings.HasPrefix(clauseARN.resource, "role/") &&
 		callerParts.service == "sts" && strings.HasPrefix(callerParts.resource, "assumed-role/") &&
 		clauseARN.account == callerParts.account {
@@ -409,10 +387,8 @@ func lastPathSegment(s string) string {
 }
 
 // sessionEnvelope is the resolved identity a session credential is minted for.
-// It decouples mintSession from AssumeRole's *iam.Role so GetSessionToken can
-// mint a user-bound session: the role paths fill the assumed-role fields, the
-// user path sets PrincipalType "user" + SessionName = the IAM user name and
-// leaves the assumed-role fields empty.
+// Role paths fill the assumed-role fields; GetSessionToken sets PrincipalType "user"
+// and leaves the assumed-role fields empty.
 type sessionEnvelope struct {
 	PrincipalType  string
 	AccountID      string
@@ -426,10 +402,8 @@ type sessionEnvelope struct {
 	AssumedRoleID     string
 }
 
-// assumedRoleEnvelope derives the session envelope for a role session, shared by
-// AssumeRole, AssumeRoleForInstance, and AssumeRoleWithWebIdentity. It owns the
-// assumed-role ARN / AssumedRoleId construction so every role path stays
-// consistent.
+// assumedRoleEnvelope derives the session envelope for a role session, shared by all
+// AssumeRole variants. It centralises assumed-role ARN and AssumedRoleId construction.
 func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdentity string) sessionEnvelope {
 	roleID := aws.StringValue(role.RoleId)
 	roleName := aws.StringValue(role.RoleName)
@@ -445,10 +419,8 @@ func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdent
 	}
 }
 
-// mintSession generates a fresh ASIA AKID, secret, and session token, encrypts
-// the secret with the IAM master key, HMACs the session token, and persists the
-// record described by env. Retries on AKID collision; the birthday bound for
-// 64-bit AKID entropy makes that practically unreachable.
+// mintSession generates a fresh ASIA AKID, encrypts the secret, HMACs the token,
+// and persists the credential. Retries up to mintMaxAttempts on AKID collision.
 func (s *STSServiceImpl) mintSession(env sessionEnvelope, duration int64) (*SessionCredential, string, string, error) {
 	plainSecret, err := generateRandomBase64(sessionSecretBytes)
 	if err != nil {
@@ -515,11 +487,9 @@ func generateRandomBase64(n int) (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-// computeTokenHMAC HMACs the wire-form (base64) session token with the IAM
-// master key. The SigV4 verifier recomputes this over the
-// X-Amz-Security-Token header and constant-time-compares against the stored
-// value — a bucket read by any process that lacks the master key cannot
-// recover a usable token.
+// computeTokenHMAC HMACs the wire-form session token with the master key.
+// The SigV4 verifier recomputes and constant-time-compares; a bucket read without
+// the master key cannot recover a valid token.
 func computeTokenHMAC(key []byte, token string) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(token))

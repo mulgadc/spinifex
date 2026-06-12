@@ -12,53 +12,31 @@ import (
 )
 
 const (
-	// stsActionAssumeRoleWithWebIdentity is the only Action whose statements
-	// may carry a Condition block (per the validator in handlers_iam). The
-	// constant is duplicated here so the action-match path stays in this
-	// package and a future rename surfaces as a compile-time mismatch.
+	// stsActionAssumeRoleWithWebIdentity is the only action that may carry a Condition block.
 	stsActionAssumeRoleWithWebIdentity = "sts:AssumeRoleWithWebIdentity"
 
-	// IRSA convention: pods bake a single audience value into the projected
-	// ServiceAccount token. The handler accepts any token whose `aud` claim
-	// contains this exact string (claim is a JSON string or array — handled
-	// upstream via jwt.ClaimStrings).
+	// irsaExpectedAudience is the audience value IRSA pods bake into ServiceAccount tokens.
 	irsaExpectedAudience = "sts.amazonaws.com"
 )
 
-// webIdentityContext is the resolved-and-verified set of facts about an
-// AssumeRoleWithWebIdentity caller that the trust-policy evaluator needs to
-// match against. The handler builds it after JWT signature + claim validation;
-// the evaluator does not re-verify, it only matches.
+// webIdentityContext holds the JWT-verified facts the trust-policy evaluator matches against.
 type webIdentityContext struct {
-	// federatedPrincipalARN is `arn:aws:iam::{roleAccountID}:oidc-provider/{issuerHostPath}`
-	// (the value the role trust policy's Principal.Federated entry must equal).
+	// federatedPrincipalARN is the oidc-provider ARN Principal.Federated must equal.
 	federatedPrincipalARN string
 
-	// issuer is the literal `iss` claim value. Used to build the condition-key
-	// prefix `{iss}:sub` / `{iss}:aud` per the IRSA convention.
+	// issuer is the literal `iss` claim; used to build condition-key prefixes like `{iss}:sub`.
 	issuer string
 
-	// subject is the literal `sub` claim value.
+	// subject is the literal `sub` claim.
 	subject string
 
-	// audience is the list of audience values from the JWT `aud` claim.
-	// Membership semantics — a single Condition StringEquals on `{iss}:aud`
-	// matches if any wired audience equals the condition value.
+	// audience holds the JWT `aud` values; a StringEquals condition matches if any entry equals the expected value.
 	audience []string
 }
 
-// evalTrustPolicyForWebIdentity is the sibling of evalTrustPolicy for the
-// AssumeRoleWithWebIdentity action. AWS semantics: explicit-deny wins across
-// the document, then any matching Allow grants. A statement matches when:
-//
-//   - Action contains sts:AssumeRoleWithWebIdentity (wildcards accepted —
-//     sts:* and "*" — same as evalTrustPolicy for symmetry).
-//   - Principal.Federated equals webIdentityContext.federatedPrincipalARN.
-//   - Every Condition operator entry holds (currently only StringEquals).
-//
-// Returns nil on grant; awserrors.ErrorAccessDenied on no-match or explicit
-// deny; a wrapped error on stored-doc corruption (matches evalTrustPolicy's
-// fail-closed-loudly contract).
+// evalTrustPolicyForWebIdentity evaluates an AssumeRoleWithWebIdentity trust policy.
+// Explicit-deny wins; a statement matches when Action, Principal.Federated, and all Conditions hold.
+// Returns nil on grant or AccessDenied/error on deny/corruption.
 func evalTrustPolicyForWebIdentity(docJSON string, ctx webIdentityContext) error {
 	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
@@ -120,23 +98,16 @@ func matchWebIdentityAction(actions []string) bool {
 	return false
 }
 
-// matchFederatedPrincipal accepts Principal.Federated as either a string or
-// an array of strings, mirroring the AWS Principal.AWS shape. Returns false
-// on Principal: "*" — Federated does not honour the bare wildcard the way
-// Principal: "*" does; a web-identity policy that means "any OIDC issuer"
-// must say so explicitly via a Principal.Federated entry per issuer ARN.
-// Unrelated top-level keys (Service, AWS) skip at the entry level — same
-// open-set semantics as matchTrustPrincipal in assume_role.go.
+// matchFederatedPrincipal accepts Principal.Federated as a string or array.
+// Returns false for Principal: "*" — Federated does not honour the bare wildcard.
+// Unrelated top-level keys (Service, AWS) are skipped.
 func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
 	}
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		// Principal: "*" → does NOT match Federated. The web-identity action
-		// has no analogue to the AWS-account-wide root principal and the bare
-		// wildcard would silently grant any OIDC issuer that could fish a
-		// trust policy. Fail closed.
+		// Principal: "*" does not match Federated — fail closed to prevent any-issuer grants.
 		return false, nil
 	}
 	var m map[string]json.RawMessage
@@ -163,19 +134,8 @@ func matchFederatedPrincipal(raw json.RawMessage, expectedARN string) (bool, err
 	return false, nil
 }
 
-// conditionsHold evaluates a Condition block against the web-identity context.
-// The validator restricts the operator to StringEquals — anything else is a
-// stored-doc inconsistency and the safe default is "do not match".
-//
-// IRSA-shaped keys:
-//
-//	{iss}:sub  → exact equality with the JWT `sub` claim
-//	{iss}:aud  → set-membership against the JWT `aud` claim list
-//	             (`aud` is a ClaimStrings — one or many)
-//
-// Each StringEquals entry value can be a single string or a list — both
-// shapes match if any entry compares equal. Missing-condition = grant
-// (no Condition → unrestricted Allow on the Federated principal).
+// conditionsHold evaluates a Condition block. Only StringEquals is supported;
+// keys are {iss}:sub (equality) and {iss}:aud (set-membership). No Condition = grant.
 func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 	if !isCondRawNonEmpty(raw) {
 		return true
@@ -186,9 +146,7 @@ func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 	}
 	for op, kv := range ops {
 		if op != "StringEquals" {
-			// Validator rejects other operators at write time; reaching here
-			// means a stored doc was tampered with bypassing validation. Fail
-			// closed rather than silently grant.
+			// Validator rejects other operators at write time; a non-StringEquals here means tampering.
 			return false
 		}
 		issPrefix := strings.TrimSuffix(ctx.issuer, "/")
@@ -207,11 +165,7 @@ func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 					return false
 				}
 			default:
-				// Unknown condition key — fail closed. v1 only models the two
-				// IRSA-shaped keys above; an unknown key in a stored doc most
-				// likely means the policy author wanted a stricter check the
-				// evaluator cannot honour, so refusing the grant is safer
-				// than ignoring the key.
+				// Unknown condition key — fail closed rather than silently ignore a stricter check.
 				return false
 			}
 		}
@@ -219,8 +173,7 @@ func conditionsHold(raw json.RawMessage, ctx webIdentityContext) bool {
 	return true
 }
 
-// isCondRawNonEmpty mirrors the validator's empty-detection so an empty `{}`
-// Condition (validator-accepted) does not enter the operator loop.
+// isCondRawNonEmpty reports whether a Condition RawMessage has meaningful content.
 func isCondRawNonEmpty(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false

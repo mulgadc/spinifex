@@ -10,15 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 )
 
-// IAM state shared across the IAM phase tests. Each phase test is its own
-// top-level Test*, so cross-phase state (users, primary access keys, and the
-// derived admin account ID) is memoized at package scope behind sync.Once.
-// LIFO cleanup is registered against fix.Harness so it runs at fixture
-// teardown rather than at end of the first caller's subtest.
-//
-// All helpers tolerate "already exists" outcomes so a caller that races a
-// phase test which is itself exercising create-then-delete (e.g. IAM1) still
-// converges on a populated state.
+// IAM state shared across the IAM phase tests, memoized at package scope via
+// sync.Once. Cleanup is registered on fix.Harness to run at fixture teardown.
+// All helpers tolerate "already exists" outcomes so concurrent phases converge.
 
 var (
 	iamAliceOnce   sync.Once
@@ -155,8 +149,7 @@ func iamEnsureAdminAccountID(t *testing.T, fix *Fixture) string {
 	return iamAdminAccountID
 }
 
-// iamCreateUserIdempotent creates a user, swallowing EntityAlreadyExists so
-// the helper can run after a phase test that already created the user.
+// iamCreateUserIdempotent creates a user, treating EntityAlreadyExists as success.
 func iamCreateUserIdempotent(fix *Fixture, name, path string) error {
 	input := &iam.CreateUserInput{UserName: aws.String(name)}
 	if path != "" {
@@ -166,8 +159,6 @@ func iamCreateUserIdempotent(fix *Fixture, name, path string) error {
 	if err == nil {
 		return nil
 	}
-	// EntityAlreadyExists: user came from a parallel phase test. Treat as
-	// success — we just need the named user to exist.
 	if iamIsEntityAlreadyExists(err) {
 		return nil
 	}

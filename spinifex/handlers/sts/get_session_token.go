@@ -11,30 +11,18 @@ import (
 )
 
 const (
-	// GetSessionToken duration bounds differ from AssumeRole: AWS permits a
-	// session up to 36h (vs. the 12h role-session ceiling) and defaults to 12h.
-	// The floor is the STS-wide minimum (minDurationSeconds, 900s).
+	// GetSessionToken allows up to 36h (vs. the 12h role-session ceiling), defaulting to 12h.
 	getSessionTokenMaxDuration     int64 = 129600 // 36h
 	getSessionTokenDefaultDuration int64 = 43200  // 12h
 )
 
-// GetSessionToken exchanges the calling IAM user's long-lived credentials for
-// short-lived ASIA session credentials bound to the SAME user identity. Unlike
-// AssumeRole, the resulting session resolves back to arn:aws:iam::A:user/N and
-// IAM policy is evaluated against that user — see the user branch of the SigV4
-// ASIA resolve path. The caller identity is resolved by the gateway and passed
-// in as plain strings to keep the handler unit-testable.
-//
-// AWS forbids calling GetSessionToken with temporary credentials, so only a
-// long-lived user principal (AKIA → principalType "user") is accepted. Assumed
-// -role callers are rejected by principal type; session callers — including a
-// GetSessionToken session, which resolves back to principalType "user" — are
-// rejected by their ASIA access-key prefix. Root is a long-lived user and, per
-// AWS, may call GetSessionToken.
+// GetSessionToken exchanges a long-lived IAM user credential for short-lived ASIA
+// credentials that still resolve to the same user identity. Only long-lived users
+// (AKIA prefix, principalType "user") may call this; assumed-role and session callers
+// are rejected. Caller identity is resolved by the gateway and passed as plain strings.
 func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error) {
 	if input == nil {
-		// `aws sts get-session-token` with no arguments sends an empty body;
-		// an absent input is the common case, not an error.
+		// An absent body is the common case from `aws sts get-session-token` with no args.
 		input = &sts.GetSessionTokenInput{}
 	}
 
@@ -44,24 +32,21 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 	if strings.HasPrefix(callerAccessKeyID, SessionAccessKeyIDPrefix) {
-		// A GetSessionToken session resolves back to principalType "user", so the
-		// check above cannot catch it — the ASIA prefix is the only signal that
-		// the caller holds temporary credentials. Rejecting it stops a session
-		// from minting a fresh session and rolling its lifetime forward forever.
+		// A GetSessionToken session resolves to principalType "user", so the ASIA prefix
+		// is the only signal the caller holds temporary credentials. Rejecting prevents
+		// a session from minting a fresh session and rolling its lifetime forward.
 		slog.Warn("GetSessionToken denied: caller is using temporary (session) credentials",
 			"account_id", callerAccountID, "akid", callerAccessKeyID)
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 	if callerAccountID == "" || callerUserName == "" {
-		// A user principal with no account or name is a mis-wired caller, not a
-		// client error — fail loud rather than mint a session with an empty name.
+		// Mis-wired caller, not a client error — fail loud rather than mint a nameless session.
 		slog.Error("GetSessionToken: user principal missing account or name",
 			"account_id", callerAccountID, "user_name", callerUserName)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	// MFA (SerialNumber/TokenCode) is out of scope: reject rather than silently
-	// ignore so a caller never believes an MFA condition was enforced.
+	// MFA is out of scope: reject rather than silently ignore, so callers don't believe MFA was enforced.
 	if aws.StringValue(input.SerialNumber) != "" || aws.StringValue(input.TokenCode) != "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -93,9 +78,8 @@ func (s *STSServiceImpl) GetSessionToken(callerAccountID, callerUserName, caller
 	}, nil
 }
 
-// clampGetSessionTokenDuration coerces a requested duration into the permitted
-// [900, 129600] window. A nil DurationSeconds is handled by the caller (default
-// 12h); this only sees an explicit value, which AWS clamps rather than rejects.
+// clampGetSessionTokenDuration coerces a duration into [900, 129600].
+// A nil DurationSeconds is handled by the caller; AWS clamps explicit values rather than rejecting them.
 func clampGetSessionTokenDuration(requested int64) int64 {
 	if requested < minDurationSeconds {
 		return minDurationSeconds

@@ -70,10 +70,9 @@ func TestCreateRule_PathPattern(t *testing.T) {
 	assert.Contains(t, *out.Rules[0].RuleArn, ":listener-rule/")
 }
 
-// TestDeleteLoadBalancer_CascadesRuleDeletion is a regression guard:
-// DeleteLoadBalancer must cascade through listener rule deletion. Previously it
-// called store.DeleteListener directly, bypassing the rule cascade, so a rule's
-// target group stayed pinned as ResourceInUse and was permanently undeletable.
+// TestDeleteLoadBalancer_CascadesRuleDeletion guards against the regression where
+// DeleteLoadBalancer called store.DeleteListener directly, bypassing rule cascade,
+// leaving a rule's target group pinned as ResourceInUse permanently.
 func TestDeleteLoadBalancer_CascadesRuleDeletion(t *testing.T) {
 	env := newRuleTestEnv(t, "del-cascade")
 

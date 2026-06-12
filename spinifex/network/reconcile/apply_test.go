@@ -159,8 +159,8 @@ func TestReconcile_OrphanPortGroupRemoved(t *testing.T) {
 	}
 }
 
-// ReconcileApplyOnly must not prune managed sg_* PGs when intent is empty
-// (startup race vs. peer subscribers); full Reconcile must still prune.
+// ReconcileApplyOnly must not prune sg_* PGs on empty intent (startup race);
+// full Reconcile must still prune.
 func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()
@@ -256,10 +256,9 @@ func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	}
 }
 
-// TestReconcile_GatewayClaimChecksChassisRedirectPort pins the claim verifier to
-// the chassisredirect (cr-) Port_Binding. The distributed gateway LRP binding is
-// always chassis-less; checking it instead made ensureGatewayClaimed report
-// "unclaimed" forever and fire a recompute every cycle, churning the EIP datapath.
+// TestReconcile_GatewayClaimChecksChassisRedirectPort pins the verifier to the
+// cr- Port_Binding. The LRP binding is chassis-less; checking it caused infinite
+// recomputes and churned the EIP datapath.
 func TestReconcile_GatewayClaimChecksChassisRedirectPort(t *testing.T) {
 	withFastClaimBounds(t)
 	m := mock.New()

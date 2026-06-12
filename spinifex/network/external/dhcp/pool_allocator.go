@@ -11,13 +11,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 )
 
-// DHCPPoolAllocator implements external.Allocator for a single
-// DHCP-sourced pool. Runs daemon-side and routes acquire/release through
-// vpcd over NATS (the bridge-owning vpcd answers).
-//
-// Each call DORAs once per AWS identity; the client-id is derived from
-// req.AllocationID / ENIID / InstanceID, in that order. Vpcd's Manager is
-// idempotent on client-id, so retries return the same IP.
+// DHCPPoolAllocator implements external.Allocator for a DHCP-sourced pool,
+// routing acquire/release via NATS to the bridge-owning vpcd. Client-id is
+// derived from AllocationID / ENIID / InstanceID; Manager is idempotent.
 type DHCPPoolAllocator struct {
 	client *NATSClient
 	pool   external.ExternalPoolConfig
@@ -85,10 +81,8 @@ func (a *DHCPPoolAllocator) Allocate(ctx context.Context, req external.AllocateR
 	return addr.Unmap(), nil
 }
 
-// Release looks up the lease holding ip and issues vpc.dhcp.release.
-// Static-pool semantics — error when poolName doesn't match this
-// allocator's pool — so ExternalIPAM's dispatch table doesn't accidentally
-// release a different pool's lease.
+// Release issues vpc.dhcp.release for ip. Errors if poolName doesn't match
+// this allocator's pool to prevent cross-pool release.
 func (a *DHCPPoolAllocator) Release(ctx context.Context, poolName string, ip netip.Addr) error {
 	if a == nil || a.client == nil {
 		return errors.New("dhcp pool allocator: nil client")

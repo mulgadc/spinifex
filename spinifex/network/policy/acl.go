@@ -42,10 +42,8 @@ type Rule struct {
 	SourceSG   string
 }
 
-// InfrastructureACLs returns the platform ACLs every PG carries: the
-// 900/800 logged default-denies (CMMC SC.L1-3.13.1) and the 1050 DHCPv4
-// client/server allows (OVN's DHCP responder runs after the PG ACL stage;
-// without these a narrow-egress SG would drop DHCPDISCOVER).
+// InfrastructureACLs returns the platform ACLs every PG carries: logged
+// 900/800 default-denies (CMMC SC.L1-3.13.1) and 1050 DHCPv4 allows.
 func InfrastructureACLs(portGroupName string) []ovn.ACLSpec {
 	return []ovn.ACLSpec{
 		denyIngressACL(portGroupName),
@@ -55,8 +53,7 @@ func InfrastructureACLs(portGroupName string) []ovn.ACLSpec {
 	}
 }
 
-// RuleACLSpecs builds priority-1000 allow ACLs. Action is "allow-related"
-// so reply traffic on established flows passes without a reverse rule.
+// RuleACLSpecs builds priority-1000 allow ACLs with "allow-related" action.
 func RuleACLSpecs(portGroupName string, ingress, egress []Rule) []ovn.ACLSpec {
 	specs := make([]ovn.ACLSpec, 0, len(ingress)+len(egress))
 	for _, rule := range ingress {
@@ -78,8 +75,7 @@ func RuleACLSpecs(portGroupName string, ingress, egress []Rule) []ovn.ACLSpec {
 	return specs
 }
 
-// BuildIngressACLMatch builds an OVN to-lport match. Tenant CIDR/SourceSG
-// MUST be validated upstream; values are interpolated verbatim.
+// BuildIngressACLMatch builds an OVN to-lport match expression.
 func BuildIngressACLMatch(portGroupName string, rule Rule) string {
 	parts := []string{fmt.Sprintf("outport == @%s", portGroupName), "ip4"}
 	parts = appendProtocolMatch(parts, rule)
@@ -105,9 +101,8 @@ func BuildEgressACLMatch(portGroupName string, rule Rule) string {
 	return strings.Join(parts, " && ")
 }
 
-// addressSetName returns the ovn-northd-derived SB Address_Set name for a
-// PG's IPv4 addresses. Spinifex must NOT create NB Address_Set rows under
-// these names — duplicate SB sync wedges northd in a commit-failed loop.
+// addressSetName returns the ovn-northd-derived SB Address_Set name for a PG's
+// IPv4 addresses. Do NOT create NB Address_Set rows with this name — it wedges northd.
 func addressSetName(portGroupName string) string {
 	return portGroupName + "_ip4"
 }

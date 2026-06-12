@@ -23,8 +23,7 @@ type EC2StateInfo struct {
 }
 
 // EC2StateCodes maps each InstanceState to its EC2 API code and name.
-// Note: StateError and StateProvisioning are Spinifex-specific states with no direct
-// AWS EC2 equivalent. Their Code/Name values are best-effort mappings.
+// StateError and StateProvisioning have no AWS equivalent; their mappings are best-effort.
 var EC2StateCodes = map[InstanceState]EC2StateInfo{
 	StateProvisioning: {Code: 0, Name: "pending"},
 	StatePending:      {Code: 0, Name: "pending"},
@@ -36,13 +35,9 @@ var EC2StateCodes = map[InstanceState]EC2StateInfo{
 	StateError:        {Code: 0, Name: "error"},
 }
 
-// EC2APIState returns the AWS-API-facing state code and name for status,
-// projecting Spinifex-internal states with no AWS equivalent onto the closest
-// valid lifecycle state. AWS InstanceStateName is a closed enum, so leaking the
-// internal "error" label breaks SDK/UI clients. A StateError instance (crash or
-// recovery-failed: QEMU dead, resources released, volumes unmounted) is, to the
-// outside world, stopped — it can be started or terminated. ok is false only for
-// a status with no mapping, letting callers apply their own fallback.
+// EC2APIState returns the AWS-API state for status. StateError maps to "stopped"
+// because AWS InstanceStateName is a closed enum and StateError instances can be
+// started or terminated like stopped ones. ok is false for unmapped statuses.
 func EC2APIState(status InstanceState) (EC2StateInfo, bool) {
 	if status == StateError {
 		return EC2StateCodes[StateStopped], true
@@ -51,8 +46,8 @@ func EC2APIState(status InstanceState) (EC2StateInfo, bool) {
 	return info, ok
 }
 
-// ValidTransitions defines the allowed state transitions for an instance.
-// StateTerminated is intentionally absent — it is a terminal state with no valid transitions.
+// ValidTransitions defines allowed state transitions. StateTerminated is absent
+// as it is a terminal state.
 var ValidTransitions = map[InstanceState][]InstanceState{
 	StateProvisioning: {StateRunning, StateError, StateShuttingDown},
 	StatePending:      {StateRunning, StateError, StateShuttingDown},

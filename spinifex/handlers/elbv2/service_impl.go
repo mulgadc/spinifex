@@ -36,15 +36,11 @@ const (
 	// elbv2LBTag is the tag key storing the parent LB ARN on managed ENIs.
 	elbv2LBTag = tags.LBARNKey
 
-	// heartbeatPersistInterval controls how often a no-op heartbeat (no state
-	// change) writes the full LoadBalancerRecord back to KV. State transitions
-	// always persist immediately.
+	// heartbeatPersistInterval is how often a no-op heartbeat writes to KV.
 	heartbeatPersistInterval = 60 * time.Second
 
-	// Health check fields are interpolated verbatim into the HAProxy template
-	// (see haproxy.go); restrict them to characters that cannot terminate a
-	// directive or introduce a new one. Length caps bound abuse and match the
-	// surface AWS exposes for these fields.
+	// Health check fields are interpolated into the HAProxy template; restrict
+	// to characters that cannot terminate or inject directives.
 	maxHealthCheckPathLen    = 1024
 	maxHealthCheckMatcherLen = 64
 )
@@ -68,21 +64,9 @@ func validateHealthCheckMatcher(m string) error {
 	return nil
 }
 
-// resolveMgmtRoute returns the (gateway, target) pair for the host route the
-// lb-agent uses to reach AWSGW from inside the LB microVM, or empty strings
-// to skip the route. Consumed by buildMicrovmNICs to populate NIC[1]'s
-// RouteDst/RouteVia for the netcfg fw_cfg blob.
-//
-// Multi-node (AWSGW on dedicated mgmt IP): MgmtRoute{Gateway,Target} are set
-// by the daemon for both schemes — return them.
-//
-// Single-node (AWSGW on advertiseIP, MgmtRoute fields empty): internet-facing
-// LBs reach AWSGW via VPC → external (their EIP gives OVN a SNAT pair for the
-// reply), so they need no mgmt route — and adding a /32 to advertiseIP would
-// steal the host's WAN return path. Internal LBs have no EIP and no SNAT pair,
-// so the VPC egress reply targets the VM's private IP from the host's WAN with
-// no route back → packet drops, lb-agent never heartbeats, LB sticks in
-// provisioning. Force the mgmt route for internal scheme via the br-mgmt IP.
+// resolveMgmtRoute returns the (gateway, target) for the lb-agent's host route to AWSGW.
+// Multi-node: returns MgmtRoute{Gateway,Target}. Single-node internet-facing: no route
+// (EIP provides SNAT). Single-node internal: route forced via br-mgmt IP.
 func (s *ELBv2ServiceImpl) resolveMgmtRoute(scheme string) (gateway, target string) {
 	if s.MgmtRouteGateway != "" && s.MgmtRouteTarget != "" {
 		return s.MgmtRouteGateway, s.MgmtRouteTarget
@@ -132,10 +116,9 @@ type ELBv2ServiceImpl struct {
 	recoveryLBIndexMu sync.Mutex
 	recoveryLBIndex   map[string]*LoadBalancerRecord
 
-	// launchWG tracks in-flight asynchronous LB-VM launches spawned by
-	// CreateLoadBalancer. Not awaited at shutdown (a multi-minute boot must not
-	// block Close); exposed via WaitLaunches purely so tests can join the
-	// background launch deterministically.
+	// launchWG tracks in-flight LB-VM launches from CreateLoadBalancer; not awaited
+	// at shutdown to avoid blocking Close on a multi-minute boot. Exposed via
+	// WaitLaunches so tests can join the background launch deterministically.
 	launchWG sync.WaitGroup
 }
 
@@ -150,10 +133,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*ELBv2Servi
 		return nil, fmt.Errorf("failed to create ELBv2 store: %w", err)
 	}
 
-	// ACM store shares the same JetStream KV — read cert PEM directly, no
-	// cross-service NATS hop. Non-fatal: a failure here only disables HTTPS
-	// termination (resolveCertPEM returns an error), it must not block the
-	// daemon from serving ELBv2 control-plane requests.
+	// ACM store shares JetStream KV. Non-fatal: failure only disables HTTPS termination.
 	acmStore, acmErr := handlers_acm.NewStore(nc)
 	if acmErr != nil {
 		slog.Warn("ELBv2: ACM store unavailable, HTTPS listeners cannot resolve certs", "err", acmErr)
@@ -192,29 +172,9 @@ func (s *ELBv2ServiceImpl) Close() {
 	}
 }
 
-// ResetTargetHealthOnStartup invalidates persisted target HealthState across
-// all target groups by resetting every non-draining target to "initial". Run
-// once during daemon startup before the service begins serving requests.
-//
-// Rationale: target HealthState is persisted in JetStream KV, but the
-// healthChecker's per-target counters live only in process memory. After a
-// daemon restart (e.g. host reboot), the counters are gone but the stored
-// "healthy" claim remains — DescribeTargetHealth returns "healthy"
-// immediately even though the daemon has zero active health observations
-// and the LB system VM's lb-agent hasn't posted a fresh report yet. Tests
-// that gate on WaitForTargetsHealthy advance prematurely, then ALB traffic
-// lands on a backend that isn't actually up.
-//
-// Resetting to "initial" is the correct AWS-semantics representation of
-// "we don't know yet, give us a moment" — the next lb-agent heartbeat
-// drives the state machine forward through evaluateHealth.
-//
-// Multi-node caveat: in a multi-daemon cluster, each daemon that restarts
-// resets the SHARED KV state. A sibling daemon's in-memory counters would
-// then be out-of-sync with the persisted "initial" state until the next
-// heartbeat re-converges. Acceptable trade-off — heartbeats arrive within
-// one health-check interval (default 5-30s) and round-robin transiently
-// excluding a backend is safer than serving traffic to a dead one.
+// ResetTargetHealthOnStartup resets every non-draining target to "initial" so
+// stale "healthy" state doesn't mislead DescribeTargetHealth after a restart;
+// the next lb-agent heartbeat re-evaluates and converges within one interval.
 func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -232,8 +192,7 @@ func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error
 		changed := false
 		for i := range tg.Targets {
 			t := &tg.Targets[i]
-			// Skip targets actively being drained — that state is driven by
-			// DeregisterTargets and must not be clobbered by a daemon restart.
+			// Draining state is driven by DeregisterTargets; don't clobber it.
 			if t.HealthState == TargetHealthDraining {
 				continue
 			}
@@ -261,8 +220,7 @@ func (s *ELBv2ServiceImpl) ResetTargetHealthOnStartup(ctx context.Context) error
 	return nil
 }
 
-// SetSystemInstanceTypeFunc sets a function that resolves the smallest available
-// instance type. Called at request time so it adapts to node capacity.
+// SetSystemInstanceTypeFunc sets a function that resolves the smallest available instance type.
 func (s *ELBv2ServiceImpl) SetSystemInstanceTypeFunc(fn func() string) {
 	s.systemInstanceTypeMu.Lock()
 	defer s.systemInstanceTypeMu.Unlock()
@@ -271,9 +229,7 @@ func (s *ELBv2ServiceImpl) SetSystemInstanceTypeFunc(fn func() string) {
 	s.systemInstanceTypeResolved = false
 }
 
-// getSystemInstanceType returns the instance type for system VMs.
-// Only caches non-empty results so the resolver retries when no capacity
-// is available yet.
+// getSystemInstanceType returns the instance type for system VMs, caching only non-empty results.
 func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 	s.systemInstanceTypeMu.Lock()
 	defer s.systemInstanceTypeMu.Unlock()
@@ -296,9 +252,8 @@ func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
 		lbID, s.GatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
 }
 
-// subnetCIDRForIP computes "ip/prefixlen" given a host IP and the subnet's
-// CIDR block (e.g. "10.0.1.0/24" → "10.0.1.5/24"). Returns empty string on
-// parse failure so the caller can log and continue without panicking.
+// subnetCIDRForIP returns "ip/prefixlen" from a host IP and subnet CIDR block.
+// Returns empty string on parse failure.
 func subnetCIDRForIP(hostIP, subnetCIDR string) string {
 	_, ipNet, err := net.ParseCIDR(subnetCIDR)
 	if err != nil {
@@ -325,17 +280,9 @@ func subnetGatewayIP(subnetCIDR string) string {
 	return gwCopy.String()
 }
 
-// buildMicrovmNICs constructs the NIC slice for a direct-boot microvm launch.
-//
-// NIC[0] is the primary VPC ENI (IsDefault=true): MAC/IP from the ENI record,
-// CIDR from ip+subnet prefix, gateway = subnet network address +1.
-//
-// NIC[1] is the management NIC (IsDefault=false): MAC and CIDR are left empty
-// here — the daemon injects them after allocating the per-instance mgmt IP.
-// RouteDst/RouteVia encode the host route the lb-agent needs to reach AWSGW
-// via the management interface (same logic as resolveMgmtRoute).
-//
-// NIC[2+] are extra VPC ENIs for multi-subnet ALBs.
+// buildMicrovmNICs constructs the NIC slice for a direct-boot microvm.
+// NIC[0] is the primary VPC ENI; NIC[1] is the mgmt NIC (MAC/CIDR filled
+// post-allocation); NIC[2+] are extra ENIs for multi-subnet ALBs.
 func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnetID, _, scheme string, extraENIs []ExtraENIInput, accountID string) []NICConfig {
 	// Resolve primary subnet CIDR for NIC[0] prefix and gateway.
 	primaryCIDR := ""
@@ -359,11 +306,8 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 		},
 	}
 
-	// NIC[1]: management NIC — daemon fills MAC/CIDR after IP allocation.
-	// RouteDst = AWSGW IP (destination), RouteVia = br-mgmt IP (next-hop).
-	// Honor resolveMgmtRoute's deliberate empty return for single-node
-	// internet-facing: adding a /32 to AdvertiseIP via mgmt steals the host's
-	// WAN return path for reply traffic, breaking same-chassis ingress.
+	// NIC[1]: mgmt NIC — daemon fills MAC/CIDR. Empty return from resolveMgmtRoute
+	// intentionally skips the route for single-node internet-facing LBs.
 	mgmtRouteGW, mgmtRouteTarget := s.resolveMgmtRoute(scheme)
 	nics = append(nics, NICConfig{
 		IsDefault: false,
@@ -394,10 +338,8 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 	return nics
 }
 
-// describeENIs resolves the supplied ENI IDs in one VPC describe call and
-// returns them keyed by NetworkInterfaceId. Returns an empty map when the
-// VPC service is unwired or the describe errors — callers must tolerate
-// missing entries.
+// describeENIs resolves ENI IDs in one VPC call, keyed by NetworkInterfaceId.
+// Returns an empty map when the VPC service is unavailable or the call errors.
 func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[string]*ec2.NetworkInterface {
 	eniDetails := make(map[string]*ec2.NetworkInterface, len(eniIDs))
 	if s.VPCService == nil || len(eniIDs) == 0 {
@@ -422,11 +364,8 @@ func (s *ELBv2ServiceImpl) describeENIs(eniIDs []string, accountID string) map[s
 	return eniDetails
 }
 
-// buildExtraENIInputs threads every non-primary ENI in eniIDs into an
-// ExtraENIInput, using eniDetails as the MAC/IP/SubnetID source. eniIDs[0]
-// is the primary ENI and is intentionally excluded. ENIs missing from
-// eniDetails are skipped (matching CreateLoadBalancer's original behaviour
-// when DescribeNetworkInterfaces drops an entry).
+// buildExtraENIInputs builds ExtraENIInput for all non-primary ENIs (eniIDs[0] excluded).
+// ENIs missing from eniDetails are skipped.
 func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInterface) []ExtraENIInput {
 	if len(eniIDs) <= 1 {
 		return nil
@@ -447,9 +386,8 @@ func buildExtraENIInputs(eniIDs []string, eniDetails map[string]*ec2.NetworkInte
 	return extras
 }
 
-// lbVMLaunch is the outcome of booting the system VM that backs a load
-// balancer. failed is true when the VM could not be launched (missing system
-// credentials or a launcher error) so the caller can mark the LB failed.
+// lbVMLaunch is the outcome of booting the LB system VM. failed is true when
+// the VM could not be launched.
 type lbVMLaunch struct {
 	instanceID string
 	vpcIP      string
@@ -458,12 +396,9 @@ type lbVMLaunch struct {
 	failed     bool
 }
 
-// launchLBVM boots the system VM backing a load balancer with the given ENI
-// set. The first ENI is the primary NIC; any additional ENIs are passed as
-// ExtraENIs so the daemon sets up a tap + QEMU NIC per subnet, giving the LB VM
-// data-plane presence in every subnet it spans. When no launcher is configured
-// the call is a no-op (zero value, failed=false) so launcher-less deployments
-// keep the LB Active. Shared by CreateLoadBalancer and the SetSubnets relaunch.
+// launchLBVM boots the system VM for a load balancer. The first ENI is the
+// primary NIC; extras give multi-subnet data-plane presence. No-op when no
+// launcher is configured. Shared by CreateLoadBalancer and SetSubnets.
 func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string) lbVMLaunch {
 	var res lbVMLaunch
 	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
@@ -522,10 +457,8 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 	return res
 }
 
-// loadRecoveryLBIndex returns the instanceID->LB map, populated lazily on
-// first successful call. Errors are not cached: a transient JetStream
-// failure at startup must not condemn every subsequent recovery candidate
-// in the same batch — the next caller retries.
+// loadRecoveryLBIndex returns the instanceID→LB map, populated lazily.
+// Errors are not cached so transient JetStream failures don't condemn recovery.
 func (s *ELBv2ServiceImpl) loadRecoveryLBIndex() (map[string]*LoadBalancerRecord, error) {
 	s.recoveryLBIndexMu.Lock()
 	defer s.recoveryLBIndexMu.Unlock()
@@ -546,10 +479,8 @@ func (s *ELBv2ServiceImpl) loadRecoveryLBIndex() (map[string]*LoadBalancerRecord
 	return s.recoveryLBIndex, nil
 }
 
-// RebuildSystemInstanceInput reconstructs the launch input for an existing
-// system instance during host-reboot recovery. The instance->LB map is
-// memoised in s.recoveryLBIndex so N concurrent recovery candidates share a
-// single ListLoadBalancers call instead of issuing N×L JetStream round-trips.
+// RebuildSystemInstanceInput reconstructs the launch input for host-reboot recovery.
+// The instance→LB map is memoised so concurrent recovery candidates share one ListLoadBalancers call.
 func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*SystemInstanceInput, error) {
 	index, err := s.loadRecoveryLBIndex()
 	if err != nil {
@@ -564,10 +495,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 	}
 
 	eniDetails := s.describeENIs(lb.ENIs, lb.AccountID)
-	// Multi-ENI rebuild needs an authoritative MAC/IP/subnet per extra, which
-	// only the VPC store supplies. Single-ENI ALBs can fall back to ctx.ENIMac
-	// + lb.VPCIP for the primary, so we only enforce the strict count match
-	// when extras are present.
+	// For multi-ENI LBs the VPC store must supply all MAC/IP/subnet details.
 	if len(lb.ENIs) > 1 && len(eniDetails) < len(lb.ENIs) {
 		return nil, fmt.Errorf("describe lb %s ENIs: got %d/%d", lb.LoadBalancerID, len(eniDetails), len(lb.ENIs))
 	}
@@ -583,10 +511,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 	extraENIs := buildExtraENIInputs(lb.ENIs, eniDetails)
 
 	nics := s.buildMicrovmNICs(lb.VPCIP, primaryMAC, lb.Subnets[0], lb.ENIs[0], lb.Scheme, extraENIs, lb.AccountID)
-	// Re-inject the daemon-allocated mgmt NIC values so writeFwCfgBlobs
-	// emits the same netcfg the original launch produced — buildMicrovmNICs
-	// leaves NIC[1] MAC/CIDR blank because they are only known after the
-	// daemon's per-instance mgmt IP allocation.
+	// Re-inject mgmt NIC MAC/CIDR — buildMicrovmNICs leaves them blank.
 	if len(nics) > 1 && ctx.MgmtMAC != "" {
 		nics[1].MAC = ctx.MgmtMAC
 		if ctx.MgmtIP != "" {
@@ -630,10 +555,8 @@ func (s *ELBv2ServiceImpl) resolveENIBindAddr(lb *LoadBalancerRecord) string {
 	return ""
 }
 
-// updateStoredConfig generates the HAProxy config for an ALB, hashes it, and
-// stores both ConfigText and ConfigHash on the LB record. The agent pulls this
-// on its next heartbeat when it detects a hash change. Safe to call when
-// instanceLauncher is nil or the LB has no VM.
+// updateStoredConfig generates the data-plane config, hashes it, and stores it
+// on the LB record. The agent fetches it on the next heartbeat when the hash changes.
 func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	if lb.InstanceID == "" {
 		return nil
@@ -701,8 +624,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	lb.ConfigText = configContent
 	lb.ConfigHash = hash
 	lb.CertFiles = certFiles
-	// NLBs run nginx, which has no active upstream probing — the agent
-	// probes these targets and reports health. ALBs report via HAProxy stats.
+	// NLBs: the agent actively probes targets (nginx has no upstream probing).
 	if lb.Type == LoadBalancerTypeNetwork {
 		lb.HealthTargets = buildNLBHealthTargets(tgByArn)
 	} else {
@@ -719,9 +641,8 @@ func (s *ELBv2ServiceImpl) updateStoredConfig(lb *LoadBalancerRecord) error {
 	return nil
 }
 
-// resolveListenerCerts resolves every distinct certificate ARN referenced by
-// the listeners to its combined PEM via the ACM store. Returns nil when no
-// listener carries a certificate (the common HTTP-only case).
+// resolveListenerCerts resolves each distinct certificate ARN to its combined PEM.
+// Returns nil for HTTP-only listeners.
 func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, accountID string) (map[string]string, error) {
 	var out map[string]string
 	for _, l := range listeners {
@@ -742,10 +663,8 @@ func (s *ELBv2ServiceImpl) resolveListenerCerts(listeners []*ListenerRecord, acc
 	return out, nil
 }
 
-// resolveCertPEM loads a certificate by ARN from the ACM store and returns its
-// combined PEM (leaf + chain + key) in the order HAProxy `ssl crt` expects.
-// Ownership is enforced: a cert belonging to another account is treated as
-// absent.
+// resolveCertPEM loads a certificate from ACM and returns its combined PEM
+// (leaf + chain + key). Cross-account certs are treated as absent.
 func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error) {
 	if s.acmStore == nil {
 		return "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
@@ -770,13 +689,9 @@ func (s *ELBv2ServiceImpl) resolveCertPEM(arn, accountID string) (string, error)
 	return b.String(), nil
 }
 
-// validateListenerCerts confirms every certificate ARN resolves in the ACM
-// store and is owned by the account, rejecting an unknown ARN at the API
-// boundary (CreateListener/ModifyListener) with ErrorELBv2CertificateNotFound.
-// Without this, an unresolvable ARN is accepted into the listener and only
-// fails later at config-render time, which aborts updateStoredConfig wholesale
-// and silently freezes the LB's data-plane convergence. Skipped when the ACM
-// store is unavailable (cannot validate; matches the nil-safe resolve path).
+// validateListenerCerts confirms every certificate ARN resolves in the ACM store
+// and is owned by the account. Rejects at the API boundary to avoid silently
+// freezing data-plane convergence at config-render time.
 func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, accountID string) error {
 	if s.acmStore == nil {
 		return nil
@@ -789,9 +704,8 @@ func (s *ELBv2ServiceImpl) validateListenerCerts(certs []ListenerCertificate, ac
 	return nil
 }
 
-// configCertHash hashes the rendered config plus every delivered cert file
-// (path + content, in sorted path order) so a cert rotation changes the hash
-// and triggers an agent reload even when the config text is unchanged.
+// configCertHash hashes the config and all cert files so a cert rotation triggers
+// an agent reload even when the config text is unchanged.
 func configCertHash(configContent string, certFiles map[string]string) string {
 	h := sha256.New()
 	h.Write([]byte(configContent))
@@ -827,7 +741,7 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 		}
 	}
 
-	// Rules can independently forward to a TG even if the listener default does not.
+	// Rules may forward to a TG even if the listener default action does not.
 	allRules, rulesErr := s.store.ListRules()
 	if rulesErr != nil {
 		slog.Error("updateStoredConfigForTargetGroup: failed to list rules", "err", rulesErr)
@@ -860,10 +774,8 @@ func (s *ELBv2ServiceImpl) updateStoredConfigForTargetGroup(tgArn string) error 
 	return nil
 }
 
-// LBAgentHeartbeat processes a heartbeat from an LB agent. On first heartbeat,
-// transitions LB from provisioning → active. Always updates LastHeartbeat and
-// processes the health report. Returns the current config hash so the agent
-// knows whether to fetch new config.
+// LBAgentHeartbeat processes a heartbeat from an LB agent. On first heartbeat
+// transitions LB provisioning→active, processes health, and returns the config hash.
 func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accountID string) (*LBAgentHeartbeatOutput, error) {
 	if input.LBID == nil || *input.LBID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -877,10 +789,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
-		// The heartbeat reached AWSGW (so the mgmt return path works) but
-		// cannot transition any LB. Without this the reject is silent and a
-		// stuck-in-provisioning LB looks identical to one whose heartbeat
-		// never arrived.
+		// Log to distinguish a stuck-in-provisioning LB from one whose heartbeat never arrived.
 		slog.Warn("LBAgentHeartbeat: LB not found or account mismatch",
 			"lbId", lbID, "accountId", accountID, "found", lb != nil)
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
@@ -900,21 +809,14 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(input *LBAgentHeartbeatInput, accoun
 
 	switch {
 	case stateChanged:
-		// Activation is the LB's readiness signal: InstanceID is set and the
-		// agent is alive to consume config. The reactive updateStoredConfig
-		// calls during the create burst no-op while the VM is still launching
-		// (InstanceID empty), so build the data-plane config now from the
-		// listeners/targets created during provisioning. updateStoredConfig
-		// persists the record (state, config, hash, health targets) in one
-		// write, so the ConfigHash returned below is fresh.
+		// Build data-plane config on activation: reactive calls during create
+		// no-op while InstanceID is empty, so we build it now from existing listeners/targets.
 		if err := s.updateStoredConfig(lb); err != nil {
 			slog.Error("LBAgentHeartbeat: failed to build config on activation", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	case heartbeatStale:
-		// Steady state: refresh the heartbeat timestamp only. Avoids writing
-		// the full record (including ConfigText) every 5 seconds when nothing
-		// changed.
+		// Refresh the heartbeat timestamp only; avoid writing the full record on every tick.
 		if err := s.store.PutLoadBalancer(lb); err != nil {
 			slog.Error("LBAgentHeartbeat: failed to persist LB", "lbId", lbID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
@@ -975,8 +877,7 @@ func healthTargetsToSDK(specs []HealthTargetSpec) []*HealthTarget {
 	return out
 }
 
-// certFilesToSDK converts the stored path→PEM map into the sorted CertFile
-// slice delivered to the agent. Sorted for deterministic output.
+// certFilesToSDK converts the stored path→PEM map into a sorted CertFile slice.
 func certFilesToSDK(certFiles map[string]string) []*CertFile {
 	if len(certFiles) == 0 {
 		return nil
@@ -1031,11 +932,9 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(instanceID, accountID string) string 
 	return ""
 }
 
-// resolveRegisteredTargetIP returns the private IP to route to for a target
-// being registered, based on the target group's target type. For ip targets the
-// supplied ID is the IP itself; for instance targets it is resolved via the
-// instance's primary ENI. Returns an error when the ID's shape does not match
-// the target type.
+// resolveRegisteredTargetIP returns the private IP for a target being registered.
+// For ip-type targets the ID is the IP; for instance targets it is resolved via
+// the primary ENI. Returns an error if the ID doesn't match the target type.
 func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(targetType, id, accountID string) (string, error) {
 	switch targetType {
 	case TargetTypeIP:
@@ -1071,12 +970,8 @@ const (
 	elbv2ResourceListenerRule = "listener-rule"
 )
 
-// elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN.
-// ELBv2 ARNs have the form
-// "arn:aws:elasticloadbalancing:{region}:{account}:{type}/...". Returns one
-// of "loadbalancer", "targetgroup", "listener", "listener-rule" — anything
-// else yields ErrorInvalidParameterValue so callers can surface a proper API
-// error.
+// elbv2ResourceTypeFromArn extracts the resource type from an ELBv2 ARN,
+// returning one of "loadbalancer", "targetgroup", "listener", "listener-rule".
 func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	parts := strings.SplitN(arn, ":", 6)
 	if len(parts) < 6 || parts[0] != "arn" || parts[2] != "elasticloadbalancing" {
@@ -1096,9 +991,7 @@ func elbv2ResourceTypeFromArn(arn string) (string, error) {
 	}
 }
 
-// isCompatibleProtocol checks whether a listener protocol is compatible with a
-// target group protocol. ALB: HTTP/HTTPS listeners can forward to HTTP or HTTPS
-// TGs. NLB: TCP→TCP, UDP→UDP, TLS→TCP or TLS, TCP_UDP→TCP_UDP.
+// isCompatibleProtocol reports whether a listener protocol is compatible with a target group protocol.
 func isCompatibleProtocol(listenerProto, tgProto string) bool {
 	switch listenerProto {
 	case ProtocolHTTP, ProtocolHTTPS:
@@ -1166,11 +1059,8 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	}
 	dnsName := fmt.Sprintf("%s%s-%s.%s.elb.spinifex.local", dnsPrefix, name, lbID, s.region)
 
-	// Atomically claim the LB name before any ENI/VM work. A duplicate
-	// CreateLoadBalancer (SDK retry / gateway re-publish that spawned a second
-	// handler) loses the claim and never launches an LB VM; a claim left by a
-	// crashed prior create (no live record) is reclaimed. Every failure path
-	// below releases the claim so a failed create does not block the name.
+	// Atomically claim the name before ENI/VM work. SDK retries lose the claim;
+	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
 	claimOK, claimDup, claimErr := s.store.ClaimLBName(name, accountID, lbID)
 	if claimErr != nil {
 		slog.Error("CreateLoadBalancer: name claim failed", "name", name, "err", claimErr)
@@ -1205,10 +1095,9 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	vpcID := ""
 	var nlbManagedSGID string
 	if s.VPCService != nil && len(subnets) > 0 {
-		// NLBs reject customer SGs (rejected above), so the ENIs would fall back
-		// to the VPC default SG whose intra-SG-only ingress drops inbound
-		// listener traffic. Mint a dedicated managed SG up front and attach it to
-		// every LB ENI; CreateListener opens the listener ports on it.
+		// NLBs reject customer SGs, so mint a dedicated managed SG for all LB ENIs;
+		// CreateListener opens listener ports on it. Without this, ENIs fall back
+		// to the VPC default SG and inbound listener traffic is dropped.
 		eniGroups := securityGroups
 		if lbType == LoadBalancerTypeNetwork {
 			sgID, sgErr := s.createNLBManagedSG(lbID, lbArn, subnets[0], accountID)
@@ -1234,18 +1123,15 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 					},
 				},
 			}
-			// SG enforcement gates inbound traffic by the ENI's port-group
-			// membership, which is set at ENI creation. For NLBs this is the
-			// managed SG minted above; for ALBs it is the customer SGs. Empty
-			// Groups intentionally falls back to the VPC default SG inside
-			// eni.CreateNetworkInterface.
+			// SG enforcement gates inbound traffic via ENI port-group membership set at
+			// creation. NLBs use the managed SG; ALBs use customer SGs. Empty Groups
+			// falls back to the VPC default SG inside CreateNetworkInterface.
 			if len(eniGroups) > 0 {
 				eniIn.Groups = aws.StringSlice(eniGroups)
 			}
 			eniOut, eniErr := s.VPCService.CreateNetworkInterface(eniIn, accountID)
 			if eniErr != nil {
-				// All-or-nothing: tear down the ENIs/SG already created so a
-				// failed create leaks nothing and frees the name claim.
+				// Rollback so a partial ENI creation doesn't leak resources.
 				s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
 				slog.Error("CreateLoadBalancer: failed to create ENI", "subnet", subnetID, "err", eniErr)
 				return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
@@ -1268,24 +1154,14 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	// Determine the data-plane state synchronously. When a launcher is configured
-	// the LB is backed by a system VM whose boot is a multi-minute job: running it
-	// inline head-of-line blocks the shared gateway responder and the gateway
-	// times out and re-publishes the create (267.4). So the VM boot runs on a
-	// background goroutine and the create returns provisioning immediately, which
-	// matches AWS (CreateLoadBalancer returns the LB provisioning; the AZ/VpcId in
-	// the response come from the ENIs created synchronously above). Launcher-less
-	// deployments (no InstanceLauncher / no ENIs) have no data plane to boot and
-	// are active on the spot.
+	// VM boot is async to avoid blocking the gateway responder. The create
+	// returns provisioning immediately; launcher-less deployments are active on the spot.
 	state := StateActive
 	willLaunch := s.InstanceLauncher != nil && len(eniIDs) > 0 && len(subnets) > 0
 	if willLaunch {
 		state = StateProvisioning
-		// Internal LBs only leave provisioning once the lb-agent heartbeats,
-		// which needs the mgmt return route. If it can't be resolved the LB
-		// hangs in provisioning forever — record the failed state up front so the
-		// broken return path is visible immediately. The VM still boots (matching
-		// the synchronous path) so the data plane exists for diagnosis.
+		// Internal LBs without a mgmt return route would hang in provisioning;
+		// mark failed immediately so the broken path is visible.
 		if scheme == SchemeInternal {
 			if gw, tgt := s.resolveMgmtRoute(scheme); gw == "" || tgt == "" {
 				slog.Error("CreateLoadBalancer: internal LB has no mgmt return route; marking failed (lb-agent cannot heartbeat AWSGW)",
@@ -1297,11 +1173,8 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 		}
 	}
 
-	// Attributes are intentionally left nil — DescribeLoadBalancerAttributes
-	// derives per-type defaults from lb.Type via DefaultLoadBalancerAttributes.
-	// Callers that want a non-default value must call ModifyLoadBalancerAttributes.
-	// InstanceID/VPCIP/HostPorts and the per-AZ PublicIP are filled in by the
-	// asynchronous launch below once the VM boots.
+	// Attributes left nil — defaults derived from lb.Type on read.
+	// InstanceID/VPCIP/HostPorts are filled by the async launch.
 	record := &LoadBalancerRecord{
 		LoadBalancerArn: lbArn,
 		LoadBalancerID:  lbID,
@@ -1325,15 +1198,13 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 
 	if err := s.store.PutLoadBalancer(record); err != nil {
 		slog.Error("CreateLoadBalancer: failed to persist record", "lbId", lbID, "err", err)
-		// The ENIs and managed SG exist but no record was persisted to own them —
-		// roll them back so they are not orphaned.
+		// Rollback so unowned ENIs/SG don't leak.
 		s.rollbackLBInfra(eniIDs, nlbManagedSGID, name, accountID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if willLaunch {
-		// Snapshot the launch inputs; the goroutine must not read the record the
-		// caller is about to return.
+		// Snapshot inputs so the goroutine doesn't alias the caller's record.
 		lc := lbLaunchCtx{lbID: lbID, lbArn: lbArn, scheme: scheme, eniIDs: eniIDs, subnets: subnets, accountID: accountID}
 		s.launchWG.Go(func() {
 			defer func() {
@@ -1345,8 +1216,6 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 			s.launchLBVMAsync(lc)
 		})
 	}
-
-	// Agent heartbeat will transition provisioning → active on first contact.
 
 	slog.Info("CreateLoadBalancer accepted", "name", name, "lbArn", lbArn, "enis", len(eniIDs), "state", state, "accountID", accountID)
 
@@ -1365,11 +1234,8 @@ type lbLaunchCtx struct {
 	accountID string
 }
 
-// launchLBVMAsync boots the LB-VM on a background goroutine and folds the result
-// back into the persisted record: on success the instance/VPC-IP/host-ports (and
-// the per-AZ public IP) are recorded and the LB stays provisioning until the
-// lb-agent heartbeats; on failure the record is marked failed so the API
-// reflects the broken data plane. Runs after CreateLoadBalancer has returned.
+// launchLBVMAsync boots the LB-VM and folds the result into the persisted record.
+// On failure marks the LB failed; on success stays provisioning until lb-agent heartbeats.
 func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
 	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID)
 
@@ -1398,12 +1264,8 @@ func (s *ELBv2ServiceImpl) launchLBVMAsync(lc lbLaunchCtx) {
 	}
 }
 
-// rollbackLBInfra tears down the infrastructure a partial CreateLoadBalancer
-// created before it could persist an owning record: every ENI minted so far, the
-// NLB managed front-end SG (if any), and the name claim. Without this an
-// ENI/SG-create-then-persist-fail path orphans those resources with no record
-// for DeleteLoadBalancer or any reclaim to reach. Each step is best-effort and
-// idempotent — a NotFound is success.
+// rollbackLBInfra tears down ENIs, the NLB managed SG, and the name claim created
+// by a partial CreateLoadBalancer. Each step is best-effort and idempotent.
 func (s *ELBv2ServiceImpl) rollbackLBInfra(eniIDs []string, nlbManagedSGID, name, accountID string) {
 	if s.VPCService != nil {
 		for _, eniID := range eniIDs {
@@ -1418,8 +1280,7 @@ func (s *ELBv2ServiceImpl) rollbackLBInfra(eniIDs []string, nlbManagedSGID, name
 	s.releaseLBNameClaim(name, accountID)
 }
 
-// markLBFailed reloads the LB record and flips it to the failed state, used by
-// the async launch panic recovery.
+// markLBFailed reloads the LB record and flips it to the failed state.
 func (s *ELBv2ServiceImpl) markLBFailed(lbArn string) {
 	record, err := s.store.GetLoadBalancerByArn(lbArn)
 	if err != nil || record == nil {
@@ -1442,17 +1303,11 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if lb == nil || lb.AccountID != accountID {
-		// Idempotent: AWS ELBv2 delete returns success on an absent (or
-		// not-owned) load balancer, so tofu destroy retries converge.
+		// Idempotent: return success for absent/unowned LBs.
 		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
 
-	// Delete all listeners (and their rules) for this LB before tearing down
-	// backing artifacts. Cascade through the shared helper, not
-	// store.DeleteListener directly, so rules don't survive and pin their
-	// target groups as ResourceInUse after the LB is gone. A list or cascade
-	// failure aborts the delete with the record intact, so tofu retries
-	// converge instead of leaving orphaned rules behind.
+	// Cascade-delete all listeners and their rules so no orphan pins a TG as ResourceInUse.
 	listeners, err := s.store.ListListenersByLB(lb.LoadBalancerArn)
 	if err != nil {
 		slog.Error("DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
@@ -1465,16 +1320,10 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 		}
 	}
 
-	// Reap the LB VM's floating-IP dnat_and_snat deterministically. The VM/ENI
-	// teardown paths reap it only conditionally — DeleteNetworkInterface defers
-	// EIP-owned addresses to the EIP lifecycle, and that lifecycle's reap runs
-	// in the async terminate goroutine below — so without this, stale rules
-	// accumulate on the VPC router across repeated create/delete cycles.
+	// Reap floating-IP NAT now; conditional VM/ENI teardown paths can miss it.
 	s.reapFloatingIPNAT(lb)
 
-	// Terminate ALB VM in background (VM termination also cleans up tap device).
-	// Must be async because VM shutdown can take seconds (QMP powerdown + QEMU exit)
-	// and we don't want to block the NATS request handler.
+	// Terminate ALB VM in background; shutdown can take seconds (QMP powerdown).
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
 		instanceID := lb.InstanceID
 		go func() {
@@ -1514,20 +1363,16 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInp
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
 }
 
-// releaseLBNameClaim drops the per-account LB name claim. Failure is logged but
-// not fatal: a leaked claim is reclaimed by the crash-orphan path on the next
-// same-name create (its owner lbID resolves to no live record).
+// releaseLBNameClaim drops the per-account LB name claim. Failures are logged but
+// not fatal; leaked claims are reclaimed by the crash-orphan path on next create.
 func (s *ELBv2ServiceImpl) releaseLBNameClaim(name, accountID string) {
 	if err := s.store.ReleaseLBName(name, accountID); err != nil {
 		slog.Warn("failed to release LB name claim", "name", name, "accountID", accountID, "err", err)
 	}
 }
 
-// reapFloatingIPNAT removes the OVN dnat_and_snat rule mapping an
-// internet-facing LB's floating (public) IP to its VM's VPC IP. DeleteEIP
-// matches on external_ip+logical_ip and is idempotent, so a redundant publish
-// from the EIP/ENI teardown paths is harmless. Internal LBs carry no floating
-// IP and are a no-op.
+// reapFloatingIPNAT removes the OVN dnat_and_snat rule for an internet-facing
+// LB's floating IP. Idempotent; internal LBs are a no-op.
 func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 	publicIP := ""
 	for _, az := range lb.AvailZones {
@@ -1785,15 +1630,11 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(input *elbv2.DeleteTargetGroupInput
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if tg == nil || tg.AccountID != accountID {
-		// Idempotent: AWS ELBv2 delete returns success on an absent (or
-		// not-owned) target group, so tofu destroy retries converge.
+		// Idempotent: return success for absent/unowned TGs.
 		return &elbv2.DeleteTargetGroupOutput{}, nil
 	}
 
-	// Only a *live* listener or rule pins the target group. A listener (or
-	// rule) whose owning load balancer no longer exists is treated as already
-	// torn down, not a live reference, so an orphan left by a partial teardown
-	// can never pin this target group as ResourceInUse permanently.
+	// Only live listeners/rules (whose LB still exists) pin the TG as ResourceInUse.
 	lbs, err := s.store.ListLoadBalancers()
 	if err != nil {
 		slog.Error("DeleteTargetGroup: failed to list load balancers for in-use check", "err", err)
@@ -2074,10 +1915,8 @@ func (s *ELBv2ServiceImpl) DescribeTargetHealth(input *elbv2.DescribeTargetHealt
 
 // --- Listener operations ---
 
-// listenerActionFromSDK converts an SDK listener action into the stored form,
-// preserving fixed-response config so HAProxy generation and tofu read-back see
-// the full action (a forward-only conversion drops the fixed-response default
-// and produces a dangling backend + perpetual plan diff).
+// listenerActionFromSDK converts an SDK listener action to stored form,
+// preserving fixed-response/redirect config to avoid dangling backends.
 func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	action := ListenerAction{}
 	if a.Type != nil {
@@ -2124,11 +1963,8 @@ func listenerActionFromSDK(a *elbv2.Action) ListenerAction {
 	return action
 }
 
-// validateListenerAction enforces the per-type action contract for listener
-// default actions and rule actions. Forward actions are validated against the
-// target group elsewhere; this covers redirect (status code + render-safe
-// fields) so invalid input fails at the API instead of being silently
-// defaulted by the renderer.
+// validateListenerAction enforces the per-type action contract. Redirect fields
+// are validated here so invalid input fails at the API, not at render time.
 func validateListenerAction(a ListenerAction) error {
 	if a.Type == ActionTypeRedirect {
 		if a.Redirect == nil {
@@ -2139,9 +1975,7 @@ func validateListenerAction(a ListenerAction) error {
 	return nil
 }
 
-// validateRedirectAction rejects an unsupported status code or any field that
-// would break the HAProxy redirect directive once the known AWS placeholders
-// are stripped.
+// validateRedirectAction rejects an unsupported status code or render-unsafe fields.
 func validateRedirectAction(rd *RedirectAction) error {
 	if rd == nil {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -2159,11 +1993,8 @@ func validateRedirectAction(rd *RedirectAction) error {
 	return nil
 }
 
-// buildListenerCertificates validates and normalises the certificate set and
-// SSL policy for a listener of the given protocol. Secure protocols (HTTPS,
-// TLS) require at least one certificate and receive a default SslPolicy when
-// unset; non-secure protocols must carry neither certificates nor an SslPolicy.
-// Exactly one certificate is marked default.
+// buildListenerCertificates validates certificates and SSL policy for a listener.
+// Secure protocols require exactly one default cert and receive a default SslPolicy when unset.
 func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPolicy *string) ([]ListenerCertificate, string, error) {
 	policy := ""
 	if sslPolicy != nil {
@@ -2361,11 +2192,9 @@ func (s *ELBv2ServiceImpl) CreateListener(input *elbv2.CreateListenerInput, acco
 	}, nil
 }
 
-// rollbackListener removes a just-persisted listener whose post-persist
-// data-plane wiring failed, so a failed CreateListener leaves no orphan record
-// and no dangling SG authorization. authorizedCIDRs is non-empty only when the
-// NLB front-end port was already opened (config-update failure path), in which
-// case the port is revoked first. Best-effort: cleanup errors are logged.
+// rollbackListener removes a listener persisted before post-persist wiring failed.
+// authorizedCIDRs is non-empty when the NLB port was already opened — it is
+// revoked first. Cleanup errors are logged but not returned.
 func (s *ELBv2ServiceImpl) rollbackListener(record *ListenerRecord, lb *LoadBalancerRecord, protocol string, port int64, authorizedCIDRs []string, accountID string) {
 	if len(authorizedCIDRs) > 0 {
 		if err := s.revokeNLBListenerPort(lb, protocol, port, authorizedCIDRs, accountID); err != nil {
@@ -2407,8 +2236,7 @@ func (s *ELBv2ServiceImpl) DeleteListener(input *elbv2.DeleteListenerInput, acco
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if listener == nil || listener.AccountID != accountID {
-		// Idempotent: AWS ELBv2 delete returns success on an absent (or
-		// not-owned) listener, so tofu destroy retries converge.
+		// Idempotent: return success for absent/unowned listeners.
 		return &elbv2.DeleteListenerOutput{}, nil
 	}
 
@@ -2548,9 +2376,7 @@ func (s *ELBv2ServiceImpl) ModifyListener(input *elbv2.ModifyListenerInput, acco
 		}
 	}
 
-	// Certificates / SSL policy. The effective protocol after any change drives
-	// the requirement: switching to a non-secure protocol clears cert material;
-	// staying on or switching to a secure protocol validates and defaults it.
+	// Cert/policy: switching to non-secure clears material; staying/switching to secure validates it.
 	if !protocolRequiresCert(updated.Protocol) {
 		if len(input.Certificates) > 0 || (input.SslPolicy != nil && *input.SslPolicy != "") {
 			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -2639,12 +2465,8 @@ func (s *ELBv2ServiceImpl) DescribeListeners(input *elbv2.DescribeListenersInput
 
 // --- Tag operations ---
 
-// DescribeTags returns tags for one or more ELBv2 resources (load balancers,
-// target groups, listeners, listener rules). Tag data is read from the existing
-// record stores — Spinifex doesn't have a separate tag KV. Untagged resources
-// return an empty Tags slice (matches AWS behaviour). Cross-account or unknown
-// ARNs return the per-resource not-found error so existence isn't leaked across
-// accounts.
+// DescribeTags returns tags for ELBv2 resources read from the record stores.
+// Cross-account or unknown ARNs return a not-found error.
 func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2734,8 +2556,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(input *elbv2.DescribeTagsInput, accountI
 	}, nil
 }
 
-// tagsFromSDK converts an SDK Tag slice into a tag map, skipping entries with a
-// nil key or value. Returns a non-nil (possibly empty) map for storage.
+// tagsFromSDK converts an SDK Tag slice into a tag map, skipping nil key/value entries.
 func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
 	m := make(map[string]string, len(tags))
 	for _, tag := range tags {
@@ -2746,9 +2567,7 @@ func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
 	return m
 }
 
-// tagsMapToSDK converts a tag map into the SDK Tag slice with deterministic
-// (sorted-by-key) ordering. Returns nil for empty/nil input so the response
-// matches AWS for untagged resources.
+// tagsMapToSDK converts a tag map into a sorted SDK Tag slice; returns nil for empty input.
 func tagsMapToSDK(tags map[string]string) []*elbv2.Tag {
 	if len(tags) == 0 {
 		return nil
@@ -2784,9 +2603,7 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(r *LoadBalancerRecord) *elbv2.LoadBalan
 		lb.SecurityGroups = append(lb.SecurityGroups, aws.String(sg))
 	}
 
-	// Build a subnet → private IP map by looking up each ENI. This lets each
-	// AvailabilityZone entry surface the private IP of the ENI that lives in
-	// its subnet, not just the public IP recorded at create time.
+	// Build subnet → private IP map so each AZ entry surfaces the ENI's private IP.
 	privateIPBySubnet := map[string]string{}
 	if s.VPCService != nil && len(r.ENIs) > 0 {
 		eniPtrs := make([]*string, 0, len(r.ENIs))
@@ -2873,9 +2690,8 @@ func (s *ELBv2ServiceImpl) listenerRecordToSDK(r *ListenerRecord) *elbv2.Listene
 	return listener
 }
 
-// listenerActionToSDK converts a stored action into the AWS SDK shape,
-// preserving forward / fixed-response / redirect detail so DescribeListeners
-// and DescribeRules round-trip cleanly. Shared by listeners and rules.
+// listenerActionToSDK converts a stored action to the AWS SDK shape.
+// Shared by listeners and rules; preserves all action types for round-trip fidelity.
 func listenerActionToSDK(a ListenerAction) *elbv2.Action {
 	action := &elbv2.Action{Type: aws.String(a.Type)}
 	if a.TargetGroupArn != "" {

@@ -11,9 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
-// SetIpAddressType sets the load balancer's IP address type. Spinifex ALBs are
-// IPv4-only, so the only accepted value is "ipv4"; dualstack variants are
-// rejected with InvalidConfigurationRequest. The call is idempotent.
+// SetIpAddressType sets the LB IP address type; only "ipv4" is accepted.
 func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, accountID string) (*elbv2.SetIpAddressTypeOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -47,11 +45,8 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(input *elbv2.SetIpAddressTypeInput, 
 	}, nil
 }
 
-// SetSecurityGroups replaces the security groups associated with an
-// (application) load balancer. The new groups are re-attached to every ENI the
-// ALB spans via ModifyNetworkInterfaceAttribute, which validates them against
-// the ENI's VPC and pushes the change to the live data-plane port before the
-// record is persisted.
+// SetSecurityGroups replaces the security groups on an ALB, re-attaching them
+// to every ENI via ModifyNetworkInterfaceAttribute before persisting.
 func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput, accountID string) (*elbv2.SetSecurityGroupsOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -82,10 +77,7 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 		sgs = append(sgs, *sg)
 	}
 
-	// Re-attach the new groups to each ALB ENI. This validates the groups
-	// against the ENI's VPC and fires the live port-SG update; a failure here
-	// (e.g. unknown SG) aborts before the record is persisted. All ENIs share
-	// the LB's VPC and groups, so a successful first apply implies the rest.
+	// Re-attach to each ENI; failure aborts before the record is persisted.
 	if s.VPCService != nil {
 		for _, eniID := range lb.ENIs {
 			if _, err := s.VPCService.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
@@ -109,13 +101,8 @@ func (s *ELBv2ServiceImpl) SetSecurityGroups(input *elbv2.SetSecurityGroupsInput
 	}, nil
 }
 
-// SetSubnets enables the subnets (and their backing ENIs) for a load balancer.
-// It is a full add+remove: a subnet in the request but not on the LB gets a new
-// managed ENI; a subnet on the LB but absent from the request has its ENI
-// removed. The system VM binds its data-plane taps at boot and the launcher
-// exposes no live ENI hotplug, so the new ENI set is applied by relaunching the
-// LB VM — a brief data-plane interruption. The record is mutated only after the
-// new ENIs exist and the VM has been relaunched.
+// SetSubnets does a full add+remove of the LB's subnets and their ENIs.
+// Because ENI hotplug is not supported, the LB VM is relaunched with the new ENI set.
 func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID string) (*elbv2.SetSubnetsOutput, error) {
 	if input == nil || input.LoadBalancerArn == nil || *input.LoadBalancerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -157,8 +144,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		return s.setSubnetsOutput(lb), nil // idempotent — no change
 	}
 
-	// Without a VPC service we cannot manage ENIs; record the requested subnet
-	// set so the API stays consistent for launcher-less / test deployments.
+	// No VPC service: just record the subnet set (launcher-less / test deployments).
 	if s.VPCService == nil {
 		lb.Subnets = desired
 		lb.AvailZones = rebuildAvailZones(desired, lb.AvailZones, nil)
@@ -169,8 +155,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		return s.setSubnetsOutput(lb), nil
 	}
 
-	// Create ENIs for the added subnets first; roll them back on any failure so
-	// a partial apply never leaks ENIs or mutates the live LB.
+	// Create ENIs for added subnets; roll back on failure to avoid leaks.
 	newENIBySubnet := make(map[string]string, len(toAdd))
 	newAZBySubnet := make(map[string]string, len(toAdd))
 	rollbackNewENIs := func() {
@@ -203,8 +188,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		}
 	}
 
-	// Terminate the LB VM before reshaping its ENI set, then relaunch it on the
-	// new set.
+	// Terminate the LB VM before reshaping its ENI set, then relaunch on the new set.
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
 		if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
 			rollbackNewENIs()
@@ -213,10 +197,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		}
 	}
 
-	// TerminateSystemInstance tears down the VM but leaves its ENIs marked
-	// in-use, so detach the existing ENIs explicitly: retained ones must be free
-	// to re-attach to the relaunched VM, and removed ones must be detached before
-	// they can be deleted.
+	// Detach all ENIs explicitly: TerminateSystemInstance doesn't clear in-use status.
 	for _, eniID := range current {
 		if detachErr := s.VPCService.DetachENI(accountID, eniID); detachErr != nil {
 			slog.Warn("SetSubnets: failed to detach ENI before relaunch", "eni", eniID, "err", detachErr)
@@ -256,8 +237,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 	return s.setSubnetsOutput(lb), nil
 }
 
-// desiredSubnetSet flattens the request's Subnets and SubnetMappings into a
-// de-duplicated, order-preserving subnet-ID list.
+// desiredSubnetSet flattens Subnets and SubnetMappings into a deduplicated, ordered list.
 func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -280,9 +260,7 @@ func desiredSubnetSet(input *elbv2.SetSubnetsInput) []string {
 	return out
 }
 
-// subnetENIMap pairs each of the LB's current subnets with its backing ENI.
-// CreateLoadBalancer and SetSubnets write Subnets and ENIs in lockstep, so the
-// parallel arrays are authoritative for which ENI lives in which subnet.
+// subnetENIMap pairs each current subnet with its ENI using the parallel Subnets/ENIs arrays.
 func subnetENIMap(lb *LoadBalancerRecord) map[string]string {
 	m := make(map[string]string, len(lb.Subnets))
 	for i, sn := range lb.Subnets {
@@ -293,9 +271,7 @@ func subnetENIMap(lb *LoadBalancerRecord) map[string]string {
 	return m
 }
 
-// createLBENI creates a single managed ENI for the LB in the given subnet,
-// tagged and security-grouped like the create-time ENIs. Returns the ENI ID and
-// its availability zone.
+// createLBENI creates a managed ENI in the given subnet, returning the ENI ID and AZ.
 func (s *ELBv2ServiceImpl) createLBENI(subnetID string, lb *LoadBalancerRecord, accountID string) (eniID, az string, err error) {
 	eniIn := &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
@@ -321,10 +297,8 @@ func (s *ELBv2ServiceImpl) createLBENI(subnetID string, lb *LoadBalancerRecord, 
 	return aws.StringValue(eni.NetworkInterfaceId), aws.StringValue(eni.AvailabilityZone), nil
 }
 
-// rebuildAvailZones produces the AvailZoneInfo list for the new subnet set in
-// order, preserving the existing zone name for retained subnets and using
-// newAZBySubnet for added ones. PublicIP is cleared — it is re-derived from the
-// relaunched VM by the caller.
+// rebuildAvailZones builds the AZ list for the new subnet set, preserving existing
+// zone names and using newAZBySubnet for additions. PublicIP is cleared.
 func rebuildAvailZones(subnets []string, existing []AvailZoneInfo, newAZBySubnet map[string]string) []AvailZoneInfo {
 	bySubnet := make(map[string]AvailZoneInfo, len(existing))
 	for _, az := range existing {
@@ -341,9 +315,8 @@ func rebuildAvailZones(subnets []string, existing []AvailZoneInfo, newAZBySubnet
 	return out
 }
 
-// lbStateAfterLaunch mirrors CreateLoadBalancer's post-launch state gate: a VM
-// that came up enters provisioning until the lb-agent heartbeats; an internal
-// LB with no mgmt return route is failed loud; a failed launch is failed.
+// lbStateAfterLaunch returns the post-launch state: provisioning if the VM came up,
+// failed if the launch failed or if an internal LB has no mgmt return route.
 func (s *ELBv2ServiceImpl) lbStateAfterLaunch(launch lbVMLaunch, scheme string) string {
 	if launch.instanceID == "" {
 		if launch.failed {
@@ -361,9 +334,7 @@ func (s *ELBv2ServiceImpl) lbStateAfterLaunch(launch lbVMLaunch, scheme string) 
 	return StateProvisioning
 }
 
-// setSubnetsOutput builds the SetSubnets response from the persisted record,
-// reusing the SDK availability-zone projection (which surfaces per-AZ private
-// IPs) so the response matches DescribeLoadBalancers.
+// setSubnetsOutput builds the SetSubnets response from the persisted record.
 func (s *ELBv2ServiceImpl) setSubnetsOutput(lb *LoadBalancerRecord) *elbv2.SetSubnetsOutput {
 	sdk := s.lbRecordToSDK(lb)
 	return &elbv2.SetSubnetsOutput{

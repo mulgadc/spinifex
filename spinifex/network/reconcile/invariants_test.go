@@ -10,20 +10,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
-// IMDS-datapath invariants. A guest LSP is created by two
-// independent paths — the live topology manager (EnsurePort) and the reconciler
-// (applyPorts) — and the per-subnet DHCPOptions row likewise. Both paths are
-// exercised here so neither can drift away from the contract the IMDS handler
-// trusts. These live in the reconcile package because it is the only network
-// package that can import both topology (the live path) and itself (the
-// reconciler path) without a cycle.
+// IMDS-datapath invariants. Guest LSPs and DHCPOptions rows are created by two
+// independent paths (live topology manager and reconciler); both are exercised
+// here so neither can drift from the contract the IMDS handler trusts.
 
-// TestI1_GuestLSPMustHavePortSecurity asserts that every guest-attached LSP,
-// created by either path, carries port_security equal to its addresses
-// ("<MAC> <IP>"). This is the load-bearing security boundary: ovn-controller
-// drops any frame whose eth.src/ip4.src doesn't match port_security at the
-// ingress LSP, so a compromised guest cannot forge a peer's source IP. Without
-// it the IMDS (VPC-ID, source-IP) → ENI mapping is forgeable.
+// TestI1_GuestLSPMustHavePortSecurity asserts every guest LSP carries
+// port_security == "<MAC> <IP>". Without it a compromised guest can forge a
+// peer's source IP, breaking the IMDS (VPC-ID, source-IP) → ENI mapping.
 func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 	ctx := context.Background()
 
@@ -63,8 +56,7 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 	})
 }
 
-// assertPortSecurity fails with the ADR clause when the LSP lacks port_security
-// equal to its addresses.
+// assertPortSecurity fails when the LSP's port_security doesn't match its addresses.
 func assertPortSecurity(t *testing.T, m *mock.Client, portName, want string) {
 	t.Helper()
 	lsp, err := m.GetLogicalSwitchPort(context.Background(), portName)
@@ -76,8 +68,7 @@ func assertPortSecurity(t *testing.T, m *mock.Client, portName, want string) {
 			"port_security allow source-IP spoofing, breaking the IMDS "+
 			"(VPC-ID, source-IP) → ENI mapping", portName, lsp.PortSecurity, want)
 	}
-	// port_security must mirror addresses exactly, or the enforced identity and
-	// the advertised identity diverge.
+	// port_security must mirror addresses exactly.
 	if len(lsp.Addresses) != 1 || lsp.Addresses[0] != lsp.PortSecurity[0] {
 		t.Errorf("guest LSP %s Addresses %v != PortSecurity %v: enforced and advertised "+
 			"identity must match", portName, lsp.Addresses, lsp.PortSecurity)

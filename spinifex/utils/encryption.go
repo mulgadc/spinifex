@@ -11,18 +11,14 @@ import (
 	"github.com/mulgadc/predastore/pkg/masterkey"
 )
 
-// viperblockKeyCache memoises masterkey.LoadShared by path so the AWS gateway
-// handlers (volume / instance / image) do not re-stat and re-parse the same
-// 32-byte file on every VB.New. Process-wide; the underlying *Key holds an
-// AEAD which is safe for concurrent use per the crypto/cipher contract.
+// viperblockKeyCache memoises masterkey.LoadShared by path. The *Key holds an AEAD safe for concurrent use.
 var (
 	viperblockKeyCacheMu sync.Mutex
 	viperblockKeyCache   = map[string]*masterkey.Key{}
 )
 
-// LoadViperblockMasterKey returns the cached *masterkey.Key for the given
-// path, loading it via masterkey.LoadShared on first use. An empty path
-// returns (nil, nil) — encryption is treated as disabled.
+// LoadViperblockMasterKey returns the cached *masterkey.Key for path, loading on first use.
+// An empty path returns (nil, nil), meaning encryption is disabled.
 func LoadViperblockMasterKey(path string) (*masterkey.Key, error) {
 	if path == "" {
 		return nil, nil

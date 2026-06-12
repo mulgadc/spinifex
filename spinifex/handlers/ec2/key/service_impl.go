@@ -367,10 +367,8 @@ func (s *KeyServiceImpl) ValidateKeyPairExists(accountID, keyName string) error 
 	return err
 }
 
-// GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a
-// single clean line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; every other
-// fault is returned as-is so the caller can distinguish absence (404) from a
-// backend error (500).
+// GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a single
+// line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; other errors are returned as-is.
 func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string, error) {
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	result, err := s.store.GetObject(&s3.GetObjectInput{

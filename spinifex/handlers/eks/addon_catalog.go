@@ -2,26 +2,20 @@ package handlers_eks
 
 import "slices"
 
-// AddonSpec describes one Spinifex-supported managed add-on. The catalog is a
-// static in-binary registry (air-gapped; there is no internet add-on catalog),
-// so DescribeAddonVersions and CreateAddon validate against these entries.
+// AddonSpec describes one Spinifex-supported managed add-on in the static
+// in-binary catalog. DescribeAddonVersions and CreateAddon validate against it.
 type AddonSpec struct {
 	// Name is the AWS add-on name (e.g. "aws-load-balancer-controller").
 	Name string
-	// Versions lists the supported versions newest-first; [0] is the default.
-	Versions []string
-	// DefaultVersion is the version CreateAddon applies when none is requested.
-	// Always equal to Versions[0].
+	// Versions lists supported versions newest-first; [0] is the default.
+	Versions       []string
 	DefaultVersion string
-	// RequiresIRSA reports whether the add-on needs an IAM-role-for-service-
-	// account binding to operate (surfaced as requiresIamPermissions).
+	// RequiresIRSA indicates the add-on needs an IAM role for service-account binding.
 	RequiresIRSA bool
-	// Description is a short human-readable summary.
-	Description string
+	Description  string
 }
 
-// addonCatalog is the bundled set of supported add-ons. Keep newest version
-// first in each Versions slice; newAddonSpec enforces DefaultVersion = [0].
+// addonCatalog is the bundled add-on registry. Keep newest version first per slice.
 var addonCatalog = buildAddonCatalog(
 	newAddonSpec("aws-load-balancer-controller", true,
 		"Provisions ELBv2 load balancers for Kubernetes Service/Ingress resources.",
@@ -31,8 +25,7 @@ var addonCatalog = buildAddonCatalog(
 		"1.11.1"),
 )
 
-// newAddonSpec builds a spec, pinning DefaultVersion to the first (newest)
-// version. Panics on an empty version list — the catalog is build-time data.
+// newAddonSpec builds a spec with DefaultVersion = versions[0]. Panics on empty versions.
 func newAddonSpec(name string, requiresIRSA bool, description string, versions ...string) AddonSpec {
 	if len(versions) == 0 {
 		panic("eks: addon spec " + name + " has no versions")

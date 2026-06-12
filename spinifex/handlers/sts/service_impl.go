@@ -11,11 +11,9 @@ import (
 
 const masterKeySize = 32 // AES-256, must match handlers_iam.
 
-// STSServiceImpl implements STS operations using NATS JetStream KV. It
-// resolves roles + IAM crypto through the in-process IAMService and persists
-// session credentials in its own bucket. The master key is supplied by the
-// awsgw startup path and shared by reference with IAMServiceImpl; STS does
-// not own rotation.
+// STSServiceImpl implements STS operations backed by NATS JetStream KV.
+// Roles and IAM crypto are resolved through the in-process IAMService; the master key
+// is shared with IAMServiceImpl and not rotated by STS.
 type STSServiceImpl struct {
 	natsConn       *nats.Conn
 	js             nats.JetStreamContext
@@ -26,11 +24,9 @@ type STSServiceImpl struct {
 
 var _ STSService = (*STSServiceImpl)(nil)
 
-// NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the same
-// 32-byte secret IAM uses for at-rest envelope encryption; both services
-// share it (see § Crypto reuse in the STS v1 plan). clusterSize sets the
-// JetStream replication factor for the session bucket; pass 1 for
-// single-node or test setups.
+// NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the 32-byte
+// key shared with IAMServiceImpl. clusterSize sets the JetStream replication factor;
+// pass 1 for single-node or test setups.
 func NewSTSServiceImpl(natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte, clusterSize int) (*STSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")

@@ -104,9 +104,8 @@ func TestNATManager_AddEIP_IdempotentSkip_RePrimesReachability(t *testing.T) {
 		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
 	}
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	// Re-attach the same EIP (stop->start / reboot-recovery): the DNAT row is
-	// unchanged so the row write is skipped, but reachability must be re-primed
-	// or the host neigh entry goes dark until the kernel ARP times out.
+	// Re-attach same EIP (stop->start): row write is skipped but reachability
+	// must be re-primed or the host neigh goes dark until ARP times out.
 	require.NoError(t, nm.AddEIP(ctx, spec))
 
 	assert.Equal(t, 1, barrierCalls, "FlowsBarrier must not fire on idempotent skip")
@@ -329,13 +328,9 @@ func TestNATManager_AddNATGateway_AndDelete(t *testing.T) {
 	require.NoError(t, nm.DeleteNATGateway(ctx, "vpc-1", "10.0.1.0/24"))
 }
 
-// TestNATManager_DeleteNATGateway_CrossRouterIsolation guards against a NAT
-// row owned by router B being mutated/deleted when DeleteNATGateway is called
-// on router A and both routers carry the same subnet CIDR. AWS allows subnet
-// CIDRs to repeat per-VPC, so (snat, logicalIP) is not globally unique. Bug
-// observed in CI Phase 8d: shared 172.31.x CIDRs across VPCs caused
-// DeleteEIP/DeleteNAT to hit the wrong NAT row, leaving orphaned rules that
-// corrupted ARP/conntrack for the surviving NATGW EIP.
+// TestNATManager_DeleteNATGateway_CrossRouterIsolation guards against deleting
+// a NAT row on router B when DeleteNATGateway targets router A. AWS allows
+// overlapping subnet CIDRs across VPCs, so (snat, logicalIP) is not globally unique.
 func TestNATManager_DeleteNATGateway_CrossRouterIsolation(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
@@ -366,10 +361,8 @@ func TestNATManager_DeleteNATGateway_CrossRouterIsolation(t *testing.T) {
 	assert.Equal(t, "nat-b", survived.ExternalIDs["spinifex:nat_gateway_id"])
 }
 
-// TestNATManager_DeleteEIP_CrossRouterIsolation is the dnat_and_snat analogue
-// of the cross-router NATGW isolation test. Two VPCs each with a private VM
-// at 10.0.0.5 (legal — VPC CIDRs may overlap). DeleteEIP on vpc-a must not
-// touch vpc-b's NAT row.
+// TestNATManager_DeleteEIP_CrossRouterIsolation is the dnat_and_snat analogue:
+// two VPCs with overlapping private IPs — DeleteEIP on vpc-a must not touch vpc-b.
 func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

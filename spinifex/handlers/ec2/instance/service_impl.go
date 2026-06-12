@@ -89,10 +89,9 @@ instance-id: {{.InstanceID}}
 local-hostname: {{.Hostname}}
 `
 
-// cloudInitNetworkConfigWildcard enables DHCP on all NICs via wildcard match.
-// Used when there's no dual-NIC setup (non-VPC or VPC without DEV_NETWORKING).
-// The "e*" glob matches both traditional names (eth0, eth1 — Alpine/older
-// kernels) and predictable names (ens3, enp0s3 — systemd-based distros).
+// cloudInitNetworkConfigWildcard enables DHCP on all NICs via "e*" glob,
+// covering both traditional (eth0) and predictable (ens3) names.
+// Used when there is no dual-NIC setup (non-VPC or no DEV_NETWORKING).
 const cloudInitNetworkConfigWildcard = `network:
   version: 2
   ethernets:
@@ -103,19 +102,16 @@ const cloudInitNetworkConfigWildcard = `network:
       dhcp-identifier: mac
 `
 
-// cloudInitNetworkConfigDisabled tells cloud-init to do no network rendering
-// at all. Used on RHEL-family guests where Spinifex writes NM keyfiles via
-// user-data write_files; without this stub cloud-init's RHEL network module
-// falls back to autodetect-DHCP and drops a second keyfile next to ours.
+// cloudInitNetworkConfigDisabled suppresses cloud-init network rendering.
+// Used on RHEL guests where NM keyfiles are written via write_files;
+// without this stub cloud-init would drop a competing autoconnect keyfile.
 const cloudInitNetworkConfigDisabled = `network:
   config: disabled
 `
 
-// selectNetworkConfigForFamily returns the cloud-init network-config payload
-// for the given distro family. RHEL-family guests get an explicit
-// "config: disabled" stub because their NM keyfiles are written via user-data
-// write_files; shipping a netplan config alongside would let cloud-init's RHEL
-// network module drop a competing cloud-init-enpXsY.nmconnection.
+// selectNetworkConfigForFamily returns the cloud-init network-config for the distro.
+// RHEL gets "config: disabled" to prevent cloud-init from dropping a competing
+// NM keyfile alongside the ones written via user-data write_files.
 func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) string {
 	if distroFamily == "rhel" {
 		return cloudInitNetworkConfigDisabled
@@ -128,26 +124,8 @@ func selectNetworkConfigForFamily(distroFamily, eniMAC, devMAC, mgmtMAC, mgmtIP 
 }
 
 // generateNetworkConfig produces the cloud-init network-config for the instance.
-//
-// Per-interface config is generated when eniMAC is present (VPC NIC). This allows
-// adding the mgmt NIC with a static IP and optionally the dev NIC with route
-// suppression. Without per-interface config, the wildcard fallback does DHCP on
-// all NICs — which won't work for the mgmt NIC (no DHCP server on br-mgmt).
-//
-// extraENIMACs configures additional VPC NICs for multi-subnet system VMs
-// (e.g. multi-AZ ALB VMs). Each extra MAC produces a DHCP ethernet block named
-// vpc1, vpc2, ... so each interface pulls its address from the subnet it lives in.
-//
-// The dev NIC still gets an IP via DHCP (needed for hostfwd port forwarding)
-// but dhcp4-overrides prevents it from installing routes or DNS.
-//
-// The primary VPC NIC (vpc0) also carries an on-link route to the IMDS metadata
-// IP (169.254.169.254): under the L2 datapath the metadata localport lives on
-// the guest's subnet switch and answers ARP directly, so the guest must treat
-// the address as on-link rather than steering it via the default gateway. The
-// route is reached via the primary ENI, matching AWS; it is not delivered via
-// DHCP option 121 (which would force the default route into option 121 per
-// RFC 3442) and the default gateway stays option 3.
+// Emits per-interface blocks when eniMAC is set; falls back to wildcard DHCP
+// when eniMAC is empty.
 func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string, emitIMDSRoute bool) string {
 	if eniMAC == "" {
 		return cloudInitNetworkConfigWildcard
@@ -161,10 +139,8 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
       dhcp4: true
       dhcp-identifier: mac
 `, eniMAC)
-	// The gateway-less IMDS on-link route renders only under netplan. cloud-init's
-	// eni renderer (Alpine) crashes on a route with no gateway, taking the whole
-	// network-config down with it, so eni-rendered guests get this route via
-	// buildAlpineCloudInit instead (emitIMDSRoute=false).
+	// Alpine's eni renderer crashes on gateway-less routes; omit here and
+	// deliver via buildAlpineCloudInit instead (emitIMDSRoute=false).
 	if emitIMDSRoute {
 		cfg += fmt.Sprintf(`      routes:
         - to: %s/32
@@ -203,8 +179,7 @@ func generateNetworkConfig(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs 
       addresses:
         - "%s/24"
 `, mgmtMAC, mgmtIP)
-		// Route for multi-node LB mgmt traffic is delivered to the LB microVM
-		// via the fw_cfg netcfg blob, not here.
+		// LB mgmt route is delivered via fw_cfg netcfg, not here.
 	}
 
 	return cfg
@@ -217,46 +192,27 @@ type CloudInitData struct {
 	UserDataCloudConfig string
 	UserDataScript      string
 	CACertPEM           string
-	// DistroFamily selects per-distro branches in the cloud-init template.
-	// "debian" | "rhel" | "alpine". Empty falls through to debian rendering
-	// (legacy AMIs registered before the field existed).
+	// DistroFamily selects per-distro rendering: "debian" | "rhel" | "alpine".
+	// Empty falls through to debian (legacy AMIs without this field).
 	DistroFamily string
-	// SudoGroup is the OS group cloud-init adds the user to for passwordless
-	// sudo. "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
+	// SudoGroup is "sudo" on debian/ubuntu/alpine, "wheel" on RHEL-family.
 	SudoGroup string
-	// RHELWriteFiles is the pre-indented YAML block of NM keyfile entries
-	// (one per NIC) appended under the merged write_files: key. Empty on
-	// non-RHEL guests; the network-config ISO file carries the YAML netplan
-	// equivalent instead.
+	// RHELWriteFiles is the pre-indented YAML NM keyfile block (one per NIC).
+	// Empty on non-RHEL guests; those use the network-config ISO instead.
 	RHELWriteFiles string
-	// RHELRunCmd is the pre-indented YAML block of runcmd entries (restorecon
-	// + nmcli reload/up) needed to load and bring up the keyfiles. Empty on
-	// non-RHEL guests.
+	// RHELRunCmd is the pre-indented runcmd YAML (restorecon + nmcli reload/up).
+	// Empty on non-RHEL guests.
 	RHELRunCmd string
-	// AlpineWriteFiles / AlpineRunCmd carry the IMDS on-link route delivery for
-	// Alpine guests (a persistent /etc/local.d script + OpenRC `local` enable),
-	// since the eni renderer cannot emit the gateway-less route in the
-	// network-config. Empty on non-Alpine guests and on non-VPC instances.
+	// AlpineWriteFiles / AlpineRunCmd deliver the IMDS on-link route via a
+	// local.d script (eni renderer can't emit gateway-less routes).
+	// Empty on non-Alpine or non-VPC instances.
 	AlpineWriteFiles string
 	AlpineRunCmd     string
 }
 
 // buildRHELCloudInit produces the cloud-init write_files (NM keyfiles) and
-// runcmd (restorecon + nmcli) blocks needed to bring up networking on a
-// RHEL-family guest. Returns empty strings when eniMAC is empty (wildcard /
-// non-VPC path) so NM's default autoconnect handles the interface.
-//
-// Mirrors generateNetworkConfig's per-interface structure: vpc0 (DHCP + on-link
-// IMDS route) + optional vpc1..N for extra ENIs, dev0 (DHCP with route/DNS
-// suppression), mgmt0 (static). Owning the keyfile bytes directly avoids relying on cloud-init's
-// v2-to-NM renderer round-tripping dhcp-identifier: mac → dhcp-client-id=mac,
-// which OVN's MAC-keyed DHCP requires.
-//
-// File mode 0600 root:root is load-bearing — NM ignores keyfiles otherwise.
-// restorecon defers to host SELinux policy (no-op on non-SELinux systems);
-// nmcli reload forces NM to rescan system-connections after write_files
-// completes in cloud-init's config stage, and nmcli up brings each interface
-// online without waiting on autoconnect heuristics.
+// runcmd blocks for RHEL networking. Returns empty strings when eniMAC is empty.
+// File mode 0600 is required — NM ignores world-readable keyfiles.
 func buildRHELCloudInit(eniMAC, devMAC, mgmtMAC, mgmtIP string, extraENIMACs []string) (writeFiles, runCmd string) {
 	if eniMAC == "" {
 		return "", ""
@@ -309,15 +265,12 @@ func appendRHELDHCPKeyfile(b *strings.Builder, name, mac string, suppressDefault
 	b.WriteString("      method=auto\n")
 	b.WriteString("      dhcp-client-id=mac\n")
 	if suppressDefaults {
-		// Equivalent to netplan dhcp4-overrides {use-routes: false, use-dns: false}:
-		// dev NIC gets an IP for hostfwd but must not install a default route or DNS.
+		// Dev NIC gets DHCP IP for hostfwd but must not install routes or DNS.
 		b.WriteString("      never-default=true\n")
 		b.WriteString("      ignore-auto-dns=true\n")
 	}
 	if imdsRoute {
-		// On-link route to the IMDS metadata IP so the guest ARPs 169.254.169.254
-		// directly on this NIC; the per-subnet localport answers. No next hop =
-		// link scope. Matches the netplan path in generateNetworkConfig.
+		// On-link IMDS route so guest ARPs 169.254.169.254 on this NIC (link scope).
 		fmt.Fprintf(b, "      route1=%s/32\n", handlers_imds.MetaDataServerIP)
 	}
 	b.WriteString("      [ipv6]\n")
@@ -341,18 +294,9 @@ func appendRHELStaticKeyfile(b *strings.Builder, name, mac, ip string) {
 	b.WriteString("      method=disabled\n")
 }
 
-// buildAlpineCloudInit produces the cloud-init write_files + runcmd blocks that
-// deliver the IMDS on-link route on Alpine guests. Returns empty strings when
-// eniMAC is empty (wildcard / non-VPC path).
-//
-// Alpine renders networking via cloud-init's eni backend, which crashes on a
-// gateway-less route (it assumes every route has a next hop), so the route is
-// omitted from the netplan network-config (see generateNetworkConfig) and added
-// here instead. A persistent /etc/local.d script keeps the on-link route present
-// across reboots — runcmd runs once per instance, so the OpenRC `local` service
-// re-applies it on every boot. cloud-init's eni renderer renames the primary
-// VPC NIC to vpc0 via a 70-persistent-net.rules udev rule, so the device name is
-// stable. `ip route replace` is idempotent.
+// buildAlpineCloudInit produces the write_files + runcmd blocks that install the
+// IMDS on-link route on Alpine guests. Alpine's eni renderer crashes on
+// gateway-less routes, so the route is delivered via a persistent local.d script.
 func buildAlpineCloudInit(eniMAC string) (writeFiles, runCmd string) {
 	if eniMAC == "" {
 		return "", ""
@@ -364,10 +308,8 @@ func buildAlpineCloudInit(eniMAC string) (writeFiles, runCmd string) {
 	wf.WriteString("    permissions: '0755'\n")
 	wf.WriteString("    content: |\n")
 	wf.WriteString("      #!/bin/sh\n")
-	// Resolve the primary VPC NIC via its default route, not by name: the
-	// persistent-net udev rename to vpc0 doesn't apply on the Alpine AMI, so the
-	// kernel name is eth0 at first boot. The mgmt NIC (eth1) carries no default
-	// route, so this always picks the VPC egress NIC — the one IMDS rides.
+	// Resolve via default route: udev rename to vpc0 hasn't run yet at first boot;
+	// the mgmt NIC has no default route so this always selects the VPC egress NIC.
 	wf.WriteString("      dev=$(ip route show default | awk '{print $5; exit}')\n")
 	fmt.Fprintf(&wf, "      [ -n \"$dev\" ] && ip route replace %s/32 dev \"$dev\" scope link\n", handlers_imds.MetaDataServerIP)
 
@@ -403,13 +345,9 @@ type volumeParams struct {
 	deleteOnTermination bool
 }
 
-// floorVolumeSizeToAMI ensures requested is at least the AMI's snapshot size.
-// Cloud images embed a fixed-size partition table; truncating below it (e.g.
-// a 10 GiB Rocky image requested at the 4 GiB default) hangs the guest in
-// dracut waiting on a root UUID that lives past the cut-off. AWS rejects
-// under-sized requests with InvalidParameterValue — spinifex silently rounds
-// up since we don't surface that error code today and the user-visible
-// failure (dracut hang) is worse than a slightly bigger volume.
+// floorVolumeSizeToAMI ensures the requested size is at least the AMI's snapshot
+// size. Under-sizing hangs the guest in dracut; we round up silently rather than
+// returning InvalidParameterValue, since a slightly larger volume is less harmful.
 func floorVolumeSizeToAMI(loader AMIMetaLoader, imageID string, requested int) int {
 	if loader == nil || !strings.HasPrefix(imageID, "ami-") {
 		return requested
@@ -592,14 +530,9 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	return instance, ec2Instance, nil
 }
 
-// PrepareRunInstances validates RunInstances input, allocates per-node capacity,
-// creates per-instance VM + ec2.Instance metadata, auto-resolves the subnet,
-// creates the primary ENI, and auto-assigns a public IP when the subnet has
-// MapPublicIpOnLaunch. It does NOT touch vmMgr, WriteState, or NATS
-// subscriptions — those are daemon concerns so the daemon can respond to AWS
-// between Prepare and Launch (preserving the original respond-then-launch
-// timing). Returns the reservation, the prepared VMs, and the instance-type
-// info so the caller can deallocate on failure.
+// PrepareRunInstances validates input, allocates capacity, creates VM metadata,
+// auto-creates the primary ENI, and auto-assigns a public IP when needed.
+// Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
 func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
 	if accountID == "" {
 		return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
@@ -627,8 +560,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		slog.Error("PrepareRunInstances: AMI not found", "imageId", *input.ImageId, "err", err)
 		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
-	// Caller must own the AMI or it must carry a non-account-ID owner alias
-	// (e.g. "self", "spinifex", "") indicating a system/legacy AMI.
+	// Caller must own the AMI or the owner alias must be non-account-ID (e.g. "self", "spinifex", "").
 	amiOwner := amiMeta.ImageOwnerAlias
 	if amiOwner != "" && amiOwner != accountID && utils.IsAccountID(amiOwner) {
 		slog.Warn("PrepareRunInstances: AMI not owned by caller", "imageId", *input.ImageId, "amiOwner", amiOwner, "accountID", accountID)
@@ -658,9 +590,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	launchCount := allocatableCount
 	slog.Info("PrepareRunInstances: count determined", "min", minCount, "max", maxCount, "launching", launchCount)
 
-	// Allocate is atomic per call (check + commit under a single write lock),
-	// so this loop can never overcommit. Under contention it may allocate
-	// fewer than allocatableCount; the < minCount branch below rolls back.
+	// Each Allocate is atomic; under contention we may get fewer than
+	// allocatableCount — the < minCount branch below rolls back.
 	var allocatedCount int
 	for i := 0; i < launchCount; i++ {
 		if err := s.resourceMgr.Allocate(instanceType); err != nil {
@@ -692,8 +623,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 		}
 		instance.BootMode = amiMeta.BootMode
 
-		// Terraform with associate_public_ip_address sends subnet/SG via
-		// NetworkInterfaces[0]; lift to top-level so the rest works uniformly.
+		// Terraform may pass subnet/SG via NetworkInterfaces[0]; lift to top-level.
 		if (input.SubnetId == nil || *input.SubnetId == "") &&
 			len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
 			nic := input.NetworkInterfaces[0]
@@ -705,11 +635,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			}
 		}
 
-		// Pre-created ENI path: when the caller passes
-		// NetworkInterfaces[0].NetworkInterfaceId, attach that existing ENI
-		// instead of auto-creating one. AWS-parity behaviour; consumed by the
-		// EKS cluster launcher which needs the ENI to live under the customer
-		// account before the K3s server VM is created.
+		// Pre-created ENI: attach the existing ENI instead of auto-creating one
+		// (AWS parity; used by EKS launcher to pre-create the ENI in customer VPC).
 		preExistingENIID := ""
 		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
 			preExistingENIID = aws.StringValue(input.NetworkInterfaces[0].NetworkInterfaceId)
@@ -760,9 +687,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 			instance.ENIMac = *eni.MacAddress
 
 			if _, attachErr := s.eniCreator.AttachENI(accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
-				// Without the attachment, RegisterTargets (TargetType=instance)
-				// resolves ENIs via attachment.instance-id, finds none, and
-				// silently drops the target; terminate leaks the auto-EIP.
+				// Without the attachment RegisterTargets silently drops the target;
+				// aborting prevents a leak of the auto-assigned EIP.
 				slog.Error("PrepareRunInstances: AttachENI failed — aborting launch",
 					"eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
 				if _, delErr := s.eniDeleter.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
@@ -813,12 +739,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 					az := s.config.AZ
 					publicIP, poolName, allocErr := s.ipAllocator.AllocateIP(region, az, handlers_ec2_vpc.PurposeENIPublic, "", *eni.NetworkInterfaceId, instance.ID)
 					if allocErr != nil {
-						// No qemu-hostfwd fallback exists: an instance on a
-						// MapPublicIpOnLaunch subnet with no public IP is
-						// unreachable, so fail the launch instead of booting a
-						// running-but-unreachable instance. The ENI is attached
-						// with a primary IP — detach before delete (in-use ENIs
-						// reject deletion).
+						// Fail rather than boot an unreachable instance;
+						// detach before delete since in-use ENIs reject deletion.
 						slog.Error("PrepareRunInstances: public IP allocation failed — aborting launch",
 							"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
 						if detErr := s.eniCreator.DetachENI(accountID, *eni.NetworkInterfaceId); detErr != nil {
@@ -842,7 +764,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 						if natErr := utils.AddNAT(s.natsConn, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
 							slog.Error("PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 								"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
-							// Timeout may have committed the rule after our window; neutralise before releasing the IP.
+							// Neutralise before releasing in case timeout committed the rule.
 							utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 							s.rollbackAutoAssignedPublicIP(accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
 							lastRunErr = natErr
@@ -897,12 +819,9 @@ func (s *InstanceServiceImpl) PrepareRunInstances(input *ec2.RunInstancesInput, 
 	return reservation, instances, instanceType, nil
 }
 
-// attachPreCreatedENI looks up an existing ENI in accountID, verifies it is
-// not already in-use, attaches it as device-0 to instance, and populates the
-// VM + ec2.Instance with the ENI's network identity (private IP, MAC, subnet,
-// VPC, security groups). Returns an error without mutating any state if the
-// lookup or attach fails. Public-IP auto-assignment is skipped on the
-// pre-created path because the caller is expected to manage that out-of-band.
+// attachPreCreatedENI verifies the ENI is available, attaches it as device-0,
+// and populates the VM + ec2.Instance. Public-IP auto-assignment is skipped;
+// the caller manages that out-of-band.
 func (s *InstanceServiceImpl) attachPreCreatedENI(accountID, eniID string, instance *vm.VM, ec2Instance *ec2.Instance) error {
 	eniInfo, err := s.eniCreator.GetENI(accountID, eniID)
 	if err != nil {
@@ -953,15 +872,12 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(accountID, eniID string, insta
 	return nil
 }
 
-// LaunchRunInstances takes the VMs created by PrepareRunInstances (already
-// inserted into vmMgr by the caller) and runs the heavyweight launch loop:
-// volume preparation, GPU claim, vmMgr.Run. Failures mark the VM as failed
-// and deallocate resources but do not abort the loop — partial success
-// matches AWS behaviour where some instances in a reservation may fail.
+// LaunchRunInstances runs the heavyweight launch loop for VMs already inserted
+// into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
 func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
 	var successCount int
 	for _, instance := range instances {
-		// Skip if a concurrent request terminated the instance during prepare.
+		// Skip if a concurrent terminate raced with prepare.
 		status := s.vmMgr.Status(instance)
 		if status != vm.StatePending && status != vm.StateProvisioning {
 			slog.Info("LaunchRunInstances: instance state changed during provisioning, skipping launch",
@@ -969,8 +885,7 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 			continue
 		}
 
-		// Pre-compute dev MAC so cloud-init can generate per-interface netplan
-		// that suppresses the default route on the dev/hostfwd NIC.
+		// Pre-compute dev MAC for per-interface cloud-init netplan (route suppression).
 		if s.config.Daemon.DevNetworking && instance.ENIId != "" {
 			instance.DevMAC = vm.GenerateDevMAC(instance.ID)
 		}
@@ -1028,10 +943,8 @@ func (s *InstanceServiceImpl) LaunchRunInstances(instances []*vm.VM, input *ec2.
 	slog.Info("LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
 }
 
-// RunInstances satisfies the InstanceService interface for non-daemon callers
-// (tests, mocks). The daemon's NATS handler bypasses this method and calls
-// PrepareRunInstances + LaunchRunInstances directly so it can respond to AWS
-// between the two phases, preserving the original respond-then-launch timing.
+// RunInstances is for non-daemon callers (tests). The daemon calls
+// PrepareRunInstances + LaunchRunInstances directly to respond before launching.
 func (s *InstanceServiceImpl) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	reservation, instances, instanceType, err := s.PrepareRunInstances(input, accountID)
 	if err != nil {
@@ -1044,9 +957,7 @@ func (s *InstanceServiceImpl) RunInstances(input *ec2.RunInstancesInput, account
 	return reservation, nil
 }
 
-// RebootInstance handles an ec2.cmd reboot for an instance already running on
-// this node. Returns nil on success; the dispatching daemon handler maps the
-// returned error to a NATS error response and responds with `{}` on nil.
+// RebootInstance handles an ec2.cmd reboot for a running instance on this node.
 func (s *InstanceServiceImpl) RebootInstance(instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
 	slog.Info("RebootInstance: rebooting instance", "id", command.ID)
 
@@ -1068,16 +979,12 @@ func (s *InstanceServiceImpl) RebootInstance(instance *vm.VM, command spxtypes.E
 	return nil
 }
 
-// StartInstance handles an ec2.cmd start for an instance that is stopped on
-// this node (local vmMgr state, not the cross-node shared-KV path). Returns
-// nil on success; the dispatching daemon handler responds with the running
-// status payload.
+// StartInstance handles an ec2.cmd start for a locally stopped instance.
 func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
 	slog.Info("StartInstance: starting instance", "id", command.ID)
 
 	status := s.vmMgr.Status(instance)
-	// StateError is startable: a crash/recovery-failed instance can be manually
-	// recovered. The manager transitions Error->Pending before relaunch.
+	// StateError is startable so a crashed instance can be manually recovered.
 	if status != vm.StateStopped && status != vm.StateError {
 		slog.Error("StartInstance: instance not in a startable state", "instanceId", command.ID, "status", status)
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
@@ -1091,9 +998,8 @@ func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC
 		}
 	}
 
-	// Clear stop attribute before launch so WriteState inside the manager
-	// persists the correct attributes. Without this, a daemon restart after
-	// a stop→start cycle would see StopInstance=true and skip reconnecting QEMU.
+	// Clear stop attribute before launch; a stale StopInstance=true would
+	// cause the daemon to skip QEMU reconnect on restart.
 	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Attributes = command.Attributes })
 
 	if err := s.vmMgr.Start(instance.ID); err != nil {
@@ -1117,10 +1023,8 @@ func (s *InstanceServiceImpl) StartInstance(instance *vm.VM, command spxtypes.EC
 	return nil
 }
 
-// StopOrTerminateInstance handles an ec2.cmd stop or terminate for an
-// instance running on this node. Validates the transition synchronously,
-// stamps the command attributes onto the VM, then dispatches the actual
-// Stop/Terminate in a background goroutine so the daemon can ack immediately.
+// StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
+// transition synchronously, then dispatches Stop/Terminate in a goroutine.
 func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command spxtypes.EC2InstanceCommand) error {
 	isTerminate := command.Attributes.TerminateInstance
 	action := "Stopping"
@@ -1132,11 +1036,8 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 
 	slog.Info("StopOrTerminateInstance: "+action, "id", command.ID)
 
-	// Fold the termination-protection check, idempotency check, transition
-	// validation, and attribute stamp into one lock acquisition so a racing
-	// ModifyInstanceAttribute can't clear protection between the gates. The
-	// async lifecycle goroutine below persists on its own state transitions,
-	// so no synchronous persist is needed here.
+	// Single lock acquisition covers protection check, idempotency, transition
+	// validation, and attribute stamp to prevent races with ModifyInstanceAttribute.
 	var (
 		protected, raced, stateMismatch bool
 		currentState                    vm.InstanceState
@@ -1156,10 +1057,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 			return
 		}
 		v.Attributes = command.Attributes
-		// Auto-disassociate IAM instance profile on terminate (matches AWS).
-		// Stop/Start preserves the binding; only terminate clears it. Done
-		// under the same lock as the state transition so DescribeInstances
-		// never observes a terminated instance still advertising a profile.
+		// Auto-disassociate IAM profile on terminate (AWS parity; stop/start preserves it).
+		// Done under the same lock so DescribeInstances never sees a terminated
+		// instance advertising a profile.
 		if isTerminate && v.IamInstanceProfileArn != "" {
 			slog.Info("IAM instance profile auto-disassociated",
 				"instance_id", v.ID,
@@ -1181,13 +1081,12 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		return errors.New(awserrors.ErrorOperationNotPermitted)
 	}
 	if raced {
-		// Idempotent: a concurrent terminate goroutine is already cleaning up.
+		// Idempotent: a concurrent terminate is already in progress.
 		slog.Info("StopOrTerminateInstance: instance already shutting down, terminate is idempotent", "instanceId", instance.ID)
 		return nil
 	}
 	if stateMismatch {
-		// Surface IncorrectInstanceState synchronously so the AWS SDK sees
-		// 400 instead of a stale 200. The async path re-validates.
+		// Surface IncorrectInstanceState synchronously (AWS SDK expects 400).
 		slog.Warn("StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
 			"instanceId", instance.ID, "currentState", string(currentState))
 		return errors.New(awserrors.ErrorIncorrectInstanceState)
@@ -1213,14 +1112,9 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 	return nil
 }
 
-// AssociateIamInstanceProfile attaches an instance profile to a running
-// instance. The gateway has already resolved the profile reference to a
-// canonical ARN and enforced iam:PassRole; this method validates that the
-// instance has no existing profile (returns IamInstanceProfileAlreadyAssociated
-// otherwise) and atomically writes the ARN + a freshly generated
-// iip-assoc-… ID to vm.VM. AssociationId is never reused — every Associate
-// produces a new one. InstanceProfile.Id is left nil; the gateway enriches it
-// from its IAMService cache before returning to the caller.
+// AssociateIamInstanceProfile attaches an instance profile to a running instance.
+// Validates no existing profile, then atomically writes the ARN + new association ID.
+// InstanceProfile.Id is left nil; the gateway enriches it from IAMService.
 func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, command spxtypes.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
 	if command.IamProfileAssociationData == nil || command.IamProfileAssociationData.InstanceProfileArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1261,13 +1155,8 @@ func (s *InstanceServiceImpl) AssociateIamInstanceProfile(instance *vm.VM, comma
 	}, nil
 }
 
-// DisassociateIamProfileAssociation finds the VM carrying the requested
-// AssociationId in this daemon's vmMgr and clears both profile fields
-// atomically. Returns nil when no local VM owns the ID, or when the caller's
-// account doesn't own the matching VM, so the gateway fan-out collector can
-// advance past this daemon's NoOp response without waiting on the deadline.
-// The accountID scope mirrors checkInstanceOwnership semantics applied
-// per-instance on ec2.cmd.<id>.
+// DisassociateIamProfileAssociation clears the profile association on the local VM.
+// Returns nil when no local VM owns the ID so the gateway fan-out can skip this node.
 func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.DisassociateIamInstanceProfileInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1281,9 +1170,7 @@ func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.Disas
 	var clearedArn string
 	timestamp := time.Now().UTC()
 	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
-		// Re-check under the manager lock: another fan-out (or a concurrent
-		// terminate) could have cleared or replaced the association between
-		// our snapshot read and this mutation.
+		// Re-check under lock: a concurrent terminate may have cleared the association.
 		if v.IamInstanceProfileAssociationId != associationID {
 			return false
 		}
@@ -1297,8 +1184,7 @@ func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.Disas
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if clearedArn == "" {
-		// Lost a race with terminate / another disassociate. NoOp so the
-		// gateway collector treats it as "not this daemon's instance".
+		// Lost a race; NoOp so the gateway collector skips this node.
 		return nil, nil
 	}
 
@@ -1313,12 +1199,9 @@ func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(input *ec2.Disas
 	}, nil
 }
 
-// ReplaceIamProfileAssociation finds the VM carrying the requested
-// AssociationId and swaps it for a new (ARN, AssociationId) pair atomically.
-// The new AssociationId is always freshly generated — AWS never reuses IDs
-// across replace. Returns nil when no local VM owns the old ID or when the
-// caller's account doesn't own the matching VM. The gateway has already
-// resolved IamInstanceProfile.Arn to a canonical ARN before publishing.
+// ReplaceIamProfileAssociation atomically swaps the profile ARN and AssociationId.
+// Returns nil when no local VM owns the old ID. The gateway has already resolved
+// the ARN to canonical form.
 func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(input *ec2.ReplaceIamInstanceProfileAssociationInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
 	if input == nil || input.AssociationId == nil || *input.AssociationId == "" ||
 		input.IamInstanceProfile == nil || aws.StringValue(input.IamInstanceProfile.Arn) == "" {
@@ -1363,12 +1246,9 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(input *ec2.ReplaceIam
 	}, nil
 }
 
-// DescribeIamProfileAssociations walks this daemon's vmMgr and returns every
-// live association visible to the caller's account matching the supplied
-// filters (empty filters match all). Empty result is a valid response: the
-// gateway aggregates per-daemon slices, so missing daemons just yield fewer
-// rows. Filter names other than "instance-id" / "state" surface as
-// InvalidParameterValue, short-circuiting the fan-out at the gateway.
+// DescribeIamProfileAssociations returns live associations on this node visible to
+// the caller. Supports "instance-id" and "state" filters; unknown filters return
+// InvalidParameterValue.
 func (s *InstanceServiceImpl) DescribeIamProfileAssociations(input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
 	assocFilter := stringPtrSliceToSet(input.AssociationIds)
 	instFilter := make(map[string]bool)
@@ -1409,8 +1289,7 @@ func (s *InstanceServiceImpl) DescribeIamProfileAssociations(input *ec2.Describe
 		if len(instFilter) > 0 && !instFilter[v.ID] {
 			return
 		}
-		// v1 only emits "associated" — there are no async transitions, so any
-		// state filter that excludes "associated" yields an empty result.
+		// Only "associated" state exists; other state filters yield empty results.
 		const liveState = ec2.IamInstanceProfileAssociationStateAssociated
 		if len(stateFilter) > 0 && !stateFilter[liveState] {
 			return
@@ -1425,12 +1304,8 @@ func (s *InstanceServiceImpl) DescribeIamProfileAssociations(input *ec2.Describe
 	return out, nil
 }
 
-// findInstanceByAssociationID is the lock-protected lookup used by the
-// fan-out mutators. It snapshots the matching instance ID under the manager
-// lock and returns (id, true) only when the caller's account owns the VM,
-// so cross-tenant Disassociate / Replace cannot reach into another account's
-// instance. The actual mutation re-validates inside UpdateAndPersist to close
-// the read/mutate race window.
+// findInstanceByAssociationID returns the VM ID for the given AssociationId
+// if the caller's account owns it. Mutations re-validate under UpdateAndPersist.
 func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, accountID string) (string, bool) {
 	var owner string
 	s.vmMgr.ForEach(func(v *vm.VM) {
@@ -1558,10 +1433,8 @@ func (s *InstanceServiceImpl) newViperblock(volumeName string, size int, volumeC
 	return vb, err
 }
 
-// restoreSlogDefault re-installs the daemon's Info-level slog handler after
-// viperblock.New mutates the global slog default via its SetDebug method
-// (see viperblock.go SetDebug — it calls slog.SetDefault with LevelError,
-// silencing every Info/Warn in the entire process).
+// restoreSlogDefault re-installs the Info-level slog handler after viperblock.New
+// resets it to LevelError via SetDebug, silencing all Info/Warn globally.
 func restoreSlogDefault() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -1583,12 +1456,8 @@ func (s *InstanceServiceImpl) prepareRootVolume(input *ec2.RunInstancesInput, im
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Load the state from the remote backend. Only os.ErrNotExist means
-	// "volume doesn't exist, clone from AMI" — every other error (HMAC
-	// integrity failure, key mismatch, transient backend 5xx, JSON parse
-	// failure) must abort. Cloning from AMI on a tamper/mismatch would
-	// overwrite the legitimate volume's config.json with AMI base-map
-	// state and lose access to the live data.
+	// Only os.ErrNotExist means "clone from AMI"; any other error must abort.
+	// Treating a tamper/mismatch as missing would overwrite live volume state.
 	_, err = vb.LoadStateRequest("")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Error("Failed to load root volume state from backend",
@@ -1673,11 +1542,9 @@ func (s *InstanceServiceImpl) cloneAMIToVolume(input *ec2.RunInstancesInput, siz
 	return nil
 }
 
-// prepareEFIVolume creates the per-VM EFI variable store. The volume is
-// sized to match the firmware's VARS template (QEMU pflash refuses any other
-// size) and seeded with the template bytes so EFI variables — BootOrder,
-// BootNext, secure-boot state — survive across reboots. arch is the AMI
-// architecture string ("x86_64" | "arm64").
+// prepareEFIVolume creates the per-VM EFI variable store, sized exactly to the
+// firmware VARS template (pflash requires byte-exact size) and seeded from it.
+// arch is "x86_64" | "arm64".
 func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM, arch string) error {
 	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
 	if err != nil {
@@ -1698,10 +1565,8 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 	efiVolumeName := fmt.Sprintf("%s-efi", imageId)
 	efiVolumeConfig := volumeConfig
 	efiVolumeConfig.VolumeMetadata.VolumeID = efiVolumeName
-	// Zero SizeGiB so viperblock's LoadState doesn't reconcile the EFI
-	// volume's persisted byte-exact size up to the parent root volume's
-	// GiB-rounded size — QEMU pflash rejects any VARS volume larger than
-	// the firmware's expected variable region.
+	// Zero SizeGiB prevents viperblock from rounding the EFI volume size
+	// up to GiB boundaries; pflash rejects any size beyond the VARS region.
 	efiVolumeConfig.VolumeMetadata.SizeGiB = 0
 
 	efiVb, err := s.newViperblock(efiVolumeName, int(varsSize), efiVolumeConfig)
@@ -1716,11 +1581,8 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Distinguish "not found" (seed from template) from any other backend
-	// failure (transient S3 5xx, JSON unmarshal, etc.). Treating a transient
-	// failure as "not found" would silently re-seed a volume on every retry,
-	// clobbering guest-set BootOrder. Backends signal missing-object by
-	// wrapping os.ErrNotExist (see viperblock.classifyStateLoad).
+	// Only os.ErrNotExist means "seed from template"; other errors must abort.
+	// Treating a transient failure as missing would clobber guest-set BootOrder.
 	_, loadErr := efiVb.LoadStateRequest("")
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		slog.Error("Failed to load EFI volume state from backend", "name", efiVolumeName, "err", loadErr)
@@ -1755,9 +1617,7 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 		}
 	}
 
-	// Close is the durability boundary after WriteAt+Flush; if it fails the
-	// VARS volume may be partially written and QEMU pflash will refuse to
-	// start. Fail the launch loudly rather than enqueueing a corrupt volume.
+	// Close is the durability boundary; a partial VARS write causes pflash to refuse launch.
 	if err := efiVb.Close(); err != nil {
 		slog.Error("Failed to close EFI Viperblock store", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -1777,10 +1637,8 @@ func (s *InstanceServiceImpl) prepareEFIVolume(imageId string, volumeConfig vipe
 	return nil
 }
 
-// instanceArchitecture pulls the AWS architecture string off an
-// ec2.InstanceTypeInfo. Returns "" when the spec is nil or malformed; the
-// caller's firmware probe surfaces that as a clear error rather than a
-// silent BIOS fallback.
+// instanceArchitecture returns the AWS architecture string from the instance type.
+// Returns "" on nil/malformed spec; the caller's firmware probe surfaces the error.
 func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 	if it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 || it.ProcessorInfo.SupportedArchitectures[0] == nil {
 		return ""
@@ -1788,9 +1646,8 @@ func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 	return *it.ProcessorInfo.SupportedArchitectures[0]
 }
 
-// prepareCloudInitVolume creates cloud-init ISO with SSH keys and user data.
-// rootVolumeId is the per-instance root volume ID (not the AMI ID), ensuring
-// each instance gets its own cloud-init volume with fresh SSH keys and metadata.
+// prepareCloudInitVolume creates the cloud-init ISO with SSH keys and user data.
+// Uses rootVolumeId (not AMI ID) so each instance gets its own volume.
 func (s *InstanceServiceImpl) prepareCloudInitVolume(input *ec2.RunInstancesInput, rootVolumeId string, volumeConfig viperblock.VolumeConfig, instance *vm.VM) error {
 	slog.Info("Creating cloud-init volume")
 
@@ -1875,9 +1732,7 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 	// Generate instance metadata
 	hostname := generateHostname(instance.ID)
 
-	// Retrieve SSH pubkey from S3 — required for instance access.
-	// Password authentication is not supported; instances without a key
-	// pair have no remote access method.
+	// Retrieve SSH pubkey from S3 — password auth is not supported.
 	keyName := ""
 	if input.KeyName != nil {
 		keyName = *input.KeyName
@@ -1906,9 +1761,7 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		}
 	}
 
-	// Read CA certificate for injection into guest cloud-init.
-	// Derive the config directory: BaseDir (e.g. ~/spinifex/spinifex/) sits one
-	// level below the data root; the CA cert is at <data-root>/config/ca.pem.
+	// Read CA cert from <data-root>/config/ca.pem and inject into guest cloud-init.
 	var caCertPEM string
 	dataRoot := filepath.Dir(strings.TrimSuffix(s.config.BaseDir, "/"))
 	caCertPath := filepath.Join(dataRoot, "config", "ca.pem")
@@ -1929,9 +1782,7 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		slog.Error("failed to read CA cert for guest cloud-init injection", "path", caCertPath, "error", err)
 	}
 
-	// Re-read AMI metadata for DistroFamily rather than persisting it on
-	// vm.VM — cloud-init renders once at first launch and the ISO is sealed,
-	// so no consumer needs DistroFamily after this point.
+	// Re-read AMI metadata for DistroFamily; not persisted on VM since the ISO is sealed once.
 	var distroFamily string
 	if s.amiLoader != nil && input.ImageId != nil && *input.ImageId != "" {
 		amiMeta, err := s.amiLoader.GetAMIConfig(*input.ImageId)
@@ -1988,11 +1839,8 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		}
 	}
 
-	// Alpine's eni renderer can't emit the gateway-less IMDS route, so deliver it
-	// out-of-band via a local.d script. Only when the caller didn't supply its own
-	// #cloud-config: that payload owns the write_files/runcmd keys (e.g. the EKS
-	// k3s server VM, which bakes the same route into its own block), and a second
-	// write_files key here would collide — last key wins, silently dropping a block.
+	// Inject Alpine IMDS route only when no #cloud-config user-data is present;
+	// a caller-supplied payload already owns write_files/runcmd and a second key collides.
 	if distroFamily == "alpine" && userData.UserDataCloudConfig == "" {
 		userData.AlpineWriteFiles, userData.AlpineRunCmd = buildAlpineCloudInit(instance.ENIMac)
 	}
@@ -2032,11 +1880,8 @@ func (s *InstanceServiceImpl) createCloudInitISO(input *ec2.RunInstancesInput, i
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Add network-config: per-interface when VPC+dev (suppresses dev default route),
-	// wildcard DHCP otherwise. Extra ENI MACs produce additional DHCP NICs for
-	// multi-subnet system VMs (multi-AZ ALBs). RHEL-family guests get a
-	// "config: disabled" stub here so cloud-init doesn't drop a second NM
-	// keyfile alongside the ones we wrote via user-data write_files.
+	// Add network-config: per-interface for VPC+dev, wildcard DHCP otherwise.
+	// RHEL gets "config: disabled" to prevent a competing NM keyfile.
 	networkConfig := selectNetworkConfigForFamily(distroFamily, instance.ENIMac, instance.DevMAC, instance.MgmtMAC, instance.MgmtIP, extraMACs)
 	err = writer.AddFile(strings.NewReader(networkConfig), "network-config")
 	if err != nil {
@@ -2129,9 +1974,8 @@ var DescribeInstancesValidFilters = map[string]bool{
 }
 
 // DescribeInstanceStatusValidFilters lists the filter names accepted by
-// DescribeInstanceStatus. event.*, instance-status.* and system-status.*
-// are rejected: Mulga's static-payload health model has no events and a
-// single value per status field, so those filters can't usefully narrow.
+// DescribeInstanceStatus. event.* and status.* filters are excluded as
+// Mulga's health model has a single static value per status field.
 var DescribeInstanceStatusValidFilters = map[string]bool{
 	"availability-zone":   true,
 	"instance-state-code": true,
@@ -2235,21 +2079,15 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 
 	reservationMap := make(map[string]*ec2.Reservation)
 
-	// Iterate under the manager lock — VM fields (Status, Instance, Reservation,
-	// PublicIP, PlacementGroupName) are mutated through manager-locked
-	// Inspect/UpdateState elsewhere, so reading them lock-free would race.
+	// Iterate under the manager lock to avoid races on Status, Instance, PublicIP, etc.
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, instance := range vms {
 			if !IsInstanceVisible(accountID, instance.AccountID) {
 				continue
 			}
-			// Platform-managed system VMs (LB HAProxy, EKS control plane) carry a
-			// ManagedBy tag and must stay out of customer EC2 listings, the same
-			// way they're filtered from the UI Nodes page. LB VMs are owned by the
-			// system account so IsInstanceVisible already hides them, but the EKS
-			// control-plane VM is owned by the customer account (its ENI lives in
-			// the customer VPC), so guard on ManagedBy here. Root/operator callers
-			// still see system instances.
+			// Platform-managed VMs (LB, EKS control plane) are hidden from customer
+			// listings. LBs are system-account-owned; EKS control-plane VMs are
+			// customer-account-owned so ManagedBy guards them explicitly.
 			if instance.ManagedBy != "" && accountID != utils.GlobalAccountID {
 				continue
 			}
@@ -2316,12 +2154,9 @@ func (s *InstanceServiceImpl) DescribeInstances(input *ec2.DescribeInstancesInpu
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// DescribeInstanceTypes returns instance types this node supports. Without
-// the "capacity" filter the response lists every supported type once,
-// matching AWS semantics — callers (e.g. the Terraform AWS provider) expect
-// a stable answer that does not depend on current allocation. With
-// `capacity=true` each type expands to one entry per free schedulable slot
-// so callers can aggregate cluster-wide remaining capacity.
+// DescribeInstanceTypes returns supported instance types. With filter
+// capacity=true, expands each type to one entry per free slot for cluster-wide
+// capacity aggregation.
 func (s *InstanceServiceImpl) DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
 	slog.Info("Processing DescribeInstanceTypes request from this node")
 
@@ -2443,11 +2278,8 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(input *ec2.DescribeInstanc
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// ModifyInstanceAttribute applies a single attribute change. InstanceType and
-// UserData require the instance to be stopped. DisableApiTermination works on
-// both running and stopped instances. SourceDestCheck is a networking concept
-// that does not apply to bare-metal VMs; it is accepted as a no-op on any
-// instance state so Terraform and the AWS CLI do not error out.
+// ModifyInstanceAttribute applies a single attribute change. SourceDestCheck
+// is a no-op on bare-metal VMs. InstanceType/UserData require a stopped instance.
 func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2567,10 +2399,8 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(input *ec2.ModifyInstanceA
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
 }
 
-// StoppedInstanceNode returns the LastNode field stored in the shared KV for a
-// stopped instance. Returns "" when the store is unavailable, the instance is
-// not found, or the entry has no LastNode set. Used by the daemon's ec2.start
-// handler to route start requests back to the original node when possible.
+// StoppedInstanceNode returns the node that last hosted the stopped instance,
+// used to route start requests back to the original node when possible.
 func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {
 	if s.stoppedStore == nil {
 		return ""
@@ -2686,10 +2516,8 @@ func (s *InstanceServiceImpl) StartStoppedInstance(input *StartStoppedInstanceIn
 	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
 }
 
-// TerminateStoppedInstance picks up a stopped instance from shared KV, deletes
-// its volumes, releases its public IP and ENI, writes it to the terminated
-// bucket, then removes it from the stopped bucket. No QEMU shutdown or unmount
-// is needed — the instance was already drained during stop.
+// TerminateStoppedInstance terminates a stopped instance: deletes its volumes,
+// releases its public IP and ENI, and moves it to the terminated KV bucket.
 func (s *InstanceServiceImpl) TerminateStoppedInstance(input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
 	if input.InstanceID == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -2791,14 +2619,8 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(instance *vm.VM, instanceID 
 	_ = instanceID
 }
 
-// rollbackAutoAssignedPublicIP unwinds an auto-assign that proceeded past
-// ENI create + attach + IPAM allocation + ENI update but failed at the
-// vpc.add-nat barrier. Order matters: clear the ENI record first so any
-// concurrent DescribeNetworkInterfaces stops surfacing the unreachable IP,
-// then release the IPAM lease so the pool slot can be reused, then detach
-// and delete the ENI itself — the failing instance never enters vmMgr, so
-// terminateCleanup will not run and the ENI would otherwise leak. Detach
-// must precede DeleteNetworkInterface; the latter rejects in-use ENIs.
+// rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI
+// public IP record, releases the IPAM lease, then detaches and deletes the ENI.
 func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(accountID, instanceID, eniID, publicIP, poolName string) {
 	if s.eniCreator != nil {
 		if err := s.eniCreator.UpdateENIPublicIP(accountID, eniID, "", ""); err != nil {

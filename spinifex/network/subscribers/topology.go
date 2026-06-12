@@ -71,8 +71,7 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 	}
 	ctx := context.Background()
 	// vpc.create and vpc.create-subnet have no ordering guarantee; pre-ensure
-	// the VPC router so a tight bootstrap doesn't fail with "router not
-	// found". EnsureVPC is idempotent.
+	// the VPC router for tight bootstraps. EnsureVPC is idempotent.
 	if err := s.topology.EnsureVPC(ctx, topology.VPCSpec{VPCID: evt.VpcId}); err != nil {
 		slog.Error("subscribers: EnsureVPC (subnet pre-create) failed", "vpc_id", evt.VpcId, "err", err)
 		respond(msg, err)
@@ -87,9 +86,7 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	// The IMDS localport lives on every subnet switch (guests reach metadata over
-	// one L2 hop). Install is best-effort — the reconciler re-ensures it
-	// idempotently, so a transient OVN failure here must not fail CreateSubnet.
+	// IMDS localport lives on every subnet switch. Best-effort; reconciler re-ensures it.
 	if s.imds != nil {
 		if _, err := s.imds.EnsureForSubnet(ctx, evt.SubnetId, evt.VpcId, cidr); err != nil {
 			slog.Warn("subscribers: IMDS EnsureForSubnet failed; reconciler will converge", "subnet_id", evt.SubnetId, "err", err)
@@ -112,8 +109,7 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 		}
 	}
 	ctx := context.Background()
-	// Remove the IMDS localport before the subnet switch goes away — the
-	// localport lives on subnet-{subnetID}.
+	// Remove the IMDS localport before the subnet switch goes away.
 	if s.imds != nil {
 		if err := s.imds.RemoveForSubnet(ctx, evt.SubnetId); err != nil {
 			slog.Error("subscribers: IMDS RemoveForSubnet failed", "subnet_id", evt.SubnetId, "err", err)
@@ -302,10 +298,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 		"vpc_id", evt.VpcId, "natgw_id", evt.NatGatewayId,
 		"public_ip", evt.PublicIp, "subnet_cidr", evt.SubnetCidr)
 
-	// SNAT rewrites src IP but the LR still needs a route to egress. Install
-	// a per-subnet LR policy at NATGW priority so private-subnet packets are
-	// rerouted out the IGW gateway port (NATGW SNAT happens on the same LR
-	// before egress).
+	// SNAT rewrites src IP but the LR still needs a per-subnet reroute policy.
 	if evt.SubnetId == "" {
 		return
 	}
@@ -372,8 +365,7 @@ func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 		return
 	}
 	ctx := context.Background()
-	// Remove the per-subnet policy first so no packets are routed to the LR
-	// uplink after the SNAT rule is gone (which would leak un-NAT'd private IPs).
+	// Remove per-subnet policy before SNAT to avoid leaking un-NAT'd private IPs.
 	if evt.SubnetId != "" {
 		destCidr := evt.DestinationCidr
 		if destCidr == "" {

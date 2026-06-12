@@ -23,19 +23,13 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// SubnetVPCResolver resolves a subnet ID to its parent VPC ID and the VPC's
-// CIDR block. Narrow so EKSServiceImpl can stay free of the wider
-// handlers/ec2/vpc surface; the daemon adapts VPCServiceImpl onto this
-// contract.
+// SubnetVPCResolver resolves a subnet to its VPC ID and CIDR.
 type SubnetVPCResolver interface {
 	GetSubnetVPC(accountID, subnetID string) (vpcID string, err error)
 	GetVPCCIDR(accountID, vpcID string) (cidr string, err error)
 }
 
-// EKSServiceDeps wires every external collaborator EKSServiceImpl needs.
-// The narrow per-area interfaces (sgProvisioner, nlbProvisioner, etc.) are
-// already defined alongside their consumers; the daemon adapts each
-// service's concrete type onto the interface.
+// EKSServiceDeps wires the external collaborators EKSServiceImpl needs.
 type EKSServiceDeps struct {
 	Config         *config.Config
 	NATSConn       *nats.Conn
@@ -44,13 +38,8 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
-	// Gateway broker config handed to the K3s server VM so it can publish its
-	// bootstrap envelopes + state reports via SigV4-signed HTTPS POST to the AWS
-	// gateway (the ELBv2 lb-agent model) instead of dialing core NATS.
-	// SystemGatewayURL is the mgmt-reachable AWSGW endpoint (distinct from
-	// GatewayBaseURL, which is the OIDC issuer host); SystemAccessKey/SecretKey
-	// are the system (Predastore) SigV4 creds; GatewayCACert is the PEM that
-	// signs the gateway server cert.
+	// Gateway broker config for the K3s server VM (SigV4 HTTPS to AWSGW).
+	// SystemGatewayURL is the mgmt-reachable endpoint; GatewayCACert signs its TLS cert.
 	SystemGatewayURL string
 	SystemAccessKey  string
 	SystemSecretKey  string
@@ -65,42 +54,28 @@ type EKSServiceDeps struct {
 	EIP       eipProvisioner
 	Worker    WorkerLauncher
 
-	// PlacementGroup reserves distinct hosts for HA control-plane spread;
-	// Scheduler answers the capacity + placement fan-out the spread path needs.
-	// The daemon wires the NATS implementations.
+	// PlacementGroup and Scheduler support HA control-plane spread (NATS-backed).
 	PlacementGroup controlPlanePlacer
 	Scheduler      HostScheduler
 
-	// AddonInstaller delivers managed-addon manifests to clusters. Optional:
-	// when nil the service defaults to the KV staging installer
-	// (newStagingInstaller) bound to NATSConn.
+	// AddonInstaller delivers managed-addon manifests; nil defaults to the KV staging installer.
 	AddonInstaller AddonInstaller
 }
 
-// WorkerLauncher is the narrow EC2 surface CreateNodegroup needs to launch and
-// terminate nodegroup worker instances. Workers go through the normal
-// customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC) so they are
-// visible in DescribeInstances and reclaimed by TerminateInstances like any
-// other customer EC2. The daemon adapts its concrete instance service onto this.
-// Exported so the daemon can assert *Daemon satisfies it with a compile-time
-// check.
+// WorkerLauncher is the narrow EC2 surface for launching nodegroup worker instances.
+// Workers use the customer-owned RunInstances path (no ManagedBy tag, no mgmt NIC).
 type WorkerLauncher interface {
 	RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(instanceIDs []string, accountID string) error
 }
 
-// eipProvisioner is the narrow EIP surface CreateCluster needs to give the
-// hidden K3s control-plane VM an egress-only public IP (the distributed-NAT
-// dev/edge topology has no shared masquerade address). The daemon adapts the
-// concrete EIP service onto this.
+// eipProvisioner is the narrow EIP surface for allocating a CP VM egress IP.
 type eipProvisioner interface {
 	AllocateAddress(input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error)
 	ReleaseAddress(input *ec2.ReleaseAddressInput, accountID string) (*ec2.ReleaseAddressOutput, error)
 }
 
-// EKSServiceImpl is the daemon-side EKSService. CreateCluster /
-// DescribeCluster / ListClusters / DeleteCluster have real bodies; every
-// other action is still NotImplemented pending follow-up sprints.
+// EKSServiceImpl is the daemon-side EKSService implementation.
 type EKSServiceImpl struct {
 	deps     EKSServiceDeps
 	leaderKV nats.KeyValue
@@ -110,27 +85,18 @@ type EKSServiceImpl struct {
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 
-	// launchWG tracks in-flight asynchronous create launches (control-plane and
-	// nodegroup VM provisioning kicked off after the fast CREATING response).
-	// Not part of request handling — exists so tests can deterministically await
-	// launch completion (WaitLaunches).
+	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
 
-// WaitLaunches blocks until all asynchronous create launches started by this
-// service have finished. Intended for tests; production create handlers return
-// as soon as the CREATING record is claimed.
+// WaitLaunches blocks until all async create launches finish. Intended for tests.
 func (s *EKSServiceImpl) WaitLaunches() { s.launchWG.Wait() }
 
 const defaultK8sVersion = "1.32"
 
-// NewEKSServiceImpl wires the Store, leader bucket, reconciler registry, and
-// per-cluster background-goroutine context. Validates that MasterKey,
-// GatewayBaseURL, Region, and HolderID are set when called from the live
-// daemon path; the legacy NewEKSServiceImplWithNATS shim leaves them empty
-// and bodies that need them return ServerInternal.
+// NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
@@ -153,10 +119,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}, nil
 }
 
-// NewEKSServiceImplWithNATS is a back-compat shim. Bodies that need
-// orchestration deps return ServerInternal when invoked through this shim;
-// the daemon-handler routing test calls it to verify NATS subject wiring
-// without standing up the full dependency graph.
+// NewEKSServiceImplWithNATS is a back-compat shim for tests that only need NATS wiring.
 func NewEKSServiceImplWithNATS(cfg *config.Config, nc *nats.Conn) (*EKSServiceImpl, error) {
 	return NewEKSServiceImpl(EKSServiceDeps{Config: cfg, NATSConn: nc})
 }
@@ -173,10 +136,7 @@ func (s *EKSServiceImpl) Shutdown() {
 	s.registry.StopAll()
 }
 
-// SpawnRegisteredReconcilers enumerates every cluster in every per-account
-// bucket and registers a reconciler goroutine for each cluster in
-// CREATING or ACTIVE state. Called by the daemon on boot so a node restart
-// resumes lifecycle reconcile without waiting for the next CreateCluster.
+// SpawnRegisteredReconcilers resumes reconciler goroutines for all CREATING/ACTIVE clusters on daemon boot.
 func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 	if !s.depsReadyForOrchestration() {
 		slog.Debug("SpawnRegisteredReconcilers: deps not ready, skipping")
@@ -210,10 +170,7 @@ func (s *EKSServiceImpl) SpawnRegisteredReconcilers() error {
 			if meta.Status != ClusterStatusCreating && meta.Status != ClusterStatusActive {
 				continue
 			}
-			// A restart mid-CREATING lost the bootstrap subscriptions; the K3s
-			// VM publishes its one-shot core-NATS messages once and to nobody.
-			// Re-subscribe to whichever artifacts are still missing so the
-			// cluster can still reach ACTIVE instead of hanging in CREATING.
+			// Re-subscribe to missing artifacts; K3s publishes each one-shot message once.
 			if meta.Status == ClusterStatusCreating {
 				if pending := BootstrapPendingKinds(acctKV, cluster, meta); len(pending) > 0 {
 					slog.Info("SpawnRegisteredReconcilers: resuming bootstrap",
@@ -231,9 +188,7 @@ func (s *EKSServiceImpl) depsReadyForOrchestration() bool {
 	return len(s.missingOrchestrationDeps()) == 0
 }
 
-// requireOrchestrationDeps returns a client-facing ServiceUnavailable (with the
-// specific unmet deps logged at ERROR) when the daemon is missing orchestration
-// wiring, so the failure is diagnosable instead of a bare ServerInternal.
+// requireOrchestrationDeps returns ServiceUnavailable with missing deps logged when orchestration is not wired.
 func (s *EKSServiceImpl) requireOrchestrationDeps(op string) error {
 	missing := s.missingOrchestrationDeps()
 	if len(missing) == 0 {
@@ -243,9 +198,7 @@ func (s *EKSServiceImpl) requireOrchestrationDeps(op string) error {
 	return errors.New(awserrors.ErrorServiceUnavailable)
 }
 
-// missingOrchestrationDeps names the deps required for cluster orchestration
-// that are unset, so a "deps not ready" rejection can log the precise cause
-// instead of an opaque ServerInternal whose only hint is a one-time boot WARN.
+// missingOrchestrationDeps returns names of unset orchestration deps.
 func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 	var missing []string
 	if s.deps.VPCSG == nil {
@@ -295,22 +248,13 @@ func (s *EKSServiceImpl) missingOrchestrationDeps() []string {
 
 // --- Cluster ---
 
-// logCreateErr records the precise cause of a CreateCluster step failure at
-// ERROR. The request surface collapses these wrapped errors to an opaque
-// ServerInternal ("An internal error has occurred... contact AWS re:Post"), so
-// without this the wrapped error never reaches the operator. Returns the error
-// wrapped with the stage for the caller to surface.
+// logCreateErr logs a CreateCluster step failure at ERROR and returns it wrapped with the stage name.
 func logCreateErr(name, accountID, stage string, err error) error {
 	slog.Error("CreateCluster: "+stage+" failed", "cluster", name, "accountID", accountID, "err", err)
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-// managedIngressTagKey is the CreateCluster tag that controls K3s' bundled
-// traefik + servicelb (interim in-VPC app exposure). They are ON by default so
-// workloads are reachable before the AWS Load Balancer Controller add-on ships;
-// value "false" (case-insensitive) opts out for AWS parity. TODO: flip the
-// default back off (parity) once the aws-lb-controller add-on lands — see
-// docs/development/feature/eks-dataplane-ingress.md.
+// managedIngressTagKey controls K3s built-in traefik+servicelb; "false" opts out for AWS parity.
 const managedIngressTagKey = "spinifex.io/managed-ingress"
 
 // builtinIngressEnabled reports whether a cluster keeps the K3s built-in ingress
@@ -340,9 +284,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 
 	vpcID, err := s.deps.VPCSubnet.GetSubnetVPC(accountID, subnetIDs[0])
 	if err != nil {
-		// Subnet is a caller-supplied parameter — a resolve failure is a client
-		// fault (bad/foreign subnet), not an internal one. Surface it as such
-		// instead of collapsing to a retryable ServerInternal the SDK retries.
+		// Subnet resolve failure is a client fault (bad/foreign subnet).
 		slog.Error("CreateCluster: resolve subnet VPC failed",
 			"cluster", name, "accountID", accountID, "subnet", subnetIDs[0], "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -370,26 +312,13 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 		BuiltinIngress: builtinIngressEnabled(input.Tags),
 		CreatedAt:      time.Now().UTC(),
 	}
-	// Atomically claim the cluster name before any launching/fallible work. A
-	// duplicate CreateCluster (the SDK's own retry, or a gateway re-publish that
-	// spawns a second concurrent handler) loses the claim and is rejected — or,
-	// for a prior FAILED attempt, reclaims it — so exactly one handler ever
-	// launches control-plane VMs for a given name.
+	// Claim the cluster name before any launching; duplicate/retry handlers lose the claim.
 	if err := s.claimClusterName(accountID, acctKV, meta); err != nil {
 		return nil, err
 	}
 
-	// Respond with the cluster in CREATING immediately and run the launch
-	// (SGs, NLB, OIDC, control-plane VM boot, egress, target registration,
-	// bootstrap, reconciler) off the request goroutine. A multi-minute control-
-	// plane boot must not occupy the spinifex-workers subscription or the gateway
-	// times out and re-publishes the request, spawning a duplicate concurrent
-	// handler (267.4 — the same retry the 267.3 claim guards against). AWS itself
-	// returns the cluster in CREATING here; the client polls DescribeCluster to
-	// ACTIVE/FAILED.
-	// Snapshot the CREATING response before spawning the launch: the goroutine
-	// owns meta from here on (it mutates and re-persists it), so the request
-	// goroutine must not touch meta again.
+	// Respond CREATING immediately; run the slow launch on a background goroutine.
+	// The goroutine owns meta from here on — do not touch it after this point.
 	out := &eks.CreateClusterOutput{Cluster: clusterMetaToAWS(meta)}
 	s.launchWG.Go(func() {
 		defer func() {
@@ -430,11 +359,7 @@ type clusterLaunchCtx struct {
 	acctKV             nats.KeyValue
 }
 
-// failClusterLaunch records an asynchronous control-plane launch failure: it
-// marks the cluster FAILED (with reason, so DescribeCluster surfaces the cause
-// and the 267.3 reclaim path can recreate cleanly) and logs the stage. The
-// launch runs after the CREATING response was already sent, so a failure can
-// only surface as status, never as the CreateCluster return value.
+// failClusterLaunch logs a launch failure and marks the cluster FAILED so DescribeCluster surfaces the cause.
 func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID, stage string, err error) {
 	_ = logCreateErr(name, accountID, stage, err)
 	if mErr := MarkClusterFailed(kv, name, stage+": "+err.Error()); mErr != nil && !errors.Is(mErr, ErrClusterNotFound) {
@@ -442,11 +367,8 @@ func (s *EKSServiceImpl) failClusterLaunch(kv nats.KeyValue, name, accountID, st
 	}
 }
 
-// launchClusterInfra is CreateCluster's slow phase, run on a background
-// goroutine after the CREATING response is sent: security groups, the cluster
-// NLB, OIDC keypair, the control-plane VM(s), egress wiring, NLB target
-// registration, the creator-admin AccessEntry, and the bootstrap/reconciler
-// goroutines. Every failure path marks the cluster FAILED via failClusterLaunch.
+// launchClusterInfra is CreateCluster's slow phase (SGs, NLB, OIDC, CP VMs, egress, bootstrap).
+// Runs on a background goroutine; every failure marks the cluster FAILED.
 func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	accountID := lc.accountID
 	callerPrincipalARN := lc.callerPrincipalARN
@@ -467,9 +389,6 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	}
 	meta.ResourcesVpcConfig.SecurityGroupIds = []string{cpSG, ngSG}
 
-	// The NLB's backing LB VM forwards the published endpoint to the apiserver
-	// from inside the VPC, so the control-plane SG must admit that hop or the
-	// NLB target stays unhealthy and the endpoint never serves.
 	vpcCIDR, err := s.deps.VPCSubnet.GetVPCCIDR(accountID, vpcID)
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "resolve vpc cidr", err)
@@ -479,24 +398,17 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane ingress", err)
 		return
 	}
-	// HA control planes run servers 2..N as join servers whose embedded etcd must
-	// peer with the quorum; without these self-referencing CP-SG rules a join
-	// registers but its etcd never replicates, so the node never reports Ready.
 	if err := EnsureControlPlaneHAIngress(s.deps.VPCSG, accountID, cpSG); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "ensure control-plane HA ingress", err)
 		return
 	}
 
-	// Public access ⇒ internet-facing NLB (external-pool front-end IP, reachable
-	// on the LAN/edge network); private-only ⇒ internal NLB (VPC-only).
 	nlb, err := EnsureClusterNLB(s.deps.NLB, accountID, name, subnetIDs, publicAccess, publicCidrs)
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "ensure cluster NLB", err)
 		return
 	}
-	// Prefer the reachable front-end IP as the kubeconfig endpoint host so the
-	// apiserver serving cert (which SANs this IP) validates with TLS verification
-	// on. Fall back to the synthetic NLB DNS name when no IP was read back.
+	// Prefer the NLB front-end IP for TLS SAN validation; fall back to DNS name.
 	endpointHost := nlb.FrontendIP
 	if endpointHost == "" {
 		endpointHost = nlb.DNSName
@@ -506,11 +418,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
-	// Persist the NLB ARNs now, before any further fallible step. Without this
-	// a failure between here and the final PutClusterMeta would leave the NLB +
-	// target group + listener + backing LB VM created but unrecorded, so
-	// DeleteCluster (which keys teardown off the persisted ARNs) could not
-	// reclaim them.
+	// Persist NLB ARNs early so DeleteCluster can reclaim them on any later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "persist NLB arns", err)
 		return
@@ -534,9 +442,6 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		return
 	}
 
-	// Shared cluster token seeded into every control-plane server so the HA
-	// spread's servers 2..N join the first server's etcd quorum (and workers
-	// register). Single-CP clusters carry it too — harmless, one code path.
 	joinToken, err := GenerateK3sClusterToken()
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "generate k3s cluster token", err)
@@ -569,9 +474,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		s.failClusterLaunch(acctKV, name, accountID, "launch K3s VM", err)
 		return
 	}
-	// Mirror the primary ([0]) into the scalar fields the reconciler, egress
-	// wiring, and teardown read today. All CP nodes are NLB target-registered
-	// (failover); egress is still primary-only (separate hidden-pool /32 wire).
+	// Mirror primary CP ([0]) into scalar fields; all nodes are NLB-registered for failover.
 	primary := cpNodes[0]
 	meta.ControlPlaneNodes = cpNodes
 	meta.ControlPlaneSpreadGroup = spreadGroup
@@ -580,19 +483,12 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	meta.ControlPlaneENIIP = primary.ENIIP
 	meta.ControlPlaneMgmtIP = primary.MgmtIP
 
-	// Persist the CP VM + ENI + spread-group refs now, before any further fallible
-	// step. The VMs are live the moment placeControlPlane returns; without this a
-	// failure between here and the next PutClusterMeta (e.g. egress allocation)
-	// leaves them launched but unrecorded, so neither DeleteCluster nor the
-	// FAILED-cluster reclaim could reach them and the sys.medium VMs leak.
+	// Persist CP IDs immediately; VMs are live now and must not be orphaned on later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "persist control-plane ids", err)
 		return
 	}
 
-	// Egress: the control-plane VM must pull container images. Allocate a
-	// hidden pool address and wire an egress-only SNAT for its /32 (no DNAT —
-	// the VM stays unreachable inbound; the NLB is its only front door).
 	egressIP, egressAllocID, err := s.allocateClusterEgressIP(accountID, name)
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "allocate cluster egress IP", err)
@@ -607,8 +503,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		ExternalIp: egressIP,
 	})
 
-	// Record the egress allocation before registering the target so a failed
-	// register (or anything after) leaves it recoverable by DeleteCluster.
+	// Persist egress allocation so DeleteCluster can reclaim it on later failure.
 	if err := PutClusterMeta(acctKV, meta); err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, "persist egress allocation", err)
 		return
@@ -628,10 +523,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		return
 	}
 
-	// bootstrapClusterCreatorAdminPermissions (default true): grant the caller
-	// system:masters via an AccessEntry so the cluster creator can immediately
-	// authenticate through the token webhook (Q9). Keyed by the caller's exact
-	// principal ARN — the webhook looks the entry up by the same ARN STS returns.
+	// Seed creator system:masters AccessEntry so the token webhook can authenticate the creator immediately.
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
 		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
 			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
@@ -789,17 +681,8 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
 }
 
-// claimClusterName atomically takes ownership of the cluster's meta key before
-// CreateCluster does any launching work, closing the duplicate-handler race (an
-// SDK retry or a gateway re-publish spawning a second concurrent CreateCluster).
-// The fresh CREATING meta is laid down with kv.Create: the winner owns it. A
-// loser finds the key already present and either rejects (a live cluster) or,
-// for a prior FAILED attempt, reclaims it — flipping FAILED→CREATING via CAS so
-// exactly one concurrent reclaimer wins, then purging the old attempt's infra
-// (keeping the meta key as its lock) before laying down the fresh record. The
-// old resource refs stay in the record until teardown confirms the infra is
-// gone, so a crash mid-purge leaves them recoverable rather than orphaned.
-// Returns an AWS-shaped error ready to hand back to the caller.
+// claimClusterName atomically claims the cluster meta key before any launch work.
+// A prior FAILED attempt is reclaimed via CAS (FAILED→CREATING); live clusters reject with ResourceInUse.
 func (s *EKSServiceImpl) claimClusterName(accountID string, acctKV nats.KeyValue, meta *ClusterMeta) error {
 	name := meta.Name
 	data, err := json.Marshal(meta)
@@ -813,10 +696,7 @@ func (s *EKSServiceImpl) claimClusterName(accountID string, acctKV nats.KeyValue
 		return logCreateErr(name, accountID, "claim cluster name", cerr)
 	}
 
-	// Key already present. Reclaim only a prior FAILED attempt; flip its status
-	// to CREATING via CAS so exactly one concurrent reclaimer wins. The mutate
-	// changes only Status, so the old resource refs survive in the record for
-	// teardown below (and for a retry if we crash before clearing them).
+	// Key already present: reclaim a FAILED attempt via CAS; old refs survive for teardown.
 	var oldRefs *ClusterMeta
 	reclaimed := false
 	if err := casUpdateMeta(acctKV, name, func(m *ClusterMeta) bool {
@@ -1034,9 +914,7 @@ func (s *EKSServiceImpl) DeleteNodegroup(input *eks.DeleteNodegroupInput, accoun
 
 // --- AccessEntry + AccessPolicy ---
 
-// acctKVForCluster opens the per-account bucket and verifies the cluster exists,
-// translating absence to the AWS ResourceNotFoundException shape. The
-// AccessEntry handlers all need both.
+// acctKVForCluster opens the per-account bucket and verifies the cluster exists.
 func (s *EKSServiceImpl) acctKVForCluster(accountID, cluster string) (nats.KeyValue, error) {
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1072,8 +950,7 @@ func (s *EKSServiceImpl) CreateAccessEntry(input *eks.CreateAccessEntryInput, ac
 		entryType = AccessEntryTypeStandard
 	}
 	if entryType != AccessEntryTypeStandard {
-		// Node-type entries (EC2_LINUX/etc.) need the nodegroup join path; reject
-		// until Sprint 6d wires them.
+		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	acctKV, err := s.acctKVForCluster(accountID, cluster)

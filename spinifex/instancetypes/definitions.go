@@ -68,14 +68,8 @@ type cpuGeneration struct {
 }
 
 // vendorSiblingFamily maps an x86_64 family to its cross-vendor counterpart
-// (Intel ↔ AMD) within the same generation tier. Resource shape (vCPU /
-// memory ratio per size) is identical between siblings, so a host that can
-// run t3.medium can run t3a.medium on the same KVM substrate. Used by
-// generateForGeneration so any x86_64 host accepts requests for either
-// vendor family — load balances across mixed Intel + AMD clusters.
-//
-// ARM (Graviton t4g/c?g/m?g/r?g) and legacy Intel-only (t2, c4, m4, r4)
-// families have no cross-vendor sibling and are omitted.
+// (Intel ↔ AMD) within the same generation tier. Siblings share the same vCPU/memory
+// ratios, so a mixed Intel+AMD cluster can serve either vendor family.
 var vendorSiblingFamily = map[string]string{
 	"t3": "t3a", "t3a": "t3",
 	"c5": "c5a", "c5a": "c5",
@@ -129,8 +123,6 @@ type instanceFamilyDef struct {
 	sizes      []instanceSize
 	currentGen bool
 }
-
-// Size tables for each instance category
 
 var burstableSizes = []instanceSize{
 	{"nano", 2, 0.5},
@@ -299,26 +291,9 @@ var systemSizes = []instanceSize{
 	{"medium", 2, 4},    // 2 vCPU, 4 GB — EKS k3s control-plane VMs
 }
 
-// instanceFamilyDefs defines all supported instance families with their vendor and sizes.
-//
-// We support the core families across burstable, general purpose, compute optimized,
-// and memory optimized categories. The following AWS family categories are intentionally
-// excluded because they require specialized hardware not available on standard bare-metal hosts:
-//
-//   - Local disk variants (d/n suffixes): c5d, c5ad, c5n, m5d, m5ad, m5n, m5dn, m5zn, r5d, r5ad,
-//     r5n, r5dn, r5b, c6gd, c6gn, c6id, c6in, m6gd, m6id, m6idn, m6in, r6gd, r6id, r6idn, r6in,
-//     c7gd, c7gn, c7i-flex, m7gd, m7i-flex, r7gd, r7iz, c8gd, c8gn, c8i-flex, m8gd, m8i-flex,
-//     r8gd, r8gn, r8gb, r8i-flex — require NVMe instance storage or enhanced networking
-//   - Multi-GPU only: g4dn 12xlarge, p3 8/16xlarge, p3dn 24xlarge, p4d/p4de 24xlarge, p5/p5e 48xlarge
-//   - AWS-proprietary accelerators: inf1, inf2, trn1, trn2, dl1, dl2q — Inferentia/Trainium chips, AWS-only hardware
-//   - Unsupported GPU: g2, g6f, gr6f, p2, p6 — too old (g2/p2), future/unannounced (p6), or insufficient hardware availability (g6f/gr6f)
-//   - Storage optimized: d2, d3, d3en, h1, i2-i8g, i7ie, i8ge, im4gn, is4gen — require dense HDD/NVMe
-//   - FPGA: f1, f2 — require FPGA hardware
-//   - High memory: u-*, u7i-*, x1, x1e, x2gd, x2idn, x2iedn, x2iezn, x8g — require TB-scale memory
-//   - High frequency: z1d — specialized high clock-speed instances
-//   - (unsupported) Dedicated host: mac*, hpc* — require macOS/Apple hardware or HPC interconnects
-//   - (unsupported) Video: vt1 — requires video transcoding hardware
-//   - Legacy (pre-gen4): a1, c1, c3, cc1, cc2, cg1, cr1, hi1, hs1, m1, m2, m3, r3, t1
+// instanceFamilyDefs lists all supported instance families. Excluded families require
+// hardware not available on bare-metal: local NVMe, Inferentia/Trainium, FPGAs, TB-scale
+// memory, multi-GPU-only sizes, or macOS/HPC interconnects.
 var instanceFamilyDefs = []instanceFamilyDef{
 	// Burstable
 	{name: "t2", sizes: burstableSizes, currentGen: false},

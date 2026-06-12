@@ -20,10 +20,8 @@ const (
 	KeyPrefixCert = "cert."
 )
 
-// CertRecord is the stored representation of an imported certificate. PEM
-// material (leaf, chain, private key) is held alongside the parsed metadata
-// surfaced by DescribeCertificate. AccountID scopes ownership so list/describe
-// never cross account boundaries.
+// CertRecord is the stored representation of an imported certificate.
+// AccountID scopes ownership so list/describe never cross account boundaries.
 type CertRecord struct {
 	CertificateArn   string    `json:"certificate_arn"`
 	AccountID        string    `json:"account_id"`
@@ -62,8 +60,7 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 	return &Store{kv: kv}, nil
 }
 
-// certKey derives the KV key from a certificate ARN. The ARN's certificate ID
-// (the UUID after "certificate/") is the stable per-record key.
+// certKey derives the KV key from a certificate ARN using the UUID after "certificate/".
 func certKey(certArn string) string {
 	id := certArn
 	if i := strings.LastIndex(certArn, "/"); i >= 0 {

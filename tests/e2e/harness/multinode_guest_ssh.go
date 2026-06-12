@@ -14,13 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 )
 
-// GuestSSHEndpoint resolves (host, 22) for SSH-ing into a guest VM via its
-// public IP.
-//
-// There is deliberately NO qemu-hostfwd fallback (see InstancePublicSSHHost):
-// hostfwd bypasses the OVN datapath, so reaching a guest through it would mask
-// the networking regressions these tests exist to catch. A running instance
-// with no public IP is a hard failure.
+// GuestSSHEndpoint resolves (host, 22) for SSH-ing into a guest VM. No
+// qemu-hostfwd fallback: hostfwd bypasses the OVN datapath (see
+// InstancePublicSSHHost). A running instance with no public IP is a hard failure.
 func GuestSSHEndpoint(t *testing.T, c *AWSClient, cluster *Cluster, instanceID string, opts ...PollOpt) (host string, port int) {
 	t.Helper()
 	_ = cluster // retained for signature stability; node hostfwd lookup removed

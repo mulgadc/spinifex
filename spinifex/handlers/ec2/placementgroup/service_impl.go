@@ -317,9 +317,7 @@ func (s *PlacementGroupServiceImpl) UpdatePlacementGroupRecord(accountID, groupN
 const maxCASRetries = 5
 
 // ReserveSpreadNodes atomically reserves node slots for a spread placement group launch.
-// It reads the group record, filters eligible nodes (excluding already-occupied ones),
-// selects nodes, writes placeholder entries, and returns the selected nodes.
-// Uses CAS with retries following the IPAM pattern.
+// Filters occupied nodes, selects up to MaxCount, writes placeholders via CAS with retries.
 func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(input *ReserveSpreadNodesInput, accountID string) (*ReserveSpreadNodesOutput, error) {
 	if input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

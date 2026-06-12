@@ -8,11 +8,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// SubnetVethRecord is the persisted per-subnet IMDS plumbing record
-// (KVBucketIMDSSubnetVeth, keyed by subnet ID): the signal that a subnet's IMDS
-// localport is installed, replayed by each chassis's BindManager. It carries the
-// LSP MAC and the subnet CIDR the host can't re-derive, plus the owning VPC for
-// the subnet→VPC reverse lookup.
+// SubnetVethRecord is the per-subnet IMDS plumbing record stored in KVBucketIMDSSubnetVeth.
+// Replayed by each chassis's BindManager; carries MAC and CIDR fields the host cannot re-derive.
 type SubnetVethRecord struct {
 	SubnetID      string `json:"subnet_id"`
 	ShortSubnetID string `json:"short_subnet_id"`
@@ -22,9 +19,7 @@ type SubnetVethRecord struct {
 	CreatedAt     string `json:"created_at"`
 }
 
-// VethStore is the persistence surface for SubnetVethRecord rows in
-// KVBucketIMDSSubnetVeth. Backed by a NATS JetStream KV bucket opened by
-// InitBuckets in production; tests inject the handle via NewVethStore.
+// VethStore is the persistence surface for SubnetVethRecord rows in KVBucketIMDSSubnetVeth.
 type VethStore struct {
 	kv nats.KeyValue
 }

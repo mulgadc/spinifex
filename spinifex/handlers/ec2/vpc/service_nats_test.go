@@ -207,11 +207,8 @@ func TestNATSVPCService_Timeout(t *testing.T) {
 	_, nc := setupTestVPCServiceWithNC(t)
 	client := &NATSVPCService{natsConn: nc}
 
-	// Use a very short timeout to make the test fast
-	// We can't easily override the 30s timeout in the production code,
-	// so instead test with a topic that has no subscriber.
-	// The standard NATSVPCService uses 30s which is too long for tests.
-	// Just verify the constructor works.
+	// Production code uses a 30s timeout; just verify the constructor works
+	// without exercising the full round-trip.
 	_ = client
 	_ = time.Second // reference time package
 }

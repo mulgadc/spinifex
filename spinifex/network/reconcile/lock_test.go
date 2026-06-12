@@ -8,11 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAcquireLeader_GetOrCreateAcrossCalls pins the get-or-create fix: the
-// first acquire creates the bucket and wins, a second acquire while the lock is
-// held must attach to the now-existing bucket (not hang on "stream name already
-// in use") and lose cleanly, and once the winner releases a later acquire wins
-// again.
+// TestAcquireLeader_GetOrCreateAcrossCalls pins the get-or-create fix: first
+// acquire creates the bucket and wins; second must attach (not hang on "stream
+// name already in use") and lose; after release a new acquire wins.
 func TestAcquireLeader_GetOrCreateAcrossCalls(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 

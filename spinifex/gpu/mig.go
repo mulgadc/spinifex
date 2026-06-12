@@ -166,11 +166,9 @@ func createComputeInstance(pciAddr string, giID int) (int, error) {
 	return parseCreatedCIID(string(out))
 }
 
-// enrichMdevPaths walks basePath (/sys/bus/mdev/devices) and matches UUIDs to
-// instances by reading each entry's symlink target (which contains the parent
-// GPU's PCI address) and the GI ID from the gpu_instance_id sysfs attribute.
-// basePath is parameterised so tests can inject a temp directory with fake
-// symlinks without touching real sysfs.
+// enrichMdevPaths matches mdev UUIDs to instances via symlink target (parent GPU
+// PCI address) and gpu_instance_id sysfs attribute. basePath is parameterised
+// so tests can inject a temp dir without touching real sysfs.
 func enrichMdevPaths(basePath, pciAddr string, instances []MIGInstance) error {
 	entries, err := os.ReadDir(basePath)
 	if err != nil {

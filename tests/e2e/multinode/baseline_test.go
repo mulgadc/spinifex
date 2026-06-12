@@ -19,31 +19,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Fresh-install reachability baselines for the multi-node cluster. These run
-// right after preflight and before any test triggers needInstanceTrio (which
-// authorizes SSH on the default SG), so the default SG / subnet / route table
-// are observed in their pristine, out-of-box state.
+// Fresh-install reachability baselines. Run before needInstanceTrio so the
+// default SG/subnet/route-table are in their pristine state.
 //
-// Two facts they pin:
-//
-//   - runMultinodeDefaultSGReachabilityBaseline: an instance in the default
-//     subnet behind a dedicated default-deny SG is NOT reachable from the
-//     runner until tcp/22 is authorized — the SG, not routing, is the gate.
-//
-//   - runMultinodeSameSGCrossHostComms: two instances on DIFFERENT nodes that
-//     share the default SG can reach each other over the VPC datapath with no
-//     ingress rule added — the default SG's self-reference rule is enforced as
-//     an OVN address set spanning chassis. The probe is ICMP, which only the
-//     default SG's self-ingress permits, so the signal can't be confounded by
-//     the tcp/22 rule other tests add to the default SG later.
-//
-// Neither mutates a default resource: dedicated SGs are authorized, the
-// default SG is only read / used for membership.
+//   - runMultinodeDefaultSGReachabilityBaseline: proves the SG (not routing)
+//     gates external tcp/22 — blocked before authorize, reachable after.
+//   - runMultinodeSameSGCrossHostComms: proves the default SG self-reference
+//     rule spans chassis — ICMP between two instances on different nodes
+//     succeeds with no added ingress rule.
 
-// baselineLaunch launches one instance with the given SGs into subnetID and
-// registers a terminate-and-wait cleanup. Returns the instance ID once
-// "running". Self-cleaning so the cluster VM inventory is unperturbed for
-// sibling tests.
+// baselineLaunch launches one instance with the given SGs into subnetID,
+// registers a terminate-and-wait cleanup, and returns the instance ID once "running".
 func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnetID string, sgIDs []string) string {
 	t.Helper()
 	sgs := make([]*string, 0, len(sgIDs))
@@ -98,8 +84,7 @@ func instancePrivateIP(t *testing.T, fix *Fixture, id string) string {
 	return ip
 }
 
-// sshCapture runs cmd over SSH and returns combined output + error without
-// fataling, so callers can assert on the exit status (ping success/failure).
+// sshCapture runs cmd over SSH and returns combined output + error without fataling.
 func sshCapture(pem, user, host string, port int, cmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -160,11 +145,9 @@ func runMultinodeDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 	assert.Containsf(t, out, "ec2-user", "ssh id after authorize\n%s", out)
 }
 
-// runMultinodeSameSGCrossHostComms launches two instances on different nodes,
-// both in the default SG plus a dedicated runner-SSH SG, and asserts that one
-// can ICMP-ping the other over the VPC. ICMP is permitted only by the default
-// SG's self-reference rule, so success proves that rule is enforced across
-// chassis with no default-SG mutation.
+// runMultinodeSameSGCrossHostComms launches two instances on different nodes sharing
+// the default SG and asserts ICMP-ping succeeds across hosts. ICMP is permitted only
+// by the default SG self-reference rule, proving it is enforced across chassis.
 func runMultinodeSameSGCrossHostComms(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Baseline: same default-SG instances communicate across hosts")
 
@@ -173,14 +156,13 @@ func runMultinodeSameSGCrossHostComms(t *testing.T, fix *Fixture) {
 	amiID := needAMI(t, fix, arch)
 	keyName, keyPath := needKeyPair(t, fix)
 
-	// Dedicated SG so the runner can SSH into a probe instance without touching
-	// the default SG. Opens tcp/22 only — ICMP between guests still depends on
-	// the default SG's self-ingress, keeping the cross-host signal clean.
+	// Dedicated SG for runner SSH — opens tcp/22 only; ICMP between guests
+	// still depends on the default SG self-ingress, keeping the signal clean.
 	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, "baseline-runnersg")
 	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)
 
-	// Launch instances until two land on distinct nodes (best-effort scheduler
-	// spread). Bounded so a degenerate single-node placement can't loop.
+	// Launch instances until two land on distinct nodes. Bounded so a degenerate
+	// single-node placement can't loop forever.
 	type placed struct {
 		id   string
 		node string

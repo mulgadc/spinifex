@@ -785,10 +785,9 @@ type volumeModificationResult struct {
 	err          error
 }
 
-// fetchVolumeModificationsByIDs reads each requested volume's config in
-// parallel, returning a result slice positionally aligned with volumeIDs.
-// Cross-tenant volumes surface as InvalidVolume.NotFound, mirroring
-// DescribeVolumes' silent tenant scoping.
+// fetchVolumeModificationsByIDs reads each requested volume's config in parallel,
+// returning results positionally aligned with volumeIDs. Cross-tenant volumes surface
+// as InvalidVolume.NotFound.
 func (s *VolumeServiceImpl) fetchVolumeModificationsByIDs(volumeIDs []*string, accountID string) []volumeModificationResult {
 	results := make([]volumeModificationResult, len(volumeIDs))
 	var wg sync.WaitGroup
@@ -980,10 +979,8 @@ func (s *VolumeServiceImpl) GetVolumeConfig(volumeID string) (*viperblock.Volume
 	return cfg, err
 }
 
-// getVolumeConfigAndEncryption reads config.json and surfaces both the
-// VolumeConfig and the authoritative VBState.EncryptionEnabled flag. Wrapper-
-// only blobs (pre-VBState volumes or freshly-seeded test fixtures) report
-// encryptionEnabled=false — they predate encryption-at-rest by construction.
+// getVolumeConfigAndEncryption reads config.json and returns the VolumeConfig plus the
+// VBState.EncryptionEnabled flag. Pre-VBState blobs report encryptionEnabled=false.
 func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*viperblock.VolumeConfig, bool, error) {
 	configKey := volumeID + "/config.json"
 
@@ -1043,16 +1040,9 @@ func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.Vol
 	return nil
 }
 
-// mergeVolumeConfig reads existing config.json from S3 and merges the new
-// VolumeConfig into it, preserving full VBState when present. If no existing
-// VBState is found, it returns a plain volumeConfigWrapper.
-//
-// Refuses to merge an encrypted-at-rest VBState: the persisted blob carries a
-// trailing 16-byte AES-GCM tag bound to the JSON bytes, and re-marshaling
-// here without the master key would strip the tag and brick the volume.
-// Spinifex does not currently hold the viperblock master key, so the safe
-// behavior is to fail loud rather than silently corrupt the on-disk state.
-// Track full encryption-aware merge under a separate bead.
+// mergeVolumeConfig reads existing config.json from S3 and merges the new VolumeConfig
+// into it, preserving full VBState when present. Refuses to merge encrypted VBState —
+// re-marshaling without the master key would corrupt the on-disk AES-GCM tag.
 func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.VolumeConfig) ([]byte, error) {
 	getResult, err := s.store.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -1072,10 +1062,8 @@ func (s *VolumeServiceImpl) mergeVolumeConfig(configKey string, cfg *viperblock.
 		return nil, fmt.Errorf("failed to read existing config: %w", err)
 	}
 
-	// Decoder (not Unmarshal) so a trailing 16-byte AES-GCM tag does not
-	// produce a parse error and route the body to the wrapper-only path —
-	// that would silently overwrite an encrypted config.json with a tag-less
-	// blob and brick the volume.
+	// Use Decoder (not Unmarshal): a trailing AES-GCM tag must not cause a parse error
+	// that would silently route to the wrapper-only path and brick the volume.
 	var state viperblock.VBState
 	if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&state); decodeErr != nil || state.BlockSize == 0 {
 		// Not a full VBState (new volume or wrapper-only) -- write wrapper
@@ -1180,10 +1168,8 @@ func (s *VolumeServiceImpl) ModifyVolume(input *ec2.ModifyVolumeInput, accountID
 	}
 	targetIOPS := int64(volMeta.IOPS)
 
-	// Persist the modification record alongside the volume metadata so
-	// DescribeVolumesModifications can read it back. spinifex applies
-	// modifications synchronously, so the persisted state is always
-	// completed/100/EndTime==StartTime.
+	// Persist the modification record so DescribeVolumesModifications can read it back.
+	// Modifications are synchronous, so state is always completed/100.
 	now := time.Now()
 	cfg.Modification = &viperblock.VolumeModification{
 		VolumeID:           volumeID,

@@ -1,9 +1,7 @@
 package types
 
 // EC2InstanceCommand is the NATS wire format for EC2 instance commands
-// (stop, terminate, start, attach-volume, detach-volume, attach-eni,
-// detach-eni). It replaces direct use of qmp.Command on the gateway→daemon
-// boundary.
+// (stop, terminate, start, attach/detach-volume, attach/detach-eni).
 type EC2InstanceCommand struct {
 	ID                        string                     `json:"id"`
 	Attributes                EC2CommandAttributes       `json:"attributes"`
@@ -54,10 +52,8 @@ type DetachENIData struct {
 }
 
 // IamProfileAssociationData carries parameters for an associate-iam-instance-profile
-// command. The gateway has already resolved the profile reference to a canonical
-// ARN and enforced iam:PassRole — the daemon only needs the ARN to persist on
-// vm.VM. The new AssociationId is generated daemon-side under the vmMgr lock,
-// so it does not appear in the request payload.
+// command. The gateway resolves the ARN and enforces iam:PassRole; the daemon
+// only needs the ARN to persist on vm.VM.
 type IamProfileAssociationData struct {
 	InstanceProfileArn string `json:"instance_profile_arn"`
 }

@@ -323,9 +323,8 @@ func runIAMAccessKeyLifecycle(t *testing.T, fix *Fixture) {
 func runIAMUserAuthentication(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM User Authentication")
 	// Daemon does not yet honour active-key signatures created via the IAM
-	// API — every scoped DescribeInstances returns 403. Skip-gate until
-	// the handler lands; mulga-siv-100 tracks the daemon-side work.
-	t.Skip("daemon IAM signature/principal lookup not implemented — mulga-siv-100")
+	// API — every scoped DescribeInstances returns 403.
+	t.Skip("daemon IAM signature/principal lookup not implemented")
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 
 	harness.Step(t, "scoped client (alice) describe-instances — active key OK")
@@ -559,10 +558,9 @@ func runIAMPolicyCRUD(t *testing.T, fix *Fixture) {
 // bypass / prefix wildcard / FullAdmin), DetachUserPolicy.
 func runIAMPolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM Policy Attachment IAM Phase 5 — Policy Attachment & Enforcement Enforcement")
-	// Enforcement depends on scoped-credential signing (Phase 3) which the
-	// daemon doesn't honour yet — mulga-siv-100. Skip-gate the whole phase
-	// until the upstream gap closes.
-	t.Skip("daemon IAM scoped-credential enforcement not implemented — mulga-siv-100")
+	// Enforcement depends on scoped-credential signing which the daemon
+	// doesn't honour yet.
+	t.Skip("daemon IAM scoped-credential enforcement not implemented")
 	adminAccount := iamEnsureAdminAccountID(t, fix)
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 	bobKeyID, bobSecret := iamEnsureBobKey(t, fix)
@@ -733,10 +731,9 @@ func runIAMPolicyAttachmentEnforcement(t *testing.T, fix *Fixture) {
 // delete the policy is gone (NoSuchEntity).
 func runIAMPolicyLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IAM Policy Lifecycle (Detach IAM Phase 6 — Policy Lifecycle (Detach & Delete) Delete)")
-	// DetachUserPolicy returns 404 NoSuchEntity even for attachments
-	// confirmed by Phase 5 — daemon's attachment ledger isn't persisted
-	// across the API boundary. Skip-gate; mulga-siv-100 tracks the fix.
-	t.Skip("daemon DetachUserPolicy not implemented — mulga-siv-100")
+	// DetachUserPolicy returns 404 NoSuchEntity even for confirmed attachments —
+	// the daemon's attachment ledger isn't persisted across the API boundary.
+	t.Skip("daemon DetachUserPolicy not implemented")
 	adminAccount := iamEnsureAdminAccountID(t, fix)
 	aliceKeyID, aliceSecret := iamEnsureAliceKey(t, fix)
 

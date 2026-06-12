@@ -11,10 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// NATSClient is the daemon-side wrapper around vpcd's Manager. It
-// marshals acquire/release requests over NATS request/reply and
-// unmarshals the Lease returned by the bridge-owning vpcd. Used by
-// ExternalIPAM (Q4) for DHCP-sourced pools.
+// NATSClient is the daemon-side DHCP wrapper: marshals acquire/release RPC
+// calls over NATS to the bridge-owning vpcd.
 type NATSClient struct {
 	nc      *nats.Conn
 	timeout time.Duration
@@ -30,10 +28,8 @@ func NewNATSClient(nc *nats.Conn, timeout time.Duration) *NATSClient {
 	return &NATSClient{nc: nc, timeout: timeout}
 }
 
-// AcquireParams is the wire-level acquire payload. Bridge/HWAddr are
-// passed through to the vpcd-side Client.Acquire; Purpose/PoolName/
-// VPCID let the manager persist the lease against the right pool
-// record.
+// AcquireParams is the wire-level acquire payload; fields map to Client.Acquire
+// and the KV record's purpose/pool/vpc metadata.
 type AcquireParams struct {
 	Bridge      string
 	ClientID    string

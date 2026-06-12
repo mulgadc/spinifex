@@ -30,16 +30,9 @@ func SpxBin() string {
 }
 
 // spxChildEnv returns a sanitized environment for `spx` child processes.
-// spx CLI calls viper.AutomaticEnv() with prefix "SPINIFEX" inside
-// config.LoadConfig (spinifex/spinifex/config/config.go:212), so any
-// SPINIFEX_* env var the harness sets to wire up its own ClusterFromEnv /
-// Env loaders silently overrides the matching cluster.toml field — most
-// notably SPINIFEX_NODES (csv of IPs) clobbers the `nodes` map and leaves
-// NATS.Host empty, surfacing as `nats: no servers available for
-// connection` even though the cluster is healthy (mulga-siv-90 run
-// 26195522455). Strip every SPINIFEX_* except the small set the spx root
-// command actually binds via BindEnv (kept for parity with operator
-// muscle-memory).
+// Harness SPINIFEX_* vars would override cluster.toml fields via viper
+// AutomaticEnv, so we strip them except for the small set spx explicitly
+// binds via BindEnv.
 func spxChildEnv() []string {
 	keep := map[string]struct{}{
 		"SPINIFEX_CONFIG_PATH":  {},
@@ -102,11 +95,9 @@ func SpxGetVMs(t *testing.T) string {
 	return SpxRun(t, false, "get", "vms")
 }
 
-// SpxRunBestEffort runs `spx <args...>` and returns combined output ignoring
-// the exit code. Matches the bash `2>/dev/null` + no exit-check pattern used
-// by `spx get vms` in run-multinode-e2e.sh phases 2-3 — the CLI's NATS dial
-// can race the cluster join shortly after bootstrap without indicating a
-// data-path fault, so a transient non-zero exit shouldn't fail the suite.
+// SpxRunBestEffort runs `spx <args...>` and returns combined output, ignoring
+// the exit code. CLI NATS dial can race cluster join and return an error even
+// when the data path is healthy.
 func SpxRunBestEffort(t *testing.T, args ...string) string {
 	t.Helper()
 	var buf bytes.Buffer

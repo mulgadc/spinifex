@@ -104,8 +104,6 @@ func loadThrottleConfig(path string) (ratelimit.Config, error) {
 func launchService(config *config.ClusterConfig) error {
 	nodeConfig := config.Nodes[config.Node]
 
-	// Connect to NATS for service communication. On concurrent startup the
-	// local NATS server may not be listening yet, so retry with backoff.
 	natsConn, err := utils.ConnectNATSWithRetry(admin.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	if err != nil {
 		return err
@@ -198,7 +196,6 @@ func launchService(config *config.ClusterConfig) error {
 		slog.Warn("Failed to load throttle config, throttling disabled", "err", err)
 	}
 
-	// Create gateway with NATS connection
 	gw := gateway.GatewayConfig{
 		Debug:          nodeConfig.AWSGW.Debug,
 		DisableLogging: false,
@@ -277,10 +274,8 @@ func initIAMService(natsConn *nats.Conn, masterKey []byte, clusterSize int) (*ha
 	}
 }
 
-// findBootstrapFile returns the path to bootstrap.json, checking the data
-// directory first (production), then the awsgw subdir (dev mode), then the
-// legacy config dir. Returns the first path that exists, or the primary
-// location if none exist (so the caller gets a clean "not found" error).
+// findBootstrapFile returns the first existing bootstrap.json candidate path,
+// or the primary path if none exist.
 func findBootstrapFile(baseDir string) string {
 	candidates := []string{
 		filepath.Join(baseDir, "bootstrap.json"),

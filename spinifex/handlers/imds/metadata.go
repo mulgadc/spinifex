@@ -16,8 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// HTTP paths. IMDSv2 token issuance is a PUT; everything else is a token-gated
-// GET under /latest/.
 const (
 	pathToken            = "/latest/api/token" //nolint:gosec // URL path, not a credential
 	prefixMetaData       = "/latest/meta-data/"
@@ -34,9 +32,7 @@ const (
 	hdrForwardedFor = "X-Forwarded-For"
 )
 
-// rejectForwarded enforces AWS IMDS's SSRF defence: any request carrying an
-// X-Forwarded-For header is refused with 403 before token or identity checks,
-// blocking the classic "trick a server-side app into relaying metadata" attack.
+// rejectForwarded enforces the IMDS SSRF defence: requests with X-Forwarded-For are 403'd.
 func rejectForwarded(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(hdrForwardedFor) != "" {
@@ -47,9 +43,7 @@ func rejectForwarded(next http.Handler) http.Handler {
 	})
 }
 
-// handleToken serves PUT /latest/api/token. It binds a fresh token to the
-// requesting ENI (resolved from the datapath-attested source IP) and returns it
-// as a text/plain body, matching AWS IMDSv2.
+// handleToken serves PUT /latest/api/token, issuing a fresh ENI-bound IMDSv2 token.
 func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		w.Header().Set("Allow", http.MethodPut)
@@ -81,8 +75,7 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(token))
 }
 
-// handleMetadata serves every token-gated read path. It resolves the caller's
-// ENI, enforces the IMDSv2 token, then dispatches on the request path.
+// handleMetadata serves token-gated GET requests, resolving the ENI and dispatching.
 func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -96,9 +89,7 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// IMDSv2: a valid, ENI-bound token is mandatory on every read. A missing,
-	// unknown, expired, or wrong-ENI token is an indistinguishable 401 so a
-	// guest cannot probe which tokens exist.
+	// IMDSv2: valid ENI-bound token required; any failure is 401 to prevent probing.
 	if !s.tokens.validate(r.Header.Get(hdrToken), eni.eniID, s.now()) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -107,11 +98,8 @@ func (s *IMDSServiceImpl) handleMetadata(w http.ResponseWriter, r *http.Request)
 	s.dispatch(w, r, eni)
 }
 
-// resolveCaller maps the request's (vpcID-from-context, source-IP) to the owning
-// ENI, or nil when no mapping exists (logged for operator triage). The listener
-// identifies the subnet; its statically-resolved VPC is what keys the
-// eni-by-vpc-ip index. A backend error is also surfaced as nil → the caller
-// 404s, never 500s, matching AWS's opaque "eventually available" boot posture.
+// resolveCaller maps (vpcID-from-context, source-IP) to the owning ENI.
+// Returns nil on miss or backend error, producing a 404 instead of 500.
 func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 	vpcID, _ := r.Context().Value(ctxKeyVPCID).(string)
 	subnetID, _ := r.Context().Value(ctxKeySubnetID).(string)
@@ -137,16 +125,11 @@ func (s *IMDSServiceImpl) resolveCaller(r *http.Request) *eniFacts {
 func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *eniFacts) {
 	path := r.URL.Path
 
-	// Credential fetch for a specific role: /iam/security-credentials/<role>.
 	if strings.HasPrefix(path, prefixSecurityCreds) && len(path) > len(prefixSecurityCreds) {
 		s.serveRoleCredentials(w, eni, strings.TrimPrefix(path, prefixSecurityCreds))
 		return
 	}
 
-	// SSH public keys: /public-keys/, /public-keys/0/, /public-keys/0/openssh-key.
-	// The two directory listings resolve from the instance's launch key name; only
-	// the material leaf fetches it. (The bare /public-keys, sans trailing slash, is
-	// handled in the switch below.)
 	if sub, ok := strings.CutPrefix(path, prefixPublicKeys); ok {
 		s.servePublicKeys(w, eni, sub)
 		return
@@ -188,8 +171,6 @@ func (s *IMDSServiceImpl) dispatch(w http.ResponseWriter, r *http.Request, eni *
 	case pathUserData:
 		s.serveUserData(w, eni)
 	default:
-		// /latest/dynamic/instance-identity/document and
-		// /latest/meta-data/network/interfaces/... are out of scope in v1.
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
@@ -204,8 +185,7 @@ func (s *IMDSServiceImpl) serveInstanceField(w http.ResponseWriter, eni *eniFact
 	writeText(w, field(inst))
 }
 
-// serveUserData writes the instance's user-data, or 404 when there is none —
-// matching AWS for instances launched without user-data.
+// serveUserData writes the instance's user-data, or 404 if absent.
 func (s *IMDSServiceImpl) serveUserData(w http.ResponseWriter, eni *eniFacts) {
 	inst := s.instanceFor(w, eni)
 	if inst == nil {
@@ -219,8 +199,7 @@ func (s *IMDSServiceImpl) serveUserData(w http.ResponseWriter, eni *eniFacts) {
 	_, _ = w.Write(inst.userData)
 }
 
-// serveIAMInfo writes {InstanceProfileArn, InstanceProfileId}, 404 when the
-// instance has no instance profile, or 500 when the profile can't be resolved.
+// serveIAMInfo writes the instance profile ARN and ID, or 404 if none is attached.
 func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
 	profile, err := s.profileFor(eni)
 	if err != nil {
@@ -237,9 +216,8 @@ func (s *IMDSServiceImpl) serveIAMInfo(w http.ResponseWriter, eni *eniFacts) {
 	})
 }
 
-// serveSecurityCredentialsList writes the role name(s) under the profile, one
-// per line. No profile/role is an empty 200 (matching AWS); a backend failure is
-// a 500, never an empty 200 that would silently strip the instance's creds.
+// serveSecurityCredentialsList writes the role name(s) under the profile.
+// No profile/role returns an empty 200; a backend failure returns 500.
 func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, eni *eniFacts) {
 	profile, err := s.profileFor(eni)
 	if err != nil {
@@ -253,9 +231,8 @@ func (s *IMDSServiceImpl) serveSecurityCredentialsList(w http.ResponseWriter, en
 	writeText(w, profile.RoleName)
 }
 
-// serveRoleCredentials mints (or serves cached) credentials for the named role.
-// AWS only accepts the actual role name as the path parameter, not the profile
-// name, so a mismatch is 404; a backend failure resolving the profile is 500.
+// serveRoleCredentials mints or returns cached credentials for the named role.
+// A name mismatch is 404; a backend failure resolving the profile is 500.
 func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFacts, roleParam string) {
 	profile, err := s.profileFor(eni)
 	if err != nil {
@@ -276,9 +253,7 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 
 	body, err := s.creds.get(eni, profile.RoleName, *role.Role.Arn, s.now())
 	if err != nil {
-		// AWS surfaces a trust-policy failure as a JSON body with Code:"Failed";
-		// the SDK reports it as "EC2RoleProvider failed". Mirror that rather than
-		// a bare HTTP error so the SDK error message is AWS-accurate.
+		// Mirror the AWS Code:"Failed" JSON body so SDKs report a recognisable error.
 		slog.Warn("IMDS: AssumeRoleForInstance failed", "account_id", eni.accountID, "role", profile.RoleName, "instance_id", eni.instanceID, "err", err)
 		writeJSON(w, map[string]string{
 			"Code":        "Failed",
@@ -292,20 +267,8 @@ func (s *IMDSServiceImpl) serveRoleCredentials(w http.ResponseWriter, eni *eniFa
 	_, _ = w.Write(body)
 }
 
-// servePublicKeys serves the /public-keys subtree, where sub is the path after
-// "/public-keys/" ("" for the bare directory). Spinifex binds one key pair per
-// instance, so the index is always 0:
-//
-//	""              → "0=<keyName>"   (key list)
-//	"0", "0/"       → "openssh-key"   (formats list for index 0)
-//	"0/openssh-key" → the SSH public key material
-//
-// The two listings resolve from the instance's launch key name with no material
-// RPC; only the leaf fetches it. A no-key instance, or any index other than 0,
-// is 404 — matching AWS. On the material path, a deleted key is 404 (definitive
-// absence) but any other backend fault is 500: a 404 tells cloud-init the
-// instance has no key and it boots keyless without retry, so a transient fault
-// must never collapse to 404 (mirrors serveIAMInfo/serveRoleCredentials).
+// servePublicKeys serves the /public-keys subtree (index always 0).
+// A deleted key is 404; any other backend fault is 500 to avoid cloud-init booting keyless.
 func (s *IMDSServiceImpl) servePublicKeys(w http.ResponseWriter, eni *eniFacts, sub string) {
 	inst := s.instanceFor(w, eni)
 	if inst == nil {
@@ -354,9 +317,8 @@ func (s *IMDSServiceImpl) instanceFor(w http.ResponseWriter, eni *eniFacts) *ins
 	return inst
 }
 
-// profileFor resolves the instance's IAM instance profile. Returns (profile, nil)
-// when resolvable, (nil, nil) when genuinely absent (404/empty), (nil, err) on
-// backend failure (500) — collapsing err into absent would silently drop creds.
+// profileFor resolves the IAM instance profile for an ENI.
+// Returns (nil, nil) when absent, (nil, err) on backend failure — never collapses errors to absent.
 func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	inst, err := s.resolver.resolveInstance(eni)
 	if err != nil {
@@ -369,10 +331,7 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	profile, err := s.iam.ResolveInstanceProfile(eni.accountID, inst.iamInstanceProfileArn)
 	if err != nil {
 		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
-			// The profile was deleted out from under the instance. AWS treats this
-			// as "no instance role", not a backend fault — NoSuchEntity is raised
-			// only for a genuinely absent record, never a transient.
-			return nil, nil
+			return nil, nil // profile deleted; treat as no role
 		}
 		slog.Error("IMDS: resolve instance profile failed", "account_id", eni.accountID, "arn", inst.iamInstanceProfileArn, "err", err)
 		return nil, err
@@ -383,9 +342,7 @@ func (s *IMDSServiceImpl) profileFor(eni *eniFacts) (*resolvedProfile, error) {
 	return &resolvedProfile{ARN: profile.ARN, InstanceProfileID: profile.InstanceProfileID, RoleName: profile.RoleName}, nil
 }
 
-// resolvedProfile is the slice of an IAM instance profile the metadata surface
-// serves, decoupled from the handlers_iam type so this package needn't import
-// it for the field access.
+// resolvedProfile is the slice of an IAM instance profile served by the metadata surface.
 type resolvedProfile struct {
 	ARN               string
 	InstanceProfileID string
@@ -404,8 +361,7 @@ func parseTokenTTL(raw string) (time.Duration, bool) {
 	return time.Duration(n) * time.Second, true
 }
 
-// regionFromAZ derives the region from an availability-zone name by stripping
-// the trailing AZ letter ("ap-southeast-2a" → "ap-southeast-2").
+// regionFromAZ strips the trailing AZ letter from an AZ name to get the region.
 func regionFromAZ(az string) string {
 	if az == "" {
 		return ""
@@ -417,8 +373,7 @@ func regionFromAZ(az string) string {
 	return az
 }
 
-// synthHostname builds the AWS-style internal hostname
-// "ip-10-0-1-5.<region>.compute.internal" from a private IP and region.
+// synthHostname builds "ip-10-0-1-5.<region>.compute.internal" from a private IP and region.
 func synthHostname(ip, region string) string {
 	if ip == "" || region == "" {
 		return ""
@@ -441,9 +396,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_, _ = w.Write(data)
 }
 
-// ctxKey is the unexported context-key type for values the bind manager threads
-// into each request: the subnet the listener serves and that subnet's
-// statically-resolved owning VPC (which keys the eni-by-vpc-ip index).
+// ctxKey is the unexported context-key type used to thread subnet and VPC into each request.
 type ctxKey int
 
 const (

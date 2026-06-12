@@ -99,10 +99,9 @@ type SharedCredentials struct {
 	AdminSecretKey string `json:"admin_secret_key,omitempty"`
 }
 
-// FormationServer is a lightweight HTTP server that coordinates cluster formation.
-// Nodes register themselves via POST /formation/join. Once the expected number of
-// nodes have joined, the done channel is closed and full cluster data (credentials,
-// CA, node list) becomes available via GET /formation/status.
+// FormationServer is a lightweight HTTPS server that coordinates cluster formation.
+// Nodes register via POST /formation/join; full cluster data is available via
+// GET /formation/status once the expected count is reached.
 type FormationServer struct {
 	mu            sync.RWMutex
 	expected      int

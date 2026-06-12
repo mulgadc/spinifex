@@ -100,8 +100,8 @@ func TestExternalIPAM_Release(t *testing.T) {
 	err = ipam.ReleaseIP("wan", "192.168.1.151")
 	require.NoError(t, err)
 
-	// Round-robin: a released IP is NOT reused immediately (siv-246). Allocation
-	// resumes past the cursor, so the next IP is .153, not the freed .151.
+	// Round-robin: a released IP is NOT reused immediately. Allocation resumes
+	// past the cursor, so the next IP is .153, not the freed .151.
 	ip3, _, err := ipam.AllocateIP("", "", PurposeENIPublic, "", "eni-3", "i-3")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.153", ip3)

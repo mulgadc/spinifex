@@ -2,17 +2,10 @@ package vm
 
 import "log/slog"
 
-// MigrateStoppedToSharedKV writes instance to the cluster-shared "stopped"
-// KV bucket and removes it from the local running map. Returns true only
-// when both the shared write succeeded AND the local entry was removed
-// under this caller's ownership of the supplied *VM pointer.
-//
-// Returns false on KV write failure or when a concurrent handler reclaimed
-// the slot (DeleteIf no longer matches the supplied pointer). Callers
-// should fire OnInstanceDown / persist running-state only on true: a slot
-// reclaim means the id now resolves to a different live instance, and
-// firing the down hook would tear down the new instance's per-id
-// resources (e.g. NATS subscriptions).
+// MigrateStoppedToSharedKV writes instance to the "stopped" KV bucket and
+// removes it from the local map. Returns true only when both the write and
+// DeleteIf succeeded — a concurrent slot reclaim reports false to prevent
+// firing OnInstanceDown against a different live instance at the same id.
 func (m *Manager) MigrateStoppedToSharedKV(instance *VM) bool {
 	if m.deps.StateStore == nil {
 		return false
@@ -31,9 +24,7 @@ func (m *Manager) MigrateTerminatedToKV(instance *VM) bool {
 }
 
 // migrateInstanceToKV is the shared body of MigrateStoppedToSharedKV and
-// MigrateTerminatedToKV. Returns true only when both the shared write
-// succeeded and DeleteIf removed the local entry — see the public
-// methods' doc comments for why slot-reclaim is reported as failure.
+// MigrateTerminatedToKV.
 func (m *Manager) migrateInstanceToKV(instance *VM, writeFn func(string, *VM) error, label string) bool {
 	instance.LastNode = m.deps.NodeID
 	if err := writeFn(instance.ID, instance); err != nil {

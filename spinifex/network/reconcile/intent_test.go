@@ -162,12 +162,9 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 	}
 }
 
-// TestLoadIntentFromKV_NATGWUsesAssociatedSubnet enforces that loadNATGWs
-// emits one NATGWSpec per *associated* private subnet (via route-table
-// associations) — NOT the NATGW's own public home subnet. Bug observed in CI
-// Phase 8d: reconciler installed snat for the NATGW's public-subnet CIDR
-// (172.31.0.0/20) instead of the routed private-subnet CIDR (172.31.16.0/20),
-// corrupting conntrack reverse-NAT and producing 100% packet loss.
+// TestLoadIntentFromKV_NATGWUsesAssociatedSubnet enforces that loadNATGWs emits
+// specs for associated *private* subnets, not the NATGW's own public home subnet.
+// Wrong CIDR corrupts conntrack reverse-NAT and causes 100% packet loss.
 func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
@@ -217,10 +214,8 @@ func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 	}
 }
 
-// TestLoadIntentFromKV_NATGWNoAssociationSkips guards against installing a
-// SNAT for a NATGW that no route table points to. Without an associated
-// private subnet there is no traffic to translate, and emitting the home
-// subnet's CIDR would corrupt the SNAT table.
+// TestLoadIntentFromKV_NATGWNoAssociationSkips guards against SNAT install for
+// a NATGW with no route-table association; emitting the home-subnet CIDR would corrupt the SNAT table.
 func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
@@ -260,12 +255,9 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 	}
 }
 
-// TestLoadIntentFromKV_IGWRoutesFanOutMainRT covers the bootstrap race:
-// publisher fires vpc.add-igw-route before subscribers attach, the event
-// is dropped, and KV is the only source of truth left. The reconcile pass
-// must rediscover the per-subnet egress intent from the main RT and fan it
-// out to every subnet (including implicit-main subnets with no explicit
-// non-main association).
+// TestLoadIntentFromKV_IGWRoutesFanOutMainRT covers the bootstrap race: events
+// dropped before subscribers attach; reconcile must re-derive per-subnet egress
+// intent from the main RT, including implicit-main subnets.
 func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
@@ -316,10 +308,8 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 	}
 }
 
-// TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet whose
-// effective RT has no 0.0.0.0/0 entry, in a VPC with an attached IGW, must
-// surface a DropGates intent so the reconciler installs the per-subnet
-// drop policy that gates the VPC LR's router-wide default static route.
+// TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet with no
+// 0.0.0.0/0 route in an IGW-attached VPC must produce a DropGates intent.
 func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
@@ -374,9 +364,8 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 	}
 }
 
-// TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC without an attached IGW
-// has no router-wide default static route, so unrouted subnets are already
-// dropped by lr_in_ip_routing priority-0 — no drop policy needed.
+// TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC with no IGW has no router-wide
+// default static route; lr_in_ip_routing already drops, so no drop policy needed.
 func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 

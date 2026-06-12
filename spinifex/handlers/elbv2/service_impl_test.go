@@ -1547,11 +1547,9 @@ func TestDescribeListeners_FilterByLBArn(t *testing.T) {
 	assert.Len(t, desc.Listeners, 2)
 }
 
-// TestDescribeListeners_AccountIsolation pins the independent account filter
-// in DescribeListeners (service_impl.go:1470). LB-level isolation is tested
-// by TestDescribeLoadBalancers_AccountIsolation, but listener filtering is
-// enforced separately on each ListenerRecord — a regression that drops the
-// listener-side check would not be caught by the LB-level test.
+// TestDescribeListeners_AccountIsolation pins the per-ListenerRecord account filter.
+// LB-level isolation is tested separately; a regression dropping the listener-side
+// check would not be caught by the LB-level test.
 func TestDescribeListeners_AccountIsolation(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -1836,12 +1834,9 @@ func TestCreateListener_PushConfig_NoNATS(t *testing.T) {
 	require.NoError(t, err) // No panic, no error — updateStoredConfig skipped gracefully
 }
 
-// TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID pins the nil-safe
-// branch in DeleteLoadBalancer: an LB created without a systemAMI never
-// launched an ALB VM (InstanceID == ""), so DeleteLoadBalancer must skip
-// TerminateSystemInstance rather than call it with an empty string. The
-// positive case (terminate IS called when InstanceID is set) is covered by
-// TestDeleteLoadBalancer_TerminatesVM_WithPublicIP in service_impl_vpc_test.go.
+// TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID pins the nil-safe branch:
+// an LB without a systemAMI has InstanceID=="" and must skip TerminateSystemInstance.
+// The positive case is covered by TestDeleteLoadBalancer_TerminatesVM_WithPublicIP.
 func TestDeleteLoadBalancer_NoTerminateWhenEmptyInstanceID(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -2008,12 +2003,9 @@ func TestLBAgentHeartbeat_ProcessesHealthReport(t *testing.T) {
 	assert.Equal(t, TargetHealthHealthy, stored.Targets[0].HealthState)
 }
 
-// TestLBAgentHeartbeat_BuildsConfigOnActivation covers the create-burst race:
-// the reactive updateStoredConfig calls during CreateListener/RegisterTargets
-// no-op while the LB VM is still launching (InstanceID empty). The agent's
-// first heartbeat (provisioning→active) is the readiness signal that must build
-// the data-plane config from the listeners/targets created during provisioning,
-// so the agent receives a non-empty ConfigHash + backend list on its first poll.
+// TestLBAgentHeartbeat_BuildsConfigOnActivation covers the create-burst race where
+// updateStoredConfig no-ops while InstanceID is empty; the first heartbeat
+// (provisioning→active) must build the full config so the agent gets a ConfigHash.
 func TestLBAgentHeartbeat_BuildsConfigOnActivation(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -2590,11 +2582,9 @@ func TestDescribeLoadBalancerAttributes_NLBDefaults(t *testing.T) {
 	assert.Equal(t, "false", attrMap["load_balancing.cross_zone.enabled"])
 }
 
-// TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys guards against
-// regressions where terraform's default ModifyLoadBalancerAttributes call
-// hits ValidationError because the ALB default attribute set is missing a
-// key that the AWS provider sends. Every key here is one the aws-sdk-go
-// elbv2 API documents for ALBs.
+// TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys guards against missing ALB
+// attribute keys that Terraform's default ModifyLoadBalancerAttributes call sends,
+// which would surface as ValidationError.
 func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
 	attrs := DefaultLoadBalancerAttributes(LoadBalancerTypeApplication)
 
@@ -2719,11 +2709,8 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 }
 
 // --- Attribute mirror-pair tests (table-driven over TG/LB) ---
-//
-// ModifyTargetGroupAttributes/ModifyLoadBalancerAttributes (and their Describe
-// counterparts) are mirror pairs differing only by record type, store methods,
-// default set and not-found error. The behavioural tests below run once per
-// kind via t.Run instead of being hand-copied per resource.
+// Modify*/Describe* are mirror pairs differing only by record type, store methods,
+// default set, and not-found error; tests run once per kind via t.Run.
 
 // rawAttr models one submitted SDK attribute, including the invalid shapes a
 // handler must skip: a nil slice element, a nil Key, or a nil Value.
@@ -3027,10 +3014,8 @@ func TestAttributeSkipsInvalidEntries(t *testing.T) {
 	}
 }
 
-// TestAttributeAllInvalidReturnsError guards against the silent-success case
-// where every submitted attribute trips the nil guard and the handler returns
-// 200 OK with an empty body — the caller would think the write landed when
-// nothing was applied.
+// TestAttributeAllInvalidReturnsError guards against silent success when every
+// attribute trips the nil guard, returning 200 OK with nothing applied.
 func TestAttributeAllInvalidReturnsError(t *testing.T) {
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
@@ -3047,11 +3032,9 @@ func TestAttributeAllInvalidReturnsError(t *testing.T) {
 	}
 }
 
-// TestAttributeSequentialMerge verifies that successive Modify calls accumulate
-// keys instead of replacing the entire attribute map. A refactor that did
-// `rec.Attributes = newMap` would pass every other test (single-call round-trip
-// covers the happy path) but silently wipe previous attributes on every
-// subsequent Modify — the most likely real-world bug.
+// TestAttributeSequentialMerge verifies successive Modify calls accumulate keys.
+// `rec.Attributes = newMap` would pass single-call tests but silently wipe
+// previous attributes on every subsequent call.
 func TestAttributeSequentialMerge(t *testing.T) {
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {
@@ -3112,10 +3095,9 @@ func TestAttributeNoopSkipsPersist(t *testing.T) {
 	}
 }
 
-// TestAttributeRejectsUnknownKey guards against silently persisting typo'd or
-// cross-product attribute keys. AWS rejects unknown keys with ValidationError;
-// we match that so Terraform surfaces the typo at plan time instead of letting
-// it drift into KV forever.
+// TestAttributeRejectsUnknownKey guards against silently persisting typo'd keys.
+// AWS rejects unknowns with ValidationError; matching that surfaces typos at plan
+// time rather than letting them drift into KV.
 func TestAttributeRejectsUnknownKey(t *testing.T) {
 	for _, k := range attrKinds() {
 		t.Run(k.name, func(t *testing.T) {

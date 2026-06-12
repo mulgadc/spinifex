@@ -11,13 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Package-local prereq bootstrappers. Each wraps the matching
-// harness.Discover* / harness.Ensure* call so a top-level Test* in this
-// package can self-bootstrap whatever the phase under test depends on,
-// without threading state through a shared Fixture struct.
-//
-// All wrapped helpers are memoized by the underlying harness.Fixture, so
-// repeated need* calls from different tests hit the cache.
+// Package-local bootstrappers wrapping harness.Discover*/Ensure* so each Test*
+// can self-bootstrap its prerequisites. Results are memoized by harness.Fixture.
 
 // needAZ returns the discovered default availability zone.
 func needAZ(t *testing.T, fix *Fixture) string {
@@ -39,16 +34,12 @@ func needAMI(t *testing.T, fix *Fixture) string {
 }
 
 // needKeyPair returns the memoized primary EC2 key pair name + PEM path.
-// Routes through harness.EnsureKeyPair so the PEM lands in fix.TmpDir and
-// is cleaned up at fixture teardown.
 func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
 	t.Helper()
 	return harness.EnsureKeyPair(t, fix.Harness, fix.TmpDir)
 }
 
-// customAMIName is the well-known name the bash driver bakes when exercising
-// the CreateImage flow. Lifted out as a constant so both phase5e (creator)
-// and phase8 8o (duplicate-name negative) reference the same literal.
+// customAMIName is the well-known AMI name used by CreateImage tests.
 const customAMIName = "e2e-custom-ami"
 
 // needCustomAMI returns the memoized CreateImage-built custom AMI ID,
@@ -76,9 +67,7 @@ func ensureCustomAMI(t *testing.T, fix *Fixture, sourceInstanceID, name, desc st
 }
 
 // needInstance bootstraps the suite's primary running instance and returns
-// the running *ec2.Instance plus its root volume ID. Idempotent via
-// harness.EnsureInstance — the first caller pays the launch cost, every
-// other caller hits the cache.
+// the *ec2.Instance plus its root volume ID. Idempotent via harness.EnsureInstance.
 func needInstance(t *testing.T, fix *Fixture) (inst *ec2.Instance, rootVolumeID string) {
 	t.Helper()
 	instType, _ := needInstanceTypeArch(t, fix)
@@ -105,8 +94,7 @@ func needInstance(t *testing.T, fix *Fixture) (inst *ec2.Instance, rootVolumeID 
 	require.NotEmpty(t, descOut.Reservations[0].Instances, "no instances for %s", instanceID)
 	inst = descOut.Reservations[0].Instances[0]
 
-	// Root volume: the BDM whose DeviceName matches RootDeviceName. Falls back
-	// to the first BDM if RootDeviceName is empty (some drivers don't echo it).
+	// Match BDM by RootDeviceName; fall back to first BDM if empty.
 	rootDev := aws.StringValue(inst.RootDeviceName)
 	for _, bdm := range inst.BlockDeviceMappings {
 		if rootDev != "" && aws.StringValue(bdm.DeviceName) != rootDev {

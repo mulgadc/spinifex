@@ -12,9 +12,7 @@ import (
 )
 
 const (
-	// LocalStateSchemaVersion is the on-disk schema version for instance-state.json.
-	// Bump on any breaking change to the LocalState shape; daemon refuses to start
-	// on an unknown version rather than silently losing data.
+	// LocalStateSchemaVersion guards on-disk compatibility; bump on breaking changes.
 	LocalStateSchemaVersion = 1
 
 	// DefaultLocalStateDir is the default directory under DataDir for local state files.
@@ -34,11 +32,8 @@ type LocalState struct {
 	VMS           map[string]*vm.VM `json:"vms"`
 }
 
-// LocalStatePath returns the absolute path to the per-node instance state file
-// rooted at dataDir. Empty dataDir falls back to DefaultDataDir
-// (/var/lib/spinifex), the platform-shared root. The state directory sits at
-// the platform root so it lives next to other shared state (predastore,
-// viperblock data dirs) rather than nested under the daemon's own subdir.
+// LocalStatePath returns the absolute path to the per-node instance state file.
+// Empty dataDir falls back to DefaultDataDir.
 func LocalStatePath(dataDir string) string {
 	if dataDir == "" {
 		dataDir = DefaultDataDir
@@ -46,11 +41,8 @@ func LocalStatePath(dataDir string) string {
 	return filepath.Join(dataDir, DefaultLocalStateDir, LocalStateFileName)
 }
 
-// MarshalLocalState produces the JSON wire form of vms wrapped with the schema
-// version. Callers that already hold a stable view of vms (e.g. inside a
-// vm.Manager.View callback) can marshal under the lock and pass the bytes to
-// WriteLocalStateBytes — that avoids racing json.Marshal against concurrent
-// VM-field mutations.
+// MarshalLocalState produces the JSON wire form of vms with schema version.
+// Call inside a vm.Manager.View callback to avoid races on VM fields.
 func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 	state := LocalState{
 		SchemaVersion: LocalStateSchemaVersion,
@@ -63,14 +55,8 @@ func MarshalLocalState(vms map[string]*vm.VM) ([]byte, error) {
 	return data, nil
 }
 
-// WriteLocalState atomically writes the instance state to path. vms must be a
-// snapshot owned by the caller (e.g. from vm.Manager.SnapshotMap) — this
-// function does not lock. Convenience wrapper around MarshalLocalState +
-// WriteLocalStateBytes for callers that own an exclusive snapshot.
-//
-// Atomicity: marshal → write to <path>.tmp → fsync → rename. The rename is
-// atomic on POSIX so a concurrent reader sees either the old file or the new
-// one, never a half-written file.
+// WriteLocalState atomically writes instance state via marshal → tmp → fsync →
+// rename. vms must be a caller-owned snapshot; this function does not lock.
 func WriteLocalState(path string, vms map[string]*vm.VM) error {
 	data, err := MarshalLocalState(vms)
 	if err != nil {
@@ -80,8 +66,6 @@ func WriteLocalState(path string, vms map[string]*vm.VM) error {
 }
 
 // WriteLocalStateBytes atomically writes pre-marshalled state JSON to path.
-// Used by hot paths that marshal under a short-lived lock and then commit to
-// disk lock-free.
 func WriteLocalStateBytes(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -119,14 +103,8 @@ func WriteLocalStateBytes(path string, data []byte) error {
 	return nil
 }
 
-// ReadLocalState reads the per-node instance state from path.
-//
-// Returns (nil, nil) if the file does not exist — fresh-install signal,
-// caller should start with an empty instance map.
-//
-// Returns an error on:
-//   - JSON parse failure (corruption — caller refuses start)
-//   - Unknown SchemaVersion (caller refuses start; safer than silent migration)
+// ReadLocalState reads instance state from path. Returns (nil, nil) if the
+// file does not exist (fresh install). Errors on JSON failure or unknown schema.
 func ReadLocalState(path string) (*LocalState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

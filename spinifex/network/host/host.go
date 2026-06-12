@@ -1,7 +1,6 @@
-// Package host is L0 of the spinifex network stack: kernel/OVS host wiring.
-// Owns OVS bridges (br-int, br-ext), the uplink port attaching br-ext to WAN,
-// and the external CIDR. Bridge mode (physical vs veth) is resolved here and
-// invisible above L0. See ADR-0006 (S2, S3).
+// Package host is L0 of the spinifex network stack: OVS bridges (br-int,
+// br-ext), uplink port, and external CIDR. Bridge mode resolved here
+// and invisible above L0 (ADR-0006 S2, S3).
 package host
 
 import (

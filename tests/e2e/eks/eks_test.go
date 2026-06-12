@@ -30,16 +30,9 @@ const (
 	getTokenTpl   = "k8s-aws-v1."
 )
 
-// TestEKS drives the EKS control-plane lifecycle against the local awsgw
-// endpoint: a real VPC/subnet, CreateCluster → ACTIVE (which boots the K3s
-// server VM + NLB), kubeconfig artifact assembly, AccessEntry CRUD, get-token,
-// and DeleteCluster → gone. Phase 1 is API-level only (no kubectl); the
-// kubectl/IRSA data-plane subtests land in Phase 2 once apiserver reachability
-// from the runner is wired.
-//
-// One cluster fixture is shared across the subtests (create once, delete in
-// Cleanup) — control-plane boot is the slowest step, so re-creating per subtest
-// would blow the suite timeout on dev nodes.
+// TestEKS drives the EKS control-plane lifecycle: VPC/subnet creation, CreateCluster → ACTIVE
+// (K3s VM + NLB boot), kubeconfig artifact assembly, AccessEntry CRUD, get-token, and
+// DeleteCluster. One fixture is shared across subtests to avoid repeated control-plane boot cost.
 func TestEKS(t *testing.T) {
 	env := harness.LoadEnv(t)
 	artifacts := harness.ArtifactDir(t, env)
@@ -122,23 +115,16 @@ func TestEKS(t *testing.T) {
 
 	t.Run("KubectlGetNodes", func(t *testing.T) {
 		requireClusterReady(t, fx)
-		// Reach the apiserver through the published cluster endpoint (the
-		// internet-facing NLB front-end IP:443) with TLS verification ON — the
-		// serving cert SANs this IP, so no insecure-skip-tls-verify and no
-		// mgmt-IP shim. A 401 here means the get-token webhook chain regressed;
-		// a TLS error means the endpoint/cert-SAN wiring regressed.
+		// Reach the apiserver at the published endpoint with TLS verification ON.
+		// A 401 means the get-token webhook chain regressed; a TLS error means
+		// the cert-SAN wiring regressed.
 		require.NotEmpty(t, aws.StringValue(fx.Cluster.Endpoint), "cluster must publish a reachable endpoint")
 		kcPath := writeKubeconfig(t, artifacts, fx.Cluster)
 		kc := harness.NewKubectl(t, kcPath, getTokenEnv(t, env))
 
-		// Auth + reachability: poll until the apiserver answers and reports a
-		// Ready node. A 401 here means the get-token webhook chain regressed.
-		// Generous envelope: the cluster flips ACTIVE as soon as the apiserver
-		// first answers, but k3s can crash once during bootstrap (embedded-etcd
-		// fsync latency under I/O contention blows the apiserver/leaderelection
-		// deadlines) and is respawned by supervise-daemon. The control plane
-		// then stabilises once etcd latency settles — a few minutes on a busy
-		// node — so wait well past the first ACTIVE before failing.
+		// Poll until a Ready node appears. k3s may crash once during bootstrap
+		// (etcd fsync latency under I/O contention) and be respawned; the generous
+		// envelope allows the control plane to stabilise after the first ACTIVE.
 		harness.EventuallyErr(t, func() error {
 			out, err := kc.Run(30*time.Second, "get", "nodes",
 				"-o", `jsonpath={range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`)
@@ -253,10 +239,9 @@ func deleteSubnet(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
 	}
 }
 
-// deleteClusterBestEffort tears the cluster down if a subtest left it standing
-// (the DeleteCluster subtest already removed it on the happy path). VPC/subnet
-// cleanup must wait for the cluster's NLB + VM to release them, so this runs
-// before the VPC/subnet Cleanups (Cleanups run LIFO; this is registered last).
+// deleteClusterBestEffort tears the cluster down if the DeleteCluster subtest did not.
+// Registered last so it runs before VPC/subnet Cleanups (LIFO), ensuring the NLB + VM
+// release the subnet before the VPC is removed.
 func deleteClusterBestEffort(t *testing.T, c *harness.AWSClient, fx *clusterFixture) {
 	if fx.Deleted {
 		return
@@ -274,10 +259,8 @@ func deleteClusterBestEffort(t *testing.T, c *harness.AWSClient, fx *clusterFixt
 
 // --- kubeconfig artifact --------------------------------------------------
 
-// writeKubeconfig assembles the kubeconfig `aws eks update-kubeconfig` would
-// produce from DescribeCluster output and writes it to the artifact dir. The
-// suite asserts the structure (server, CA, exec block) rather than shelling out
-// to update-kubeconfig so the assertion is hermetic.
+// writeKubeconfig builds a kubeconfig from DescribeCluster output and writes it to the artifact
+// dir. Avoids shelling to `aws eks update-kubeconfig` so the structure assertion is hermetic.
 func writeKubeconfig(t *testing.T, artifacts string, cl *eks.Cluster) string {
 	t.Helper()
 	name := aws.StringValue(cl.Name)

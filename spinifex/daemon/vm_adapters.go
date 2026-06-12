@@ -18,14 +18,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Thin adapters that satisfy the vm.Manager collaborator interfaces. The
-// bodies delegate to existing daemon methods or services; the manager
-// receives them via vm.Deps so it can drive lifecycle without importing the
-// daemon package.
-
-// stateStoreAdapter satisfies vm.StateStore by delegating to the cluster
-// JetStream manager. It also tolerates a nil JetStreamManager during early
-// boot so manager construction can happen before initJetStream returns.
+// stateStoreAdapter satisfies vm.StateStore by delegating to JetStreamManager.
+// Tolerates nil JetStreamManager during early boot.
 type stateStoreAdapter struct {
 	js *JetStreamManager
 }
@@ -69,11 +63,7 @@ func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
 }
 
 // volumeMounterAdapter satisfies vm.VolumeMounter by routing ebs.mount /
-// ebs.unmount NATS requests, mirroring Daemon.MountVolumes and
-// Daemon.unmountInstanceVolumes. The mount path mutates
-// instance.EBSRequests.Requests[k].NBDURI; unmount also flips boot/data
-// volumes back to "available" via VolumeStateUpdater so the AWS API view
-// stays consistent.
+// ebs.unmount NATS requests. Unmount also updates volume state via VolumeStateUpdater.
 type volumeMounterAdapter struct {
 	nc       *nats.Conn
 	node     string
@@ -205,11 +195,7 @@ func (a *volumeMounterAdapter) MountOne(req *types.EBSRequest) error {
 	return nil
 }
 
-// UnmountOne sends ebs.unmount for a single request. Best-effort: errors
-// are logged and tolerated. Shared by AttachVolume rollback and the
-// DetachVolume ebs.unmount step where the caller cannot meaningfully act
-// on a failed unmount. Internal callers that need to surface rollback
-// failures use unmountOne directly.
+// UnmountOne sends ebs.unmount; errors are logged and swallowed.
 func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
 	if err := a.unmountOne(req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
@@ -218,8 +204,7 @@ func (a *volumeMounterAdapter) UnmountOne(req types.EBSRequest) {
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
 }
 
-// unmountOne sends ebs.unmount and returns any error so callers (e.g. the
-// Mount partial-failure rollback) can wrap it into a richer failure.
+// unmountOne sends ebs.unmount and returns any error.
 func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -242,10 +227,8 @@ func (a *volumeMounterAdapter) unmountOne(req types.EBSRequest) error {
 	return nil
 }
 
-// instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver. It looks up
-// the EC2 InstanceTypeInfo on the daemon's ResourceManager and projects the
-// QEMU-relevant numbers (vCPU, memory MiB, architecture) into the
-// SDK-agnostic vm.InstanceTypeSpec.
+// instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver by projecting
+// EC2 instance type info into the SDK-agnostic vm.InstanceTypeSpec.
 type instanceTypeResolverAdapter struct {
 	rm *ResourceManager
 }
@@ -272,9 +255,7 @@ func (a *instanceTypeResolverAdapter) Resolve(name string) (vm.InstanceTypeSpec,
 	}, true
 }
 
-// resourceControllerAdapter satisfies vm.ResourceController. Both Allocate
-// and Deallocate look up the EC2 InstanceTypeInfo by name before delegating
-// to the existing capacity-keyed resource manager methods.
+// resourceControllerAdapter satisfies vm.ResourceController.
 type resourceControllerAdapter struct {
 	rm *ResourceManager
 }
@@ -309,13 +290,8 @@ func (a *resourceControllerAdapter) CanAllocate(instanceType string, count int) 
 	return a.rm.canAllocate(it, count)
 }
 
-// onInstanceRecoveringHook returns the daemon's OnInstanceRecovering
-// callback. Restore fires it once per instance about to be relaunched so
-// concurrent terminate commands can land on this node before launch
-// completes — without it, ec2.cmd.<id> would only be subscribed by
-// onInstanceUpHook after launch success, leaving a window where the
-// instance is reachable by DescribeInstances (in StatePending) but not
-// by EC2 commands.
+// onInstanceRecoveringHook subscribes ec2.cmd.<id> early during Restore so
+// terminate commands can land before the relaunch completes.
 func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
 	return func(instance *vm.VM) {
 		d.mu.Lock()
@@ -334,11 +310,8 @@ func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
 	}
 }
 
-// consumeCleanShutdownMarker returns the daemon's
-// ConsumeCleanShutdownMarker callback. Returns true (and deletes the
-// marker) when a clean shutdown was recorded for this node on the
-// previous run; returns false otherwise so Restore takes the cautious
-// "validate stale PIDs" path.
+// consumeCleanShutdownMarker returns the ConsumeCleanShutdownMarker callback.
+// Returns true and deletes the marker when a clean shutdown was recorded.
 func (d *Daemon) consumeCleanShutdownMarker() func() bool {
 	return func() bool {
 		if d.jsManager == nil {
@@ -354,11 +327,8 @@ func (d *Daemon) consumeCleanShutdownMarker() func() bool {
 	}
 }
 
-// onInstanceUpHook returns the daemon's OnInstanceUp callback. Subscribing
-// per-instance NATS topics is the only side-effect; the manager fires this
-// synchronously after a successful Pending→Running transition. Returns the
-// first subscribe error so the manager (specifically reconnectInstance) can
-// roll back QMP rather than persist a half-reachable instance to KV.
+// onInstanceUpHook subscribes per-instance NATS topics after Pending→Running.
+// Returns the first subscribe error so the manager can roll back QMP.
 func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 	return func(instance *vm.VM) error {
 		d.mu.Lock()

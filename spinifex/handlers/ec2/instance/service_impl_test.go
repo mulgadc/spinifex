@@ -547,10 +547,8 @@ func TestCloudInitMetaTemplateRendering(t *testing.T) {
 	assert.Contains(t, rendered, "local-hostname:")
 }
 
-// TestCloudInitVolumeNamePerInstance verifies that AMI-based launches produce
-// unique root volume IDs, which in turn produce unique cloud-init volume names.
-// This prevents the bug where a cached cloud-init ISO (keyed by AMI) would
-// serve stale SSH keys or hostnames to subsequent instances.
+// TestCloudInitVolumeNamePerInstance verifies that each launch produces a unique
+// root volume ID so cloud-init ISOs are not shared across instances.
 func TestRunInstance_NoImageId(t *testing.T) {
 	instanceTypes := map[string]*ec2.InstanceTypeInfo{
 		"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -857,7 +855,7 @@ func TestCloudInitVolumeNamePerInstance(t *testing.T) {
 	}
 }
 
-// --- 1b-pre Describe* coverage (siv-22 parts) ------------------------------
+// --- Describe* coverage -----------------------------------------------------
 
 type fakeResourceCapacityProvider struct {
 	types          []*ec2.InstanceTypeInfo
@@ -2238,7 +2236,7 @@ func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
 	assert.Empty(t, store.deletedStopped, "stopped-KV entry must remain on rollback")
 }
 
-// --- PrepareRunInstances / ec2.cmd dispatch tests (1b-pre phase 2d) ---------
+// --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
 
 type fakeAMILoader struct {
 	byID map[string]viperblock.AMIMetadata
@@ -2727,12 +2725,9 @@ func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
 	}
 }
 
-// TestPrepareRunInstances_NATFailureRollsBackPublicIP regresses the silent
-// corruption where vpc.add-nat NACKs (or vpcd is offline) but the launch
-// returned an ec2.Instance carrying the unreachable IP, the ENI record was
-// updated with that IP, and the IPAM pool entry stayed allocated. With the
-// fix in place, NAT failure must drop the instance from the response, clear
-// the ENI public IP, release the IPAM lease, and deallocate capacity.
+// TestPrepareRunInstances_NATFailureRollsBackPublicIP verifies that a vpc.add-nat
+// failure drops the instance, clears the ENI public IP, releases the IPAM
+// lease, and deallocates capacity.
 func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	eni := &fakeENICreator{
 		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
@@ -2824,12 +2819,9 @@ func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
 	}
 }
 
-// TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch regresses the
-// silent failure where a failed public-IP allocation (pool exhausted) was
-// logged at WARN and ignored, so the instance booted running with no public
-// IP. There is no qemu-hostfwd fallback, so such an instance is unreachable.
-// The fix must fail the launch: detach + delete the auto-created ENI,
-// deallocate capacity, drop the instance, and surface InsufficientAddressCapacity.
+// TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch verifies that a
+// failed public-IP allocation aborts the launch: detaches and deletes the ENI,
+// deallocates capacity, and returns InsufficientAddressCapacity.
 func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 	eni := &fakeENICreator{
 		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
@@ -2896,16 +2888,9 @@ func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
 	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
 }
 
-// TestPrepareRunInstances_ENIAttachFailureRollsBack regresses the silent
-// corruption where AttachENI failure was logged-and-ignored, leaving the
-// auto-created ENI unattached in vpcService. Later RegisterTargets with
-// TargetType=instance enumerates ENIs by attachment.instance-id, finds
-// none, and drops the target — the customer's ALB has 0 healthy targets
-// with no log line connecting the two events. The dangling ENI also leaks
-// its auto-assigned EIP on terminate because DeleteNetworkInterface
-// cannot resolve the instance link. With the fix, AttachENI failure must
-// delete the auto-created ENI, deallocate capacity, and drop the instance
-// from the reservation.
+// TestPrepareRunInstances_ENIAttachFailureRollsBack verifies that an AttachENI
+// failure deletes the auto-created ENI, deallocates capacity, and drops the
+// instance from the reservation.
 func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
 	eni := &fakeENICreator{
 		attachErr: errors.New("vpc attach refused"),
@@ -3038,10 +3023,8 @@ func TestStartInstance_AllocateFails(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
 
-// TestStartInstance_ErrorStateStartable verifies a crash/recovery-failed
-// instance (StateError) is accepted past the startability guard. Reaching the
-// resource Allocate step (here forced to fail) proves the guard did not reject
-// it with IncorrectInstanceState — manual recovery of errored instances works.
+// TestStartInstance_ErrorStateStartable verifies a StateError instance passes
+// the startability guard and reaches resource allocation.
 func TestStartInstance_ErrorStateStartable(t *testing.T) {
 	id := "i-err"
 	mgr := mgrWith(map[string]*vm.VM{
@@ -3068,12 +3051,8 @@ func TestRebootInstance_NotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
 
-// TestStartInstance_NotFound verifies that when vmMgr.Start cannot find the
-// instance (e.g. it was terminated between the daemon's pre-dispatch lookup
-// and the manager call), the service returns InvalidInstanceID.NotFound
-// rather than collapsing to a generic Server.InternalError. The AWS SDK
-// retries 500s, so the prior behaviour produced duplicate Start attempts
-// before the client surfaced the failure.
+// TestStartInstance_NotFound verifies that a missing instance returns
+// InvalidInstanceID.NotFound rather than a generic internal error.
 func TestStartInstance_NotFound(t *testing.T) {
 	id := "i-missing"
 	mgr := mgrWith(nil)

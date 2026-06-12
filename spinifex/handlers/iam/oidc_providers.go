@@ -18,22 +18,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Per-account IAM JetStream KV bucket holds resources that are inherently
-// account-scoped and not appropriate for the global IAM buckets — currently
-// the OIDC identity-provider registry consumed by STS AssumeRoleWithWebIdentity
-// and by IAM's CreateOpenIDConnectProvider CRUD.
-//
-// Lazy creation: callers that read MUST tolerate ErrBucketNotFound (no provider
-// has been registered for the account yet); callers that write MUST use
-// GetOrCreateIAMAccountBucket so the bucket appears on first use.
+// Per-account IAM bucket holds account-scoped resources (currently the OIDC provider registry).
+// Readers must tolerate ErrBucketNotFound; writers must use GetOrCreateIAMAccountBucket.
 const (
 	KVBucketIAMAccountPrefix  = "iam-account-"
 	KVBucketIAMAccountVersion = 1
 
-	// oidcProvidersKeyPrefix matches the eks-v1.md Q4 layout:
-	// "iam-account-{accountID}/oidc-providers/{issuerHash}". Keep the literal
-	// here (not strings.Join) so a stray refactor that introduces a different
-	// separator fails compile rather than silently writing to a sibling path.
 	oidcProvidersKeyPrefix = "oidc-providers/"
 )
 
@@ -43,40 +33,25 @@ func IAMAccountBucketName(accountID string) string {
 	return KVBucketIAMAccountPrefix + accountID
 }
 
-// OIDCProviderKey returns the KV key for an OIDC provider entry. The key is
-// derived from the SHA-256 hex digest of the issuer URL — the Mulga
-// convention (AWS uses the SHA-1 thumbprint of the IdP root cert; we hash the
-// issuer URL because we are also the IdP and have no separate cert chain to
-// pin against).
+// OIDCProviderKey returns the KV key for an OIDC provider, derived from the SHA-256 of the issuer URL.
 func OIDCProviderKey(issuer string) string {
 	sum := sha256.Sum256([]byte(issuer))
 	return oidcProvidersKeyPrefix + hex.EncodeToString(sum[:])
 }
 
-// OIDCProviderARN composes the AWS-format ARN used as the Federated principal
-// value in role trust policies that authorise the named issuer:
-//
-//	arn:aws:iam::{accountID}:oidc-provider/{issuerHostPath}
-//
-// issuerHostPath is the issuer URL with the scheme stripped (no leading
-// "https://") — matches the AWS convention so customers can paste an existing
-// IRSA trust policy unchanged.
+// OIDCProviderARN returns the arn:aws:iam::{accountID}:oidc-provider/{issuerHostPath} ARN.
+// issuerHostPath is the issuer URL with the https:// scheme stripped.
 func OIDCProviderARN(accountID, issuerHostPath string) string {
 	return fmt.Sprintf("arn:aws:iam::%s:oidc-provider/%s", accountID, issuerHostPath)
 }
 
-// GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on
-// first use. Writers (CreateOpenIDConnectProvider) MUST use this; readers that
-// must tolerate a not-yet-created bucket should call js.KeyValue directly and
-// treat nats.ErrBucketNotFound as "empty".
+// GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
 func GetOrCreateIAMAccountBucket(js nats.JetStreamContext, accountID string, replicas int) (nats.KeyValue, error) {
 	return getOrCreateBucket(js, IAMAccountBucketName(accountID), 1, max(replicas, 1))
 }
 
 // OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
-// Url carries the full issuer URL including scheme (the exact string the
-// cluster apiserver places in the token `iss` claim); the KV key is its hash,
-// and the provider ARN is derived by stripping the scheme.
+// Url is the full issuer URL; the KV key is its SHA-256 hash.
 type OIDCProviderRecord struct {
 	Url            string   `json:"url"`
 	ClientIDList   []string `json:"clientIDList,omitempty"`
@@ -85,10 +60,7 @@ type OIDCProviderRecord struct {
 	Tags           []Tag    `json:"tags,omitempty"`
 }
 
-// issuerFromOIDCProviderARN reverses OIDCProviderARN: it extracts the
-// scheme-less host/path suffix and prepends https:// to reconstruct the issuer
-// URL (and therefore its KV key). v1 issuers are always https, so this
-// round-trips Create's input.Url.
+// issuerFromOIDCProviderARN reverses OIDCProviderARN, reconstructing the full https issuer URL.
 func issuerFromOIDCProviderARN(arn string) (string, error) {
 	_, hostPath, ok := strings.Cut(arn, ":oidc-provider/")
 	if !ok {
@@ -100,8 +72,7 @@ func issuerFromOIDCProviderARN(arn string) (string, error) {
 	return "https://" + hostPath, nil
 }
 
-// validateOIDCProviderURL enforces the v1 issuer shape: a parseable https URL
-// with a host. We are the IdP, so no thumbprint/cert-chain validation applies.
+// validateOIDCProviderURL enforces the issuer shape: a parseable https URL with a non-empty host.
 func validateOIDCProviderURL(raw string) error {
 	if raw == "" {
 		return errors.New("url is required")
@@ -290,8 +261,7 @@ func stripIssuerScheme(issuer string) string {
 	return strings.TrimPrefix(issuer, "https://")
 }
 
-// tagsToSDK converts stored Tags into the SDK shape used by OIDC-provider
-// responses.
+// tagsToSDK converts stored Tags into the SDK shape.
 func tagsToSDK(tags []Tag) []*iam.Tag {
 	if len(tags) == 0 {
 		return nil

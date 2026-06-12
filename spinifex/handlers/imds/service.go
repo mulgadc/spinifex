@@ -16,25 +16,18 @@ import (
 // tokenSweepInterval is how often abandoned/expired IMDSv2 tokens are swept.
 const tokenSweepInterval = time.Minute
 
-// profileLookup is the slice of IAMService the IMDS credential + iam/* paths
-// need: dereference an instance-profile ARN to its record, and resolve a role
-// name to its canonical ARN. Narrowed to an interface for unit testing.
+// profileLookup is the IAMService slice needed for credential + iam/* paths.
 type profileLookup interface {
 	ResolveInstanceProfile(accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
 	GetRole(accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 }
 
-// publicKeyLookup fetches an instance's launch SSH public key material by
-// (accountID, keyName), serving the public-keys/0/openssh-key path. Narrowed to
-// an interface for unit testing; the production implementation
-// (NATSPublicKeyLookup) fronts the daemon-side key service over a NATS RPC.
+// publicKeyLookup fetches the SSH public key material for the public-keys path.
 type publicKeyLookup interface {
 	GetPublicKey(accountID, keyName string) (string, error)
 }
 
-// IMDSService is the host-served EC2 Instance Metadata Service. It runs in
-// vpcd on every chassis, serving 169.254.169.254 to local guest VMs over
-// per-subnet veths. Run owns the listener lifecycle and blocks until ctx is done.
+// IMDSService is the host-served EC2 Instance Metadata Service (169.254.169.254).
 type IMDSService interface {
 	Run(ctx context.Context) error
 }
@@ -42,16 +35,13 @@ type IMDSService interface {
 var _ IMDSService = (*IMDSServiceImpl)(nil)
 
 // eniResolver maps a datapath-attested (vpcID, srcIP) to ENI + instance facts.
-// An interface so the HTTP handlers are unit-testable without a live KV;
-// metadataResolver is the production implementation.
 type eniResolver interface {
 	resolveENI(vpcID, srcIP string) (*eniFacts, error)
 	resolveInstance(eni *eniFacts) (*instanceFacts, error)
 	resolveSGNames(accountID string, sgIDs []string) []string
 }
 
-// IMDSServiceImpl is the in-process IMDS implementation. It is not part of the
-// HTTPS gateway dispatch surface — it owns its own per-VPC listener stack.
+// IMDSServiceImpl is the in-process IMDS implementation with its own per-subnet listener stack.
 type IMDSServiceImpl struct {
 	resolver eniResolver
 	tokens   *tokenStore
@@ -62,9 +52,7 @@ type IMDSServiceImpl struct {
 	now      func() time.Time
 }
 
-// NewIMDSServiceImpl wires the IMDS service. natsConn backs the KV reads and the
-// account-scoped instance fan-out (sized by expectedNodes); ensureVeth/removeVeth
-// are injected rather than imported to avoid an import cycle via network/host.
+// NewIMDSServiceImpl wires the IMDS service. ensureVeth/removeVeth are injected to avoid an import cycle.
 func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, expectedNodes int, ensureVeth ensureVethFunc, removeVeth removeVethFunc) (*IMDSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
@@ -100,9 +88,7 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 		return nil, fmt.Errorf("open %s bucket: %w", KVBucketIMDSSubnetVeth, err)
 	}
 
-	// The SG bucket is owned by the VPC service and only feeds the non-critical
-	// security-groups path. Open it best-effort: if it isn't up yet, IMDS still
-	// starts and resolveSGNames degrades to serving raw IDs.
+	// Open SG bucket best-effort; IMDS starts fine without it, degrading to raw IDs.
 	sgKV, err := js.KeyValue(kvBucketSecurityGroups)
 	if err != nil {
 		slog.Warn("IMDS: security-group bucket unavailable, /security-groups will serve IDs", "bucket", kvBucketSecurityGroups, "err", err)
@@ -130,8 +116,7 @@ func NewIMDSServiceImpl(natsConn *nats.Conn, sts stsAssumer, iamSvc profileLooku
 	return svc, nil
 }
 
-// httpHandler builds the shared mux used by every per-VPC listener. The token
-// PUT is the only path reachable without a token; everything else is gated.
+// httpHandler builds the shared mux for every per-subnet listener.
 func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathToken, s.handleToken)
@@ -139,10 +124,8 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	return rejectForwarded(mux)
 }
 
-// Run starts the bind manager (sync + watch) and the token-sweep ticker, then
-// blocks until ctx is cancelled. The initial sync failing is logged but not
-// fatal — other vpcd services must not have their readiness gated on IMDS
-// plumbing, and SDKs retry while it converges.
+// Run starts the bind manager (sync + watch) and token-sweep ticker, blocks until ctx is done.
+// Initial sync failure is non-fatal; vpcd readiness must not be gated on IMDS.
 func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 	if err := s.bind.sync(ctx); err != nil {
 		slog.Warn("IMDS: initial bind sync failed, continuing", "err", err)
@@ -155,9 +138,7 @@ func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// sweepExpired evicts expired IMDSv2 tokens and stale credential-cache entries
-// on a ticker for the life of ctx. Both stores are in-memory and accrete on VM
-// churn, so a single sweep keeps them bounded without a per-store goroutine.
+// sweepExpired evicts expired tokens and stale credential-cache entries on a ticker.
 func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
 	ticker := time.NewTicker(tokenSweepInterval)
 	defer ticker.Stop()

@@ -9,15 +9,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ErrLeaseHeld signals that a reconciler was not spawned because another node
-// holds the leader lease. Spawn treats it as benign: it drops the registry
-// entry (rather than recording a phantom holder) so a later Spawn re-attempts
-// once the holder's lease TTL lapses.
+// ErrLeaseHeld signals the leader lease is held by another node.
+// Spawn treats it as benign and retries on the next tick.
 var ErrLeaseHeld = errors.New("eks: reconciler lease held by another node")
 
-// ReconcilerRegistry tracks active per-cluster reconciler goroutines so the
-// daemon can spawn, stop, and graceful-shutdown them in unison. One entry per
-// (accountID, clusterName) key.
+// ReconcilerRegistry tracks active per-cluster reconciler goroutines; one entry per (accountID, clusterName).
 type ReconcilerRegistry struct {
 	mu      sync.Mutex
 	holders map[string]*reconcilerHandle
@@ -34,15 +30,10 @@ func NewReconcilerRegistry() *ReconcilerRegistry {
 	return &ReconcilerRegistry{holders: map[string]*reconcilerHandle{}}
 }
 
-// SpawnReconcilerFn is the per-cluster goroutine starter the registry uses.
-// Tests inject a fake; production wires a real ClusterReconciler under the
-// hood (acquires lease, then loops via Run).
+// SpawnReconcilerFn starts a per-cluster reconciler goroutine; injectable for tests.
 type SpawnReconcilerFn func(ctx context.Context, accountID, clusterName string) (release func(), err error)
 
-// Spawn launches one reconciler goroutine for (accountID, clusterName). If
-// one is already running for that pair, returns nil without spawning a
-// duplicate. SpawnFn is responsible for acquiring the leader lease + invoking
-// Run; the registry only owns the ctx and the release.
+// Spawn launches one reconciler goroutine for (accountID, clusterName), or no-ops if already running.
 func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterName string, spawnFn SpawnReconcilerFn) error {
 	if accountID == "" || clusterName == "" {
 		return errors.New("eks: ReconcilerRegistry.Spawn empty ids")
@@ -71,8 +62,6 @@ func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterNam
 		cancel()
 		close(done)
 		if errors.Is(err, ErrLeaseHeld) {
-			// Lease held elsewhere — not a failure. The entry is already
-			// dropped above, so a later Spawn retries after the holder's TTL.
 			return nil
 		}
 		return err
@@ -146,12 +135,8 @@ func registryKey(accountID, clusterName string) string {
 	return accountID + "/" + clusterName
 }
 
-// RunClusterReconciler is the production SpawnReconcilerFn: it constructs a
-// ClusterReconciler, acquires the leader lease, then drives Run in a
-// goroutine. Returns (release, nil) on lease acquired, or (nil, error) on
-// constructor failure. If another node holds the lease, returns
-// (nil, ErrLeaseHeld) so the registry drops the entry and re-attempts on a
-// later tick instead of recording a phantom holder.
+// RunClusterReconciler is the production SpawnReconcilerFn: constructs a ClusterReconciler,
+// acquires the lease, and drives Run in a goroutine. Returns ErrLeaseHeld if another node wins.
 func RunClusterReconciler(
 	ctx context.Context,
 	leaderKV, acctKV nats.KeyValue,

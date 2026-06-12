@@ -18,15 +18,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// haControlPlaneCount is the control-plane spread width: an odd quorum of three
-// so an embedded-etcd control plane tolerates a single host loss. Fewer than
-// this many schedulable hosts falls back to a single control-plane VM (today's
-// behaviour) instead of failing the create.
+// haControlPlaneCount is the HA spread width (odd quorum tolerating one host loss).
+// Fewer schedulable hosts fall back to a single CP VM.
 const haControlPlaneCount = 3
 
-// controlPlanePlacer is the spread-placement surface the HA control-plane
-// orchestrator needs. handlers/ec2/placementgroup.PlacementGroupService (wired
-// by the daemon as NewNATSPlacementGroupService) satisfies it.
+// controlPlanePlacer is the spread-placement surface for HA CP orchestration.
 type controlPlanePlacer interface {
 	CreatePlacementGroup(*ec2.CreatePlacementGroupInput, string) (*ec2.CreatePlacementGroupOutput, error)
 	DeletePlacementGroup(*ec2.DeletePlacementGroupInput, string) (*ec2.DeletePlacementGroupOutput, error)
@@ -38,25 +34,17 @@ type controlPlanePlacer interface {
 
 var _ controlPlanePlacer = (handlers_ec2_placementgroup.PlacementGroupService)(nil)
 
-// HostScheduler answers the capacity + placement fan-out questions the HA
-// control-plane orchestrator asks. The daemon wires a NATS implementation; unit
-// tests fake it so the orchestration logic needs no live cluster.
+// HostScheduler answers capacity + placement fan-out questions for HA CP placement.
 type HostScheduler interface {
-	// SchedulableHosts returns the distinct node IDs that can fit at least one
-	// VM of instanceType.
+	// SchedulableHosts returns node IDs that can fit at least one VM of instanceType.
 	SchedulableHosts(instanceType string) []string
-	// InstanceHosts maps each instance ID to the node currently hosting it.
-	// Instances absent from the result are not (yet) visible to the fan-out.
+	// InstanceHosts maps each instance ID to its hosting node; absent entries are not yet visible.
 	InstanceHosts(instanceIDs []string) map[string]string
 }
 
-// placeControlPlane places the cluster's control-plane VM(s). With at least
-// haControlPlaneCount schedulable hosts it spreads that many k3s server VMs
-// across distinct hosts, all-or-nothing; otherwise it launches a single
-// control-plane VM on the local node (today's behaviour). Returns the placed
-// nodes ([0] is the primary the NLB + egress wire to until 231.7.3) and the
-// spread placement-group name ("" for the single-CP fallback) the caller
-// persists for DeleteCluster teardown.
+// placeControlPlane places the cluster's CP VMs. With ≥ haControlPlaneCount
+// schedulable hosts it spreads servers all-or-nothing; otherwise falls back to
+// a single CP. Returns placed nodes ([0] = primary) and spread group name ("" for single-CP).
 func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K3sServerInput) ([]ControlPlaneNode, string, error) {
 	instanceType := tmpl.InstanceType
 	if instanceType == "" {
@@ -83,10 +71,7 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 		MaxCount:      haControlPlaneCount,
 	}, pgAccount)
 	if err != nil {
-		// Could not reserve the full quorum of distinct hosts (capacity raced
-		// away between the status fan-out and the CAS reservation). Drop the
-		// group and fall back to a single control plane rather than failing the
-		// whole create.
+		// Capacity raced away between fan-out and reservation; fall back to single CP.
 		slog.Warn("placeControlPlane: spread reservation failed, falling back to single control plane",
 			"cluster", clusterName, "group", groupName, "err", err)
 		s.deleteSpreadGroup(groupName, pgAccount)
@@ -106,8 +91,7 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 		launched = append(launched, controlPlaneNode(r.node, r.out))
 	}
 
-	// All-or-nothing: any launch failure rolls back every VM that did come up,
-	// releases the reservation, drops the group, and fails the create.
+	// All-or-nothing: any launch failure rolls back all VMs, releases the reservation.
 	if len(launchErrs) > 0 {
 		slog.Error("placeControlPlane: partial spread launch, rolling back",
 			"cluster", clusterName, "launched", len(launched), "failed", len(launchErrs))
@@ -115,10 +99,8 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 		return nil, "", fmt.Errorf("eks: HA control-plane launch failed: %w", errors.Join(launchErrs...))
 	}
 
-	// Confirm each VM actually landed on its reserved host (acceptance: verified
-	// via the node-VM fan-out). The node-targeted launch subject already pins
-	// placement, so an instance not yet visible to the fan-out is tolerated;
-	// only a definitive wrong-host placement triggers rollback.
+	// Verify each VM landed on its reserved host. Not-yet-visible instances are
+	// tolerated; only a definitive wrong-host placement triggers rollback.
 	if err := s.verifyControlPlaneSpread(launched); err != nil {
 		slog.Error("placeControlPlane: placement verification failed, rolling back",
 			"cluster", clusterName, "err", err)
@@ -144,8 +126,7 @@ func (s *EKSServiceImpl) placeControlPlane(accountID, clusterName string, tmpl K
 	return launched, groupName, nil
 }
 
-// launchSingleControlPlane launches one control-plane VM on the local node, the
-// pre-HA behaviour. NodeID is empty: the local launch is node-blind.
+// launchSingleControlPlane launches one CP VM on the local node (pre-HA fallback).
 func (s *EKSServiceImpl) launchSingleControlPlane(tmpl K3sServerInput) ([]ControlPlaneNode, string, error) {
 	in := tmpl
 	in.TargetNodeID = ""
@@ -162,13 +143,9 @@ type cpLaunchResult struct {
 	err  error
 }
 
-// launchControlPlaneSpread launches the reserved nodes as one etcd quorum:
-// nodes[0] is the first server (cluster-init), and its ENI IP is the join
-// endpoint the remaining servers register against — so it must come up first.
-// nodes[1..] then launch in parallel as join servers (each remote launch blocks
-// on a full-AMI boot round trip, so sequential joins would be N×). Results stay
-// index-aligned with nodes. If the first server fails, the joins are skipped
-// (no endpoint to join) so the caller's all-or-nothing rollback fires.
+// launchControlPlaneSpread launches the reserved nodes as one etcd quorum.
+// nodes[0] is the cluster-init server whose ENI IP the remaining servers join;
+// nodes[1..] launch in parallel. Results are index-aligned with nodes.
 func (s *EKSServiceImpl) launchControlPlaneSpread(tmpl K3sServerInput, nodes []string) []cpLaunchResult {
 	results := make([]cpLaunchResult, len(nodes))
 
@@ -200,13 +177,11 @@ func (s *EKSServiceImpl) launchControlPlaneSpread(tmpl K3sServerInput, nodes []s
 	return results
 }
 
-// errFirstServerFailed marks join-server results skipped when the cluster-init
-// server never came up — the joins have no endpoint to register against.
+// errFirstServerFailed marks join results skipped when the cluster-init server failed to launch.
 var errFirstServerFailed = errors.New("eks: first control-plane server failed; join servers skipped")
 
-// verifyControlPlaneSpread confirms every launched VM sits on its reserved host
-// and that no two share a host. A VM not yet visible to the fan-out is tolerated
-// (listing lag — the node-targeted launch subject already guarantees the host).
+// verifyControlPlaneSpread confirms every CP VM sits on its reserved host with
+// no duplicates. VMs not yet visible to the fan-out are tolerated.
 func (s *EKSServiceImpl) verifyControlPlaneSpread(nodes []ControlPlaneNode) error {
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
@@ -233,10 +208,8 @@ func (s *EKSServiceImpl) verifyControlPlaneSpread(nodes []ControlPlaneNode) erro
 	return nil
 }
 
-// rollbackControlPlaneSpread tears down a partial HA placement: terminate every
-// VM that launched, release the reservation (clears the empty placeholders —
-// the record was never finalized on any rollback path), and drop the group.
-// Best-effort: a stranded internal placement group is harmless and re-creatable.
+// rollbackControlPlaneSpread terminates launched VMs, releases the reservation,
+// and drops the group. Best-effort: a leaked internal group is harmless.
 func (s *EKSServiceImpl) rollbackControlPlaneSpread(accountID, groupName, pgAccount string, launched []ControlPlaneNode, reserved []string) {
 	for _, n := range launched {
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance, accountID, n.InstanceID, n.ENIID); err != nil {
@@ -252,9 +225,7 @@ func (s *EKSServiceImpl) rollbackControlPlaneSpread(accountID, groupName, pgAcco
 	s.deleteSpreadGroup(groupName, pgAccount)
 }
 
-// ensureSpreadGroup creates the per-cluster spread placement group. A duplicate
-// (a prior attempt left it behind) is reused — ReserveSpreadNodes filters
-// already-occupied hosts, so reserving against a stale group is safe.
+// ensureSpreadGroup creates the spread placement group, reusing it if it already exists.
 func (s *EKSServiceImpl) ensureSpreadGroup(groupName, pgAccount string) error {
 	_, err := s.deps.PlacementGroup.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{
 		GroupName: aws.String(groupName),
@@ -278,9 +249,8 @@ func (s *EKSServiceImpl) deleteSpreadGroup(groupName, pgAccount string) {
 	}
 }
 
-// teardownSpreadGroup removes the cluster's CP instances from the spread group
-// and deletes it. Best-effort: a leaked internal group strands nothing billable.
-// Runs only for HA clusters (ControlPlaneSpreadGroup set).
+// teardownSpreadGroup removes CP instances from the spread group and deletes it.
+// No-op for single-CP clusters (ControlPlaneSpreadGroup == "").
 func (s *EKSServiceImpl) teardownSpreadGroup(meta *ClusterMeta) {
 	if meta.ControlPlaneSpreadGroup == "" {
 		return
@@ -302,9 +272,8 @@ func (s *EKSServiceImpl) teardownSpreadGroup(meta *ClusterMeta) {
 	s.deleteSpreadGroup(meta.ControlPlaneSpreadGroup, pgAccount)
 }
 
-// controlPlaneTeardownNodes returns the control-plane VMs DeleteCluster must
-// tear down. It prefers the multi-node list; for clusters persisted before that
-// field existed it synthesizes a single entry from the scalar fields.
+// controlPlaneTeardownNodes returns CP VMs for DeleteCluster. Prefers
+// ControlPlaneNodes; falls back to scalar fields for older persisted clusters.
 func controlPlaneTeardownNodes(meta *ClusterMeta) []ControlPlaneNode {
 	if len(meta.ControlPlaneNodes) > 0 {
 		return meta.ControlPlaneNodes
@@ -320,10 +289,8 @@ func controlPlaneTeardownNodes(meta *ClusterMeta) []ControlPlaneNode {
 	}}
 }
 
-// haSpreadGroupName namespaces the spread group by account + cluster. The group
-// lives under the system account (admin.SystemAccountID) so it never surfaces in
-// a customer's DescribePlacementGroups; the account therefore cannot
-// disambiguate same-named clusters across tenants, so it is folded into the name.
+// haSpreadGroupName namespaces the spread group by account + cluster so same-named
+// clusters across tenants don't collide. Lives under the system account.
 func haSpreadGroupName(accountID, clusterName string) string {
 	return "eks-cp-" + accountID + "-" + clusterName
 }
@@ -342,27 +309,22 @@ func controlPlaneNode(nodeID string, out *K3sServerOutput) ControlPlaneNode {
 
 var _ HostScheduler = (*natsHostScheduler)(nil)
 
-// hostFanoutTimeout bounds a node status / node VMs fan-out. Sized for a LAN
-// round trip to every daemon; CreateCluster is already multi-second so a fixed
-// short collection window trades a little latency for reliably seeing every host
-// (a missed host would wrongly drop the cluster to single-CP).
+// hostFanoutTimeout bounds a node status/VMs fan-out. Short fixed window
+// trades a little latency for reliably seeing all hosts before placement.
 const hostFanoutTimeout = time.Second
 
 type natsHostScheduler struct {
 	nc *nats.Conn
 }
 
-// NewNATSHostScheduler builds the NATS fan-out HostScheduler the daemon wires
-// into EKSServiceDeps.
+// NewNATSHostScheduler returns a NATS fan-out HostScheduler for EKSServiceDeps.
 func NewNATSHostScheduler(nc *nats.Conn) HostScheduler {
 	return &natsHostScheduler{nc: nc}
 }
 
 func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
-	// The control-plane VM is a system type (sys.*), which node.status omits from
-	// its per-type capacity list (system types are hidden from customers). A
-	// system VM still consumes host vCPU/memory like any guest, so size the fit
-	// against each node's raw schedulable headroom and the type's footprint.
+	// sys.* types are hidden from customers in node.status but still consume
+	// vCPU/memory, so fit is checked against raw schedulable headroom.
 	vcpu, memGB, ok := instancetypes.SpecForSystemType(instanceType)
 	if !ok {
 		slog.Warn("SchedulableHosts: unknown system instance type, no schedulable hosts",
@@ -385,9 +347,8 @@ func (h *natsHostScheduler) SchedulableHosts(instanceType string) []string {
 	return hosts
 }
 
-// nodeFitsSystemInstance reports whether a node's schedulable headroom
-// (Total - Reserved - Alloc, the same arithmetic node.status documents for guest
-// scheduling) admits at least one VM of the given vCPU/memory footprint.
+// nodeFitsSystemInstance reports whether a node's headroom (Total - Reserved - Alloc)
+// fits at least one VM of the given vCPU/memory footprint.
 func nodeFitsSystemInstance(st types.NodeStatusResponse, vcpu int, memGB float64) bool {
 	remainVCPU := st.TotalVCPU - st.ReservedVCPU - st.AllocVCPU
 	remainMem := st.TotalMemGB - st.ReservedMemGB - st.AllocMemGB
@@ -414,8 +375,7 @@ func (h *natsHostScheduler) InstanceHosts(instanceIDs []string) map[string]strin
 	return out
 }
 
-// fanout publishes an empty request on subject and invokes handle for every
-// reply that arrives within hostFanoutTimeout.
+// fanout publishes on subject and calls handle for each reply within hostFanoutTimeout.
 func (h *natsHostScheduler) fanout(subject string, handle func([]byte)) {
 	if h.nc == nil {
 		return

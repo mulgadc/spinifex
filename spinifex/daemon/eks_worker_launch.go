@@ -15,12 +15,8 @@ import (
 // Compile-time check that Daemon satisfies the EKS worker-launch surface.
 var _ handlers_eks.WorkerLauncher = (*Daemon)(nil)
 
-// RunWorkerInstance launches a nodegroup worker through the normal customer
-// RunInstances path: customer-owned, primary ENI auto-created in input.SubnetId
-// with input.SecurityGroupIds, no ManagedBy tag, no mgmt NIC — so the worker is
-// visible in DescribeInstances and reclaimed by TerminateInstances like any
-// other customer EC2. The EKS service hands us raw cloud-config YAML in
-// input.UserData; RunInstances expects it base64-encoded, so wrap it here.
+// RunWorkerInstance launches a nodegroup worker via the normal RunInstances path.
+// UserData is base64-encoded before forwarding; the worker is customer-visible.
 func (d *Daemon) RunWorkerInstance(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("eks worker: instance service not initialized")
@@ -34,10 +30,8 @@ func (d *Daemon) RunWorkerInstance(input *ec2.RunInstancesInput, accountID strin
 	return d.instanceService.RunInstances(input, accountID)
 }
 
-// TerminateWorkerInstances terminates each nodegroup worker via the same path
-// the EC2 NATS terminate handler uses. A worker no longer tracked by the local
-// vmMgr is treated as already-gone (idempotent success) so a retried
-// DeleteNodegroup / scale-down does not wedge on instances that already drained.
+// TerminateWorkerInstances terminates nodegroup workers. Already-gone instances
+// are treated as success so retried DeleteNodegroup calls are idempotent.
 func (d *Daemon) TerminateWorkerInstances(instanceIDs []string, accountID string) error {
 	if d.instanceService == nil {
 		return errors.New("eks worker: instance service not initialized")

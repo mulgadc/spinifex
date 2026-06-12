@@ -11,14 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runNodeFailure is the Go port of node-failure injection
-// (run-multinode-e2e.sh:898-957). Stops spinifex.target on node2, asserts the
-// cluster degrades cleanly: surviving nodes still serve DescribeInstances,
-// NATS reports 1 peer instead of 2, and the trio remains addressable.
-//
-// Registers a t.Cleanup that restarts node2 unconditionally so a cancelled
-// recovery test doesn't leave the cluster broken for downstream tests.
-// runNodeRecovery itself runs the recovery assertions explicitly.
+// runNodeFailure stops spinifex.target on node2 and asserts clean degradation:
+// surviving nodes still serve DescribeInstances and NATS reports 1 peer.
+// Unconditionally restarts node2 in t.Cleanup so downstream tests are unaffected.
 func runNodeFailure(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Node Failure")
 
@@ -33,15 +28,10 @@ func runNodeFailure(t *testing.T, fix *Fixture) {
 	harness.Step(t, "stop spinifex.target on %s (%s)", node2.Name, node2.Addr)
 	harness.StopNode(t, node2)
 	t.Cleanup(func() {
-		// Best-effort: ensure node2 comes back even if assertions below fail
-		// or the run is cancelled. runNodeRecovery calls StartNode again —
-		// systemctl start is idempotent.
-		harness.StartNode(t, node2)
+		harness.StartNode(t, node2) // idempotent; runNodeRecovery may also call this
 	})
 
-	// NATS detection of a peer drop is delayed by the heartbeat — bash
-	// uses `sleep 10`. WaitNATSPeers polls so we converge faster on a
-	// healthy run while still tolerating a slow detection.
+	// NATS peer-drop detection is delayed by heartbeat; poll so we converge faster than a fixed sleep.
 	harness.Step(t, "wait NATS to report 1 peer (degraded)")
 	fix.Cluster.WaitNATSPeers(t, 1, harness.WithTimeout(30*time.Second), harness.WithPoll(2*time.Second))
 

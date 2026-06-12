@@ -200,10 +200,8 @@ func TestDescribeImages_AfterCreate(t *testing.T) {
 	assert.Equal(t, testAccountID, *result.Images[0].OwnerId)
 }
 
-// TestDescribeImages_BootModeProjection asserts that AMIMetadata.BootMode
-// round-trips through DescribeImages. Empty BootMode (legacy AMIs registered
-// before the field existed) must pass through as an empty string, not get
-// synthesized to a default.
+// TestDescribeImages_BootModeProjection asserts that AMIMetadata.BootMode round-trips
+// through DescribeImages; empty BootMode on legacy AMIs must pass through unchanged.
 func TestDescribeImages_BootModeProjection(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -871,10 +869,8 @@ func createTestAMIConfigFull(t *testing.T, store *objectstore.MemoryObjectStore,
 	require.NoError(t, err)
 }
 
-// TestDescribeImages_FilterBy verifies single-attribute filters. Each subtest
-// builds its own AMI fixtures and asserts which IDs the filter selects.
-// Multi-filter, wildcard, error-path, and no-filter cases live in their own
-// dedicated tests below.
+// TestDescribeImages_FilterBy verifies single-attribute filters; each subtest builds
+// its own AMI fixtures. Multi-filter, wildcard, and error-path cases have their own tests.
 func TestDescribeImages_FilterBy(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1542,11 +1538,8 @@ func putTestAMIConfigWithSnapshot(t *testing.T, store *objectstore.MemoryObjectS
 	require.NoError(t, err)
 }
 
-// seedCopyableAMI writes a matching (snapshot, AMI) pair so CopyImage can
-// complete end-to-end. Returns the AMI metadata that was persisted (callers
-// can customise fields before seeding by tweaking the returned VolumeID /
-// tags via preceding calls, but the helper takes the simple path for the
-// happy case).
+// seedCopyableAMI writes a matching (snapshot, AMI) pair so CopyImage can complete
+// end-to-end.
 func seedCopyableAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID, volumeID string, sizeGiB int64) {
 	t.Helper()
 	cfg := handlers_ec2_snapshot.SnapshotConfig{
@@ -1704,10 +1697,8 @@ func TestCopyImage_SystemAMICopiedIntoCallerAccount(t *testing.T) {
 	assert.Equal(t, "spinifex", srcMeta.ImageOwnerAlias)
 }
 
-// Bundled system AMIs (admin-imported) have no standalone snap-xxx/metadata.json
-// — their SnapshotID refers to a viperblock-internal snap, and blocks live under
-// ami-xxx/. CopyImage must still succeed (AWS parity: copy of a public AMI works),
-// falling back to synthesizing a snap view where VolumeID = sourceImageID.
+// Bundled system AMIs have no standalone snap-xxx/metadata.json; CopyImage must
+// still succeed by synthesizing a snap view where VolumeID = sourceImageID.
 func TestCopyImage_BundledSystemAMINoStandaloneSnap(t *testing.T) {
 	svc, store := setupTestImageService(t)
 

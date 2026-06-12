@@ -17,12 +17,8 @@ func IsSystemType(name string) bool {
 	return strings.HasPrefix(name, "sys.")
 }
 
-// SpecForSystemType returns the vCPU and memory (GB) footprint of a system
-// instance type (sys.*). System VMs consume host capacity like any guest, so
-// the EKS HA control-plane scheduler sizes spread placement against these
-// figures rather than the customer-facing node.status type list (which omits
-// sys.* types). ok is false for an unknown name or a non-system type. The
-// footprint is arch-independent, so the host GOARCH is used for the lookup.
+// SpecForSystemType returns the vCPU and memory (GB) footprint of a sys.* type.
+// ok is false for unknown or non-system types.
 func SpecForSystemType(name string) (vcpu int, memGB float64, ok bool) {
 	if !IsSystemType(name) {
 		return 0, 0, false
@@ -36,18 +32,10 @@ func SpecForSystemType(name string) (vcpu int, memGB float64, ok bool) {
 		true
 }
 
-// generateForGeneration creates the instance type map for the given CPU generation.
-// It generates all instance families matching the generation's family list across
-// burstable, general purpose, compute optimized, and memory optimized categories.
-//
-// On x86_64 hosts the cross-vendor sibling family for each member of
-// gen.families is also emitted (e.g. Intel Skylake's "t3" pulls in "t3a" so
-// AMD-targeted RunInstances requests can land on this host). ARM and
-// legacy Intel-only families have no sibling and are unaffected.
+// generateForGeneration creates instance types for the given CPU generation.
+// Cross-vendor siblings are included on x86_64 so a mixed Intel+AMD cluster
+// can serve either vendor family.
 func generateForGeneration(gen cpuGeneration, arch string) map[string]*ec2.InstanceTypeInfo {
-	// Build a set of allowed families for fast lookup. Include cross-vendor
-	// siblings so a mixed Intel+AMD cluster routes RunInstances of either
-	// vendor family to any x86_64 host with capacity.
 	allowed := make(map[string]bool, len(gen.families)*2)
 	for _, f := range gen.families {
 		allowed[f] = true
@@ -124,11 +112,8 @@ func generateSystemTypes(arch string) map[string]*ec2.InstanceTypeInfo {
 	return types
 }
 
-// generateGPUTypes generates instance types for the discovered GPU models.
-// For each unique GPU family, it emits all sizes for that family with GpuInfo populated.
-// Duplicates (multiple GPUs of the same model) produce only one set of types.
 // GenerateGPUTypes returns InstanceTypeInfo entries for each GPU model with GpuInfo populated.
-// It is exported for use by the daemon's hot-reload path.
+// Exported for use by the daemon's hot-reload path.
 func GenerateGPUTypes(models []GPUModel, arch string) map[string]*ec2.InstanceTypeInfo {
 	return generateGPUTypes(models, arch)
 }

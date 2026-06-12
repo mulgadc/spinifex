@@ -50,28 +50,10 @@ type Witness struct {
 	keyName      string
 }
 
-// NewWitness constructs a Witness from environment-supplied settings:
-//
-//   - AWS_REGION (required) — passed to the AWS SDK client.
-//   - DDIL_WITNESS_AMI (optional) — specific AMI ID; if unset, an
-//     ami-ubuntu-* image is discovered at launch time.
-//   - DDIL_WITNESS_INSTANCE_TYPE (optional) — explicit instance type; if
-//     unset, the smallest registered type (by memory, then vCPUs) is
-//     auto-discovered at launch time. Auto-discovery beats hard-coding
-//     `t2.micro` because tofu clusters seed `*.nano` variants under
-//     names that change between releases.
-//   - DDIL_WITNESS_KEY_NAME (default spinifex-key) — EC2 key pair name
-//     the daemon injects via cloud-init.
-//   - DDIL_GUEST_SSH_USER (default ec2-user) — user for guest SSH; matches
-//     the default account on the cluster's ami-ubuntu-* images (shell E2E
-//     uses the same login at tests/e2e/run-multinode-e2e.sh:650).
-//   - DDIL_GUEST_SSH_KEY (required) — private key for guest SSH; must
-//     pair with the public material registered under DDIL_WITNESS_KEY_NAME
-//     so authorized_keys on the cloud-init guest accepts it.
-//
-// Credentials for the SDK come from the default chain (AWS_ACCESS_KEY_ID/
-// AWS_SECRET_ACCESS_KEY or shared profile), matching the tofu-cluster
-// convention used by the shell E2E suites.
+// NewWitness constructs a Witness from environment variables. Required:
+// AWS_REGION, DDIL_GUEST_SSH_KEY. Optional: DDIL_WITNESS_AMI,
+// DDIL_WITNESS_INSTANCE_TYPE (defaults to smallest registered type),
+// DDIL_WITNESS_KEY_NAME (default spinifex-key), DDIL_GUEST_SSH_USER (default ec2-user).
 func NewWitness(cluster *Cluster, transport SSH) (*Witness, error) {
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
@@ -324,12 +306,8 @@ func (w *Witness) resolveAMI(ctx context.Context) (string, error) {
 }
 
 // resolveInstanceType returns the witness instance type, caching the result.
-// When DDIL_WITNESS_INSTANCE_TYPE is set it is honoured verbatim; otherwise
-// DescribeInstanceTypes is consulted and the smallest registered type — by
-// memory first, vCPUs as tiebreaker — is selected. The sort key is
-// quantitative on purpose: naming conventions (`t2.nano`, `c6i.large`, …)
-// shift between cluster releases, but smallest-by-resource always picks the
-// cheapest valid launch target.
+// Falls back to the smallest registered type (by memory, then vCPUs) so the
+// choice doesn't depend on naming conventions that shift between releases.
 func (w *Witness) resolveInstanceType(ctx context.Context) (string, error) {
 	if w.instanceType != "" {
 		return w.instanceType, nil
@@ -399,25 +377,18 @@ func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Du
 	}
 }
 
-// findHost walks every cluster node looking for the QEMU process that owns
-// instanceID. The daemon embeds the instance ID in `-pidfile`, `-qmp`, and
-// `-name guest=` on the QEMU command line, so grepping for the ID identifies
-// exactly one process per cluster regardless of net mode (user-hostfwd vs
-// tap-mode bridge).
+// findHost walks cluster nodes looking for the QEMU process that owns instanceID
+// (the instance ID appears in -pidfile, -qmp, and -name on the QEMU command line).
 func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, error) {
 	cmd := fmt.Sprintf("ps auxw | grep %s | grep qemu-system | grep -v grep", ShellQuote(instanceID))
-	// Give the daemon a short window to actually spawn QEMU after the
-	// EC2 state flip to running, since /aws/ec2 reports "running" before
-	// the daemon has finished forking the process on some nodes.
+	// EC2 "running" state is reported before QEMU is forked; give it a window.
 	deadline := time.Now().Add(30 * time.Second)
 	const interval = 1 * time.Second
 	for {
 		for _, n := range w.cluster.Nodes {
 			out, err := w.ssh.Run(ctx, n, cmd)
 			if err != nil {
-				// `grep | grep` exits 1 when no match — our SSH wrapper treats
-				// that as error; try the next node rather than bailing.
-				continue
+				continue // grep exits 1 on no match; try next node
 			}
 			if strings.Contains(string(out), instanceID) {
 				return n, nil
@@ -477,11 +448,8 @@ func (w *Witness) terminate(ctx context.Context, id string) error {
 	return nil
 }
 
-// readCounter tunnels SSH through host to publicIP:22 and reads
-// /var/lib/counter. The cluster's external pool (MapPublicIpOnLaunch) sits
-// on an OVN-managed subnet that isn't routable from the off-cluster runner;
-// the host node, however, reaches it via OVN's gateway router. Using the
-// VM's hosting node as the jump keeps the relay inside the cluster.
+// readCounter tunnels SSH through host to publicIP:22 and reads /var/lib/counter.
+// The runner can't reach the EIP directly; the hosting node jumps via OVN's gateway.
 func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (int, error) {
 	hostClient, err := dialHost(ctx, host, w.cluster.SSHUser, w.hostSigner)
 	if err != nil {
@@ -530,16 +498,9 @@ func readCounter(ctx context.Context, w *Witness, host Node, publicIP string) (i
 	return n, nil
 }
 
-// awaitBaseline polls readCounter through the host-tunnelled SSH session
-// until the guest answers with a parseable counter value or timeout
-// expires. Three layers must come up before the baseline can be read:
-// sshd binding :22, the OVN dnat_and_snat rule landing for the EIP, and
-// cloud-init's runcmd enabling witness-counter.service (which seeds
-// /var/lib/counter on first ExecStartPre). All three are async to
-// RunInstances, so we retry on the transport errors plus the
-// "No such file or directory" the counter service emits before its
-// ExecStartPre runs. Auth and parse errors fail fast — they won't fix
-// themselves with more polling.
+// awaitBaseline polls readCounter until the guest returns a parseable counter
+// value. Retries on transient transport errors (sshd not yet up, EIP rule not
+// yet landed, counter file not yet created). Auth and parse errors fail fast.
 func awaitBaseline(ctx context.Context, w *Witness, host Node, publicIP string, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	const interval = 2 * time.Second
@@ -551,10 +512,6 @@ func awaitBaseline(ctx context.Context, w *Witness, host Node, publicIP string, 
 		}
 		lastErr = err
 		msg := strings.ToLower(err.Error())
-		// "connect failed" covers x/crypto/ssh's
-		//   `ssh: rejected: connect failed (Connection refused)`
-		// emitted when the SSH jump host's DialContext fails — the
-		// canonical signal that the guest hasn't bound :22 yet.
 		transient := strings.Contains(msg, "connect failed") ||
 			strings.Contains(msg, "connection refused") ||
 			strings.Contains(msg, "connection reset") ||

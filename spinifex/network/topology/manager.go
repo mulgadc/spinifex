@@ -1,7 +1,6 @@
-// Package topology is L2 of the spinifex network stack: the logical network
-// model. It translates VPC/subnet/ENI/SG API objects into OVN logical network
-// objects via L1 (network/ovn). Higher layers (policy, external, federation)
-// build on this; lower layers must not call here.
+// Package topology is L2 of the spinifex network stack. It translates
+// VPC/subnet/ENI/SG objects into OVN logical network objects via L1.
+// Higher layers (policy, external, federation) build on this.
 package topology
 
 import (
@@ -50,9 +49,8 @@ type SubnetSpec struct {
 	CIDR     netip.Prefix
 }
 
-// PortSpec describes an ENI / VM port at L2. PrivateIP+MAC bind to LSP
-// Addresses/PortSecurity at create. SGIDs is initial membership;
-// changes go through SetPortSecurityGroups.
+// PortSpec describes an ENI port at L2. PrivateIP+MAC bind to LSP Addresses/
+// PortSecurity at create; SG membership changes go through SetPortSecurityGroups.
 type PortSpec struct {
 	PortID    string
 	SubnetID  string

@@ -37,11 +37,7 @@ type VMGPUInfo struct {
 }
 
 // NodeStatusResponse is returned by the spinifex.node.status NATS topic (fan-out).
-//
-// ReservedVCPU / ReservedMemGB are held back from guest scheduling for the
-// spinifex daemon and co-located services. Schedulable capacity is
-// TotalVCPU - ReservedVCPU - AllocVCPU (and the equivalent for memory);
-// per-type counts in InstanceTypes already account for the reserve.
+// Schedulable capacity = TotalVCPU - ReservedVCPU - AllocVCPU (same for memory).
 type NodeStatusResponse struct {
 	Node           string            `json:"node"`
 	Status         string            `json:"status"`

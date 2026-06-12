@@ -699,11 +699,8 @@ func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
 	}
 }
 
-// TestAttachInternetGateway_NoGateFanOut documents that attach intentionally
-// skips the gate fan-out to avoid racing the default-VPC bootstrap path,
-// which attaches the IGW and immediately adds a 0.0.0.0/0 → IGW route. The
-// two events would race across the gate/ungate NATS subjects and leave the
-// default subnet DROPped when ungate landed first.
+// TestAttachInternetGateway_NoGateFanOut verifies that IGW attach skips gate
+// fan-out to avoid racing the bootstrap CreateRoute path.
 func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	pub := &fakeGatePublisher{}

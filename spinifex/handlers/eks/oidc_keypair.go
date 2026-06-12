@@ -17,11 +17,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// PublicKeyPEMFromPrivate parses a PKCS#8 private-key PEM and returns the PKIX
-// public-key PEM. kube-apiserver's --service-account-key-file requires a PUBLIC
-// key (ParsePublicKeysPEM rejects private-key blocks), while the matching
-// --service-account-signing-key-file takes the private key; the K3s server VM
-// needs both, seeded to separate files.
+// PublicKeyPEMFromPrivate parses a PKCS#8 private-key PEM and returns the PKIX public-key PEM.
+// kube-apiserver --service-account-key-file requires a public key; signing uses the private key.
 func PublicKeyPEMFromPrivate(privPEM string) (string, error) {
 	block, _ := pem.Decode([]byte(privPEM))
 	if block == nil {
@@ -42,9 +39,7 @@ func PublicKeyPEMFromPrivate(privPEM string) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})), nil
 }
 
-// oidcJWK and oidcJWKS are the RFC 7517 wire shapes the per-cluster JWKS
-// document uses. handlers_sts decodes the same JSON via its own JWK / JWKS
-// types — wire compatibility (not Go type identity) is the contract.
+// oidcJWK and oidcJWKS are the RFC 7517 wire shapes for the per-cluster JWKS document.
 type oidcJWK struct {
 	Kty string `json:"kty"`
 	Kid string `json:"kid"`
@@ -59,16 +54,11 @@ type oidcJWKS struct {
 	Keys []oidcJWK `json:"keys"`
 }
 
-// P-256 coordinate width per SEC1 — JWK requires fixed-length base64url, not
-// the variable-length big.Int byte representation.
+// p256CoordLen is the P-256 coordinate width; JWK requires fixed-length base64url.
 const p256CoordLen = 32
 
-// GenerateClusterOIDCKeypair creates a fresh ECDSA-P256 keypair for the
-// cluster, PEM-marshals the private key as PKCS8, envelope-encrypts the PEM
-// with masterKey, writes the ciphertext to OIDCSigningKeyKey and the JWKS
-// document to OIDCJWKSKey. Returns the plaintext private-key PEM and the JWKS
-// bytes so the caller (CreateCluster) can pass them straight to user-data
-// without a follow-up KV read + decrypt.
+// GenerateClusterOIDCKeypair creates an ECDSA-P256 keypair, encrypts the private key PEM
+// into KV, and writes the JWKS document. Returns plaintext PEM + JWKS for immediate use.
 func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey []byte) (privPEM string, jwksBytes []byte, err error) {
 	if clusterName == "" {
 		return "", nil, errors.New("eks: GenerateClusterOIDCKeypair empty cluster name")
@@ -106,9 +96,8 @@ func GenerateClusterOIDCKeypair(kv nats.KeyValue, clusterName string, masterKey 
 	return string(pemBlock), jwksBytes, nil
 }
 
-// LoadClusterOIDCPrivateKey reads the encrypted PEM from KV, decrypts with
-// masterKey, parses it to *ecdsa.PrivateKey. Returns ErrClusterNotFound when
-// the key is absent so DeleteCluster idempotency works.
+// LoadClusterOIDCPrivateKey decrypts and parses the cluster OIDC private key from KV.
+// Returns ErrClusterNotFound if absent (supports idempotent DeleteCluster).
 func LoadClusterOIDCPrivateKey(kv nats.KeyValue, clusterName string, masterKey []byte) (*ecdsa.PrivateKey, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: LoadClusterOIDCPrivateKey empty cluster name")
@@ -145,14 +134,9 @@ func LoadClusterOIDCPrivateKey(kv nats.KeyValue, clusterName string, masterKey [
 	return priv, nil
 }
 
-// ZeroizeClusterOIDCKey overwrites the encrypted private-key blob with zeros
-// of the same length, then purges the key. DeleteCluster calls this first so
-// a crash after this point leaves no recoverable key material. Purge (not
-// Delete) drops the key's entire revision history — a Delete leaves a tombstone
-// over prior revisions, so the original encrypted PEM would survive in history
-// until age/limit rolls it off. The account bucket is History=1 regardless
-// (see store.go), so this is defense-in-depth against a widened history.
-// Absent key is a no-op — supports idempotent DeleteCluster retries.
+// ZeroizeClusterOIDCKey overwrites the encrypted key blob with zeros then purges it.
+// Purge (not Delete) drops all revision history, leaving no recoverable key material.
+// Absent key is a no-op for idempotent DeleteCluster retries.
 func ZeroizeClusterOIDCKey(kv nats.KeyValue, clusterName string) error {
 	if clusterName == "" {
 		return errors.New("eks: ZeroizeClusterOIDCKey empty cluster name")

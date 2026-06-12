@@ -21,18 +21,15 @@ import (
 	"github.com/mulgadc/viperblock/viperblock"
 )
 
-// RG-4 guest OOM tiers. Under host memory pressure the kernel reaps a user
-// guest QEMU first; system instances (ELBv2 LB-VMs, EKS control-plane nodes)
-// back many user VMs, so they rank above user guests but below the infra tier
-// (units carry OOMScoreAdjust=-500). The host system.slice is reserved below all.
+// RG-4 guest OOM tiers: user guests are reaped first; system instances (ELBv2,
+// EKS) rank above user guests but below infra (OOMScoreAdjust=-500).
 const (
 	oomScoreUserGuest      = 500 // ManagedBy == "" — customer instance, reaped first
 	oomScoreSystemInstance = 0   // ManagedBy != "" — elbv2 / eks, protected above user guests
 )
 
-// guestOOMScore returns the oom_score_adj for a guest QEMU per the RG-4 ladder,
-// keyed on whether the instance is platform-managed (ManagedBy set). Pure —
-// split out for unit-testability of the tiering.
+// guestOOMScore returns the oom_score_adj per the RG-4 ladder.
+// Pure function; split out for unit-testability.
 func guestOOMScore(managedBy string) int {
 	if managedBy == "" {
 		return oomScoreUserGuest
@@ -40,28 +37,22 @@ func guestOOMScore(managedBy string) int {
 	return oomScoreSystemInstance
 }
 
-// Run launches a VM through the manager's lifecycle pipeline: validate state,
-// mount volumes, exec QEMU, attach QMP, transition to Running, fire
-// OnInstanceUp. The instance need not be in the manager's map yet — Run
-// inserts it before transitioning. Used by RunInstances, the start-stopped
-// handler, restore, and crash recovery.
+// Run launches a VM: validate state, mount volumes, exec QEMU, attach QMP,
+// transition to Running, fire OnInstanceUp. Inserts the instance before
+// transitioning. Used by RunInstances, start-stopped handler, restore, and crash recovery.
 func (m *Manager) Run(instance *VM) error {
 	return m.launch(instance)
 }
 
-// Start re-launches a stopped instance held in the manager's map by id. Used
-// by the EC2 StartInstances handler when the instance is already local.
-// Returns ErrInstanceNotFound when id is unknown so callers can map the
-// failure to InvalidInstanceID.NotFound rather than a generic 500.
+// Start re-launches a stopped instance by id. Returns ErrInstanceNotFound when
+// id is unknown so callers can map the failure to InvalidInstanceID.NotFound.
 func (m *Manager) Start(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
-	// A crash/recovery-failed instance sits in StateError, which launchStillValid
-	// rejects. Move it to pending first (the same Error->Pending step the
-	// auto-restart path takes) so launch proceeds; resource re-allocation is the
-	// caller's responsibility, mirroring the stopped-start flow.
+	// StateError is rejected by launchStillValid; move to Pending first so
+	// launch proceeds (resource re-allocation is the caller's responsibility).
 	if m.Status(instance) == StateError && m.deps.TransitionState != nil {
 		if err := m.deps.TransitionState(instance, StatePending); err != nil {
 			return err
@@ -70,10 +61,8 @@ func (m *Manager) Start(id string) error {
 	return m.launch(instance)
 }
 
-// Reboot issues a QMP system_reset to a running instance. The VM stays
-// in StateRunning across the reset; QEMU re-runs firmware and the guest
-// kernel reboots in place. Returns ErrInstanceNotFound when id is unknown
-// and ErrInvalidTransition when the instance is not Running.
+// Reboot issues a QMP system_reset; the VM stays in StateRunning while QEMU
+// re-runs firmware. Returns ErrInstanceNotFound or ErrInvalidTransition as appropriate.
 func (m *Manager) Reboot(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -89,11 +78,8 @@ func (m *Manager) Reboot(id string) error {
 	return nil
 }
 
-// launchStillValid returns true while the launch pipeline may continue
-// setting up resources for instance. Returns false if a concurrent terminate
-// has flipped status out of pending/stopped/provisioning — at that point the
-// terminate goroutine owns cleanup and launch must bail without further side
-// effects.
+// launchStillValid returns true when status is still pending/stopped/provisioning.
+// Returns false if a concurrent terminate took ownership; launch must bail.
 func (m *Manager) launchStillValid(instance *VM) bool {
 	status := m.Status(instance)
 	if status == StatePending || status == StateStopped || status == StateProvisioning {
@@ -127,10 +113,8 @@ func (m *Manager) launch(instance *VM) error {
 		return err
 	}
 
-	// Re-check status — Mount can take 30+s on cold AMIs (NBD clone), and a
-	// terminate can race in during that window. Skip the remaining setup so
-	// the concurrent terminate goroutine doesn't fight SetupTapDevice and leak
-	// resources.
+	// Re-check status — Mount can take 30+s on cold AMIs, and a terminate may
+	// race in during that window; bail to avoid resource contention.
 	if !m.launchStillValid(instance) {
 		return nil
 	}
@@ -160,10 +144,8 @@ func (m *Manager) launch(instance *VM) error {
 
 	m.Insert(instance)
 
-	// Final race check — QEMU is up, but if a terminate fired during start /
-	// QMP attach, the concurrent goroutine has already transitioned status to
-	// shutting-down. Attempting StateRunning here would log a spurious error;
-	// let the terminate cleanup own teardown.
+	// Final race check — a concurrent terminate may have already transitioned to
+	// shutting-down; let that goroutine own cleanup.
 	if !m.launchStillValid(instance) {
 		return nil
 	}
@@ -485,10 +467,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 		}
 	}
 
-	// QEMU writes its pidfile after parsing args and mmap'ing the kernel/initrd/
-	// fwcfg blobs. Direct-boot is usually <50ms, but under post-reboot recovery
-	// load it can exceed the settle wait — block briefly so we don't tear down
-	// the tap before QEMU finishes attaching to it.
+	// Wait for the pidfile so we don't tear down the tap before QEMU finishes
+	// attaching to it (can lag under post-reboot recovery load).
 	if _, err := utils.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
 		slog.Error("Failed to read PID file", "err", err)
 		return err
@@ -497,11 +477,8 @@ func (m *Manager) startQEMU(instance *VM) error {
 	return nil
 }
 
-// findFreePort is bound to a var (not called directly) so tests can swap in
-// a deterministic stub — appendDevHostfwdNIC's failure paths (split error,
-// Atoi error, per-entry failures continuing) are otherwise unreachable
-// because viperblock.FindFreePort always succeeds with a well-formed
-// host:port from the OS.
+// findFreePort is a var so tests can swap in a stub to reach appendDevHostfwdNIC's
+// failure paths (viperblock.FindFreePort always succeeds in production).
 var findFreePort = viperblock.FindFreePort
 
 // appendDevHostfwdNIC adds a user-mode NIC with SSH hostfwd for dev access.
@@ -553,10 +530,8 @@ func (m *Manager) appendDevHostfwdNIC(instance *VM) {
 		"bindIP", bindIP, "port", sshDebugPort, "mac", devMac, "instanceId", instance.ID)
 }
 
-// AttachQMP connects a QMP client to a QEMU process that already exists
-// (e.g. a daemon restart finding a still-running QEMU) and starts the
-// heartbeat goroutine. AttachQMP is the matching seam for reconnect
-// callers; the launch path calls the same helper inline.
+// AttachQMP connects a QMP client to an already-running QEMU process and
+// starts the heartbeat goroutine. Used by reconnect callers on daemon restart.
 func (m *Manager) AttachQMP(instance *VM) error {
 	client, err := newQMPClientWithHandshake(instance)
 	if err != nil {
@@ -567,15 +542,11 @@ func (m *Manager) AttachQMP(instance *VM) error {
 	return nil
 }
 
-// newQMPClientWithHandshake dials the instance's QMP socket and runs the
-// qmp_capabilities handshake. The caller owns starting the heartbeat
-// goroutine on the returned client.
+// newQMPClientWithHandshake dials the QMP socket and runs the qmp_capabilities
+// handshake. The caller is responsible for starting the heartbeat goroutine.
 func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
-	// QEMU binds the QMP listening socket after writing its pidfile and parsing
-	// args; under post-reboot recovery load the bind can lag behind startQEMU's
-	// pidfile gate, leaving an "ENOENT on dial" race that tears down the VM
-	// before it finishes coming up. Block briefly so the dial only runs once
-	// the socket inode exists.
+	// QMP socket bind lags the pidfile under recovery load; wait for the
+	// socket inode to exist before dialling to avoid an ENOENT race.
 	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, 3*time.Second); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
@@ -591,9 +562,8 @@ func newQMPClientWithHandshake(v *VM) (*qmp.QMPClient, error) {
 	return client, nil
 }
 
-// qmpHeartbeat sends a query-status QMP command every 30s to confirm the
-// QEMU process is still healthy. Exits when the instance reaches a terminal
-// or transitional state. Closes the QMP connection on exit.
+// qmpHeartbeat sends query-status every 30s. Exits and closes the QMP
+// connection when the instance reaches a terminal or transitional state.
 func (m *Manager) qmpHeartbeat(instance *VM) {
 	for {
 		time.Sleep(30 * time.Second)
@@ -621,8 +591,7 @@ func (m *Manager) qmpHeartbeat(instance *VM) {
 	}
 }
 
-// sendQMPCommand encodes cmd onto client and decodes the matching response,
-// skipping informational events.
+// sendQMPCommand encodes cmd and decodes the response, skipping event messages.
 func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*qmp.QMPResponse, error) {
 	if q == nil || q.Encoder == nil || q.Decoder == nil {
 		return nil, fmt.Errorf("QMP client is not initialized")
@@ -669,25 +638,13 @@ func sendQMPCommand(q *qmp.QMPClient, cmd qmp.QMPCommand, instanceID string) (*q
 	}
 }
 
-// EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated
-// for EBS hot-plug. Matches the /dev/sd[f-p] AWS device-letter range that
-// AttachVolume targets. Cannot grow without QEMU restart (Linux PCIe
-// hot-plug requires pre-allocated ports), so the count is deliberately
-// equal to the AWS device-letter ceiling.
+// EBSHotPlugSlotCount is the fixed number of PCIe root ports pre-allocated for
+// EBS hot-plug, matching the /dev/sd[f-p] range. Cannot grow without QEMU restart.
 const EBSHotPlugSlotCount = 11
 
-// buildBaseVMConfig creates a vm.Config with base QEMU settings and PCIe
-// hotplug root ports. bootMode is the AMI's boot mode string ("bios" | "uefi"
-// | "uefi-preferred"); "uefi" and "uefi-preferred" flip cfg.UseUEFI. Any other
-// value (including "") defaults to BIOS.
-//
-// PCIe root ports are pre-allocated in two pools:
-//
-//   - hotplug-ebs{1..EBSHotPlugSlotCount} on chassis 1..EBSHotPlugSlotCount
-//     for AttachVolume targets (/dev/sd[f-p]).
-//   - hotplug-eni{1..N} on chassis EBSHotPlugSlotCount+1.. where N is
-//     instancetypes.HotPlugENISlotsForType(instanceType) — the AWS-published
-//     ENI cap for the type minus the primary ENI, which is wired at boot.
+// buildBaseVMConfig creates a Config with base QEMU settings and two pre-allocated
+// PCIe root-port pools: hotplug-ebs{1..N} for EBS (/dev/sd[f-p]) and
+// hotplug-eni{1..M} for ENI hot-plug. bootMode "uefi"/"uefi-preferred" sets UseUEFI.
 func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serialSocket, architecture, bootMode string, vCPUs, memoryMiB int) Config {
 	cfg := Config{
 		Name:           instanceID,
@@ -722,11 +679,9 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 	return cfg
 }
 
-// initENIRequests resets the per-VM ENI hot-plug slot allocator before the
-// VM boots. The free-list mirrors the hotplug-eni{1..N} root ports emitted
-// by buildBaseVMConfig for the instance type. AttachedByENIID is preserved
-// across restart so the reconciler (Sprint 3d) can match KV truth against
-// the in-memory map; on a cold boot it starts empty.
+// initENIRequests resets the per-VM ENI slot free-list to mirror the
+// hotplug-eni{1..N} root ports in buildBaseVMConfig. AttachedByENIID is
+// preserved across restart; on a cold boot it starts empty.
 func (m *Manager) initENIRequests(instance *VM) {
 	eniSlots := instancetypes.HotPlugENISlotsForType(instance.InstanceType)
 	instance.ENIRequests.Mu.Lock()
@@ -740,10 +695,9 @@ func (m *Manager) initENIRequests(instance *VM) {
 	}
 }
 
-// buildDrives converts EBS volume requests into QEMU drive, iothread, and
-// device configurations. Returns an error if any volume is missing its
-// NBDURI. EFI volumes are emitted as pflash unit=1 (per-VM EFI variable
-// store); the readonly pflash CODE blob (unit=0) is added by Config.Execute.
+// buildDrives converts EBS requests into QEMU drive/iothread/device configs.
+// Returns an error if any volume is missing its NBDURI. EFI volumes emit
+// pflash unit=1; the readonly CODE blob (unit=0) is added by Config.Execute.
 func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) ([]Drive, []IOThread, []Device, error) {
 	var drives []Drive
 	var iothreads []IOThread

@@ -14,14 +14,12 @@ type NATMode int
 const (
 	NATModeUnknown NATMode = iota
 
-	// NATModeDistributed sets ExternalMAC + LogicalPort on every
-	// dnat_and_snat so OVN processes DNAT on the VM's own chassis. Required
-	// by UplinkModePhysical.
+	// NATModeDistributed sets ExternalMAC+LogicalPort so OVN processes DNAT on
+	// the VM's own chassis. Required by UplinkModePhysical.
 	NATModeDistributed
 
-	// NATModeCentralized leaves ExternalMAC/LogicalPort unset so the gateway
-	// chassis owns SNAT/DNAT. Required by UplinkModeVeth (bridge breaks
-	// distributed-NAT hairpin routing).
+	// NATModeCentralized leaves ExternalMAC/LogicalPort unset; gateway chassis
+	// owns SNAT/DNAT. Required by UplinkModeVeth.
 	NATModeCentralized
 )
 

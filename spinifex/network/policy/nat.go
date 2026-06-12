@@ -54,10 +54,8 @@ type NATManager interface {
 	// DeleteSNAT removes the IGW default-outbound snat for vpcCIDR.
 	DeleteSNAT(ctx context.Context, vpcID, vpcCIDR string) error
 
-	// AddSystemInstanceSNAT installs an egress-only snat rewriting a single
-	// system instance's /32 (logicalIP) to externalIP. Unlike AddEIP it is a
-	// plain snat, not dnat_and_snat, so there is no inbound path to the
-	// instance. Idempotent; tagged role=system-instance-egress.
+	// AddSystemInstanceSNAT installs an egress-only snat for a /32 logicalIP →
+	// externalIP. Plain snat (not dnat_and_snat), so no inbound path. Idempotent.
 	AddSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP, externalIP string) error
 
 	// DeleteSystemInstanceSNAT removes the egress-only snat by logicalIP;
@@ -65,27 +63,18 @@ type NATManager interface {
 	DeleteSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP string) error
 }
 
-// FlowsBarrier blocks until ovn-northd has compiled NB → SB and every
-// chassis installed flows. Production wires a closure over
-// `ovn-nbctl --wait=hv sync`; tests leave it nil.
+// FlowsBarrier blocks until every chassis has installed flows. Production
+// wires `ovn-nbctl --wait=hv sync`; tests leave it nil.
 type FlowsBarrier func() error
 
-// NeighFlusher invalidates the host neighbour (ARP) entry for externalIP so the
-// next dial re-resolves L2. Called on both EIP attach and detach: it keeps a
-// recycled external IP reachable, preventing the host ARP cache from pointing at
-// the prior owner's MAC until the kernel ARP timeout expires (60-300s).
-//
-// Best-effort: implementations return errors but callers warn and proceed.
+// NeighFlusher invalidates the host ARP entry for externalIP so a recycled
+// external IP isn't shadowed by the prior owner's MAC (kernel ARP timeout 60-300s).
+// Best-effort: callers warn and proceed on error.
 type NeighFlusher func(externalIP string) error
 
-// NeighPrimer installs the host neighbour entry for a distributed EIP directly,
-// mapping ExternalIP to its external_mac. Preferred over NeighFlusher on attach
-// when the MAC is known (distributed mode): a flush merely re-arms ARP, but no
-// node answers the host's re-ARP for a same-chassis recycled IP, so the entry
-// would just decay back to FAILED. Programming the known MAC makes the recycled
-// IP reachable without an ARP round-trip.
-//
-// Best-effort: implementations return errors but callers warn and proceed.
+// NeighPrimer programs the host ARP entry for a distributed EIP directly.
+// Preferred over NeighFlusher when the MAC is known: a flush triggers re-ARP that
+// no node answers for a same-chassis recycled IP. Best-effort; callers warn and proceed.
 type NeighPrimer func(eip EIPSpec) error
 
 type Option func(*natManager)
@@ -100,10 +89,8 @@ func WithFlowsBarrier(b FlowsBarrier) Option {
 	}
 }
 
-// WithNeighFlusher injects the host neighbour-flush hook fired on EIP detach (and
-// on attach when the external_mac is unknown). Without it, recycled external IPs
-// stay shadowed by the prior owner's MAC in the host ARP cache until the kernel
-// ARP timeout expires.
+// WithNeighFlusher injects the ARP-flush hook fired on EIP detach and on attach
+// when external_mac is unknown.
 func WithNeighFlusher(f NeighFlusher) Option {
 	return func(m *natManager) {
 		if f != nil {
@@ -112,10 +99,8 @@ func WithNeighFlusher(f NeighFlusher) Option {
 	}
 }
 
-// WithNeighPrimer injects the host neighbour-prime hook fired on EIP attach in
-// distributed mode (external_mac known). Preferred over the flusher there: it
-// programs the recycled IP's MAC directly instead of waiting on an ARP reply
-// that no node sends for a same-chassis recycled IP.
+// WithNeighPrimer injects the ARP-prime hook fired on EIP attach in distributed
+// mode; preferred over the flusher when external_mac is known.
 func WithNeighPrimer(p NeighPrimer) Option {
 	return func(m *natManager) {
 		if p != nil {
@@ -184,16 +169,13 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 				existing.LogicalPort != nil && *existing.LogicalPort == eip.PortName)) {
 		slog.Info("policy: AddEIP idempotent skip — rule current, re-priming reachability",
 			"router", router, "external_ip", eip.ExternalIP, "logical_ip", eip.LogicalIP)
-		// Skip the delete-then-add row churn, but still re-announce on the wire:
-		// a stop->start or daemon reboot-recovery re-attaches the same EIP, and
-		// without a fresh prime the host neigh / OVS datapath stays dark until
-		// the kernel ARP entry times out (60-300s).
+		// Skip row churn but still re-prime: stop->start re-attaches the same EIP
+		// and the host neigh stays dark until ARP times out without a fresh prime.
 		m.primeReachability(eip, distributed)
 		return nil
 	}
 
-	// Search every router for stale rules — vpc.delete-nat is
-	// fire-and-forget and may not have run before IP reuse.
+	// Search every router for stale rules — vpc.delete-nat is fire-and-forget.
 	if removed, err := m.ovn.DeleteAllNATsByExternalIP(ctx, "dnat_and_snat", eip.ExternalIP); err != nil {
 		slog.Warn("policy: stale NAT cleanup failed before AddEIP", "external_ip", eip.ExternalIP, "err", err)
 	} else if removed > 0 {
@@ -210,12 +192,8 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 	return nil
 }
 
-// primeReachability re-announces an EIP on the wire so the host neigh table and
-// OVS datapath learn its external_mac. Distributed mode programs the neighbour
-// entry directly instead of flushing and waiting on an ARP reply no node sends
-// for a same-chassis recycled IP; centralised mode (no known MAC) falls back to
-// a flush. Best-effort — every step is logged, none fatal — so it is safe to run
-// on the idempotent-skip path as well as after a fresh AddNAT.
+// primeReachability re-announces an EIP: distributed mode programs the ARP entry
+// directly; centralised mode (no MAC) flushes and re-arms ARP. Best-effort.
 func (m *natManager) primeReachability(eip EIPSpec, distributed bool) {
 	if distributed {
 		if err := m.neighPrime(eip); err != nil {
@@ -233,9 +211,7 @@ func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP
 			return fmt.Errorf("delete dnat_and_snat %s on %s: %w", logicalIP, router, err)
 		}
 	}
-	// Flush the host ARP entry for the released IP so the next owner is not
-	// shadowed by this rule's stale MAC. Best-effort, and safe on the
-	// not-found path (the entry may still be cached from a prior binding).
+	// Flush host ARP for the released IP so the next owner isn't shadowed. Best-effort.
 	if externalIP != "" {
 		if err := m.neigh(externalIP); err != nil {
 			slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
@@ -259,8 +235,7 @@ func (m *natManager) AddNATGateway(ctx context.Context, gw NATGWSpec) error {
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add NAT GW snat %s -> %s on %s: %w", gw.SubnetCIDR, gw.PublicIP, router, err)
 	}
-	// Block until SB + chassis have the SNAT flow; otherwise first packets
-	// from the private subnet drop.
+	// Block until SB + chassis have the SNAT flow.
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddNATGateway flows barrier failed",
 			"public_ip", gw.PublicIP, "subnet_cidr", gw.SubnetCIDR, "err", err)
@@ -319,8 +294,7 @@ func (m *natManager) AddSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP
 			"spinifex:role":      "system-instance-egress",
 		},
 	}
-	// Skip when the existing row already matches; avoids the duplicate-append
-	// on a re-published add (the snat is keyed by its unique pool external IP).
+	// Skip when the existing row already matches (idempotent re-publish guard).
 	if existing, err := m.ovn.FindNATByExternalIP(ctx, "snat", externalIP); err != nil {
 		slog.Warn("policy: AddSystemInstanceSNAT idempotency lookup failed", "external_ip", externalIP, "err", err)
 	} else if existing != nil && existing.LogicalIP == logicalIP {
@@ -332,8 +306,7 @@ func (m *natManager) AddSystemInstanceSNAT(ctx context.Context, vpcID, logicalIP
 	if err := m.ovn.AddNAT(ctx, router, snatRule); err != nil {
 		return fmt.Errorf("add system-instance snat %s -> %s on %s: %w", logicalIP, externalIP, router, err)
 	}
-	// Block until SB + chassis have the SNAT flow; otherwise first egress
-	// packets from the instance drop.
+	// Block until SB + chassis have the SNAT flow.
 	if err := m.barrier(); err != nil {
 		slog.Warn("policy: AddSystemInstanceSNAT flows barrier failed",
 			"logical_ip", logicalIP, "external_ip", externalIP, "err", err)

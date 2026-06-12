@@ -10,9 +10,8 @@ import (
 // awsgw in the cluster, matching the cluster-wide worker convention.
 const imdsResponderQueue = "spinifex-workers"
 
-// SubjectResolveInstanceProfile and SubjectGetRole are the internal, ACL-gated
-// subjects the IMDS handler (in vpcd) calls to resolve an instance profile and its
-// role from awsgw's in-process IAM. Only these two read RPCs are surfaced.
+// SubjectResolveInstanceProfile and SubjectGetRole are the ACL-gated internal RPC subjects
+// vpcd uses to resolve an instance profile and role from awsgw's IAM service.
 const (
 	SubjectResolveInstanceProfile = "imds.iam.resolve_instance_profile"
 	SubjectGetRole                = "imds.iam.get_role"
@@ -30,9 +29,8 @@ type GetRoleRequest struct {
 	Input     *iam.GetRoleInput `json:"input"`
 }
 
-// SubscribeIMDSResponders wires the profile/role responders onto nc,
-// queue-grouped so any awsgw can answer. The returned subscriptions are for
-// caller-side cleanup.
+// SubscribeIMDSResponders wires profile/role responders onto nc, queue-grouped.
+// Returns subscriptions for caller-side cleanup.
 func (s *IAMServiceImpl) SubscribeIMDSResponders(nc *nats.Conn) ([]*nats.Subscription, error) {
 	profileSub, err := nc.QueueSubscribe(SubjectResolveInstanceProfile, imdsResponderQueue, func(msg *nats.Msg) {
 		utils.ServeNATSRequest(msg, func(req *ResolveInstanceProfileRequest) (*InstanceProfile, error) {

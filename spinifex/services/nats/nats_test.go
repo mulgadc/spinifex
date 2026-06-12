@@ -26,10 +26,8 @@ func templatePath(t *testing.T) string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "cmd", "spinifex", "cmd", "templates", "nats.conf")
 }
 
-// TestRenderedConfig_EnforcesAuth renders the production nats.conf template with
-// a known token, starts an embedded NATS server from the resulting config, and
-// verifies that unauthenticated and wrong-token connections are rejected while
-// correct-token connections succeed.
+// TestRenderedConfig_EnforcesAuth renders the production nats.conf template,
+// starts an embedded NATS server, and verifies token authentication.
 func TestRenderedConfig_EnforcesAuth(t *testing.T) {
 	token := "nats_test-secret-token-1234"
 	tmpDir := t.TempDir()
@@ -107,10 +105,8 @@ func TestRenderedConfig_EnforcesAuth(t *testing.T) {
 }
 
 // TestRenderedConfig_HasMigrationVersionMarker ensures the nats.conf template
-// stamps the current migration version on the first line. Without this marker,
-// the migration framework treats fresh installs as version 0 and tries to run
-// the 0→1 migration on next upgrade. The marker must be the literal first line
-// — NATSConfVersionReader only checks line 0.
+// stamps the migration version on the first line (NATSConfVersionReader only
+// checks line 0; missing marker causes fresh installs to run the 0→1 migration).
 func TestRenderedConfig_HasMigrationVersionMarker(t *testing.T) {
 	raw, err := os.ReadFile(templatePath(t))
 	require.NoError(t, err)

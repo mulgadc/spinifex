@@ -46,10 +46,8 @@ func (d Dependents) Empty() bool {
 	return len(d.Snapshots) == 0 && len(d.Volumes) == 0 && len(d.AMIs) == 0
 }
 
-// RemovePreview captures everything the CLI needs to render the confirmation
-// prompt and decide whether to proceed: AMI metadata (or zero values when the
-// config is missing/corrupt), backing-storage byte counts, and the dependent
-// resource set. PreviewRemoveSystemImage performs no deletions.
+// RemovePreview captures AMI metadata, byte counts, and dependents for the
+// CLI confirmation prompt. PreviewRemoveSystemImage performs no deletions.
 type RemovePreview struct {
 	ImageID       string
 	Name          string
@@ -74,11 +72,8 @@ func SnapPrefix(imageID string) string {
 	return "snap-" + imageID
 }
 
-// PreviewRemoveSystemImage walks the object store and gathers everything the
-// caller needs to decide whether to remove an admin-imported AMI. It performs
-// no mutations. Returned errors indicate unexpected I/O failures only —
-// AMI-not-found, corrupt config, and account-owned AMIs are reflected in the
-// preview fields, not as errors.
+// PreviewRemoveSystemImage gathers AMI metadata and dependents without mutating
+// any state. Not-found, corrupt config, and account-owned AMI are preview fields.
 func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID string) (*RemovePreview, error) {
 	if !strings.HasPrefix(imageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
@@ -125,16 +120,8 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 	return preview, nil
 }
 
-// FindAMIDependents walks the bucket to find every resource that transitively
-// depends on the given admin-imported AMI:
-//
-//  1. snap-*/metadata.json whose VolumeID == imageID  → derivedSnaps
-//     (these are CopyImage-created snapshots that point back at the system AMI)
-//  2. vol-*/config.json whose VolumeMetadata.SnapshotID ∈ {snap-ami-<id>} ∪ derivedSnaps
-//  3. ami-*/config.json whose AMIMetadata.SnapshotID ∈ derivedSnaps
-//
-// The walk terminates one hop deep. CopyImage of an account AMI uses its own
-// VolumeID, not the system AMI's, so further recursion is not required today.
+// FindAMIDependents returns snapshots, volumes, and AMIs that depend on the
+// given system AMI. Walk terminates one hop deep.
 func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (Dependents, error) {
 	var deps Dependents
 
@@ -220,16 +207,9 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 	return deps, nil
 }
 
-// RemoveSystemImage deletes an admin-imported AMI and its backing storage
-// after re-validating the preconditions:
-//
-//  1. ami-<id>/config.json exists and parses (skipped under --force = salvage)
-//  2. AMI is system-owned, not account-owned (--force bypasses)
-//  3. No volumes / snapshots / AMIs depend on it (--force bypasses)
-//
-// Deletion order is intentional: the config.json is deleted FIRST so the AMI
-// disappears from DescribeImages immediately, preventing new RunInstances
-// from racing the block cleanup.
+// RemoveSystemImage deletes an admin-imported AMI after re-validating that it
+// is system-owned and has no dependents (bypassed by --force). config.json is
+// deleted first so the AMI vanishes from DescribeImages before block cleanup.
 func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts RemoveImageOpts) (*RemoveImageResult, error) {
 	if !strings.HasPrefix(opts.ImageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
@@ -344,10 +324,8 @@ func readAMIConfig(store objectstore.ObjectStore, bucket, imageID string) (viper
 	return state.VolumeConfig.AMIMetadata, nil
 }
 
-// errCorruptVolumeConfig lets the dependency walk distinguish a vol-*/config.json
-// that can't be parsed (recovery is operator-owned, walk continues) from a
-// transient transport error (walk must fail closed — silently dropping a
-// dependent could lead to deleting blocks underneath a live volume).
+// errCorruptVolumeConfig distinguishes an unparse-able config (walk continues)
+// from a transport error (walk fails closed to prevent deleting live blocks).
 var errCorruptVolumeConfig = errors.New("corrupt volume config")
 
 // readVolumeConfig reads vol-<id>/config.json into VolumeConfig.

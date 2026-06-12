@@ -26,8 +26,6 @@ import (
 	"time"
 )
 
-// Helper functions for OS images
-
 var ErrQCOWDetected = errors.New("qcow format detected")
 
 const sumsFileMaxSize = 1 * 1024 * 1024 // 1 MB, matches formation.go JoinRequest cap.
@@ -39,26 +37,15 @@ var (
 	ErrChecksumFetchFailed     = errors.New("checksum fetch failed")
 )
 
-// checksumExtraRootCAs is a test-only hook so unit tests can stand up an
-// httptest.NewTLSServer (which uses a self-signed cert) without relaxing the
-// HTTPS enforcement. Production builds leave this nil and the verification
-// client uses the system trust store.
+// checksumExtraRootCAs is a test-only hook for httptest TLS servers; nil in production.
 var checksumExtraRootCAs *x509.CertPool
 
-// checksumFetchTimeout is a var (not const) so tests can shrink it to exercise
-// the context-deadline path without waiting 30s.
+// checksumFetchTimeout is a var so tests can shrink it to exercise the deadline path.
 var checksumFetchTimeout = 30 * time.Second
 
-// VerifyImageChecksum fetches the sums file at checksumURL, locates the entry
-// for imagePath's basename, hashes imagePath with the algorithm named by
-// checksumType ("sha256" or "sha512"), and compares digests.
-//
-// Fails closed: every error path returns without accepting the image. A
-// non-HTTPS scheme, non-2xx status, transport error, response over 1 MB, or
-// cross-scheme redirect all wrap ErrChecksumFetchFailed. Unknown algorithm
-// wraps ErrUnsupportedChecksumType. Missing filename entry wraps
-// ErrChecksumNotFound. Digest mismatch wraps ErrChecksumMismatch and the
-// wrapped error's %v includes expected and actual hex.
+// VerifyImageChecksum fetches the sums file at checksumURL, finds the entry for imagePath's basename,
+// hashes the file with checksumType ("sha256" or "sha512"), and compares digests.
+// Fails closed: non-HTTPS, non-2xx, oversized response, or digest mismatch all return a wrapped error.
 func VerifyImageChecksum(imagePath, checksumURL, checksumType string) error {
 	hasher, err := newHasher(checksumType)
 	if err != nil {
@@ -71,8 +58,7 @@ func VerifyImageChecksum(imagePath, checksumURL, checksumType string) error {
 		return err
 	}
 
-	// Distinct error for a catalog/sums-file algorithm mismatch — without this
-	// it'd surface as "tampering" via ConstantTimeCompare's length-0 return.
+	// Catch algorithm mismatch before ConstantTimeCompare; a length mismatch would look like tampering.
 	if len(expected) != hasher.Size()*2 {
 		return fmt.Errorf("%w: digest length %d from sums file does not match %s output length %d",
 			ErrChecksumFetchFailed, len(expected), checksumType, hasher.Size()*2)
@@ -108,10 +94,8 @@ func newHasher(checksumType string) (hash.Hash, error) {
 	}
 }
 
-// fetchExpectedDigest downloads the sums file and returns the hex digest for
-// the given filename. Enforces HTTPS on initial URL and every redirect hop,
-// caps redirects at 10, and truncates response at sumsFileMaxSize+1 so the
-// size check is unambiguous.
+// fetchExpectedDigest downloads the sums file and returns the hex digest for filename.
+// Enforces HTTPS on every redirect hop, caps at 10 redirects, and limits response to sumsFileMaxSize.
 func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	parsed, err := url.Parse(checksumURL)
 	if err != nil {
@@ -182,21 +166,9 @@ func fetchExpectedDigest(checksumURL, filename string) (string, error) {
 	return digest, nil
 }
 
-// parseSumsFile scans a sums file and returns the hex digest matching filename.
-// Filename match is case-sensitive: upstream Debian/Ubuntu/Alpine sums are
-// consistently lowercase and a divergence is a real signal.
-//
-// Accepts four on-the-wire shapes: "<hex>  <name>" (coreutils text mode),
-// "<hex> *<name>" (coreutils binary mode), "<algo> (<name>) = <hex>" (BSD
-// style, used by Rocky/RHEL/Alma/Fedora/CentOS Stream CHECKSUM files), and a
-// bare single-token "<hex>" line (single-file .sha512 from Alpine, which does
-// not carry a filename).
-//
-// GPG cleartext-signed armor is tolerated implicitly: the BEGIN/END markers
-// and "Hash:" header don't match any shape's structural guards, and signature
-// body lines are individually single tokens but always appear in pairs
-// (base64 + the =CRC trailer at minimum), so bareCount stays ≥ 2 and the
-// bare-digest fallback never fires on a signed file.
+// parseSumsFile scans a sums file and returns the hex digest matching filename (case-sensitive).
+// Accepts GNU coreutils text/binary, BSD-style, and bare single-token (Alpine .sha512) formats.
+// GPG cleartext-signed armor is tolerated: its body lines always appear in pairs, keeping bareCount ≥ 2.
 func parseSumsFile(body []byte, filename string) (string, error) {
 	var bareDigest string
 	bareCount := 0
@@ -218,10 +190,7 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 				return fields[0], nil
 			}
 		case 4:
-			// BSD-style: "<algo> (<name>) = <hex>". The "=" guard also rejects
-			// armor lines like "-----BEGIN PGP SIGNED MESSAGE-----" that happen
-			// to tokenise into 4 fields. Filenames have no spaces in upstream
-			// usage (Rocky/Alma/Fedora pin dated builds).
+			// BSD-style: "<algo> (<name>) = <hex>". The "=" guard rejects PGP armor lines that happen to tokenise to 4 fields.
 			if fields[2] != "=" || !strings.HasPrefix(fields[1], "(") || !strings.HasSuffix(fields[1], ")") {
 				continue
 			}
@@ -230,17 +199,14 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 				return fields[3], nil
 			}
 		default:
-			// Unrecognised shape. Skip rather than reject outright — signed sums
-			// files occasionally have trailing commentary we want to tolerate.
+			// Skip unrecognised shapes; signed sums files may have trailing commentary.
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("%w: scan sums file: %v", ErrChecksumFetchFailed, err)
 	}
 
-	// Alpine single-file .sha512 fallback: exactly one bare-digest line in the
-	// whole file. Any more and we refuse, because we can't tell which line is
-	// the right one without a filename.
+	// Alpine single-file fallback: accept only if exactly one bare-digest line in the file.
 	if bareCount == 1 {
 		return bareDigest, nil
 	}
@@ -248,10 +214,8 @@ func parseSumsFile(body []byte, filename string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrChecksumNotFound, filename)
 }
 
-// hashImageFile streams the image through hasher and returns the digest as
-// lowercase hex. Zero-byte files are rejected outright so a truncated
-// download surfaces as an explicit error rather than an opaque "checksum
-// mismatch".
+// hashImageFile streams imagePath through hasher and returns lowercase hex.
+// Rejects zero-byte files so a truncated download surfaces as an explicit error.
 func hashImageFile(imagePath string, hasher hash.Hash) (string, error) {
 	f, err := os.Open(imagePath)
 	if err != nil {
@@ -285,15 +249,11 @@ type Images struct {
 	Checksum     string    `json:"checksum"`
 	ChecksumType string    `json:"checksum_type"`
 	BootMode     string    `json:"boot_mode"`
-	// Tags are copied onto the imported AMI's AMIMetadata.Tags so the UI
-	// can filter/classify the image. Used to mark system-owned AMIs
-	// (e.g. the LB/HAProxy image) via spinifex:managed-by.
+	// Tags are copied onto the imported AMI's metadata for UI filtering (e.g. spinifex:managed-by).
 	Tags map[string]string `json:"tags,omitempty"`
 }
 
-// distroFamilies maps a distro name to its cloud-init family. Family selects
-// the per-distro branches in the cloud-init template (sudoers group,
-// NetworkManager keyfile vs netplan). Keep keys lowercase; callers normalise.
+// distroFamilies maps a distro name to its cloud-init family. Keys are lowercase.
 var distroFamilies = map[string]string{
 	"debian": "debian",
 	"ubuntu": "debian",
@@ -305,11 +265,8 @@ var distroFamilies = map[string]string{
 	"alpine": "alpine",
 }
 
-// DistroFamily returns the cloud-init family for distro. Unknown or empty
-// distro maps to "debian" (today's default rendering) and logs a warning so
-// operators using --file imports for custom appliances aren't broken by a
-// missing --distro flag; explicit RHEL-family rendering requires
-// --distro rocky|rhel|alma|fedora|centos.
+// DistroFamily returns the cloud-init family for distro.
+// Unknown or empty distro defaults to "debian" with a warning; RHEL family requires an explicit distro flag.
 func DistroFamily(distro string) string {
 	d := strings.ToLower(strings.TrimSpace(distro))
 	if family, ok := distroFamilies[d]; ok {
@@ -463,12 +420,7 @@ var AvailableImages = map[string]Images{
 		Tags:         map[string]string{"gpu-vendor": "amd"},
 	},
 
-	// EKS node system AMI. The control-plane + node-group launchers resolve the
-	// boot AMI by the spinifex:managed-by=eks tag (not by name), so importing
-	// this catalog entry — which copies the tag onto the AMI — is enough for
-	// CreateCluster/CreateNodegroup to find it. Built from
-	// scripts/images/eks-node/manifest.conf (Alpine bios base); published to R2
-	// with scripts/publish-system-image.sh.
+	// EKS node system AMI. Resolved by spinifex:managed-by=eks tag — importing this entry is sufficient for CreateCluster/CreateNodegroup.
 	"spinifex-eks-node": {
 		Name:         "spinifex-eks-node",
 		Description:  "Mulga EKS node image — Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook (server|agent role selected at first boot)",
@@ -485,34 +437,23 @@ var AvailableImages = map[string]Images{
 	},
 }
 
-// AMI / image extraction utils
 func ExtractDiskImageFromFile(imagepath string, tmpdir string) (diskimage string, err error) {
 	var args []string
 	var execCmd string
 
-	// Confirm file exists
 	_, err = os.Stat(imagepath)
-
 	if err != nil {
 		return diskimage, err
 	}
 
-	// Extract the filepath
 	imagefile := filepath.Base(imagepath)
 
-	// Already in raw/image formt, confirm the file contains a valid disk image/MBR
 	if strings.HasSuffix(imagefile, ".raw") || strings.HasSuffix(imagefile, ".img") || strings.HasSuffix(imagefile, ".qcow2") || strings.HasSuffix(imagefile, ".qcow") {
 		path, err := filepath.Abs(imagepath)
-
 		if err != nil {
 			return path, err
 		}
-
-		// Validate the specified filename is indeed a disk image / MBR
 		err = validateDiskImagePath(path)
-
-		// Check error response
-
 		if errors.Is(err, ErrQCOWDetected) {
 			extractpath := fmt.Sprintf("%s/%s", tmpdir, imagefile)
 			extractpath = strings.TrimSuffix(extractpath, ".qcow2") + ".raw"

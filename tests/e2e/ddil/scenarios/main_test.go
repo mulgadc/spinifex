@@ -1,11 +1,8 @@
 //go:build e2e
 
-// Package scenarios holds the DDIL E2E scenario tests. Each scenario
-// (A..F) exercises one failure mode documented in
-// docs/development/improvements/ddil-e2e-test-harness.md. Scenarios start
-// as t.Skip stubs and are flipped to real assertions by the hardening
-// epics that make them runnable (daemon-local-autonomy,
-// predastore-ddil-hardening).
+// Package scenarios holds the DDIL E2E scenario tests (A..F), each exercising one
+// failure mode. Scenarios start as t.Skip stubs and are flipped to real assertions
+// by the hardening epics that make them runnable.
 package scenarios
 
 import (
@@ -21,16 +18,11 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// scenarioLetters is the canonical ordered list of scenarios the suite
-// knows about. It is used for DDIL_DRY_RUN=1 logging and by
-// TestCoverageDrift as the source-of-truth set when cross-checking
-// TEST_COVERAGE.md. Keep in sync with the TestScenario<L>_* functions in
-// this package — TestCoverageDrift fails loudly if it drifts.
+// scenarioLetters is the canonical scenario list used for DDIL_DRY_RUN logging and
+// TestCoverageDrift cross-checking. Keep in sync with TestScenario<L>_* functions.
 var scenarioLetters = []string{"A", "B", "C", "D", "E", "F"}
 
-// Package-level state shared between TestMain's signal handler and
-// TestHarnessSmoke. Populated by setupCluster when DDIL_NODES is set and
-// DDIL_DRY_RUN is unset; both remain nil otherwise.
+// Package-level cluster state. Populated by setupCluster when DDIL_NODES is set; nil in dry-run.
 var (
 	clusterOnce sync.Once
 	cluster     *harness.Cluster
@@ -42,9 +34,7 @@ var (
 // TestHarnessSmoke skip cluster-touching work in dry-run mode.
 func dryRun() bool { return os.Getenv("DDIL_DRY_RUN") == "1" }
 
-// setupCluster builds the Cluster/SSH pair once per test binary. Callers
-// that need cluster access gate on both (cluster, err): cluster is nil in
-// dry-run or when DDIL_NODES is unset.
+// setupCluster builds the Cluster/SSH pair once. Returns nil cluster in dry-run or when DDIL_NODES is unset.
 func setupCluster() (*harness.Cluster, harness.SSH, error) {
 	clusterOnce.Do(func() {
 		if dryRun() {
@@ -69,12 +59,9 @@ func setupCluster() (*harness.Cluster, harness.SSH, error) {
 	return cluster, sshXport, clusterErr
 }
 
-// TestMain is the suite-level entry point. It installs a signal handler
-// that best-effort resets the cluster on SIGINT/SIGTERM so an aborted CI
-// run does not leave iptables DROP rules or tc netem qdiscs in place,
-// then delegates to go test's default runner. DDIL_DRY_RUN=1 logs the
-// planned scenarios and skips cluster initialisation, leaving
-// TestCoverageDrift as the only meaningful assertion.
+// TestMain installs a SIGINT/SIGTERM handler that resets the cluster before exit
+// (clears iptables DROP rules and tc netem qdiscs), then runs the suite.
+// DDIL_DRY_RUN=1 skips cluster init and leaves only TestCoverageDrift active.
 func TestMain(m *testing.M) {
 	if dryRun() {
 		log.Printf("ddil: DDIL_DRY_RUN=1 — planned scenarios: %v (TestCoverageDrift will still execute)", scenarioLetters)
@@ -95,11 +82,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// installSignalHandler traps SIGINT/SIGTERM and, when a cluster is
-// available, calls ResetAllNodes before exiting non-zero. Without a
-// cluster (dry-run or missing env) it still exits non-zero so the parent
-// shell sees the signal. Returns a stop function the caller must defer to
-// unregister the handler.
+// installSignalHandler traps SIGINT/SIGTERM; calls ResetAllNodes when a cluster is
+// available, then exits non-zero. Returns a stop func the caller must defer.
 func installSignalHandler(c *harness.Cluster, s harness.SSH) func() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
@@ -128,12 +112,8 @@ func installSignalHandler(c *harness.Cluster, s harness.SSH) func() {
 	}
 }
 
-// TestHarnessSmoke exercises the reset + clean-state round trip without
-// running a scenario. It satisfies the Phase 1 acceptance criterion that
-// "full run against real cluster completes with AssertCleanState +
-// ResetAllNodes round-tripping cleanly" and gives hardening PR authors a
-// fast command for validating their tofu-cluster before touching
-// scenarios (go test -run TestHarnessSmoke).
+// TestHarnessSmoke exercises the ResetAllNodes + AssertCleanState round trip without
+// running a scenario. Fast validation command for a live cluster.
 func TestHarnessSmoke(t *testing.T) {
 	if dryRun() {
 		t.Skipf("DDIL_DRY_RUN=1")
@@ -155,18 +135,13 @@ func TestHarnessSmoke(t *testing.T) {
 	harness.AssertCleanState(ctx, t, c, s)
 }
 
-// scenarioSkip is the shared skip helper used by each TestScenario<L>_*
-// stub. Centralising the message format keeps Phase 2/3 hardening PRs to
-// a single place when they flip a scenario: delete the scenarioSkip call,
-// add the real body.
+// scenarioSkip is the shared skip helper for scenario stubs.
 func scenarioSkip(t *testing.T, letter, dep string) {
 	t.Helper()
 	t.Skipf("scenario %s requires %s", letter, dep)
 }
 
-// scenarioDeps bundles the live cluster handles every flipped scenario
-// needs. Returned by requireLiveCluster; nil on dry-run / missing env so
-// the caller's t.Skip path does not have to dereference it.
+// scenarioDeps bundles live cluster handles needed by flipped scenarios.
 type scenarioDeps struct {
 	cluster *harness.Cluster
 	ssh     harness.SSH
@@ -174,10 +149,8 @@ type scenarioDeps struct {
 	witness *harness.Witness
 }
 
-// requireLiveCluster wires up the cluster, SSH, daemon client, and witness
-// factory a flipped scenario needs. Skips (rather than fails) on dry-run,
-// missing DDIL_NODES, or missing AWS_REGION so the suite can run on a
-// laptop without provisioning the tofu cluster — Phase 1's smoke path.
+// requireLiveCluster wires up cluster, SSH, daemon client, and witness factory.
+// Skips on dry-run, missing DDIL_NODES, or insufficient cluster size.
 func requireLiveCluster(t *testing.T) scenarioDeps {
 	t.Helper()
 	if dryRun() {
@@ -205,11 +178,8 @@ func requireLiveCluster(t *testing.T) scenarioDeps {
 	}
 }
 
-// launchWitnesses launches one counter VM on each requested host, registers
-// a t.Cleanup that terminates them, and returns the slice in input order.
-// A launch failure fails the test rather than skipping — the harness
-// retries placement up to maxPlacementAttempts internally, so a hard error
-// here means the cluster cannot serve a witness at all.
+// launchWitnesses launches one counter VM per host, registers t.Cleanup termination,
+// and returns VMs in input order. Fatals on launch failure (placement retries are internal).
 func launchWitnesses(ctx context.Context, t *testing.T, w *harness.Witness, hosts ...harness.Node) []*harness.WitnessVM {
 	t.Helper()
 	out := make([]*harness.WitnessVM, 0, len(hosts))

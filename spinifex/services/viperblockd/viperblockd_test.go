@@ -444,9 +444,8 @@ func TestMountedVolumePortRange(t *testing.T) {
 	}
 }
 
-// TestRetryLoadState pins the retry policy used by ebs.mount: transient
-// backend errors retry with backoff, ErrStateNotFound fails fast, and the
-// retry budget is honoured. Required by mulga-siv-25 medium-term fix.
+// TestRetryLoadState pins the retry policy: transient errors retry with backoff,
+// ErrStateNotFound fails fast, and the retry budget is honoured.
 func TestRetryLoadState(t *testing.T) {
 	t.Run("success_first_attempt_no_sleep", func(t *testing.T) {
 		calls := 0

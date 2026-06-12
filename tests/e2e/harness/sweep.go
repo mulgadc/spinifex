@@ -1,14 +1,10 @@
 //go:build e2e
 
-// Run-scoped resource tagging + teardown sweep (mulga-siv-277).
+// Run-scoped resource tagging and teardown sweep.
 //
-// Every resource the Ensure* fixtures create is tagged e2e:run=<run-id> when
-// SPINIFEX_E2E_RUN_ID is set (CI: github.run_id; local: a temp id). A thin
-// teardown.test binary then sweeps everything carrying that tag at the end of a
-// run — reclaiming resources leaked by a crashed suite, an interrupted run, or
-// a persistent (non-tofu-destroyed) cluster. The run-id scoping keeps the sweep
-// precise: with no run id, tagging and sweeping both no-op, so the sweep can
-// never delete an untagged or foreign resource.
+// Ensure* fixtures tag resources e2e:run=<run-id> when SPINIFEX_E2E_RUN_ID is
+// set. A teardown binary sweeps everything with that tag at run end. Without a
+// run id, tagging and sweeping both no-op.
 package harness
 
 import (

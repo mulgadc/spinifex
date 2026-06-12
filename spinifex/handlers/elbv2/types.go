@@ -109,10 +109,9 @@ type LoadBalancerRecord struct {
 	State           string   `json:"state"`  // "provisioning", "active", "failed"
 	VpcId           string   `json:"vpc_id"`
 	SecurityGroups  []string `json:"security_groups"`
-	// NLBManagedSGID is the internal security group the ELBv2 service mints for
-	// a network LB (NLBs reject customer SGs, so this is created and owned here).
-	// It is attached to every LB ENI and is the SG listener-port ingress is
-	// authorized on. Not surfaced by DescribeLoadBalancers.
+	// NLBManagedSGID is the managed SG minted for NLBs (customer SGs are rejected).
+	// Attached to every LB ENI; listener-port ingress is authorized on it.
+	// Not surfaced by DescribeLoadBalancers.
 	NLBManagedSGID string `json:"nlb_managed_sg_id,omitempty"`
 	// NLBIngressCIDRs overrides the scheme-based default client CIDRs that
 	// listener ports are opened to on NLBManagedSGID. Empty ⇒ default
@@ -137,10 +136,9 @@ type LoadBalancerRecord struct {
 	CreatedAt       time.Time          `json:"created_at"`
 }
 
-// HealthTargetSpec is a backend the nginx agent actively health-checks. It is
-// computed when the NLB config is stored and delivered to the agent via
-// GetLBConfig. ServerName matches the health checker's key
-// (sanitizeName("srv", target.Id)).
+// HealthTargetSpec is a backend the nginx agent actively health-checks, computed
+// at NLB config store time and delivered via GetLBConfig. ServerName matches
+// the health checker's key (sanitizeName("srv", target.Id)).
 type HealthTargetSpec struct {
 	ServerName string `json:"server_name"`
 	Address    string `json:"address"`  // ip:port to probe
@@ -234,10 +232,9 @@ type ListenerRecord struct {
 	AccountID       string           `json:"account_id"`
 	CreatedAt       time.Time        `json:"created_at"`
 
-	// Certificates holds the listener's TLS certificates for a secure
-	// protocol (ALB HTTPS / NLB TLS). The first IsDefault entry is the
-	// default cert; the rest are additional SNI certs. Empty for non-secure
-	// listeners. SslPolicy is the negotiated security policy name.
+	// Certificates holds TLS certs for HTTPS/TLS listeners; the first IsDefault
+	// entry is the default cert, the rest are SNI certs. Empty for non-secure
+	// listeners. SslPolicy is the negotiated policy name.
 	Certificates []ListenerCertificate `json:"certificates,omitempty"`
 	SslPolicy    string                `json:"ssl_policy,omitempty"`
 
@@ -309,17 +306,9 @@ type RuleQueryStringKV struct {
 	Value string `json:"value"`
 }
 
-// DefaultLoadBalancerAttributes returns the default attribute set for a load
-// balancer of the given type. ALBs default load_balancing.cross_zone.enabled to
-// "true"; NLBs (and any unknown type) default it to "false". This is the single
-// source of truth — CreateLoadBalancer no longer seeds attributes, and
-// DescribeLoadBalancerAttributes derives the per-type defaults from lb.Type on
-// read.
-//
-// The key set must be broad enough to satisfy terraform AWS provider's
-// default ModifyLoadBalancerAttributes call after aws_lb creation: the
-// provider sends every attribute it knows about, and any key missing here
-// gets rejected with ValidationError, surfacing as "UnknownError" in tofu.
+// DefaultLoadBalancerAttributes returns the default attribute map for a load balancer.
+// ALBs cross-zone default is "true"; NLBs/unknown default to "false". Key set covers
+// every attribute Terraform's AWS provider sends on post-create Modify calls.
 func DefaultLoadBalancerAttributes(lbType string) map[string]string {
 	switch lbType {
 	case LoadBalancerTypeApplication:
@@ -336,22 +325,16 @@ func DefaultTargetGroupAttributes() map[string]string {
 	return maps.Clone(targetGroupAttributeDefaults)
 }
 
-// Default attribute sets are package-level so Describe calls clone a prebuilt
-// map instead of rebuilding it on every request. Callers receive a clone, never
-// the shared map, so mutation cannot leak back into the defaults.
-//
-// access_logs.s3.bucket / .prefix (and the connection_logs equivalents) default
-// to empty strings: that matches real AWS, where logging is disabled by default
-// and the bucket/prefix are unset until the operator opts in. Terraform sends
-// these empty strings on every apply, so they must be present as known keys.
+// Default attribute sets are package-level vars; callers receive a clone so
+// mutation never leaks back. Empty-string log keys match real AWS defaults
+// and must be present as known keys for Terraform compatibility.
 var (
-	// Common to all load balancer types; also the fallback for unknown types.
+	// lbBaseAttributeDefaults is common to all LB types and the fallback for unknown types.
 	lbBaseAttributeDefaults = map[string]string{
 		"deletion_protection.enabled":       "false",
 		"load_balancing.cross_zone.enabled": "false",
 	}
 
-	// ALB defaults match real AWS values as of the aws-sdk-go 1.55 elbv2 API.
 	albAttributeDefaults = map[string]string{
 		"deletion_protection.enabled":                              "false",
 		"load_balancing.cross_zone.enabled":                        "true",

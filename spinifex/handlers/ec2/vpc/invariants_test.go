@@ -12,15 +12,9 @@ import (
 
 // IMDS-datapath invariant.
 
-// TestI4_ENIIndexBucketShape asserts the spinifex-network-eni-by-vpc-ip reverse
-// index keeps its contract: keys parse as "vpcID/ip" with a valid IP, values
-// carry a non-empty eni_id, and no mutable/denormalised fields creep back into
-// the value. The index is identity-only (eni_id + the immutable account_id) by
-// design — every mutable field (IPs, MAC, instance ID, profile ARN) is read
-// live off the ENIRecord + instance record at request time. A denormalised
-// field here resurrects the staleness class the design deliberately removed:
-// an IMDS handler trusting a stale profile ARN would mint credentials for the
-// wrong role.
+// TestI4_ENIIndexBucketShape asserts the eni-by-vpc-ip reverse index keeps its
+// contract: keys parse as "vpcID/ip", values carry only immutable identity
+// fields (eni_id + account_id), and no mutable/denormalised fields are present.
 func TestI4_ENIIndexBucketShape(t *testing.T) {
 	_, nc := setupTestVPCServiceWithNC(t)
 	kv := openTestENIByIPBucket(t, nc)
@@ -30,10 +24,8 @@ func TestI4_ENIIndexBucketShape(t *testing.T) {
 	require.NoError(t, idx.Put("vpc-aaaaaaaa", "10.0.1.5", "eni-aaa", "111122223333"))
 	require.NoError(t, idx.Put("vpc-bbbbbbbb", "10.0.2.9", "eni-bbb", "444455556666"))
 
-	// allowedFields is the closed set the value JSON may contain. Adding a field
-	// to eniByIPValue without updating this set fails the test by design — a
-	// reviewer must justify any new field as immutable identity, not cached
-	// mutable state.
+	// allowedFields is the closed set the value JSON may contain; any new field
+	// must be immutable identity, not cached mutable state.
 	allowedFields := map[string]struct{}{"eni_id": {}, "account_id": {}}
 
 	keys, err := kv.Keys()

@@ -17,108 +17,73 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// imdsServerIP is the link-local IMDS address (mirror of
-// handlers/imds.MetaDataServerIP, duplicated to avoid an import cycle:
-// imds → sts → eks).
+// imdsServerIP is the link-local IMDS address (duplicated here to avoid an imds→sts→eks import cycle).
 const imdsServerIP = "169.254.169.254"
 
-// ErrEKSServerAMINotFound is returned by the launcher when no AMI carrying the
-// EKS managed-by tag exists in the account. CreateCluster maps it to a precise
-// client error: it signals an operator/config gap (the eks-server image was
-// never built/imported), not an unrecoverable internal fault.
+// ErrEKSServerAMINotFound is returned when no AMI with the EKS managed-by tag
+// exists. Signals an operator/config gap (image not built/imported).
 var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
 
-// k3sVPCProvisioner is the subset of handlers_ec2_vpc.VPCService that the K3s
-// server VM launcher needs. Narrow so tests can fake it without implementing
-// the full VPC surface.
+// k3sVPCProvisioner is the narrow VPC surface the K3s server VM launcher needs.
 type k3sVPCProvisioner interface {
 	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 }
 
-// k3sInstanceLauncher is the system-instance launch surface the K3s control-plane
-// VM needs. The VM boots from the eks-server AMI (BootAMI) and must get a
-// management-bridge NIC so it can reach the daemon's NATS endpoint off its
-// tenant VPC subnet — which only the system-instance path provides.
-// *daemon.Daemon satisfies this interface.
+// k3sInstanceLauncher is the system-instance launch surface for the K3s CP VM.
+// The VM boots from the eks-server AMI and needs a mgmt-bridge NIC via the
+// system-instance path to reach the daemon's NATS endpoint.
 type k3sInstanceLauncher interface {
 	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
-	// LaunchSystemInstanceOnNode places the VM on a specific Spinifex host for
-	// HA control-plane spread. An empty nodeID (or the local node) launches
-	// in-process, matching LaunchSystemInstance.
+	// LaunchSystemInstanceOnNode pins the VM to a specific host for HA spread.
+	// An empty nodeID launches in-process like LaunchSystemInstance.
 	LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
 }
 
-// k3sAMIResolver is the subset of handlers_ec2_image.ImageService the launcher
-// uses to resolve the eks-server AMI name to an AMI ID at launch time.
+// k3sAMIResolver is the narrow AMI surface for resolving the eks-server AMI ID.
 type k3sAMIResolver interface {
 	DescribeImages(input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error)
 }
 
 const (
-	// defaultK3sServerInstanceType is the internal system type the k3s
-	// control-plane VM boots as (2 vCPU / 4 GB / 40 GB root). A sys.* type
-	// keeps the CP VM out of customer DescribeInstanceTypes and lets the daemon
-	// register the node-targeted system.LaunchInstance.{type}.{nodeID} subject
-	// the HA spread path uses. Callers can override via K3sServerInput.InstanceType.
+	// defaultK3sServerInstanceType is the sys.* type for the CP VM; keeps it out of
+	// customer DescribeInstanceTypes and enables node-targeted HA launch subjects.
 	defaultK3sServerInstanceType = "sys.medium"
 
-	// k3sOIDCSigningKeyPath is the on-VM path where cloud-init drops the
-	// per-cluster OIDC private key PEM. K3s reads it via the
-	// service-account-signing-key-file kube-apiserver arg (signs SA tokens).
+	// k3sOIDCSigningKeyPath is the on-VM OIDC private key PEM path.
 	k3sOIDCSigningKeyPath = "/etc/rancher/k3s/oidc-signing-key.pem"
 
-	// k3sOIDCPublicKeyPath is where cloud-init drops the matching public key
-	// PEM. kube-apiserver's service-account-key-file requires a PUBLIC key
-	// (it rejects a private-key PEM with "data does not contain any valid RSA
-	// or ECDSA public keys" and crash-loops), so it must be a separate file.
+	// k3sOIDCPublicKeyPath is the matching public key PEM; kube-apiserver's
+	// --service-account-key-file requires a PUBLIC key, so it must be separate.
 	k3sOIDCPublicKeyPath = "/etc/rancher/k3s/oidc-signing-key.pub.pem"
 
-	// k3sFirstBootEnvPath is the env file k3s-first-boot.sh sources at boot
-	// (see scripts/images/eks-server/k3s-first-boot.sh ENVFILE).
+	// k3sFirstBootEnvPath is the env file k3s-first-boot.sh sources at boot.
 	k3sFirstBootEnvPath = "/etc/spinifex-eks/first-boot.env"
 
-	// agentEnvPath is the env file the k3s-agent OpenRC service sources for its
-	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL. Path matches the AGENT_ENVFILE
-	// in scripts/images/eks-node/eks-node-role.sh and k3s-agent.initd.
+	// agentEnvPath is the env file the k3s-agent OpenRC service sources for
+	// K3S_URL/K3S_TOKEN/K3S_NODE_NAME/K3S_NODE_LABEL.
 	agentEnvPath = "/etc/spinifex-eks/agent.env"
 
-	// k3sGatewayCAPath is the on-VM destination for the AWS gateway TLS CA cert
-	// PEM. The K3s VM uses it to verify the gateway's HTTPS cert when the
-	// eks-gateway-publish helper POSTs bootstrap envelopes + state reports.
-	// Path matches k3s-first-boot.sh EKS_GATEWAY_CA.
+	// k3sGatewayCAPath is the on-VM gateway TLS CA cert PEM path.
 	k3sGatewayCAPath = "/etc/spinifex-eks/gateway-ca.pem"
 
-	// k3sTokenWebhookKubeconfigPath is the apiserver token-webhook config the
-	// eks-token-webhook service (ordered `before k3s`) writes before the
-	// apiserver starts. Wired via the authentication-token-webhook-config-file
-	// apiserver arg so bearer tokens minted by `aws eks get-token` resolve
-	// through the webhook. Must match the webhook's EKS_WEBHOOK_KUBECONFIG default.
+	// k3sTokenWebhookKubeconfigPath is the apiserver token-webhook kubeconfig
+	// written before k3s starts, wired via --authentication-token-webhook-config-file.
 	k3sTokenWebhookKubeconfigPath = "/etc/spinifex-eks/token-webhook.kubeconfig" //nolint:gosec // file path, not a credential
 
-	// k3sConfigPath is the K3s server config file cloud-init writes; K3s
-	// reads it at startup (overrides the AMI-baked config.yaml.skel).
+	// k3sConfigPath is the K3s server config file written by cloud-init.
 	k3sConfigPath = "/etc/rancher/k3s/config.yaml"
 
-	// k3sResolvConfPath is the on-VM resolver file. The Alpine eks-server AMI
-	// runs dhcpcd, whose resolv.conf hook fails to persist the DHCP-supplied
-	// nameservers ("can't create /etc/resolv.conf: nonexistent directory"), so
-	// the VM boots with no resolver and containerd cannot resolve registry-1.
-	// docker.io to pull the system-pod images. cloud-init writes a static
-	// resolver here; the dhcpcd hook never clobbers it (it errors before it
-	// would). Reachable via the cluster's egress SNAT.
+	// k3sResolvConfPath is the on-VM resolver path. The Alpine AMI's dhcpcd hook
+	// cannot create /etc/resolv.conf, so cloud-init writes a static resolver here.
 	k3sResolvConfPath = "/etc/resolv.conf"
 
-	// k3sResolvConf is the static resolver content. Public anycast resolvers
-	// reached over the control-plane VM's egress path.
+	// k3sResolvConf is the static resolver; reached via the cluster's egress SNAT.
 	k3sResolvConf = "nameserver 1.1.1.1\nnameserver 8.8.8.8"
 )
 
-// K3sServerInput is the launcher's input shape. AccountID is the customer
-// account; the ENI + VM both live there in v1 (SystemAccount-owned VM is
-// deferred behind cross-account-ENI work). Region is carried for future
-// region-aware AMI lookups but not consumed today.
+// K3sServerInput is the K3s server VM launcher's input shape.
 type K3sServerInput struct {
 	AccountID        string
 	ClusterName      string
@@ -126,49 +91,34 @@ type K3sServerInput struct {
 	SubnetID         string
 	ControlPlaneSGID string
 	NLBDNS           string
-	// EndpointIP is the reachable cluster NLB front-end IP. When set it is added
-	// to the apiserver serving-cert SANs (tls-san) so kubectl reaching the
-	// cluster on this IP validates TLS. Empty for an internal endpoint with no
-	// front-end IP read back.
+	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
+	// Empty for an internal endpoint with no front-end IP.
 	EndpointIP        string
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	OIDCPublicKeyPEM  string
-	// Gateway broker config: the control-plane VM publishes its bootstrap
-	// envelopes + state reports via SigV4-signed HTTPS POST to the AWS gateway
-	// (the ELBv2 lb-agent model), not by dialing core NATS. GatewayURL is the
-	// mgmt-reachable AWSGW endpoint; AccessKey/SecretKey are the system
-	// (Predastore) SigV4 creds; GatewayCACert is the PEM that signs the gateway
-	// server cert.
+	// Gateway broker config: CP VM publishes via SigV4-signed HTTPS POST to AWSGW.
+	// GatewayURL is the mgmt-reachable endpoint; AccessKey/SecretKey are system
+	// SigV4 creds; GatewayCACert signs the gateway TLS cert.
 	GatewayURL    string
 	AccessKey     string
 	SecretKey     string
 	GatewayCACert string
 	InstanceType  string
-	// TargetNodeID pins the control-plane VM to a specific Spinifex host for HA
-	// spread across distinct failure domains. Empty launches on the local
-	// daemon node (the single-CP default).
+	// TargetNodeID pins the VM to a specific host for HA spread; empty = local node.
 	TargetNodeID string
-	// JoinToken is the shared k3s cluster token (server secret). Set on every
-	// control-plane server so servers 2..N authenticate into the first server's
-	// embedded-etcd quorum and workers continue to register. Empty preserves
-	// k3s' per-server auto-generated token (pre-HA single-CP behaviour).
+	// JoinToken is the shared k3s cluster token so HA servers join the etcd quorum.
+	// Empty = k3s auto-generated token (single-CP).
 	JoinToken string
-	// ServerURL, when set, boots this VM as a JOIN server: it registers with the
-	// existing control plane at this https://<first-server-ip>:6443 endpoint and
-	// joins the etcd quorum WITHOUT cluster-init. Empty = the first server, which
-	// cluster-inits the datastore. A non-empty ServerURL requires JoinToken.
+	// ServerURL boots this VM as a JOIN server joining the quorum at the given endpoint.
+	// Empty = first server (cluster-init). Non-empty requires JoinToken.
 	ServerURL string
-	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled (interim
-	// in-VPC app exposure). When false the config disables them for AWS parity,
-	// where Service type=LoadBalancer / Ingress are satisfied by the AWS Load
-	// Balancer Controller instead. The CreateCluster default is ON until that
-	// controller ships (see managedIngressTagKey).
+	// BuiltinIngress keeps K3s' bundled traefik + servicelb enabled.
+	// When false, both are disabled for AWS parity (ingress via the LB Controller).
 	BuiltinIngress bool
 }
 
-// K3sServerOutput carries the identifiers the caller needs to persist into
-// ClusterMeta and to register the ENI IP with the cluster NLB target group.
+// K3sServerOutput carries identifiers to persist in ClusterMeta and register with the NLB.
 type K3sServerOutput struct {
 	InstanceID string
 	ENIID      string
@@ -176,15 +126,9 @@ type K3sServerOutput struct {
 	MgmtIP     string
 }
 
-// LaunchK3sServerVM provisions the K3s control-plane VM for an EKS cluster.
-// Sequence: resolve the eks-server AMI, pre-create the customer-account ENI
-// in the supplied subnet with the control-plane SG, render cloud-init user
-// data (env vars, OIDC PEM, K3s config), then call RunInstances with
-// NetworkInterfaces[0].NetworkInterfaceId pointing at the pre-created ENI.
-// Returns instance/ENI identity so the caller can register the ENI IP with
-// the cluster NLB target group and persist the IDs in ClusterMeta. On
-// RunInstances failure the pre-created ENI is deleted best-effort so the
-// caller does not leak a customer-account resource.
+// LaunchK3sServerVM provisions the K3s CP VM: resolves the AMI, pre-creates the
+// ENI, renders cloud-init user-data, then launches via RunInstances. On failure
+// the ENI is deleted best-effort to avoid leaking a customer-account resource.
 func LaunchK3sServerVM(
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
@@ -267,10 +211,8 @@ func LaunchK3sServerVM(
 	}, nil
 }
 
-// TerminateK3sServerVM tears down the K3s server VM for a cluster. The
-// instance termination cascades ENI detach inside the customer instance path,
-// then this helper deletes the ENI explicitly so DeleteCluster does not leak
-// it. Missing instance/ENI is a no-op so retries stay safe.
+// TerminateK3sServerVM terminates the K3s server VM and deletes the ENI.
+// Missing instance/ENI is a no-op for idempotent retries.
 func TerminateK3sServerVM(
 	vpcSvc k3sVPCProvisioner,
 	instSvc k3sInstanceLauncher,
@@ -281,9 +223,7 @@ func TerminateK3sServerVM(
 	}
 	var firstErr error
 	if instanceID != "" {
-		// A retried DeleteCluster reaches here after the VM already drained, so
-		// "instance not found" is the steady-state success case, not a failure —
-		// treat it as idempotent so teardown can proceed to the ENI/SG/KV sweep.
+		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
 			if errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
 				slog.Debug("TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
@@ -300,15 +240,10 @@ func TerminateK3sServerVM(
 			switch {
 			case awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
 				awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
-				// The instance-terminate cascade (or a prior retry) already
-				// deleted the ENI. Idempotent success — must NOT block the SG +
-				// KV sweep, or the cluster wedges in DELETING permanently.
+				// ENI already gone (instance-terminate cascade or prior retry); idempotent success.
 				slog.Debug("TerminateK3sServerVM: ENI already gone", "eniId", eniID)
 			default:
-				// InvalidNetworkInterface.InUse (the VM is still terminating
-				// async and holds the ENI) and any other error are retryable:
-				// surface so the cluster stays DELETING and the reconciler
-				// retries once the instance releases the ENI.
+				// InUse = VM still terminating async; surface error so the reconciler retries.
 				slog.Warn("TerminateK3sServerVM: ENI delete failed", "eniId", eniID, "err", err)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("delete ENI %s: %w", eniID, err)
@@ -319,12 +254,8 @@ func TerminateK3sServerVM(
 	return firstErr
 }
 
-// lookupEKSServerAMI resolves the EKS control-plane AMI by the
-// spinifex:managed-by=eks tag the build pipeline stamps on it, rather than a
-// brittle exact name. This survives the planned server+agent → single EKS AMI
-// unify untouched (the unified AMI keeps the tag; role is chosen per-instance
-// at launch). If more than one AMI carries the tag (e.g. server + agent both
-// imported pre-unify), the newest by CreationDate wins.
+// lookupEKSServerAMI resolves the EKS CP AMI by the spinifex:managed-by=eks tag
+// rather than a brittle exact name. If multiple AMIs match, the newest wins.
 func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error) {
 	out, err := amiSvc.DescribeImages(&ec2.DescribeImagesInput{
 		Filters: []*ec2.Filter{
@@ -401,11 +332,8 @@ func validateK3sServerInput(in K3sServerInput) error {
 	return nil
 }
 
-// GenerateK3sClusterToken mints the shared k3s cluster token (256 bits of
-// crypto-random, hex-encoded) seeded into every control-plane server so servers
-// 2..N join the first server's etcd quorum and workers register. Generated per
-// CreateCluster; not persisted (the node-token derived from it is published on
-// the bootstrap bus for workers).
+// GenerateK3sClusterToken mints the shared k3s cluster token (256 bits, hex-encoded).
+// Servers 2..N and workers use it to join; the derived node-token is published on the bootstrap bus.
 func GenerateK3sClusterToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -414,9 +342,7 @@ func GenerateK3sClusterToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// k3sServerJoinURL builds the registration endpoint a join server dials: the
-// first server's ENI private IP on the k3s supervisor port. Token-based join is
-// trust-on-first-use, so the IP need not be in the apiserver cert SANs.
+// k3sServerJoinURL builds the join endpoint (first server's ENI IP on port 6443).
 func k3sServerJoinURL(ip string) string {
 	return "https://" + net.JoinHostPort(ip, "6443")
 }
@@ -442,11 +368,7 @@ type userDataFile struct {
 func buildK3sUserData(in K3sServerInput) string {
 	nlbEndpoint := "https://" + net.JoinHostPort(in.NLBDNS, strconv.FormatInt(clusterNLBListenPort, 10))
 
-	// Role the eks-node-role first-boot selector reads to enable the
-	// control-plane services. The first server is "server" (cluster-init +
-	// bootstrap publisher); servers 2..N are "server-join" (register into the
-	// existing quorum, no bootstrap re-publish). Nodegroup workers seed "agent"
-	// through their own path.
+	// "server" = first CP (cluster-init + bootstrap publisher); "server-join" = HA join server.
 	role := "server"
 	if in.ServerURL != "" {
 		role = "server-join"
@@ -463,42 +385,15 @@ func buildK3sUserData(in K3sServerInput) string {
 		"EKS_CLUSTER_NAME=" + in.ClusterName,
 		"EKS_NLB_ENDPOINT=" + nlbEndpoint,
 		"EKS_OIDC_ISSUER=" + in.OIDCIssuer,
-		// Gate deferred built-in ingress: k3s.initd stages a traefik .skip marker
-		// before boot and the state-reporter removes it once the apiserver is
-		// stable. Set only for clusters that want built-in ingress.
+		// Deferred ingress: k3s.initd stages a traefik .skip marker; state-reporter removes it once stable.
 		"EKS_DEFER_TRAEFIK=" + boolFlag(in.BuiltinIngress),
 	}, "\n")
 
-	// cluster-init (first server) selects the embedded etcd datastore (required
-	// for multi-server HA); servers 2..N instead carry `server: <first>` + the
-	// shared token and join the quorum without cluster-init.
-	// etcd-expose-metrics surfaces etcd's own wal_fsync_duration_seconds and
-	// backend_commit_duration_seconds on 127.0.0.1:2381/metrics so control-plane
-	// commit latency is measurable directly, not inferred.
-	//
-	// anonymous-auth=true: k3s hardens it off by default, which makes the
-	// apiserver answer 401 to an unauthenticated /healthz. The cluster reconciler
-	// probes https://<NLB>/healthz anonymously to gate ACTIVE, so it must be
-	// reachable; the default RBAC binds only the health/version non-resource
-	// paths to system:unauthenticated, so this exposes nothing else.
-	// In real EKS neither traefik nor servicelb exists; Service type=LoadBalancer
-	// and Ingress are reconciled by the AWS Load Balancer Controller. When a
-	// cluster does not opt into built-in ingress (BuiltinIngress=false) the K3s
-	// built-ins are disabled outright for parity.
-	//
-	// When a cluster DOES want built-in ingress (dev / interim, until the AWS LB
-	// controller add-on lands) traefik stays ENABLED in config so k3s writes its
-	// manifest — but its helm-install Job (klipper-helm image pull + chart
-	// install) hammers the embedded etcd during the fragile bootstrap window,
-	// which can tip etcd fsync latency past the apiserver / leaderelection
-	// deadlines and crash the control plane. So traefik is deferred, NOT disabled:
-	// k3s.initd stages a deploy-controller .skip marker before the apiserver
-	// starts (EKS_DEFER_TRAEFIK gates it), and the state-reporter removes that
-	// marker once the apiserver is sustainedly healthy — traefik then installs
-	// with etcd headroom. Disabling traefik (`disable: traefik`) is wrong for this:
-	// k3s never writes traefik.yaml, leaving no manifest to un-skip. servicelb
-	// (klipper) is lazy — it acts only when a LoadBalancer Service exists — so it
-	// carries no bootstrap cost and stays enabled whenever built-in ingress is on.
+	// First server uses cluster-init (embedded etcd); join servers set `server: <first>` + token.
+	// etcd-expose-metrics: surfaces etcd fsync/commit latency on 127.0.0.1:2381/metrics.
+	// anonymous-auth=true: reconciler probes /healthz unauthenticated to gate ACTIVE; RBAC limits exposure.
+	// When BuiltinIngress=false, traefik+servicelb are disabled for AWS LB Controller parity.
+	// When true, traefik is deferred (not disabled) to avoid hammering etcd during bootstrap.
 	var configLines []string
 	if in.ServerURL == "" {
 		configLines = append(configLines, "cluster-init: true")
@@ -510,13 +405,7 @@ func buildK3sUserData(in K3sServerInput) string {
 	}
 	configLines = append(configLines,
 		"etcd-expose-metrics: true",
-		// Keep user workloads off the control plane (EKS parity — the CP is never
-		// a worker). Critical here because the server node is schedulable by
-		// default: a workload landing on the CP pulls its images onto the same
-		// NBD/viperblock disk the embedded etcd fsyncs to, starving etcd until the
-		// apiserver crashes and the VM OOMs. k3s' packaged addons tolerate
-		// CriticalAddonsOnly, so they still run (here, draining to the nodegroup);
-		// NoExecute also evicts anything already scheduled, not just future pods.
+		// Prevent user workloads on the CP (EKS parity). k3s packaged addons tolerate CriticalAddonsOnly.
 		"node-taint:",
 		"  - CriticalAddonsOnly=true:NoExecute",
 	)
@@ -528,9 +417,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		)
 	}
 	configLines = append(configLines, "tls-san:", "  - "+in.NLBDNS)
-	// The reachable front-end IP must be a cert SAN so kubectl reaching the
-	// cluster on https://<EndpointIP>:443 validates TLS. k3s accepts IP literals
-	// in tls-san and classifies them as IP SANs.
+	// EndpointIP must be a cert SAN for TLS validation via https://<EndpointIP>:443.
 	if in.EndpointIP != "" {
 		configLines = append(configLines, "  - "+in.EndpointIP)
 	}
@@ -543,30 +430,21 @@ func buildK3sUserData(in K3sServerInput) string {
 		"  - anonymous-auth=true",
 		"  - authentication-token-webhook-config-file="+k3sTokenWebhookKubeconfigPath,
 		"  - authentication-token-webhook-cache-ttl=5m",
-		// Pin v1 so the apiserver decodes the webhook's authentication.k8s.io/v1
-		// TokenReview response; the default v1beta1 rejects the GVK mismatch (401).
+		// v1: default v1beta1 rejects authentication.k8s.io/v1 TokenReview response (401).
 		"  - authentication-token-webhook-version=v1",
 	)
 	k3sConfig := strings.Join(configLines, "\n")
 
 	files := []userDataFile{
-		// first-boot.env carries the system SigV4 secret key, so keep it
-		// root-only (0600).
+		// 0600: contains system SigV4 secret key.
 		{Path: k3sFirstBootEnvPath, Perms: "0600", Body: envBody},
 		{Path: k3sOIDCSigningKeyPath, Perms: "0600", Body: strings.TrimRight(in.OIDCPrivateKeyPEM, "\n")},
 		{Path: k3sOIDCPublicKeyPath, Perms: "0644", Body: strings.TrimRight(in.OIDCPublicKeyPEM, "\n")},
 		{Path: k3sConfigPath, Perms: "0644", Body: k3sConfig},
 		{Path: k3sGatewayCAPath, Perms: "0644", Body: strings.TrimRight(in.GatewayCACert, "\n")},
-		// IMDS on-link route. Alpine's cloud-init eni renderer crashes on a
-		// gateway-less route in network-config, so it's delivered out-of-band:
-		// a persistent local.d script (re-applied every boot by the OpenRC
-		// `local` service, enabled via runcmd below) ARPs 169.254.169.254
-		// directly on the VPC subnet. This block owns the only write_files key,
-		// so it must carry the route itself — appending a second write_files via
-		// the generic cloud-init template would collide (last key wins, silently
-		// dropping the k3s config). The device is resolved via the default route
-		// (the VPC egress NIC), not a name: the persistent-net rename to vpc0
-		// doesn't apply on the Alpine AMI, so the kernel name is eth0 at boot.
+		// IMDS on-link route via persistent local.d script: Alpine cloud-init crashes on a
+		// gateway-less network-config route, so it's written here instead. Uses default-route
+		// device (eth0 on Alpine, not vpc0) to ARP 169.254.169.254 directly on the VPC subnet.
 		{
 			Path:  "/etc/local.d/imds-onlink-route.start",
 			Perms: "0755",
@@ -579,14 +457,8 @@ func buildK3sUserData(in K3sServerInput) string {
 	var buf strings.Builder
 	buf.WriteString("#cloud-config\n")
 
-	// Resolver via bootcmd, NOT write_files: on the Alpine AMI /etc/resolv.conf
-	// is a dangling symlink (its target dir does not exist — which is why the
-	// dhcpcd hook cannot persist DHCP DNS), and pointing write_files at it makes
-	// cloud-init follow the dead link, fail, and abort the WHOLE write_files
-	// block (dropping first-boot.env + the k3s config). bootcmd runs before
-	// write_files in the init stage and as a shell, so it can drop the symlink
-	// and write a real file. Containerd needs this to resolve registry-1.docker.
-	// io for system-pod image pulls; reachable over the cluster egress SNAT.
+	// bootcmd (not write_files): /etc/resolv.conf is a dangling symlink on Alpine; write_files
+	// follows it, fails, and aborts the entire block. bootcmd drops the symlink first.
 	buf.WriteString("bootcmd:\n")
 	buf.WriteString("  - rm -f " + k3sResolvConfPath + "\n")
 	fmt.Fprintf(&buf, "  - printf '%s\\n' > %s\n",
@@ -604,8 +476,7 @@ func buildK3sUserData(in K3sServerInput) string {
 		}
 	}
 
-	// Enable + start the OpenRC `local` service so the IMDS route script runs on
-	// first boot and is re-applied on every subsequent boot.
+	// Enable OpenRC `local` so the IMDS route script runs on every boot.
 	buf.WriteString("runcmd:\n")
 	buf.WriteString("  - [ rc-update, add, local, default ]\n")
 	buf.WriteString("  - [ rc-service, local, start ]\n")

@@ -10,8 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// AddonStatus mirrors the AWS EKS addon.status enum verbatim so clients match
-// against the values without translation.
+// AddonStatus mirrors the AWS EKS addon.status enum verbatim.
 type AddonStatus string
 
 const (
@@ -23,9 +22,8 @@ const (
 	AddonStatusCreateFailed AddonStatus = "CREATE_FAILED"
 )
 
-// AddonRecord is the persisted-state envelope for a managed add-on bound to a
-// cluster. It tracks the AWS-visible lifecycle status plus the IRSA role and
-// opaque configuration the installer needs.
+// AddonRecord is the persisted state for a managed add-on: lifecycle status,
+// IRSA role, and opaque configuration the installer needs.
 type AddonRecord struct {
 	AddonName             string            `json:"addonName"`
 	AddonVersion          string            `json:"addonVersion"`
@@ -39,13 +37,11 @@ type AddonRecord struct {
 	ModifiedAt            time.Time         `json:"modifiedAt"`
 }
 
-// ErrAddonNotFound is returned by GetAddonRecord / the CAS helper when no
-// record exists for the add-on. Callers translate to the AWS shape
-// (ResourceNotFoundException) at the service boundary.
+// ErrAddonNotFound is returned when no record exists for the add-on.
+// Callers translate it to ResourceNotFoundException at the service boundary.
 var ErrAddonNotFound = errors.New("eks: addon not found")
 
-// AddonARN composes the deterministic ARN for a managed add-on (one per
-// add-on name per cluster).
+// AddonARN composes the deterministic ARN for a managed add-on.
 func AddonARN(region, accountID, cluster, addon string) string {
 	return fmt.Sprintf("arn:aws:eks:%s:%s:addon/%s/%s", region, accountID, cluster, addon)
 }
@@ -88,10 +84,8 @@ func GetAddonRecord(kv nats.KeyValue, cluster, addon string) (*AddonRecord, erro
 	return &rec, nil
 }
 
-// ListAddonRecords returns every add-on record under a cluster, sorted by add-on
-// name for stable output. The staged-manifest sub-keys
-// (clusters/{c}/addons/{addon}/manifest) are skipped — only the record keys
-// (one path segment under the prefix) are returned.
+// ListAddonRecords returns all add-on records under a cluster, sorted by name.
+// Staged-manifest sub-keys (one extra path segment) are skipped.
 func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) {
 	if cluster == "" {
 		return nil, errors.New("eks: ListAddonRecords empty cluster")
@@ -109,8 +103,7 @@ func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) 
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		// Skip sub-keys (e.g. the staged manifest); a record key is exactly one
-		// segment under the prefix.
+		// Skip sub-keys (e.g. staged manifest); record keys are one segment under the prefix.
 		if strings.Contains(strings.TrimPrefix(k, prefix), "/") {
 			continue
 		}
@@ -131,8 +124,7 @@ func ListAddonRecords(kv nats.KeyValue, cluster string) ([]*AddonRecord, error) 
 	return out, nil
 }
 
-// DeleteAddonRecord removes one record (and its staged manifest, if any).
-// Returns ErrAddonNotFound if the record did not exist.
+// DeleteAddonRecord removes one record and its staged manifest. Returns ErrAddonNotFound if absent.
 func DeleteAddonRecord(kv nats.KeyValue, cluster, addon string) error {
 	key := AddonKey(cluster, addon)
 	if _, err := kv.Get(key); err != nil {
@@ -152,8 +144,8 @@ func DeleteAddonRecord(kv nats.KeyValue, cluster, addon string) error {
 	return nil
 }
 
-// casUpdateAddon does a revision-checked read-modify-write. mutate returns true
-// if it changed a field. Returns ErrAddonNotFound if absent.
+// casUpdateAddon does a revision-checked read-modify-write.
+// mutate returns true when a field changed. Returns ErrAddonNotFound if absent.
 func casUpdateAddon(kv nats.KeyValue, cluster, addon string, mutate func(*AddonRecord) bool) (*AddonRecord, error) {
 	key := AddonKey(cluster, addon)
 	for range maxClusterStateCASRetries {

@@ -412,15 +412,13 @@ func addressMatchesFilters(record *EIPRecord, filters map[string][]string) bool 
 	return filterutil.MatchesTags(filters, record.Tags)
 }
 
-// DescribeAddressesAttribute returns per-EIP attributes (e.g. domain-name).
-// Spinifex doesn't support reverse-DNS PTR records, so PtrRecord is left nil.
-// Unlike DescribeAddresses, this returns an empty list (not an error) when
-// requested AllocationIds are not found. This matches real AWS behavior.
+// DescribeAddressesAttribute returns per-EIP attributes. PtrRecord is always nil
+// (no reverse-DNS support). Returns an empty list, not an error, for missing IDs.
 func (s *EIPServiceImpl) DescribeAddressesAttribute(input *ec2.DescribeAddressesAttributeInput, accountID string) (*ec2.DescribeAddressesAttributeOutput, error) {
 	var addresses []*ec2.AddressAttribute
 
 	if len(input.AllocationIds) > 0 {
-		// Direct lookups — O(n) on requested IDs rather than scanning all EIPs.
+		// Direct lookups by requested IDs.
 		for _, id := range input.AllocationIds {
 			if id == nil {
 				continue
@@ -570,10 +568,9 @@ func (s *EIPServiceImpl) findByAssociationID(accountID, associationID string) (*
 	return nil, "", 0, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
 }
 
-// AssociatedPublicIPForInstance returns the public IP of the Elastic IP
-// associated with instanceID, if any. The daemon uses it to re-announce a
-// post-launch EIP's dnat_and_snat on VM relaunch, where the instance's own
-// PublicIP field is unset (only auto-assigned public IPs populate it).
+// AssociatedPublicIPForInstance returns the public IP of the EIP associated with
+// instanceID, if any. Used by the daemon to re-announce dnat_and_snat on relaunch
+// when the instance's own PublicIP field is unset (EIP-assigned vs auto-assigned).
 func (s *EIPServiceImpl) AssociatedPublicIPForInstance(accountID, instanceID string) (string, bool) {
 	if instanceID == "" {
 		return "", false
@@ -602,13 +599,9 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(accountID, instanceID str
 	return "", false
 }
 
-// publishNATEvent publishes a NAT lifecycle event to NATS for vpcd consumption.
-// This is fire-and-forget; errors are logged but do not fail the API response.
-//
-// PortName must match the OVN logical switch port name ("port-<eni-id>") because
-// vpcd sets NAT.LogicalPort to this value in distributed NAT mode (direct
-// bridge). A mismatch creates a dnat_and_snat row pointing at a nonexistent
-// port, and OVN never programs the DNAT flow.
+// publishNATEvent publishes a NAT lifecycle event to NATS for vpcd (fire-and-forget).
+// PortName must use topology.Port(eniID) to match the OVN logical switch port name;
+// a mismatch causes OVN to never program the DNAT flow.
 func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, eniID, mac string) {
 	utils.PublishEvent(s.natsConn, topic, natEvent{
 		VpcId:      vpcID,

@@ -14,12 +14,9 @@ type FirmwareCandidate struct {
 	VarsTemplate string
 }
 
-// FirmwarePathCandidates lists where UEFI firmware lives on supported hosts,
-// keyed by Architecture string ("x86_64" | "arm64"). First match wins so
-// distro-native packages take precedence over edk2 fallbacks.
-//
-// Exported so tests across packages can swap entries via t.Cleanup. The RHEL
-// host plan extends this map by appending candidates.
+// FirmwarePathCandidates lists UEFI firmware locations keyed by architecture.
+// First match wins so distro packages take precedence over edk2 fallbacks.
+// Exported so tests can swap entries via t.Cleanup.
 var FirmwarePathCandidates = map[string][]FirmwareCandidate{
 	"x86_64": {
 		{Code: "/usr/share/OVMF/OVMF_CODE_4M.fd", VarsTemplate: "/usr/share/OVMF/OVMF_VARS_4M.fd"},
@@ -31,15 +28,9 @@ var FirmwarePathCandidates = map[string][]FirmwareCandidate{
 	},
 }
 
-// FirmwarePaths returns the first (code, varsTemplate, varsSize) tuple from
-// FirmwarePathCandidates[arch] where both files exist on disk. varsSize is
-// the on-disk size of the VARS template — QEMU pflash requires the per-VM
-// VARS volume to match the template byte-for-byte, so the caller sizes the
-// viperblock volume from this return.
-//
-// Returns an error mentioning the arch on miss; the launch path treats this
-// as a hard failure rather than falling back to SeaBIOS (a UEFI guest booted
-// under SeaBIOS panics on missing ESP).
+// FirmwarePaths returns the first (code, varsTemplate, varsSize) from
+// FirmwarePathCandidates[arch] where both files exist. varsSize is used to
+// size the per-VM VARS volume. Returns an error on miss — no SeaBIOS fallback.
 func FirmwarePaths(arch string) (code, varsTemplate string, varsSize int64, err error) {
 	candidates, ok := FirmwarePathCandidates[arch]
 	if !ok {

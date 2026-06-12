@@ -10,24 +10,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// enableBridgePromisc puts iface into IFF_PROMISC and returns a release
-// callback the caller defers. Reference-counted across concurrent DORAs
-// on the same bridge so the first caller flips PROMISC on and the last
-// caller flips it off — concurrent leases don't fight over flag state.
-//
-// Rationale: nclient4 sends DHCPDISCOVER with the derived 02:xx:xx:xx:xx:xx
-// chaddr (see DeriveMAC) which doesn't match the bridge's own MAC. Many
-// upstream DHCP servers reply unicast to chaddr regardless of the
-// broadcast flag, so the OFFER egresses the Linux bridge with a destination
-// MAC the bridge has never learned. Without IFF_PROMISC the kernel
-// AF_PACKET socket bound to the bridge drops those frames in software and
-// the DORA times out with "no matching response packet received". With
-// PROMISC the bridge surfaces every received frame to the socket and
-// nclient4 sees the OFFER.
-//
-// On failure (typically EPERM when vpcd lost CAP_NET_ADMIN) the function
-// returns the error so the caller can decide whether to proceed — the
-// bridge may already be in PROMISC via operator config.
+// enableBridgePromisc puts iface into IFF_PROMISC and returns a release callback.
+// Reference-counted so concurrent DORAs share one flag; needed because servers
+// unicast OFFERs to the derived chaddr, which the bridge drops without PROMISC.
 var enableBridgePromisc = func(iface string) (func() error, error) {
 	if iface == "" {
 		return nil, errors.New("promisc: iface required")

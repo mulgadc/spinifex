@@ -17,10 +17,9 @@ func nlbManagedSGName(lbID string) string {
 	return "spinifex-nlb-" + lbID
 }
 
-// lbENIGroups returns the security groups to attach to an LB's data-plane ENIs.
-// NLBs use the internally-minted managed SG (customer SGs are rejected at
-// create time); ALBs use the customer-supplied SGs. Shared by the create-time
-// ENI loop and the SetSubnets relaunch path so both attach the same SG.
+// lbENIGroups returns the SGs to attach to an LB's data-plane ENIs: the managed SG
+// for NLBs (customer SGs are rejected), or customer SGs for ALBs. Shared by the
+// create-time ENI loop and SetSubnets relaunch so both paths attach the same SG.
 func lbENIGroups(lb *LoadBalancerRecord) []string {
 	if lb.Type == LoadBalancerTypeNetwork {
 		if lb.NLBManagedSGID != "" {
@@ -31,10 +30,9 @@ func lbENIGroups(lb *LoadBalancerRecord) []string {
 	return lb.SecurityGroups
 }
 
-// createNLBManagedSG mints the internal front-end SG for an NLB in the LB's VPC
-// and returns its ID. The VPC is resolved from the LB's first subnet. The SG is
-// tagged like the LB's other managed resources so the ownership sweep can find
-// it.
+// createNLBManagedSG mints the managed front-end SG for an NLB; the VPC is resolved
+// from the first subnet. The SG is tagged like other managed resources so the
+// ownership sweep can find it.
 func (s *ELBv2ServiceImpl) createNLBManagedSG(lbID, lbArn, subnetID, accountID string) (string, error) {
 	subnet, err := s.VPCService.GetSubnet(accountID, subnetID)
 	if err != nil {
@@ -65,10 +63,9 @@ func (s *ELBv2ServiceImpl) createNLBManagedSG(lbID, lbArn, subnetID, accountID s
 	return *out.GroupId, nil
 }
 
-// deleteNLBManagedSG best-effort deletes an NLB's managed SG. Callable on the
-// create-rollback and delete paths; a nil VPC service or empty ID is a no-op,
-// and a delete failure is logged but not surfaced (the SG can only be deleted
-// once its ENIs are gone, which the delete path guarantees).
+// deleteNLBManagedSG best-effort deletes an NLB's managed SG; nil VPC service or
+// empty ID is a no-op. Failures are logged but not returned — the SG can only
+// be deleted after its ENIs are gone, which the delete path ensures.
 func (s *ELBv2ServiceImpl) deleteNLBManagedSG(sgID, accountID string) {
 	if s.VPCService == nil || sgID == "" {
 		return
@@ -132,10 +129,9 @@ func listenerIPProtocols(protocol string) []string {
 	}
 }
 
-// authorizeNLBListenerPort opens a listener port on the NLB's managed SG for
-// each (protocol, CIDR) pair. Each rule is authorized in its own call so an
-// already-present rule (Duplicate, swallowed) never blocks a sibling rule —
-// keeping re-create / reconcile idempotent. No-op when there is no managed SG.
+// authorizeNLBListenerPort opens a listener port on the NLB's managed SG for each
+// (protocol, CIDR) pair; each rule is authorized separately so a Duplicate error
+// never blocks a sibling rule. No-op when there is no managed SG.
 func (s *ELBv2ServiceImpl) authorizeNLBListenerPort(lb *LoadBalancerRecord, protocol string, port int64, cidrs []string, accountID string) error {
 	if s.VPCService == nil || lb.NLBManagedSGID == "" {
 		return nil
@@ -188,11 +184,9 @@ func (s *ELBv2ServiceImpl) revokeNLBListenerPort(lb *LoadBalancerRecord, protoco
 	return nil
 }
 
-// SetLoadBalancerIngressCIDRs overrides the client CIDRs the NLB's listener
-// ports are opened to (e.g. an EKS public endpoint's publicAccessCidrs) and
-// re-authorizes every existing listener accordingly. Passing nil/empty reverts
-// to the scheme-based default. Idempotent: the old rules are revoked and the
-// new ones authorized, both swallowing the benign duplicate / not-found errors.
+// SetLoadBalancerIngressCIDRs overrides the client CIDRs for an NLB's listener ports,
+// revoking old rules and authorizing new ones. Passing nil/empty reverts to the
+// scheme-based default (0.0.0.0/0 internet-facing, VPC CIDR internal).
 func (s *ELBv2ServiceImpl) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []string, accountID string) error {
 	if lbArn == "" {
 		return errors.New(awserrors.ErrorMissingParameter)

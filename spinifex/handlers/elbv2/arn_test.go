@@ -242,10 +242,9 @@ func TestBuildMicrovmNICs_ExtraENIs(t *testing.T) {
 	assert.False(t, nics[2].IsDefault)
 }
 
-// TestBuildMicrovmNICs_MgmtRoute covers the same single-node/multi-node matrix
-// as TestLBVMUserData_InternalSingleNodeFallback: internet-facing single-node
-// must NOT emit a /32 via mgmt to AdvertiseIP because that steals the host's
-// WAN return path for reply traffic, breaking same-chassis ingress.
+// TestBuildMicrovmNICs_MgmtRoute verifies the single-node/multi-node mgmt-route matrix:
+// internet-facing single-node must not emit a /32 via mgmt to AdvertiseIP, as that
+// would steal the host's WAN return path and break same-chassis ingress.
 func TestBuildMicrovmNICs_MgmtRoute(t *testing.T) {
 	mk := func() *ELBv2ServiceImpl {
 		return &ELBv2ServiceImpl{

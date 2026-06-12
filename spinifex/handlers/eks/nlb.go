@@ -10,9 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// nlbProvisioner is the subset of handlers_elbv2.ELBv2Service that the
-// cluster NLB helpers need. Narrow so tests can fake with hand-rolled
-// recorders without implementing the full ELBv2 surface.
+// nlbProvisioner is the narrow ELBv2 surface needed by cluster NLB helpers.
 type nlbProvisioner interface {
 	CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
@@ -31,38 +29,28 @@ type nlbProvisioner interface {
 	SetLoadBalancerIngressCIDRs(lbArn string, cidrs []string, accountID string) error
 }
 
-// AWS load-balancer + target-group names are bounded to 32 alphanumeric or
-// hyphen characters. EnsureClusterNLB rejects clusters whose derived name
-// would exceed this before issuing the create call so callers see a clear
-// error instead of a generic ELBv2 InvalidParameterValue.
+// maxELBv2NameLen is the AWS limit on LB/TG names (alphanumeric + hyphens).
 const maxELBv2NameLen = 32
 
-// k3sAPIServerPort is the in-VM K3s api-server bind port. The NLB target
-// group sends traffic to this port on the K3s server VM's ENI.
+// k3sAPIServerPort is the K3s apiserver port; NLB target group forwards here.
 const k3sAPIServerPort int64 = 6443
 
 // clusterNLBListenPort is the customer-facing port the cluster NLB exposes.
 // kubectl + the AWS SDK both expect TLS on 443.
 const clusterNLBListenPort int64 = 443
 
-// ClusterNLB is the in-process tuple produced by EnsureClusterNLB. Each ARN
-// is persisted into ClusterMeta so the reconciler + DeleteCluster can act on
-// the resources without re-resolving by name.
+// ClusterNLB is the NLB resource tuple produced by EnsureClusterNLB; ARNs are persisted to ClusterMeta.
 type ClusterNLB struct {
 	LoadBalancerArn string
 	TargetGroupArn  string
 	ListenerArn     string
 	DNSName         string
-	// FrontendIP is the NLB's reachable front-end address: the external-pool
-	// public IP for an internet-facing cluster NLB, or the VPC private IP for an
-	// internal one. Used as the kubeconfig endpoint host + apiserver cert SAN.
-	// Empty if the backing LB record has no address yet.
+	// FrontendIP is the public IP (internet-facing) or VPC IP (internal) of the NLB front-end.
+	// Used as the kubeconfig endpoint host and apiserver cert SAN; empty if not yet provisioned.
 	FrontendIP string
 }
 
-// ClusterNLBName returns the deterministic NLB name for a cluster. Stable so
-// DeleteCluster can locate the NLB from clusterName alone after a daemon
-// restart that lost the in-memory ARN.
+// ClusterNLBName returns the deterministic NLB name for a cluster.
 func ClusterNLBName(clusterName string) string {
 	return "eks-" + clusterName
 }
@@ -73,24 +61,9 @@ func ClusterTargetGroupName(clusterName string) string {
 	return "eks-" + clusterName + "-cp"
 }
 
-// EnsureClusterNLB provisions (or returns) the cluster's NLB + target group +
-// :443→:6443 TCP listener. Idempotent on clusterName: existing resources are
-// reused so DeleteCluster failure-retry and reconciler crash-recovery both
-// converge without duplicate creates.
-//
-// The K3s server VM ENI IP is NOT registered here — Stage 4
-// (k3s_server_vm.go) calls RegisterClusterTarget once the VM has its ENI IP.
-//
-// internetFacing selects the NLB scheme: true ⇒ internet-facing (external-pool
-// front-end IP, LAN-reachable, for a public cluster endpoint); false ⇒ internal
-// (VPC-only). After ensuring the LB, the reachable FrontendIP is read back from
-// the backing LB record so the caller can use it as the endpoint host + cert SAN.
-//
-// publicAccessCidrs narrows who may reach an internet-facing front-end below the
-// scheme default (0.0.0.0/0). It maps the cluster's publicAccessCidrs onto the
-// NLB managed-SG ingress; ignored for an internal NLB (its ingress already
-// tracks the VPC CIDR) and for the wide-open default, which the LB carries out
-// of the box.
+// EnsureClusterNLB provisions (or reuses) the cluster NLB, target group, and
+// :443→:6443 TCP listener. Idempotent; ENI registration is done separately by
+// RegisterClusterTarget. publicAccessCidrs narrows ingress for internet-facing LBs.
 func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
@@ -118,17 +91,12 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	if err := ensureClusterListener(nlbp, accountID, lbName, out); err != nil {
 		return nil, err
 	}
-	// Narrow the internet-facing front-end to the cluster's publicAccessCidrs
-	// when they restrict below the wide-open scheme default the LB already
-	// carries. The override is idempotent, so re-running on retry converges.
 	if internetFacing && narrowsPublicAccess(publicAccessCidrs) {
 		if err := nlbp.SetLoadBalancerIngressCIDRs(out.LoadBalancerArn, publicAccessCidrs, accountID); err != nil {
 			return nil, fmt.Errorf("eks: set NLB ingress CIDRs for %s: %w", lbName, err)
 		}
 	}
-	// Read the front-end IP back from the LB record (DescribeLoadBalancers →
-	// populated LoadBalancerAddresses). Best-effort: an empty IP is not fatal
-	// here — the caller falls back to the DNS-name endpoint.
+	// Best-effort front-end IP read-back; caller falls back to DNS name if empty.
 	if lb, err := lookupLBByName(nlbp, accountID, lbName); err == nil && lb != nil {
 		out.FrontendIP = frontendIPFromLB(lb, internetFacing)
 	} else if err != nil {
@@ -137,10 +105,7 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 	return out, nil
 }
 
-// narrowsPublicAccess reports whether publicAccessCidrs restrict the front-end
-// below the wide-open default an internet-facing NLB already carries. Empty (no
-// override) or the lone 0.0.0.0/0 default are no-ops and skip the extra ELBv2
-// round-trip.
+// narrowsPublicAccess reports whether publicAccessCidrs restrict below the 0.0.0.0/0 default.
 func narrowsPublicAccess(cidrs []string) bool {
 	if len(cidrs) == 0 {
 		return false
@@ -151,9 +116,8 @@ func narrowsPublicAccess(cidrs []string) bool {
 	return true
 }
 
-// frontendIPFromLB extracts the reachable front-end address from a described
-// load balancer: the public IpAddress for an internet-facing LB, else the VPC
-// PrivateIPv4Address. Returns the first non-empty match across AZs.
+// frontendIPFromLB returns the public IpAddress (internet-facing) or PrivateIPv4Address (internal)
+// from the described LB; first non-empty match across AZs.
 func frontendIPFromLB(lb *elbv2.LoadBalancer, internetFacing bool) string {
 	for _, az := range lb.AvailabilityZones {
 		for _, addr := range az.LoadBalancerAddresses {
@@ -174,8 +138,7 @@ func frontendIPFromLB(lb *elbv2.LoadBalancer, internetFacing bool) string {
 	return ""
 }
 
-// RegisterClusterTarget attaches one K3s server ENI IP to the cluster TG. Thin
-// wrapper over RegisterClusterTargets for callers with a single IP.
+// RegisterClusterTarget attaches one ENI IP to the cluster TG.
 func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
 	if eniIP == "" {
 		return errors.New("eks: RegisterClusterTarget empty ENI IP")
@@ -183,12 +146,8 @@ func RegisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) 
 	return RegisterClusterTargets(nlbp, accountID, tgArn, []string{eniIP})
 }
 
-// RegisterClusterTargets attaches every control-plane server ENI IP to the
-// cluster TG so the NLB forwards :443 traffic to :6443 on each CP VM. With all
-// N HA servers registered, the TG health check (:6443) drains a member when its
-// node dies and kubectl/apiserver traffic fails over to the survivors. Empty
-// IPs are skipped; the ELBv2 RegisterTargets impl dedupes on (id, port), so
-// re-invocation (e.g. by the reconciler) is idempotent.
+// RegisterClusterTargets attaches all CP ENI IPs to the cluster TG. Empty IPs are
+// skipped; RegisterTargets deduplicates on (id, port) so re-invocation is idempotent.
 func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs []string) error {
 	if tgArn == "" {
 		return errors.New("eks: RegisterClusterTargets empty TG arn")
@@ -215,9 +174,7 @@ func RegisterClusterTargets(nlbp nlbProvisioner, accountID, tgArn string, eniIPs
 	return nil
 }
 
-// DeregisterClusterTarget removes the K3s server ENI IP from the cluster TG.
-// Called by DeleteCluster before VM termination so health checks stop hitting
-// a dying target.
+// DeregisterClusterTarget removes an ENI IP from the cluster TG before VM termination.
 func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string) error {
 	if tgArn == "" {
 		return errors.New("eks: DeregisterClusterTarget empty TG arn")
@@ -237,11 +194,8 @@ func DeregisterClusterTarget(nlbp nlbProvisioner, accountID, tgArn, eniIP string
 	return nil
 }
 
-// DeleteClusterNLB tears down the cluster NLB + TG. DeleteLoadBalancer
-// cascades listener cleanup inside the ELBv2 impl, so listeners do not need
-// an explicit delete pass. Missing resources are no-ops to keep DeleteCluster
-// retries safe. Both sub-sweeps always run; LB delete error takes precedence
-// over TG delete error when both fail.
+// DeleteClusterNLB tears down the cluster NLB and TG. DeleteLoadBalancer cascades
+// listener cleanup. Missing resources are no-ops; LB error takes precedence if both fail.
 func DeleteClusterNLB(nlbp nlbProvisioner, accountID, clusterName string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterNLB empty cluster name")

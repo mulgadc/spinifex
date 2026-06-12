@@ -9,10 +9,7 @@ import (
 	"testing"
 )
 
-// ANSI color codes — rendered live by the Actions UI; raw escapes pass
-// through to artifact log files harmlessly. Disabled when stdout is not
-// a TTY and GITHUB_ACTIONS isn't set, so piped local `go test -v` stays
-// clean.
+// ANSI color codes. Disabled when stdout is not a TTY and GITHUB_ACTIONS is unset.
 var (
 	colorBold  = "\x1b[1m"
 	colorDim   = "\x1b[2m"
@@ -28,25 +25,15 @@ func init() {
 	}
 }
 
-// Phase writes a colored section banner directly to stdout, bypassing
-// t.Logf so the line lands flush-left without the testing framework's
-// `<file>:<line>:` prefix or forced indent. Banners are pure visual
-// structure — the diagnostic resource IDs themselves stay on t.Logf
-// (see Detail) so they remain attributed to the owning test in JUnit XML.
-//
-// Use sparingly: one line per logical phase, not per attribute.
+// Phase writes a colored section banner to stdout, bypassing t.Logf to avoid
+// the framework's indentation. Use one line per logical phase, not per attribute.
 func Phase(t *testing.T, format string, args ...any) {
 	t.Helper()
 	fmt.Fprintf(os.Stdout, "\n%s%s━━ %s ━━%s\n", colorBold, colorCyan, fmt.Sprintf(format, args...), colorReset)
 }
 
-// Step emits a single-line sub-phase marker directly to os.Stdout so it
-// streams live in CI. Bypasses t.Logf because the testing framework
-// buffers per-test and releases only on PASS/FAIL — long subtests
-// (lb's Internal_NLB ~60s, Phase8Acct_AccountScoping ~115s) would
-// otherwise go silent for the whole subtest. go-junit-report parses
-// stdout between `=== RUN` and `--- PASS/FAIL` markers, so per-test
-// attribution is preserved without the buffered duplicate.
+// Step emits a sub-phase marker directly to stdout so it streams live in CI.
+// Bypasses t.Logf, which buffers until PASS/FAIL and goes silent for long subtests.
 func Step(t *testing.T, format string, args ...any) {
 	t.Helper()
 	fmt.Fprintf(os.Stdout, "%s· %s%s\n", colorDim, fmt.Sprintf(format, args...), colorReset)

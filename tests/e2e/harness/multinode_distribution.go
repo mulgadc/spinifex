@@ -11,16 +11,8 @@ import (
 	"time"
 )
 
-// InstanceHostingNode returns the cluster node currently running the named
-// instance's qemu process. Mirrors the bash find_instance_node helper:
-// SSH each node, `ps auxw | grep <instance_id> | grep qemu-system`. Returns
-// nil if no node owns the instance (caller decides whether that's fatal).
-//
-// Skips fix-the-process for the local node (index 0) because the bash uses a
-// direct `ps` instead of SSH for self — but Go runs everywhere as part of
-// the same test binary, so we accept the small redundancy and SSH back to
-// self too. Avoids a special case that the bash had only because of script
-// invocation context.
+// InstanceHostingNode returns the cluster node running the named instance's
+// qemu process (ps auxw | grep qemu-system). Returns nil if no node owns it.
 func InstanceHostingNode(t *testing.T, c *Cluster, instanceID string) *Node {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -64,15 +56,11 @@ func AssertSpreadAcrossNodes(t *testing.T, c *Cluster, instanceIDs []string, min
 }
 
 // runPSGrep runs the ps+grep pipeline on a node and returns combined output.
-// Bash uses `ps auxw | grep <id> | grep qemu-system | grep -v grep`; we
-// preserve the same pipeline so future schedulers that change the qemu
-// binary name (e.g. qemu-system-aarch64) surface a single-place change.
 func runPSGrep(ctx context.Context, ssh *PeerSSH, n Node, instanceID string) (string, error) {
 	cmd := fmt.Sprintf("ps auxw | grep %q | grep qemu-system | grep -v grep", instanceID)
 	out, err := ssh.Run(ctx, n.Addr, cmd)
 	if err != nil {
-		// `grep` returns exit 1 when no match; treat that as "no match",
-		// not a transport error.
+		// exit 1 from grep means no match, not a transport error.
 		if exitErr, ok := asExitErr(err); ok && exitErr.ExitCode() == 1 {
 			return "", nil
 		}

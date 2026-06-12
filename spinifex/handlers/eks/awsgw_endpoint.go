@@ -7,16 +7,11 @@ import (
 	"strings"
 )
 
-// ClusterOIDCIssuer returns the public OIDC issuer URL for one cluster. This
-// is the URL kube-apiserver advertises as service-account-issuer and the URL
-// that AWS STS / external IRSA validators fetch /.well-known/openid-configuration
-// against. Format per plan §10.6:
+// ClusterOIDCIssuer returns the public OIDC issuer URL:
 //
 //	{gatewayBaseURL}/oidc/eks/{region}/{accountID}/{clusterName}
 //
-// gatewayBaseURL is the awsgw HTTPS endpoint (e.g. "https://10.0.0.1:9999"),
-// without a trailing /oidc. Validates that region/accountID/clusterName are
-// non-empty and URL-safe.
+// gatewayBaseURL is the awsgw HTTPS endpoint without a trailing slash.
 func ClusterOIDCIssuer(gatewayBaseURL, region, accountID, clusterName string) (string, error) {
 	if gatewayBaseURL == "" {
 		return "", errors.New("eks: ClusterOIDCIssuer empty gatewayBaseURL")

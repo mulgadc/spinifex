@@ -245,14 +245,8 @@ func (s *IAMServiceImpl) ListInstanceProfilesForRole(accountID string, input *ia
 	}, nil
 }
 
-// ResolveInstanceProfile dereferences an instance-profile reference (the
-// {Name, Arn} shape from RunInstancesInput.IamInstanceProfile and related
-// EC2 association ops) to the canonical InstanceProfile record. Accepts
-// either the friendly name or the full ARN.
-//
-// When given an ARN, the embedded account ID must match the caller — this
-// is a defence-in-depth check; the gateway also rejects cross-account
-// references with AccessDenied before reaching this helper.
+// ResolveInstanceProfile resolves an instance-profile name or ARN to its record.
+// When given an ARN, the embedded account ID must match accountID.
 func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*InstanceProfile, error) {
 	if nameOrARN == "" {
 		return nil, errors.New(awserrors.ErrorIAMInvalidInput)
@@ -272,10 +266,7 @@ func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*I
 	return s.getInstanceProfile(accountID, profileName)
 }
 
-// parseInstanceProfileARN extracts the account ID and profile name from an
-// IAM instance-profile ARN of the form
-// `arn:aws:iam::<accountID>:instance-profile/<path>/<name>` (path optional).
-// Returns InvalidIamInstanceProfileArn.Malformed for any deviation.
+// parseInstanceProfileARN extracts accountID and profile name from an IAM instance-profile ARN.
 func parseInstanceProfileARN(arn string) (accountID, name string, err error) {
 	parts := strings.SplitN(arn, ":", 6)
 	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "iam" || parts[3] != "" {
@@ -315,11 +306,8 @@ func (s *IAMServiceImpl) getInstanceProfile(accountID, profileName string) (*Ins
 	return &profile, nil
 }
 
-// profileToSDK converts the internal InstanceProfile record into the AWS SDK
-// shape. The SDK requires a Roles array (0 or 1 element in our model); when
-// a role is attached the role's full record is dereferenced and embedded.
-// Propagates errors from the role lookup — DeleteRole's no-orphan-ref guard
-// makes this an invariant violation that must not be silently degraded.
+// profileToSDK converts the internal InstanceProfile to the AWS SDK shape.
+// Dereferences the attached role when present; propagates lookup errors.
 func (s *IAMServiceImpl) profileToSDK(accountID string, p *InstanceProfile) (*iam.InstanceProfile, error) {
 	out := &iam.InstanceProfile{
 		InstanceProfileName: aws.String(p.InstanceProfileName),

@@ -47,21 +47,15 @@ const (
 	kindNLB lbKind = "NLB"
 )
 
-// TestLoadBalancer ports run-lb-e2e.sh. Each of the 4 LB variants (ALB/NLB ×
-// internet-facing/internal) runs as its own sequential subtest with its own
-// LB, listener, target group, and (for internal) client VM. Sequential
-// scheduling keeps peak instance count low (2 app + 1 LB + 1 client = 4) so
-// the suite passes on capacity-constrained dev nodes — see mulga-siv-77 for
-// the underlying placement bug.
+// TestLoadBalancer runs 4 LB variants (ALB/NLB × internet-facing/internal) as sequential
+// subtests, each with its own LB + listener + TG. Sequential scheduling keeps peak instance
+// count low (≤4) so the suite passes on capacity-constrained dev nodes.
 func TestLoadBalancer(t *testing.T) {
 	env := harness.LoadEnv(t)
 	skipIfDevNetworking(t, env)
 
-	// Resolve peer availability BEFORE the shared fixture build (VPC + 2
-	// app VMs + probe client = minutes). Single-node mode has no peer, so
-	// the user sees the "internet-facing will skip" message immediately
-	// instead of attributing the fixture-setup wait to the first subtest
-	// name that gotestsum prints once subtests start.
+	// Resolve peer availability before building the shared fixture so the "skip" message
+	// appears immediately rather than after minutes of VPC/VM setup.
 	peer := pickPeer(env)
 	var ssh *harness.PeerSSH
 	if peer != "" {
@@ -94,10 +88,8 @@ func TestLoadBalancer(t *testing.T) {
 		}
 		runLBSuite(t, client, fixture, kindNLB, "internet-facing", ssh, peer)
 	})
-	// Every internal subtest depends on the same mgmt-return datapath and shared
-	// fixture. If the first (Internal_ALB) never leaves provisioning, the rest
-	// time out identically — gate them on it so the suite fails fast instead of
-	// burning ~5 minutes per subtest on a foregone outcome.
+	// Gate remaining internal subtests on Internal_ALB: if the LB never reaches active,
+	// the rest will time out identically — fail fast instead of burning ~5min each.
 	albOK := t.Run("Internal_ALB", func(t *testing.T) {
 		runLBSuite(t, client, fixture, kindALB, "internal", nil, "")
 	})
@@ -108,11 +100,8 @@ func TestLoadBalancer(t *testing.T) {
 	}
 	t.Run("Internal_NLB", func(t *testing.T) {
 		skipIfInternalBroken(t)
-		// DescribeLoadBalancers reports the ALB gone before the sys.micro VM's
-		// vCPU/memory allocation is actually reclaimed. Without this settle,
-		// NLB's createLB races the deallocate on capacity-tight dev hosts and
-		// trips the sys.micro reserve, ending up in terminal state=failed.
-		// Cheaper than cold-booting a fresh probe client per suite.
+		// Allow time for the ALB sys.micro VM's resources to be reclaimed before
+		// NLB races the deallocate on capacity-tight hosts.
 		time.Sleep(15 * time.Second)
 		runLBSuite(t, client, fixture, kindNLB, "internal", nil, "")
 	})
@@ -345,10 +334,8 @@ func deleteSubnet(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	}
 }
 
-// addPublicRoute installs 0.0.0.0/0 → IGW on the VPC's main route table.
-// Without this, the daemon classifies the subnet as private and installs an
-// OVN LR policy DROP on the subnet's egress (priority 1100), breaking the
-// return path for inbound DNATed probes to the public IP.
+// addPublicRoute installs 0.0.0.0/0 → IGW on the VPC's main route table so the daemon
+// classifies the subnet as public and does not install an OVN LR egress DROP.
 func addPublicRoute(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
@@ -395,10 +382,8 @@ func configureDefaultSG(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	f.SecurityGroup = aws.StringValue(out.SecurityGroups[0].GroupId)
 	t.Logf("default SG: %s", f.SecurityGroup)
 
-	// Use structured IpPermissions form — spinifex's vpcd ignores the
-	// top-level IpProtocol/FromPort/ToPort/CidrIp shortcut and silently
-	// returns newRules=0, so the OVN ACL is never installed and ingress
-	// drops at the port group. Filed as a separate bead on the daemon side.
+	// Use structured IpPermissions form — vpcd ignores the top-level shorthand fields
+	// so the OVN ACL would never be installed otherwise.
 	for _, port := range []int64{httpPort, tcpPort, triggerPort} {
 		_, err := c.EC2.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId: aws.String(f.SecurityGroup),
@@ -478,11 +463,9 @@ func terminateInstances(t *testing.T, c *harness.AWSClient, ids []string) {
 
 // --- LB suite: one LB (ALB or NLB) × one scheme (internet-facing/internal)
 
-// runLBSuite creates one TG + LB + listener, asserts scheme/DNS/ENI
-// invariants, runs the traffic test (local + remote for internet-facing,
-// client-VM for internal), then tears it all down before returning. Each
-// suite is fully self-contained so the 4 subtests run sequentially without
-// piling up LB system instances on capacity-constrained dev nodes.
+// runLBSuite creates one TG + LB + listener, asserts scheme/DNS/ENI invariants, runs
+// traffic tests, then tears down before returning. Self-contained so subtests don't
+// accumulate LB system instances on capacity-constrained dev nodes.
 func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKind, scheme string, ssh *harness.PeerSSH, peer string) {
 	t.Helper()
 	suffix := "int"
@@ -544,12 +527,9 @@ func runLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture, kind lbKin
 	runInternalTrafficViaClient(t, c, f, kind, priv)
 }
 
-// runUDPNLBSuite exercises an internal NLB with a UDP listener end-to-end. This
-// is the regression gate for nginx NLB target health: nginx `stream` has no
-// active upstream probing, so the lb-agent actively probes the targets (here
-// over TCP/9000) and reports health — without it WaitForTargetsHealthy would
-// never pass for any NLB. Once healthy, a UDP datagram round-trip through the
-// VIP proves the L4 data plane (which HAProxy cannot serve for UDP).
+// runUDPNLBSuite exercises an internal NLB with a UDP listener. The lb-agent probes
+// targets over TCP/9000 (nginx stream has no active health-check); once healthy, a
+// UDP datagram round-trip through the VIP proves the L4 data plane.
 func runUDPNLBSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	const label = "NLB internal UDP"
@@ -639,11 +619,8 @@ func createTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, nam
 	return arn
 }
 
-// createUDPTargetGroup creates a UDP target group. AWS (and spinifex) require a
-// UDP target group's health check to run over TCP/HTTP/HTTPS — UDP itself can't
-// be probed — so the check targets the app's TCP echo port (9000) while the
-// data plane forwards UDP on udpPort. This exercises the nginx agent's active
-// TCP prober, which is what advances NLB targets to healthy.
+// createUDPTargetGroup creates a UDP TG with a TCP health check (UDP can't be probed),
+// exercising the nginx agent's active TCP prober that advances NLB targets to healthy.
 func createUDPTargetGroup(t *testing.T, c *harness.AWSClient, f *sharedFixture, name string) string {
 	t.Helper()
 	out, err := c.ELBv2.CreateTargetGroup(&elbv2.CreateTargetGroupInput{
@@ -779,10 +756,8 @@ func deleteLB(t *testing.T, c *harness.AWSClient, lb lbInfo) {
 	}
 }
 
-// waitForLBGone polls DescribeLoadBalancers until the daemon reports
-// LoadBalancerNotFound (or the LB no longer appears in the result), which
-// in spinifex corresponds to the underlying system VM having finished
-// terminating and released its capacity.
+// waitForLBGone polls until DescribeLoadBalancers returns LoadBalancerNotFound,
+// indicating the underlying system VM has terminated and released its capacity.
 func waitForLBGone(t *testing.T, c *harness.AWSClient, arn string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -871,15 +846,8 @@ func describeListenerPort(t *testing.T, c *harness.AWSClient, listenerArn string
 	return aws.Int64Value(out.Listeners[0].Port)
 }
 
-// runModifyListenerSuite verifies that an in-place listener edit reroutes
-// traffic without dropping the listener — the regression mulga-944 fixes
-// (frontend previously delete+created on every edit).
-//
-//   - Start: listener HTTP:80 → tgA, probes round-robin across 2 app instances.
-//   - ModifyListener port=8090 → same tgA. Probe at 8090 must succeed
-//     immediately (port: 80 must not be active any more, port 8090 must serve).
-//   - ModifyListener defaultActions → tgB (same backends). Probe still
-//     round-robins; proves DefaultActions swap is honoured by HAProxy.
+// runModifyListenerSuite verifies in-place listener edits: port change and DefaultActions swap.
+// Regression gate: the listener must stay alive across edits (not delete+recreate).
 func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	const label = "ALB internal ModifyListener"
@@ -927,19 +895,9 @@ func runModifyListenerSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture
 	probeAtPort(t, f, priv, altPort, label+" after TG-swap (still port 8090, now tgB)")
 }
 
-// runListenerRulesSuite exercises ALB listener rules end-to-end:
-//
-//   - Two TGs with disjoint backends (app#0 -> tgA, app#1 -> tgB) so the probe
-//     responder identifies which TG actually served the request.
-//   - CreateRule path-pattern /alpha* -> tgB. Probe at /alpha/index.html must
-//     hit app#1 only; probe at / must still hit app#0 (default).
-//   - ModifyRule path-pattern /alpha* -> /beta*. Probe at /alpha/ now falls to
-//     the default rule (app#0).
-//   - DescribeRules lists the rule plus the synthetic default.
-//   - DeleteRule removes the rule entirely; probes route to default.
-//
-// Uses host-header on a parallel branch to verify a second condition field
-// reaches HAProxy as an ACL.
+// runListenerRulesSuite exercises ALB listener rules: CreateRule, ModifyRule, DescribeRules,
+// and DeleteRule. Two TGs with disjoint backends so probes confirm which TG served.
+// Also tests host-header condition to verify a second ACL field reaches HAProxy.
 func runListenerRulesSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	const label = "ALB internal ListenerRules"
@@ -1097,10 +1055,9 @@ func singleResponder(r harness.TrafficResult) string {
 	return ""
 }
 
-// probeAtPath drives the shared client to issue probesPerRun probes at
-// lbIP:port with the given path and optional Host header, asserting that at
-// least half succeed. Returns the parsed distribution so callers can assert
-// which backend(s) served.
+// probeAtPath drives the shared client to issue probesPerRun probes at lbIP:port with the
+// given path and optional Host header. Asserts at least half succeed and returns the
+// distribution so callers can assert which backend(s) served.
 func probeAtPath(t *testing.T, f *sharedFixture, lbIP string, port int64, path, host, label string) harness.TrafficResult {
 	t.Helper()
 	r, err := probeOnceAt(f, lbIP, port, path, host, probesPerRun)
@@ -1130,10 +1087,9 @@ func waitForPathServing(t *testing.T, f *sharedFixture, lbIP string, port int64,
 	}, timeout, 2*time.Second)
 }
 
-// waitForPathRoutedAway polls a path until responses stop coming from
-// awayFrom. Use after CreateRule/ModifyRule/DeleteRule to wait out the
-// lb-agent's reconcile window. Requires at least one successful probe so
-// we don't pass on a transient outage.
+// waitForPathRoutedAway polls a path until responses stop coming from awayFrom.
+// Use after CreateRule/ModifyRule/DeleteRule to wait out lb-agent reconcile.
+// Requires at least one successful probe to avoid passing on a transient outage.
 func waitForPathRoutedAway(t *testing.T, f *sharedFixture, lbIP string, port int64, path, awayFrom, label string, timeout time.Duration) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {
@@ -1204,10 +1160,9 @@ func probeOnceAt(f *sharedFixture, lbIP string, port int64, path, host string, c
 	return harness.VerifyResultsLines(results, "http"), nil
 }
 
-// waitForListenerServing polls the shared client with a tiny round of probes
-// until at least one returns a successful instance_id payload. Used after
-// ModifyListener calls so the assertive probeAtPort doesn't race the
-// lb-agent's poll-driven HAProxy reload (5s tick + reload latency).
+// waitForListenerServing polls the shared client until at least one probe returns
+// a successful instance_id payload. Used after ModifyListener to avoid racing
+// the lb-agent's poll-driven HAProxy reload (5s tick + reload latency).
 func waitForListenerServing(t *testing.T, f *sharedFixture, lbIP string, port int64, label string, timeout time.Duration) {
 	t.Helper()
 	harness.EventuallyErr(t, func() error {
@@ -1317,11 +1272,9 @@ func lbENI(t *testing.T, c *harness.AWSClient, prefix string, lb lbInfo) *ec2.Ne
 	return eni
 }
 
-// captureLBConsoleOnFailure registers an on-failure dump of the NLB VM's serial
-// console to the subtest artifact dir. The lb-agent's nginx engine activation
-// (and any `reload nginx:` error) lands on the guest console, not in the host
-// daemon journal — so an NLB "0/N healthy" timeout is otherwise undiagnosable
-// from CI artifacts. Call after the LB is active (the VM/ENI exists by then).
+// captureLBConsoleOnFailure registers an on-failure dump of the NLB VM's serial console.
+// nginx activation errors land on the guest console, not the host journal — so an
+// "0/N healthy" timeout is otherwise undiagnosable from CI artifacts.
 func captureLBConsoleOnFailure(t *testing.T, c *harness.AWSClient, eniDescPrefix string, lb lbInfo) {
 	t.Helper()
 	eni := lbENI(t, c, eniDescPrefix, lb)
@@ -1447,10 +1400,9 @@ func runNLBDeregisterDraining(t *testing.T, c *harness.AWSClient, tgArn, targetI
 
 // --- Shared probe client + per-suite trigger ----------------------------
 
-// launchSharedProbeClient launches one client VM whose user-data exposes
-// http.server on :80 (results dir) and a JSON trigger endpoint on :9090.
-// Both internal suites hit the same client — avoids the ~60s second cold
-// boot of a per-suite client.
+// launchSharedProbeClient launches one client VM whose user-data exposes http.server on :80
+// and a JSON trigger endpoint on :9090. Both internal suites share the same client
+// to avoid the ~60s cold-boot cost of a per-suite client.
 func launchSharedProbeClient(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	out, err := c.EC2.RunInstances(&ec2.RunInstancesInput{

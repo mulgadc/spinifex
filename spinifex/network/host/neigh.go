@@ -6,18 +6,9 @@ import (
 	"strings"
 )
 
-// FlushNeigh removes the kernel neighbour (ARP) entry for ip on dev so the next
-// packet to ip re-resolves L2. Wraps `ip neigh flush to <ip> dev <dev>`, which
-// is idempotent — flushing zero entries still succeeds.
-//
-// ARP refresh for EIP recycle: ovn-controller emits its automatic GARP only on
-// LSP binding-chassis migration, so a same-chassis external_ip rebind leaves the
-// host neighbour cache pointed at the prior owner's MAC until the kernel ARP
-// timeout (60-300s). Flushing the entry on EIP attach and detach forces a fresh
-// resolution against the current owner.
-//
-// L0 method (ADR-0006 S2) — only network/host/ may shell out to host tools.
-// Best-effort: callers must treat errors as warnings, not failures.
+// FlushNeigh removes the kernel ARP entry for ip on dev, forcing re-resolution.
+// Same-chassis EIP rebind skips OVN's automatic GARP, so flushing is required.
+// Best-effort: callers should treat errors as warnings.
 func FlushNeigh(ctx context.Context, runner Runner, dev, ip string) error {
 	if dev == "" || ip == "" {
 		return fmt.Errorf("host.FlushNeigh: dev and ip required")
@@ -32,19 +23,9 @@ func FlushNeigh(ctx context.Context, runner Runner, dev, ip string) error {
 	return nil
 }
 
-// ReplaceNeigh installs (or overwrites) the kernel neighbour entry mapping ip to
-// mac on dev in NUD_REACHABLE state. Wraps `ip neigh replace <ip> lladdr <mac>
-// dev <dev> nud reachable`.
-//
-// This is the deterministic counterpart to FlushNeigh for EIP attach: when an
-// external IP is recycled onto a new owner, OVN advertises the new MAC only via
-// a GARP it emits on LSP binding-chassis migration — a same-chassis rebind emits
-// none, so no node answers the host's re-ARP. Flushing then waits for an ARP
-// reply that never comes; programming the known external_mac directly skips the
-// round-trip, and inbound traffic refreshes the entry from there on.
-//
-// L0 method (ADR-0006 S2) — only network/host/ may shell out to host tools.
-// Best-effort: callers must treat errors as warnings, not failures.
+// ReplaceNeigh installs the kernel ARP entry for ip→mac on dev (NUD_REACHABLE).
+// OVN emits no GARP on same-chassis EIP rebind, so programming the MAC directly
+// avoids an ARP round-trip. Best-effort: callers treat errors as warnings.
 func ReplaceNeigh(ctx context.Context, runner Runner, dev, ip, mac string) error {
 	if dev == "" || ip == "" || mac == "" {
 		return fmt.Errorf("host.ReplaceNeigh: dev, ip and mac required")

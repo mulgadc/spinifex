@@ -15,9 +15,8 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// renewJitter is the ± window applied to every renewal/rebind/expiry
-// timer so cluster-wide synchronised wake-ups don't pile DORA traffic
-// onto the upstream DHCP server at the same instant.
+// renewJitter is the ± window applied to renewal timers to spread cluster-wide
+// wake-ups and avoid piling DORA traffic on the upstream server.
 const renewJitter = time.Second
 
 // postExpiryBackoff is the cool-off applied after a re-DORA fails post
@@ -69,10 +68,9 @@ type Manager struct {
 	wg sync.WaitGroup
 }
 
-// leaseLoop is the handle stored in Manager.loops. The pointer-identity
-// lets the run() defer disambiguate its own loop from a successor loop
-// that may have been registered after a cancel (e.g. expired lease
-// re-acquired with same client-id).
+// leaseLoop is the handle stored in Manager.loops. Pointer-identity lets
+// run() distinguish its own loop from a successor (e.g. re-acquired lease
+// with the same client-id).
 type leaseLoop struct {
 	cancel context.CancelFunc
 }
@@ -109,10 +107,8 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}, nil
 }
 
-// Start scans the KV bucket and, for every non-expired lease, kicks
-// off a renewal goroutine that first re-issues a RENEW to confirm the
-// upstream server still honours the binding (RFC 2131 §4.3.2
-// INIT-REBOOT equivalent — nclient4 unicasts to ServerID from raw_ack).
+// Start scans the KV bucket and spawns a renewal goroutine per live lease,
+// re-issuing a RENEW to confirm the upstream binding (RFC 2131 INIT-REBOOT).
 // Expired entries are deleted. Repeated calls return an error.
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
@@ -166,11 +162,9 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-// Subscribe registers the two daemon-facing handlers via a per-AZ
-// queue group so that exactly one vpcd answers each request even when
-// multiple vpcds in the AZ subscribe. Without the queue group every
-// vpcd would DORA in parallel with the same derived chaddr, causing
-// upstream-server NAKs / lease leaks (real-multi CI cells 8, 10).
+// Subscribe registers NATS handlers under a per-AZ queue group so exactly
+// one vpcd answers each request. Without a queue group all vpcds would DORA
+// in parallel with the same chaddr, causing NAKs and lease leaks.
 func (m *Manager) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 	if nc == nil {
 		return nil, errors.New("dhcp manager: nats conn required")
@@ -317,11 +311,9 @@ func (m *Manager) doAcquire(ctx context.Context, e *Entry) error {
 	return nil
 }
 
-// acquireWithBackoff drives client.Acquire under a per-attempt deadline
-// schedule, capped by AcquireBudget wallclock. Each attempt gets a fresh
-// child ctx with timeout schedule[i] ± acquireAttemptJitter so concurrent
-// acquires don't synchronise. Returns the last error if every attempt
-// fails or the budget is exhausted; ctx.Err() short-circuits immediately.
+// acquireWithBackoff drives client.Acquire with per-attempt timeouts from
+// the schedule, capped by AcquireBudget. Jitter prevents synchronised wakes.
+// ctx.Err() short-circuits; returns last error when all attempts fail.
 func (m *Manager) acquireWithBackoff(ctx context.Context, req AcquireRequest) (*Lease, error) {
 	if len(m.acquireSchedule) == 0 {
 		return m.client.Acquire(ctx, req)
@@ -487,13 +479,9 @@ func (m *Manager) acquireLocked(ctx context.Context, req acquireWireRequest) (*E
 	return &entry, nil
 }
 
-// DrainAll DHCPRELEASEs every lease currently held in this vpcd's per-AZ
-// store and deletes the KV records. Best-effort: a per-lease release
-// failure is logged and skipped so one stuck lease can't block the rest.
-// Returns the number of leases successfully released. Used by the teardown
-// path so an env reset returns its leases to the upstream pool rather than
-// stranding them until TTL (Stop() deliberately preserves leases for
-// adopt-on-reboot, which is wrong on a destructive teardown).
+// DrainAll DHCPRELEASEs every lease in this vpcd's per-AZ store and deletes
+// the KV records. Best-effort (per-lease failures logged, not fatal). Used on
+// destructive teardown; Stop() preserves leases for adopt-on-reboot.
 func (m *Manager) DrainAll(ctx context.Context) (int, error) {
 	entries, err := m.store.List()
 	if err != nil {

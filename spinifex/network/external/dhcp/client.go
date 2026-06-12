@@ -1,14 +1,6 @@
-// Package dhcp provides an in-process DHCPv4 client used by spinifex-vpcd
-// to obtain, renew and release real server-bound leases on behalf of the
-// external IPAM pool.
-//
-// The production client (NewNClient4) opens an AF_PACKET socket per DORA
-// on the target bridge via github.com/insomniacslk/dhcp/dhcpv4/nclient4.
-// Tests inject Fake instead.
-//
-// Retransmission lives one layer up (DHCPManager in vpcd, Q3) — this
-// package performs single-attempt DORA/RENEW/RELEASE and persists
-// server-bound leases to a per-AZ KV bucket.
+// Package dhcp provides an in-process DHCPv4 client (spinifex-vpcd) for
+// single-attempt DORA/RENEW/RELEASE with KV-persisted leases. Retransmission
+// is owned by DHCPManager one layer up.
 package dhcp
 
 import (

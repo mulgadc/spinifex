@@ -1,15 +1,8 @@
 package vm
 
-// InstanceCleaner releases the per-instance external resources that the
-// manager itself does not own: storage volumes, the management TAP/IP, the
-// public IP allocation, the primary ENI, and placement-group membership.
-// The manager invokes these from Stop/Terminate after QEMU has shut down
-// and volumes have been unmounted; methods are best-effort and log their
-// own errors.
-//
-// The live implementation lives in the daemon package and delegates to the
-// existing volume / VPC / EIP / placement-group services. Tests inject a
-// recording fake.
+// InstanceCleaner releases per-instance external resources (volumes, mgmt TAP/IP,
+// public IP, ENI, placement group) that the manager does not own. Invoked from
+// Stop/Terminate after QEMU shuts down; methods are best-effort and self-logging.
 type InstanceCleaner interface {
 	// DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
 	// and user volumes flagged DeleteOnTermination via the volume service.

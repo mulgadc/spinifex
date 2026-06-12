@@ -24,11 +24,9 @@ const ensureRefetchInterval = 20 * time.Millisecond
 // refetch path on conflict.
 const ensureWaitTimeoutMS = 0
 
-// ensureNamedRowOps returns ops that atomically "insert createObj unless a row
-// with this Name exists". OVN NB lacks a unique-Name constraint; the paired
-// wait+create lets ovsdb-server serialise concurrent writers, and the
-// `until=!=` inverse formulation is required because RFC 7047 §5.2.6 mandates
-// a non-empty `rows` member (libovsdb drops `[]` via `omitempty`).
+// ensureNamedRowOps returns ops that insert createObj unless a row with the same
+// Name exists. The wait-op serialises concurrent writers; `until=!=` is required
+// because RFC 7047 §5.2.6 mandates a non-empty `rows` member.
 func (c *LiveClient) ensureNamedRowOps(table, name string, createObj model.Model) ([]ovsdb.Operation, error) {
 	createOps, err := c.client.Create(createObj)
 	if err != nil {
@@ -68,10 +66,8 @@ func (c *LiveClient) transactOps(ctx context.Context, ops []ovsdb.Operation) err
 	return err
 }
 
-// namedUUID builds a valid OVSDB named-uuid by replacing every non
-// [_a-zA-Z0-9] byte with `_`. Required for ACL UUIDs that embed Match
-// expressions like "outport == @pg-sg-XYZ && ip4"; without this, OVSDB
-// rejects them with "Type mismatch for member 'uuid-name'".
+// namedUUID builds a valid OVSDB named-uuid by replacing non-[_a-zA-Z0-9]
+// bytes with `_`. Required for ACL UUIDs embedding match expressions.
 func namedUUID(prefix, name string) string {
 	s := prefix + name
 	result := make([]byte, len(s))
@@ -235,7 +231,6 @@ func (c *LiveClient) ListLogicalSwitches(ctx context.Context) ([]nbdb.LogicalSwi
 }
 
 func (c *LiveClient) CreateLogicalSwitchPort(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort) error {
-	// Named UUID lets the same transaction reference the port.
 	if lsp.UUID == "" {
 		lsp.UUID = namedUUID("lsp_", lsp.Name)
 	}
@@ -268,9 +263,7 @@ func (c *LiveClient) CreateLogicalSwitchPort(ctx context.Context, switchName str
 }
 
 // CreateLogicalSwitchPortInGroups bundles LSP create, switch-ports mutate, and
-// per-port-group ports mutates into one transaction so the LSP's named UUID
-// resolves across all ops. The per-PG `_ip4`/`_ip6` Address_Set rows are
-// auto-derived by ovn-northd; vpcd must not write them (see provisionSG).
+// per-PG ports mutates into one transaction so the LSP's named UUID resolves across all ops.
 func (c *LiveClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switchName string, lsp *nbdb.LogicalSwitchPort, portGroupNames []string) error {
 	if lsp.UUID == "" {
 		lsp.UUID = namedUUID("lsp_", lsp.Name)
@@ -495,7 +488,6 @@ func (c *LiveClient) ListLogicalRouters(ctx context.Context) ([]nbdb.LogicalRout
 }
 
 func (c *LiveClient) CreateLogicalRouterPort(ctx context.Context, routerName string, lrp *nbdb.LogicalRouterPort) error {
-	// Named UUID lets the same transaction reference the port.
 	if lrp.UUID == "" {
 		lrp.UUID = namedUUID("lrp_", lrp.Name)
 	}
@@ -594,8 +586,7 @@ func (c *LiveClient) UpdateLogicalRouterPort(ctx context.Context, lrp *nbdb.Logi
 }
 
 // SetGatewayChassis binds a chassis to an LRP for HA gateway scheduling.
-// Read-then-decide so reconcile/IGW-attach can re-run safely: absent →
-// create + LRP-mutate; same priority → no-op; differing priority → mutate.
+// Idempotent: absent → create+mutate; same priority → no-op; different priority → update.
 func (c *LiveClient) SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error {
 	gcName := lrpName + "-" + chassisName
 	existing, err := c.GetGatewayChassisByName(ctx, gcName)
@@ -672,8 +663,7 @@ func (c *LiveClient) GetGatewayChassisByName(ctx context.Context, name string) (
 	return &rows[0], nil
 }
 
-// ListGatewayChassis returns every Gateway_Chassis row; reconcile uses this
-// to find rows whose chassis_name no longer exists in SBDB.
+// ListGatewayChassis returns every Gateway_Chassis row.
 func (c *LiveClient) ListGatewayChassis(ctx context.Context) ([]nbdb.GatewayChassis, error) {
 	var rows []nbdb.GatewayChassis
 	if err := c.client.List(ctx, &rows); err != nil {
@@ -822,9 +812,7 @@ func (c *LiveClient) AddNAT(ctx context.Context, routerName string, nat *nbdb.NA
 }
 
 // DeleteNAT removes a NAT rule matching (natType, logicalIP) from routerName.
-// Lookup is scoped to routerName.NAT — rules owned by other routers with the
-// same logical IP are left alone. Required because AWS subnet CIDRs repeat
-// across VPCs, so (natType, logicalIP) is not globally unique.
+// Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally unique.
 func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
@@ -872,11 +860,8 @@ func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, 
 	return nil
 }
 
-// DeleteNATByExternalIP removes a NAT rule matching the given external IP from
-// routerName only. Lookup is scoped to routerName.NAT — rules on other routers
-// with the same external IP are left alone (use DeleteAllNATsByExternalIP for
-// cross-router cleanup). Returns ErrNATNotFound if no matching rule is found
-// on this router (callers can ignore this).
+// DeleteNATByExternalIP removes a NAT rule matching (natType, externalIP) from
+// routerName only. Returns ErrNATNotFound if absent on this router.
 func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName string, natType, externalIP string) error {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
@@ -926,10 +911,8 @@ func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName strin
 	return nil
 }
 
-// DeleteAllNATsByExternalIP removes NAT rules matching externalIP from every
-// router that references them, handling cross-VPC stale rules left when
-// vpc.delete-nat hasn't been processed before the IP is reused. Returns the
-// number deleted.
+// DeleteAllNATsByExternalIP removes NAT rules matching externalIP across all routers.
+// Handles cross-VPC stale rules. Returns the count deleted.
 func (c *LiveClient) DeleteAllNATsByExternalIP(ctx context.Context, natType, externalIP string) (int, error) {
 	var nats []nbdb.NAT
 	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
@@ -980,8 +963,7 @@ func (c *LiveClient) DeleteAllNATsByExternalIP(ctx context.Context, natType, ext
 	return len(nats), nil
 }
 
-// FindNATByExternalIP returns the first NAT rule matching (natType,
-// externalIP) or nil if none exists.
+// FindNATByExternalIP returns the first NAT rule matching (natType, externalIP), or nil.
 func (c *LiveClient) FindNATByExternalIP(ctx context.Context, natType, externalIP string) (*nbdb.NAT, error) {
 	var nats []nbdb.NAT
 	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
@@ -1027,9 +1009,8 @@ func (c *LiveClient) AddStaticRoute(ctx context.Context, routerName string, rout
 	return nil
 }
 
-// FindStaticRoute returns the first owned static route on routerName whose
-// IPPrefix matches, or (nil, nil). Reconcile callers must dedupe via this
-// helper because AddStaticRoute leaves a duplicate row on every retry.
+// FindStaticRoute returns the first owned static route matching ipPrefix on routerName,
+// or (nil, nil). Prevents duplicate rows from AddStaticRoute retries.
 func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error) {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
@@ -1351,7 +1332,7 @@ func (c *LiveClient) getPortGroup(ctx context.Context, name string) (*nbdb.PortG
 	return &pgs[0], nil
 }
 
-// GetPortGroup is the exported wrapper around getPortGroup.
+// GetPortGroup returns the named port group.
 func (c *LiveClient) GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
 	return c.getPortGroup(ctx, name)
 }
@@ -1364,8 +1345,7 @@ func (c *LiveClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, erro
 	return pgs, nil
 }
 
-// ListPortGroupsForPort returns the names of port groups whose Ports set
-// contains the LSP's UUID. Empty slice (not error) when no memberships.
+// ListPortGroupsForPort returns port group names containing the LSP. Empty (not error) when none.
 func (c *LiveClient) ListPortGroupsForPort(ctx context.Context, lspName string) ([]string, error) {
 	lsp, err := c.GetLogicalSwitchPort(ctx, lspName)
 	if err != nil {
@@ -1398,9 +1378,7 @@ func (c *LiveClient) AddACLs(ctx context.Context, portGroupName string, specs []
 	var ops []ovsdb.Operation
 	uuids := make([]string, 0, len(specs))
 	for i, spec := range specs {
-		// Index `i` disambiguates ACLs that collapse to the same
-		// (direction,match) — without it OVSDB rejects the second insert
-		// with "duplicate uuid-name".
+		// Index i disambiguates ACLs with the same (direction, match).
 		acl := &nbdb.ACL{
 			UUID:        namedUUID("acl_", fmt.Sprintf("%s_%d_%s", portGroupName, i, spec.Direction)),
 			Direction:   spec.Direction,
@@ -1478,11 +1456,8 @@ func (c *LiveClient) ClearACLs(ctx context.Context, portGroupName string) error 
 	return nil
 }
 
-// ReplaceACLs atomically swaps the port group's ACL set in a single OVSDB
-// transaction: detach + delete every existing ACL row, create the new rows,
-// attach them to the port group. Equivalent to ClearACLs followed by AddACLs
-// without the mid-flight window where the port group has zero ACLs (which
-// would otherwise default-drop tenant traffic on the egress test path).
+// ReplaceACLs atomically swaps the port group's ACL set in one transaction.
+// Avoids the zero-ACL window that ClearACLs+AddACLs would expose (default-drop).
 func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
 	pg, err := c.getPortGroup(ctx, portGroupName)
 	if err != nil {

@@ -15,12 +15,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// handleAttachNetworkInterface composes the existing KV-side AttachENI
-// with the live QMP pipeline vm.Manager.HotPlugENI. The KV update happens
-// first so a daemon crash before the QMP pipeline leaves the ENI record
-// in attaching state for the Sprint 3d reconciler to converge. On QMP
-// failure the KV record is rolled back to available with the error
-// reason persisted in LastAttachError.
+// handleAttachNetworkInterface updates KV first (crash-safe attaching state),
+// then runs the QMP hot-plug pipeline. On QMP failure the KV record rolls
+// back to available with the error persisted in LastAttachError.
 func (d *Daemon) handleAttachNetworkInterface(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	slog.Info("Attaching ENI to instance", "instanceId", command.ID)
 
@@ -99,10 +96,9 @@ func (d *Daemon) handleAttachNetworkInterface(msg *nats.Msg, command types.EC2In
 	})
 }
 
-// handleDetachNetworkInterface reverses the attach pipeline. The KV
-// record is marked detaching first so a daemon crash mid-flight leaves
-// state for the reconciler; on QMP success the record returns to
-// available.
+// handleDetachNetworkInterface marks the KV record as detaching first
+// (crash-safe), runs the QMP hot-unplug pipeline, then returns the
+// record to available on success.
 func (d *Daemon) handleDetachNetworkInterface(msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) {
 	slog.Info("Detaching ENI from instance", "instanceId", command.ID)
 

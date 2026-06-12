@@ -11,18 +11,14 @@ import (
 )
 
 const (
-	// credDurationSeconds is the lifetime of instance-role credentials. 1 hour
-	// is the AWS default and matches the storage-backed STS v1 design.
+	// credDurationSeconds is the lifetime of instance-role credentials (AWS default: 1 hour).
 	credDurationSeconds = 3600
 
-	// credRefreshWindow is how far before expiry a cached credential is treated
-	// as stale and re-minted. AWS SDKs refresh at the same 5-minute mark.
+	// credRefreshWindow is how early a cached credential is re-minted before expiry.
 	credRefreshWindow = 5 * time.Minute
 )
 
-// instanceCredential is the JSON body served at
-// /latest/meta-data/iam/security-credentials/<role>, byte-for-byte matching the
-// AWS shape so unmodified SDK credential providers parse it.
+// instanceCredential is the JSON body served at /latest/meta-data/iam/security-credentials/<role>.
 type instanceCredential struct {
 	Code            string `json:"Code"`
 	LastUpdated     string `json:"LastUpdated"`
@@ -34,23 +30,18 @@ type instanceCredential struct {
 	AccountId       string `json:"AccountId"`
 }
 
-// stsAssumer is the narrow slice of STSService the IMDS credential path needs:
-// the in-process, EC2-service-principal AssumeRole entry point. Narrowed to an
-// interface so the cred cache is unit-testable with a fake.
+// stsAssumer is the narrow STSService slice needed by the IMDS credential path.
 type stsAssumer interface {
 	AssumeRoleForInstance(accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error)
 }
 
-// cachedCred holds a rendered credential body and the instant at which it should
-// be re-minted (expiry minus the refresh window).
+// cachedCred holds a rendered credential body and the time it should be re-minted.
 type cachedCred struct {
 	body      []byte
 	refreshAt time.Time
 }
 
-// credCache memoises minted instance-role credentials per (ENI, role) until the
-// refresh window. It keeps STS off the hot path: the typical request returns a
-// cached body, and only a near-expiry request triggers a fresh assume.
+// credCache memoises instance-role credentials per (ENI, role) until the refresh window.
 type credCache struct {
 	sts     stsAssumer
 	mu      sync.Mutex
@@ -61,9 +52,7 @@ func newCredCache(assumer stsAssumer) *credCache {
 	return &credCache{sts: assumer, entries: make(map[string]cachedCred)}
 }
 
-// get returns the credential JSON body for an instance's role, minting fresh
-// credentials via STS when the cache is cold or within the refresh window. The
-// cache key is (eniID, roleName) so two ENIs sharing a role don't collide.
+// get returns the credential JSON body, minting via STS when the cache is cold or near expiry.
 func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) ([]byte, error) {
 	key := eni.eniID + "\x00" + roleName
 
@@ -105,10 +94,7 @@ func (c *credCache) get(eni *eniFacts, roleName, roleARN string, now time.Time) 
 	return body, nil
 }
 
-// sweep drops fully-expired entries (past refreshAt + the refresh window, i.e.
-// past the credential's actual expiry), bounding the cache against ENI churn:
-// a terminated instance's entry is never overwritten and would otherwise leak.
-// Evicting a live entry would only force a re-mint, so this is always safe.
+// sweep removes fully-expired entries to bound the cache against ENI churn.
 func (c *credCache) sweep(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

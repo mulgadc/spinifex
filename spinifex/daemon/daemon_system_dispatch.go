@@ -31,18 +31,9 @@ type systemInstanceTerminateEnvelope struct {
 	Error string `json:"error,omitempty"`
 }
 
-// handleSystemLaunchInstance is the NATS subscriber for
-// system.LaunchInstance.{type}[.{nodeID}] requests. The owning daemon (the
-// one whose queue-group subscription wins, or the one whose nodeID-targeted
-// subscription is hit) runs LaunchSystemInstance locally and the resulting
-// VM stays bound to this node — see handleSystemTerminateInstance for the
-// matching teardown path.
-//
-// The launch runs in its own goroutine so the subscription's delivery goroutine
-// returns immediately: a multi-minute VM boot must not head-of-line block the
-// host-pinned launch subject, or concurrent launches to the same node fail with
-// 'no responders' even though the daemon is up (267.4). The NATS request/reply
-// contract is preserved — the goroutine responds with the launch result.
+// handleSystemLaunchInstance is the NATS subscriber for system.LaunchInstance.
+// The launch runs in its own goroutine so a multi-minute VM boot cannot
+// head-of-line block concurrent launches to the same node.
 func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) {
 	d.systemDispatchWg.Go(func() {
 		defer func() {
@@ -84,12 +75,9 @@ func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) {
 	respondWithSystemLaunchOutput(msg, output)
 }
 
-// LaunchSystemInstanceOnNode launches a system VM on a specific Spinifex host.
-// An empty nodeID or the local node runs the launch in-process (matching
-// LaunchSystemInstance); any other node is reached over the node-targeted
-// system.LaunchInstance.{type}.{nodeID} subject, where the receiving daemon
-// runs the launch locally and binds the per-instance terminate subscription
-// (handleSystemLaunchInstance). The VM stays bound to the node that runs it.
+// LaunchSystemInstanceOnNode launches a system VM on a specific host.
+// An empty nodeID or the local node runs in-process; any other node is
+// reached via system.LaunchInstance.{type}.{nodeID} — the VM stays on that node.
 func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
 	if nodeID == "" || nodeID == d.node {
 		return d.LaunchSystemInstance(input)
@@ -156,11 +144,8 @@ func (d *Daemon) subscribeSystemTerminateLocked(instanceID string) error {
 }
 
 // handleSystemTerminateInstance is the NATS subscriber for
-// system.TerminateInstance.{instanceID}. Only the daemon that owns the VM
-// has a subscription on this subject — other daemons never see the request.
-//
-// Like the launch path, teardown runs in its own goroutine so a slow terminate
-// never head-of-line blocks the responder (267.4).
+// system.TerminateInstance.{instanceID}. Only the owning daemon subscribes.
+// Teardown runs in its own goroutine to avoid head-of-line blocking.
 func (d *Daemon) handleSystemTerminateInstance(msg *nats.Msg) {
 	d.systemDispatchWg.Go(func() {
 		defer func() {

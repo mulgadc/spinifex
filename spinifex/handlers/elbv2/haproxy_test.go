@@ -161,11 +161,9 @@ func TestGenerateHAProxyConfig_SharedTargetGroup(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(config, "balance roundrobin"))
 }
 
-// TestGenerateHAProxyConfig_FixedResponseDefault mirrors the shared-ingress
-// shape: a listener whose default action is fixed-response (no target group),
-// with host-header rules forwarding to per-app target groups. The generator
-// must synthesize a default backend instead of emitting a dangling
-// `default_backend bk_`, which makes HAProxy fail to start.
+// TestGenerateHAProxyConfig_FixedResponseDefault covers a fixed-response default action
+// with host-header rules forwarding to target groups. The generator must synthesize a
+// default backend; a dangling `default_backend bk_` makes HAProxy fail to start.
 func TestGenerateHAProxyConfig_FixedResponseDefault(t *testing.T) {
 	lb := &LoadBalancerRecord{LoadBalancerID: "lb-ingress"}
 	listenerArn := "arn:aws:elasticloadbalancing:ap-southeast-2:1:listener/app/wd-ingress/lb-ingress/lst-616760baf6a3031c3"

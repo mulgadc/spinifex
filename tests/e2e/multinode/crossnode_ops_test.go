@@ -12,15 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runCrossNodeOps is the Go port of cross-node stop/start
-// (run-multinode-e2e.sh:854-895). Picks the first trio instance, finds the
-// node currently hosting it, then drives stop+start through gateways on
-// OTHER nodes — proving the cross-node control path actually reaches the
-// hosting daemon, not just the local one.
-//
-// State guarantee: instance ends running. Other Test*s may share the trio
-// (guest SSH, etc.) so leaving it stopped would cascade-fail downstream
-// tests. Bash has the same guarantee implicitly via the start poll at end.
+// runCrossNodeOps stops and starts the first trio instance through gateways on
+// OTHER nodes than the one hosting it, proving cross-node control path routing.
+// Instance is guaranteed to end running so sibling tests sharing the trio are unaffected.
 func runCrossNodeOps(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — Cross-Node Stop/Start")
 

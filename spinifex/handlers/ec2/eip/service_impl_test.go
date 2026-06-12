@@ -82,8 +82,8 @@ func TestEIP_Release(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Round-robin: re-allocating does NOT hand back the just-released IP
-	// (siv-246); the cursor advances, so the new EIP differs.
+	// Round-robin: re-allocating does NOT hand back the just-released IP;
+	// the cursor advances, so the new EIP differs.
 	out2, err := svc.AllocateAddress(&ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.NotEqual(t, allocatedIP, *out2.PublicIp, "released EIP must not be reused immediately")
@@ -558,12 +558,9 @@ func TestEIP_DescribeAddresses_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.AllocationId, *desc.Addresses[0].AllocationId)
 }
 
-// TestEIP_PublishNATEvent_PortNameHasPortPrefix is a regression test for a bug
-// where EIPServiceImpl.publishNATEvent sent the raw ENI id as PortName. vpcd
-// writes PortName into NAT.LogicalPort in distributed NAT mode (direct bridge),
-// so a mismatch with the OVN logical switch port name ("port-<eni>") produces
-// a dnat_and_snat row pointing at a nonexistent port — OVN never programs the
-// flow and the EIP black-holes.
+// TestEIP_PublishNATEvent_PortNameHasPortPrefix verifies that publishNATEvent
+// uses topology.Port(eniID) as PortName. A raw ENI id mismatch creates a
+// dnat_and_snat row pointing at a nonexistent OVN port, black-holing the EIP.
 func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 	svc, _ := setupTestEIP(t)
 
@@ -580,9 +577,7 @@ func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 	var got natEvent
 	require.NoError(t, json.Unmarshal(msg.Data, &got))
 	assert.Equal(t, "port-"+eniID, got.PortName,
-		"PortName must match the OVN logical switch port name (port-<eni>); "+
-			"otherwise vpcd's distributed NAT creates a dnat_and_snat rule "+
-			"pointing at a nonexistent logical port and the flow is never programmed")
+		"PortName must be port-<eni> to match the OVN logical switch port name")
 	assert.Equal(t, "10.0.0.5", got.LogicalIP)
 	assert.Equal(t, "198.51.100.10", got.ExternalIP)
 }

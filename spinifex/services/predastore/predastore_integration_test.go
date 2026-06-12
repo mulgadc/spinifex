@@ -1,9 +1,7 @@
 package predastore
 
-// Integration tests for predastore service
-//
-// These tests start a real predastore daemon and test S3 operations against it.
-// Tests use AWS SDK Go v1 to verify bucket operations, authentication, and file operations.
+// Integration tests for predastore: start a real daemon and verify S3 bucket,
+// auth, and file operations using AWS SDK Go v1.
 
 import (
 	"bytes"
@@ -57,11 +55,8 @@ var (
 	sharedConfig     *Config
 )
 
-// generateTestCertificate generates a self-signed TLS certificate for testing
-// and returns a CertPool that trusts it. Predastore's QUIC client (commit
-// dce8618) verifies server certs against the OS trust store after
-// InsecureSkipVerify was dropped, so the test must inject the ephemeral CA
-// via quicclient.SetDefaultRootCAs before any dial.
+// generateTestCertificate generates a self-signed TLS certificate for testing.
+// The CA must be injected via quicclient.SetDefaultRootCAs before any dial.
 func generateTestCertificate(certPath, keyPath string) (*x509.CertPool, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -161,21 +156,11 @@ func startPredastoreServer(t *testing.T) *Config {
 		t.Fatalf("Failed to generate certificate: %v", err)
 	}
 
-	// Predastore's in-process QUIC client (s3d → shard nodes) verifies the
-	// server cert against the OS trust store. The ephemeral test cert is
-	// not in that store, so inject it as a package-level default. Persists
-	// for the lifetime of the test process — startPredastoreServer is a
-	// once-per-process singleton.
+	// Inject the ephemeral cert for the QUIC client (s3d → shard nodes).
 	quicclient.SetDefaultRootCAs(caPool)
 
-	// Predastore's in-process s3db REST client (port 6660) has no public
-	// hook to override its RootCAs — it uses the OS trust store via the
-	// default tls.Config (RootCAs nil ⇒ x509.SystemCertPool, which Go reads
-	// from SSL_CERT_FILE on Unix). Point it at the ephemeral cert so the
-	// in-process bucket/object metadata calls trust their own server.
-	// x509.SystemCertPool is sync.Once-cached, so the pool is loaded on
-	// the first dial below while SSL_CERT_FILE is still set, and stays
-	// valid for the rest of the process even after t.Setenv reverts.
+	// SSL_CERT_FILE injects the cert for the s3db REST client's OS trust store
+	// (sync.Once-cached, must be set before the first dial).
 	t.Setenv("SSL_CERT_FILE", certPath)
 
 	// Predastore mandates a 32-byte master key at mode 0600 (rejected otherwise
@@ -189,10 +174,7 @@ func startPredastoreServer(t *testing.T) *Config {
 		t.Fatalf("Failed to write test encryption key: %v", err)
 	}
 
-	// Create config file. Five storage nodes are declared so predastore's dev-mode
-	// path launches all QUIC servers locally as goroutines (server.go:629). Buckets
-	// are created via the S3 API after startup — config buckets are no longer
-	// surfaced by ListBuckets (predastore commit 0711e7d, account-scoped auth).
+	// Five nodes trigger dev-mode: all QUIC shards start as local goroutines.
 	configPath := filepath.Join(testDir, "predastore_test.toml")
 	configContent := `version = "1.0"
 region = "us-east-1"
@@ -256,10 +238,7 @@ account_id = "123456789012"
 		TlsCert:           certPath,
 		TlsKey:            keyPath,
 		EncryptionKeyFile: encryptionKeyPath,
-		// Predastore rejects NodeID 0; -1 triggers dev mode, which launches
-		// every configured QUIC node in-process. The test config defines
-		// five nodes, so this is the only sane choice for a single-process
-		// integration test.
+		// NodeID -1 triggers dev mode: all QUIC nodes run in-process.
 		NodeID: -1,
 	}
 	sharedConfig = cfg

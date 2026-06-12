@@ -2,21 +2,10 @@
 
 // Memoized, cleanup-aware resource fixtures for the e2e harness.
 //
-// Background: the bash phase scripts (single-node, multinode) and their first
-// Go ports bundle two distinct concerns — provisioning (CreateImage, CreateVpc,
-// RunInstances) and assertion (lifecycle checks). Downstream phases inherit
-// state via a single shared Fixture struct, so a vpcd-only diff still re-runs
-// the AMI + instance chain.
-//
-// Ensure* helpers separate the two. Each helper is idempotent: first call
-// creates the resource and registers teardown; subsequent calls (within the
-// same Fixture) return the cached ID. Concurrent callers see one create via
-// singleflight. Cleanup is registered on the Fixture's parent test so memoized
-// resources survive child-subtest lifetimes.
-//
-// Bead 2 (e2e-fixtures-harness) of
-// docs/development/improvements/e2e-targeted-suite-selection.md. Wired into
-// real tests by Bead 3 (e2e-single-fixture-migration).
+// Ensure* helpers are idempotent: the first call creates the resource and
+// registers teardown; subsequent calls return the cached ID. Concurrent callers
+// share one create via singleflight. Cleanup routes to the Fixture's parent test
+// so memoized resources outlive child-subtest lifetimes.
 package harness
 
 import (
@@ -83,8 +72,7 @@ type Fixture struct {
 	processCleanups []func()
 }
 
-// Compile-time interface checks — the real SDK clients must satisfy the
-// subset the Fixture stores (CLAUDE.md project standard).
+// Compile-time interface checks.
 var (
 	_ ec2iface.EC2API     = (*ec2.EC2)(nil)
 	_ elbv2iface.ELBV2API = (*elbv2.ELBV2)(nil)
@@ -197,15 +185,9 @@ func (f *Fixture) RegisterCleanup(fn func()) {
 	f.registerCleanup(fn)
 }
 
-// ensureOnce is the shared backbone of every Ensure*. It:
-//  1. Returns the cached resource ID if one exists for key.
-//  2. Otherwise enters singleflight, calls create exactly once across
-//     concurrent callers, registers cleanup against fx.parent, and caches
-//     the result.
-//
-// create returns (id, cleanupFn). cleanupFn runs once at parent teardown.
-// If create fails, no cleanup is registered and the cache is untouched, so
-// a retry triggers a fresh create.
+// ensureOnce returns the cached resource ID for key, or calls create exactly
+// once (via singleflight) and caches the result. On failure no cleanup is
+// registered and the cache is untouched, so a retry triggers a fresh create.
 func (f *Fixture) ensureOnce(t *testing.T, key string, create func() (string, func() error, error)) (string, error) {
 	t.Helper()
 
@@ -260,11 +242,8 @@ func (f *Fixture) resourceName(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, f.scratch)
 }
 
-// pollUntil is the local readiness poller used by Ensure*. Re-implements
-// the (timeout, interval, cond) loop on top of the interface-typed EC2
-// client so unit-test fakes can drive it deterministically. Caller-side
-// reuse of harness.WaitFor* (which takes a concrete *AWSClient) is
-// deliberately avoided here.
+// pollUntil polls cond at interval until it returns true or timeout elapses.
+// Uses the interface-typed EC2 client so unit-test fakes can drive it.
 func pollUntil(t *testing.T, timeout, interval time.Duration, cond func() (bool, error)) error {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -334,9 +313,8 @@ func EnsureKeyPair(t *testing.T, fx *Fixture, artifactsDir string) (string, stri
 // EnsureAMI
 // ----------------------------------------------------------------------------
 
-// AMISource describes how to materialise an AMI. Exactly one of Existing or
-// CreateFrom must be set: Existing pins a pre-baked image; CreateFrom drives
-// CreateImage against a snapshotable source instance.
+// AMISource describes how to materialise an AMI. Set exactly one of Existing
+// (pre-baked image ID) or CreateFrom (drives CreateImage from a source instance).
 type AMISource struct {
 	// Existing is a pre-baked AMI ID to verify + return as-is.
 	Existing string
@@ -349,9 +327,8 @@ type AMICreateSpec struct {
 	Name             string
 	Description      string
 	Architecture     string
-	// NoReboot mirrors CreateImage's NoReboot flag. Set true when the
-	// source instance must keep running across the AMI bake (e.g. Phase 5e
-	// hands the instance off to Phase 6/7 lifecycle assertions).
+	// NoReboot mirrors CreateImage's NoReboot flag. Set true when the source
+	// instance must stay running across the bake.
 	NoReboot bool
 }
 

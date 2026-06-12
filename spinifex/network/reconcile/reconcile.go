@@ -1,8 +1,6 @@
-// Package reconcile is the network stack's intent-actual reconciliation
-// layer. It loads desired state from the JetStream KV snapshot (scoped to
-// the local AZ) and applies the diff against OVN NB in a single
-// topologically-sorted pass (VPC → Subnet → SG → Port → IGW → EIP →
-// NATGW). Deletes run reverse order. Drift fires every 5 minutes.
+// Package reconcile is the network stack's intent-actual reconciliation layer.
+// It loads desired state from JetStream KV and applies the diff against OVN NB
+// in topological order (VPC→Subnet→SG→Port→IGW→EIP→NATGW). Drift every 5m.
 package reconcile
 
 import (
@@ -27,20 +25,12 @@ type Reconciler interface {
 	ReconcileApplyOnly(ctx context.Context, intent IntentState) error
 }
 
-// GatewayClaimVerifier confirms that ovn-controller has claimed the Southbound
-// chassisredirect Port_Binding for a gateway router port, and nudges a recompute
-// when it has not. After a host reboot the Northbound gateway_chassis intent can
-// be correct while the SB binding is left unclaimed — ovn-controller then
-// installs no logical flows for the gateway redirect and the VPC's floating IPs
-// go dark. The reconciler runs this after SetGatewayChassis to drive the binding
-// to claimed. Implementations shell out to ovn-sbctl/ovn-appctl; the
-// compile-time check lives at the wiring site (vpcd) since the host
-// implementation cannot import this cross-cutter package.
+// GatewayClaimVerifier confirms ovn-controller has claimed the SB chassisredirect
+// Port_Binding and nudges recompute if not. After a reboot the SB binding can be
+// unclaimed while NB intent is correct, making VPC floating IPs unreachable.
 type GatewayClaimVerifier interface {
-	// GatewayPortClaimed reports whether the SB Port_Binding for crPortName has a
-	// non-empty chassis. crPortName is the chassisredirect (cr-) port: the
-	// distributed gateway LRP binding stays chassis-less, so only the
-	// chassisredirect port reflects the gateway-chassis claim.
+	// GatewayPortClaimed reports whether the SB Port_Binding for crPortName (the
+	// chassisredirect port) has a non-empty chassis.
 	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
@@ -55,22 +45,17 @@ type Config struct {
 	Routes   policy.RouteManager
 	IGW      external.IGWManager
 	Topology topology.Manager
-	// IMDS installs per-VPC IMDS OVN topology during the VPC apply pass.
-	// Optional: nil skips IMDS plumbing (focused reconcile tests leave it
-	// unset; production always wires it).
+	// IMDS installs IMDS OVN topology per-VPC. Optional: nil skips IMDS (tests).
 	IMDS    external.IMDSTopologyManager
 	LocalAZ string
 	// NodeHostname is the holder identity for leader-election CAS.
 	NodeHostname string
 	// Chassis is the SBDB-discovered chassis list for gateway LRP rebinding.
 	Chassis []string
-	// GatewayClaim verifies/repairs the Southbound chassis claim for gateway
-	// ports after rebinding. Optional: nil skips the post-reboot claim check
-	// (focused reconcile tests leave it unset; production wires the host prober).
+	// GatewayClaim verifies/repairs the SB chassis claim after rebinding. Optional.
 	GatewayClaim GatewayClaimVerifier
-	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}") emitted on
-	// subnet DHCPOptions rows. Empty falls back to the topology default, so the
-	// reconciler and live topology paths emit the same value (no drift).
+	// DNSServer is the OVN dhcp_options dns_server value ("{a, b}"). Empty falls
+	// back to the topology default to keep both code paths in sync.
 	DNSServer string
 }
 
@@ -130,11 +115,8 @@ func New(cfg Config) (Reconciler, error) {
 	}, nil
 }
 
-// Reconcile diffs intent vs. actual OVN state and applies create/delete
-// per-resource: VPC → Subnet → SG → Port → IGW → EIP → NATGW (reverse for
-// deletes). SG precedes Port so ENI LSPs join their PGs atomically via
-// CreateLogicalSwitchPortInGroups. Per-stage errors are logged and the next
-// stage runs; only an actual-state scan failure is returned.
+// Reconcile diffs intent vs. actual OVN state and applies in topological order.
+// Per-stage errors are logged; only a scan failure is returned.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
 	return r.reconcile(ctx, intent, true)
 }

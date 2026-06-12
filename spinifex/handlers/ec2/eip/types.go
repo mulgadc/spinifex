@@ -16,10 +16,8 @@ type EIPRecord struct {
 	ENIId         string `json:"eni_id,omitempty"`
 	InstanceId    string `json:"instance_id,omitempty"`
 	PrivateIp     string `json:"private_ip,omitempty"`
-	// MacAddress is the associated ENI's MAC, captured at associate-time so
-	// the vpcd reconcile can re-apply the distributed-shape dnat_and_snat
-	// (external_mac/logical_port) after a host reboot without re-querying the
-	// ENI. Empty while the EIP is unassociated.
+	// MacAddress is the ENI's MAC captured at associate-time so vpcd can
+	// re-apply dnat_and_snat after a host reboot. Empty when unassociated.
 	MacAddress string            `json:"mac_address,omitempty"`
 	VpcId      string            `json:"vpc_id,omitempty"`
 	State      string            `json:"state"` // "allocated", "associated"

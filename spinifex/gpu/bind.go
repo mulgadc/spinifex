@@ -94,9 +94,8 @@ func unbindVFIO(sysfsRoot, addr, originalDriver string) error {
 	return nil
 }
 
-// writeSysfs writes value to a sysfs attribute path.
-// Uses O_WRONLY|O_CREATE|O_TRUNC so it works against both real sysfs
-// (file exists, kernel handles the write) and test temp dirs (file created).
+// writeSysfs writes value to a sysfs attribute path. Works against both real
+// sysfs and test temp dirs (file created if absent).
 func writeSysfs(path, value string) error {
 	return os.WriteFile(path, []byte(value), 0o600)
 }

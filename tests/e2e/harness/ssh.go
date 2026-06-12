@@ -37,13 +37,9 @@ type sshClient struct {
 
 var _ SSH = (*sshClient)(nil)
 
-// NewSSH returns an SSH transport configured from a Cluster.
-//
-// The private key at cluster.SSHKeyPath must be in a format understood by
-// ssh.ParsePrivateKey (OpenSSH or PEM). Host keys are not verified — the
-// harness runs against short-lived test infrastructure where TOFU would add
-// noise and no security benefit. Do not reuse this transport for production
-// access.
+// NewSSH returns an SSH transport configured from a Cluster. Host keys are not
+// verified: the harness targets short-lived infra where TOFU adds noise and no
+// security benefit.
 func NewSSH(cluster *Cluster) (SSH, error) {
 	keyBytes, err := os.ReadFile(cluster.SSHKeyPath)
 	if err != nil {
@@ -95,9 +91,7 @@ func (s *sshClient) Run(ctx context.Context, node Node, cmd string) ([]byte, err
 	session.Stdout = &out
 	session.Stderr = &out
 
-	// Propagate context cancellation by signalling the session. ssh.Session
-	// has no Kill; Signal(KILL) is the portable way to interrupt a running
-	// command.
+	// Signal(KILL) is the portable way to interrupt a running command.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {

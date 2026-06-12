@@ -11,11 +11,8 @@ import (
 	"time"
 )
 
-// PeerSSH is a minimal SSH wrapper that shells out to /usr/bin/ssh with the
-// flags the bash E2E scripts use. It exists so LB/multinode scenarios can
-// drive remote nodes without depending on the DDIL harness. Step 1.5 of
-// docs/development/improvements/e2e-go-harness.md replaces this with the
-// typed x/crypto/ssh client hoisted from ddil/harness/ssh.go.
+// PeerSSH is a minimal SSH wrapper for driving remote cluster nodes in
+// LB/multinode scenarios.
 type PeerSSH struct {
 	User    string
 	KeyPath string

@@ -11,10 +11,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/config"
 )
 
-// Peer-health probe cadence. Worst-case detection of total partition is
-// peerProbeInterval + (peers × peerProbeTimeout); on a 3-node cluster with
-// the current settings that lands ~6s after the partition installs — well
-// inside the 30s budget DDIL Scenario C asserts on.
+// Peer-health probe cadence. Worst-case partition detection on a 3-node
+// cluster is ~6s — within the 30s DDIL Scenario C budget.
 const (
 	peerProbeInterval = 2 * time.Second
 	peerProbeTimeout  = 2 * time.Second
@@ -49,14 +47,8 @@ func (d *Daemon) peerNodes() []config.Config {
 	return out
 }
 
-// monitorPeerReachability polls every peer's /health endpoint over the
-// cluster network and updates peersReachable. Runs until d.ctx is cancelled.
-// No-op on single-node clusters: peersReachable is pinned true in NewDaemon
-// and there is nothing to probe.
-//
-// Probes are issued serially per tick because (a) typical cluster size is 2–3
-// peers, (b) any peer responding is enough to declare reachability, and
-// (c) serial dialling caps in-flight HTTPS connections during steady state.
+// monitorPeerReachability polls every peer's /health and updates peersReachable.
+// No-op on single-node. Probes are serial: any one responding suffices.
 func (d *Daemon) monitorPeerReachability() {
 	peers := d.peerNodes()
 	if len(peers) == 0 {
@@ -99,23 +91,15 @@ func (d *Daemon) probePeersOnce(client *http.Client, peers []config.Config) {
 	if prev != reachable {
 		slog.Info("peer reachability changed", "reachable", reachable, "peers", len(peers))
 		if reachable {
-			// Scenario C heal edge: local NATS client stayed connected
-			// to its local server throughout the partition so
-			// onNATSReconnect never fires. The peer-probe flip is the
-			// only signal that the cluster is back. Goroutine keeps
-			// the probe ticker non-blocking; reconcileOnHeal coalesces
-			// with any concurrent NATS-reconnect path.
+			// DDIL Scenario C: NATS stayed connected, so this flip is
+			// the only heal signal. Goroutine keeps the ticker non-blocking.
 			go d.reconcileOnHeal("peer-probe-heal")
 		}
 	}
 }
 
-// peerDaemonPort returns the TCP port to dial on peer p. The toml template
-// only renders [nodes.<self>.daemon] for the local node — remote-node blocks
-// carry just `host = "<ip>"` — so a peer's own DaemonConfig is typically
-// empty. Clusters are symmetric, so this falls back to the local daemon's
-// bound port. Returns "" only when neither the peer nor self has a parseable
-// host:port.
+// peerDaemonPort returns the TCP port to dial on peer p. Falls back to the
+// local daemon's port since remote-node config blocks typically omit it.
 func (d *Daemon) peerDaemonPort(p config.Config) string {
 	if p.Daemon.Host != "" {
 		if _, port, err := net.SplitHostPort(p.Daemon.Host); err == nil && port != "" {

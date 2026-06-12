@@ -16,11 +16,9 @@ const (
 	PendingWatchdogTimeout = 5 * time.Minute
 )
 
-// StartPendingWatchdog spawns a background goroutine that periodically
-// scans for instances stuck in Pending/Provisioning beyond
-// PendingWatchdogTimeout and marks them failed via Manager.MarkFailed. The
-// goroutine exits when ctx is cancelled. Safe to call once per Manager
-// (additional calls would duplicate the goroutine).
+// StartPendingWatchdog spawns a goroutine that marks instances stuck in
+// Pending/Provisioning beyond PendingWatchdogTimeout as failed. Exits when
+// ctx is cancelled. Call once per Manager to avoid duplicating the goroutine.
 func (m *Manager) StartPendingWatchdog(ctx context.Context) {
 	ticker := time.NewTicker(PendingWatchdogInterval)
 	go func() {

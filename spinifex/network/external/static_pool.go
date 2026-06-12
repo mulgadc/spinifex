@@ -52,11 +52,8 @@ type PoolRecord struct {
 	GwLrpRangeStart string                          `json:"gw_lrp_range_start,omitempty"`
 	GwLrpRangeEnd   string                          `json:"gw_lrp_range_end,omitempty"`
 	Allocated       map[string]ExternalIPAllocation `json:"allocated"`
-	// Cursor is the last address handed out. Allocation resumes just past it
-	// and wraps at RangeEnd, so a released IP is not reused until the cursor
-	// cycles the whole range — by which time the host ARP cache for the prior
-	// owner has decayed and its OVN gateway state is gone. Empty on a fresh
-	// pool (older records unmarshal with no cursor) → first cycle is lowest-free.
+	// Cursor is the last address handed out; allocation resumes just past it,
+	// wrapping at RangeEnd so a released IP is not immediately reused.
 	Cursor string `json:"cursor,omitempty"`
 }
 
@@ -280,13 +277,8 @@ func (a *StaticPoolAllocator) getRecord(poolName string) (*PoolRecord, uint64, e
 	return &record, entry.Revision(), nil
 }
 
-// nextAvailableIP picks the next unallocated address in the pool's range,
-// skipping addresses inside [GwLrpRangeStart, GwLrpRangeEnd]. Allocation
-// resumes one past record.Cursor and wraps at RangeEnd so a just-released IP
-// is not handed straight back — it only becomes a candidate again after the
-// cursor cycles the whole range. An empty cursor (fresh pool, or an older KV
-// record) starts at RangeStart, preserving lowest-free order for the first
-// cycle. Carved from the pre-Q1 handlers/ec2/vpc.nextAvailableExternalIP.
+// nextAvailableIP picks the next unallocated address, skipping [GwLrpRangeStart,
+// GwLrpRangeEnd]. Resumes one past Cursor, wrapping at RangeEnd.
 func nextAvailableIP(record *PoolRecord) (string, error) {
 	startIP := net.ParseIP(record.RangeStart).To4()
 	endIP := net.ParseIP(record.RangeEnd).To4()
@@ -313,7 +305,7 @@ func nextAvailableIP(record *PoolRecord) (string, error) {
 	}
 	total := endInt - startInt + 1
 
-	// Resume just past the cursor; empty/out-of-range cursor → start of range.
+	// Empty or out-of-range cursor starts at RangeStart.
 	offset := uint32(0)
 	if c := net.ParseIP(record.Cursor).To4(); c != nil {
 		ci := ipv4ToUint32(c)

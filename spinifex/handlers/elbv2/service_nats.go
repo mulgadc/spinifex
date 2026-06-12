@@ -10,12 +10,9 @@ import (
 
 const (
 	defaultTimeout = 30 * time.Second
-	// longRunningTimeout covers operations that synchronously launch or tear
-	// down ALB frontend VMs (DHCP lease + QEMU boot / QMP shutdown + QEMU exit).
-	// A healthy launch is ~45s on a warm box; shutdown can take tens of seconds
-	// if QMP is slow. Until CreateLoadBalancer is made fully async, we keep a
-	// wide margin so Terraform's AWS provider doesn't retry mid-flight and then
-	// hit DuplicateLoadBalancerName on the second attempt.
+	// longRunningTimeout covers synchronous ALB VM launch/teardown (~45 s on a warm
+	// box). Wide margin prevents Terraform retrying mid-flight and hitting
+	// DuplicateLoadBalancerName before CreateLoadBalancer is made async.
 	longRunningTimeout = 5 * time.Minute
 )
 

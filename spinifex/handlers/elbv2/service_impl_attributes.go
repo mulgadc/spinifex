@@ -50,10 +50,9 @@ func (r attrResource[R]) load() (*R, error) {
 	return rec, nil
 }
 
-// modifyResourceAttributes validates and merges submitted attributes into the
-// record, persisting only when something actually changed. rawCount is the
-// number of attributes the caller submitted before nil filtering, used to
-// distinguish "nothing sent" from "everything sent was invalid".
+// modifyResourceAttributes validates and merges submitted attributes, persisting only
+// on change. rawCount is pre-nil-filter count, used to distinguish "nothing sent"
+// from "everything sent was invalid".
 func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawCount int) ([]attrPair, error) {
 	if res.arn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

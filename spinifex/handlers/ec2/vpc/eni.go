@@ -575,10 +575,8 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 	return nil
 }
 
-// FindENIByAttachment scans the per-account ENI bucket for a record whose
-// AttachmentId matches attachmentId. Returns NotFound semantics when no
-// match exists. Used by DetachNetworkInterface, whose AWS input identifies
-// the attachment by id rather than by ENI id.
+// FindENIByAttachment scans the ENI bucket for the record with the given
+// AttachmentId. Used by DetachNetworkInterface which identifies by attachment ID.
 func (s *VPCServiceImpl) FindENIByAttachment(accountID, attachmentId string) (ENIRecord, error) {
 	keys, err := s.eniKV.Keys()
 	if err != nil && !errors.Is(err, nats.ErrNoKeysFound) {
@@ -721,10 +719,8 @@ func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, private
 	})
 }
 
-// requestPortEvent sends a port lifecycle event via request-reply with the
-// shared SG-event timeout. Used for vpc.create-port so vpcd OVSDB failures
-// (which leave the LSP outside any SG port group) surface to the caller
-// instead of being swallowed.
+// requestPortEvent sends a port lifecycle event via request-reply so vpcd
+// OVSDB failures surface to the caller rather than being swallowed.
 func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string) error {
 	return utils.RequestEvent(s.natsConn, topic, portEventPayload{
 		NetworkInterfaceId: eniId,
@@ -737,9 +733,7 @@ func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, private
 }
 
 // requestUpdatePortSGsEvent sends a vpc.update-port-sgs event to vpcd via
-// request-reply so OVN port-group reconciliation errors surface to the caller
-// instead of being swallowed. The payload is declarative — vpcd reads its
-// libovsdb cache to compute the diff.
+// request-reply. Errors surface to the caller; vpcd computes the OVN diff.
 func (s *VPCServiceImpl) requestUpdatePortSGsEvent(eniId, privateIP string, sgIds []string) error {
 	return utils.RequestEvent(s.natsConn, "vpc.update-port-sgs", struct {
 		NetworkInterfaceId string   `json:"network_interface_id"`
@@ -768,16 +762,9 @@ func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, po
 	})
 }
 
-// validateSGAttachment is the boundary validator shared by RunInstances (via
-// CreateNetworkInterface), CreateNetworkInterface itself, and
-// ModifyNetworkInterfaceAttribute. It runs *before* any KV write so failures
-// don't leave half-state.
-//
-// AWS contract reproduced here:
-//   - InvalidGroup.NotFound when an SG ID is unknown to the account.
-//   - InvalidParameterValue when an SG's VPC differs from the resolved VPC.
-//   - SecurityGroupsPerInterfaceLimitExceeded when >5 SGs (AWS default).
-//   - MissingParameter when the list is empty (every ENI must have ≥1 SG).
+// validateSGAttachment validates SG IDs before any KV write. Returns
+// InvalidGroup.NotFound, InvalidParameterValue, SecurityGroupsPerInterfaceLimitExceeded,
+// or MissingParameter per AWS contract.
 const sgPerInterfaceLimit = 5
 
 func (s *VPCServiceImpl) validateSGAttachment(accountID string, sgIds []string, vpcId string) error {

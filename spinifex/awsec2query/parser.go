@@ -13,27 +13,6 @@ import (
 // Callers should map this to AWS's MalformedQueryString error code.
 var ErrSliceTooLarge = errors.New("list parameter exceeds maximum entries")
 
-/*
-
-Sample args
-
-args["Action"] = "RunInstance"
-args["ImageId"] = "ami-123456789"
-args["MinCount"] = "1"
-args["MaxCount"] = "1"
-args["InstanceType"] = "t2.micro"
-args["KeyName"] = "my-key-pair"
-args["SecurityGroup.1"] = "sg-12345678"
-args["SecurityGroup.2"] = "sg-87654321"
-args["TagSpecification.1.ResourceType"] = "instance"
-args["TagSpecification.1.Tag.1.Key"] = "Name"
-args["TagSpecification.1.Tag.1.Value"] = "MyInstance"
-args["TagSpecification.2.ResourceType"] = "volume"
-args["TagSpecification.2.Tag.1.Key"] = "Environment"
-args["TagSpecification.2.Tag.1.Value"] = "Production"
-
-*/
-
 func QueryParamsToStruct(params map[string]string, out any) error {
 	v := reflect.ValueOf(out)
 
@@ -67,10 +46,8 @@ func setStructFields(v reflect.Value, params map[string]string, prefix string) e
 		// Check for locationName tag (AWS SDK uses this for query parameter names)
 		locationName := fieldType.Tag.Get("locationName")
 
-		// Try the field name, locationName, and title-cased locationName.
-		// AWS query params use title case (e.g. "ResourceId") but some SDK
-		// structs use camelCase locationName (e.g. "resourceId" in DeleteTagsInput
-		// vs "ResourceId" in CreateTagsInput).
+		// Try field name, locationName, and title-cased locationName.
+		// AWS query params use title case but some SDK structs use camelCase locationName.
 		queryKeys := []string{prefix + fieldName}
 		if locationName != "" && locationName != fieldName {
 			queryKeys = append(queryKeys, prefix+locationName)
@@ -153,13 +130,12 @@ func setFieldValue(field reflect.Value, value string) error {
 		elem := field.Type().Elem()
 		// Special case: []byte
 		if elem.Kind() == reflect.Uint8 {
-			// First try base64 (what the AWS API expects for PublicKeyMaterial).
+			// Try base64 first (AWS API expectation); fall back to raw bytes.
 			trimmed := strings.TrimSpace(value)
 			if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
 				field.SetBytes(decoded)
 				return nil
 			}
-			// Some clients may send raw text. Fall back to raw bytes.
 			field.SetBytes([]byte(value))
 			return nil
 		}
@@ -195,8 +171,7 @@ func setFieldValue(field reflect.Value, value string) error {
 const maxSliceLen = 1024
 
 func setSliceField(field reflect.Value, params map[string]string, prefix string) error {
-	// Find all indexed items for this slice.
-	// Supports both EC2-style (Prefix.N) and IAM/ELBv2-style (Prefix.member.N) formats.
+	// Collect indexed items; supports EC2-style (Prefix.N) and IAM/ELBv2-style (Prefix.member.N).
 	indices := make(map[int]bool)
 	useMember := false
 	for key := range params {

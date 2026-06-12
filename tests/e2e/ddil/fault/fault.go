@@ -15,17 +15,9 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// PartitionNode isolates target from peers by installing per-peer iptables
-// DROP rules for both directions. The orchestrator's SSH source IP must not
-// be one of peers (it normally isn't: the peers are cluster members, and the
-// orchestrator is the CI runner). After applying, a sanity-check SSH echo
-// confirms the control plane is still reachable; a lost control-plane SSH
-// is a loud error rather than a silent hang.
-//
-// The rule set is additive (iptables -I INPUT/OUTPUT) so PartitionNode
-// composes with any prior non-DDIL rules. HealNode's flush is still the
-// correct teardown because the harness owns the target's firewall during a
-// scenario.
+// PartitionNode isolates target from peers with per-peer iptables DROP rules (INPUT+OUTPUT).
+// A post-partition SSH echo confirms the orchestrator's control-plane path was not severed;
+// rules are additive so PartitionNode composes with existing non-DDIL firewall state.
 func PartitionNode(ctx context.Context, ssh harness.SSH, target harness.Node, peers []harness.Node) error {
 	if len(peers) == 0 {
 		return fmt.Errorf("ddil fault: PartitionNode %s: no peers supplied", target.Name)
@@ -43,9 +35,7 @@ func PartitionNode(ctx context.Context, ssh harness.SSH, target harness.Node, pe
 		return fmt.Errorf("ddil fault: partition %s: %w", target.Name, err)
 	}
 
-	// Sanity-check: if our SSH path ran through a peer IP, the rules we just
-	// installed would have severed it. Fail loudly so a future infra change
-	// (e.g. orchestrator moved onto the cluster network) surfaces immediately.
+	// Confirm orchestrator SSH still works; if not, the orchestrator shares a peer IP.
 	if _, err := ssh.Run(ctx, target, "echo ok"); err != nil {
 		return fmt.Errorf("ddil fault: partition %s severed orchestrator SSH "+
 			"(orchestrator may share peer IPs): %w", target.Name, err)
@@ -62,9 +52,8 @@ func HealNode(ctx context.Context, ssh harness.SSH, target harness.Node) error {
 	return nil
 }
 
-// KillNATS stops spinifex-nats on node without touching spinifex-daemon.
-// This is the scenario shape the current happy-path suite cannot express —
-// `systemctl stop spinifex.target` brings both down together.
+// KillNATS stops spinifex-nats without touching spinifex-daemon (unlike systemctl stop
+// spinifex.target which brings both down).
 func KillNATS(ctx context.Context, ssh harness.SSH, node harness.Node) error {
 	if _, err := ssh.Run(ctx, node, "sudo systemctl stop spinifex-nats"); err != nil {
 		return fmt.Errorf("ddil fault: kill nats on %s: %w", node.Name, err)
@@ -80,9 +69,8 @@ func StartNATS(ctx context.Context, ssh harness.SSH, node harness.Node) error {
 	return nil
 }
 
-// RestartDaemonOnly restarts spinifex-daemon without touching spinifex-nats.
-// Used by Scenario B to exercise the daemon-without-NATS startup path
-// (daemon-local-autonomy §1d).
+// RestartDaemonOnly restarts spinifex-daemon without touching spinifex-nats,
+// exercising the daemon-without-NATS startup path.
 func RestartDaemonOnly(ctx context.Context, ssh harness.SSH, node harness.Node) error {
 	if _, err := ssh.Run(ctx, node, "sudo systemctl restart spinifex-daemon"); err != nil {
 		return fmt.Errorf("ddil fault: restart daemon on %s: %w", node.Name, err)

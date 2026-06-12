@@ -963,10 +963,7 @@ func TestCreateVolume_StampsAccountID(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 
-	// CreateVolume will fail at viperblock layer (no real S3), but the
-	// VolumeConfig should have TenantID set if we can inspect it.
-	// We test via the validation path — CreateVolume with invalid size
-	// should NOT fail because of accountID.
+	// Test via the validation path — CreateVolume should not fail because of accountID.
 	_, err := svc.CreateVolume(&ec2.CreateVolumeInput{
 		Size:             aws.Int64(1),
 		AvailabilityZone: aws.String("ap-southeast-2a"),

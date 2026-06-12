@@ -2,11 +2,8 @@ package awserrors
 
 import "testing"
 
-// TestErrorLookup_Structure asserts invariants of the ErrorLookup map without
-// duplicating every entry. Catches wholesale-deletion accidents, invalid HTTP
-// codes, empty messages, and regressions of SDK-surfaced codes — the failure
-// modes that actually matter — without locking in a 1:1 mirror that has to be
-// updated in lockstep with every new error code.
+// TestErrorLookup_Structure asserts ErrorLookup invariants: minimum size, valid HTTP codes, non-empty messages.
+// Avoids a 1:1 mirror that would need updating with every new error code.
 func TestErrorLookup_Structure(t *testing.T) {
 	if len(ErrorLookup) < 400 {
 		t.Fatalf("ErrorLookup unexpectedly small: %d entries", len(ErrorLookup))

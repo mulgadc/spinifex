@@ -16,34 +16,21 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Sentinel errors for TLS certificate configuration failures in ConnectNATS.
-// Callers can use errors.Is to detect permanent TLS errors without relying
-// on error message text.
+// Sentinel errors for TLS configuration failures in ConnectNATS.
 var (
 	ErrCACertRead  = errors.New("failed to read CA cert")
 	ErrCACertParse = errors.New("failed to parse CA cert")
 )
 
-// ErrClusterUnavailable is returned by NATS request helpers when the underlying
-// connection is not currently connected. Callers (gateway, scatter-gather
-// fan-out) use this to fail fast instead of waiting for per-call timeouts.
+// ErrClusterUnavailable is returned when the NATS connection is not currently connected.
 var ErrClusterUnavailable = errors.New("cluster unavailable: NATS disconnected")
 
-// natsRetryEscalateAttempt is the attempt count past which ConnectNATSWithRetry
-// promotes the per-attempt log line from slog.Warn to slog.Error (rate-limited
-// to once a minute). With the 60s backoff cap, ~30 attempts corresponds to
-// ~30 minutes of continuous disconnection — long enough to suspect a config
-// error rather than a routine NATS restart.
+// natsRetryEscalateAttempt is the threshold at which retry logs escalate from Warn to Error (rate-limited to 1/min).
+// ~30 attempts at the 60 s backoff cap ≈ ~30 min disconnected, suggesting config error not transient restart.
 const natsRetryEscalateAttempt = 30
 
-// ConnectNATS establishes a connection to a NATS server with standard reconnect
-// handling and logging. If token is non-empty, token authentication is used.
-// If caCertPath is non-empty, TLS is enabled using the given CA certificate.
-//
-// Optional callback hooks (WithDisconnectHandler / WithReconnectHandler) wrap
-// the default log lines so callers can react to connectivity changes (e.g. the
-// daemon flips its cluster/standalone mode field) without losing the existing
-// disconnect/reconnect log output.
+// ConnectNATS connects to a NATS server with reconnect handling. Supports token auth and TLS via caCertPath.
+// WithDisconnectHandler/WithReconnectHandler wrap the default log lines for callers that need to react to state changes.
 func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Conn, error) {
 	cfg := retryConfig{}
 	for _, o := range opts {
@@ -97,10 +84,6 @@ func ConnectNATS(host, token, caCertPath string, opts ...RetryOption) (*nats.Con
 }
 
 // retryConfig holds parameters for ConnectNATS / ConnectNATSWithRetry.
-//
-// retry-related fields tune the outer reconnect-with-backoff loop;
-// callback fields wrap nats.go's connection-state handlers so callers can
-// react to disconnects/reconnects without losing the default log lines.
 type retryConfig struct {
 	maxWait       time.Duration
 	retryDelay    time.Duration
@@ -119,7 +102,7 @@ func WithMaxWait(d time.Duration) RetryOption {
 	return func(c *retryConfig) { c.maxWait = d }
 }
 
-// WithRetryDelay sets the initial delay between retries (doubles each attempt, capped at 10s).
+// WithRetryDelay sets the initial retry delay (exponentially doubled, capped at 10 s).
 func WithRetryDelay(d time.Duration) RetryOption {
 	return func(c *retryConfig) { c.retryDelay = d }
 }
@@ -130,22 +113,18 @@ func WithMaxRetryDelay(d time.Duration) RetryOption {
 	return func(c *retryConfig) { c.maxRetryDelay = d }
 }
 
-// WithDisconnectHandler registers an optional callback invoked after the
-// default disconnect log line. Callback runs on a NATS client goroutine; keep
-// it non-blocking (atomic stores, channel sends, goroutine spawns).
+// WithDisconnectHandler registers a callback invoked after the default disconnect log line.
+// Runs on a NATS goroutine; keep it non-blocking.
 func WithDisconnectHandler(fn func(*nats.Conn, error)) RetryOption {
 	return func(c *retryConfig) { c.onDisconnect = fn }
 }
 
-// WithReconnectHandler registers an optional callback invoked after the
-// default reconnect log line. Same goroutine constraints as WithDisconnectHandler.
+// WithReconnectHandler registers a callback invoked after the default reconnect log line. Same goroutine constraints as WithDisconnectHandler.
 func WithReconnectHandler(fn func(*nats.Conn)) RetryOption {
 	return func(c *retryConfig) { c.onReconnect = fn }
 }
 
-// WithAttemptErrHandler registers an optional callback invoked after each
-// failed connect attempt during ConnectNATSWithRetry's outer loop. Used by the
-// daemon to surface initial-connect retries as a counter on /local/status.
+// WithAttemptErrHandler registers a callback invoked after each failed attempt in ConnectNATSWithRetry.
 func WithAttemptErrHandler(fn func(err error, attempt int)) RetryOption {
 	return func(c *retryConfig) { c.onAttemptErr = fn }
 }
@@ -156,11 +135,8 @@ func WithContext(ctx context.Context) RetryOption {
 	return func(c *retryConfig) { c.ctx = ctx }
 }
 
-// ConnectNATSWithRetry calls ConnectNATS in a retry loop with exponential
-// backoff. It retries for up to 5 minutes (default) before giving up; pass
-// WithMaxWait(0) to retry indefinitely (cancel via WithContext). TLS
-// configuration errors (ErrCACertRead, ErrCACertParse) are permanent and
-// cause an immediate return without retrying.
+// ConnectNATSWithRetry calls ConnectNATS with exponential backoff, retrying up to 5 min by default.
+// Pass WithMaxWait(0) to retry indefinitely (cancel via WithContext). TLS errors return immediately.
 func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (*nats.Conn, error) {
 	cfg := retryConfig{
 		maxWait:       5 * time.Minute,
@@ -201,10 +177,7 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 			return nil, fmt.Errorf("NATS connect failed after %s: %w", elapsed.Round(time.Second), err)
 		}
 
-		// Past the retry-escalation threshold (~30 attempts ≈ ~30 min disconnected
-		// at the 60s backoff cap) the warn-on-every-retry pattern can hide a
-		// stuck NATS config in routine warning noise. Escalate to slog.Error,
-		// rate-limited to once a minute, so the operator's error log surfaces it.
+		// Past the escalation threshold, promote from Warn to Error (rate-limited to 1/min).
 		if attempt > natsRetryEscalateAttempt {
 			if lastEscalatedLog.IsZero() || time.Since(lastEscalatedLog) >= time.Minute {
 				slog.Error("NATS still disconnected", "error", err, "disconnected_for", elapsed.Round(time.Second), "attempt", attempt)
@@ -231,9 +204,7 @@ func ConnectNATSWithRetry(host, token, caCertPath string, opts ...RetryOption) (
 // AWS account ID from the gateway to daemon handlers.
 const AccountIDHeader = "X-Account-ID"
 
-// PrincipalARNHeader carries the caller's resolved IAM principal ARN from the
-// gateway to daemon handlers that attribute an action to its caller (e.g. the
-// EKS bootstrap-creator-admin AccessEntry).
+// PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 
 // NATSHeader is an extra request header passed to NATSRequest beyond the
@@ -250,10 +221,7 @@ func PrincipalARNFromMsg(msg *nats.Msg) string {
 }
 
 // NATSRequest performs a NATS request-response with JSON marshaling.
-// It marshals the input, sends to the given subject with the X-Account-ID
-// header (plus any extra headers), validates the response for error payloads,
-// and unmarshals the successful response into Out. Handlers can ignore the
-// account ID if the operation is unscoped (e.g. DescribeInstanceTypes).
+// Sends with X-Account-ID (plus any extra headers) and unmarshals the successful response into Out.
 func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, accountID string, headers ...NATSHeader) (*Out, error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
@@ -294,9 +262,7 @@ func NATSRequest[Out any](conn *nats.Conn, subject string, input any, timeout ti
 	return &output, nil
 }
 
-// ServeNATSRequest is the responder-side counterpart to NATSRequest: it unmarshals
-// the request payload into *I, invokes fn, and replies with the JSON result or an
-// awserrors envelope. The payload carries its own context; no X-Account-ID header.
+// ServeNATSRequest unmarshals the request into *I, invokes fn, and replies with JSON or an awserrors envelope.
 func ServeNATSRequest[I any, O any](msg *nats.Msg, fn func(*I) (*O, error)) {
 	input := new(I)
 	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
@@ -323,22 +289,15 @@ func respondNATS(msg *nats.Msg, data []byte) {
 }
 
 const (
-	// maxScatterGatherResponseSize is the maximum allowed size for a single
-	// scatter-gather response payload (10 MB). Responses exceeding this are
-	// skipped to prevent OOM from buggy nodes.
+	// maxScatterGatherResponseSize caps a single scatter-gather response at 10 MB to prevent OOM.
 	maxScatterGatherResponseSize = 10 * 1024 * 1024
-
-	// maxScatterGatherUnboundedResponses is the hard cap on responses collected
-	// when expectedNodes is 0 (unbounded fan-out).
+	// maxScatterGatherUnboundedResponses caps responses when expectedNodes is 0.
 	maxScatterGatherUnboundedResponses = 256
 )
 
-// NATSScatterGather publishes a fan-out request and collects responses from
-// multiple nodes. It returns the first successful (non-error) response. Error
-// payloads from individual nodes are skipped. If all responses are errors, the
-// last error is returned. If no responses arrive before the deadline, a timeout
-// error is returned. When expectedNodes > 0, collection exits early once that
-// many responses have been received.
+// NATSScatterGather fans out a request and returns the first successful response.
+// Skips per-node error payloads; returns the last error if all fail or a timeout if none arrive.
+// Exits early when expectedNodes > 0 responses have been received.
 func NATSScatterGather[Out any](conn *nats.Conn, subject string, input any, timeout time.Duration, expectedNodes int, accountID string) (*Out, error) {
 	if conn == nil || !conn.IsConnected() {
 		return nil, ErrClusterUnavailable
@@ -421,8 +380,7 @@ func NATSScatterGather[Out any](conn *nats.Conn, subject string, input any, time
 	return nil, fmt.Errorf("scatter-gather timeout: no responses received for %s", subject)
 }
 
-// PublishEvent marshals event as JSON and publishes it to the given NATS topic.
-// Errors are logged but not returned (fire-and-forget). A nil connection is a no-op.
+// PublishEvent marshals event as JSON and publishes to topic (fire-and-forget; nil conn is a no-op).
 func PublishEvent(nc *nats.Conn, topic string, event any) {
 	if nc == nil {
 		return
@@ -446,15 +404,8 @@ type natEvent struct {
 	MAC        string `json:"mac"`
 }
 
-// AddNAT requests vpcd commit the OVN dnat_and_snat rule for (externalIP →
-// logicalIP) via NATS request-reply and waits up to 10 s for the ack. A
-// non-nil return means the rule was either NOT committed (NACK / no
-// responders) OR may have been committed after the timeout fired (vpcd's
-// waitForFlowsHV barrier is unbounded). Callers MUST roll back any state
-// that assumes the public IP is routable AND publish a best-effort
-// vpc.delete-nat for the same (vpcID, externalIP, logicalIP, portName) to
-// neutralise a half-committed rule — there is no reconciler that repairs
-// a black-holed external IP after the fact.
+// AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply (10 s timeout).
+// A non-nil return means the rule may not be committed; callers must roll back and publish vpc.delete-nat.
 func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
 	return RequestEvent(nc, "vpc.add-nat", natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
@@ -462,12 +413,8 @@ func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) e
 	}, 10*time.Second)
 }
 
-// PublishNATEvent sends a NAT lifecycle event (vpc.add-nat or vpc.delete-nat)
-// to NATS. vpc.add-nat uses request-reply to commit the OVN NAT rule before
-// returning (prevents ARP propagation races); vpc.delete-nat is fire-and-forget.
-//
-// Callers that MUST react to an add-nat failure (e.g. roll back a launch)
-// should use AddNAT instead — this helper only logs the failure.
+// PublishNATEvent sends a NAT lifecycle event. vpc.add-nat uses request-reply (prevents ARP races);
+// vpc.delete-nat is fire-and-forget. Use AddNAT directly when failure must trigger a rollback.
 func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portName, mac string) {
 	evt := natEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
@@ -484,10 +431,7 @@ func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portNam
 	PublishEvent(nc, topic, evt)
 }
 
-// RequestEvent marshals event as JSON and sends a NATS request, waiting for a
-// response. This ensures the subscriber has processed the event before the
-// caller continues. Returns an error if the request times out or the responder
-// reports an error.
+// RequestEvent marshals event as JSON and sends a synchronous NATS request, blocking until the subscriber acks.
 func RequestEvent(nc *nats.Conn, topic string, event any, timeout time.Duration) error {
 	if nc == nil {
 		return fmt.Errorf("%s: nats connection not initialized", topic)
@@ -514,8 +458,7 @@ func RequestEvent(nc *nats.Conn, topic string, event any, timeout time.Duration)
 	return nil
 }
 
-// AccountIDFromMsg extracts the caller's account ID from a NATS message header.
-// Returns the account ID, or empty string if the header is not set.
+// AccountIDFromMsg extracts the caller's account ID from a NATS message header, or "" if absent.
 func AccountIDFromMsg(msg *nats.Msg) string {
 	if msg == nil || msg.Header == nil {
 		return ""

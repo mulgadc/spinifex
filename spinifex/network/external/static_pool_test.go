@@ -63,9 +63,8 @@ func TestStaticPool_GatewayReserved(t *testing.T) {
 }
 
 // TestStaticPool_NoInstantReuseAfterRelease pins the round-robin reuse policy:
-// a released IP must not be handed straight back (the recycle that left a
-// freshly-reassigned EIP unreachable from the same host — siv-246). It is only
-// reusable after the cursor cycles the range.
+// a released IP must not be handed back immediately; only after the cursor
+// cycles the range.
 func TestStaticPool_NoInstantReuseAfterRelease(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
 	ctx := context.Background()

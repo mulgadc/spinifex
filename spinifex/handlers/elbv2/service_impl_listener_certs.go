@@ -21,10 +21,8 @@ func listenerCertsToSDK(certs []ListenerCertificate) []*elbv2.Certificate {
 	return out
 }
 
-// AddListenerCertificates attaches additional (SNI) certificates to a secure
-// listener. The default certificate is set at create time and is unaffected;
-// added certificates are non-default. Re-adding an existing certificate is a
-// no-op.
+// AddListenerCertificates attaches additional (SNI) certificates to a secure listener.
+// Added certificates are non-default; re-adding an existing certificate is a no-op.
 func (s *ELBv2ServiceImpl) AddListenerCertificates(input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

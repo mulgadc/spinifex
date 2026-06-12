@@ -11,8 +11,7 @@ import (
 // VersionKey is the well-known KV key used to store a bucket's schema version.
 const VersionKey = "_version"
 
-// WriteVersion writes the schema version to a bucket.
-// Only writes if the key doesn't exist or the stored version is older.
+// WriteVersion writes the schema version to a bucket, only if missing or older.
 // Returns an error if the stored value is corrupt (non-integer).
 func WriteVersion(kv nats.KeyValue, version int) error {
 	entry, err := kv.Get(VersionKey)
@@ -32,9 +31,8 @@ func WriteVersion(kv nats.KeyValue, version int) error {
 	return err
 }
 
-// ReadVersion reads the schema version from a bucket.
-// Returns 0 if the key is not set. Returns an error on network failures
-// or corrupt values so callers can distinguish "not set" from "unreachable".
+// ReadVersion reads the schema version from a bucket; returns 0 if not set.
+// Errors distinguish network failures and corrupt values from "not set".
 func ReadVersion(kv nats.KeyValue) (int, error) {
 	entry, err := kv.Get(VersionKey)
 	if err != nil {
@@ -50,7 +48,7 @@ func ReadVersion(kv nats.KeyValue) (int, error) {
 	return v, nil
 }
 
-// GlobalAccountID is the root/system account. Pre-Phase4 resources are owned by this account.
+// GlobalAccountID is the root/system account ID.
 const GlobalAccountID = "000000000000"
 
 // AccountKey returns a KV key scoped to an account: "{accountID}.{resourceID}".
@@ -86,9 +84,7 @@ func GetOrCreateKVBucket(js nats.JetStreamContext, bucketName string, history in
 	return kv, nil
 }
 
-// DeleteKVBucketIfExists deletes a NATS KV bucket by name. Returns nil if the
-// bucket does not exist (idempotent). Used by daemon startup to tombstone
-// obsolete buckets after a subsystem is removed in a schema migration.
+// DeleteKVBucketIfExists deletes a NATS KV bucket by name, returning nil if it does not exist.
 func DeleteKVBucketIfExists(js nats.JetStreamContext, bucketName string) error {
 	err := js.DeleteKeyValue(bucketName)
 	if err == nil {

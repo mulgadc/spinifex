@@ -2,10 +2,8 @@ package topology
 
 import "testing"
 
-// IMDS reachability is served by a localport on the subnet switch (answered over
-// L2), not via DHCP option 121, so BuildSubnetDHCPOptions must no longer emit a
-// classless_static_route key. The default gateway is still carried by option 3
-// (router), and dns_server/server_id remain present.
+// IMDS is served by a subnet-switch localport over L2, not option 121, so
+// BuildSubnetDHCPOptions must not emit classless_static_route.
 func TestBuildSubnetDHCPOptions_NoClasslessStaticRoute(t *testing.T) {
 	opts := BuildSubnetDHCPOptions("10.0.1.1", "02:00:00:00:00:01", "{8.8.8.8, 1.1.1.1}")
 

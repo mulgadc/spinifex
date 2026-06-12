@@ -10,33 +10,22 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// imdsNetnsAddr is the host/listener side of the IMDS address, assigned to the
-// veth host end inside the per-subnet netns. .254 is MetaDataServerIP; the /30 is
-// kept (no longer load-bearing for a next-hop) and the reply path resolves the
-// guest via the subnet CIDR added on-link out the same veth.
+// imdsNetnsAddr is the IMDS address assigned to the veth host end inside the netns.
+// Reply path resolves the guest via the subnet CIDR added on-link.
 const imdsNetnsAddr = "169.254.169.254/30"
 
-// imdsPortLSPName is the OVN logical-switch-port the OVS-side veth binds to via
-// external_ids:iface-id. It mirrors topology.IMDSPort but is duplicated here to
-// avoid an import cycle (host ← handlers/imds ← topology).
+// imdsPortLSPName returns the LSP name the OVS-side veth binds to.
+// Duplicated from topology.IMDSPort to avoid a host←handlers/imds←topology cycle.
 func imdsPortLSPName(subnetID string) string { return "imds-port-" + subnetID }
 
-// imdsLSPMAC is the logical MAC OVN advertises for 169.254.169.254 (the localport
-// address). The netns veth host end MUST carry this exact MAC: OVN resolves .254
-// to it and delivers IMDS request frames with dl_dst set to it, so a kernel-random
-// veth MAC makes the netns drop every frame not-for-me and the listener never sees
-// a SYN. Mirrors external.IMDSSpecForSubnet's LSPMAC, duplicated here (like
-// imdsPortLSPName) to avoid the import cycle.
+// imdsLSPMAC returns the logical MAC OVN uses for 169.254.169.254. The host-end veth
+// must carry this MAC exactly — OVN delivers frames with dl_dst set to it.
+// Duplicated from external.IMDSSpecForSubnet to avoid the import cycle.
 func imdsLSPMAC(subnetID string) string { return utils.HashMAC("imds-" + subnetID) }
 
-// EnsureIMDSVeth idempotently creates the per-subnet IMDS veth pair, moves the host
-// end into a dedicated netns with 169.254.169.254/30 + the subnet CIDR on-link, and
-// attaches the OVS end to br-int so ovn-controller binds the localport here. The
-// netns gives the host-served reply a real L3 next-hop (SO_BINDTODEVICE alone cannot
-// route the SYN-ACK): the on-link subnet route makes the guest directly reachable, so
-// the reply resolves by ARP over the localport on the guest's own L2 switch. The netns
-// also isolates overlapping subnet CIDRs into separate routing domains. Returns the
-// netns name and host-end name the listener enters and binds.
+// EnsureIMDSVeth idempotently creates the per-subnet IMDS veth pair: moves the host
+// end into a dedicated netns with 169.254.169.254/30 + subnet CIDR on-link, and
+// attaches the OVS end to br-int. Returns netns and host-end names.
 func EnsureIMDSVeth(ctx context.Context, subnetID string, cidr netip.Prefix) (netnsName, hostEndName string, err error) {
 	if !cidr.IsValid() {
 		return "", "", fmt.Errorf("EnsureIMDSVeth: subnet %s requires a valid CIDR", subnetID)
@@ -45,13 +34,9 @@ func EnsureIMDSVeth(ctx context.Context, subnetID string, cidr netip.Prefix) (ne
 	hostEnd := IMDSHostVethName(subnetID)
 	netns := IMDSNetnsName(subnetID)
 
-	// Idempotency probe: the full plumbing (veth pair, netns, host-end address +
-	// route) exists from a prior boot only when the OVS end is a port on br-int
-	// AND the netns is enterable. A live OVS port over a stale netns (name
-	// present but setns(2) fails EINVAL — e.g. a crash between umount and unlink,
-	// or a tmpfs remount across reboot) leaves the listener permanently
-	// unbindable, so that case must NOT short-circuit: tear the inconsistent
-	// plumbing down and rebuild it below.
+	// Idempotency: plumbing is complete only when both the OVS port is on br-int
+	// AND the netns is enterable. A live OVS port over an unenterable netns
+	// (stale /run/netns handle, setns EINVAL) must not short-circuit — tear and rebuild.
 	if imdsOVSPortOnBrInt(ovsEnd) {
 		if netnsEnterable(netns) {
 			slog.Debug("IMDS veth already present", "subnet", subnetID, "ovs_end", ovsEnd, "host_end", hostEnd, "netns", netns)
@@ -95,15 +80,9 @@ func EnsureIMDSVeth(ctx context.Context, subnetID string, cidr netip.Prefix) (ne
 	return netns, hostEnd, nil
 }
 
-// configureIMDSNetns moves the host end into the netns, sets its MAC to the
-// localport's logical MAC, brings it (and lo) up, and assigns the IMDS address +
-// the subnet CIDR on-link so the host-served reply resolves the guest by ARP over
-// the localport (a single L2 hop on the guest's own switch — no router next-hop).
-// The OVS end stays in the root netns for ovn-controller to bind. The MAC set is
-// the request-path contract: OVN delivers frames with dl_dst = the localport MAC,
-// so the veth host end must own that MAC or the netns silently drops them. The
-// addr/route adds tolerate "File exists" so a re-run after a partial failure
-// converges rather than wedging.
+// configureIMDSNetns moves the host end into the netns, sets its MAC (OVN delivers
+// frames with dl_dst = localport MAC, so the veth must own it), brings both lo and
+// hostEnd up, and adds the IMDS addr + subnet CIDR on-link. Tolerates "File exists".
 func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string, cidr netip.Prefix) error {
 	if out, err := utils.SudoCommand("ip", "link", "set", ovsEnd, "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("bring up IMDS OVS end %s: %s: %w", ovsEnd, strings.TrimSpace(string(out)), err)
@@ -125,11 +104,8 @@ func configureIMDSNetns(netns, hostEnd, ovsEnd, hostEndMAC string, cidr netip.Pr
 	return ipNetnsTolerate(netns, "File exists", "route", "add", cidr.String(), "dev", hostEnd)
 }
 
-// ensureNetns creates the netns, treating "already exists" as success — but
-// only when the pre-existing handle is actually enterable. A stale
-// /run/netns/<ns> bind-mount (name resolves yet setns(2) fails EINVAL) returns
-// "File exists" from `ip netns add` while being unusable, which would leave the
-// IMDS listener permanently unbindable; that handle is torn down and recreated.
+// ensureNetns creates the netns, treating "already exists" as success only if the
+// handle is enterable. A stale bind-mount (setns EINVAL) is torn down and recreated.
 func ensureNetns(netns string) error {
 	out, err := utils.SudoCommand("ip", "netns", "add", netns).CombinedOutput()
 	if err == nil {
@@ -153,23 +129,20 @@ func ensureNetns(netns string) error {
 	return nil
 }
 
-// imdsOVSPortOnBrInt reports whether the IMDS OVS-end veth is currently a port
-// on br-int — the cheap signal that prior plumbing exists.
+// imdsOVSPortOnBrInt reports whether the OVS-end veth is on br-int.
 func imdsOVSPortOnBrInt(ovsEnd string) bool {
 	out, err := utils.SudoCommand("ovs-vsctl", "port-to-br", ovsEnd).CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) == "br-int"
 }
 
-// netnsEnterable reports whether netns can be entered via setns(2). A stale
-// bind-mount resolves by name but fails EINVAL; `ip -n <netns> link show lo`
-// performs the setns and surfaces it. A truly-absent netns also reports false,
-// which is the correct signal for both callers (recreate / rebuild).
+// netnsEnterable reports whether netns can be entered via setns(2).
+// A stale bind-mount or absent netns both return false.
 func netnsEnterable(netns string) bool {
 	return utils.SudoCommand("ip", "-n", netns, "link", "show", "lo").Run() == nil
 }
 
 // ipNetnsTolerate runs `ip -n <netns> <args...>`, treating output containing
-// tolerate as success (for idempotent re-runs of addr/route adds).
+// tolerate as success (idempotent addr/route adds).
 func ipNetnsTolerate(netns, tolerate string, args ...string) error {
 	full := append([]string{"-n", netns}, args...)
 	if out, err := utils.SudoCommand("ip", full...).CombinedOutput(); err != nil {
@@ -181,16 +154,14 @@ func ipNetnsTolerate(netns, tolerate string, args ...string) error {
 	return nil
 }
 
-// RemoveIMDSVeth detaches the OVS port, deletes the netns (which destroys the
-// host end and thus the veth pair), and clears any root-netns remnant. Idempotent:
-// safe to call for a subnet that never had a veth on this chassis.
+// RemoveIMDSVeth detaches the OVS port, deletes the netns, and clears any leftover
+// veth. Idempotent.
 func RemoveIMDSVeth(ctx context.Context, subnetID string) error {
 	return removeIMDSPlumbing(IMDSOVSPortName(subnetID), IMDSHostVethName(subnetID), IMDSNetnsName(subnetID))
 }
 
-// removeIMDSPlumbing tears down the OVS port, the netns, and any leftover veth.
-// Deleting the netns destroys the host end (and its peer); the trailing link del
-// covers the partial state where the host end was never moved into the netns.
+// removeIMDSPlumbing removes the OVS port, netns, and any leftover veth.
+// The trailing link del covers the case where the host end was never moved to the netns.
 func removeIMDSPlumbing(ovsEnd, hostEnd, netns string) error {
 	if out, err := utils.SudoCommand("ovs-vsctl", "--if-exists", "del-port", ovsEnd).CombinedOutput(); err != nil {
 		slog.Warn("Failed to remove IMDS veth from OVS", "ovs_end", ovsEnd, "err", err, "out", strings.TrimSpace(string(out)))
@@ -198,8 +169,7 @@ func removeIMDSPlumbing(ovsEnd, hostEnd, netns string) error {
 
 	if out, err := utils.SudoCommand("ip", "netns", "del", netns).CombinedOutput(); err != nil {
 		msg := strings.TrimSpace(string(out))
-		// "No such file or directory" — already gone. Anything else is logged
-		// but not fatal: the link del below still runs.
+		// "No such file or directory" — already gone; other errors logged but not fatal.
 		if !strings.Contains(msg, "No such file") {
 			slog.Warn("Failed to delete IMDS netns", "netns", netns, "err", err, "out", msg)
 		}

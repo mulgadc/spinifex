@@ -115,12 +115,9 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 	}
 }
 
-// TestHandleAddNATGateway_InstallsPerSubnetEgress drives the regression: the
-// subscriber must install a Logical_Router_Policy at NATGW priority alongside
-// the SNAT rule, otherwise private-subnet packets have no route off the LR
-// and NAT GW egress fails (Phase 8d). Verifies the policy is installed
-// against the IGW's gateway port, with the inport scoped to the private
-// subnet, after a vpc.add-nat-gateway event.
+// TestHandleAddNATGateway_InstallsPerSubnetEgress drives the regression: subscriber
+// must install a Logical_Router_Policy at NATGW priority alongside the SNAT rule,
+// scoped to the private subnet inport.
 func TestHandleAddNATGateway_InstallsPerSubnetEgress(t *testing.T) {
 	ctx := context.Background()
 	_, nc := testutil.StartTestNATS(t)
@@ -322,9 +319,8 @@ func TestHandleDeleteNATGateway_InvalidCIDRStillDetaches(t *testing.T) {
 	}, time.Second, 20*time.Millisecond, "SNAT must be removed even when CIDR is invalid")
 }
 
-// TestHandleAddNATGateway_NoSubnetIDSkipsPolicy: legacy events without a
-// subnet (or AWS gateway types that don't bind to a specific subnet) must
-// install the SNAT rule and short-circuit before any policy work.
+// TestHandleAddNATGateway_NoSubnetIDSkipsPolicy: events without a SubnetId
+// must install the SNAT but skip policy work.
 func TestHandleAddNATGateway_NoSubnetIDSkipsPolicy(t *testing.T) {
 	ctx := context.Background()
 	_, nc := testutil.StartTestNATS(t)
@@ -436,11 +432,8 @@ func TestHandleAddIGWRoute_InstallsPolicy(t *testing.T) {
 	assert.Equal(t, policy.SubnetEgressPriorityIGW, policies[0].Priority)
 }
 
-// TestHandleDeleteNATGateway_MissingRouterStillReturns covers the failure
-// path where the underlying router has been torn down already: the handler
-// must log + return rather than panic. Exercises both the
-// RemoveNATGatewaySubnetEgress error branch and the DetachNATGateway error
-// branch, and the empty-DestinationCidr default of 0.0.0.0/0.
+// TestHandleDeleteNATGateway_MissingRouterStillReturns: missing router must not
+// panic; exercises both error branches and the empty-DestinationCidr default.
 func TestHandleDeleteNATGateway_MissingRouterStillReturns(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	sub, _ := newTestSubscriber(t)
@@ -543,8 +536,7 @@ func TestHandleAddIGWRoute_InvalidCIDR(t *testing.T) {
 	assert.Empty(t, policies)
 }
 
-// Every request/reply topic must return a structured error envelope on bad
-// JSON. Fire-and-forget topics (NAT gateway) just must not panic.
+// Every request/reply topic must return a structured error on bad JSON.
 func TestBadJSON_AllRequestReplies(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	sub, _ := newTestSubscriber(t)

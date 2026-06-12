@@ -7,23 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/tests/e2e/harness"
-	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
 	"github.com/mulgadc/spinifex/tests/e2e/ddil/fault"
+	ddilh "github.com/mulgadc/spinifex/tests/e2e/ddil/harness"
+	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// TestScenarioB_DaemonRestartWithoutNATS — kill spinifex-nats, restart
-// spinifex-daemon, verify the daemon starts within 30s (not the old
-// 5-minute NATS-wait abort) and recovers its instances from the local
-// state file. See
-// docs/development/improvements/ddil-e2e-test-harness.md §3 Scenario B.
-//
-// Plan §3 Scenario B step 8 originally asked for "same PID, same command
-// line" across the restart. Operationally only recovery matters — PID is
-// just a label and would only stay stable if the daemon unit set
-// KillMode=process (today it uses systemd's default control-group).
-// Asserting recovery + a live post-restart QEMU process gives the same
-// regression coverage without coupling the test to the unit file.
+// TestScenarioB_DaemonRestartWithoutNATS kills spinifex-nats, restarts spinifex-daemon, and
+// verifies the daemon enters standalone mode within 30s and recovers its instances from the
+// local state file. PID/command-line identity is not asserted; recovery + live QEMU is sufficient.
 func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 	deps := requireLiveCluster(t)
 	c, ssh, dc, w := deps.cluster, deps.ssh, deps.dc, deps.witness
@@ -54,9 +45,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 			_ = fault.StartNATS(cctx, ssh, node3)
 		})
 
-		// 1d's promise is "daemon comes up without NATS". The 30s budget is
-		// the plan's threshold — if it slips, the new startup path has
-		// regressed back to the 5-minute NATS-wait abort.
+		// 30s budget: if the daemon misses it, the startup path has regressed to the 5-minute NATS-wait abort.
 		restartStart := time.Now()
 		if err := fault.RestartDaemonOnly(ctx, ssh, node3); err != nil {
 			t.Fatalf("restart daemon on %s: %v", node3.Name, err)
@@ -72,10 +61,7 @@ func TestScenarioB_DaemonRestartWithoutNATS(t *testing.T) {
 		}
 		pre.AssertPreserved(t, post)
 
-		// Each recovered instance must have a live QEMU process. /local/instances
-		// reports PID from utils.ReadPidFile (local_api.go:112) — a non-zero
-		// value proves the daemon found and re-attached to (or relaunched)
-		// the QEMU pidfile. Zero means no QEMU on this host.
+		// Non-zero PID proves the daemon re-attached to the QEMU pidfile after restart.
 		for _, inst := range post {
 			if inst.PID == 0 {
 				t.Errorf("recovered instance %s has no live QEMU PID", inst.InstanceID)

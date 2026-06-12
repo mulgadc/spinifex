@@ -17,17 +17,15 @@ const (
 	tokenBytes = 32
 )
 
-// tokenEntry binds an issued IMDSv2 token to the ENI that requested it (not the
-// IP — so the session survives a DHCP-renew IP change but dies on ENI detach)
-// and its expiry.
+// tokenEntry binds an IMDSv2 token to its issuing ENI and expiry.
+// Bound to the ENI (not the IP) so it survives DHCP-renew but dies on ENI detach.
 type tokenEntry struct {
 	eniID     string
 	expiresAt time.Time
 }
 
-// tokenStore holds outstanding IMDSv2 tokens in memory, per process. Tokens are
-// a CSRF defence, not a security artefact, so they are never persisted; a
-// vpcd restart drops them and SDKs reissue transparently.
+// tokenStore holds outstanding IMDSv2 tokens in memory. Tokens are a CSRF defence,
+// not persisted; a vpcd restart drops them and SDKs reissue transparently.
 type tokenStore struct {
 	mu     sync.Mutex
 	tokens map[string]tokenEntry
@@ -51,9 +49,8 @@ func (s *tokenStore) issue(eniID string, ttl time.Duration, now time.Time) (stri
 	return token, nil
 }
 
-// validate reports whether token is currently valid AND was issued to
-// expectedENI. A wrong-ENI token is rejected exactly like an unknown one so the
-// caller cannot probe which tokens exist. Expired tokens are evicted lazily.
+// validate reports whether token is valid and was issued to expectedENI.
+// Wrong-ENI tokens are rejected identically to unknown ones to prevent probing.
 func (s *tokenStore) validate(token, expectedENI string, now time.Time) bool {
 	if token == "" {
 		return false
@@ -72,8 +69,7 @@ func (s *tokenStore) validate(token, expectedENI string, now time.Time) bool {
 	return entry.eniID == expectedENI
 }
 
-// sweep deletes every token that expired at or before now. Called on a 1-minute
-// ticker so abandoned tokens (an SDK that issues then never reads) don't leak.
+// sweep deletes expired tokens to prevent abandoned tokens from leaking.
 func (s *tokenStore) sweep(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

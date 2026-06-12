@@ -17,10 +17,9 @@ type taggable struct {
 	save  func(map[string]string) error
 }
 
-// resolveTaggable loads the ELBv2 resource named by arn and returns a handle for
-// reading and persisting its tags. found is false when the resource doesn't
-// exist; notFoundError carries the per-type API error for that case. Store
-// failures are logged and returned as ErrorServerInternal.
+// resolveTaggable loads the ELBv2 resource by ARN and returns a tag read/write handle.
+// found is false when the resource doesn't exist; notFoundError is the per-type error.
+// Store failures are logged and returned as ErrorServerInternal.
 func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundError string, found bool, err error) {
 	resourceType, terr := elbv2ResourceTypeFromArn(arn)
 	if terr != nil {
@@ -89,10 +88,9 @@ func (s *ELBv2ServiceImpl) resolveTaggable(arn string) (h taggable, notFoundErro
 	return h, notFoundError, found, nil
 }
 
-// AddTags adds or overwrites tags on one or more ELBv2 resources. Tags are
-// validated up-front so a malformed key can't leave a partial apply spanning
-// the ResourceArns. Cross-account or unknown ARNs yield the per-resource
-// not-found error.
+// AddTags adds or overwrites tags on ELBv2 resources. Tags are validated up-front
+// so a malformed key can't leave a partial apply; cross-account or unknown ARNs
+// yield the per-resource not-found error.
 func (s *ELBv2ServiceImpl) AddTags(input *elbv2.AddTagsInput, accountID string) (*elbv2.AddTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 || len(input.Tags) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -138,10 +136,9 @@ func (s *ELBv2ServiceImpl) AddTags(input *elbv2.AddTagsInput, accountID string) 
 	return &elbv2.AddTagsOutput{}, nil
 }
 
-// RemoveTags removes the named tag keys from one or more ELBv2 resources.
-// Removal is idempotent — keys absent from a resource are silently ignored,
-// matching AWS. Cross-account or unknown ARNs yield the per-resource not-found
-// error.
+// RemoveTags removes tag keys from ELBv2 resources; absent keys are silently ignored
+// (idempotent, matching AWS). Cross-account or unknown ARNs yield the per-resource
+// not-found error.
 func (s *ELBv2ServiceImpl) RemoveTags(input *elbv2.RemoveTagsInput, accountID string) (*elbv2.RemoveTagsOutput, error) {
 	if input == nil || len(input.ResourceArns) == 0 || len(input.TagKeys) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

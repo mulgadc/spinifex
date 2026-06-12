@@ -22,37 +22,24 @@ type FlowsBarrier func() error
 type IGWManager interface {
 	AttachIGW(ctx context.Context, spec IGWSpec) error
 	DetachIGW(ctx context.Context, vpcID string) error
-	// EnsureSubnetEgress installs an OVN Logical_Router_Policy on the VPC
-	// router so traffic sourced from subnetID and destined for prefix
-	// reroutes via the IGW's gateway port. Called from the route-table
-	// subscriber when CreateRoute / AssociateRouteTable wires a subnet to a
-	// route table carrying a 0.0.0.0/0 -> igw-X route. Idempotent.
+	// EnsureSubnetEgress installs a Logical_Router_Policy rerouting traffic
+	// from subnetID matching prefix via the IGW's gateway port. Idempotent.
 	EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 	// RemoveSubnetEgress is the inverse. Idempotent.
 	RemoveSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
-	// EnsureNATGatewaySubnetEgress installs the per-subnet egress policy that
-	// gives private-subnet packets a default route to leave the LR after
-	// NATGW SNAT. Reuses the IGW's gateway port + wan nexthop (NATGW SNAT
-	// happens on the same VPC router); priority SubnetEgressPriorityNATGW
-	// (lower than IGW so an IGW route on the same subnet would win).
-	// Requires AttachIGW to have run first (NATGW depends on IGW per AWS).
+	// EnsureNATGatewaySubnetEgress installs the NATGW egress policy at
+	// SubnetEgressPriorityNATGW (lower than IGW). Requires AttachIGW first.
 	EnsureNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 	// RemoveNATGatewaySubnetEgress is the inverse. Idempotent.
 	RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
-	// EnsureSubnetEgressDrop installs a DROP policy at
-	// SubnetEgressPriorityDrop for subnets whose effective route table lacks
-	// a 0.0.0.0/0 entry. The drop fires after lr_in_ip_routing has matched
-	// the VPC LR's router-wide default static route, killing the packet
-	// before egress. Idempotent.
+	// EnsureSubnetEgressDrop installs a DROP policy for subnets lacking a
+	// 0.0.0.0/0 route table entry. Fires after lr_in_ip_routing. Idempotent.
 	EnsureSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
 	// RemoveSubnetEgressDrop is the inverse. Idempotent.
 	RemoveSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error
-	// EnsureSystemInstanceEgress wires egress-only internet access for a
-	// single system instance (e.g. an EKS K3s server VM) sourced from
-	// instanceIP in subnetID, SNAT'd to externalIP. Installs a /32 reroute
-	// policy at SystemInstanceEgressPriority (above the drop gate so it works
-	// even on a drop-gated subnet) plus a plain snat (no DNAT, no inbound).
-	// Requires AttachIGW to have run first. Idempotent.
+	// EnsureSystemInstanceEgress wires SNAT-only egress for a single instance
+	// (instanceIP → externalIP). Installs a /32 reroute above the drop gate.
+	// Requires AttachIGW first. Idempotent.
 	EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
 	// RemoveSystemInstanceEgress is the inverse. Idempotent.
 	RemoveSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
@@ -284,10 +271,8 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	return nil
 }
 
-// EnsureSubnetEgress installs a per-subnet egress policy on the VPC router
-// rerouting (inport == "rtr-<subnetID>" && ip4.dst == prefix) via the IGW
-// nexthop out the gateway LRP. Idempotent (drift-replace via the underlying
-// policy.RouteManager).
+// EnsureSubnetEgress installs a per-subnet egress reroute policy on the VPC router.
+// Idempotent.
 func (m *igwManager) EnsureSubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
 	return m.ensureSubnetEgressAtPriority(ctx, vpcID, subnetID, prefix, policy.SubnetEgressPriorityIGW, "EnsureSubnetEgress")
 }
@@ -301,16 +286,14 @@ func (m *igwManager) RemoveSubnetEgress(ctx context.Context, vpcID, subnetID str
 	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.rerouteExcludeCIDRs(ctx, vpcID))
 }
 
-// EnsureNATGatewaySubnetEgress is the NATGW priority sibling of
-// EnsureSubnetEgress. Same nexthop and output port; lower priority so an
-// IGW route on the same subnet (if ever both present) wins.
+// EnsureNATGatewaySubnetEgress installs the NATGW-priority egress policy
+// (lower than IGW so IGW wins if both apply).
 func (m *igwManager) EnsureNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
 	return m.ensureSubnetEgressAtPriority(ctx, vpcID, subnetID, prefix, policy.SubnetEgressPriorityNATGW, "EnsureNATGatewaySubnetEgress")
 }
 
-// RemoveNATGatewaySubnetEgress deletes the per-subnet egress policy at any
-// priority for (subnetID, prefix). policy.RouteManager.DeleteSubnetEgress
-// already deletes both IGW and NATGW priorities defensively.
+// RemoveNATGatewaySubnetEgress deletes the egress policy for (subnetID, prefix).
+// Idempotent.
 func (m *igwManager) RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
 	if vpcID == "" || subnetID == "" {
 		return errors.New("RemoveNATGatewaySubnetEgress: vpcID and subnetID required")
@@ -318,12 +301,8 @@ func (m *igwManager) RemoveNATGatewaySubnetEgress(ctx context.Context, vpcID, su
 	return m.routes.DeleteSubnetEgress(ctx, vpcID, subnetID, prefix, m.rerouteExcludeCIDRs(ctx, vpcID))
 }
 
-// EnsureSubnetEgressDrop installs a drop policy at SubnetEgressPriorityDrop
-// for a subnet whose effective route table lacks a 0.0.0.0/0 entry. The drop
-// fires in lr_in_policy AFTER the VPC LR's router-wide default static route
-// has already matched in lr_in_ip_routing, killing the packet before egress.
-// Excludes the VPC CIDR (intra-VPC traffic untouched), 169.254.0.0/16 (DHCP
-// / link-local / metadata), and 224.0.0.0/4 (multicast).
+// EnsureSubnetEgressDrop installs a drop policy for subnets lacking a 0.0.0.0/0
+// route. Fires in lr_in_policy after routing; excludes VPC CIDR, link-local, multicast.
 func (m *igwManager) EnsureSubnetEgressDrop(ctx context.Context, vpcID, subnetID string, prefix netip.Prefix) error {
 	if vpcID == "" || subnetID == "" {
 		return errors.New("EnsureSubnetEgressDrop: vpcID and subnetID required")
@@ -365,12 +344,8 @@ func (m *igwManager) ensureSubnetEgressAtPriority(ctx context.Context, vpcID, su
 	})
 }
 
-// EnsureSystemInstanceEgress installs an egress-only path for one system
-// instance: a /32 reroute policy out the gateway port plus a plain snat
-// (instanceIP -> externalIP). The reroute sits above the subnet drop gate so
-// it works even where the instance's subnet is otherwise private; where the
-// subnet already has a 1000 reroute it is harmless (same nexthop). The snat is
-// not dnat_and_snat, so the instance is never reachable inbound.
+// EnsureSystemInstanceEgress installs a /32 reroute above the drop gate plus a plain
+// snat (instanceIP → externalIP). No DNAT: the instance is not reachable inbound.
 func (m *igwManager) EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error {
 	if vpcID == "" || subnetID == "" {
 		return errors.New("EnsureSystemInstanceEgress: vpcID and subnetID required")
@@ -427,19 +402,16 @@ func (m *igwManager) RemoveSystemInstanceEgress(ctx context.Context, vpcID, subn
 	return firstErr
 }
 
-// linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so
-// link-local (DHCP and friends — traffic that should never egress the gateway)
-// and multicast destinations are not killed by the per-subnet gate.
+// linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so link-local
+// and multicast are not killed by the per-subnet drop gate.
 var (
 	linkLocalCIDR      = netip.MustParsePrefix("169.254.0.0/16")
 	multicastCIDR      = netip.MustParsePrefix("224.0.0.0/4")
 	defaultRoutePrefix = netip.MustParsePrefix("0.0.0.0/0")
 )
 
-// dropExcludeCIDRs returns the exclusion list for a per-subnet drop policy:
-// VPC CIDR (if discoverable) plus link-local and multicast. The drop policy is
-// a default-deny within the subnet's egress so it must spare any class the
-// platform legitimately uses outside the VPC.
+// dropExcludeCIDRs returns the exclusion list for a drop policy: VPC CIDR,
+// link-local, and multicast.
 func (m *igwManager) dropExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := []netip.Prefix{linkLocalCIDR, multicastCIDR}
 	if vpc := m.vpcExcludeCIDRs(ctx, vpcID); len(vpc) > 0 {
@@ -448,22 +420,15 @@ func (m *igwManager) dropExcludeCIDRs(ctx context.Context, vpcID string) []netip
 	return excludes
 }
 
-// rerouteExcludeCIDRs returns the exclusion list for a per-subnet egress
-// reroute policy: VPC CIDR (if discoverable) plus link-local. The reroute
-// matches 0.0.0.0/0 — the widest possible scope — so it would otherwise divert
-// link-local (169.254.0.0/16) out the gateway, where it has no business going.
-// Multicast is not excluded here (unlike the drop policy): a reroute only
-// diverts traffic that already has somewhere to go, so leaking multicast to the
-// gateway is harmless, whereas the drop policy would kill it outright.
+// rerouteExcludeCIDRs returns the exclusion list for an egress reroute policy:
+// VPC CIDR plus link-local (0.0.0.0/0 would otherwise divert link-local out the gateway).
 func (m *igwManager) rerouteExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	excludes := m.vpcExcludeCIDRs(ctx, vpcID)
 	return append(excludes, linkLocalCIDR)
 }
 
-// vpcExcludeCIDRs fetches the VPC's primary CIDR from the LR ExternalIDs
-// label so per-subnet egress reroute policies skip in-VPC destinations.
-// Returns nil on lookup failure or unset label — caller installs a policy
-// without exclusions, preserving prior behaviour.
+// vpcExcludeCIDRs returns the VPC's primary CIDR from the LR ExternalIDs.
+// Returns nil on lookup failure; caller installs policy without exclusions.
 func (m *igwManager) vpcExcludeCIDRs(ctx context.Context, vpcID string) []netip.Prefix {
 	router, err := m.ovn.GetLogicalRouter(ctx, topology.VPCRouter(vpcID))
 	if err != nil || router == nil {
@@ -480,8 +445,7 @@ func (m *igwManager) vpcExcludeCIDRs(ctx context.Context, vpcID string) []netip.
 	return []netip.Prefix{prefix}
 }
 
-// resolveGatewayNetwork picks LRP Networks/nexthop/IP. Distributed: link-local.
-// Centralised: WAN-subnet IP (LRP is on-wire).
+// resolveGatewayNetwork resolves the LRP network/nexthop/IP for the VPC gateway port.
 func (m *igwManager) resolveGatewayNetwork(ctx context.Context, vpcID string) (network, nexthop, gwIP string, err error) {
 	network = linkLocalGatewayNetwork
 	nexthop = linkLocalGatewayNexthop

@@ -723,11 +723,9 @@ func TestENI_RequesterManagedFlag(t *testing.T) {
 	}
 }
 
-// TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies that
-// when the caller supplies SecurityGroups on the LB input, the underlying ALB
-// ENI is created with those SGs (not the VPC default SG). Without this the
-// ENI's OVN port-group never gains the user's allow rules and inbound traffic
-// is dropped by the SG enforcement default-deny ACL.
+// TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI verifies caller-supplied
+// SecurityGroups are applied to the ALB ENI; without this the OVN port-group misses
+// the user's allow rules and the default-deny ACL drops all inbound traffic.
 func TestCreateLoadBalancer_AttachesSpecifiedSecurityGroupsToENI(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -804,11 +802,9 @@ func TestCreateLoadBalancer_NoSecurityGroupsFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, defaultSGID, *albENI.Groups[0].GroupId)
 }
 
-// TestRebuildSystemInstanceInput_HappyPath verifies that a recovering ALB
-// VM gets the same SystemInstanceInput shape the launch path produced —
-// otherwise writeFwCfgBlobs would emit a different netcfg/cacert blob than
-// the persisted QEMU command line references, and the relaunch would fail
-// at fw_cfg load time the same way the tmpfs wipe does today.
+// TestRebuildSystemInstanceInput_HappyPath verifies a recovering ALB VM gets the
+// same SystemInstanceInput as the original launch; a mismatch causes writeFwCfgBlobs
+// to emit a different netcfg/cacert blob than the persisted QEMU command line.
 func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 
@@ -854,10 +850,8 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	assert.Equal(t, originalInput.SubnetID, rebuilt.SubnetID)
 	assert.Equal(t, originalInput.ENIID, rebuilt.ENIID)
 	assert.Equal(t, originalInput.ENIMac, rebuilt.ENIMac)
-	// ENIIP comes from the persisted lb.VPCIP (which the launcher's PrivateIP
-	// return value sets); in production the launcher echoes back the ENI's
-	// private IP, so this matches the original launch input. The test mock
-	// returns a synthetic value, so assert against the mock's PrivateIP.
+	// ENIIP comes from lb.VPCIP (set by the launcher's PrivateIP return value);
+	// the test mock returns a synthetic value, so assert against the mock's IP.
 	assert.Equal(t, "10.0.1.42", rebuilt.ENIIP)
 	assert.Equal(t, originalInput.Scheme, rebuilt.Scheme)
 	assert.Equal(t, originalInput.AccountID, rebuilt.AccountID)
@@ -870,10 +864,9 @@ func TestRebuildSystemInstanceInput_HappyPath(t *testing.T) {
 	assert.Equal(t, "172.31.0.7/24", rebuilt.NICs[1].CIDR, "mgmt NIC CIDR must come from RecoveryContext")
 }
 
-// TestRebuildSystemInstanceInput_NoLBRecord verifies the error path used by
-// refreshSystemInstanceState to flag the instance recovery_failed when the
-// LB record was wiped from KV but the VM record survived — recovery must
-// not invent a fake input and silently boot the VM into an unowned state.
+// TestRebuildSystemInstanceInput_NoLBRecord verifies the recovery_failed path when
+// the LB record is gone from KV but the VM record survives; recovery must not
+// silently boot the VM into an unowned state.
 func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
 	svc := setupTestService(t)
 
@@ -885,11 +878,9 @@ func TestRebuildSystemInstanceInput_NoLBRecord(t *testing.T) {
 	assert.Contains(t, err.Error(), "no LB record references instance i-ghost")
 }
 
-// TestRebuildSystemInstanceInput_MultiENI verifies that extras survive the
-// rebuild for multi-subnet ALBs — the create path passes one ExtraENIInput
-// per non-primary subnet, and recovery must produce the same shape so the
-// daemon wires the same set of taps and NICs the persisted QEMU args
-// reference.
+// TestRebuildSystemInstanceInput_MultiENI verifies extras survive the rebuild for
+// multi-subnet ALBs; recovery must produce the same ExtraENIInput shape so the
+// daemon wires the same taps and NICs the persisted QEMU args reference.
 func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 

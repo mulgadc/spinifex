@@ -26,12 +26,8 @@ func ValidateEmail(addr string) error {
 	return nil
 }
 
-// ReadOperatorEmail extracts the [operator].email scalar from a spinifex.toml
-// file, or returns "" if the file doesn't exist, can't be read, or has no
-// [operator] section. Used by `spx admin init --force` (and reset flows) to
-// preserve a previously-captured email across re-inits when --email isn't
-// supplied on the new invocation. Minimal text scan — no TOML parser, since
-// we only need one scalar from one section.
+// ReadOperatorEmail extracts the [operator].email scalar from spinifex.toml,
+// returning "" on any error or missing section. Uses a text scan, not a full TOML parser.
 func ReadOperatorEmail(tomlPath string) string {
 	f, err := os.Open(tomlPath)
 	if err != nil {

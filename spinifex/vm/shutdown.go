@@ -14,20 +14,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// pidFileRemovalTimeout is how long Stop/Terminate wait for QEMU's PID file
-// to disappear after a graceful system_powerdown before resorting to
-// SIGKILL. 20s is enough for an ACPI shutdown — guests that haven't
-// responded by then won't.
+// pidFileRemovalTimeout is how long Stop/Terminate wait for the PID file to
+// disappear after system_powerdown before resorting to SIGKILL.
 const pidFileRemovalTimeout = 20 * time.Second
 
-// Stop transitions a running instance to stopped: graceful QMP shutdown,
-// volume unmount, tap teardown, resource deallocation. Persists to the
-// cluster-shared "stopped" KV bucket and removes the instance from the
-// local running map. Fires OnInstanceDown.
-//
-// Returns ErrInstanceNotFound if id is unknown, ErrInvalidTransition if
-// the instance is not in a state that admits Stopping. Persistence errors
-// after the in-memory transition succeeded are logged but not surfaced.
+// Stop transitions a running instance to stopped: graceful QMP shutdown, volume
+// unmount, tap teardown, resource deallocation. Migrates to the "stopped" KV
+// bucket and fires OnInstanceDown. Returns ErrInstanceNotFound or ErrInvalidTransition.
 func (m *Manager) Stop(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -53,16 +46,10 @@ func (m *Manager) Stop(id string) error {
 	return nil
 }
 
-// stopOne runs the per-instance stop sequence shared by Stop and StopAll:
-// transition to Stopping → stopCleanup → transition to Stopped → migrate
-// to the cluster-shared "stopped" KV bucket → fire OnInstanceDown.
-// Returns (true, nil) when the migration removed the instance from the
-// local map under this caller's ownership; the caller must then persist
-// the running state. Returns (false, nil) when migration was skipped
-// (KV write failure or slot reclaim) — see MigrateStoppedToSharedKV for
-// why OnInstanceDown must not fire in that case. Returns (false, err)
-// when the precheck rejects the transition; non-Running VMs surface as
-// ErrInvalidTransition so fan-out callers can skip them.
+// stopOne runs the stop sequence shared by Stop and StopAll:
+// Stopping → stopCleanup → Stopped → migrate to "stopped" KV → OnInstanceDown.
+// Returns (true, nil) when migration removed the instance (caller must persist).
+// Returns (false, nil) on KV failure or slot reclaim; (false, err) on precheck failure.
 func (m *Manager) stopOne(instance *VM) (bool, error) {
 	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
 		return false, err
@@ -92,19 +79,9 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 	return true, nil
 }
 
-// StopAll fans stopOne out across every VM the manager currently holds.
-// Used by the coordinated shutdown DRAIN phase. Each instance transitions
-// through Stopping → Stopped, is migrated to the cluster-shared "stopped"
-// KV bucket, and fires OnInstanceDown — matching Stop's contract so that
-// a daemon restart sees the instances as stopped rather than promoting
-// them through the failed-recovery path. The fan-out runs one goroutine
-// per VM so total wall-time is bounded by the slowest, and per-VM errors
-// (e.g. non-Running precheck failures) are logged but never abort the
-// fan-out. writeRunningState is called once at the end rather than per
-// VM to avoid O(N²) marshalling of the running map.
-//
-// Volume + tap teardown only — AWS resources (ENI, public IP, placement
-// group) are not released because the instance is not being terminated.
+// StopAll fans stopOne across every VM for the coordinated shutdown DRAIN phase.
+// Runs one goroutine per VM; per-VM errors are logged but do not abort the fan-out.
+// AWS resources (ENI, public IP, placement group) are not released on stop.
 func (m *Manager) StopAll() error {
 	snapshot := m.Snapshot()
 	if len(snapshot) == 0 {
@@ -133,14 +110,9 @@ func (m *Manager) StopAll() error {
 	return nil
 }
 
-// Terminate transitions an instance to terminated: graceful shutdown,
-// volume + ENI + IP cleanup, placement group removal. Persists to the
-// cluster-shared "terminated" KV bucket and removes the instance from
-// the local running map. Fires OnInstanceDown.
-//
-// Idempotent on already-shutting-down (the failed-launch goroutine is
-// already cleaning up). Returns ErrInstanceNotFound if id is unknown,
-// ErrInvalidTransition if the current state does not permit termination.
+// Terminate transitions an instance to terminated: graceful shutdown, volume +
+// ENI + IP cleanup, placement group removal. Idempotent on already-shutting-down.
+// Returns ErrInstanceNotFound or ErrInvalidTransition as appropriate.
 func (m *Manager) Terminate(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
@@ -161,15 +133,9 @@ func (m *Manager) Terminate(id string) error {
 	return m.finalizeTerminated(instance)
 }
 
-// MarkFailed sets a failure reason, transitions to shutting-down
-// synchronously, then runs the cleanup chain in a goroutine. Used when a
-// launch errors mid-way: callers (NATS RunInstances handler, recovery
-// worker, pending watchdog, system-instance launcher) get back control
-// immediately and do not block on volume unmount, ENI delete, or KV
-// writes.
-//
-// Tolerates instances already in a cleanup state (no-op) and instances
-// that may or may not be present in the running-VM map.
+// MarkFailed sets a failure reason, transitions to shutting-down synchronously,
+// then runs the cleanup chain in a goroutine so callers return immediately.
+// Tolerates instances already in a cleanup state (no-op).
 func (m *Manager) MarkFailed(instance *VM, reason string) {
 	skip := false
 	var observed InstanceState
@@ -210,19 +176,10 @@ func (m *Manager) MarkFailed(instance *VM, reason string) {
 	})
 }
 
-// MarkRecoveryFailed handles the case where daemon-restart recovery cannot
-// bring a previously-running instance back online (Run error during
-// relaunch, or QMP reconnect failure on a surviving QEMU). It transitions
-// the instance to StateError with a Server.RecoveryFailed StateReason,
-// then runs the non-destructive cleanup chain (graceful unmount + tap
-// teardown + GPU release + resource deallocation) in a goroutine. Unlike
-// MarkFailed, it does NOT delete volumes, release public IPs, detach
-// ENIs, or remove placement-group membership — those resources are
-// preserved so the operator can either retry recovery or issue an
-// explicit ec2.TerminateInstances (which will then honour
-// DeleteOnTermination as normal). The instance stays in the local map
-// and OnInstanceDown is NOT fired so the ec2.cmd.<id> subscription
-// remains live for operator action.
+// MarkRecoveryFailed transitions an instance to StateError after a failed
+// daemon-restart recovery. Runs non-destructive cleanup (unmount, tap teardown,
+// GPU/resource release) in a goroutine. Unlike MarkFailed, volumes, ENIs, and
+// IPs are preserved for operator retry or explicit TerminateInstances.
 func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 	skip := false
 	var observed InstanceState
@@ -264,10 +221,8 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 	})
 }
 
-// finalizeTerminated transitions instance to terminated, writes the
-// terminated KV entry, removes the instance from the local map, fires
-// OnInstanceDown, and persists the running set. Shared by Terminate and
-// MarkFailed.
+// finalizeTerminated transitions to terminated, writes the KV entry, removes
+// from the local map, fires OnInstanceDown, and persists the running set.
 func (m *Manager) finalizeTerminated(instance *VM) error {
 	// Inspect (not UpdateState): MarkFailed may invoke this for an
 	// instance that was never inserted into the local map.
@@ -415,12 +370,9 @@ func (m *Manager) deallocateResources(instance *VM) {
 	m.deps.Resources.Deallocate(instance.InstanceType)
 }
 
-// transitionWithPrecheck validates the transition first, then calls the
-// daemon-supplied TransitionState. Pre-validation lets us surface
-// ErrInvalidTransition cleanly (so callers can map it to the AWS
-// IncorrectInstanceState error code) and treat any post-precheck error
-// as a persistence failure on a transition whose memory mutation
-// already succeeded.
+// transitionWithPrecheck validates the transition then calls TransitionState.
+// Surfaces ErrInvalidTransition cleanly; post-precheck errors are persistence
+// failures on a transition whose in-memory mutation already succeeded.
 func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) error {
 	current := m.Status(instance)
 	if !IsValidTransition(current, target) {
@@ -446,9 +398,8 @@ func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) err
 	return nil
 }
 
-// writeRunningState persists the current running-VM map via the StateStore.
-// The View callback holds the manager lock across the marshal+put so VM
-// fields can't change mid-encode; splitting marshal from put is deferred.
+// writeRunningState persists the running-VM map. View holds the lock across
+// marshal+put to prevent field changes mid-encode.
 func (m *Manager) writeRunningState() error {
 	if m.deps.StateStore == nil {
 		return nil

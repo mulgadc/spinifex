@@ -9,16 +9,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/qmp"
 )
 
-// DeviceController abstracts the QEMU Machine Protocol surface the ENI
-// hot-plug pipeline uses: device_add / device_del / netdev_add / netdev_del /
-// query-pci. Sprint 3a lands the interface and the in-memory stub so the
-// downstream pipeline (Sprint 3b) can be unit-tested without a live QEMU.
-//
-// The production backend (QMPDeviceController) wraps the existing
-// sendQMPCommand helper so wire-level serialization continues to live on the
-// underlying *qmp.QMPClient mutex. The stub backend (StubDeviceController)
-// keeps an in-memory map of attached devices/netdevs for assertions and lets
-// tests pre-program failure responses per execute name.
+// DeviceController abstracts the QMP surface the ENI hot-plug pipeline uses:
+// device_add / device_del / netdev_add / netdev_del / query-pci.
+// QMPDeviceController is the production backend; StubDeviceController is for tests.
 type DeviceController interface {
 	DeviceAdd(args map[string]any) error
 	DeviceDel(deviceID string) error
@@ -27,19 +20,15 @@ type DeviceController interface {
 	QueryPCI() ([]PCIDevice, error)
 }
 
-// PCIDevice is the trimmed projection of QEMU's query-pci response that the
-// hot-plug pipeline consumes. Full response parsing lands in Sprint 3b; the
-// stub backend populates QDevID only, which is the field the pipeline checks
-// to confirm device materialization.
+// PCIDevice is the trimmed projection of QEMU's query-pci response used by
+// the hot-plug pipeline to confirm device materialization (QDevID field).
 type PCIDevice struct {
 	Bus    int    `json:"bus"`
 	Slot   int    `json:"slot"`
 	QDevID string `json:"qdev_id,omitempty"`
 }
 
-// QMPDeviceController is the production DeviceController bound to a live
-// QEMU instance. Construct one per VM via NewQMPDeviceController and reuse
-// it across the hot-plug / hot-unplug pipeline for the same VM.
+// QMPDeviceController is the production DeviceController for a live QEMU instance.
 type QMPDeviceController struct {
 	client     *qmp.QMPClient
 	instanceID string
@@ -77,13 +66,9 @@ func (c *QMPDeviceController) NetdevDel(netdevID string) error {
 	return err
 }
 
-// QueryPCI issues query-pci and flattens the nested QEMU response into a
-// list of PCIDevice entries. The response is a per-bus list whose devices
-// may themselves carry a "pci_bridge" subfield containing a nested
-// "devices" list (every pcie-root-port surfaces this way), so the parse
-// recurses through bridges. Only devices with a non-empty qdev_id are
-// returned — the hot-plug pipeline only needs to detect materialization
-// of a known id.
+// QueryPCI issues query-pci and flattens the response into a PCIDevice list,
+// recursing through pci_bridge entries. Only devices with a non-empty qdev_id
+// are returned.
 func (c *QMPDeviceController) QueryPCI() ([]PCIDevice, error) {
 	resp, err := sendQMPCommand(c.client, qmp.QMPCommand{Execute: "query-pci"}, c.instanceID)
 	if err != nil {
@@ -100,10 +85,8 @@ func (c *QMPDeviceController) QueryPCI() ([]PCIDevice, error) {
 	return out, nil
 }
 
-// pciBusInfo and pciDeviceInfo mirror only the fields the hot-plug
-// pipeline reads from query-pci. Full QEMU output is much richer
-// (class_info, regions, irq, …) but we ignore everything else to keep the
-// parser stable against QMP version drift.
+// pciBusInfo and pciDeviceInfo mirror only the fields the hot-plug pipeline
+// reads from query-pci; everything else is ignored for stability against QMP drift.
 type pciBusInfo struct {
 	Bus     int             `json:"bus"`
 	Devices []pciDeviceInfo `json:"devices"`
@@ -130,10 +113,9 @@ func appendPCIDevices(dst []PCIDevice, devs []pciDeviceInfo) []PCIDevice {
 	return dst
 }
 
-// StubDeviceController is an in-memory DeviceController for unit tests. It
-// records every call in order, enforces duplicate-id and unknown-id errors
-// the way real QEMU does, and lets tests inject a one-shot failure per
-// execute name via FailNext.
+// StubDeviceController is an in-memory DeviceController for tests. It records
+// calls, enforces duplicate/unknown-id errors like real QEMU, and supports
+// one-shot failure injection via SetFailNext.
 type StubDeviceController struct {
 	mu       sync.Mutex
 	devices  map[string]map[string]any
@@ -142,9 +124,7 @@ type StubDeviceController struct {
 	failNext map[string]error
 }
 
-// StubCall records one DeviceController invocation. Args is a shallow copy
-// of the args map passed in (or {"id": …} for the *Del methods) so tests
-// can assert on payload without worrying about caller mutation.
+// StubCall records one DeviceController invocation with a shallow copy of Args.
 type StubCall struct {
 	Execute string
 	Args    map[string]any
@@ -160,9 +140,8 @@ func NewStubDeviceController() *StubDeviceController {
 
 var _ DeviceController = (*StubDeviceController)(nil)
 
-// SetFailNext primes the stub to return err on the next call matching
-// execute (one of "device_add", "device_del", "netdev_add", "netdev_del",
-// "query-pci"). Cleared after the call fires.
+// SetFailNext primes the stub to return err on the next call matching execute.
+// Cleared after the call fires.
 func (s *StubDeviceController) SetFailNext(execute string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

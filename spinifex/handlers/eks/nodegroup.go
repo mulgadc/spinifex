@@ -226,12 +226,7 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		ModifiedAt:     now,
 	}
 
-	// Atomically claim the nodegroup record before any SG provisioning or worker
-	// launch. This is the idempotency barrier: a duplicate CreateNodegroup (SDK
-	// retry / gateway re-publish that spawned a second handler) loses the claim
-	// here and returns without doing any provisioning work, so concurrent creates
-	// cannot double-launch workers. The L169 read above stays only as a cheap
-	// fast-path reject.
+	// Atomically claim the record; concurrent/duplicate CreateNodegroup requests lose here.
 	owned, err := ClaimNodegroupRecord(acctKV, rec)
 	if err != nil {
 		return nil, err
@@ -240,13 +235,8 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 	}
 
-	// Claim won — the nodegroup is now CREATING. SG provisioning, token decrypt,
-	// AMI lookup and worker launch are a multi-minute job that must not run in the
-	// gateway request path (it head-of-line blocks the shared responder and the
-	// gateway times out and re-publishes — 267.4). Snapshot the CREATING reply
-	// before the launch, which mutates rec (InstanceIDs/Status), then run the
-	// provisioning on a background goroutine. Failures surface via the record's
-	// CREATE_FAILED status, which DeleteNodegroup reclaims.
+	// Snapshot the CREATING reply before background launch (launch mutates rec).
+	// Failures surface as CREATE_FAILED, which DeleteNodegroup reclaims.
 	out := &eks.CreateNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}
 
 	s.launchWG.Go(func() {
@@ -325,9 +315,7 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		return
 	}
 
-	// v1 marks ACTIVE on successful RunInstances (instance-level), not on
-	// k8s node-Ready — node-Ready gating needs a kubectl probe from the
-	// reconciler and lands in a follow-up.
+	// v1: ACTIVE on RunInstances success; node-Ready gating is a future improvement.
 	rec.Status = eks.NodegroupStatusActive
 	rec.ModifiedAt = time.Now().UTC()
 	if err := PutNodegroupRecord(acctKV, rec); err != nil {
@@ -469,9 +457,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.
 	}
 
 	if err := s.reconcileWorkerCount(acctKV, accountID, rec, meta); err != nil {
-		// reconcileWorkerCount may have launched some workers before failing; their
-		// IDs are already on rec. Persist so DeleteNodegroup can reclaim them rather
-		// than leaking the partial scale-up.
+		// Persist partial IDs so DeleteNodegroup can reclaim a failed scale-up.
 		rec.ModifiedAt = time.Now().UTC()
 		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
 			slog.Error("updateNodegroupConfig: persist after reconcile failure",
@@ -533,8 +519,7 @@ func (s *EKSServiceImpl) reconcileWorkerCount(acctKV nats.KeyValue, accountID st
 }
 
 func (s *EKSServiceImpl) updateNodegroupVersion(input *eks.UpdateNodegroupVersionInput) (*eks.UpdateNodegroupVersionOutput, error) {
-	// Worker AMI version upgrades (drain + replace) land in a follow-up; v1
-	// nodegroups are fixed at their create-time version.
+	// Worker AMI version upgrades (drain + replace) are not implemented in v1.
 	if input != nil {
 		slog.Info("UpdateNodegroupVersion not implemented in v1",
 			"cluster", aws.StringValue(input.ClusterName), "nodegroup", aws.StringValue(input.NodegroupName))

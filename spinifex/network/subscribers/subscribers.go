@@ -33,9 +33,7 @@ type Config struct {
 	EIP      external.EIPManager
 	NATGW    external.NATGWManager
 	IGW      external.IGWManager
-	// IMDS installs per-VPC IMDS OVN topology on vpc.create / removes it on
-	// vpc.delete. Optional: nil disables IMDS plumbing (focused topology tests
-	// leave it unset; production always wires it).
+	// IMDS installs/removes IMDS OVN topology on vpc.create/delete. Optional.
 	IMDS external.IMDSTopologyManager
 }
 

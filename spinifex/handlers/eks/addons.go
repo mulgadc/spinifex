@@ -32,9 +32,7 @@ func (s *EKSServiceImpl) ListAddons(input *eks.ListAddonsInput, accountID string
 	return &eks.ListAddonsOutput{Addons: aws.StringSlice(names)}, nil
 }
 
-// DescribeAddonVersions returns the bundled add-on catalog, optionally filtered
-// to a single add-on by name. It is cluster-independent (the catalog is static)
-// so it does not touch the KV store.
+// DescribeAddonVersions returns the static add-on catalog, optionally filtered by name.
 func (s *EKSServiceImpl) DescribeAddonVersions(input *eks.DescribeAddonVersionsInput, _ string) (*eks.DescribeAddonVersionsOutput, error) {
 	filter := ""
 	if input != nil {
@@ -51,9 +49,8 @@ func (s *EKSServiceImpl) DescribeAddonVersions(input *eks.DescribeAddonVersionsI
 	return &eks.DescribeAddonVersionsOutput{Addons: out}, nil
 }
 
-// CreateAddon validates the add-on against the bundled catalog, persists a
-// CREATING record, and stages it for delivery. The record reaches ACTIVE only
-// once the cluster's state report confirms delivery (separate slice).
+// CreateAddon validates, persists a CREATING record, and stages it for delivery.
+// Transitions to ACTIVE once the cluster state report confirms delivery.
 func (s *EKSServiceImpl) CreateAddon(input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -125,8 +122,7 @@ func (s *EKSServiceImpl) DescribeAddon(input *eks.DescribeAddonInput, accountID 
 	return &eks.DescribeAddonOutput{Addon: addonRecordToAWS(cluster, rec)}, nil
 }
 
-// UpdateAddon CASes the version/config/role onto the record, marks it UPDATING,
-// and re-stages it for delivery.
+// UpdateAddon CASes new version/config/role onto the record, marks it UPDATING, and re-stages it.
 func (s *EKSServiceImpl) UpdateAddon(input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -177,8 +173,7 @@ func (s *EKSServiceImpl) UpdateAddon(input *eks.UpdateAddonInput, accountID stri
 	}}, nil
 }
 
-// DeleteAddon marks the record DELETING, removes the staged manifest, and
-// deletes the record.
+// DeleteAddon marks the record DELETING, removes the staged manifest, then deletes the record.
 func (s *EKSServiceImpl) DeleteAddon(input *eks.DeleteAddonInput, accountID string) (*eks.DeleteAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -239,8 +234,7 @@ func addonRecordToAWS(cluster string, rec *AddonRecord) *eks.Addon {
 	return out
 }
 
-// addonSpecToAWS converts a catalog spec to the SDK AddonInfo shape, expanding
-// each supported version into an AddonVersionInfo.
+// addonSpecToAWS converts a catalog spec to the SDK AddonInfo shape.
 func addonSpecToAWS(spec AddonSpec) *eks.AddonInfo {
 	versions := make([]*eks.AddonVersionInfo, 0, len(spec.Versions))
 	for _, v := range spec.Versions {
@@ -255,8 +249,7 @@ func addonSpecToAWS(spec AddonSpec) *eks.AddonInfo {
 	}
 }
 
-// addonInstaller returns the wired installer, defaulting to the staging
-// installer bound to the daemon NATS connection when none was injected.
+// addonInstaller returns the injected installer or the default stagingInstaller.
 func (s *EKSServiceImpl) addonInstaller() AddonInstaller {
 	if s.deps.AddonInstaller != nil {
 		return s.deps.AddonInstaller
@@ -264,8 +257,7 @@ func (s *EKSServiceImpl) addonInstaller() AddonInstaller {
 	return newStagingInstaller(s.deps.NATSConn)
 }
 
-// markAddonFailed best-effort flips a record to CREATE_FAILED with the reason
-// after an installer error so a failed install is not left looking healthy.
+// markAddonFailed best-effort flips a record to CREATE_FAILED with the error reason.
 func (s *EKSServiceImpl) markAddonFailed(acctKV nats.KeyValue, cluster, addon string, cause error) {
 	now := time.Now().UTC()
 	if _, err := casUpdateAddon(acctKV, cluster, addon, func(r *AddonRecord) bool {

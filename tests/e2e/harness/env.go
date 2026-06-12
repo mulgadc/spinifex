@@ -1,10 +1,7 @@
 //go:build e2e
 
 // Package harness provides shared E2E test primitives for the Spinifex scenario
-// suites (cert, lb, multinode, baremetal, reboot, tofu). Each scenario package
-// imports this harness; bash drivers under spinifex/tests/e2e/ are being
-// retired in favour of these Go scenarios — see
-// docs/development/improvements/e2e-go-harness.md.
+// suites (cert, lb, multinode, baremetal, reboot, tofu).
 package harness
 
 import (
@@ -66,9 +63,8 @@ func LoadEnv(t *testing.T) *Env {
 
 	nodeIPs := splitCSV(os.Getenv("SPINIFEX_NODE_IPS"))
 	if len(nodeIPs) == 0 {
-		// Single-node parity with run-cert-e2e.sh: loopback + every
-		// non-loopback global IPv4 so SAN checks see all addresses the
-		// cert is expected to cover.
+		// Include loopback + every non-loopback global IPv4 so SAN checks see
+		// all addresses the cert covers.
 		if mode == ModeSingle {
 			nodeIPs = discoverSingleNodeIPs()
 		} else {
@@ -77,8 +73,7 @@ func LoadEnv(t *testing.T) *Env {
 	}
 	serviceIPs := splitCSV(os.Getenv("SPINIFEX_SERVICE_IPS"))
 	if len(serviceIPs) == 0 {
-		// awsgw.host in spinifex.toml is the only IP the gateway actually
-		// listens on; cert TLS checks must hit that IP, not the loopback.
+		// Use the awsgw bind IP so TLS checks hit the actual listener, not loopback.
 		if bind := awsgwBindIP(configDir); bind != "" && bind != "0.0.0.0" {
 			serviceIPs = []string{bind}
 		} else {

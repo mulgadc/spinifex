@@ -8,11 +8,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// GatewayClaimProber checks and repairs the Southbound chassis claim for OVN
-// gateway router ports by shelling out to ovn-sbctl / ovn-appctl. It backs the
-// reconcile.GatewayClaimVerifier interface; the compile-time check lives at the
-// wiring site (vpcd), since this host-layer package cannot import the reconcile
-// cross-cutter without re-tangling the layer tree.
+// GatewayClaimProber checks the SB chassis claim for OVN gateway router ports.
+// Backs reconcile.GatewayClaimVerifier; compile-time check lives in vpcd.
 type GatewayClaimProber struct {
 	sbAddr string
 }
@@ -24,21 +21,16 @@ func NewGatewayClaimProber(sbAddr string) *GatewayClaimProber {
 }
 
 // GatewayPortClaimed reports whether the SB Port_Binding for crPortName has a
-// non-empty chassis. crPortName is the chassisredirect (cr-) port of a
-// distributed gateway port: the bare LRP binding stays distributed/chassis-less,
-// so the chassisredirect port is the one that carries the gateway-chassis claim.
-// An unclaimed binding (chassis == []) means ovn-controller has not installed
-// flows for the gateway redirect, so the floating IPs behind it are unreachable.
-// ctx is part of the verifier contract; ovn-sbctl is a short-lived local query
-// and is not cancelled mid-flight.
+// non-empty chassis. Uses the chassisredirect (cr-) port — the bare LRP stays
+// chassis-less. Unclaimed binding means flows are not installed and EIPs unreachable.
 func (p *GatewayClaimProber) GatewayPortClaimed(_ context.Context, crPortName string) (bool, error) {
 	args := []string{"--no-leader-only"}
 	if p.sbAddr != "" {
 		args = append(args, "--db="+p.sbAddr)
 	}
 	args = append(args, "--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)
-	// Output() not CombinedOutput(): sudo PAM audit noise on stderr would
-	// otherwise be read as a non-empty chassis value.
+	// Output() not CombinedOutput(): sudo PAM noise on stderr would be
+	// misread as a non-empty chassis value.
 	out, err := utils.SudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
 		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", crPortName, err)

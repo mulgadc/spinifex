@@ -18,18 +18,14 @@ const (
 	// imdsRPCTimeout bounds each internal control-plane round-trip to awsgw.
 	imdsRPCTimeout = 10 * time.Second
 
-	// profileCacheTTL memoises profile/role lookups. Both mappings are effectively
-	// static, so a short TTL keeps the iam/* GETs off a NATS round-trip per request.
+	// profileCacheTTL memoises profile/role lookups to avoid per-request NATS round-trips.
 	profileCacheTTL = 5 * time.Minute
 
-	// pubKeyCacheTTL memoises SSH public-key material, immutable for a key's
-	// lifetime; separate from profileCacheTTL so the two are tunable independently.
+	// pubKeyCacheTTL memoises SSH public-key material (immutable for a key's lifetime).
 	pubKeyCacheTTL = 5 * time.Minute
 )
 
-// NATSSTSAssumer is the NATS-backed stsAssumer. It mints instance-role credentials
-// via awsgw's SubjectAssumeRoleForInstance responder, keeping no local cache —
-// credCache already memoises minted credentials, so STS stays off the hot path.
+// NATSSTSAssumer is the NATS-backed stsAssumer for minting instance-role credentials.
 type NATSSTSAssumer struct {
 	nc *nats.Conn
 }
@@ -50,9 +46,7 @@ func (a *NATSSTSAssumer) AssumeRoleForInstance(accountID, roleARN, instanceID st
 	}, imdsRPCTimeout, accountID)
 }
 
-// NATSProfileLookup is the NATS-backed profileLookup. It resolves instance
-// profiles and roles via awsgw's IAM responders, fronted by a short-TTL cache
-// so repeat iam/* GETs don't take a round-trip each.
+// NATSProfileLookup is the NATS-backed profileLookup with a short-TTL cache.
 type NATSProfileLookup struct {
 	nc       *nats.Conn
 	profiles *ttlCache[*handlers_iam.InstanceProfile]
@@ -102,10 +96,7 @@ func (p *NATSProfileLookup) GetRole(accountID string, input *iam.GetRoleInput) (
 	return out, nil
 }
 
-// NATSPublicKeyLookup is the NATS-backed publicKeyLookup. It fetches an
-// instance's launch SSH public key from the daemon-side key service via the
-// imds.ec2.get_public_key responder, fronted by a success-only TTL cache so
-// repeat material fetches don't take a round-trip each.
+// NATSPublicKeyLookup is the NATS-backed publicKeyLookup with a success-only TTL cache.
 type NATSPublicKeyLookup struct {
 	nc    *nats.Conn
 	cache *ttlCache[string]
@@ -131,16 +122,13 @@ func (p *NATSPublicKeyLookup) GetPublicKey(accountID, keyName string) (string, e
 		KeyName:   keyName,
 	}, imdsRPCTimeout, accountID)
 	if err != nil {
-		// Errors are never cached — a transient miss must not pin a key as absent.
-		return "", err
+		return "", err // errors not cached: transient miss must not pin key as absent
 	}
 	p.cache.put(key, out.OpenSSHKey)
 	return out.OpenSSHKey, nil
 }
 
-// ttlCache is a minimal concurrency-safe map with per-entry expiry, used to
-// keep effectively-static IAM lookups off the NATS round-trip. now is a field
-// so tests can drive expiry deterministically.
+// ttlCache is a concurrency-safe map with per-entry expiry; now is injectable for tests.
 type ttlCache[V any] struct {
 	mu  sync.Mutex
 	ttl time.Duration

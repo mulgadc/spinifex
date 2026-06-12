@@ -6,36 +6,23 @@ import (
 	"time"
 )
 
-// ManagerHooks are callbacks the manager fires synchronously on every
-// running/terminated transition. The daemon uses these to drive per-instance
-// NATS subscription/unsubscription. Hook fields may be nil; nil hooks are no-ops.
-//
-// OnInstanceUp returns an error so callers can distinguish a soft launch
-// (subscribe failures only logged) from a reconnect (failures must roll back
-// QMP and abort the reconnect). Callers that don't care about the error may
-// ignore it.
+// ManagerHooks are callbacks the manager fires synchronously on running/terminated
+// transitions. Hook fields may be nil (no-ops). OnInstanceUp returns an error so
+// reconnect callers can roll back QMP on subscribe failure; launch callers may ignore it.
 type ManagerHooks struct {
 	OnInstanceUp   func(*VM) error
 	OnInstanceDown func(id string)
-	// OnInstanceRecovering fires from Restore once per instance that is
-	// about to be relaunched. The daemon subscribes only the command
-	// topic (ec2.cmd.<id>) here so concurrent terminate commands can
-	// reach this node while the relaunch is in flight; the subsequent
-	// OnInstanceUp on launch success is idempotent and reinstalls both
-	// the command and console subscriptions.
+	// OnInstanceRecovering fires from Restore before each relaunch so the daemon
+	// can early-subscribe ec2.cmd.<id> and handle concurrent terminates in flight.
 	OnInstanceRecovering func(*VM)
-	// BeforeInstanceRelaunch fires from Restore once per recovery
-	// candidate, after OnInstanceRecovering and immediately before
-	// m.Run. Daemons use this to refresh ephemeral on-host state
-	// (tmpfs-backed config blobs, dynamic firmware files) that did not
-	// survive a host reboot. A non-nil error aborts the relaunch and
-	// marks the instance recovery_failed.
+	// BeforeInstanceRelaunch fires from Restore immediately before m.Run. Daemons
+	// use this to refresh ephemeral on-host state that did not survive a reboot.
+	// A non-nil error aborts the relaunch and marks the instance recovery_failed.
 	BeforeInstanceRelaunch func(*VM) error
 }
 
-// Deps bundles every collaborator the manager uses to drive lifecycle.
-// Fields may be nil where the manager does not yet require them; call sites
-// guard against nil so partial wiring during construction is safe.
+// Deps bundles collaborators the manager uses to drive lifecycle.
+// Fields may be nil; call sites guard against nil so partial wiring is safe.
 type Deps struct {
 	NodeID string
 
@@ -72,11 +59,8 @@ type Deps struct {
 	// Zero is acceptable in tests; production uses 1s.
 	DetachDelay time.Duration
 
-	// ConsumeCleanShutdownMarker reports whether the previous daemon run
-	// recorded a clean shutdown marker for this node, deleting it as a
-	// side effect. Restore uses the result to decide whether to wait
-	// briefly for stale QEMU PIDs to die before classifying state. Nil
-	// is treated as "no marker" (cautious recovery).
+	// ConsumeCleanShutdownMarker reports whether the previous run wrote a clean
+	// shutdown marker, consuming it. Nil is treated as "no marker" (cautious recovery).
 	ConsumeCleanShutdownMarker func() bool
 }
 
@@ -89,9 +73,8 @@ type Manager struct {
 	goroutineWg sync.WaitGroup
 }
 
-// NewManager returns a Manager with no collaborators wired. Production code
-// uses NewManagerWithDeps; tests that only exercise the in-memory map keep
-// this convenience.
+// NewManager returns a Manager with no collaborators wired. Tests that only
+// exercise the in-memory map use this; production code uses NewManagerWithDeps.
 func NewManager() *Manager {
 	return &Manager{vms: make(map[string]*VM)}
 }
@@ -101,10 +84,8 @@ func NewManagerWithDeps(deps Deps) *Manager {
 	return &Manager{vms: make(map[string]*VM), deps: deps}
 }
 
-// SetDeps replaces the manager's dependencies. The daemon constructs the
-// manager early (before NATS / JetStream / network plumber are available)
-// and calls SetDeps once those collaborators exist. Must not be called
-// concurrently with lifecycle methods.
+// SetDeps replaces the manager's dependencies. Called once collaborators are
+// available after early construction. Must not be called concurrently.
 func (m *Manager) SetDeps(deps Deps) { m.deps = deps }
 
 // NodeID returns the node identifier the manager was constructed with.
@@ -145,8 +126,7 @@ func (m *Manager) Delete(id string) {
 }
 
 // DeleteIf deletes the entry for id only if the stored pointer matches want.
-// Returns true if the delete happened. Used by stop/terminate handlers to guard
-// against the slot being reclaimed by a concurrent start handler.
+// Returns true if the delete happened; false if the slot was reclaimed concurrently.
 func (m *Manager) DeleteIf(id string, want *VM) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -165,9 +145,8 @@ func (m *Manager) Count() int {
 	return len(m.vms)
 }
 
-// ForEach calls fn for each VM under the manager lock. fn must not call back
-// into Manager methods that take the lock — that will deadlock. For lock-free
-// iteration, use Snapshot.
+// ForEach calls fn for each VM under the manager lock. fn must not re-enter
+// locked Manager methods (deadlock). For lock-free iteration use Snapshot.
 func (m *Manager) ForEach(fn func(*VM)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -176,9 +155,8 @@ func (m *Manager) ForEach(fn func(*VM)) {
 	}
 }
 
-// Snapshot returns the current set of VMs as a slice. Callers must not mutate
-// the slice's *VM entries' map-related fields; the underlying VM pointers are
-// shared with the manager.
+// Snapshot returns the current VMs as a slice. The returned pointers are shared
+// with the manager; callers must not mutate map-related fields.
 func (m *Manager) Snapshot() []*VM {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -189,8 +167,7 @@ func (m *Manager) Snapshot() []*VM {
 	return out
 }
 
-// SnapshotMap returns a copy of the id→VM map. Used by the state persistence
-// adapter so serialization can happen without holding the manager lock.
+// SnapshotMap returns a copy of the id→VM map for serialization outside the lock.
 func (m *Manager) SnapshotMap() map[string]*VM {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -212,9 +189,8 @@ func (m *Manager) Filter(pred func(*VM) bool) []*VM {
 	return out
 }
 
-// UpdateState looks up id and, if found, runs fn(v) under lock. Used for
-// atomic check-then-mutate or read-under-lock on a single VM. Returns true
-// if the VM was found and fn was invoked.
+// UpdateState looks up id and, if found, runs fn(v) under lock.
+// Returns true if the VM was found and fn was invoked.
 func (m *Manager) UpdateState(id string, fn func(*VM)) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -226,14 +202,10 @@ func (m *Manager) UpdateState(id string, fn func(*VM)) bool {
 	return true
 }
 
-// UpdateAndPersist looks up id and runs fn(v) under the manager lock. fn
-// returns true to request a state-store persist after the lock is released
-// (matching the writeRunningState pattern used by AttachVolume / Stop /
-// Terminate); false signals a no-op or early-return mutator and skips the
-// persist entirely. Returns (false, nil) when the VM is not in the running
-// map; fn is not invoked. On persist failure the in-memory mutation has
-// already taken effect — the caller's API-level error masks the drift but
-// memory will be ahead of disk until the next successful persist.
+// UpdateAndPersist looks up id and runs fn(v) under lock. fn returns true to
+// trigger a state-store persist after the lock is released; false skips it.
+// Returns (false, nil) when the VM is absent. On persist failure the in-memory
+// mutation already took effect — memory stays ahead of disk until next persist.
 func (m *Manager) UpdateAndPersist(id string, fn func(*VM) bool) (bool, error) {
 	var changed bool
 	found := m.UpdateState(id, func(v *VM) {
@@ -245,22 +217,17 @@ func (m *Manager) UpdateAndPersist(id string, fn func(*VM) bool) (bool, error) {
 	return true, m.writeRunningState()
 }
 
-// Status returns v.Status under the manager lock. Replaces the dominant
-// "Inspect to read Status" pattern with a typed accessor. Read-only — no
-// membership check, so callers may pass a pointer to an instance no longer
-// in the map (e.g. mid-cleanup) and still get a consistent read.
+// Status returns v.Status under the manager lock. No membership check —
+// callers may pass a pointer to an instance no longer in the map.
 func (m *Manager) Status(v *VM) InstanceState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return v.Status
 }
 
-// Inspect runs fn(v) under the manager lock for an already-resolved VM
-// pointer. Used by call sites that hold a *VM (e.g. from a NATS handler
-// dispatch) and need to read or mutate its fields with the same memory-
-// ordering guarantee as map-keyed access. Prefer UpdateState (membership-
-// checked) for mutation and Status for the read-Status pattern; Inspect
-// remains for closures that mutate fields on a possibly-orphaned VM.
+// Inspect runs fn(v) under the manager lock for an already-resolved VM pointer.
+// Prefer UpdateState for membership-checked mutation; Inspect is for closures
+// that may run on a possibly-orphaned VM (e.g. MarkFailed).
 func (m *Manager) Inspect(v *VM, fn func(*VM)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -268,18 +235,14 @@ func (m *Manager) Inspect(v *VM, fn func(*VM)) {
 }
 
 // View runs fn with the live id→VM map under the manager lock. fn must not
-// mutate the map nor retain references after returning. Used by serialization
-// paths that need every VM's fields to be stable for the duration of the
-// encode (e.g. JSON marshal during state persistence).
+// mutate the map or retain references after returning.
 func (m *Manager) View(fn func(map[string]*VM)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fn(m.vms)
 }
 
-// Replace bulk-resets the manager to the given set of VMs. The supplied map
-// is copied; callers may mutate it after the call returns. Used by Restore
-// after loading persisted state.
+// Replace bulk-resets the manager to the given VMs (copied). Used by Restore.
 func (m *Manager) Replace(vms map[string]*VM) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -287,9 +250,8 @@ func (m *Manager) Replace(vms map[string]*VM) {
 	maps.Copy(m.vms, vms)
 }
 
-// WaitForBackgroundWork blocks until all background goroutines started by
-// MarkFailed and MarkRecoveryFailed have completed. Intended for tests that
-// need the temp directory to be quiescent before cleanup runs.
+// WaitForBackgroundWork blocks until all goroutines started by MarkFailed and
+// MarkRecoveryFailed complete. Used by tests to drain before cleanup.
 func (m *Manager) WaitForBackgroundWork() {
 	m.goroutineWg.Wait()
 }

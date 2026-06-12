@@ -9,18 +9,9 @@ import (
 	"strings"
 )
 
-// resetPCI issues a PCI Function-Level Reset for addr via sysfs. It is a no-op
-// for non-AMD devices: NVIDIA and Intel GPUs handle the unbind/rebind cycle
-// without requiring an explicit reset.
-//
-// AMD Instinct (CDNA) data-centre GPUs expose a reset sysfs node and support
-// FLR correctly — writing "1" to it clears the hardware state left behind by
-// QEMU, allowing the next Claim to bind a clean device. Consumer AMD GPUs
-// (Polaris/Vega/Navi) have a firmware reset bug that FLR does not fully fix;
-// those architectures are not the target here.
-//
-// Returns nil when the reset attribute is absent so callers treat this as
-// best-effort.
+// resetPCI issues a PCI Function-Level Reset for AMD devices via sysfs.
+// No-op for NVIDIA/Intel which handle unbind/rebind without an explicit reset.
+// Returns nil when the sysfs reset attribute is absent (best-effort).
 func resetPCI(sysfsRoot, addr string) error {
 	vendorBytes, _ := os.ReadFile(filepath.Join(sysfsRoot, "bus/pci/devices", addr, "vendor"))
 	if strings.TrimSpace(string(vendorBytes)) != "0x1002" {

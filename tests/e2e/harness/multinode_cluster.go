@@ -20,28 +20,16 @@ const (
 	awsgwHealthPort      = 9999
 )
 
-// natsRoutezResponse models the subset of /routez we care about. Bash polled
-// `jq '.routes | unique_by(.remote_id) | length'` — we match by parsing the
-// route slice and counting distinct remote_id values.
+// natsRoutezResponse models the NATS /routez subset used to count distinct peers.
 type natsRoutezResponse struct {
 	Routes []struct {
 		RemoteID string `json:"remote_id"`
 	} `json:"routes"`
 }
 
-// WaitNATSPeers polls every node's NATS /routez endpoint until each reports
-// at least want distinct peers. Default timeout 60s / interval 2s — covers
-// the post-join settle window observed in run-multinode-e2e.sh phase 2.
-//
-// NATS monitor binds 127.0.0.1:8222 only (cmd/spinifex/cmd/templates/nats.conf),
-// so the routez query has to land on each node's loopback. Bash uses
-// `peer_ssh "$ip" curl http://127.0.0.1:8222/routez`; we mirror that via
-// PeerSSH + curl rather than dialling node.Addr:8222 directly (which fails
-// with connection refused).
-//
-// Use want=2 on a healthy 3-node cluster (each peer sees the other two via
-// one route — NATS dedupes by remote_id so a 3-node mesh shows 2 unique
-// peers per node). Drops to want=1 after a single-node failure.
+// WaitNATSPeers polls every node's NATS /routez until each reports at least want
+// distinct peers (timeout 60s, interval 2s). NATS monitor binds 127.0.0.1:8222
+// only, so queries run via PeerSSH + curl rather than dialling node.Addr directly.
 func (c *Cluster) WaitNATSPeers(t *testing.T, want int, opts ...PollOpt) {
 	t.Helper()
 	cfg := applyOpts(pollCfg{timeout: 60 * time.Second, interval: 2 * time.Second}, opts...)

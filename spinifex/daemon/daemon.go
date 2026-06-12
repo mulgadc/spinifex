@@ -85,33 +85,26 @@ type EBS struct {
 // when full, it unsubscribes so NATS routes requests to other nodes.
 type ResourceManager struct {
 	mu sync.RWMutex
-	// hostVCPU / hostMemGB are the host figures guests schedule against:
-	// physical cores (physicalCoreCount, not SMT threads) and /proc/meminfo.
-	// Schedulable capacity for guest VMs is host - reserved - allocated.
+	// hostVCPU / hostMemGB: physical cores (not SMT threads) and total RAM.
+	// Schedulable capacity = host - reserved - allocated.
 	hostVCPU  int
 	hostMemGB float64
-	// reservedVCPU / reservedMem are held back from guest scheduling for
-	// the spinifex daemon and co-located services (NATS, predastore,
-	// viperblock, vpcd, awsgw, ui). See hostReserve / defaultHostReserve.
+	// reservedVCPU / reservedMem: resources held back for the daemon and
+	// co-located services. See hostReserve / defaultHostReserve.
 	reservedVCPU  int
 	reservedMem   float64
 	allocatedVCPU int
 	allocatedMem  float64
-	// nbdkitMainMiB / nbdkitAuxMiB are the per-volume nbdkit memory charges
-	// (main vs aux), added to every instance's guest -m at admission so the
-	// nbdkit processes backing its volumes are accounted, not absorbed by the
-	// fixed reserve. See resolveNbdkitCharge / instanceMemChargeMiB. RG-6.
+	// nbdkitMainMiB / nbdkitAuxMiB: per-volume nbdkit memory charged at
+	// admission so nbdkit backing a guest's volumes is accounted explicitly.
 	nbdkitMainMiB int
 	nbdkitAuxMiB  int
 	instanceTypes map[string]*ec2.InstanceTypeInfo
 	gpuManager    *gpu.Manager // nil if GPU passthrough is disabled or no GPUs present
 
-	// readMemAvailableGB is the live second admission gate. The static accounting
-	// above counts only guest -m, so co-located storage VMs, nbdkit (grows with
-	// guest disk I/O), the daemon stack and page cache are invisible to it.
-	// MemAvailable sees all of them and already nets reclaimable cache, catching
-	// real overcommit the accounting would greenlight. nil disables the gate
-	// (SPINIFEX_ADMISSION_LIVE_MEM=0); a read failure fails open.
+	// readMemAvailableGB is the live second admission gate (MemAvailable from
+	// /proc/meminfo). Catches real overcommit the static -m accounting misses.
+	// nil disables it (SPINIFEX_ADMISSION_LIVE_MEM=0); read failure fails open.
 	readMemAvailableGB func() (float64, bool)
 
 	// Dynamic instance-type subscription management
@@ -156,12 +149,9 @@ type Daemon struct {
 	cancel                context.CancelFunc
 	shutdownWg            sync.WaitGroup
 
-	// systemDispatchWg tracks in-flight host-pinned system.LaunchInstance /
-	// system.TerminateInstance handlers. Each request runs in its own goroutine
-	// so a long VM boot never head-of-line blocks the responder's subscription
-	// (267.4). Not awaited at shutdown — these are request-scoped and the reply
-	// is bounded by the requester's timeout; the WaitGroup exists so tests can
-	// deterministically await dispatch completion.
+	// systemDispatchWg tracks in-flight system.LaunchInstance / TerminateInstance
+	// handlers. Each runs in its own goroutine so a slow VM boot never blocks
+	// the NATS subscription. Used by tests to await dispatch completion.
 	systemDispatchWg sync.WaitGroup
 
 	// vmMgr owns the in-memory map of VMs running on this node.
@@ -182,9 +172,8 @@ type Daemon struct {
 	// JetStream manager for KV state storage (nil if JetStream disabled)
 	jsManager *JetStreamManager
 
-	// stateStore is the vm.StateStore-shaped view over jsManager. Both the
-	// vm.Manager and daemon-side handlers route VM-instance state I/O
-	// through it. Initialized after initJetStream succeeds.
+	// stateStore is the vm.StateStore view over jsManager, initialized after
+	// initJetStream succeeds.
 	stateStore vm.StateStore
 
 	// Delay after QMP device_del before blockdev-del (default 1s, 0 in tests)
@@ -193,85 +182,60 @@ type Daemon struct {
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
 	natsRetryOpts []utils.RetryOption
 
-	// requireNATSTimeout caps the first connectNATS attempt when the
-	// SPINIFEX_REQUIRE_NATS=1 strict-startup env var is set (§1d-strict).
-	// Default 30s; tests override to a shorter value to keep the strict-mode
-	// abort path fast.
+	// requireNATSTimeout caps the first connectNATS attempt under
+	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
 	requireNATSTimeout time.Duration
 
-	// exitFunc is invoked when SPINIFEX_REQUIRE_NATS=1 strict-startup is
-	// requested and the bounded first connect fails. Defaults to os.Exit;
-	// tests override to observe the abort without killing the test process.
+	// exitFunc is called when SPINIFEX_REQUIRE_NATS=1 and the first connect
+	// times out. Defaults to os.Exit; tests override to avoid killing the process.
 	exitFunc func(int)
 
 	// networkPlumber handles tap device lifecycle for VPC and management networking
 	networkPlumber vm.NetworkPlumber
 
-	// Management NIC infrastructure: bridge IP + IP allocator for system instances.
-	// Populated at startup when br-mgmt is detected; nil/empty otherwise.
+	// mgmtBridgeIP / mgmtIPAllocator: management NIC infrastructure for system
+	// instances. Populated at startup when br-mgmt is detected.
 	mgmtBridgeIP    string
 	mgmtIPAllocator *MgmtIPAllocator
-	// mgmtRouteVia is the AWSGW bind IP that system instances must route via the
-	// management NIC. Set when AWSGW binds to a specific IP (multi-node).
+	// mgmtRouteVia: AWSGW bind IP system instances route via br-mgmt (multi-node).
 	mgmtRouteVia string
 
-	// gpuProbe holds the result of the always-on startup GPU hardware probe.
-	// Populated regardless of whether gpu_passthrough is enabled in config.
+	// gpuProbe: startup GPU hardware probe result, always populated.
 	gpuProbe gpuProbeResult
 
-	// gpuManager handles VFIO bind/unbind lifecycle for GPU passthrough.
-	// Nil when GPUPassthrough is disabled in config or no recognised GPUs are found.
+	// gpuManager: VFIO bind/unbind for GPU passthrough. Nil when disabled or no GPUs found.
 	gpuManager *gpu.Manager
 
-	// shuttingDown is set to true during coordinated cluster shutdown (GATE phase)
-	// or during SIGTERM-based shutdown. When true, the daemon rejects new work,
-	// crash handlers bail out, and setupShutdown skips redundant VM stops.
+	// shuttingDown: set during GATE or SIGTERM; daemon rejects new work and
+	// crash handlers bail out.
 	shuttingDown atomic.Bool
 
-	// ready is set to true once NATS connection, JetStream, and all services
-	// are fully initialized. The health endpoint reports "starting" until ready.
+	// ready: set once NATS, JetStream, and all services are initialized.
+	// /health reports "starting" until true.
 	ready atomic.Bool
 
-	// natsConnected is true iff the daemon's NATS client TCP connection is
-	// live. Flipped by onNATSDisconnect / onNATSReconnect and by connectNATS
-	// success. False at construction (cluster bootstrap hasn't run yet).
+	// natsConnected: true when the NATS TCP connection is live.
 	natsConnected atomic.Bool
-	// peersReachable is true iff at least one peer daemon's /health responded
-	// in the most recent peer-health probe cycle. Managed by
-	// monitorPeerReachability. Single-node clusters keep this permanently
-	// true (no peers to lose); multi-node clusters start false and flip true
-	// after the first successful probe.
+	// peersReachable: true when at least one peer /health responded in the
+	// last probe cycle. Pinned true on single-node clusters.
 	peersReachable atomic.Bool
 
-	// natsRetryCount counts disconnect→reconnect cycles since process start.
-	// Bumped from onNATSReconnect; surfaced via NATSRetryCount() for the
-	// /local/status endpoint added in 1b.
+	// natsRetryCount: disconnect→reconnect cycles since process start.
 	natsRetryCount atomic.Int64
 
-	// stateRevision is bumped on every successful local-state write. Surfaced
-	// via /local/status so observers can detect changes without diffing payloads.
+	// stateRevision: incremented on each successful WriteState.
 	stateRevision atomic.Uint64
 
-	// kvSyncFailures counts best-effort JetStream KV sync failures (timeout or
-	// put error) since process start. Bumped from RecordKVSyncFailure; surfaced
-	// via /local/status and the spinifex_daemon_kv_sync_failures_total metric.
+	// kvSyncFailures: best-effort JetStream KV sync failures since start.
 	kvSyncFailures atomic.Int64
-	// lastKVSyncAt holds the unix-nano timestamp of the most recent successful
-	// best-effort KV sync. Zero means "never synced since process start".
+	// lastKVSyncAt: unix-nano timestamp of the last successful KV sync.
 	lastKVSyncAt atomic.Int64
-	// lastKVSyncError holds the most recent best-effort KV sync error message
-	// as a string. Cleared back to "" on the next successful sync.
+	// lastKVSyncError: most recent KV sync error message; "" on success.
 	lastKVSyncError atomic.Value
 
-	// reconciling coalesces concurrent reconcileOnHeal invocations. Both
-	// the NATS reconnect callback and the peer-probe heal edge may fire
-	// near-simultaneously on the same heal; the second caller observes
-	// the flag set and returns.
+	// reconciling: coalesces concurrent reconcileOnHeal calls.
 	reconciling atomic.Bool
-	// stateWriteMu serialises WriteState. Concurrent callers (each terminate /
-	// stop goroutine triggers TransitionState → WriteState) share a single
-	// path + ".tmp" staging file; without serialisation one rename races the
-	// other and fails ENOENT, which aborts the cleanup chain and leaks ENIs.
+	// stateWriteMu: serialises WriteState to prevent races on the .tmp staging file.
 	stateWriteMu sync.Mutex
 
 	mu sync.Mutex
@@ -283,18 +247,9 @@ const (
 	DaemonModeCluster    = "cluster"
 )
 
-// Mode returns the daemon's current connectivity mode. "cluster" iff both the
-// local NATS link is up AND at least one peer responded to the most recent
-// /health probe. Any other combination (NATS down, peers unreachable, or
-// both) reports "standalone". Safe to call from any goroutine.
-//
-// The two-signal design covers the DDIL Tier 1 failure modes:
-//   - NATS-only outage (Scenario A): natsConnected=false ⇒ standalone.
-//   - Daemon restart with NATS down (Scenario B): natsConnected=false ⇒
-//     standalone until both NATS and peers return.
-//   - Clean partition with local NATS still up (Scenario C):
-//     peersReachable=false ⇒ standalone even though the client socket is
-//     healthy.
+// Mode returns "cluster" iff both natsConnected and peersReachable are true;
+// otherwise "standalone". Two signals are required so a NATS-up partition
+// (DDIL Scenario C) still reports standalone when no peer responds.
 func (d *Daemon) Mode() string {
 	if d.natsConnected.Load() && d.peersReachable.Load() {
 		return DaemonModeCluster
@@ -349,9 +304,7 @@ func (d *Daemon) RecordKVSyncSuccess(_ string) {
 }
 
 // RecordKVSyncFailure implements KVSyncObserver. Bumps the failure counter and
-// records the error message for /local/status. The bucket arg is reserved for
-// future per-bucket labelling; the current call site is the instance-state
-// bucket and the value is logged via the manager's slog.Warn line.
+// records the error message for /local/status.
 func (d *Daemon) RecordKVSyncFailure(_ string, err error) {
 	d.kvSyncFailures.Add(1)
 	if err != nil {
@@ -376,10 +329,7 @@ func (d *Daemon) onNATSReconnect(_ *nats.Conn) {
 	go d.reconcileOnHeal("nats-reconnect")
 }
 
-// execCommand wraps exec.Command so tests can substitute a fake builder.
-// Mirrors the utils.SudoCommand seam — getSystemMemory shells out to
-// sysctl (darwin) or grep /proc/meminfo (linux), neither of which can be
-// faked without an indirection that the test can swap.
+// execCommand wraps exec.Command so tests can substitute a fake implementation.
 var execCommand = exec.Command
 
 // getSystemMemory returns the total system memory in GB
@@ -425,14 +375,9 @@ func getSystemMemory() (float64, error) {
 	}
 }
 
-// physicalCoreCount returns the number of physical CPU cores. Guest vCPUs are
-// scheduled 1:1 against physical cores rather than SMT threads:
-// runtime.NumCPU() counts logical threads, so on an SMT or hybrid host (e.g.
-// 12 cores / 16 threads) it would let guest vCPUs pack past the physical core
-// count and thrash them during the boot spike. Parses /proc/cpuinfo, counting
-// distinct (physical id, core id) pairs. Falls back to runtime.NumCPU() on
-// non-Linux hosts or when the topology fields are absent (some VMs/containers
-// omit them).
+// physicalCoreCount returns the number of physical CPU cores by parsing
+// distinct (physical id, core id) pairs from /proc/cpuinfo. Falls back to
+// runtime.NumCPU() on non-Linux or when topology fields are absent.
 func physicalCoreCount() int {
 	logical := runtime.NumCPU()
 	if runtime.GOOS != "linux" {
@@ -451,9 +396,8 @@ func physicalCoreCount() int {
 }
 
 // parsePhysicalCores counts distinct (physical id, core id) pairs in
-// /proc/cpuinfo contents — i.e. physical cores, with SMT siblings collapsed.
-// Returns ok=false when the topology fields are absent (some VMs/containers
-// omit them) so the caller can fall back to the logical CPU count.
+// /proc/cpuinfo, collapsing SMT siblings. Returns ok=false when topology
+// fields are absent so the caller can fall back to the logical CPU count.
 func parsePhysicalCores(data []byte) (int, bool) {
 	cores := make(map[string]struct{})
 	var phys, core string
@@ -488,22 +432,12 @@ func parsePhysicalCores(data []byte) (int, bool) {
 	return len(cores), true
 }
 
-// NewResourceManager creates a new resource manager with system capabilities.
-// Returns an error if system memory cannot be detected, since an incorrect
-// default would either under-provision (large servers) or over-commit (small devices).
-// Also returns an error if the host is too small to satisfy the daemon's
-// reserve — clamping silently would defeat the reserve and look like a
-// runtime bug.
-// gpuModels is the list of recognised GPU models present on the host; pass nil if
-// GPU passthrough is disabled or no GPUs were found.
+// NewResourceManager creates a new ResourceManager. Errors if memory detection
+// fails or if the host is too small to satisfy the daemon's reserve.
 func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
-	// Schedule guest vCPUs against physical cores, not SMT threads (see
-	// physicalCoreCount), so a hyperthreaded/hybrid host can't be packed past
-	// what it can actually run. SPINIFEX_HOST_VCPU overrides detection for
-	// hosts that misreport topology.
+	// Use physical cores (not SMT threads); SPINIFEX_HOST_VCPU overrides.
 	hostVCPU := resolveHostVCPU(os.Getenv, physicalCoreCount())
 
-	// Get system memory (in GB)
 	totalMemGB, err := getSystemMemory()
 	if err != nil {
 		return nil, fmt.Errorf("detect system memory: %w", err)
@@ -518,14 +452,11 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		return nil, fmt.Errorf("validate host reserve: %w", err)
 	}
 
-	// Determine architecture
 	arch := "x86_64"
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
 	}
 
-	// Detect CPU generation and generate matching instance types (including GPU
-	// families when gpuModels is non-nil).
 	instanceTypes := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, arch, gpuModels)
 	if len(migProfiles) > 0 {
 		maps.Copy(instanceTypes, instancetypes.GenerateMIGTypes(migProfiles, arch))
@@ -537,8 +468,6 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))
 
-	// Live-memory admission gate: enabled by default, reads /proc/meminfo
-	// MemAvailable at each admission. nil when disabled so liveMemGate is a no-op.
 	var memReader func() (float64, bool)
 	if liveMemAdmissionEnabled(os.Getenv) {
 		memReader = readMemAvailableGB
@@ -575,11 +504,8 @@ func instanceTypeMemoryMiB(it *ec2.InstanceTypeInfo) int64 {
 	return 0
 }
 
-// instanceMemChargeMiB is the full memory admission charges one instance of it:
-// its guest -m plus the nbdkit processes backing its volumes (RG-6). Every
-// accounting gate (both canAllocateCount sites, liveMemGate, allocate,
-// deallocate) divides remaining memory by — or moves the running total by —
-// this value, so the charge and release can never drift.
+// instanceMemChargeMiB is the full per-instance memory charge: guest -m plus
+// nbdkit processes for its volumes. All admission gates use this value.
 func (rm *ResourceManager) instanceMemChargeMiB(it *ec2.InstanceTypeInfo) int64 {
 	return instanceTypeMemoryMiB(it) +
 		nbdkitChargeMiB(defaultMainVolumes, defaultAuxVolumes, rm.nbdkitMainMiB, rm.nbdkitAuxMiB)
@@ -668,12 +594,9 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 	return infos
 }
 
-// GetSupportedInstanceTypeInfos returns every instance type this node is
-// configured to run, irrespective of current free capacity. It mirrors
-// AWS's DescribeInstanceTypes semantics: callers asking "what types do you
-// support?" must see a stable answer even when every slot is occupied.
-// System types and entries with incomplete CPU/memory metadata are still
-// skipped.
+// GetSupportedInstanceTypeInfos returns every supported instance type regardless
+// of current capacity, mirroring AWS DescribeInstanceTypes semantics. System
+// types and entries with incomplete metadata are skipped.
 func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -693,10 +616,8 @@ func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeIn
 	return infos
 }
 
-// GetResourceStats returns current resource allocation stats for the node status response.
-// totalVCPU / totalMemGB are the raw host figures; reservedVCPU / reservedMemGB are
-// held back from guest scheduling. Per-type caps reflect host - reserved - allocated,
-// matching what the admission path will actually permit.
+// GetResourceStats returns host resource figures, reservation, allocation, and
+// per-type capacity caps for the node status response.
 func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []types.InstanceTypeCap) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -788,16 +709,9 @@ func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
 		requireNATSTimeout: 30 * time.Second,
 		exitFunc:           os.Exit,
 	}
-	// Initialise peersReachable optimistically. Mode() also requires
-	// natsConnected, which starts false, so the optimistic init never
-	// causes Mode() to falsely report cluster — but it does prevent the
-	// first probe tick from triggering a spurious "heal" edge on
-	// multi-node clusters at startup (zero-value false → first-successful-
-	// probe true would otherwise fire reconcileOnHeal at boot,
-	// concurrently with startCluster's own bootstrap and perturbing the
-	// timing the DDIL harness relies on). Single-node clusters never
-	// run a probe at all, so this also keeps the prior single-node
-	// behaviour where Mode() flips to cluster the moment NATS comes up.
+	// Initialise peersReachable true so the first probe tick never fires a
+	// spurious reconcileOnHeal at startup. Mode() still requires natsConnected
+	// (starts false), so this can't falsely report cluster mode.
 	d.peersReachable.Store(true)
 	return d, nil
 }
@@ -1054,18 +968,9 @@ func (d *Daemon) subscribeAll() error {
 	return nil
 }
 
-// Start brings the daemon up in two phases (DDIL Tier 1, §1d):
-//
-//  1. startLocal — bootstraps everything that does not need NATS (cluster
-//     manager HTTPS, mgmt bridge + IP allocator, OVS plumber, OOM score,
-//     local instance state via 1a). The daemon is reachable on /local/* and
-//     /health as soon as this returns.
-//  2. startCluster — runs in the background, retries NATS forever, then
-//     initialises JetStream + cluster-scoped services, restores instances,
-//     and subscribes to NATS topics. Mode flips to "cluster" once connected.
-//
-// Process-exit on NATS failure is no longer possible; staying up degraded is
-// always better than killing the local VM management plane.
+// Start bootstraps the daemon in two phases (DDIL Tier 1): startLocal brings
+// up HTTPS + local state without NATS, then startCluster retries NATS
+// indefinitely and joins the cluster once connected.
 func (d *Daemon) Start() error {
 	if err := d.startLocal(); err != nil {
 		return err
@@ -1083,20 +988,12 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
-// startLocal performs the no-NATS bootstrap: HTTPS cluster manager,
-// management bridge detection, network plumber, OOM protection, and local
-// instance-state recovery. Failures here are fatal — these are local
-// configuration errors (TLS misconfig, bad config path) that retry would not
-// fix. The daemon is reachable via /local/* and /health once this returns.
+// startLocal performs the no-NATS bootstrap. Failures here are fatal (local
+// config errors that retry cannot fix). The daemon is reachable via /local/*
+// and /health once this returns.
 //
-// Invariant (DDIL §1e-audit): no code in startLocal may touch JetStream KV.
-// The 25 cluster-scoped / read-cache / expendable buckets enumerated in
-// daemon-local-autonomy.md §1e-audit are initialised exclusively from
-// startCluster() — touching any of them here would defeat Tier 1 autonomy by
-// blocking on NATS at boot. The only KV bucket the daemon owns at Tier 1 is
-// spinifex-instance-state, and even that is read from the local file (see 1a),
-// not JetStream, in this phase. assertNoClusterServicesInitialised below
-// enforces the invariant at runtime.
+// DDIL §1e-audit: no JetStream KV must be touched here. All KV buckets are
+// initialised in startCluster. assertNoClusterServicesInitialised enforces this.
 func (d *Daemon) startLocal() error {
 	// ClusterManager serves /health and /local/* over HTTPS. NATS-independent.
 	if err := d.ClusterManager(); err != nil {
@@ -1134,10 +1031,7 @@ func (d *Daemon) startLocal() error {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
 	}
 
-	// Recover local instance state from disk (1a). Read-only — KV migrations,
-	// QMP reconnects, NATS subscriptions and crashed-VM relaunches happen in
-	// startCluster() once NATS is reachable. Fatal if the file is corrupt:
-	// silently dropping instance state would orphan running VMs.
+	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
 	if err := d.LoadState(); err != nil {
 		return fmt.Errorf("load local instance state: %w", err)
 	}
@@ -1153,10 +1047,8 @@ func (d *Daemon) startLocal() error {
 		return fmt.Errorf("startLocal Tier 1 invariant violated: %w", err)
 	}
 
-	// Peer-health probe runs in startLocal because Mode() needs a partition
-	// signal even when NATS never connects (DDIL Scenario C). The probe is
-	// NATS-independent — it dials each peer's /health over the cluster
-	// network — so it does not violate the Tier 1 invariant asserted above.
+	// Peer-health probe is NATS-independent (dials /health directly) and must
+	// start here so Mode() can detect partitions even if NATS never connects.
 	d.shutdownWg.Go(d.monitorPeerReachability)
 
 	d.ready.Store(true)
@@ -1164,12 +1056,8 @@ func (d *Daemon) startLocal() error {
 	return nil
 }
 
-// assertNoClusterServicesInitialised guards the DDIL §1e-audit Tier 1
-// invariant: at the end of startLocal, no NATS-dependent or KV-backed handle
-// may exist. A non-nil field here means a future edit accidentally hoisted a
-// cluster-scoped initialiser into the no-NATS phase, which would re-introduce
-// the boot-time NATS dependency that 1d removed. Cheap nil sweep — runs once
-// per process, on the bootstrap path only.
+// assertNoClusterServicesInitialised enforces the DDIL §1e-audit invariant:
+// no NATS-dependent handle may exist at the end of startLocal.
 func (d *Daemon) assertNoClusterServicesInitialised() error {
 	switch {
 	case d.natsConn != nil:
@@ -1210,16 +1098,9 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 	return nil
 }
 
-// startCluster performs the cluster-integration phase asynchronously. It
-// retries NATS indefinitely (cap 60s backoff) and only returns once the node
-// is fully participating in the cluster or d.ctx is cancelled. Errors here
-// are logged, never propagated as a process-exit.
-//
-// Invariant (DDIL §1e-audit): every JetStream KV bucket — the 18 cluster-scoped
-// buckets, 4 read-cache (IAM) buckets, and 2 expendable buckets enumerated in
-// daemon-local-autonomy.md §1e-audit — is initialised here, never in
-// startLocal. Adding a new cluster-scoped service belongs in this function;
-// hoisting one into startLocal trips assertNoClusterServicesInitialised.
+// startCluster retries NATS indefinitely and initialises all cluster-scoped
+// services. Errors are logged, not fatal. All JetStream KV buckets (DDIL
+// §1e-audit) must be initialised here, never in startLocal.
 func (d *Daemon) startCluster() error {
 	if os.Getenv("SPINIFEX_REQUIRE_NATS") == "1" {
 		// §1d-strict opt-in: bounded first connect, abort on timeout. Restores
@@ -1239,18 +1120,14 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
-	// Tombstone the spinifex-dhcp-leases bucket left over from the upstream-DHCP
-	// client removed in Phase 2.3. Idempotent — first daemon start on an upgraded
-	// cluster sweeps the bucket; later restarts are no-ops.
+	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := d.natsConn.JetStream(); jsErr == nil {
 		if err := utils.DeleteKVBucketIfExists(js, "spinifex-dhcp-leases"); err != nil {
 			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
 		}
 	}
 
-	// Enable OVN native IPsec on intra-AZ Geneve when the cluster flag is set.
-	// Idempotent — ovs-monitor-ipsec materialises strongSwan configs from the
-	// cert pointers each time ovn-controller programs a tunnel.
+	// Enable OVN native IPsec when configured (idempotent).
 	if d.clusterConfig != nil && d.clusterConfig.Network.IPSecEnabled {
 		if err := host.EnableOVNIPSec(d.configPath, d.clusterConfig); err != nil {
 			slog.Warn("Failed to enable OVN native IPsec; intra-AZ Geneve will be plaintext", "err", err)
@@ -1319,8 +1196,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
 	}
 
-	// Wire the eni-by-vpc-ip reverse index so the ENI controller keeps the
-	// IMDS source-IP→ENI lookup in sync on Create/DeleteNetworkInterface.
+	// Wire eni-by-vpc-ip reverse index for IMDS source-IP→ENI lookup.
 	if vpcJS, jsErr := d.natsConn.JetStream(); jsErr != nil {
 		slog.Warn("Failed to get JetStream for eni-by-ip index", "err", jsErr)
 	} else if eniByIPKV, kvErr := handlers_imds.InitENIByIPBucket(vpcJS, 1); kvErr != nil {
@@ -1346,8 +1222,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
-	// Initialize external IPAM if pool mode is configured (per-VM public IPs).
-	// NAT mode only uses SNAT via a shared gateway IP — no per-VM allocation needed.
+	// Initialize external IPAM for pool mode (per-VM public IPs).
 	if d.clusterConfig != nil && d.clusterConfig.Network.ExternalMode == "pool" {
 		js, jsErr := d.natsConn.JetStream()
 		if jsErr != nil {
@@ -1414,15 +1289,9 @@ func (d *Daemon) startCluster() error {
 		}
 	}
 
-	// Wire deps needed by InstanceService.TerminateStoppedInstance now that
-	// volumeService / vpcService / externalIPAM are constructed.
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, d.externalIPAM)
-
-	// Wire deps for InstanceService.PrepareRunInstances (AMI/key/VPC/IPAM).
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, d.externalIPAM)
 
-	// Wire GPU claimer for InstanceService.StartStoppedInstance — nil when no
-	// passthrough hardware is configured.
 	if d.gpuManager != nil {
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 	}
@@ -1444,27 +1313,16 @@ func (d *Daemon) startCluster() error {
 		d.elbv2Service.VPCService = d.vpcService
 	}
 
-	// Wire LB VM lifecycle: route system VM launches through NATS so they
-	// fan out across the cluster instead of always running on whichever node
-	// handled the upstream CreateLoadBalancer call. The daemon's own
-	// system.LaunchInstance.* subscriptions (registered by ResourceManager)
-	// will pick up the request locally when this node has capacity, or hand
-	// off to another node via the spinifex-workers queue group otherwise.
+	// Route system VM launches through NATS so they fan out across the cluster.
 	d.elbv2Service.InstanceLauncher = handlers_elbv2.NewNATSSystemInstanceLauncher(d.natsConn, 0)
 
-	// Wire system credentials + gateway URL for LB agent SigV4 auth.
 	d.wireLBAgentConfig()
 
-	// System VMs (LB, NAT GW) use the dedicated sys.micro instance type.
 	d.elbv2Service.SetSystemInstanceTypeFunc(func() string {
 		return "sys.micro"
 	})
 
-	// Invalidate persisted target HealthState before subscriptions go live.
-	// Stale "healthy" entries from a pre-restart cluster otherwise satisfy
-	// DescribeTargetHealth waiters before any actual post-restart health
-	// observation has been recorded. Best-effort: a failure here just leaves
-	// the old behavior in place rather than blocking daemon startup.
+	// Invalidate stale "healthy" target state from before restart. Best-effort.
 	if err := d.elbv2Service.ResetTargetHealthOnStartup(context.Background()); err != nil {
 		slog.Warn("ELBv2: target-health reset failed; continuing with stale state",
 			"err", err)
@@ -1512,8 +1370,6 @@ func (d *Daemon) startCluster() error {
 		d.ensureDefaultVPCInfrastructure(failedDefaultVPCs)
 	}
 
-	// Wire vm.Manager collaborators now that NATS, JetStream, network plumber,
-	// volume service, and resource manager are all ready.
 	d.vmMgr.SetDeps(d.buildVMManagerDeps())
 
 	d.waitForClusterReady()
@@ -1522,8 +1378,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("restore instances: %w", err)
 	}
 
-	// Rebuild mgmt IP allocator from restored VMs so we don't re-allocate IPs
-	// that are already in use by running system instances.
+	// Rebuild mgmt IP allocator so already-allocated IPs aren't reused.
 	if d.mgmtIPAllocator != nil {
 		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
 		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
@@ -1533,9 +1388,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
 
-	// Initialize dynamic per-instance-type subscriptions for capacity-aware routing.
-	// Each instance type gets its own NATS topic (ec2.RunInstances.{type}) so requests
-	// are only routed to nodes with available capacity.
+	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)
 
 	d.startHeartbeat()
@@ -1551,12 +1404,8 @@ func (d *Daemon) startCluster() error {
 	return nil
 }
 
-// connectNATS establishes a connection to the NATS server. Defaults to
-// infinite retry with exponential backoff (cap 60s) so the daemon stays up
-// in standalone mode through extended NATS outages instead of process-exiting
-// (DDIL Tier 1). Tests override d.natsRetryOpts to bound the wait. Callers
-// (e.g. §1d-strict) may pass extraOpts that are applied after d.natsRetryOpts
-// so they win on conflicting fields like WithMaxWait.
+// connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests
+// override d.natsRetryOpts; extraOpts override any conflicting fields.
 func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
 	opts := append([]utils.RetryOption{
 		utils.WithMaxWait(0), // infinite retry; cancelled via d.ctx
@@ -1578,10 +1427,8 @@ func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
 	return nil
 }
 
-// initJetStream initializes JetStream with retry/backoff and upgrades replicas
-// for multi-node clusters. On multi-node clusters, JetStream requires NATS
-// cluster quorum which may take several minutes if nodes start at different
-// times. This retries for up to 5 minutes to allow late-joining nodes.
+// initJetStream initialises JetStream KV stores, retrying up to 5 minutes to
+// allow late-joining nodes to reach quorum.
 func (d *Daemon) initJetStream() error {
 	const maxWait = 5 * time.Minute
 	retryDelay := 500 * time.Millisecond
@@ -1622,16 +1469,11 @@ func (d *Daemon) initJetStream() error {
 
 	d.stateStore = newStateStoreAdapter(d.jsManager)
 
-	// Replica upgrade is deferred to after all services have created their
-	// KV buckets and the cluster is ready (see upgradeJetStreamReplicas).
-
 	return nil
 }
 
-// upgradeJetStreamReplicas bumps the replication factor on ALL KV_* streams
-// to match the cluster size. This runs after all services have created their
-// buckets and after waitForClusterReady so that enough NATS peers are online
-// to accept the new replica count.
+// upgradeJetStreamReplicas bumps KV_* stream replication to match the cluster
+// size. Runs after all buckets are created and the cluster is ready.
 func (d *Daemon) upgradeJetStreamReplicas() {
 	clusterSize := len(d.clusterConfig.Nodes)
 	if clusterSize <= 1 || d.jsManager == nil {
@@ -1642,15 +1484,11 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	}
 }
 
-// initRetrySleep is the sleep seam used by initServiceWithRetry. Tests
-// override it to drive backoff cadence without the real 35s wall-clock
-// budget that 7 doublings (500ms→1s→2s→4s→8s→10s→10s) would impose.
+// initRetrySleep is the sleep seam used by initServiceWithRetry; tests override it.
 var initRetrySleep = time.Sleep
 
-// initServiceWithRetry initializes a service using the provided init function,
-// retrying with exponential backoff (500ms→10s) for up to 5 minutes. During
-// cluster restarts, JetStream KV may be temporarily unavailable while NATS
-// routes re-establish and the cluster forms quorum.
+// initServiceWithRetry initialises a service with exponential backoff (500ms→10s)
+// for up to 5 minutes, allowing time for JetStream quorum during cluster restarts.
 func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, error) {
 	const maxWait = 5 * time.Minute
 	retryDelay := 500 * time.Millisecond
@@ -1679,9 +1517,8 @@ func initServiceWithRetry[T any](name string, initFn func() (T, error)) (T, erro
 	}
 }
 
-// waitForClusterReady waits until dependent infrastructure services are reachable
-// before starting VM recovery. This prevents races where VMs try to mount volumes
-// before viperblock/predastore are ready.
+// waitForClusterReady blocks until viperblock and predastore are reachable,
+// preventing races during VM recovery.
 func (d *Daemon) waitForClusterReady() {
 	slog.Info("Waiting for cluster readiness...")
 	maxWait := 2 * time.Minute
@@ -1716,8 +1553,7 @@ func (d *Daemon) waitForClusterReady() {
 	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "maxWait", maxWait)
 }
 
-// checkViperblockReady checks if viperblock is reachable by verifying
-// the NATS connection is up (viperblock subscribes to ebs topics on NATS).
+// checkViperblockReady reports whether viperblock is reachable via NATS.
 func (d *Daemon) checkViperblockReady() bool {
 	if d.natsConn == nil {
 		return false
@@ -1739,11 +1575,8 @@ func (d *Daemon) checkPredastoreReady() bool {
 	return true
 }
 
-// LoadState loads the instance state from the local file. Missing file is the
-// fresh-install signal (start with empty map). Corrupt or unknown-schema files
-// are fatal — caller refuses start rather than silently losing data. There is
-// no KV fallback: a fresh node has empty KV anyway, so silent KV-fallback on
-// file loss would just mask bugs.
+// LoadState loads instance state from disk. Missing file → empty map (fresh
+// install). Corrupt or unknown-schema files are fatal.
 func (d *Daemon) LoadState() error {
 	path := d.localStatePath()
 	state, err := ReadLocalState(path)
@@ -1763,11 +1596,8 @@ func (d *Daemon) LoadState() error {
 	return nil
 }
 
-// restoreInstances delegates to vm.Manager.Restore. vm.Manager only
-// persists to the cluster StateStore (JetStream); the daemon's local
-// crash-recovery file is owned by daemon.WriteState, so we sync it here
-// to preserve the pre-2b invariant that local state == in-memory state
-// after restore. Phase 2f folds this back into vm/.
+// restoreInstances delegates to vm.Manager.Restore and syncs the local state
+// file so it matches in-memory state.
 func (d *Daemon) restoreInstances() error {
 	d.vmMgr.Restore()
 	if err := d.WriteState(); err != nil {
@@ -1786,9 +1616,8 @@ func (d *Daemon) awaitShutdown() {
 	<-done
 }
 
-// computeConfigHash computes SHA256 hash of the shared cluster config (excluding node-specific fields)
+// computeConfigHash computes a SHA256 hash of the shared cluster config.
 func (d *Daemon) computeConfigHash() (string, error) {
-	// Only hash the shared cluster data, not the node-specific top-level field
 	sharedData := types.SharedClusterData{
 		Epoch:   d.clusterConfig.Epoch,
 		Version: d.clusterConfig.Version,
@@ -1803,9 +1632,8 @@ func (d *Daemon) computeConfigHash() (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-// ClusterManager starts the HTTP cluster management server
+// ClusterManager starts the HTTPS cluster management server.
 func (d *Daemon) ClusterManager() error {
-	// Get daemon host from config
 	daemonHost := d.config.Daemon.Host
 	if daemonHost == "" {
 		return fmt.Errorf("daemon.host not configured")
@@ -1813,7 +1641,6 @@ func (d *Daemon) ClusterManager() error {
 
 	r := chi.NewRouter()
 
-	// Health endpoint - responds to HTTP and NATS
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		configHash, err := d.computeConfigHash()
 		if err != nil {
@@ -1827,7 +1654,6 @@ func (d *Daemon) ClusterManager() error {
 		for _, svc := range d.config.GetServices() {
 			serviceHealth[svc] = "ok"
 		}
-		// For remote dependencies, check connectivity
 		if !d.config.HasService("nats") {
 			if d.natsConn != nil && d.natsConn.IsConnected() {
 				serviceHealth["nats"] = "remote_ok"
@@ -1836,7 +1662,6 @@ func (d *Daemon) ClusterManager() error {
 			}
 		}
 
-		// Check OVN networking readiness
 		ovnHealth := host.HealthStatus()
 		if ovnHealth.BrIntExists {
 			serviceHealth["br-int"] = "ok"
@@ -1872,10 +1697,7 @@ func (d *Daemon) ClusterManager() error {
 
 	d.registerLocalRoutes(r)
 
-	// Load TLS certificate.
-	// Resolve relative cert paths against config directory (cert lives alongside spinifex.toml).
-	// For binary installs, systemd sets absolute paths via env vars; for dev, the config
-	// stores relative paths like "config/server.pem" which need resolution.
+	// Resolve relative cert paths against the config directory.
 	tlsCert := d.config.Daemon.TLSCert
 	tlsKey := d.config.Daemon.TLSKey
 	if tlsCert == "" || tlsKey == "" {
@@ -1923,9 +1745,7 @@ func (d *Daemon) ClusterManager() error {
 	return nil
 }
 
-// kvSyncTimeout bounds the best-effort cluster sync so a degraded NATS does
-// not stall every state transition. 1s is well above healthy KV.Put latency
-// and well below a user-visible delay.
+// kvSyncTimeout caps the best-effort KV sync; 1s is above healthy Put latency.
 const kvSyncTimeout = time.Second
 
 // localStatePath returns the on-disk path to this daemon's instance state file.
@@ -1936,14 +1756,8 @@ func (d *Daemon) localStatePath() string {
 	return LocalStatePath(d.config.DataDir)
 }
 
-// WriteState persists the instance state. Local file is the source of truth;
-// JetStream KV is best-effort cluster cache. The local write is fatal on
-// failure; KV failures are logged and swallowed so partition-time clients
-// never see "KV down" errors.
-//
-// Both wire forms are marshalled inside vmMgr.View so json.Marshal sees a
-// stable VM-field snapshot. Marshaling outside the lock would race against
-// concurrent TransitionState writers under the data race detector.
+// WriteState persists instance state. Local file is the source of truth; KV is
+// best-effort. Both forms are marshalled inside vmMgr.View to avoid data races.
 func (d *Daemon) WriteState() error {
 	d.stateWriteMu.Lock()
 	defer d.stateWriteMu.Unlock()
@@ -2059,16 +1873,10 @@ func (d *Daemon) setupShutdown() {
 		<-sigChan
 		slog.Info("Received shutdown signal, cleaning up...")
 
-		// Cancel context to stop heartbeat and other goroutines
 		d.cancel()
 
-		// DDIL Tier 1: SIGTERM alone never stops local VMs.
-		// `systemctl restart spinifex-daemon` must preserve every QEMU child so
-		// the new daemon can reattach via the persisted local state file
-		// (Scenario B). VMs are only stopped when coordinated cluster shutdown
-		// has explicitly drained them — handleShutdownDrain sets shuttingDown
-		// after calling StopAll, and crash/restart handlers also gate on this
-		// flag to bail out.
+		// DDIL Tier 1: SIGTERM alone never stops VMs — the new daemon reattaches
+		// via the local state file. VMs stop only after coordinated DRAIN.
 		if d.shuttingDown.Load() {
 			slog.Info("Coordinated shutdown in progress, skipping VM stop (already handled by DRAIN phase)")
 		} else {
@@ -2076,46 +1884,37 @@ func (d *Daemon) setupShutdown() {
 			d.shuttingDown.Store(true)
 		}
 
-		// Stop ELBv2 background goroutines
 		if d.elbv2Service != nil {
 			d.elbv2Service.Close()
 		}
 
-		// Stop EKS per-cluster reconciler + bootstrap goroutines.
 		if d.eksService != nil {
 			d.eksService.Shutdown()
 		}
 
-		// Final cleanup
 		for _, sub := range d.natsSubscriptions {
-			// Unsubscribe from each subscription
 			slog.Info("Unsubscribing from NATS", "subject", sub.Subject)
 			if err := sub.Unsubscribe(); err != nil {
 				slog.Error("Error unsubscribing from NATS", "err", err)
 			}
 		}
 
-		// Write shutdown marker to cluster state KV
 		if d.jsManager != nil {
 			if err := d.jsManager.WriteShutdownMarker(d.node); err != nil {
 				slog.Error("Failed to write shutdown marker", "err", err)
 			}
 		}
 
-		// Write state to JetStream before closing NATS connection
 		err := d.WriteState()
 		if err != nil {
 			slog.Error("Failed to write state", "err", err)
 		}
 
-		// Close NATS connection. natsConn is nil when the daemon was started
-		// with NATS unreachable and never managed an initial connect — that
-		// is the DDIL Scenario B path (daemon restart while NATS is down).
+		// natsConn is nil when NATS was unreachable at startup (DDIL Scenario B).
 		if d.natsConn != nil {
 			d.natsConn.Close()
 		}
 
-		// Shutdown cluster manager
 		if d.clusterServer != nil {
 			slog.Info("Shutting down cluster manager...")
 			if err := d.clusterServer.Shutdown(context.Background()); err != nil {
@@ -2180,14 +1979,8 @@ func (rm *ResourceManager) canAllocateLocked(instanceType *ec2.InstanceTypeInfo,
 	return rm.liveMemGate(n, instanceType)
 }
 
-// liveMemGate clamps an accounting-derived launch count by the host's current
-// MemAvailable, so admission also refuses launches that fit the static -m budget
-// but would overcommit real memory (untracked storage VMs, nbdkit, daemon stack,
-// cache). Returns n unchanged when the gate is disabled (readMemAvailableGB is
-// nil) or the live read fails — failing open keeps a transient /proc/meminfo
-// error from wedging all launches; the accounting gate still applies. The bound
-// holds at least reservedMem physically available after the launch, read live on
-// each call so back-to-back launches see headroom shrink as guests fault in.
+// liveMemGate clamps n by current MemAvailable, catching overcommit that the
+// static -m budget misses. Returns n unchanged when disabled or on read error.
 func (rm *ResourceManager) liveMemGate(n int, instanceType *ec2.InstanceTypeInfo) int {
 	if rm.readMemAvailableGB == nil || n <= 0 {
 		return n
@@ -2237,9 +2030,7 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.updateInstanceSubscriptions()
 }
 
-// Allocate, Deallocate, CanAllocate, InstanceTypes are the exported facade
-// satisfying handlers_ec2_instance.InstanceTypeAllocator. The unexported
-// variants stay for internal daemon callers.
+// Allocate, Deallocate, CanAllocate satisfy handlers_ec2_instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
 func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
 func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {
@@ -2252,11 +2043,8 @@ func (rm *ResourceManager) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
 	return rm.instanceTypes
 }
 
-// initSubscriptions sets up dynamic per-instance-type NATS subscriptions.
-// Called once during daemon startup after NATS is connected.
-// reloadGPUTypes replaces GPU instance types in-place and updates NATS subscriptions.
-// Called on SIGHUP when gpu_passthrough is toggled. Mutates the existing map so that
-// all holders of the map reference (e.g. instanceService) see the updated types.
+// reloadGPUTypes replaces GPU instance types in the shared map (in-place, so
+// all holders see the update) and refreshes NATS subscriptions. Called on SIGHUP.
 func (rm *ResourceManager) reloadGPUTypes(models []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, mgr *gpu.Manager) {
 	arch := "x86_64"
 	if runtime.GOARCH == "arm64" {
@@ -2290,24 +2078,9 @@ func (rm *ResourceManager) initSubscriptions(nc *nats.Conn, handler nats.MsgHand
 	rm.updateInstanceSubscriptions()
 }
 
-// updateInstanceSubscriptions recalculates which instance types can fit on this
-// node and subscribes/unsubscribes from the corresponding NATS topics.
-//
-// Customer instance types use the ec2.RunInstances.* subject root and the
-// rm.handler callback. Each customer type gets:
-//   - ec2.RunInstances.{type} with spinifex-workers queue group
-//   - ec2.RunInstances.{type}.{nodeId} without queue group (targeted)
-//
-// System instance types (sys.*) are not exposed via the customer EC2 API and
-// instead route under system.LaunchInstance.* with the rm.systemHandler
-// callback. Same shape (queue + node-targeted topic) so ELBv2's ALB-VM
-// launches load-balance across the cluster instead of piling on the handler
-// node that processed the upstream CreateLoadBalancer call.
-//
-// NATS only routes requests to nodes whose subscription is live, so capacity
-// pressure on the queue (anycast) subject naturally re-distributes load when a
-// host fills up. The node-targeted (unicast) subject is deliberately exempt
-// from that gating — see the per-subject rationale below.
+// updateInstanceSubscriptions subscribes/unsubscribes per-type NATS topics
+// based on current capacity. Customer types use ec2.RunInstances.*; system
+// types use system.LaunchInstance.*. Each gets a queue-group and a node-targeted topic.
 func (rm *ResourceManager) updateInstanceSubscriptions() {
 	if rm.natsConn == nil {
 		return
@@ -2352,18 +2125,9 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 		}
 
 		if rm.nodeID != "" {
-			// The node-targeted (unicast) launch subject stays subscribed for any
-			// type this node can ever host, independent of current free capacity.
-			// Unlike the queue (anycast) subject above — where dropping the
-			// subscription when full lets NATS reroute the launch to a node with
-			// room — a node-targeted request names THIS node specifically (a
-			// committed spread/placement reservation, e.g. an EKS HA control-plane
-			// leg). If the subscription were torn down under capacity pressure that
-			// request would fail with 'no responders' instead of reaching the
-			// daemon, even when the reserved slot is still good. Capacity is
-			// enforced at launch time by allocate(), which rejects an over-capacity
-			// launch with an insufficient-capacity error the caller can act on.
-			// Subscribe once when the type first fits; never drop it on capacity.
+			// Node-targeted topic stays subscribed even when capacity is full:
+			// a committed reservation (e.g. spread placement) must not fail with
+			// "no responders". Capacity is enforced at launch time by allocate().
 			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
 			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
 				sub, err := rm.natsConn.Subscribe(nodeTopic, handler)
@@ -2379,13 +2143,8 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 }
 
 // wireLBAgentConfig loads system credentials, resolves the gateway URL,
-// reads the CA certificate, and wires them into the ELBv2 service so LB
-// VMs get SigV4 credentials and gateway URL injected via cloud-init.
+// and wires them into the ELBv2 service for LB VM cloud-init injection.
 func (d *Daemon) wireLBAgentConfig() {
-	// Use system credentials from spinifex.toml (predastore section).
-	// These are the same service-to-service credentials written by admin init
-	// into both spinifex.toml and system-credentials.json. Reading from the
-	// config avoids file permission issues with the separate JSON file.
 	if d.config.Predastore.AccessKey != "" && d.config.Predastore.SecretKey != "" {
 		d.systemAccessKey = d.config.Predastore.AccessKey
 		d.systemSecretKey = d.config.Predastore.SecretKey
@@ -2396,16 +2155,6 @@ func (d *Daemon) wireLBAgentConfig() {
 		slog.Warn("System credentials missing from spinifex.toml predastore section — LB VMs will not have SigV4 credentials for agent auth")
 	}
 
-	// Resolve gateway URL — the address LB VMs use to reach the AWS gateway.
-	// Host selection is centralized in resolveGatewayHost so the OIDC issuer
-	// host and EKS NATS URL come from the same source (see M7). The only
-	// LB-specific extra here is the multi-node mgmt host route: when the host
-	// resolves to a dedicated AWSGW bind IP reachable only over br-mgmt, the
-	// lb-agent needs a bootcmd /32 route via br-mgmt. We deliberately do NOT
-	// add that route when the host is AdvertiseIP — WAN host IPs may share the
-	// advertiseIP and a /32 would steal the return path for host-initiated ALB
-	// connections (reply egresses mgmt with the VM's 10.x source, bypassing
-	// OVN's SNAT, mismatching the open TCP socket dialed against the EIP).
 	awsgwBindIP := ""
 	if d.config.AWSGW.Host != "" {
 		if h, _, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil {
@@ -2417,14 +2166,11 @@ func (d *Daemon) wireLBAgentConfig() {
 
 	gatewayHost := d.resolveGatewayHost()
 
-	// Multi-node mgmt-dedicated AWSGW: host resolved to the bind IP over
-	// br-mgmt (case 1 in resolveGatewayHost). Loopback / no-mgmt / advertiseIP
-	// paths can't satisfy all three guards, so this matches only that case.
+	// Set mgmtRouteVia when AWSGW is only reachable via br-mgmt (multi-node).
 	if gatewayHost != "" && gatewayHost == awsgwBindIP && d.mgmtBridgeIP != "" && awsgwBindIP != advertiseIP {
 		d.mgmtRouteVia = awsgwBindIP
 	}
 
-	// Extract port from AWSGW host config (e.g. "0.0.0.0:9999" → "9999").
 	gatewayPort := "9999"
 	if d.config.AWSGW.Host != "" {
 		if _, port, splitErr := net.SplitHostPort(d.config.AWSGW.Host); splitErr == nil && port != "" {
@@ -2441,24 +2187,14 @@ func (d *Daemon) wireLBAgentConfig() {
 			"awsgwBindIP", awsgwBindIP, "mgmtBridgeIP", d.mgmtBridgeIP, "advertiseIP", advertiseIP)
 	}
 
-	// Pass mgmt route info so buildMicrovmNICs can add a host route for
-	// internal LBs that reach the AWSGW via the management NIC.
 	if d.mgmtRouteVia != "" {
 		d.elbv2Service.MgmtRouteGateway = d.mgmtBridgeIP
 		d.elbv2Service.MgmtRouteTarget = d.mgmtRouteVia
 	}
 
-	// Always expose mgmtBridgeIP and advertiseIP so buildMicrovmNICs can
-	// synthesize a mgmt-NIC fallback route for internal-scheme LBs on
-	// single-node setups (where MgmtRoute{Gateway,Target} stay empty because
-	// internet-facing LBs reach AWSGW via VPC + EIP SNAT). Internal LBs have
-	// no EIP, so without this fallback the agent has no return path and the
-	// LB stays in provisioning forever.
 	d.elbv2Service.MgmtBridgeIP = d.mgmtBridgeIP
 	d.elbv2Service.AdvertiseIP = advertiseIP
 
-	// Read CA cert so direct-boot microvm guests can verify AWSGW TLS.
-	// The NATS CA cert signs the AWSGW server cert (same local CA).
 	if d.config.NATS.CACert != "" {
 		if caBytes, err := os.ReadFile(d.config.NATS.CACert); err == nil {
 			d.elbv2Service.CACert = string(caBytes)
@@ -2471,14 +2207,8 @@ func (d *Daemon) wireLBAgentConfig() {
 	}
 }
 
-// buildGPUPool partitions devices into whole-GPU and MIG entries, constructs a
-// Manager, and returns GPU models for instance-type generation and MIG profile
-// specs for MIG instance-type generation.
-//
-// MIG-enabled GPUs with existing instances (daemon restart) are recovered via
-// AddMIGInstances. Fresh MIG GPUs (no existing instances) are registered via
-// AddMIGGPU for dynamic profile-per-request allocation; their slices are created
-// on the first Claim and destroyed on the last Release.
+// buildGPUPool partitions GPU devices into whole-GPU and MIG entries, constructs
+// a Manager, and returns models and MIG profile specs for instance-type generation.
 func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manager, []instancetypes.GPUModel, []instancetypes.MIGProfileSpec) {
 	type migEntry struct {
 		dev      gpu.GPUDevice
@@ -2552,10 +2282,8 @@ func buildGPUPool(devices []gpu.GPUDevice, cfg config.DaemonConfig) (*gpu.Manage
 	return mgr, models, migProfiles
 }
 
-// resolveGPUModel maps a discovered GPU to an instance type model.
-// Overrides take priority, then the production model list, then a g5 default.
-// Any GPU device that reaches the default path is treated as a g5 instance,
-// so consumer GPUs used for testing work without explicit config entries.
+// resolveGPUModel maps a GPU device to an instance type model. Overrides take
+// priority, then the production model list, then a g5 default.
 func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) instancetypes.GPUModel {
 	for i := range overrides {
 		o := &overrides[i]
@@ -2573,7 +2301,6 @@ func resolveGPUModel(dev gpu.GPUDevice, overrides []config.GPUModelOverride) ins
 	if m := instancetypes.GPUModelForVendorDevice(dev.VendorID, dev.DeviceID); m != nil {
 		return *m
 	}
-	// Default: any discovered GPU device maps to g5 using its detected specs.
 	name := dev.Model
 	if name == "" {
 		name = fmt.Sprintf("GPU %s:%s", dev.VendorID, dev.DeviceID)
@@ -2613,8 +2340,7 @@ func gpuVendorDisplayName(v gpu.Vendor) string {
 	}
 }
 
-// gpuProbeResult holds the outcome of the always-on startup hardware probe.
-// Populated before any config-gated activation logic runs.
+// gpuProbeResult holds the outcome of the startup GPU hardware probe.
 type gpuProbeResult struct {
 	Capable     bool // true when Devices, IOMMUActive, and VFIOPresent are all satisfied
 	IOMMUActive bool
@@ -2622,8 +2348,7 @@ type gpuProbeResult struct {
 	Devices     []gpu.GPUDevice
 }
 
-// probeGPU discovers GPU hardware and checks passthrough prerequisites.
-// It is read-only and has no side effects.
+// probeGPU discovers GPU hardware and checks passthrough prerequisites (read-only).
 func probeGPU() gpuProbeResult {
 	var r gpuProbeResult
 

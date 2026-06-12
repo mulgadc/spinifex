@@ -1,8 +1,6 @@
-// Package eksgw is the on-VM SigV4 client EKS control-plane helpers use to
-// reach the AWS gateway, instead of dialing core NATS. Both eks-gateway-publish
-// (bootstrap + state relay) and eks-token-webhook (TokenReview relay) sign with
-// the system (Predastore) credentials for service "eks" and POST over HTTPS;
-// the gateway authorizes via IAM and relays to the host-side NATS/STS/KV.
+// Package eksgw is the on-VM SigV4 client used by EKS helpers (eks-gateway-publish,
+// eks-token-webhook) to POST over HTTPS to the AWS gateway instead of NATS.
+// Signs with Predastore credentials for service "eks".
 package eksgw
 
 import (
@@ -73,10 +71,8 @@ func New(baseURL, caPath, accessKey, secretKey, region string) (*Client, error) 
 	}, nil
 }
 
-// Post SigV4-signs and sends a single POST of body to path (e.g.
-// "/clusters/alpha/token-review"). It returns the response body on a 2xx, or an
-// error (including the gateway status + body) otherwise. No retry — callers that
-// need it wrap Post in their own loop.
+// Post SigV4-signs and sends body to path, returning the response body on 2xx.
+// Errors include the gateway status and body. No retry; callers wrap as needed.
 func (c *Client) Post(path string, body []byte) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {

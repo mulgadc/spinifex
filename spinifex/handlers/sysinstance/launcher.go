@@ -1,29 +1,12 @@
-// Package sysinstance holds the boot-agnostic contract for launching
-// system-managed VMs. System instances are hidden from customer
-// DescribeInstances calls — BootDirect VMs (LB) via system-account ownership,
-// BootAMI VMs (EKS control plane, owned by the customer account so their ENI
-// can live in the customer VPC) via their ManagedBy tag. Two boot styles are
-// supported:
-//
-//   - BootDirect: a direct-boot microVM (bundled vmlinuz+initramfs, per-VM
-//     config delivered via QEMU fw_cfg blobs; no AMI, volume, or cloud-init).
-//     Used by the ELBv2 LB agent.
-//   - BootAMI: a full AMI boot (root volume cloned from an AMI, cloud-init
-//     user-data + network-config seed, q35 machine). Used by the EKS K3s
-//     control-plane VM.
-//
-// The types live here (not in handlers/elbv2) so both ELBv2 and EKS can launch
-// system instances without an eks→elbv2 dependency. handlers/elbv2 re-exports
-// them as type aliases for source compatibility.
+// Package sysinstance holds the boot-agnostic contract for system-managed VMs.
+// Hidden from DescribeInstances; supports two boot styles: BootDirect (fw_cfg microVM)
+// and BootAMI (AMI + cloud-init). Types live here to avoid an eks→elbv2 import cycle.
 package sysinstance
 
 import "errors"
 
-// ErrSystemInstanceNotFound is returned by TerminateSystemInstance when the
-// target instance is unknown to the daemon — already terminated, or never
-// present on this node. Teardown callers treat it as idempotent success so a
-// retried delete (e.g. EKS DeleteCluster after the VM already drained) does not
-// wedge forever on a VM that is legitimately gone.
+// ErrSystemInstanceNotFound is returned by TerminateSystemInstance when the instance is unknown.
+// Callers treat it as idempotent success so a retried delete does not block on a gone VM.
 var ErrSystemInstanceNotFound = errors.New("sysinstance: instance not found")
 
 // BootMode selects how a system instance boots.
@@ -36,44 +19,29 @@ const (
 	BootAMI BootMode = "ami"
 )
 
-// SystemInstanceLauncher is the subset of daemon functionality needed to launch
-// and terminate system-managed VMs. Defined here to avoid a circular import
-// between the launching handlers (elbv2, eks) and daemon.
+// SystemInstanceLauncher launches and terminates system-managed VMs.
+// Defined here to avoid a circular import between elbv2/eks and daemon.
 type SystemInstanceLauncher interface {
-	// LaunchSystemInstance creates and starts a system-managed VM. The VM is
-	// assigned to the system account and not visible to customers. Returns the
-	// instance ID and private IP once the VM is running.
+	// LaunchSystemInstance creates and starts a system-managed VM, returning its ID and private IP.
 	LaunchSystemInstance(input *SystemInstanceInput) (*SystemInstanceOutput, error)
 
 	// TerminateSystemInstance stops and cleans up a system-managed VM.
 	TerminateSystemInstance(instanceID string) error
 }
 
-// SystemInstanceInput describes a system VM to launch. The BootMode field
-// selects which subset of fields is consumed:
-//
-//   - BootDirect uses NICs, LBAgentEnv, CACert (fw_cfg blobs); ImageID/UserData
-//     are ignored.
-//   - BootAMI uses ImageID and UserData (cloud-init); NICs/LBAgentEnv/CACert are
-//     ignored. The mgmt NIC is allocated by the daemon and rendered into the
-//     cloud-init network-config from the VM record.
-//
-// JSON tags are explicit because this struct crosses the
-// system.LaunchInstance.* NATS subject root when a launch is handed off to the
-// cluster — see daemon/daemon_system_dispatch.go.
+// SystemInstanceInput describes a system VM to launch.
+// BootDirect uses NICs/LBAgentEnv/CACert; BootAMI uses ImageID/UserData.
+// JSON tags are explicit as this struct crosses NATS subjects.
 type SystemInstanceInput struct {
-	// BootMode selects the boot style. Empty defaults to BootDirect for
-	// backward compatibility with the original ELBv2-only contract.
+	// BootMode selects the boot style; empty defaults to BootDirect.
 	BootMode BootMode `json:"boot_mode,omitempty"`
 
-	// ManagedBy is the spinifex:managed-by tag value stamped on the instance so
-	// the UI/customer listings hide it (e.g. "elbv2", "eks").
+	// ManagedBy is the spinifex:managed-by tag value (e.g. "elbv2", "eks").
 	ManagedBy string `json:"managed_by,omitempty"`
 
 	InstanceType string `json:"instance_type"` // e.g. "sys.micro"
 	SubnetID     string `json:"subnet_id"`     // VPC subnet for networking
 
-	// ENI fields — the VM always uses a pre-created ENI (the primary ENI).
 	ENIID  string `json:"eni_id"`
 	ENIMac string `json:"eni_mac"`
 	ENIIP  string `json:"eni_ip"`

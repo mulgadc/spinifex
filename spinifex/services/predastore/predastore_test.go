@@ -237,10 +237,8 @@ func TestServiceStartWithoutConfig(t *testing.T) {
 	t.Skip("Skipping test that requires actual predastore config file - covered by integration tests")
 }
 
-// Start() must fail fast (before touching the pid file or trying to bind a
-// port) when no encryption key file is configured. Predastore itself
-// enforces this at the s3.Server layer, but a clear pre-check error at the
-// spinifex service boundary saves operators an opaque downstream failure.
+// TestServiceStartRejectsMissingEncryptionKey ensures Start fails fast when
+// EncryptionKeyFile is unset, before touching the pid file or binding.
 func TestServiceStartRejectsMissingEncryptionKey(t *testing.T) {
 	cfg := &Config{
 		ConfigPath: "/tmp/test-config.toml",

@@ -8,11 +8,8 @@ import (
 	"testing"
 )
 
-// LocalStateRevision reads the daemon's local state file revision via
-// /local/status. The revision is a monotonic counter bumped on every write
-// to the local state file (see daemon-local-autonomy §1a); AssertMonotonic
-// uses it to prove that a fault did not cause the daemon to rewind or reset
-// its persisted state.
+// LocalStateRevision reads the daemon's local state revision via /local/status.
+// AssertMonotonic uses it to verify a fault didn't rewind persisted state.
 func LocalStateRevision(ctx context.Context, d *DaemonClient, node Node) (uint64, error) {
 	s, err := d.Status(ctx, node)
 	if err != nil {

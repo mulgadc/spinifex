@@ -40,7 +40,6 @@ func GenerateResourceID(prefix string) string {
 	return prefix + "-" + hex.EncodeToString(b)[:17]
 }
 
-// Convert interface to XML
 func MarshalToXML(payload any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := xml.NewEncoder(&buf)
@@ -58,7 +57,7 @@ func MarshalToXML(payload any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// wrapWithLocation decorates payload with the requested locationName tag.
+// GenerateXMLPayload wraps payload with the requested locationName tag.
 func GenerateXMLPayload(locationName string, payload any) any {
 	t := reflect.StructOf([]reflect.StructField{
 		{
@@ -73,10 +72,8 @@ func GenerateXMLPayload(locationName string, payload any) any {
 	return v.Interface()
 }
 
-// GenerateIAMXMLPayload wraps IAM output with proper *Result element structure.
-// IAM responses have format: <ActionResponse><ActionResult>content</ActionResult><ResponseMetadata>...</ResponseMetadata></ActionResponse>
+// GenerateIAMXMLPayload wraps IAM output in the <ActionResponse><ActionResult>...</ActionResult></ActionResponse> structure.
 func GenerateIAMXMLPayload(action string, payload any) any {
-	// First wrap with ActionResult (e.g., CreateUserResult)
 	resultName := action + "Result"
 	resultWrapper := reflect.StructOf([]reflect.StructField{
 		{
@@ -88,7 +85,6 @@ func GenerateIAMXMLPayload(action string, payload any) any {
 	resultV := reflect.New(resultWrapper).Elem()
 	resultV.Field(0).Set(reflect.ValueOf(payload))
 
-	// Then wrap with ActionResponse (e.g., CreateUserResponse)
 	responseName := action + "Response"
 	responseWrapper := reflect.StructOf([]reflect.StructField{
 		{
@@ -103,12 +99,10 @@ func GenerateIAMXMLPayload(action string, payload any) any {
 	return responseV.Interface()
 }
 
-// Generate JSON Error Payload
+// GenerateErrorPayload serializes an ec2.ResponseError with the given code as JSON.
 func GenerateErrorPayload(code string) (jsonResponse []byte) {
 	var responseError ec2.ResponseError
 	responseError.Code = aws.String(code)
-
-	// Return as JSON, to simulate the NATS response
 	jsonResponse, err := json.Marshal(responseError)
 	if err != nil {
 		slog.Error("GenerateErrorPayload could not marshal JSON payload", "err", err)
@@ -118,7 +112,7 @@ func GenerateErrorPayload(code string) (jsonResponse []byte) {
 	return jsonResponse
 }
 
-// Validate the payload is an ec2.ResponseError
+// ValidateErrorPayload decodes payload as an ec2.ResponseError and returns an error when a non-nil Code is detected.
 func ValidateErrorPayload(payload []byte) (responseError ec2.ResponseError, err error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
@@ -126,22 +120,15 @@ func ValidateErrorPayload(payload []byte) (responseError ec2.ResponseError, err 
 	err = decoder.Decode(&responseError)
 
 	if err == nil && responseError.Code != nil {
-		// Successfully decoded as ResponseError AND has a non-nil Code field
-		// This is a real error response
 		return responseError, errors.New("ResponseError detected")
 	}
-
-	// Either failed to decode (not an error structure) or Code is nil (empty valid response)
 	return responseError, nil
 }
 
-// Unmarshal payload
-
+// UnmarshalJsonPayload decodes jsonData into input (already a pointer) using strict field checking.
 func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 	decoder := json.NewDecoder(bytes.NewReader(jsonData))
 	decoder.DisallowUnknownFields()
-
-	// input is already a pointer, don't take address again
 	err := decoder.Decode(input)
 	if err != nil {
 		return GenerateErrorPayload(awserrors.ErrorValidationError)
@@ -153,8 +140,6 @@ func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 func MarshalJsonPayload(input any, jsonData []byte) []byte {
 	decoder := json.NewDecoder(bytes.NewReader(jsonData))
 	decoder.DisallowUnknownFields()
-
-	// input is already a pointer, don't take address again
 	err := decoder.Decode(input)
 	if err != nil {
 		return GenerateErrorPayload(awserrors.ErrorValidationError)
@@ -163,21 +148,13 @@ func MarshalJsonPayload(input any, jsonData []byte) []byte {
 	return nil
 }
 
-// ValidateKeyPairName validates that a key pair name only contains allowed characters:
-// - Uppercase A-Z
-// - Lowercase a-z
-// - Digits 0-9
-// - Hyphen (-)
-// - Underscore (_)
-// - Period (.)
-// This prevents path traversal attacks and invalid characters like /etc/passwd, ../../../, etc.
-// Returns ErrorInvalidKeyPairFormat if validation fails
+// ValidateKeyPairName validates that a key pair name contains only [A-Za-z0-9._-].
+// Rejects empty names and returns ErrorInvalidKeyPairFormat on any invalid character.
 func ValidateKeyPairName(name string) error {
 	if name == "" {
 		return errors.New("key name cannot be empty")
 	}
 
-	// Check each character is in the allowed set
 	for _, char := range name {
 		valid := (char >= 'A' && char <= 'Z') ||
 			(char >= 'a' && char <= 'z') ||
@@ -206,10 +183,7 @@ func CreateS3Client(cfg *config.Config) *s3.S3 {
 	return s3.New(sess)
 }
 
-// Download helper
-
 func DownloadFileWithProgress(url string, name string, filename string, timeout time.Duration) (err error) {
-	// Context with optional timeout and Ctrl+C cancel
 	ctx, cancel := context.WithCancel(context.Background())
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -244,7 +218,6 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 
 	cl := resp.ContentLength
 
-	// Known size: progress bar with total
 	if cl > 0 {
 		bar, _ := pterm.DefaultProgressbar.
 			WithTitle(fmt.Sprintf("Downloading %s", name)).
@@ -252,7 +225,6 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 			Start()
 
 		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
-			// Update progress bar with the number of bytes read in this chunk
 			bar.Add(n)
 		}))
 
@@ -263,7 +235,6 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		}
 		return err
 	} else {
-		// Unknown size: spinner that shows bytes downloaded
 		spin, _ := pterm.DefaultSpinner.
 			WithText("Downloading (size unknown)...").
 			Start()
@@ -306,18 +277,8 @@ func HumanBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPEZY"[exp])
 }
 
-// HashMAC returns a deterministic locally-administered unicast MAC derived
-// from id. Output is always "02:xx:xx:xx:xx:xx" — first octet is pinned to
-// 0x02 (bit0=0 unicast, bit1=1 LAA, all other bits zero) so generated MACs
-// are immediately recognisable as ours and cannot collide with registered
-// vendor OUI space. The remaining 40 bits are SHA-256-derived. Birthday-
-// paradox 1% collision at ~150k ids, 50% at ~1.2M.
-//
-// id must be globally unique across all MACs the deployment produces. No
-// per-deployment salt is mixed in. Callers that share a base id between
-// resource classes (e.g. an instance's dev vs mgmt NIC) must compose a
-// class tag into id ("dev:"+instanceID, "mgmt:"+instanceID). Hardcoded or
-// low-entropy ids will collide.
+// HashMAC returns a deterministic locally-administered unicast MAC for id (SHA-256; first octet 0x02).
+// id must be globally unique; callers sharing a base id across resource classes must compose a class tag (e.g. "dev:"+id).
 func HashMAC(id string) string {
 	sum := sha256.Sum256([]byte(id))
 	b := make([]byte, 6)

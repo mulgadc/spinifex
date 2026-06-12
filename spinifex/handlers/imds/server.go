@@ -19,18 +19,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ensureVethFunc / removeVethFunc are the per-subnet host veth lifecycle hooks,
-// injected (not imported) to avoid an import cycle via network/host. vpcd passes
-// host.EnsureIMDSVeth / host.RemoveIMDSVeth; tests pass root-free fakes. ensure
-// takes the subnet CIDR (added on-link in the netns so the reply resolves the
-// guest by ARP) and returns the per-subnet netns the listener must be created in
-// plus the host-end veth name (now living inside that netns).
+// ensureVethFunc is the per-subnet host veth lifecycle hook injected to avoid an import cycle.
+// Returns the per-subnet netns name and the host-end veth name.
 type ensureVethFunc func(ctx context.Context, subnetID string, cidr netip.Prefix) (netnsName, hostEnd string, err error)
 type removeVethFunc func(ctx context.Context, subnetID string) error
 
-// listenFunc binds a TCP listener on 169.254.169.254:80 inside the subnet's netns,
-// scoped to its host veth. Swappable in tests so bind-manager logic runs without
-// CAP_NET_ADMIN or a real netns. An empty netnsName binds in the current netns.
+// listenFunc binds a TCP listener on 169.254.169.254:80 inside the subnet's netns.
+// An empty netnsName binds in the current netns; swapped in tests to avoid CAP_NET_ADMIN.
 type listenFunc func(ctx context.Context, netnsName, hostEnd string) (net.Listener, error)
 
 // activeBinding is the per-subnet realised state: a listener bound to the subnet's
@@ -40,9 +35,8 @@ type activeBinding struct {
 	server   *http.Server
 }
 
-// bindManager realises the per-chassis IMDS listener stack. It runs on every
-// chassis and eagerly materialises a veth + OVS port + listener for every subnet in
-// the subnet-veth bucket — lifecycle is "watch the bucket, ensure local state".
+// bindManager realises the per-chassis IMDS listener stack, materialising a listener
+// per subnet by watching the subnet-veth bucket.
 type bindManager struct {
 	kv         nats.KeyValue // spinifex-network-imds-subnet-veth
 	store      *VethStore    // reads the subnet CIDR the host on-link route needs
@@ -67,8 +61,8 @@ func newBindManager(kv nats.KeyValue, handler http.Handler, ensure ensureVethFun
 	}
 }
 
-// sync reads the full subnet-veth bucket and binds a listener for every entry. Run
-// once at startup; idempotent, so a re-sync after a transient error is safe.
+// sync reads the subnet-veth bucket and binds a listener for every entry.
+// Idempotent; safe to re-call after a transient error.
 func (b *bindManager) sync(ctx context.Context) error {
 	keys, err := b.kv.Keys()
 	if err != nil {
@@ -79,7 +73,7 @@ func (b *bindManager) sync(ctx context.Context) error {
 	}
 	for _, subnetID := range keys {
 		if subnetID == utils.VersionKey {
-			continue // schema-version marker written by migrate.RunKV, not a subnet
+			continue // schema-version marker, not a subnet
 		}
 		vpcID, cidr, err := b.subnetBinding(subnetID)
 		if err != nil {
@@ -93,12 +87,8 @@ func (b *bindManager) sync(ctx context.Context) error {
 	return nil
 }
 
-// subnetBinding reads the persisted veth record for subnetID and returns the two
-// facts bind needs: the owning VPC (the subnet→VPC static lookup — the listener
-// identifies the subnet, the eni-by-vpc-ip index is keyed vpcID/ip) and the
-// subnet CIDR (added on-link in the netns so the reply resolves the guest by
-// ARP). A record missing either field is malformed; bind cannot proceed without
-// them, and the reconciler re-publishes a complete record to converge.
+// subnetBinding returns the owning VPC ID and subnet CIDR for the given subnetID.
+// Returns an error if the veth record is missing or incomplete.
 func (b *bindManager) subnetBinding(subnetID string) (vpcID string, cidr netip.Prefix, err error) {
 	rec, err := b.store.Get(subnetID)
 	if err != nil {
@@ -117,9 +107,7 @@ func (b *bindManager) subnetBinding(subnetID string) (vpcID string, cidr netip.P
 	return rec.VPCID, cidr, nil
 }
 
-// watch reacts to subnet-veth bucket changes for the life of ctx: a Put binds the
-// subnet (if not already bound), a Delete unbinds it and tears down the veth. Both
-// transitions are idempotent.
+// watch reacts to subnet-veth bucket changes: Put binds, Delete/Purge unbinds. Idempotent.
 func (b *bindManager) watch(ctx context.Context) {
 	watcher, err := b.kv.WatchAll(nats.Context(ctx))
 	if err != nil {
@@ -137,12 +125,10 @@ func (b *bindManager) watch(ctx context.Context) {
 				return
 			}
 			if entry == nil {
-				// nil marks the end of the initial replay; sync() already
-				// covered those, so there is nothing extra to do.
-				continue
+				continue // end of initial replay; sync() already handled those
 			}
 			if entry.Key() == utils.VersionKey {
-				continue // schema-version marker written by migrate.RunKV, not a subnet
+				continue // schema-version marker, not a subnet
 			}
 			switch entry.Operation() {
 			case nats.KeyValuePut:
@@ -161,10 +147,8 @@ func (b *bindManager) watch(ctx context.Context) {
 	}
 }
 
-// bind ensures the subnet's host veth (with the subnet CIDR on-link for the reply
-// path) then opens a device-scoped listener for subnetID. vpcID is the subnet's
-// statically-resolved owning VPC, threaded into every request so the handler can
-// key the eni-by-vpc-ip index. A no-op if already bound.
+// bind ensures the subnet's host veth, then opens a device-scoped listener.
+// vpcID is threaded into every request for ENI resolution. No-op if already bound.
 func (b *bindManager) bind(ctx context.Context, subnetID, vpcID string, cidr netip.Prefix) error {
 	b.mu.Lock()
 	if _, ok := b.active[subnetID]; ok {
@@ -186,9 +170,6 @@ func (b *bindManager) bind(ctx context.Context, subnetID, vpcID string, cidr net
 	server := &http.Server{
 		Handler:           b.handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		// Tag every request from this listener with the subnet it serves and that
-		// subnet's owning VPC. The handler pairs the VPC with the datapath-attested
-		// source IP to resolve the ENI; the subnet ID rides along for triage.
 		BaseContext: func(net.Listener) context.Context {
 			c := context.WithValue(ctx, ctxKeyVPCID, vpcID)
 			return context.WithValue(c, ctxKeySubnetID, subnetID)
@@ -196,8 +177,7 @@ func (b *bindManager) bind(ctx context.Context, subnetID, vpcID string, cidr net
 	}
 
 	b.mu.Lock()
-	// Re-check under lock in case a concurrent bind won the race.
-	if _, ok := b.active[subnetID]; ok {
+	if _, ok := b.active[subnetID]; ok { // re-check under lock
 		b.mu.Unlock()
 		_ = listener.Close()
 		return nil
@@ -233,10 +213,7 @@ func (b *bindManager) unbind(ctx context.Context, subnetID string) {
 	slog.Info("IMDS: listener unbound", "subnet_id", subnetID)
 }
 
-// shutdown closes every active listener. The host veths are intentionally left
-// in place: they are cheap, idempotent to re-ensure on the next start, and
-// tearing them down on a clean vpcd restart would needlessly disrupt any other
-// chassis-local consumer.
+// shutdown closes every active listener. Host veths are left in place for cheap re-ensure on restart.
 func (b *bindManager) shutdown() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -248,16 +225,9 @@ func (b *bindManager) shutdown() {
 	}
 }
 
-// bindLocalListener opens a TCP listener on 169.254.169.254:80 inside the subnet's
-// netns, where the host-end veth carries 169.254.169.254/30 with the subnet CIDR
-// on-link — so the host-served reply resolves the guest by ARP over the localport
-// on the guest's own L2 switch (SO_BINDTODEVICE alone in the root netns could not
-// route the SYN-ACK). The netns also isolates subnets whose CIDRs overlap, since
-// each is its own routing domain. The socket must be *created* in the netns, so we
-// enter it on a locked thread for the socket call and restore the root netns before
-// serving.
-// SO_BINDTODEVICE (belt-and-braces — there is only one veth in the netns) and
-// SO_REUSEADDR (fast rebind on vpcd restart) are still set on the fd.
+// bindLocalListener opens 169.254.169.254:80 inside the subnet's netns.
+// The socket is created inside the netns (locked thread) so the fd belongs to it;
+// SO_BINDTODEVICE and SO_REUSEADDR are also set.
 func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(_, _ string, c syscall.RawConn) error {
@@ -279,8 +249,7 @@ func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.List
 	}
 
 	if netnsName == "" {
-		// No netns (tests, or a degraded host): bind in the current netns.
-		return bind()
+		return bind() // no netns: bind in current netns (tests or degraded host)
 	}
 
 	var ln net.Listener
@@ -295,12 +264,8 @@ func bindLocalListener(ctx context.Context, netnsName, hostEnd string) (net.List
 	return ln, nil
 }
 
-// inNetns runs fn on a dedicated OS thread switched into the named network
-// namespace, then restores the root netns. fn's socket-creating syscalls happen
-// in the target netns, so the listener fd belongs to it; once created, the fd is
-// served normally from any thread. If the root netns cannot be restored the
-// thread is poisoned, so the goroutine returns while still locked and the Go
-// runtime retires the thread rather than returning it to the pool.
+// inNetns runs fn on a locked OS thread switched into the named netns, then restores root netns.
+// If root netns cannot be restored the goroutine exits locked so the runtime retires the thread.
 func inNetns(netnsName string, fn func() error) error {
 	const netnsDir = "/var/run/netns/"
 	errCh := make(chan error, 1)
@@ -333,8 +298,7 @@ func inNetns(netnsName string, fn func() error) error {
 		fnErr := fn()
 
 		if err := unix.Setns(int(orig.Fd()), unix.CLONE_NEWNET); err != nil {
-			// Cannot return to the root netns — leave the thread locked so the
-			// runtime destroys it when this goroutine exits.
+			// Thread poisoned — leave it locked so the runtime retires it.
 			errCh <- errors.Join(fnErr, fmt.Errorf("restore root netns: %w", err))
 			return
 		}

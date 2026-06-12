@@ -21,9 +21,8 @@ const (
 	restartBackoffMax  = 2 * time.Minute
 )
 
-// restartAfterFunc is the scheduling seam used by MaybeRestart. Tests
-// override it to capture the scheduled callback without firing a real
-// timer (the backoff is multi-second).
+// restartAfterFunc is a var so tests can capture the restart callback without
+// firing a real timer (backoff is multi-second).
 var restartAfterFunc = time.AfterFunc
 
 // RestartBackoff computes the exponential backoff delay for the given
@@ -39,9 +38,8 @@ func RestartBackoff(restartCount int) time.Duration {
 	return delay
 }
 
-// ClassifyCrashReason extracts a human-readable crash reason from the error
-// returned by cmd.Wait(). Uses exec.ExitError + syscall.WaitStatus to
-// distinguish OOM kills (SIGKILL), segfaults (SIGSEGV), etc.
+// ClassifyCrashReason extracts a human-readable crash reason from cmd.Wait()'s
+// error, distinguishing OOM kills, segfaults, aborts, and other signals.
 func ClassifyCrashReason(waitErr error) string {
 	if waitErr == nil {
 		return "clean-exit"
@@ -77,13 +75,9 @@ func ClassifyCrashReason(waitErr error) string {
 	return "unknown"
 }
 
-// HandleCrash is the QEMU exit goroutine's reaction when cmd.Wait() returns
-// during runtime (after startup was confirmed). It detects the crash reason,
-// transitions the instance to error state, releases resources, unmounts
-// volumes, and triggers MaybeRestart.
-//
-// Wired as Deps.CrashHandler so the launch goroutine in lifecycle.go can
-// invoke it without importing the manager into a separate goroutine spawner.
+// HandleCrash reacts to an unexpected QEMU exit after startup was confirmed:
+// classifies the reason, transitions to error, releases resources, unmounts
+// volumes, and calls MaybeRestart. Wired as Deps.CrashHandler.
 func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	if status := m.Status(instance); status != StateRunning {
 		slog.Debug("QEMU exited but instance not in running state, skipping crash handler",
@@ -142,9 +136,8 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	m.MaybeRestart(instance)
 }
 
-// MaybeRestart checks restart policy and schedules a restart via
-// time.AfterFunc when allowed. Bails out on coordinated shutdown, unknown
-// instance type, exhausted restart window, or insufficient host capacity.
+// MaybeRestart checks restart policy and schedules a restart via time.AfterFunc.
+// No-op on shutdown, unknown instance type, exceeded restart window, or no capacity.
 func (m *Manager) MaybeRestart(instance *VM) {
 	if m.deps.ShutdownSignal != nil && m.deps.ShutdownSignal() {
 		slog.Info("Skipping restart during shutdown", "instance", instance.ID)
@@ -210,10 +203,9 @@ func (m *Manager) MaybeRestart(instance *VM) {
 	})
 }
 
-// RestartCrashedInstance re-verifies the instance is still in error state
-// and relaunches it via Manager.Run. Reallocates resources before relaunch
-// (HandleCrash deallocates them) and rolls back the transition + allocation
-// if the relaunch fails.
+// RestartCrashedInstance re-verifies the instance is in error state, reallocates
+// resources (HandleCrash deallocated them), and relaunches via Manager.Run.
+// Rolls back the transition and allocation if relaunch fails.
 func (m *Manager) RestartCrashedInstance(instance *VM) {
 	var skipReason string
 	var restartCount int

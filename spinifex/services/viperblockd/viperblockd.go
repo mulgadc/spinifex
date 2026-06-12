@@ -24,20 +24,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// loadStateRetryAttempts and loadStateRetryBaseDelay tune the mount-time
-// retry loop for transient backend errors (predastore restarting, NATS
-// disconnect, etc.). 5 attempts at 200ms * 1.5^n caps total wait at ~3.7s,
-// well under the daemon's 30s ebs.mount NATS timeout. See mulga-siv-25.
+// loadStateRetryAttempts / loadStateRetryBaseDelay tune the mount-time retry
+// loop (5 attempts at 200ms * 1.5^n ≈ 3.7s; well under the 30s NATS timeout).
 const (
 	loadStateRetryAttempts  = 5
 	loadStateRetryBaseDelay = 200 * time.Millisecond
 )
 
-// retryLoadState invokes loadFn up to attempts times, retrying with
-// exponential backoff (delay * 3/2 each step) only when the returned error
-// is viperblock.ErrStateBackendUnavailable. Success, ErrStateNotFound, and
-// any unclassified error return immediately so callers see them. Extracted
-// for unit testability — see loadStateWithRetry for the production caller.
+// retryLoadState invokes loadFn with exponential backoff (delay * 3/2 each step)
+// on ErrStateBackendUnavailable only; other errors return immediately.
 func retryLoadState(volume string, attempts int, baseDelay time.Duration, sleep func(time.Duration), loadFn func() error) error {
 	delay := baseDelay
 	var err error
@@ -109,10 +104,8 @@ type Config struct {
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool
 
-	// EncryptionKeyFile is the path to the shared 32-byte AES-256 master key
-	// used to seal viperblock WAL records, chunk blocks, and metadata. When
-	// empty the daemon mounts volumes in cleartext mode (legacy). Loaded once
-	// at launchService start; the parsed key is cached in masterKey.
+	// EncryptionKeyFile is the path to the shared AES-256 master key for at-rest
+	// encryption. Empty → cleartext mode (legacy).
 	EncryptionKeyFile string
 
 	masterKey *masterkey.Key
@@ -226,7 +219,6 @@ func (svc *Service) Reload() (err error) {
 }
 
 func launchService(cfg *Config) (err error) {
-	// Connect to NATS
 	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		slog.Error("Failed to connect to NATS", "err", err)
@@ -326,7 +318,6 @@ func launchService(cfg *Config) (err error) {
 	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
 		slog.Info("Received message", "data", string(msg.Data))
 
-		// Parse the message
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
 			slog.Error("Failed to unmarshal ebs.unmount message", "err", err)
@@ -453,7 +444,6 @@ func launchService(cfg *Config) (err error) {
 	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
 		slog.Info("Received message:", "data", string(msg.Data))
 
-		// Parse the message
 		var ebsRequest types.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
 			slog.Error("Failed to unmarshal ebs.mount message", "err", err)
@@ -531,10 +521,7 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		// Next, connect to the volume and confirm the state
-		// First, fetch the state from the remote backend. Retry on transient
-		// backend errors (predastore restart races, NATS hiccups) so daemon
-		// recovery doesn't tip a healthy volume into the cleanup path.
+		// Retry on transient backend errors so daemon recovery doesn't tip a healthy volume into cleanup.
 		err = loadStateWithRetry(vb, ebsRequest.Name)
 
 		if err != nil {
@@ -543,9 +530,6 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		// Next, mount the volume using nbdkit
-
-		// Determine transport type (default to socket)
 		useTCP := cfg.NBDTransport == types.NBDTransportTCP
 
 		var nbdURI string
@@ -649,7 +633,6 @@ func launchService(cfg *Config) (err error) {
 			slog.Error("NBDKit exited", "code", exitCode)
 		}()
 
-		// Wait for startup result
 		pid := <-processChan
 
 		if pid == 0 {

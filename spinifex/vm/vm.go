@@ -49,13 +49,10 @@ type VM struct {
 	// User attributes (user initiated stop/delete)
 	Attributes types.EC2CommandAttributes `json:"attributes"`
 
-	// EC2 API metadata - stored for AWS API compatibility
-	// RunInstancesInput contains the original request parameters (ImageId, KeyName, UserData, etc.)
+	// EC2 API metadata stored for AWS API compatibility.
 	RunInstancesInput *ec2.RunInstancesInput `json:"run_instances_input,omitempty"`
-	// Reservation contains the reservation metadata (ReservationId, OwnerId, etc.)
-	Reservation *ec2.Reservation `json:"reservation,omitempty"`
-	// Instance contains the current instance state and metadata
-	Instance *ec2.Instance `json:"instance,omitempty"`
+	Reservation       *ec2.Reservation       `json:"reservation,omitempty"`
+	Instance          *ec2.Instance          `json:"instance,omitempty"`
 
 	// LastNode records which daemon node last ran this instance.
 	// Set when ownership is released on stop for shared KV storage.
@@ -67,30 +64,24 @@ type VM struct {
 	// Health tracks crash detection and auto-restart state
 	Health InstanceHealthState `json:"health"`
 
-	// AccountID is the AWS account that owns this instance.
-	// Empty AccountID identifies legacy/migration resources that are only
-	// visible to the root account.
+	// AccountID is the AWS account that owns this instance. Empty for legacy
+	// resources visible only to the root account.
 	AccountID string `json:"account_id,omitempty"`
 
 	// VPC networking: ENI attached to this instance (set by RunInstances when VPC mode is active)
 	ENIId  string `json:"eni_id,omitempty"`
 	ENIMac string `json:"eni_mac,omitempty"`
 
-	// ExtraENIs lists additional VPC NICs beyond the primary ENIId/ENIMac.
-	// Used by multi-AZ system VMs (ALBs with subnets in multiple subnets) —
-	// each entry gets its own tap device on br-int and its own QEMU NIC.
-	// Empty for customer EC2 instances and single-subnet ALBs.
+	// ExtraENIs lists additional VPC NICs beyond the primary ENI.
+	// Each gets its own tap on br-int. Empty for single-ENI instances.
 	ExtraENIs []ExtraENI `json:"extra_enis,omitempty"`
 
 	// Public IP auto-assigned from external IPAM pool (released on termination)
 	PublicIP     string `json:"public_ip,omitempty"`
 	PublicIPPool string `json:"public_ip_pool,omitempty"`
 
-	// PublicIPAllocID / PublicIPAssocID are set when the public IP was
-	// allocated through the EIP service (handlers/ec2/eip) rather than
-	// directly via externalIPAM. Presence signals that teardown must go
-	// back through the EIP service (DisassociateAddress + ReleaseAddress)
-	// so the EIP KV record is removed.
+	// PublicIPAllocID / PublicIPAssocID are set when the IP was allocated via the
+	// EIP service; teardown must go through DisassociateAddress + ReleaseAddress.
 	PublicIPAllocID string `json:"public_ip_alloc_id,omitempty"`
 	PublicIPAssocID string `json:"public_ip_assoc_id,omitempty"`
 
@@ -123,33 +114,25 @@ type VM struct {
 	// attached. Auto-cleared on TerminateInstances; preserved across stop/start.
 	IamInstanceProfileArn string `json:"iam_instance_profile_arn,omitempty"`
 
-	// IamInstanceProfileAssociationId is the synthesized AWS-style association
-	// ID (iip-assoc-...) used by DescribeIamInstanceProfileAssociations and
-	// Disassociate/Replace. Empty when no profile is attached. Regenerated on
-	// every Associate/Replace — never reused.
+	// IamInstanceProfileAssociationId is the association ID used by
+	// DescribeIamInstanceProfileAssociations. Regenerated on every Associate/Replace.
 	IamInstanceProfileAssociationId string `json:"iam_instance_profile_association_id,omitempty"`
 
-	// DirectBoot signals that this VM was configured with a pre-built
-	// vm.Config by the launcher (microvm direct-boot path). When true,
-	// startQEMU skips buildBaseVMConfig and uses the existing Config
-	// instead. False for all PC-machine VMs.
+	// DirectBoot signals that Config was pre-built by the launcher (microvm path).
+	// When true, startQEMU skips buildBaseVMConfig.
 	DirectBoot bool `json:"direct_boot,omitempty"`
 
-	// GPUAttachments describes how GPUs are attached to this instance. Empty for
-	// non-GPU instances. Each entry carries either a PCI address (whole-GPU VFIO
-	// passthrough) or an mdev path (MIG slice), never both.
+	// GPUAttachments describes GPU attachments. Each entry has either a PCI address
+	// (whole-GPU VFIO passthrough) or an mdev path (MIG slice), never both.
 	GPUAttachments []gpu.GPUAttachment `json:"gpu_attachments,omitempty"`
 
-	// BootMode captures the AMI's boot mode ("bios" | "uefi" | "uefi-preferred")
-	// at launch time so the firmware choice survives daemon restart and host
-	// migration without re-querying AMIMetadata. Empty for legacy VMs launched
-	// before this field existed; treated as "bios" by the launch path.
+	// BootMode captures the AMI's boot mode at launch so firmware choice survives
+	// restarts. Empty for legacy VMs; treated as "bios" by the launch path.
 	BootMode string `json:"boot_mode,omitempty"`
 }
 
-// ResetNodeLocalState zeroes out fields that are specific to the daemon node
-// that last ran this instance. Must be called after deserializing a VM from
-// shared KV before launching it on a new node.
+// ResetNodeLocalState zeroes node-specific fields after deserializing a VM
+// from shared KV before launching it on a new node.
 func (v *VM) ResetNodeLocalState() {
 	v.MetadataServerAddress = ""
 	v.QMPClient = &qmp.QMPClient{}
@@ -217,11 +200,8 @@ type Config struct {
 	InstanceType string `json:"instance_type"`
 	Architecture string `json:"architecture"`
 
-	// UseUEFI requests UEFI firmware (OVMF on x86_64, AAVMF on arm64) instead of
-	// SeaBIOS / no-firmware boot. Execute() probes firmwarePathCandidates and
-	// returns an error if no matching code+vars pair is installed — no silent
-	// SeaBIOS fallback, since a UEFI-only guest booted under SeaBIOS panics on
-	// missing ESP.
+	// UseUEFI requests UEFI firmware. Execute() probes FirmwarePathCandidates and
+	// returns an error if no pair is found — no silent SeaBIOS fallback.
 	UseUEFI bool `json:"use_uefi,omitempty"`
 
 	KernelImage   string       `json:"kernel_image,omitempty"`   // path to vmlinuz; emits -kernel when set

@@ -22,10 +22,8 @@ var _ vm.NetworkPlumber = (*OVSPlumber)(nil)
 func NewOVSPlumber() *OVSPlumber { return &OVSPlumber{} }
 
 // SetupTap creates the kernel tap, brings it up, and attaches it to spec.Bridge.
-// The pre-create del-port is unconditional because OVS conf.db survives reboot
-// while kernel taps don't, so a /sys/class/net check would miss orphan ports.
-// Rejected alternative: `--may-exist add-port` — it would silently keep stale
-// external_ids from a prior launch with a different ENI/MAC.
+// Pre-create del-port is unconditional: OVS conf.db survives reboot but kernel
+// taps don't, and --may-exist would silently keep stale external_ids.
 func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	if err := utils.SudoCommand("ovs-vsctl", "--if-exists", "del-port", spec.Bridge, spec.Name).Run(); err != nil {
 		slog.Warn("Pre-create del-port failed (continuing)", "tap", spec.Name, "bridge", spec.Bridge, "err", err)
@@ -36,17 +34,9 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 		}
 	}
 
-	// When the daemon runs non-root (production: User=spinifex-daemon), child
-	// QEMU processes inherit that uid without CAP_NET_ADMIN. The kernel's tun
-	// attach check then requires the tap to be owned by the calling euid
-	// (drivers/net/tun.c: tun_chr_open + TUNSETIFF perm check). Without the
-	// `user` flag the tap defaults to root:root and qemu's TUNSETIFF fails
-	// with EPERM ("could not configure /dev/net/tun: Operation not permitted").
-	// Pass numeric uid/gid directly — user.Current() can fail silently under
-	// hardened systemd units / static builds, dropping the flags and leaving
-	// the tap root-owned (LB microvm in cell-17/tofu-examples). Numeric values
-	// always work and skip the NSS lookup. Root daemons skip this — they have
-	// CAP_NET_ADMIN ambient.
+	// Non-root daemon: QEMU inherits the uid without CAP_NET_ADMIN, so the tap
+	// must be owned by the calling euid (kernel TUNSETIFF check). Use numeric
+	// uid/gid to avoid NSS lookup failures in hardened systemd units.
 	addArgs := []string{"tuntap", "add", "dev", spec.Name, "mode", "tap"}
 	if uid := os.Geteuid(); uid != 0 {
 		addArgs = append(addArgs, "user", strconv.Itoa(uid), "group", strconv.Itoa(os.Getegid()))

@@ -14,11 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 )
 
-// SSHTarget is the minimal addressing tuple needed by LsblkRootGiB. The
-// existing harness.SSH interface requires a Cluster.Node, but the single-host
-// e2e suite addresses individual instances by (host, port, key) discovered at
-// runtime — those don't fit a Cluster. Defined here rather than in ssh.go to
-// keep the production SSH transport untouched.
+// SSHTarget is the minimal addressing tuple used by LsblkRootGiB. Unlike
+// harness.SSH / Cluster.Node, instances here are addressed by (host, port, key)
+// discovered at runtime, which doesn't fit the Cluster model.
 type SSHTarget struct {
 	User    string
 	Host    string
@@ -27,14 +25,9 @@ type SSHTarget struct {
 }
 
 // InstancePublicSSHHost returns (host, 22) for an SSH connection to inst's
-// public IP.
-//
-// There is deliberately NO qemu-hostfwd fallback. hostfwd (127.0.0.1 ->
-// guest:22) is a dev_networking shortcut that bypasses the OVN datapath
-// entirely — no SG ACL, no IGW, no SNAT/DNAT — so a test that reached a guest
-// through it would validate nothing real and mask exactly the networking
-// regressions these tests exist to catch. An instance with no public IP is a
-// hard failure: the routing it depends on is broken or unconfigured.
+// public IP. No qemu-hostfwd fallback: hostfwd bypasses the OVN datapath (no
+// SG ACL, no IGW, no SNAT/DNAT), masking the networking regressions these
+// tests exist to catch. No public IP is a hard failure.
 func InstancePublicSSHHost(t *testing.T, inst *ec2.Instance) (string, int) {
 	t.Helper()
 	if inst == nil {
@@ -49,11 +42,8 @@ func InstancePublicSSHHost(t *testing.T, inst *ec2.Instance) (string, int) {
 	return pub, 22
 }
 
-// LsblkRootGiB SSHes into the VM and returns the root disk size in GiB,
-// cross-checking the value the API reports against the guest's view.
-//
-// Equivalent of run-e2e.sh's lsblk pipeline (findmnt → lsblk PKNAME → lsblk
-// -b -d). Returns the GiB rounded down (same math as bash: bytes / 1<<30).
+// LsblkRootGiB SSHes into the VM and returns the root disk size in GiB
+// (bytes / 1<<30, rounded down) by running findmnt + lsblk in the guest.
 func LsblkRootGiB(t *testing.T, tgt SSHTarget) int {
 	t.Helper()
 	cmd := `SRC=$(findmnt -n -o SOURCE /); PKN=$(lsblk -n -o PKNAME "$SRC" 2>/dev/null | head -1); DEV=${PKN:-$(basename "$SRC")}; lsblk -b -d -n -o SIZE "/dev/$DEV"`
@@ -117,10 +107,8 @@ func DisableSerialConsoleAccess(t *testing.T, c *AWSClient) bool {
 	return aws.BoolValue(out.SerialConsoleAccessEnabled)
 }
 
-// DiscoverDefaultVPC returns (vpcID, defaultSGID, defaultSubnetID) for the
-// account's default VPC. t.Fatal if the default VPC is missing — the suite
-// can't run without one, and silently falling back masks the real failure
-// (daemon didn't create the default VPC on account bootstrap).
+// DiscoverDefaultVPC returns (vpcID, defaultSGID, defaultSubnetID). Fatals if
+// the default VPC is absent — its absence indicates a bootstrap failure.
 func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID string) {
 	t.Helper()
 	vpcs, err := c.EC2.DescribeVpcs(&ec2.DescribeVpcsInput{
@@ -215,10 +203,9 @@ func AuthorizeICMPIngress(t *testing.T, c *AWSClient, sgID string) {
 	t.Fatalf("authorize-security-group-ingress icmp on %s: %v", sgID, err)
 }
 
-// EnsureDefaultSGOpen authorizes tcp/22 + ICMP on the default VPC's default
-// SG. AWS default SGs only admit same-SG members; e2e probes come from the
-// test runner's external IP, so without this every SSH/ping hits the OVN
-// port-group ACL drop. Mirrors the Phase-5 block in run-e2e.sh.
+// EnsureDefaultSGOpen authorizes tcp/22 + ICMP on the default SG. Default SGs
+// only admit same-SG members; without this, runner-originated SSH/ping is dropped
+// by the OVN port-group ACL.
 func EnsureDefaultSGOpen(t *testing.T, c *AWSClient) {
 	t.Helper()
 	_, sgID, _ := DiscoverDefaultVPC(t, c)

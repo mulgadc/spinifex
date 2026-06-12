@@ -13,14 +13,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// ControlPlaneMgmtIP resolves the EKS control-plane VM's host-bridge (br-mgmt)
-// address — the only address reachable from the host/runner. The cluster
-// endpoint in DescribeCluster is the internal NLB DNS, which is NXDOMAIN here
-// and whose :443->:6443 passthrough is not wired; the VPC NIC (172.31.x) is
-// likewise unreachable. The mgmt IP is persisted unencrypted on the cluster's
-// KV meta record (ClusterMeta.ControlPlaneMgmtIP), so read it directly over
-// NATS. This is the Phase-2 reachability shim — see the eks-6g-e2e plan; the
-// real fix (NLB/Route53 passthrough) is tracked separately.
+// ControlPlaneMgmtIP resolves the EKS control-plane VM's br-mgmt address —
+// the only address reachable from the runner. The NLB endpoint is not wired
+// for external access; the mgmt IP is read directly from the NATS KV record.
 func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) string {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
@@ -49,9 +44,8 @@ func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) s
 	return meta.ControlPlaneMgmtIP
 }
 
-// natsConn resolves the NATS host/token/CA for the harness's own JetStream
-// reads. SPINIFEX_NATS_* env overrides win (CI / runner-resident runs); else it
-// reads the local node's stanza from spinifex.toml.
+// natsConn resolves NATS host/token/CA. SPINIFEX_NATS_* env vars win; otherwise
+// reads from spinifex.toml.
 func natsConn(t *testing.T, env *Env) (host, token, ca string) {
 	t.Helper()
 	host = os.Getenv("SPINIFEX_NATS_URL")

@@ -12,15 +12,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// NClient4Client is the production DHCP client backed by
-// github.com/insomniacslk/dhcp/dhcpv4/nclient4. Each Acquire/Renew/Release
-// opens an AF_PACKET socket on the target bridge for the duration of the
-// handshake and closes it when done — no long-lived per-lease process.
-//
-// Single-shot per call: Manager.acquireWithBackoff drives the outer DORA
-// schedule and per-attempt deadlines, so the leaf does not retry. This
-// keeps the budget arithmetic in one place instead of being multiplied
-// by nclient4's internal retry count.
+// NClient4Client is the production DHCP client (AF_PACKET per call, no
+// long-lived socket). Single-shot: Manager.acquireWithBackoff owns retries
+// so budget arithmetic stays in one place.
 type NClient4Client struct {
 	timeout time.Duration
 }
@@ -75,10 +69,8 @@ func (c *NClient4Client) Acquire(ctx context.Context, req AcquireRequest) (*Leas
 	}
 	defer func() { _ = client.Close() }()
 
-	// Without the broadcast flag, the server sends a unicast OFFER to the
-	// generated chaddr MAC. The physical NIC drops it in hardware (not its
-	// MAC), so the AF_PACKET socket on the bridge never sees the frame.
-	// Setting the broadcast flag forces ff:ff:ff:ff:ff:ff.
+	// Broadcast flag forces ff:ff:ff:ff:ff:ff destination — without it the
+	// server unicasts to the derived chaddr MAC which the NIC drops in hw.
 	mods := append(identityModifiers(req.ClientID, req.Hostname, req.VendorClass), dhcpv4.WithBroadcast(true))
 	lease, err := client.Request(ctx, mods...)
 	if err != nil {
@@ -168,11 +160,9 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 	return nil
 }
 
-// DeriveMAC returns the deterministic locally-administered unicast MAC
-// (02:xx:xx:xx:xx:xx) used as chaddr when an allocator has no NIC of
-// its own — DHCPGatewayLRPAllocator and DHCPPoolAllocator on first
-// acquire. Wraps utils.HashMAC so the same 0x02-prefixed scheme used
-// for OVN router/port MACs is also visible in upstream dnsmasq leases.
+// DeriveMAC returns the deterministic 02:xx:xx:xx:xx:xx chaddr for clientID,
+// using the same HashMAC scheme as OVN router/port MACs so leases are legible
+// in upstream dnsmasq logs.
 func DeriveMAC(clientID string) (net.HardwareAddr, error) {
 	hw, err := net.ParseMAC(utils.HashMAC(clientID))
 	if err != nil {

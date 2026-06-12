@@ -11,9 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
-// sgProvisioner is the subset of handlers_ec2_vpc.VPCService that the cluster
-// SG helpers need. Narrow so tests can fake with hand-rolled recorders without
-// implementing the full VPCService surface.
+// sgProvisioner is the narrow VPC surface needed by cluster SG helpers.
 type sgProvisioner interface {
 	CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, accountID string) (*ec2.CreateSecurityGroupOutput, error)
 	DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
@@ -21,16 +19,13 @@ type sgProvisioner interface {
 	AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, accountID string) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 }
 
-// clusterEKSClusterTagKey is stamped on every cluster-scoped resource so the
-// DeleteCluster sweep + the UI hide-from-customer filter can group them.
+// clusterEKSClusterTagKey groups all cluster-scoped resources for DeleteCluster sweeps.
 const clusterEKSClusterTagKey = "spinifex:eks-cluster"
 
-// clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup
-// SG when both live in the same VPC.
+// clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup SG.
 const clusterEKSRoleTagKey = "spinifex:eks-role"
 
-// clusterEKSNodegroupTagKey is stamped on worker instances so the nodegroup
-// they belong to is recoverable from EC2 tags alone.
+// clusterEKSNodegroupTagKey is stamped on worker instances to identify their nodegroup.
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
@@ -38,9 +33,7 @@ const (
 	clusterEKSRoleNodegroup    = "nodegroup"
 )
 
-// ClusterControlPlaneSGName returns the deterministic SG name used for the
-// cluster's control-plane SG. Stable so Stage-6 DeleteCluster can locate it
-// from clusterName alone.
+// ClusterControlPlaneSGName returns the deterministic control-plane SG name for a cluster.
 func ClusterControlPlaneSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-control-plane-sg", clusterName)
 }
@@ -51,12 +44,8 @@ func ClusterNodegroupSGName(clusterName string) string {
 	return fmt.Sprintf("eks-cluster-%s-nodegroup-sg", clusterName)
 }
 
-// EnsureClusterSGs creates (or returns existing) control-plane + nodegroup
-// security groups in the customer VPC. Both are tagged
-// spinifex:managed-by=eks + spinifex:eks-cluster=<name>. Idempotent: an SG
-// whose group-name + vpc-id match the expected pair is reused without a
-// second create call. The two creates are independent — a failure on the
-// nodegroup SG does not unwind the control-plane SG (DeleteCluster cleans up).
+// EnsureClusterSGs creates or reuses the control-plane and nodegroup SGs in the customer VPC.
+// Idempotent; the two creates are independent (DeleteCluster handles partial teardown).
 func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (controlPlaneSGID, nodegroupSGID string, err error) {
 	if clusterName == "" {
 		return "", "", errors.New("eks: EnsureClusterSGs empty cluster name")
@@ -84,10 +73,7 @@ func EnsureClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) (
 	return controlPlaneSGID, nodegroupSGID, nil
 }
 
-// DeleteClusterSGs removes both cluster SGs in the customer VPC. Missing SGs
-// are no-ops so DeleteCluster can retry safely. Delete errors are logged and
-// the sweep continues; the first error is returned so the caller surfaces it
-// without halting the broader teardown.
+// DeleteClusterSGs removes both cluster SGs. Missing SGs are no-ops; first error is returned.
 func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
 	if clusterName == "" {
 		return errors.New("eks: DeleteClusterSGs empty cluster name")
@@ -148,18 +134,8 @@ func ensureClusterSG(sgp sgProvisioner, accountID, vpcID, clusterName, name, des
 	return *out.GroupId, nil
 }
 
-// EnsureNodegroupSGRules authorizes the ingress rules a nodegroup's workers
-// need to join the K3s control plane and form the flannel overlay. All rules
-// are group-to-group (UserIdGroupPairs) so they stay correct as instances come
-// and go. Idempotent: the InvalidPermission.Duplicate error a re-run triggers
-// for an already-authorized rule is treated as success.
-//
-// Rules:
-//   - agent → server apiserver/supervisor: 6443/tcp (ngSG → cpSG)
-//   - flannel VXLAN: 8472/udp both directions between cpSG and ngSG, and
-//     ngSG ↔ ngSG
-//   - kubelet: 10250/tcp (cpSG → ngSG)
-//   - intra-nodegroup all traffic: ngSG self-reference
+// EnsureNodegroupSGRules authorizes ingress for flannel VXLAN (8472/udp), apiserver
+// (6443/tcp), and kubelet (10250/tcp) between CP and nodegroup SGs. Idempotent.
 func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, ngSGID string) error {
 	if cpSGID == "" || ngSGID == "" {
 		return errors.New("eks: EnsureNodegroupSGRules empty SG id")
@@ -208,13 +184,8 @@ func EnsureNodegroupSGRules(sgp sgProvisioner, accountID, clusterName, cpSGID, n
 	return nil
 }
 
-// EnsureControlPlaneIngress authorizes the ingress the cluster NLB needs to
-// reach the K3s apiserver. The NLB's backing LB VM forwards the front-end
-// listener to the apiserver on k3sAPIServerPort from inside the VPC, so the
-// control-plane SG must admit that port from the VPC CIDR. Public exposure is
-// gated separately at the NLB front-end by publicAccessCidrs; this rule only
-// governs the in-VPC LB→apiserver hop. Idempotent: the
-// InvalidPermission.Duplicate error a re-run triggers is treated as success.
+// EnsureControlPlaneIngress admits the NLB→apiserver hop from the VPC CIDR on k3sAPIServerPort.
+// Public access is gated separately at the NLB front-end. Idempotent.
 func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR string) error {
 	if cpSGID == "" {
 		return errors.New("eks: EnsureControlPlaneIngress empty control-plane SG id")
@@ -242,24 +213,8 @@ func EnsureControlPlaneIngress(sgp sgProvisioner, accountID, cpSGID, vpcCIDR str
 	return nil
 }
 
-// EnsureControlPlaneHAIngress authorizes the server-to-server ingress an HA
-// control plane needs so a join server's embedded etcd can peer with the rest
-// of the quorum. The control-plane SG is self-referencing here: every rule's
-// source and target are the same group, so the rules stay correct as CP VMs are
-// launched, lost, and rebuilt. A single cluster-init server never exercises
-// these ports, which is why they were absent until multi-server HA: the join
-// server registers over the supervisor port (already admitted) but its etcd
-// member can never replicate the raft log without the peer port, so the quorum
-// silently never forms and the node never reports Ready.
-//
-// Rules (cpSG → cpSG):
-//   - etcd client+peer: 2379-2380/tcp — embedded-etcd quorum replication
-//   - kubelet: 10250/tcp — server-to-server kubelet (metrics, logs, exec)
-//
-// The supervisor/apiserver port (6443) is already admitted from the VPC CIDR by
-// EnsureControlPlaneIngress, which covers the CP peers, so it is not repeated.
-// Idempotent: the InvalidPermission.Duplicate error a re-run triggers for an
-// already-authorized rule is treated as success.
+// EnsureControlPlaneHAIngress authorizes self-referencing CP SG rules for HA etcd peering:
+// etcd client+peer (2379-2380/tcp) and kubelet (10250/tcp) within cpSG. Idempotent.
 func EnsureControlPlaneHAIngress(sgp sgProvisioner, accountID, cpSGID string) error {
 	if cpSGID == "" {
 		return errors.New("eks: EnsureControlPlaneHAIngress empty control-plane SG id")

@@ -37,12 +37,9 @@ type IGWRecord struct {
 	CreatedAt         time.Time         `json:"created_at"`
 }
 
-// GatePublisher recomputes the per-subnet egress gate/ungate decision for
-// every subnet in a VPC. Wired by the daemon after IGW + RouteTable services
-// are constructed so AttachInternetGateway / DetachInternetGateway can fan
-// out gate decisions immediately instead of waiting up to 5 minutes for the
-// reconciler's drift tick to install OVN DROP policies on unrouted subnets.
-// Nil-safe: when unset the handler falls back to publish-only behaviour.
+// GatePublisher recomputes per-subnet egress gate/ungate decisions for a VPC.
+// Wired by the daemon so IGW attach/detach triggers immediate OVN policy updates
+// rather than waiting for the reconciler's drift tick.
 type GatePublisher interface {
 	PublishGateDecisionsForVPC(accountID, vpcID, destCidr string)
 }
@@ -332,13 +329,8 @@ func (s *IGWServiceImpl) AttachInternetGateway(input *ec2.AttachInternetGatewayI
 		}
 	}
 
-	// Gate fan-out intentionally skipped on attach. The default-VPC
-	// bootstrap path attaches the IGW and immediately publishes a
-	// 0.0.0.0/0 → IGW CreateRoute event; the two race across distinct
-	// NATS subjects (gate vs ungate) and ungate-then-gate leaves the
-	// subnet DROPped. Subnets without a default route stay protected by
-	// the reconciler's drift pass (loadSubnetDropGates). Detach is
-	// race-free because no follow-up CreateRoute fires.
+	// Gate fan-out is intentionally skipped on attach to avoid a race with
+	// the bootstrap CreateRoute path. Detach triggers gate fan-out directly.
 
 	slog.Info("AttachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 

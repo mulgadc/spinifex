@@ -17,31 +17,19 @@ import (
 // cannot be satisfied.
 var errInsufficientCapacity = errors.New("insufficient capacity to satisfy MinCount")
 
-// hostReserve is the host CPU and RAM held back from guest scheduling for the
-// always-on infrastructure tier only — the daemon and co-located fixed services
-// (NATS, predastore, viperblock, vpcd, awsgw, ui). It deliberately does NOT
-// cover per-instance consumers such as the nbdkit process backing a guest's
-// volumes: those scale with instance count and disk I/O, so folding them into a
-// fixed reserve makes it unsizable. Per-instance cost is charged to the instance
-// and bounded by the live-memory admission gate (see liveMemGate). Tunable via
-// SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB until a `capacity` command
-// lifts it into config.
+// hostReserve holds CPU and RAM reserved for the daemon and co-located fixed
+// services. Per-instance costs (nbdkit) are charged separately. Tunable via
+// SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB.
 type hostReserve struct {
 	vCPU  int
 	memGB float64
 }
 
-// defaultHostReserve covers the fixed infrastructure tier (predastore +
-// viperblock storage VMs under load, plus the daemon/NATS/awsgw/vpcd/ui stack).
-// Size it from the measured fixed-tier footprint of the target host via
-// SPINIFEX_RESERVED_MEM_GB; the default is a conservative floor, not a ceiling.
+// defaultHostReserve is the conservative floor for the fixed infrastructure tier.
 var defaultHostReserve = hostReserve{vCPU: 2, memGB: 2.0}
 
-// resolveHostReserve returns defaultHostReserve, with vCPU/memGB overridden
-// when SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB are set to valid
-// non-negative values. Invalid values are logged and ignored — keeps a
-// typo'd env from silently widening the reserve. Intended as a stop-gap
-// until the planned operator-tunable [capacity] config lands.
+// resolveHostReserve returns defaultHostReserve overridden by
+// SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB when valid.
 func resolveHostReserve(getenv func(string) string) hostReserve {
 	r := defaultHostReserve
 	if v := getenv("SPINIFEX_RESERVED_VCPU"); v != "" {
@@ -61,13 +49,8 @@ func resolveHostReserve(getenv func(string) string) hostReserve {
 	return r
 }
 
-// resolveHostVCPU returns the detected core count, overridden by
-// SPINIFEX_HOST_VCPU when set to a valid positive integer. The override is an
-// escape hatch: it pins the schedulable core count for hosts where
-// /proc/cpuinfo topology detection misreports (some VMs/containers expose no
-// "core id", or fewer physical cores than the host can actually schedule), and
-// lets tests decouple from runner topology. Invalid values are logged and
-// ignored so a typo can't silently shrink capacity below the reserve.
+// resolveHostVCPU returns detected core count, overridden by SPINIFEX_HOST_VCPU
+// when valid. Override is an escape hatch for hosts with misreported topology.
 func resolveHostVCPU(getenv func(string) string, detected int) int {
 	if v := getenv("SPINIFEX_HOST_VCPU"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -78,19 +61,11 @@ func resolveHostVCPU(getenv func(string) string, detected int) int {
 	return detected
 }
 
-// minHostMemHeadroomGB is the minimum schedulable memory we require above
-// the reserve, so a host that just meets the reserve still has a small
-// amount left to launch the smallest guest type.
+// minHostMemHeadroomGB is the minimum schedulable memory above the reserve.
 const minHostMemHeadroomGB = 0.5
 
-// applyHostReserve validates that the host meets the minimum size for the
-// given reserve and returns the reserve to apply. Pure function — no locks
-// or side effects. Exists as a helper for unit-testability of the
-// validation bounds.
-//
-// vCPU and memory are checked separately so the returned error names the
-// failing dimension, letting alerting/log filters distinguish a CPU
-// shortfall from a memory shortfall.
+// applyHostReserve validates host capacity against the reserve and returns the
+// reserve to apply. Checks CPU and memory separately for clear error messages.
 func applyHostReserve(host hostReserve, totalVCPU int, totalMemGB float64) (vcpu int, mem float64, err error) {
 	if totalVCPU <= host.vCPU {
 		return 0, 0, fmt.Errorf(
@@ -107,15 +82,8 @@ func applyHostReserve(host hostReserve, totalVCPU int, totalMemGB float64) (vcpu
 	return host.vCPU, host.memGB, nil
 }
 
-// canAllocateCount returns how many instances of the given type can fit
-// in the remaining capacity, capped at maxCount. Pure aside from a single
-// slog.Error when remaining capacity is negative — that condition would
-// otherwise be silently clamped to zero, hiding a misconfigured reserve
-// or allocation accounting drift.
-//
-// availGPU is the number of free GPUs in the pool; requiresGPU indicates
-// that this instance type needs one. When requiresGPU is true and availGPU
-// is zero, the result is always 0.
+// canAllocateCount returns how many instances of the given type fit in remaining
+// capacity, capped at maxCount. Logs an error if capacity is negative.
 func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	vCPUs int64, memMiB int64, maxCount int,
 	availGPU int, requiresGPU bool) int {
@@ -150,11 +118,8 @@ func canAllocateCount(availVCPU, allocVCPU int, availMem, allocMem float64,
 	return max(result, 0)
 }
 
-// liveMemCount clamps an accounting-derived launch count n by live host memory:
-// how many guests of memGB fit in (availMemGB − reservedMemGB) right now, never
-// more than n. Pure function — the live read and instance-type lookup happen in
-// liveMemGate. A negative headroom (host already below the reserve) yields 0, so
-// admission refuses rather than admitting into OOM territory.
+// liveMemCount clamps n by how many guests of memGB fit in live headroom
+// (availMemGB − reservedMemGB). Negative headroom yields 0.
 func liveMemCount(n int, availMemGB, reservedMemGB, memGB float64) int {
 	if memGB <= 0 {
 		return n
@@ -163,10 +128,8 @@ func liveMemCount(n int, availMemGB, reservedMemGB, memGB float64) int {
 	return max(0, min(n, byLive))
 }
 
-// liveMemAdmissionEnabled reports whether the live-memory admission gate is on.
-// Default on; SPINIFEX_ADMISSION_LIVE_MEM set to a false-y value ("0", "false",
-// "off", "no") disables it, falling back to pure accounting — a rollback hatch
-// if the live gate proves too conservative on a busy host.
+// liveMemAdmissionEnabled reports whether the live-memory gate is enabled.
+// Set SPINIFEX_ADMISSION_LIVE_MEM=0/false/off/no to disable.
 func liveMemAdmissionEnabled(getenv func(string) string) bool {
 	switch strings.ToLower(strings.TrimSpace(getenv("SPINIFEX_ADMISSION_LIVE_MEM"))) {
 	case "0", "false", "off", "no":
@@ -176,13 +139,8 @@ func liveMemAdmissionEnabled(getenv func(string) string) bool {
 	}
 }
 
-// readMemAvailableGB returns the host's current /proc/meminfo MemAvailable in
-// GB. ok=false on non-Linux hosts or any read/parse failure, which disables the
-// live gate for that call (fail open). MemAvailable is the kernel's own estimate
-// of memory available for new workloads without swapping, already netting
-// reclaimable page cache — the figure admission should gate on, and one that
-// already reflects co-located storage VMs, nbdkit, and the daemon stack that the
-// static -m accounting never sees.
+// readMemAvailableGB returns /proc/meminfo MemAvailable in GB. Returns ok=false
+// on non-Linux or read failure (fail open — accounting gate still applies).
 func readMemAvailableGB() (float64, bool) {
 	if runtime.GOOS != "linux" {
 		return 0, false
@@ -200,9 +158,7 @@ func readMemAvailableGB() (float64, bool) {
 	return float64(kb) / (1024 * 1024), true
 }
 
-// parseMemAvailableKB extracts the MemAvailable value (in kB) from /proc/meminfo
-// contents. Returns ok=false when the field is absent or unparseable. Pure —
-// split out for unit-testability without touching the filesystem.
+// parseMemAvailableKB extracts MemAvailable (kB) from /proc/meminfo. Pure.
 func parseMemAvailableKB(data []byte) (int64, bool) {
 	for line := range strings.SplitSeq(string(data), "\n") {
 		key, val, ok := strings.Cut(line, ":")
@@ -222,29 +178,20 @@ func parseMemAvailableKB(data []byte) (int64, bool) {
 	return 0, false
 }
 
-// nbdkit runs one process per attached volume (spinifex/nbd). Measured on a live
-// host: a main volume's nbdkit climbs to ~0.75 GB under guest I/O (128 MiB cache
-// + plugin working set + in-flight buffers); aux volumes (-cloudinit, -efi; 0
-// cache) stay flat ~32-68 MB. Charged per instance so a busy nbdkit can't
-// overcommit memory the static -m budget never saw. Env-tunable; RG-6.
+// Default per-volume nbdkit memory charges: main ~0.75 GB under I/O, aux ~96 MiB.
+// Env-tunable via SPINIFEX_NBDKIT_{MAIN,AUX}_MIB.
 const (
 	defaultNbdkitMainMiB = 768
 	defaultNbdkitAuxMiB  = 96
 )
 
-// defaultMainVolumes / defaultAuxVolumes is the volume layout every instance
-// gets: one main root volume plus -cloudinit and -efi aux volumes. Block-device
-// mappings add main volumes the static charge can't see at admission; the live
-// MemAvailable gate (RG-8) is the backstop for those. RG-6.
+// Default volume layout: one main root volume + two aux volumes (cloud-init, efi).
 const (
 	defaultMainVolumes = 1
 	defaultAuxVolumes  = 2
 )
 
-// resolveNbdkitCharge returns the per-volume nbdkit memory charge in MiB, with
-// main/aux overridable via SPINIFEX_NBDKIT_MAIN_MIB / SPINIFEX_NBDKIT_AUX_MIB so
-// an operator can retune from their own nbdkit RSS characterisation without a
-// rebuild. Invalid or negative values are logged and ignored.
+// resolveNbdkitCharge returns per-volume nbdkit charges, overridable via env.
 func resolveNbdkitCharge(getenv func(string) string) (mainMiB, auxMiB int) {
 	mainMiB, auxMiB = defaultNbdkitMainMiB, defaultNbdkitAuxMiB
 	if v := getenv("SPINIFEX_NBDKIT_MAIN_MIB"); v != "" {
@@ -264,17 +211,13 @@ func resolveNbdkitCharge(getenv func(string) string) (mainMiB, auxMiB int) {
 	return mainMiB, auxMiB
 }
 
-// nbdkitChargeMiB is the per-instance nbdkit charge — one process per volume over
-// the default layout (mainVols main + auxVols aux). Pure; RG-6.
+// nbdkitChargeMiB returns the total nbdkit memory charge for mainVols + auxVols.
 func nbdkitChargeMiB(mainVols, auxVols, mainMiB, auxMiB int) int64 {
 	return int64(mainVols*mainMiB + auxVols*auxMiB)
 }
 
-// resourceStatsForType computes the InstanceTypeCap for a single instance type
-// given the remaining host resources. Pure function — no locks or side effects.
-// Callers are responsible for alarming on negative remainVCPU/remainMem
-// (see canAllocateCount); resourceStatsForType silently clamps to zero
-// because it's invoked in a per-type loop and would otherwise log N times.
+// resourceStatsForType computes the InstanceTypeCap for a single type given
+// remaining resources. Clamps negative capacity to zero without logging.
 func resourceStatsForType(remainVCPU int, remainMem float64, it *ec2.InstanceTypeInfo) types.InstanceTypeCap {
 	vCPUs := instanceTypeVCPUs(it)
 	memGB := float64(instanceTypeMemoryMiB(it)) / 1024.0

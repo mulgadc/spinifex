@@ -169,13 +169,28 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 	}, nil
 }
 
-// DeleteNetworkInterface deletes an ENI
+// DeleteNetworkInterface deletes an ENI. An in-use ENI is rejected; instance
+// teardown of its own ENI uses ForceDeleteInstanceENI instead.
 func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	return s.deleteNetworkInterface(*input.NetworkInterfaceId, accountID, false)
+}
 
-	eniId := *input.NetworkInterfaceId
+// ForceDeleteInstanceENI deletes an instance's own ENI, bypassing the in-use
+// guard. The guard protects against deleting an ENI a *different* live instance
+// holds; an instance tearing down its own ENI is always permitted (ADR-0003 §2),
+// which breaks the un-terminable-ENI deadlock. Absent is success (idempotent).
+func (s *VPCServiceImpl) ForceDeleteInstanceENI(accountID, eniId string) error {
+	if eniId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	_, err := s.deleteNetworkInterface(eniId, accountID, true)
+	return err
+}
+
+func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force bool) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	key := utils.AccountKey(accountID, eniId)
 
 	// Get the ENI record
@@ -194,8 +209,8 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an in-use ENI
-	if record.Status == "in-use" {
+	// Cannot delete an in-use ENI unless the owning instance forces teardown.
+	if !force && record.Status == "in-use" {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 

@@ -42,3 +42,42 @@ func TestRLC1_VPCDeleteIdempotentOnAbsent(t *testing.T) {
 		})
 	}
 }
+
+// TestRLC_ENINonDeadlock enforces ADR-0003 §2 (break the un-terminable-ENI
+// deadlock). The public DeleteNetworkInterface guard must keep rejecting an
+// in-use ENI — that protects an ENI a *different* live instance holds — while
+// ForceDeleteInstanceENI must delete the owning instance's in-use ENI anyway.
+// Without the force path a failed DetachENI CAS leaves the ENI stuck "in-use"
+// and the in-use guard then blocks delete forever, so the instance can never
+// finish terminating.
+func TestRLC_ENINonDeadlock(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	// Simulate the deadlock precondition: the ENI is "in-use" because a prior
+	// DetachENI never flipped it back to "available".
+	_, err := svc.AttachENI(testAccountID, eniId, "i-deadlock", 0)
+	require.NoError(t, err)
+
+	// The guard stays intact: a plain delete of an in-use ENI is still rejected.
+	_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String(eniId),
+	}, testAccountID)
+	assert.ErrorContainsf(t, err, "InvalidNetworkInterface.InUse",
+		"ADR-0003 §2: the in-use guard must still protect an ENI held by a different live instance")
+
+	// The owning instance's force teardown must break the deadlock.
+	require.NoErrorf(t, svc.ForceDeleteInstanceENI(testAccountID, eniId),
+		"ADR-0003 §2: ForceDeleteInstanceENI must delete the owning instance's in-use ENI to break the un-terminable-ENI deadlock")
+
+	_, err = svc.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
+
+	// Idempotent: forcing teardown of an already-gone ENI is success.
+	require.NoErrorf(t, svc.ForceDeleteInstanceENI(testAccountID, eniId),
+		"ADR-0003 §2 / RLC rule #1: ForceDeleteInstanceENI on an absent ENI must be idempotent success")
+}

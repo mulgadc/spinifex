@@ -755,15 +755,15 @@ func terminateTestManager(t *testing.T, store StateStore) (m *Manager, cleaner *
 	return m, cleaner, rt, downCount, downIDs
 }
 
-// TestTerminate_NotFound covers the validation guard at the top of
-// Terminate. An unknown id must return ErrInstanceNotFound without
-// touching cleaners, transitions, or hooks.
-func TestTerminate_NotFound(t *testing.T) {
+// TestTerminate_AbsentIdempotent covers the idempotent guard at the top of
+// Terminate (ADR-0003 §2, rule #1). An unknown id returns success without
+// touching cleaners, transitions, or hooks so destroy retries converge.
+func TestTerminate_AbsentIdempotent(t *testing.T) {
 	m, cleaner, rt, down, _ := terminateTestManager(t, newFakeStateStore())
 
 	err := m.Terminate("i-missing")
 
-	require.ErrorIs(t, err, ErrInstanceNotFound)
+	require.NoError(t, err)
 	assert.Empty(t, cleaner.deleteVolumes)
 	assert.Empty(t, rt.snapshot())
 	assert.Zero(t, down.Load())
@@ -788,19 +788,18 @@ func TestTerminate_AlreadyShuttingDown_Idempotent(t *testing.T) {
 	assert.Equal(t, StateShuttingDown, m.Status(v))
 }
 
-// TestTerminate_InvalidTransition covers transitionWithPrecheck rejecting
-// an illegal initial transition. StateTerminated → StateShuttingDown is
-// not in ValidTransitions, so the daemon-side handler can map this to
-// AWS IncorrectInstanceState.
-func TestTerminate_InvalidTransition(t *testing.T) {
+// TestTerminate_AlreadyTerminated_Idempotent covers the idempotent short-circuit
+// for an already-terminated instance (ADR-0003 §2). Terminate returns nil and
+// runs no cleanup or transition rather than failing the terminal-state precheck.
+func TestTerminate_AlreadyTerminated_Idempotent(t *testing.T) {
 	m, cleaner, _, down, _ := terminateTestManager(t, newFakeStateStore())
 	v := &VM{ID: "i-already-terminated", Status: StateTerminated, Instance: &ec2.Instance{}}
 	m.Insert(v)
 
 	err := m.Terminate(v.ID)
 
-	require.ErrorIs(t, err, ErrInvalidTransition)
-	assert.Empty(t, cleaner.deleteVolumes, "terminateCleanup must not run when precheck rejects")
+	require.NoError(t, err)
+	assert.Empty(t, cleaner.deleteVolumes, "terminateCleanup must not run on idempotent path")
 	assert.Zero(t, down.Load())
 }
 

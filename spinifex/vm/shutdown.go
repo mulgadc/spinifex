@@ -116,11 +116,13 @@ func (m *Manager) StopAll() error {
 func (m *Manager) Terminate(id string) error {
 	instance, ok := m.Get(id)
 	if !ok {
-		return ErrInstanceNotFound
+		// Idempotent terminate (rule #1): an absent instance is already gone,
+		// so destroy retries converge.
+		return nil
 	}
 
-	if current := m.Status(instance); current == StateShuttingDown {
-		// Concurrent failed-launch goroutine already owns cleanup.
+	if current := m.Status(instance); current == StateShuttingDown || current == StateTerminated {
+		// Already terminating/terminated: cleanup is owned elsewhere. Idempotent.
 		return nil
 	}
 
@@ -269,7 +271,9 @@ func (m *Manager) stopCleanup(instance *VM) {
 	m.shutdownAndUnmount(instance)
 	m.cleanupTapDevices(instance)
 	if m.deps.InstanceCleaner != nil {
-		m.deps.InstanceCleaner.ReleaseGPU(instance)
+		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
+			slog.Warn("ReleaseGPU failed on stop", "instanceId", instance.ID, "err", err)
+		}
 	}
 	m.deallocateResources(instance)
 }
@@ -279,18 +283,44 @@ func (m *Manager) stopCleanup(instance *VM) {
 // deletion, placement-group removal.
 func (m *Manager) terminateCleanup(instance *VM) {
 	m.shutdownAndUnmount(instance)
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 
 	if m.deps.InstanceCleaner != nil {
-		m.deps.InstanceCleaner.DeleteVolumes(instance)
+		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
 	}
 
 	m.cleanupTapDevices(instance)
+	m.markTeardown(instance, TeardownTap, TeardownDone)
 
 	if m.deps.InstanceCleaner != nil {
-		m.deps.InstanceCleaner.ReleaseGPU(instance)
-		m.deps.InstanceCleaner.ReleasePublicIP(instance)
-		m.deps.InstanceCleaner.DetachAndDeleteENI(instance)
-		m.deps.InstanceCleaner.RemoveFromPlacementGroup(instance)
+		gpuErr := m.deps.InstanceCleaner.ReleaseGPU(instance)
+		if len(instance.GPUAttachments) > 0 {
+			m.markTeardownResult(instance, TeardownGPU, gpuErr)
+		}
+
+		// Public IP: ReleaseIP is sync; vpc.delete-nat is fire-and-forget, so the
+		// NAT rule removal is recorded pending (drift reconciler / GC reaps it).
+		natErr := m.deps.InstanceCleaner.ReleasePublicIP(instance)
+		if instance.PublicIP != "" {
+			if natErr != nil {
+				m.markTeardown(instance, TeardownNAT, TeardownFailed)
+			} else {
+				m.markTeardown(instance, TeardownNAT, TeardownPending)
+			}
+		}
+
+		// ENI KV delete is sync; vpc.delete-port (OVN LSP) is fire-and-forget, so
+		// the OVN port removal is recorded pending (reconcile LSP prune reaps it).
+		eniErr := m.deps.InstanceCleaner.DetachAndDeleteENI(instance)
+		if instance.ENIId != "" {
+			m.markTeardownResult(instance, TeardownENI, eniErr)
+			m.markTeardown(instance, TeardownOVN, TeardownPending)
+		}
+
+		placementErr := m.deps.InstanceCleaner.RemoveFromPlacementGroup(instance)
+		if instance.PlacementGroupName != "" {
+			m.markTeardownResult(instance, TeardownPlacement, placementErr)
+		}
 	}
 
 	m.deallocateResources(instance)

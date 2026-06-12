@@ -98,12 +98,25 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 					}
 				}
 
-				// Check if instance is already terminated (idempotent, matches AWS behavior)
-				if isAlreadyTerminated(natsConn, instanceID, accountID) {
+				// Idempotent terminate (rule #1): no daemon owns the instance and it
+				// is not a stopped instance. If the terminated-bucket query succeeds
+				// (KV reachable) the instance is already gone — return success so
+				// tofu destroy retries converge. KV-health gated: a failed query does
+				// NOT fabricate success (never trust an empty desired-state we cannot
+				// read — ADR-0003 §3).
+				found, queryOK := lookupTerminated(natsConn, instanceID, accountID)
+				if found {
 					slog.Info("TerminateInstances: Instance already terminated", "instance_id", instanceID)
 					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
 					continue
 				}
+				if queryOK {
+					slog.Info("TerminateInstances: Instance absent, terminate is idempotent", "instance_id", instanceID)
+					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
+					continue
+				}
+				slog.Error("TerminateInstances: terminated-bucket query failed, cannot confirm absence",
+					"instance_id", instanceID)
 			}
 
 			slog.Error("TerminateInstances: Failed to send command", "instance_id", instanceID, "err", err)
@@ -128,35 +141,38 @@ func TerminateInstances(input *ec2.TerminateInstancesInput, natsConn *nats.Conn,
 	return output, nil
 }
 
-// isAlreadyTerminated checks if an instance exists in the terminated KV bucket.
-func isAlreadyTerminated(natsConn *nats.Conn, instanceID, accountID string) bool {
+// lookupTerminated reports whether an instance exists in the terminated KV
+// bucket. queryOK is false when the lookup itself failed (KV unreachable /
+// malformed reply), so callers can KV-health gate any idempotent-absence
+// decision rather than treating a failed query as "not found".
+func lookupTerminated(natsConn *nats.Conn, instanceID, accountID string) (found, queryOK bool) {
 	describeInput := &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{&instanceID},
 	}
 	reqData, err := json.Marshal(describeInput)
 	if err != nil {
-		slog.Warn("isAlreadyTerminated: failed to marshal request", "instanceId", instanceID, "err", err)
-		return false
+		slog.Warn("lookupTerminated: failed to marshal request", "instanceId", instanceID, "err", err)
+		return false, false
 	}
 	reqMsg := nats.NewMsg("ec2.DescribeTerminatedInstances")
 	reqMsg.Data = reqData
 	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
-		slog.Warn("isAlreadyTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)
-		return false
+		slog.Warn("lookupTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)
+		return false, false
 	}
 	var output ec2.DescribeInstancesOutput
 	if unmarshalErr := json.Unmarshal(msg.Data, &output); unmarshalErr != nil {
-		slog.Warn("isAlreadyTerminated: failed to unmarshal response", "instanceId", instanceID, "err", unmarshalErr)
-		return false
+		slog.Warn("lookupTerminated: failed to unmarshal response", "instanceId", instanceID, "err", unmarshalErr)
+		return false, false
 	}
 	for _, res := range output.Reservations {
 		for _, inst := range res.Instances {
 			if inst.InstanceId != nil && *inst.InstanceId == instanceID {
-				return true
+				return true, true
 			}
 		}
 	}
-	return false
+	return false, true
 }

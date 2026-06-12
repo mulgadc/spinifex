@@ -1071,6 +1071,13 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		}
 	})
 	if !ok {
+		if isTerminate {
+			// Idempotent terminate (rule #1): the instance was reclaimed/torn down
+			// between resolve and lock, so it is already gone.
+			slog.Info("StopOrTerminateInstance: instance already gone, terminate is idempotent",
+				"instanceId", instance.ID)
+			return nil
+		}
 		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
 			"instanceId", instance.ID)
 		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)

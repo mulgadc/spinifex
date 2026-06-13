@@ -25,6 +25,12 @@ const clusterEKSClusterTagKey = "spinifex:eks-cluster"
 // clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup SG.
 const clusterEKSRoleTagKey = "spinifex:eks-role"
 
+// clusterEKSAccountTagKey records the customer account that owns the cluster
+// meta. The control-plane VM/ENI run under the system account, so this tag is
+// the only link from a running CP ENI back to the KV bucket holding its cluster
+// meta — the billable GC reaper needs it to decide orphan-hood.
+const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
+
 // clusterEKSNodegroupTagKey is stamped on worker instances to identify their nodegroup.
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 

@@ -28,6 +28,7 @@ var ErrEKSServerAMINotFound = errors.New("eks: eks-server AMI not found")
 type k3sVPCProvisioner interface {
 	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
 }
 
 // k3sInstanceLauncher is the system-instance launch surface for the K3s CP VM.
@@ -164,6 +165,7 @@ func LaunchK3sServerVM(
 			Tags: []*ec2.Tag{
 				{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
 				{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(in.ClusterName)},
+				{Key: aws.String(clusterEKSAccountTagKey), Value: aws.String(in.ClusterAccountID)},
 				{Key: aws.String(clusterEKSRoleTagKey), Value: aws.String(clusterEKSRoleControlPlane)},
 			},
 		}},

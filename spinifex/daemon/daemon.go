@@ -1404,6 +1404,9 @@ func (d *Daemon) startCluster() error {
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 		}
+		if d.eksService != nil {
+			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
+		}
 		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
 		gc.Start(d.ctx)
 	}
@@ -1435,6 +1438,23 @@ func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
 		}
 	}
 	return leaked, nil
+}
+
+// nodeRunningVMs returns this node's running VMs for the EKS billable reaper to
+// scan. A nil stateStore (early init / test) yields an empty set.
+func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
+	if d.stateStore == nil {
+		return nil, nil
+	}
+	running, err := d.stateStore.LoadRunningState(d.node)
+	if err != nil {
+		return nil, err
+	}
+	vms := make([]*vm.VM, 0, len(running))
+	for _, v := range running {
+		vms = append(vms, v)
+	}
+	return vms, nil
 }
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests

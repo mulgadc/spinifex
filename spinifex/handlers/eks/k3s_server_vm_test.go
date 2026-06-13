@@ -22,6 +22,12 @@ type fakeK3sVPC struct {
 	createOut *ec2.CreateNetworkInterfaceOutput
 	createErr error
 	deleteErr error
+
+	// describeByENI maps an ENI ID to the record DescribeNetworkInterfaces
+	// returns; a missing ENI yields an empty result (gone). describeErr forces
+	// a describe failure.
+	describeByENI map[string]*ec2.NetworkInterface
+	describeErr   error
 }
 
 var _ k3sVPCProvisioner = (*fakeK3sVPC)(nil)
@@ -49,6 +55,19 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 		return nil, f.deleteErr
 	}
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+func (f *fakeK3sVPC) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, _ string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	if f.describeErr != nil {
+		return nil, f.describeErr
+	}
+	out := &ec2.DescribeNetworkInterfacesOutput{}
+	for _, id := range input.NetworkInterfaceIds {
+		if eni, ok := f.describeByENI[aws.StringValue(id)]; ok {
+			out.NetworkInterfaces = append(out.NetworkInterfaces, eni)
+		}
+	}
+	return out, nil
 }
 
 type fakeK3sInst struct {

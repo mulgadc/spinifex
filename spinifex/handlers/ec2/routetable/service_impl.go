@@ -486,6 +486,16 @@ func (s *RouteTableServiceImpl) CreateRouteTable(input *ec2.CreateRouteTableInpu
 		return nil, err
 	}
 
+	// Persist tags from the create spec so tag-filtered describes (and the
+	// tag-driven CP-VPC teardown that reclaims the NAT-GW EIP) can find this
+	// route table.
+	if tags := utils.ExtractTags(input.TagSpecifications, ec2.ResourceTypeRouteTable); len(tags) > 0 {
+		record.Tags = tags
+		if err := s.putRouteTable(accountID, record); err != nil {
+			return nil, err
+		}
+	}
+
 	return &ec2.CreateRouteTableOutput{
 		RouteTable: recordToEC2(record),
 	}, nil

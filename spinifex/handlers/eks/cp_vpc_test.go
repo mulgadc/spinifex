@@ -1,11 +1,13 @@
 package handlers_eks
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 // Fakes for the managed control-plane VPC ("Set B") collaborators. They model
@@ -330,6 +332,11 @@ type fakeNatGatewayProvisioner struct {
 	deleteCalls []*ec2.DeleteNatGatewayInput
 
 	createErr error
+
+	// routeGuard, when set, models the live rule #3 guard: DeleteNatGateway is
+	// blocked (DependencyViolation) while any route table in routeGuard still
+	// exists — i.e. while a route table can forward to this NAT GW.
+	routeGuard *fakeRouteTableProvisioner
 }
 
 func newFakeNatGatewayProvisioner() *fakeNatGatewayProvisioner { return &fakeNatGatewayProvisioner{} }
@@ -374,6 +381,9 @@ func (f *fakeNatGatewayProvisioner) CreateNatGateway(input *ec2.CreateNatGateway
 
 func (f *fakeNatGatewayProvisioner) DeleteNatGateway(input *ec2.DeleteNatGatewayInput, _ string) (*ec2.DeleteNatGatewayOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
+	if f.routeGuard != nil && len(f.routeGuard.tables) > 0 {
+		return nil, errors.New(awserrors.ErrorDependencyViolation)
+	}
 	id := aws.StringValue(input.NatGatewayId)
 	for _, ng := range f.gws {
 		if ng.id == id {

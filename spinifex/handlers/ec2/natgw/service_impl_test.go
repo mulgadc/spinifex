@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/filterutil"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -62,6 +63,38 @@ func TestCreateNatGateway(t *testing.T) {
 	assert.Equal(t, "available", *ngw.State)
 	require.Len(t, ngw.NatGatewayAddresses, 1)
 	assert.Equal(t, "203.0.113.50", *ngw.NatGatewayAddresses[0].PublicIp)
+}
+
+// TestCreateNatGateway_PersistsTagsForTagFilterDiscovery locks the mulga-siv-303
+// fix: CreateNatGateway must persist TagSpecifications so DeleteClusterCPVPC can
+// find the cluster NAT gateway by tag filter and release its EIP. A dropped tag
+// makes the tag-filtered describe return empty, leaking the NAT-GW EIP.
+func TestCreateNatGateway_PersistsTagsForTagFilterDiscovery(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateNatGateway(&ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeNatgateway),
+			Tags: []*ec2.Tag{
+				{Key: aws.String("spinifex:eks-cluster"), Value: aws.String("alpha")},
+				{Key: aws.String("spinifex:eks-role"), Value: aws.String("cp-natgw")},
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+		Filter: []*ec2.Filter{
+			{Name: aws.String("tag:spinifex:eks-cluster"), Values: aws.StringSlice([]string{"alpha"})},
+			{Name: aws.String("tag:spinifex:eks-role"), Values: aws.StringSlice([]string{"cp-natgw"})},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NatGateways, 1, "tagged NAT GW must be discoverable by tag filter (mulga-siv-303)")
+	tags := filterutil.EC2TagsToMap(out.NatGateways[0].Tags)
+	assert.Equal(t, "alpha", tags["spinifex:eks-cluster"])
+	assert.Equal(t, "cp-natgw", tags["spinifex:eks-role"])
 }
 
 func TestCreateNatGateway_SubnetNotFound(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -126,6 +127,34 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	require.NoError(t, err)
 
 	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip}
+}
+
+// TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the mulga-siv-303
+// teardown order: route tables must be torn down before the NAT gateway, because
+// the NAT GW delete is guarded against live route forwards (rule #3). Deleting it
+// while the private route table still routes to it fails with DependencyViolation
+// and strands the billable NAT-GW EIP.
+func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.ngw.routeGuard = f.rt
+	f.ngw.gws = []*fakeCPNatGateway{{
+		id:    "nat-cp",
+		tags:  map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPNatGW},
+		state: "available",
+		addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-cp")}},
+	}}
+	f.rt.tables = []*fakeCPRouteTable{{
+		id:   "rtb-cp",
+		vpc:  "vpc-cp",
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRolePrivateRT},
+	}}
+
+	require.NoError(t, DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha"))
+
+	require.Len(t, f.ngw.gws, 1)
+	assert.Equal(t, "deleted", f.ngw.gws[0].state, "NAT GW must delete after routes are cleared (rule #3 guard not tripped)")
+	require.Len(t, f.eip.releaseCalls, 1, "the NAT-GW EIP must be released, not stranded (mulga-siv-303)")
+	assert.Equal(t, "eipalloc-cp", aws.StringValue(f.eip.releaseCalls[0].AllocationId))
 }
 
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {

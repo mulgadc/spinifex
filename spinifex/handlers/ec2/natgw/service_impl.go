@@ -143,7 +143,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(input *ec2.CreateNatGatewayInpu
 		PublicIp:     eipRecord.PublicIp,
 		State:        "available",
 		AccountID:    accountID,
-		Tags:         make(map[string]string),
+		Tags:         utils.ExtractTags(input.TagSpecifications, ec2.ResourceTypeNatgateway),
 		CreatedAt:    time.Now(),
 	}
 

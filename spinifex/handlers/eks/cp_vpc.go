@@ -426,32 +426,12 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 		return errors.New("eks: DeleteClusterCPVPC empty cluster name")
 	}
 
-	// 1. NAT gateway + its EIP. DeleteNatGateway publishes the SNAT removal.
-	if ngOut, err := deps.NGW.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
-		Filter: cpClusterRoleFilters(clusterName, clusterEKSRoleCPNatGW),
-	}, accountID); err != nil {
-		slog.Warn("DeleteClusterCPVPC: describe NAT gateways failed", "cluster", clusterName, "err", err)
-	} else if ngOut != nil {
-		for _, ng := range ngOut.NatGateways {
-			if state := aws.StringValue(ng.State); state == "deleted" || state == "deleting" {
-				continue
-			}
-			ngID := aws.StringValue(ng.NatGatewayId)
-			if _, err := deps.NGW.DeleteNatGateway(&ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(ngID)}, accountID); err != nil {
-				slog.Warn("DeleteClusterCPVPC: delete NAT gateway failed", "natgw", ngID, "err", err)
-			}
-			for _, addr := range ng.NatGatewayAddresses {
-				if alloc := aws.StringValue(addr.AllocationId); alloc != "" {
-					if _, err := deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(alloc)}, accountID); err != nil {
-						slog.Warn("DeleteClusterCPVPC: release NAT EIP failed", "alloc", alloc, "err", err)
-					}
-				}
-			}
-		}
-	}
-
-	// 2. Route tables: disassociate every subnet, then delete. Disassociation
-	// publishes the egress-reroute removal for each subnet.
+	// 1. Route tables: disassociate every subnet, then delete. Disassociation
+	// publishes the egress-reroute removal for each subnet. Route tables go first
+	// so the NAT gateway's live route refs are gone before its delete — the NAT
+	// GW delete is guarded against live route forwards (rule #3), so deleting it
+	// while the private RT still routes 0.0.0.0/0 to it would fail (and strand
+	// its billable EIP).
 	for _, role := range []string{clusterEKSRolePublicRT, clusterEKSRolePrivateRT} {
 		rtOut, err := deps.RT.DescribeRouteTables(&ec2.DescribeRouteTablesInput{Filters: cpClusterRoleFilters(clusterName, role)}, accountID)
 		if err != nil {
@@ -475,6 +455,31 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 			}
 			if _, err := deps.RT.DeleteRouteTable(&ec2.DeleteRouteTableInput{RouteTableId: aws.String(rtID)}, accountID); err != nil {
 				slog.Warn("DeleteClusterCPVPC: delete route table failed", "rt", rtID, "err", err)
+			}
+		}
+	}
+
+	// 2. NAT gateway + its EIP. DeleteNatGateway publishes the SNAT removal and
+	// disassociates the EIP; release follows so the billable address is reclaimed.
+	if ngOut, err := deps.NGW.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+		Filter: cpClusterRoleFilters(clusterName, clusterEKSRoleCPNatGW),
+	}, accountID); err != nil {
+		slog.Warn("DeleteClusterCPVPC: describe NAT gateways failed", "cluster", clusterName, "err", err)
+	} else if ngOut != nil {
+		for _, ng := range ngOut.NatGateways {
+			if state := aws.StringValue(ng.State); state == "deleted" || state == "deleting" {
+				continue
+			}
+			ngID := aws.StringValue(ng.NatGatewayId)
+			if _, err := deps.NGW.DeleteNatGateway(&ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(ngID)}, accountID); err != nil {
+				slog.Warn("DeleteClusterCPVPC: delete NAT gateway failed", "natgw", ngID, "err", err)
+			}
+			for _, addr := range ng.NatGatewayAddresses {
+				if alloc := aws.StringValue(addr.AllocationId); alloc != "" {
+					if _, err := deps.EIP.ReleaseAddress(&ec2.ReleaseAddressInput{AllocationId: aws.String(alloc)}, accountID); err != nil {
+						slog.Warn("DeleteClusterCPVPC: release NAT EIP failed", "alloc", alloc, "err", err)
+					}
+				}
 			}
 		}
 	}

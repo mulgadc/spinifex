@@ -87,8 +87,25 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 			continue
 		}
 		reaped++
+		r.reclaimOrphanInfra(v.AccountID, clusterName)
 	}
 	return reaped, nil
+}
+
+// reclaimOrphanInfra tears down the billable infra a reaped orphan's swept meta
+// no longer anchors: the NLB front-end NAT and the managed CP VPC's NAT-GW EIP.
+// Both are keyed by cluster name and idempotent, so a clean prior delete is a
+// no-op. Best-effort — the costliest resource (the VM) is already gone, and
+// DeleteClusterCPVPC releases the NAT-GW EIP before the VPC delete, so the
+// billable address is reclaimed even if the now-empty VPC delete trails. account
+// is the infra account (system account for the managed CP VPC topology).
+func (r *EKSBillableReaper) reclaimOrphanInfra(account, clusterName string) {
+	if err := DeleteClusterNLB(r.svc.deps.NLB, account, clusterName); err != nil {
+		slog.Warn("eks-billable: reclaim orphan NLB failed", "cluster", clusterName, "err", err)
+	}
+	if err := DeleteClusterCPVPC(r.svc.cpVPCDeps(), account, clusterName); err != nil {
+		slog.Warn("eks-billable: reclaim orphan CP VPC (NAT-GW EIP) failed", "cluster", clusterName, "err", err)
+	}
 }
 
 // clusterRefFromENI reads the cluster name + customer account from the VM's

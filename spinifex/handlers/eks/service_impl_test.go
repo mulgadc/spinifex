@@ -105,12 +105,15 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 
 // DeleteCluster on an absent cluster must reach the KV lookup with full deps
 // wired (the shim path short-circuits to ServiceUnavailable before the meta
-// read) and surface ResourceNotFoundException, not a teardown of nothing.
+// read) and return idempotent success (Common Resource Lifecycle Contract #1),
+// not a teardown of nothing — so a tofu destroy retry converges.
 func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
-	_, err := f.svc.DeleteCluster(deleteInput("ghost"), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	out, err := f.svc.DeleteCluster(deleteInput("ghost"), testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Empty(t, f.inst.terminateCalls, "absent cluster must trigger no teardown")
 }
 
 // Security guarantee: the OIDC signing key must be zeroized BEFORE infra

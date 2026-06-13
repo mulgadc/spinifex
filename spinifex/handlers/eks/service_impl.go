@@ -690,7 +690,10 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	meta, err := GetClusterMeta(acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			// Idempotent: a cluster already swept from KV is "deleted". Returning
+			// success lets a tofu destroy retry / double-targeted delete converge
+			// instead of failing the run (Common Resource Lifecycle Contract #1).
+			return &eks.DeleteClusterOutput{}, nil
 		}
 		return nil, err
 	}

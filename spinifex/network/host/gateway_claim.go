@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -48,6 +49,30 @@ func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {
 		return fmt.Errorf("ovn-appctl recompute: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// RepairDatapath re-asserts the WAN-glue veth admin state, then forces a recompute.
+// A post-reboot boot race (ovs-vswitchd/ovn-controller start after the passive
+// network.target, concurrently with systemd-networkd) can leave veth-wan-ovs
+// admin-down — br-wan loses carrier and the external datapath is dead, which a flow
+// recompute alone cannot revive. Bring both veth ends up (idempotent; skipped when
+// the device is absent, e.g. physical-uplink mode), then recompute to also clear any
+// stale gateway ofport flows. Best-effort: link errors are logged, not returned.
+func (p *GatewayClaimProber) RepairDatapath(ctx context.Context) error {
+	for _, dev := range []string{VethOVSEnd, VethLinuxEnd} {
+		if !linkExists(dev) {
+			continue
+		}
+		if out, err := utils.SudoCommand("ip", "link", "set", dev, "up").CombinedOutput(); err != nil {
+			slog.Warn("gateway claim: veth uplink admin-up failed", "dev", dev, "out", strings.TrimSpace(string(out)), "err", err)
+		}
+	}
+	return p.NudgeRecompute(ctx)
+}
+
+// linkExists reports whether a network device is present. Read-only, no sudo.
+func linkExists(dev string) bool {
+	return exec.Command("ip", "link", "show", dev).Run() == nil
 }
 
 // GatewayReachable pings the gateway LRP IP once to confirm the external datapath

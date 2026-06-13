@@ -40,6 +40,13 @@ type GatewayClaimVerifier interface {
 	// leave stale gateway/localnet flows, so every control-plane signal is green
 	// while EIPs stay unreachable.
 	GatewayReachable(ctx context.Context, gwIP string) (bool, error)
+	// RepairDatapath re-asserts the host external uplink, then forces a recompute.
+	// The post-reboot boot race that strands the datapath has two shapes: the veth
+	// gluing br-ext to the WAN bridge comes up admin-down (a recompute cannot revive
+	// a dead link), or its OVS ofport renumbered and the gateway flows went stale (a
+	// recompute fixes that). Bringing the veth up (a no-op in physical mode where the
+	// device is absent) then recomputing covers both, idempotently.
+	RepairDatapath(ctx context.Context) error
 }
 
 // Config is the construction-time bag for the reconciler. All fields except

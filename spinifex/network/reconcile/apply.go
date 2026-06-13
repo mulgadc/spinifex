@@ -318,17 +318,17 @@ func gatewayLRPIP(lrp *nbdb.LogicalRouterPort) string {
 
 // ensureGatewayDatapath verifies the external datapath actually forwards after the
 // SB claim converges. A claimed chassisredirect binding is not proof the flows are
-// installed: post-reboot ovn-controller can claim the port yet leave stale
-// gateway/localnet flows, leaving every control-plane signal green while EIPs stay
+// installed: post-reboot a boot race can leave the WAN-glue veth admin-down or the
+// gateway flows stale, leaving every control-plane signal green while EIPs stay
 // unreachable. Probe the gateway LRP IP (OVN answers ICMP natively, no guest or
-// security-group dependency); on a miss force one recompute and re-probe until a
-// short deadline. No-op when no verifier is wired or no gateway IP resolved.
+// security-group dependency); on a miss repair the uplink + recompute, then re-probe
+// until a short deadline. No-op when no verifier is wired or no gateway IP resolved.
 func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP string) {
 	if r.gwClaim == nil || gwIP == "" {
 		return
 	}
 	deadline := time.Now().Add(gatewayDatapathTimeout)
-	nudged := false
+	repaired := false
 	for {
 		reachable, err := r.gwClaim.GatewayReachable(ctx, gwIP)
 		if err != nil {
@@ -336,21 +336,21 @@ func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP stri
 			return
 		}
 		if reachable {
-			if nudged {
-				slog.Info("reconcile/apply: gateway datapath recovered after recompute", "vpc_id", vpcID, "gw_ip", gwIP)
+			if repaired {
+				slog.Info("reconcile/apply: gateway datapath recovered after uplink repair", "vpc_id", vpcID, "gw_ip", gwIP)
 			}
 			return
 		}
-		if !nudged {
-			slog.Warn("reconcile/apply: gateway datapath unreachable despite SB claim; forcing ovn-controller recompute",
+		if !repaired {
+			slog.Warn("reconcile/apply: gateway datapath unreachable despite SB claim; repairing uplink + forcing recompute",
 				"vpc_id", vpcID, "gw_ip", gwIP)
-			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
-				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
+			if err := r.gwClaim.RepairDatapath(ctx); err != nil {
+				slog.Warn("reconcile/apply: gateway datapath repair failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
 			}
-			nudged = true
+			repaired = true
 		}
 		if time.Now().After(deadline) {
-			slog.Error("reconcile/apply: gateway datapath did not recover after recompute; external connectivity degraded",
+			slog.Error("reconcile/apply: gateway datapath did not recover after uplink repair; external connectivity degraded",
 				"vpc_id", vpcID, "gw_ip", gwIP, "timeout", gatewayDatapathTimeout)
 			return
 		}

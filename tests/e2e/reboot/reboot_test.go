@@ -884,6 +884,12 @@ echo "=== ovs-vsctl show ==="
 sudo ovs-vsctl show 2>&1
 echo "=== ovs-vsctl list-ports br-int ==="
 sudo ovs-vsctl list-ports br-int 2>&1
+echo "=== ip -d link show veth-wan-ovs (admin/carrier state) ==="
+ip -d link show veth-wan-ovs 2>&1
+echo "=== ip -d link show veth-wan-br (admin/carrier state) ==="
+ip -d link show veth-wan-br 2>&1
+echo "=== ovs-ofctl show br-ext (ofport numbering) ==="
+sudo ovs-ofctl show br-ext 2>&1
 `
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
 	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)

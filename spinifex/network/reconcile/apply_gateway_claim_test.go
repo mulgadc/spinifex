@@ -19,6 +19,7 @@ type fakeClaimVerifier struct {
 	reachErr       error
 	checks         int
 	nudges         int
+	repairs        int
 	reachChecks    int
 	lastPort       string // most recent port name passed to GatewayPortClaimed
 	lastGwIP       string // most recent IP passed to GatewayReachable
@@ -37,6 +38,14 @@ func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (
 }
 
 func (f *fakeClaimVerifier) NudgeRecompute(_ context.Context) error {
+	f.nudges++
+	return f.nudgeErr
+}
+
+// RepairDatapath re-asserts the uplink then recomputes. Shares the nudge counter so
+// the reachableAfter scripting (nudges-to-recover) covers both gates uniformly.
+func (f *fakeClaimVerifier) RepairDatapath(_ context.Context) error {
+	f.repairs++
 	f.nudges++
 	return f.nudgeErr
 }
@@ -206,8 +215,11 @@ func TestEnsureGatewayDatapath_NudgeThenRecover(t *testing.T) {
 
 	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
 
+	if f.repairs != 1 {
+		t.Errorf("repairs = %d, want exactly 1 (repair once, then recover)", f.repairs)
+	}
 	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (nudge once, then recover)", f.nudges)
+		t.Errorf("nudges = %d, want exactly 1 (repair includes a recompute)", f.nudges)
 	}
 }
 
@@ -227,11 +239,11 @@ func TestEnsureGatewayDatapath_NeverRecoversNudgesOnceThenGivesUp(t *testing.T) 
 		t.Fatal("ensureGatewayDatapath did not return within deadline; blocking reconcile")
 	}
 
-	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (nudge once, do not spam)", f.nudges)
+	if f.repairs != 1 {
+		t.Errorf("repairs = %d, want exactly 1 (repair once, do not spam)", f.repairs)
 	}
 	if f.reachChecks < 2 {
-		t.Errorf("reachChecks = %d, want >=2 (polled past the first nudge)", f.reachChecks)
+		t.Errorf("reachChecks = %d, want >=2 (polled past the first repair)", f.reachChecks)
 	}
 }
 

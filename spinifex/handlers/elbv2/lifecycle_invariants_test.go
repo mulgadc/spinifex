@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -174,4 +175,51 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 
 	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
 	require.NoErrorf(t, err, "ADR-0002 §5 TG deletability after LB teardown: target group must not stay pinned as ResourceInUse")
+}
+
+// TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly enforces ADR-0002 §3 (live-only
+// dependency guard): DeleteTargetGroup may block on ResourceInUse ONLY when a
+// LIVE listener/rule (one whose owning LB still exists) forwards to the TG. A
+// rule orphaned by a vanished LB must NOT pin the TG — that is the permanent
+// trap mulga-siv-172 reported. Locks the liveLB/liveListener skip both ways so a
+// maintainer cannot regress the in-use scan back to a global rule sweep.
+func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
+	svc := setupTestService(t)
+
+	// Orphan-rule TG: forwarded to by a rule whose owning LB/listener is gone.
+	orphanTG, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-orphan-tg")}, testAccountID)
+	require.NoError(t, err)
+	orphanTGArn := *orphanTG.TargetGroups[0].TargetGroupArn
+
+	danglingListenerArn := "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID +
+		":listener/app/gone/0000000000000000/1111111111111111"
+	require.NoError(t, svc.store.PutRule(&RuleRecord{
+		RuleArn:     "arn:aws:elasticloadbalancing:us-east-1:" + testAccountID + ":listener-rule/app/gone/0000000000000000/1111111111111111/2222222222222222",
+		RuleID:      "rule-orphan00000000",
+		ListenerArn: danglingListenerArn,
+		Actions:     []ListenerAction{{Type: "forward", TargetGroupArn: orphanTGArn}},
+		AccountID:   testAccountID,
+	}))
+
+	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(orphanTGArn)}, testAccountID)
+	require.NoErrorf(t, err, "ADR-0002 §3 live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse (mulga-siv-172 regression)")
+
+	// Live-rule TG: forwarded to by a listener whose LB still exists → ResourceInUse.
+	lbOut, err := svc.CreateLoadBalancer(&elbv2.CreateLoadBalancerInput{Name: aws.String("rlc3-lb")}, testAccountID)
+	require.NoError(t, err)
+	liveTG, err := svc.CreateTargetGroup(&elbv2.CreateTargetGroupInput{Name: aws.String("rlc3-live-tg")}, testAccountID)
+	require.NoError(t, err)
+	liveTGArn := liveTG.TargetGroups[0].TargetGroupArn
+
+	_, err = svc.CreateListener(&elbv2.CreateListenerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(80),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: liveTGArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DeleteTargetGroup(&elbv2.DeleteTargetGroupInput{TargetGroupArn: liveTGArn}, testAccountID)
+	assert.ErrorContainsf(t, err, awserrors.ErrorELBv2TargetGroupInUse,
+		"ADR-0002 §3 live-only guard: a TG forwarded to by a LIVE listener must block on ResourceInUse")
 }

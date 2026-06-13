@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
@@ -15,6 +16,12 @@ import (
 var (
 	gatewayClaimTimeout  = 30 * time.Second
 	gatewayClaimInterval = 2 * time.Second
+)
+
+// Bounds for the post-claim datapath-reachability wait. Package vars so tests can shorten.
+var (
+	gatewayDatapathTimeout  = 30 * time.Second
+	gatewayDatapathInterval = 2 * time.Second
 )
 
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
@@ -281,7 +288,8 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 		return
 	}
 	gwPortName := topology.GatewayRouterPort(vpcID)
-	if _, err := r.ovn.GetLogicalRouterPort(ctx, gwPortName); err != nil {
+	lrp, err := r.ovn.GetLogicalRouterPort(ctx, gwPortName)
+	if err != nil {
 		return
 	}
 	for i, chassis := range r.chassis {
@@ -291,6 +299,67 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 		}
 	}
 	r.ensureGatewayClaimed(ctx, topology.GatewayChassisRedirectPort(vpcID))
+	r.ensureGatewayDatapath(ctx, vpcID, gatewayLRPIP(lrp))
+}
+
+// gatewayLRPIP returns the bare IPv4 of the gateway router port, parsed from its
+// first CIDR network (e.g. "192.168.1.241/23" -> "192.168.1.241"). Empty when the
+// LRP is nil or carries no network, which makes the datapath gate a no-op.
+func gatewayLRPIP(lrp *nbdb.LogicalRouterPort) string {
+	if lrp == nil || len(lrp.Networks) == 0 {
+		return ""
+	}
+	ip, _, ok := strings.Cut(lrp.Networks[0], "/")
+	if !ok {
+		return ""
+	}
+	return ip
+}
+
+// ensureGatewayDatapath verifies the external datapath actually forwards after the
+// SB claim converges. A claimed chassisredirect binding is not proof the flows are
+// installed: post-reboot ovn-controller can claim the port yet leave stale
+// gateway/localnet flows, leaving every control-plane signal green while EIPs stay
+// unreachable. Probe the gateway LRP IP (OVN answers ICMP natively, no guest or
+// security-group dependency); on a miss force one recompute and re-probe until a
+// short deadline. No-op when no verifier is wired or no gateway IP resolved.
+func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP string) {
+	if r.gwClaim == nil || gwIP == "" {
+		return
+	}
+	deadline := time.Now().Add(gatewayDatapathTimeout)
+	nudged := false
+	for {
+		reachable, err := r.gwClaim.GatewayReachable(ctx, gwIP)
+		if err != nil {
+			slog.Warn("reconcile/apply: gateway datapath probe failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
+			return
+		}
+		if reachable {
+			if nudged {
+				slog.Info("reconcile/apply: gateway datapath recovered after recompute", "vpc_id", vpcID, "gw_ip", gwIP)
+			}
+			return
+		}
+		if !nudged {
+			slog.Warn("reconcile/apply: gateway datapath unreachable despite SB claim; forcing ovn-controller recompute",
+				"vpc_id", vpcID, "gw_ip", gwIP)
+			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
+				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
+			}
+			nudged = true
+		}
+		if time.Now().After(deadline) {
+			slog.Error("reconcile/apply: gateway datapath did not recover after recompute; external connectivity degraded",
+				"vpc_id", vpcID, "gw_ip", gwIP, "timeout", gatewayDatapathTimeout)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(gatewayDatapathInterval):
+		}
+	}
 }
 
 // ensureGatewayClaimed polls the SB chassisredirect binding after SetGatewayChassis.

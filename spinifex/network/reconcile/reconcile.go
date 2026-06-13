@@ -34,6 +34,12 @@ type GatewayClaimVerifier interface {
 	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
+	// GatewayReachable reports whether the external datapath actually forwards to
+	// gwIP (the gateway LRP IP). A claimed SB binding does not prove flows are
+	// installed: post-reboot ovn-controller can claim the chassisredirect port yet
+	// leave stale gateway/localnet flows, so every control-plane signal is green
+	// while EIPs stay unreachable.
+	GatewayReachable(ctx context.Context, gwIP string) (bool, error)
 }
 
 // Config is the construction-time bag for the reconciler. All fields except

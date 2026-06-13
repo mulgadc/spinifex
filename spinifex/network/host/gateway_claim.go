@@ -2,7 +2,9 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -46,4 +48,24 @@ func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {
 		return fmt.Errorf("ovn-appctl recompute: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// GatewayReachable pings the gateway LRP IP once to confirm the external datapath
+// forwards. OVN logical routers answer ICMP echo to their own port IPs natively,
+// so this probes host -> br-wan -> br-ext -> localnet -> OVN gateway router with no
+// guest or security-group dependency. A failed ping (non-zero exit) reports
+// unreachable, not an error; an error is reserved for the inability to run ping.
+func (p *GatewayClaimProber) GatewayReachable(ctx context.Context, gwIP string) (bool, error) {
+	if gwIP == "" {
+		return false, fmt.Errorf("GatewayReachable: gwIP required")
+	}
+	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", gwIP)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("ping %s: %w", gwIP, err)
+	}
+	return true, nil
 }

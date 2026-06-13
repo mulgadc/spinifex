@@ -489,8 +489,21 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 	return nil
 }
 
-// TerminateSystemInstance stops and cleans up a system-managed VM.
+// TerminateSystemInstance stops and cleans up a system-managed VM. When this
+// node does not own the VM, the terminate is routed over NATS to the owning
+// daemon: an HA-spread EKS control plane places CP VMs on remote hosts, so a
+// cluster-wide teardown invoked on any node must reach the owner to actually
+// stop qemu and free the ENI — otherwise the local-only path returns NotFound
+// and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
+	if _, exists := d.vmMgr.Get(instanceID); exists {
+		return d.terminateSystemInstanceLocal(instanceID)
+	}
+	return d.terminateSystemInstanceRemote(instanceID)
+}
+
+// terminateSystemInstanceLocal stops a VM owned by this node.
+func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
 		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)

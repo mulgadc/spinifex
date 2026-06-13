@@ -60,6 +60,22 @@ func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
 	assert.Equal(t, "system.TerminateInstance.i-up-sys", sub.Subject)
 }
 
+// TestOnInstanceUpHook_ReArmsSystemTerminateForEKS locks mulga-siv-295.10: an EKS
+// K3s control-plane VM placed on the coordinator's own node (local launch, no
+// remote-launch handler) must still bind system.TerminateInstance.{id} via the
+// OnInstanceUp funnel — otherwise a cluster-wide teardown invoked on another node
+// finds no responder, treats the VM as gone, and deletes its still-attached ENI.
+func TestOnInstanceUpHook_ReArmsSystemTerminateForEKS(t *testing.T) {
+	d, _ := newHookTestDaemon(t)
+	instance := &vm.VM{ID: "i-up-eks", ManagedBy: tags.ManagedByEKS}
+
+	require.NoError(t, d.onInstanceUpHook()(instance))
+
+	sub, ok := d.natsSubscriptions["system.TerminateInstance.i-up-eks"]
+	require.True(t, ok, "system terminate subscription must be bound for EKS control-plane VMs")
+	assert.Equal(t, "system.TerminateInstance.i-up-eks", sub.Subject)
+}
+
 func TestOnInstanceUpHook_NoSystemTerminateForRegularInstance(t *testing.T) {
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-regular"}

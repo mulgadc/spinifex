@@ -1406,6 +1406,7 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
+			reapers = append(reapers, d.eksService.NewDeletingReaper())
 		}
 		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
 		gc.Start(d.ctx)

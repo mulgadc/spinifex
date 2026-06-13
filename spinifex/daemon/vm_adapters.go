@@ -373,13 +373,15 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		}
 		d.natsSubscriptions[consoleSubKey] = consoleSub
 
-		// Re-arm the per-instance terminate subscription for system-managed VMs
-		// (ELBv2 load balancers). The launch handler binds it at first launch,
-		// but it is lost across a daemon restart; OnInstanceUp fires on both the
-		// relaunch and the reconnect-to-surviving-QEMU recovery paths, so without
-		// this system.TerminateInstance.{id} has no responder and the VM can
-		// never be torn down (SetSubnets relaunch, DeleteLoadBalancer).
-		if instance.ManagedBy == tags.ManagedByELBv2 {
+		// Bind the per-instance terminate subscription for any system-managed VM
+		// (ELBv2 load balancers, EKS K3s control-plane VMs). OnInstanceUp is the
+		// one funnel every launch path crosses — local placement on the
+		// coordinator node, the remote-launch handler, and the
+		// reconnect-to-surviving-QEMU recovery after a daemon restart. Without it
+		// system.TerminateInstance.{id} has no responder, so a cluster-wide
+		// teardown invoked on another node cannot stop this VM and deletes its
+		// still-attached ENI (InvalidNetworkInterface.InUse).
+		if tags.IsSystemManaged(instance.ManagedBy) {
 			if subErr := d.subscribeSystemTerminateLocked(instance.ID); subErr != nil {
 				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",
 					"instanceId", instance.ID, "err", subErr)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -22,6 +23,10 @@ type fakeK3sVPC struct {
 	createOut *ec2.CreateNetworkInterfaceOutput
 	createErr error
 	deleteErr error
+	// deleteInUseUntil models the async instance-terminate cascade: the first N
+	// DeleteNetworkInterface calls return InvalidNetworkInterface.InUse, then the
+	// cascade has force-deleted the ENI so the next call returns NotFound.
+	deleteInUseUntil int
 
 	// describeByENI maps an ENI ID to the record DescribeNetworkInterfaces
 	// returns; a missing ENI yields an empty result (gone). describeErr forces
@@ -51,6 +56,12 @@ func (f *fakeK3sVPC) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInp
 
 func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
+	if f.deleteInUseUntil > 0 {
+		if len(f.deleteCalls) <= f.deleteInUseUntil {
+			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		}
+		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+	}
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
@@ -561,15 +572,39 @@ func TestTerminateK3sServerVM_ENINotFoundIsIdempotent(t *testing.T) {
 	require.Len(t, vpc.deleteCalls, 1)
 }
 
-func TestTerminateK3sServerVM_ENIInUseIsRetryable(t *testing.T) {
-	// The VM is still terminating async and holds the ENI. InUse must surface
-	// as an error so the cluster stays DELETING and the reconciler retries.
+func TestTerminateK3sServerVM_ENIInUseThenCascadeDeletes(t *testing.T) {
+	// mulga-siv-295.10: the VM is still terminating async; its terminate cascade
+	// force-deletes the ENI a beat later. TerminateK3sServerVM must wait out the
+	// InUse window so the first DeleteCluster completes instead of wedging.
+	withFastENIWait(t)
+	vpc := &fakeK3sVPC{deleteInUseUntil: 3}
+	inst := &fakeK3sInst{}
+
+	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
+	require.NoError(t, err, "InUse that resolves to NotFound (cascade) must be tolerated, not surfaced")
+	assert.Greater(t, len(vpc.deleteCalls), 3, "must retry past the InUse window until the ENI is gone")
+}
+
+func TestTerminateK3sServerVM_ENIInUsePastBudgetSurfaces(t *testing.T) {
+	// A persistent InUse (cascade never fires) must still surface after the
+	// bounded budget so the teardown backstop retries rather than blocking forever.
+	withFastENIWait(t)
 	vpc := &fakeK3sVPC{deleteErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)}
 	inst := &fakeK3sInst{}
 
 	err := TerminateK3sServerVM(vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
-	require.Error(t, err, "ENI still in use must be retryable, not swallowed")
+	require.Error(t, err, "ENI in use past the budget must surface so the backstop retries")
 	assert.Contains(t, err.Error(), "delete ENI eni-aaa111")
+	assert.Greater(t, len(vpc.deleteCalls), 1, "must have retried before giving up")
+}
+
+// withFastENIWait shrinks the ENI-delete retry budget for tests so a bounded
+// retry loop runs in milliseconds, restoring the production defaults after.
+func withFastENIWait(t *testing.T) {
+	t.Helper()
+	budget, interval := eniDeleteWaitBudget, eniDeleteWaitInterval
+	eniDeleteWaitBudget, eniDeleteWaitInterval = 20*time.Millisecond, 1*time.Millisecond
+	t.Cleanup(func() { eniDeleteWaitBudget, eniDeleteWaitInterval = budget, interval })
 }
 
 func TestTerminateK3sServerVM_InstanceAlreadyGoneIsIdempotent(t *testing.T) {

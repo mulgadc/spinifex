@@ -73,6 +73,12 @@ type ClusterMeta struct {
 	NLBArn                string    `json:"nlbArn,omitempty"`
 	NLBTargetGroupArn     string    `json:"nlbTargetGroupArn,omitempty"`
 	CreatedAt             time.Time `json:"createdAt"`
+	// DeletingSince stamps when the cluster entered DELETING. The teardown
+	// backstop reaper waits out a healthy synchronous DeleteCluster (min-age)
+	// before re-driving purgeClusterInfra, so it only ever re-drives a wedged
+	// teardown, never one still in progress. No omitempty: encoding/json never
+	// treats a time.Time as empty.
+	DeletingSince time.Time `json:"deletingSince"`
 	// HealthIssue is the last health failure reason ("" = healthy).
 	// DescribeCluster surfaces it as a ClusterHealth issue.
 	HealthIssue string `json:"healthIssue,omitempty"`
@@ -210,6 +216,9 @@ func SetClusterStatus(kv nats.KeyValue, name string, status ClusterStatus) error
 			return false
 		}
 		m.Status = status
+		if status == ClusterStatusDeleting && m.DeletingSince.IsZero() {
+			m.DeletingSince = time.Now().UTC()
+		}
 		return true
 	})
 }

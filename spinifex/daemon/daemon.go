@@ -1396,9 +1396,15 @@ func (d *Daemon) startCluster() error {
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
 	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
-	// a node-down mid-cascade and purge completed terminated records.
+	// a node-down mid-cascade and purge completed terminated records. The volume
+	// data-safety reaper (ADR-0005 §3) rides the same backstop but only marks +
+	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
-		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, d.vmMgr.NewTerminatedTeardownReaper())
+		reapers := []vm.Reaper{d.vmMgr.NewTerminatedTeardownReaper()}
+		if d.volumeService != nil {
+			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+		}
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
 		gc.Start(d.ctx)
 	}
 
@@ -1410,6 +1416,25 @@ func (d *Daemon) startCluster() error {
 	d.awaitShutdown()
 
 	return nil
+}
+
+// leakedVolumeInstances returns the set of instance IDs this node owns whose
+// teardown leaked a volume — terminated here with a failed volumes-teardown.
+// The volume data-safety reaper marks (never deletes) volumes still attached to
+// these definitively-gone instances. Keying on this node's terminated set keeps
+// the shared-store scan from false-marking another node's live-instance volume.
+func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
+	terminated, err := d.jsManager.ListTerminatedInstances()
+	if err != nil {
+		return nil, err
+	}
+	leaked := make(map[string]bool)
+	for _, v := range terminated {
+		if v.LastNode == d.node && v.Teardown[vm.TeardownVolumes] == string(vm.TeardownFailed) {
+			leaked[v.ID] = true
+		}
+	}
+	return leaked, nil
 }
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests

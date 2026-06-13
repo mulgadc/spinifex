@@ -62,6 +62,16 @@ type ENIRecord struct {
 	DetachForce bool `json:"detach_force,omitempty"`
 }
 
+// eniIsLiveAttachment reports whether the ENI record is a live attachment to
+// an instance — the rule #3 live reference that pins its subnet undeletable
+// and blocks a plain ENI delete. Checks every structured attachment field so a
+// single-field drift (e.g. Status cleared but AttachmentId retained) still
+// counts. A detached/available ENI is not a live ref: it is itself deletable
+// and reaped by the GC backstop, so it never pins its subnet.
+func eniIsLiveAttachment(r *ENIRecord) bool {
+	return r.Status == "in-use" || r.InstanceId != "" || r.AttachmentId != ""
+}
+
 // CreateNetworkInterface creates a new ENI in the specified subnet
 func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
@@ -209,8 +219,10 @@ func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force b
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an in-use ENI unless the owning instance forces teardown.
-	if !force && record.Status == "in-use" {
+	// Cannot delete an ENI that is a live attachment unless the owning
+	// instance forces teardown. An ENI whose instance is gone is detached by
+	// terminate (0003 §2) and falls through as deletable.
+	if !force && eniIsLiveAttachment(&record) {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 

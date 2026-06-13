@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,4 +81,62 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 	// Idempotent: forcing teardown of an already-gone ENI is success.
 	require.NoErrorf(t, svc.ForceDeleteInstanceENI(testAccountID, eniId),
 		"ADR-0003 §2 / RLC rule #1: ForceDeleteInstanceENI on an absent ENI must be idempotent success")
+}
+
+// TestRLC3_VPCFamilyDeleteGuardsLiveDependents enforces the Common Resource
+// Lifecycle Contract rule #3 (live-only dependency guards): a VPC-family delete
+// must return DependencyViolation while a *live* dependent remains, but a
+// detached/available (orphan) child must never pin its parent undeletable —
+// otherwise tofu destroy deadlocks on a child the GC backstop already reaps.
+func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
+	t.Run("DeleteSubnet blocked by an attached ENI", func(t *testing.T) {
+		svc := setupTestVPCService(t)
+		vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+		subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+		eniId := createTestENI(t, svc, subnetId)
+		_, err := svc.AttachENI(testAccountID, eniId, "i-resident000000", 0)
+		require.NoError(t, err)
+
+		_, err = svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
+		assert.ErrorContainsf(t, err, awserrors.ErrorDependencyViolation,
+			"ADR-0004 §2: DeleteSubnet must return DependencyViolation while a live ENI attachment (a resident instance) remains (rule #3)")
+	})
+
+	t.Run("DeleteSubnet allowed with only an available ENI", func(t *testing.T) {
+		svc := setupTestVPCService(t)
+		vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+		subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+		_ = createTestENI(t, svc, subnetId) // available, never attached
+
+		_, err := svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String(subnetId)}, testAccountID)
+		require.NoErrorf(t, err,
+			"ADR-0004 §2/rule #3: an available (orphan) ENI must not pin its subnet — it is itself deletable and GC-reaped")
+	})
+
+	t.Run("DeleteNetworkInterface blocked while attached", func(t *testing.T) {
+		svc := setupTestVPCService(t)
+		vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+		subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+		eniId := createTestENI(t, svc, subnetId)
+		_, err := svc.AttachENI(testAccountID, eniId, "i-live0000000000", 0)
+		require.NoError(t, err)
+
+		_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
+		assert.ErrorContainsf(t, err, awserrors.ErrorInvalidNetworkInterfaceInUse,
+			"ADR-0004 §2: a plain DeleteNetworkInterface must reject an ENI attached to a live instance")
+	})
+
+	t.Run("DeleteNetworkInterface allowed once detached", func(t *testing.T) {
+		svc := setupTestVPCService(t)
+		vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+		subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+		eniId := createTestENI(t, svc, subnetId)
+		_, err := svc.AttachENI(testAccountID, eniId, "i-gone0000000000", 0)
+		require.NoError(t, err)
+		require.NoError(t, svc.DetachENI(testAccountID, eniId))
+
+		_, err = svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
+		require.NoErrorf(t, err,
+			"ADR-0004 §2/rule #3: an ENI whose instance is gone (detached) must be deletable")
+	})
 }

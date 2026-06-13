@@ -10,6 +10,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +18,11 @@ import (
 const testAccountID = "123456789012"
 
 func setupTestService(t *testing.T) *NatGatewayServiceImpl {
+	svc, _ := setupTestServiceJS(t)
+	return svc
+}
+
+func setupTestServiceJS(t *testing.T) (*NatGatewayServiceImpl, nats.JetStreamContext) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 
@@ -38,7 +44,7 @@ func setupTestService(t *testing.T) *NatGatewayServiceImpl {
 
 	svc, err := NewNatGatewayServiceImplWithNATS(nc)
 	require.NoError(t, err)
-	return svc
+	return svc, js
 }
 
 func TestCreateNatGateway(t *testing.T) {

@@ -641,6 +641,13 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	var subnetRecord SubnetRecord
 	_ = json.Unmarshal(subnetEntry.Value(), &subnetRecord)
 
+	// Block while a live ENI attachment (hence a resident instance) remains in
+	// the subnet (rule #3). Orphan/available ENIs do not pin it: tofu deletes
+	// them first and the GC backstop reaps leftovers.
+	if err := s.checkSubnetResidents(accountID, subnetID); err != nil {
+		return nil, err
+	}
+
 	if err := s.subnetKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -651,6 +658,41 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	s.publishSubnetEvent("vpc.delete-subnet", subnetID, subnetRecord.VpcId, subnetRecord.CidrBlock)
 
 	return &ec2.DeleteSubnetOutput{}, nil
+}
+
+// checkSubnetResidents returns DependencyViolation if any ENI residing in the
+// subnet is a live attachment (rule #3). Fail-closed on a KV read error so a
+// transient fault never lets a delete orphan a port.
+func (s *VPCServiceImpl) checkSubnetResidents(accountID, subnetID string) error {
+	keys, err := s.eniKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil
+		}
+		slog.Error("DeleteSubnet: ENI scan failed, blocking delete to avoid orphaning ports", "subnetId", subnetID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	prefix := accountID + "."
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.eniKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			continue
+		}
+		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
+			return errors.New(awserrors.ErrorDependencyViolation)
+		}
+	}
+	return nil
 }
 
 // DescribeSubnets describes subnets

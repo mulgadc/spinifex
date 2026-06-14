@@ -24,6 +24,14 @@ var (
 	gatewayDatapathInterval = 2 * time.Second
 )
 
+// Bounds for the guest-port SB Port_Binding convergence wait. Shorter than the
+// gateway gate: a guest port binds quickly once its tap is plugged, and this runs
+// per EIP. Package vars so tests can shorten.
+var (
+	guestPortDatapathTimeout  = 20 * time.Second
+	guestPortDatapathInterval = 2 * time.Second
+)
+
 // applyVPCs ensures every intent VPC has a LogicalRouter. Stray OVN-only
 // routers are left alone.
 func (r *reconciler) applyVPCs(ctx context.Context, intent IntentState, actual ActualState) {
@@ -403,11 +411,62 @@ func (r *reconciler) ensureGatewayClaimed(ctx context.Context, crPortName string
 	}
 }
 
-// applyEIPs runs every intent EIP through NATManager.AddEIP; idempotent.
+// applyEIPs runs every intent EIP through NATManager.AddEIP; idempotent. After the
+// DNAT row + neigh prime are in place it gates on the guest ENI's SB Port_Binding:
+// AddEIP only proves the gateway-chassis flow exists, not the gatewayLRP->guest
+// geneve hop, so a fresh post-churn guest can stay dark (SSH to the public IP times
+// out) while every control-plane signal is green.
 func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ ActualState) {
 	for _, spec := range intent.EIPs {
 		if err := r.nat.AddEIP(ctx, spec); err != nil {
 			slog.Error("reconcile/apply: AddEIP failed", "external_ip", spec.ExternalIP, "logical_ip", spec.LogicalIP, "err", err)
+		}
+		r.ensureGuestPortDatapath(ctx, spec.VPCID, spec.PortName)
+	}
+}
+
+// ensureGuestPortDatapath verifies the guest ENI behind an EIP is actually
+// reachable on the ingress path. AddEIP installs the DNAT and primes the host
+// neigh, but the DNAT-translated packet still has to cross geneve to the guest's
+// chassis; until that port's SB Port_Binding is up the flow is missing and the EIP
+// blackholes. Probe the guest Port_Binding; on a miss force one ovn-controller
+// recompute (binds the port / installs the remote flow) and re-probe until a short
+// deadline. No-op when no verifier is wired or the EIP carries no guest port.
+func (r *reconciler) ensureGuestPortDatapath(ctx context.Context, vpcID, lspName string) {
+	if r.gwClaim == nil || lspName == "" {
+		return
+	}
+	deadline := time.Now().Add(guestPortDatapathTimeout)
+	nudged := false
+	for {
+		up, err := r.gwClaim.GuestPortUp(ctx, lspName)
+		if err != nil {
+			slog.Warn("reconcile/apply: guest port datapath probe failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
+			return
+		}
+		if up {
+			if nudged {
+				slog.Info("reconcile/apply: guest port datapath converged after recompute", "vpc_id", vpcID, "lsp", lspName)
+			}
+			return
+		}
+		if !nudged {
+			slog.Warn("reconcile/apply: guest port SB binding not up; nudging ovn-controller recompute",
+				"vpc_id", vpcID, "lsp", lspName)
+			if err := r.gwClaim.NudgeRecompute(ctx); err != nil {
+				slog.Warn("reconcile/apply: ovn-controller recompute nudge failed", "vpc_id", vpcID, "lsp", lspName, "err", err)
+			}
+			nudged = true
+		}
+		if time.Now().After(deadline) {
+			slog.Error("reconcile/apply: guest port datapath did not converge; EIP ingress may be unreachable",
+				"vpc_id", vpcID, "lsp", lspName, "timeout", guestPortDatapathTimeout)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(guestPortDatapathInterval):
 		}
 	}
 }

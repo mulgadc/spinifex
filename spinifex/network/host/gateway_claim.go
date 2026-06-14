@@ -41,25 +41,6 @@ func (p *GatewayClaimProber) GatewayPortClaimed(_ context.Context, crPortName st
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-// GuestPortUp reports whether the SB Port_Binding for a guest ENI LSP is up —
-// bound to a chassis with logical flows installed. ovn-controller sets up=true
-// only once the port is realised on its hosting chassis, which is the southbound
-// signal that the cross-node geneve flow to that chassis exists; until then the
-// ingress EIP datapath blackholes after DNAT. Output() not CombinedOutput(): sudo
-// PAM noise on stderr would be misread as the column value.
-func (p *GatewayClaimProber) GuestPortUp(_ context.Context, lspName string) (bool, error) {
-	args := []string{"--no-leader-only"}
-	if p.sbAddr != "" {
-		args = append(args, "--db="+p.sbAddr)
-	}
-	args = append(args, "--bare", "--columns=up", "find", "Port_Binding", "logical_port="+lspName)
-	out, err := utils.SudoCommand("ovn-sbctl", args...).Output()
-	if err != nil {
-		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", lspName, err)
-	}
-	return strings.TrimSpace(string(out)) == "true", nil
-}
-
 // NudgeRecompute asks the local ovn-controller to re-evaluate logical flows via
 // the incremental engine, forcing a re-claim of unbound Port_Bindings.
 func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {

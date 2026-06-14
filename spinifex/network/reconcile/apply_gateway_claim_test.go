@@ -14,19 +14,15 @@ import (
 type fakeClaimVerifier struct {
 	claimedAfter   int // nudges required before the port reports claimed; <0 never
 	reachableAfter int // nudges required before the datapath reports reachable; <0 never
-	guestUpAfter   int // nudges required before the guest port reports up; <0 never
 	checkErr       error
 	nudgeErr       error
 	reachErr       error
-	guestErr       error
 	checks         int
 	nudges         int
 	repairs        int
 	reachChecks    int
-	guestChecks    int
 	lastPort       string // most recent port name passed to GatewayPortClaimed
 	lastGwIP       string // most recent IP passed to GatewayReachable
-	lastLSP        string // most recent lsp passed to GuestPortUp
 }
 
 func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (bool, error) {
@@ -66,18 +62,6 @@ func (f *fakeClaimVerifier) GatewayReachable(_ context.Context, gwIP string) (bo
 	return f.nudges >= f.reachableAfter, nil
 }
 
-func (f *fakeClaimVerifier) GuestPortUp(_ context.Context, lspName string) (bool, error) {
-	f.guestChecks++
-	f.lastLSP = lspName
-	if f.guestErr != nil {
-		return false, f.guestErr
-	}
-	if f.guestUpAfter < 0 {
-		return false, nil
-	}
-	return f.nudges >= f.guestUpAfter, nil
-}
-
 func withFastDatapathBounds(t *testing.T) {
 	t.Helper()
 	to, iv := gatewayDatapathTimeout, gatewayDatapathInterval
@@ -92,14 +76,6 @@ func withFastClaimBounds(t *testing.T) {
 	gatewayClaimTimeout = 200 * time.Millisecond
 	gatewayClaimInterval = 1 * time.Millisecond
 	t.Cleanup(func() { gatewayClaimTimeout, gatewayClaimInterval = to, iv })
-}
-
-func withFastGuestPortBounds(t *testing.T) {
-	t.Helper()
-	to, iv := guestPortDatapathTimeout, guestPortDatapathInterval
-	guestPortDatapathTimeout = 200 * time.Millisecond
-	guestPortDatapathInterval = 1 * time.Millisecond
-	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
 }
 
 func TestEnsureGatewayClaimed_NoVerifierIsNoop(t *testing.T) {
@@ -304,113 +280,5 @@ func TestEnsureGatewayDatapath_ContextCancelStops(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ensureGatewayDatapath ignored context cancellation")
-	}
-}
-
-func TestEnsureGuestPortDatapath_NoVerifierIsNoop(t *testing.T) {
-	r := &reconciler{} // gwClaim nil
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
-	// Reaching here without panic is the assertion.
-}
-
-func TestEnsureGuestPortDatapath_EmptyLSPIsNoop(t *testing.T) {
-	f := &fakeClaimVerifier{}
-	r := &reconciler{gwClaim: f}
-
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "")
-
-	if f.guestChecks != 0 {
-		t.Errorf("guestChecks = %d, want 0 (empty lsp must skip the probe)", f.guestChecks)
-	}
-}
-
-func TestEnsureGuestPortDatapath_UpNoNudge(t *testing.T) {
-	withFastGuestPortBounds(t)
-	f := &fakeClaimVerifier{guestUpAfter: 0}
-	r := &reconciler{gwClaim: f}
-
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
-
-	if f.nudges != 0 {
-		t.Errorf("up guest port nudged %d times, want 0", f.nudges)
-	}
-	if f.guestChecks != 1 {
-		t.Errorf("guestChecks = %d, want 1 (single up probe)", f.guestChecks)
-	}
-	if f.lastLSP != "port-eni-1" {
-		t.Errorf("lastLSP = %q, want port-eni-1", f.lastLSP)
-	}
-}
-
-func TestEnsureGuestPortDatapath_NudgeThenConverge(t *testing.T) {
-	withFastGuestPortBounds(t)
-	// Down until one recompute nudge, then up.
-	f := &fakeClaimVerifier{guestUpAfter: 1}
-	r := &reconciler{gwClaim: f}
-
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
-
-	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (nudge once, then converge)", f.nudges)
-	}
-}
-
-func TestEnsureGuestPortDatapath_NeverConvergesNudgesOnceThenGivesUp(t *testing.T) {
-	withFastGuestPortBounds(t)
-	f := &fakeClaimVerifier{guestUpAfter: -1} // never up
-	r := &reconciler{gwClaim: f}
-
-	done := make(chan struct{})
-	go func() {
-		r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("ensureGuestPortDatapath did not return within deadline; blocking reconcile")
-	}
-
-	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (nudge once, do not spam)", f.nudges)
-	}
-	if f.guestChecks < 2 {
-		t.Errorf("guestChecks = %d, want >=2 (polled past the first nudge)", f.guestChecks)
-	}
-}
-
-func TestEnsureGuestPortDatapath_ProbeErrorBailsOut(t *testing.T) {
-	withFastGuestPortBounds(t)
-	f := &fakeClaimVerifier{guestErr: errors.New("ovn-sbctl down")}
-	r := &reconciler{gwClaim: f}
-
-	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
-
-	if f.nudges != 0 {
-		t.Errorf("nudges = %d, want 0 (bail out on probe error, do not nudge blindly)", f.nudges)
-	}
-}
-
-func TestEnsureGuestPortDatapath_ContextCancelStops(t *testing.T) {
-	to, iv := guestPortDatapathTimeout, guestPortDatapathInterval
-	guestPortDatapathTimeout = 10 * time.Second
-	guestPortDatapathInterval = 50 * time.Millisecond
-	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
-
-	f := &fakeClaimVerifier{guestUpAfter: -1}
-	r := &reconciler{gwClaim: f}
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-	go func() {
-		r.ensureGuestPortDatapath(ctx, "vpc-a", "port-eni-1")
-		close(done)
-	}()
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("ensureGuestPortDatapath ignored context cancellation")
 	}
 }

@@ -47,12 +47,6 @@ type GatewayClaimVerifier interface {
 	// recompute fixes that). Bringing the veth up (a no-op in physical mode where the
 	// device is absent) then recomputing covers both, idempotently.
 	RepairDatapath(ctx context.Context) error
-	// GuestPortUp reports whether the SB Port_Binding for a guest ENI LSP is up
-	// (bound to a chassis with flows installed). A guest port that is not up means
-	// the cross-node geneve flow to its chassis is not installed, so the ingress
-	// EIP datapath blackholes after DNAT and SSH to the public IP times out against
-	// an otherwise-running instance.
-	GuestPortUp(ctx context.Context, lspName string) (bool, error)
 }
 
 // Config is the construction-time bag for the reconciler. All fields except

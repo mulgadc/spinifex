@@ -1022,10 +1022,29 @@ if [ -n "$GWMAC" ]; then
   for p in $(sudo ovs-vsctl list-ports br-int 2>/dev/null | grep -aE 'patch-br-int-to-ext'); do
     echo "--- in_port=$p ---"
     sudo ovs-appctl ofproto/trace br-int "in_port=$p,tcp,dl_src=02:00:00:00:00:01,dl_dst=$GWMAC,nw_src=192.168.0.11,nw_dst=$EIP,tp_src=40000,tp_dst=80" 2>&1 \
-      | grep -aE 'bridge|ct_|nat|dnat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -50
+      | grep -aE 'bridge|ct_|nat|dnat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -120
   done
 else
   echo "(no cr-gw MAC resolved — ARP itself failed)"
+fi
+echo "=== south->north RETURN trace (guest reply -> un-DNAT -> WAN) ==="
+PRIV=$(sudo ovn-nbctl --no-leader-only --bare --columns=logical_ip find NAT external_ip="\"$EIP\"" 2>/dev/null | head -1)
+CLIENT=$({ sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "dst=$EIP" | grep -aoE 'src=[0-9.]+' | head -1 | cut -d= -f2)
+[ -z "$CLIENT" ] && CLIENT=192.168.1.1
+GLSP=""; GMAC=""
+for lp in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding type='""' 2>/dev/null); do
+  m=$(sudo ovn-sbctl --no-leader-only --bare --columns=mac find Port_Binding logical_port="$lp" 2>/dev/null)
+  case "$m" in *"$PRIV"*) GLSP="$lp"; GMAC=$(echo "$m" | awk '{print $1}'); break;; esac
+done
+TAP=$(sudo ovs-vsctl --bare --columns=name find Interface external_ids:iface-id="$GLSP" 2>/dev/null | head -1)
+SUBNET_GW=$(echo "$PRIV" | awk -F. '{print $1"."$2"."$3".1"}')
+LRPMAC=$(sudo ovn-nbctl --no-leader-only --bare --columns=mac find Logical_Router_Port networks~="$SUBNET_GW/" 2>/dev/null | head -1)
+echo "PRIV=[$PRIV] CLIENT=[$CLIENT] GLSP=[$GLSP] GMAC=[$GMAC] TAP=[$TAP] LRPMAC=[$LRPMAC]"
+if [ -n "$TAP" ] && [ -n "$GMAC" ] && [ -n "$LRPMAC" ]; then
+  sudo ovs-appctl ofproto/trace br-int "in_port=$TAP,tcp,dl_src=$GMAC,dl_dst=$LRPMAC,nw_src=$PRIV,nw_dst=$CLIENT,tp_src=80,tp_dst=40000,tcp_flags=ack" 2>&1 \
+    | grep -aE 'bridge|ct_|nat|dnat|snat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -150
+else
+  echo "(return-trace discovery incomplete — skipping)"
 fi
 echo "=== conntrack DNAT entries (EIP/guest) ==="
 { sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "$EIP|10\.210\.1\." | head -30 || echo "(none)"

@@ -427,6 +427,30 @@ func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 	assert.Equal(t, "2.2.2.2", survived.ExternalIP, "surviving row must belong to vpc-b")
 }
 
+// TestNATManager_DeleteEIP_RecycledLogicalIP_NoClobber guards the EIP-recycling
+// clobber: a dnat_and_snat row's identity is its external IP, not its logical IP.
+// Private IPs are reused as instances recycle, so a stale or retried delete keyed
+// on a freed EIP must not tear down whichever live EIP now holds the same private IP.
+func TestNATManager_DeleteEIP_RecycledLogicalIP_NoClobber(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	nm, err := NewNATManager(m, NATModeCentralized)
+	require.NoError(t, err)
+
+	// Live EIP .174 bound to recycled private IP 172.31.0.4.
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.0.174", LogicalIP: "172.31.0.4",
+	}))
+
+	// Stale delete for an earlier EIP (.172) on the same recycled private IP.
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.172", "172.31.0.4"))
+
+	got := findNAT(m, "dnat_and_snat", "172.31.0.4")
+	require.NotNil(t, got, "live EIP row must survive a stale delete for a recycled private IP")
+	assert.Equal(t, "192.168.0.174", got.ExternalIP, "the surviving row must be the live EIP")
+}
+
 func TestNATManager_AddSNAT_AndDelete(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

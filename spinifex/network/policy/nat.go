@@ -226,16 +226,22 @@ func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {
 	router := topology.VPCRouter(vpcID)
-	if err := m.ovn.DeleteNAT(ctx, router, "dnat_and_snat", logicalIP); err != nil {
+	// Delete the dnat_and_snat row by its external IP, not its logical IP. A row's
+	// identity on the gateway router is the EIP; private IPs are recycled as instances
+	// come and go, so a stale or retried delete keyed on logical IP clobbers whichever
+	// EIP currently holds that private IP (the next owner goes dark). An empty external
+	// IP means there is no EIP and therefore no dnat_and_snat row to remove.
+	if externalIP == "" {
+		return nil
+	}
+	if err := m.ovn.DeleteNATByExternalIP(ctx, router, "dnat_and_snat", externalIP); err != nil {
 		if !errors.Is(err, ovn.ErrNATNotFound) {
-			return fmt.Errorf("delete dnat_and_snat %s on %s: %w", logicalIP, router, err)
+			return fmt.Errorf("delete dnat_and_snat %s on %s: %w", externalIP, router, err)
 		}
 	}
 	// Flush host ARP for the released IP so the next owner isn't shadowed. Best-effort.
-	if externalIP != "" {
-		if err := m.neigh(externalIP); err != nil {
-			slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
-		}
+	if err := m.neigh(externalIP); err != nil {
+		slog.Warn("policy: DeleteEIP neighbour flush failed", "external_ip", externalIP, "logical_ip", logicalIP, "err", err)
 	}
 	return nil
 }

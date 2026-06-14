@@ -48,8 +48,6 @@ type IGWManager interface {
 	// SNATs the instance, so the reroute alone lets the inbound connection's reply
 	// (and instance-initiated egress) bypass the subnet drop gate. Idempotent.
 	EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
-	// RemoveEIPInstanceEgress is the inverse. Idempotent.
-	RemoveEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -438,19 +436,6 @@ func (m *igwManager) EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetI
 		OutputPort:   topology.GatewayRouterPort(vpcID),
 		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
 	})
-}
-
-// RemoveEIPInstanceEgress deletes the reroute installed by EnsureEIPInstanceEgress.
-// Idempotent.
-func (m *igwManager) RemoveEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error {
-	if vpcID == "" || subnetID == "" {
-		return errors.New("RemoveEIPInstanceEgress: vpcID and subnetID required")
-	}
-	srcIP, err := netip.ParseAddr(instanceIP)
-	if err != nil {
-		return fmt.Errorf("RemoveEIPInstanceEgress: parse instance IP %q: %w", instanceIP, err)
-	}
-	return m.routes.DeleteSystemInstanceEgress(ctx, vpcID, subnetID, srcIP, defaultRoutePrefix, m.vpcExcludeCIDRs(ctx, vpcID))
 }
 
 // linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so link-local

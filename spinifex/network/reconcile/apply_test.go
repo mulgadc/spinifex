@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
@@ -428,6 +429,58 @@ func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 	storedPort := m.Ports["port-"+port.PortID]
 	if !slices.Contains(pgB.Ports, storedPort.UUID) {
 		t.Errorf("ENI port not joined to new SG port group on drift")
+	}
+}
+
+// TestReconcile_PublicInstanceExemptFromDropGate locks the post-reboot regression: a
+// reconcile that drop-gates an IGW-attached subnet with no 0.0.0.0/0 route must also
+// install the /32 reroute above the gate for every public-IP instance in that subnet,
+// else the gate drops the instance's inbound-connection reply and the ALB/EIP datapath
+// goes dark post-reboot while every control-plane signal stays green. The reboot suite
+// drives this via auto-assigned public IPs (ENI records), not the EIP bucket.
+func TestReconcile_PublicInstanceExemptFromDropGate(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	// Auto-assigned public IP on the ENI (MapPublicIpOnLaunch / ELB), not an EIP.
+	port := intent.Ports["eni-a"]
+	port.PublicIP = netip.MustParseAddr("192.168.0.50")
+	intent.Ports["eni-a"] = port
+	intent.DropGates[subnetEgressKey("subnet-a", netip.MustParsePrefix("0.0.0.0/0"))] = SubnetEgressIntent{
+		VPCID: "vpc-a", SubnetID: "subnet-a", DestCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-a"))
+	if err != nil {
+		t.Fatalf("ListLogicalRouterPolicies: %v", err)
+	}
+	var reroute, drop *nbdb.LogicalRouterPolicy
+	for i := range policies {
+		switch policies[i].Priority {
+		case policy.SystemInstanceEgressPriority:
+			reroute = &policies[i]
+		case policy.SubnetEgressPriorityDrop:
+			drop = &policies[i]
+		}
+	}
+	if drop == nil {
+		t.Fatalf("drop gate (priority %d) missing: a routeless IGW subnet must be gated", policy.SubnetEgressPriorityDrop)
+	}
+	if reroute == nil {
+		t.Fatalf("public-instance exemption (priority %d) missing: the drop gate kills the reply post-reboot",
+			policy.SystemInstanceEgressPriority)
+	}
+	if !strings.Contains(reroute.Match, "ip4.src == 10.0.1.10/32") {
+		t.Errorf("exemption reroute match = %q, want it to confine to ip4.src == 10.0.1.10/32", reroute.Match)
+	}
+	if reroute.Priority <= drop.Priority {
+		t.Errorf("exemption reroute priority %d must sit above drop gate %d", reroute.Priority, drop.Priority)
 	}
 }
 

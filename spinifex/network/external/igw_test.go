@@ -404,6 +404,44 @@ func TestEnsureSystemInstanceEgress(t *testing.T) {
 	assert.Nil(t, dnat, "egress-only: no inbound dnat_and_snat may be installed")
 }
 
+// TestEnsureEIPInstanceEgress installs the /32 reroute above the drop gate WITHOUT
+// any snat row: an EIP's dnat_and_snat already SNATs the instance, so a second plain
+// snat would be redundant. The reroute alone lets the EIP's inbound-connection reply
+// bypass the subnet drop gate.
+func TestEnsureEIPInstanceEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	// Drop gate first (1100), then the EIP reroute above it (1200).
+	require.NoError(t, mgr.EnsureSubnetEgressDrop(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	require.NoError(t, mgr.EnsureEIPInstanceEgress(ctx, "vpc-1", "subnet-pub", "10.0.4.10"))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	var reroute, drop *nbdb.LogicalRouterPolicy
+	for i := range policies {
+		switch policies[i].Priority {
+		case policy.SystemInstanceEgressPriority:
+			reroute = &policies[i]
+		case policy.SubnetEgressPriorityDrop:
+			drop = &policies[i]
+		}
+	}
+	require.NotNil(t, reroute, "EIP /32 reroute must be installed")
+	require.NotNil(t, drop, "drop gate must remain — the reroute exempts the EIP, not the subnet")
+	assert.Equal(t, "reroute", reroute.Action)
+	assert.Contains(t, reroute.Match, "ip4.src == 10.0.4.10/32")
+	assert.Greater(t, reroute.Priority, drop.Priority, "EIP reroute must sit above the drop gate")
+
+	for _, n := range m.NATs {
+		assert.NotEqual(t, "snat", n.Type, "EIP egress is reroute-only: dnat_and_snat already SNATs, no plain snat")
+	}
+}
+
 // TestEnsureSystemInstanceEgress_IsIdempotent re-runs install; row counts stay 1.
 func TestEnsureSystemInstanceEgress_IsIdempotent(t *testing.T) {
 	ctx := context.Background()

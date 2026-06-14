@@ -43,6 +43,13 @@ type IGWManager interface {
 	EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
 	// RemoveSystemInstanceEgress is the inverse. Idempotent.
 	RemoveSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
+	// EnsureEIPInstanceEgress installs a /32 reroute above the drop gate for an
+	// EIP-backed instance — reroute only, no SNAT. The EIP's dnat_and_snat already
+	// SNATs the instance, so the reroute alone lets the inbound connection's reply
+	// (and instance-initiated egress) bypass the subnet drop gate. Idempotent.
+	EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
+	// RemoveEIPInstanceEgress is the inverse. Idempotent.
+	RemoveEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -400,6 +407,50 @@ func (m *igwManager) RemoveSystemInstanceEgress(ctx context.Context, vpcID, subn
 		firstErr = fmt.Errorf("delete system instance egress snat: %w", err)
 	}
 	return firstErr
+}
+
+// EnsureEIPInstanceEgress installs the /32 reroute above the drop gate for an EIP
+// instance, without the plain SNAT EnsureSystemInstanceEgress adds: the EIP's
+// dnat_and_snat already SNATs the instance, so the reroute alone is what lets the
+// inbound connection's reply bypass the subnet drop gate (lr_in_policy runs before
+// lr_out un-DNAT/SNAT, so the reply still carries its private source at the gate).
+// Idempotent.
+func (m *igwManager) EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("EnsureEIPInstanceEgress: vpcID and subnetID required")
+	}
+	srcIP, err := netip.ParseAddr(instanceIP)
+	if err != nil {
+		return fmt.Errorf("EnsureEIPInstanceEgress: parse instance IP %q: %w", instanceIP, err)
+	}
+	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
+	if err != nil {
+		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
+	}
+	if nexthop == "" {
+		return fmt.Errorf("EnsureEIPInstanceEgress: no gateway nexthop for %s (IGW not attached?)", vpcID)
+	}
+	return m.routes.AddSystemInstanceEgress(ctx, vpcID, policy.SystemInstanceEgressSpec{
+		SubnetID:     subnetID,
+		SrcIP:        srcIP,
+		Prefix:       defaultRoutePrefix,
+		Nexthop:      nexthop,
+		OutputPort:   topology.GatewayRouterPort(vpcID),
+		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
+	})
+}
+
+// RemoveEIPInstanceEgress deletes the reroute installed by EnsureEIPInstanceEgress.
+// Idempotent.
+func (m *igwManager) RemoveEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("RemoveEIPInstanceEgress: vpcID and subnetID required")
+	}
+	srcIP, err := netip.ParseAddr(instanceIP)
+	if err != nil {
+		return fmt.Errorf("RemoveEIPInstanceEgress: parse instance IP %q: %w", instanceIP, err)
+	}
+	return m.routes.DeleteSystemInstanceEgress(ctx, vpcID, subnetID, srcIP, defaultRoutePrefix, m.vpcExcludeCIDRs(ctx, vpcID))
 }
 
 // linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so link-local

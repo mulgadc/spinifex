@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -449,6 +450,57 @@ func (r *reconciler) applyEIPs(ctx context.Context, intent IntentState, _ Actual
 		}
 		r.ensureGuestPortDatapath(ctx, spec.VPCID, spec.PortName)
 	}
+}
+
+// applyPublicInstanceEgress exempts every public-IP instance from its subnet egress
+// drop gate. Public IPs come from two disjoint sources: auto-assigned and ELB
+// addresses recorded on the ENI (intent.Ports) and user EIPs in the EIP bucket
+// (intent.EIPs). Both need the same /32 reroute above the gate.
+func (r *reconciler) applyPublicInstanceEgress(ctx context.Context, intent IntentState, _ ActualState) {
+	for _, p := range intent.Ports {
+		if p.PublicIP.IsValid() {
+			r.ensureEIPEgressExemption(ctx, intent, p.VPCID, p.SubnetID, p.PrivateIP.String())
+		}
+	}
+	for _, e := range intent.EIPs {
+		r.ensureEIPEgressExemption(ctx, intent, e.VPCID, subnetIDForIP(intent.Subnets, e.LogicalIP), e.LogicalIP)
+	}
+}
+
+// ensureEIPEgressExemption punches a public-IP instance through its subnet's egress
+// drop gate. The drop gate (installed for an IGW-attached subnet with no 0.0.0.0/0
+// route) drops the instance's WAN-bound traffic — including the reply leg of an
+// inbound connection, since lr_in_policy runs before lr_out un-DNAT/SNAT so the reply
+// still carries its private source at the gate. A /32 reroute above the gate restores
+// the datapath; the instance's dnat_and_snat supplies SNAT. No-op when the VPC has no
+// IGW (no drop gate) or the instance maps to no known subnet.
+func (r *reconciler) ensureEIPEgressExemption(ctx context.Context, intent IntentState, vpcID, subnetID, instanceIP string) {
+	if _, hasIGW := intent.IGWs[vpcID]; !hasIGW {
+		return
+	}
+	if subnetID == "" {
+		slog.Warn("reconcile/apply: public instance maps to no subnet; skipping egress exemption",
+			"vpc_id", vpcID, "instance_ip", instanceIP)
+		return
+	}
+	if err := r.igw.EnsureEIPInstanceEgress(ctx, vpcID, subnetID, instanceIP); err != nil {
+		slog.Error("reconcile/apply: EnsureEIPInstanceEgress failed",
+			"vpc_id", vpcID, "subnet_id", subnetID, "instance_ip", instanceIP, "err", err)
+	}
+}
+
+// subnetIDForIP returns the SubnetID whose CIDR contains ip, or "" if none match.
+func subnetIDForIP(subnets map[string]topology.SubnetSpec, ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	for _, s := range subnets {
+		if s.CIDR.IsValid() && s.CIDR.Contains(addr) {
+			return s.SubnetID
+		}
+	}
+	return ""
 }
 
 // ensureGuestPortDatapath verifies the guest ENI behind an EIP is reachable on the

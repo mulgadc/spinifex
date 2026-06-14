@@ -58,4 +58,8 @@ type PortSpec struct {
 	PrivateIP netip.Addr
 	MAC       net.HardwareAddr
 	SGIDs     []string
+	// PublicIP is the ENI's auto-assigned or ELB public address, when present.
+	// It does not affect the L2 LSP; the reconciler reads it to exempt the
+	// instance from its subnet egress drop gate (the dnat_and_snat datapath).
+	PublicIP netip.Addr
 }

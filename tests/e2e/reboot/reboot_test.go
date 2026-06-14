@@ -588,19 +588,37 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer probeCancel()
 	seen := map[string]bool{}
-	harness.Eventually(t, func() bool {
+	served := false
+	serveDeadline := time.Now().Add(180 * time.Second)
+	for time.Now().Before(serveDeadline) {
 		out, err := fix.ssh.Run(probeCtx, fix.env.WANHost,
 			fmt.Sprintf("curl -s --connect-timeout 2 --max-time 3 'http://%s:%d/' 2>/dev/null", fix.albPublicIP, httpPort))
-		if err != nil {
-			return false
+		if err == nil {
+			if id := instanceIDFromResponse(out); id != "" {
+				seen[id] = true
+			}
 		}
-		id := instanceIDFromResponse(out)
-		if id != "" {
-			seen[id] = true
+		if len(seen) >= 2 {
+			served = true
+			break
 		}
-		return len(seen) >= 2
-	}, 180*time.Second, 1*time.Second,
-		fmt.Sprintf("ALB did not serve from both backends within 180s post-reboot (saw=%v)", seen))
+		time.Sleep(1 * time.Second)
+	}
+	// 8.5 reports targets healthy via the daemon's own view, which can be green
+	// while the north-south EIP datapath is dark. Capture dataplane diagnostics on
+	// a serve failure too — otherwise this path leaves no flow/ARP evidence.
+	if !served {
+		harness.Step(t, "ALB serve FAILED — capturing datapath diagnostics")
+		dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
+		dumpALBProbe(dctx, t, fix)
+		dumpOVNDataplane(dctx, t, fix)
+		dumpOVNClaimState(dctx, t, fix)
+		dumpHeartbeatDiagnostics(dctx, t, fix)
+		dumpAppDiagnostics(t, fix)
+		dcancel()
+		t.Fatalf("ALB did not serve from both backends within 180s post-reboot (saw=%v) "+
+			"— see diag-ovn-flows.txt / diag-alb-probe.txt / diag-heartbeat.txt", seen)
+	}
 
 	runHTTPBurst(t, fix, "ALB post-reboot")
 
@@ -976,6 +994,10 @@ echo "=== ovs-vsctl show (bridges + ports) ==="
 sudo ovs-vsctl show 2>&1 | head -120
 echo "=== ovs-ofctl dump-flows br-int (forwarding flows) ==="
 sudo ovs-ofctl dump-flows br-int 2>&1 | head -200
+echo "=== ovs-ofctl dump-flows br-ext (north-south / localnet forwarding) ==="
+sudo ovs-ofctl dump-flows br-ext 2>&1 | head -120
+echo "=== ovs-appctl fdb/show br-ext (WAN-side MAC learning) ==="
+sudo ovs-appctl fdb/show br-ext 2>&1 | head -40
 echo "=== ovn-sbctl chassis + port bindings ==="
 sudo ovn-sbctl --no-leader-only show 2>&1 | head -80
 echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
@@ -984,8 +1006,11 @@ echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
 sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
 echo "=== host neigh (all floating IPs) ==="
 ip neigh show 2>&1 | grep -E "br-wan|br-int" | head -40
-echo "=== host->ALB floating IP %[1]s reachability ==="
+echo "=== host->ALB floating IP %[1]s reachability (REAL ARP: flush primed neigh first) ==="
+sudo ip neigh flush %[1]s 2>&1 || true
 ping -c 2 -W 2 %[1]s 2>&1
+echo "--- neigh after real resolution attempt (INCOMPLETE/FAILED => gateway not answering ARP) ---"
+ip neigh show %[1]s 2>&1
 sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail -20 || echo "(ofproto/trace unavailable)"
 `, fix.albPublicIP)
 

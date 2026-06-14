@@ -31,15 +31,11 @@ func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	assert.ErrorContains(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
 }
 
-// kvBucketRouteTables is the route-table KV bucket, seeded here to prove a live
-// route forwarding to a NAT gateway does not block its deletion.
-const kvBucketRouteTables = "spinifex-vpc-route-tables"
-
 // TestRLC3_NatGatewayDeletesWhileRouted enforces ADR-0004 §2: a NAT gateway is
 // exempt from rule #3 route-reference guards. AWS deletes a NAT gateway even
-// while a route table forwards to it (the route blackholes); the reconciler
-// drops the SNAT once the record leaves the active bucket. Delete must succeed
-// whether or not a live route still targets it.
+// while a route table forwards to it (the route blackholes); delete tears down
+// the SNAT for each routed subnet so egress stops. Delete must succeed whether
+// or not a live route still targets it.
 func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 	t.Run("succeeds while a route forwards to it", func(t *testing.T) {
 		svc, js := setupTestServiceJS(t)

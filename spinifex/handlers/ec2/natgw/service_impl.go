@@ -202,9 +202,10 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// AWS-faithful: a NAT gateway deletes even while routes still forward to it;
-	// the route entry blackholes. The reconciler drops the SNAT once the record
-	// leaves the active bucket, so no route-reference dependency guard is needed.
+	// AWS-faithful: a NAT gateway deletes even while routes still forward to it
+	// (the route blackholes), so there is no route-reference dependency guard.
+	// Tear down the SNAT for each subnet routed through it so egress stops.
+	s.publishDeleteEventsForNatGateway(&record, accountID)
 
 	// Move to deleted bucket (auto-expires via TTL) so DescribeNatGateways can
 	// return state=deleted while Terraform polls after deletion.
@@ -232,6 +233,85 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
+}
+
+// kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal
+// (not imported from the routetable package) because routetable imports this
+// package for PublishAddEvent — importing it back would be a cycle.
+const kvBucketRouteTables = "spinifex-vpc-route-tables"
+
+// publishDeleteEventsForNatGateway tears down the SNAT for every private subnet
+// routed through this NAT gateway, by scanning route tables for routes that
+// target it and publishing vpc.delete-nat-gateway per associated subnet. Called
+// on delete so egress stops even though the route entry survives (blackhole).
+// Best-effort: a scan error only delays SNAT teardown until the route is deleted.
+func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(record *NatGatewayRecord, accountID string) {
+	if s.natsConn == nil {
+		return
+	}
+	rtbKV, err := utils.GetOrCreateKVBucket(mustJS(s.natsConn), kvBucketRouteTables, 10)
+	if err != nil {
+		slog.Warn("DeleteNatGateway: route-table scan failed, SNAT teardown deferred to route delete", "natGatewayId", record.NatGatewayId, "err", err)
+		return
+	}
+	keys, err := rtbKV.Keys()
+	if err != nil {
+		return
+	}
+	prefix := accountID + "."
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := rtbKV.Get(key)
+		if err != nil {
+			continue
+		}
+		var rtbData struct {
+			VpcId  string `json:"vpc_id"`
+			Routes []struct {
+				NatGatewayId string `json:"nat_gateway_id"`
+			} `json:"routes"`
+			Associations []struct {
+				SubnetId string `json:"subnet_id"`
+			} `json:"associations"`
+		}
+		if err := json.Unmarshal(entry.Value(), &rtbData); err != nil {
+			continue
+		}
+		if rtbData.VpcId != record.VpcId {
+			continue
+		}
+		hasNatRoute := false
+		for _, r := range rtbData.Routes {
+			if r.NatGatewayId == record.NatGatewayId {
+				hasNatRoute = true
+				break
+			}
+		}
+		if !hasNatRoute {
+			continue
+		}
+		for _, assoc := range rtbData.Associations {
+			if assoc.SubnetId == "" {
+				continue
+			}
+			subnetEntry, err := s.subnetKV.Get(utils.AccountKey(accountID, assoc.SubnetId))
+			if err != nil {
+				continue
+			}
+			var subnet handlers_ec2_vpc.SubnetRecord
+			if err := json.Unmarshal(subnetEntry.Value(), &subnet); err != nil {
+				continue
+			}
+			s.PublishDeleteEvent(record.VpcId, record.NatGatewayId, record.PublicIp, subnet.CidrBlock)
+		}
+	}
+}
+
+func mustJS(nc *nats.Conn) nats.JetStreamContext {
+	js, _ := nc.JetStream()
+	return js
 }
 
 // disassociateEIP clears the EIP's association to this NAT gateway, keeping the

@@ -202,12 +202,9 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Block while any live route table forwards to this NAT GW (rule #3). The
-	// route-delete path tears down the SNAT rule, so a NAT GW only deletes once
-	// nothing routes to it.
-	if err := s.checkNatGatewayRouteRefs(&record, accountID); err != nil {
-		return nil, err
-	}
+	// AWS-faithful: a NAT gateway deletes even while routes still forward to it;
+	// the route entry blackholes. The reconciler drops the SNAT once the record
+	// leaves the active bucket, so no route-reference dependency guard is needed.
 
 	// Move to deleted bucket (auto-expires via TTL) so DescribeNatGateways can
 	// return state=deleted while Terraform polls after deletion.
@@ -235,64 +232,6 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
-}
-
-// kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal
-// (not imported from the routetable package) because routetable imports this
-// package for PublishAddEvent — importing it back would be a cycle.
-const kvBucketRouteTables = "spinifex-vpc-route-tables"
-
-// checkNatGatewayRouteRefs returns DependencyViolation if any route table in
-// the NAT gateway's VPC has a live route forwarding to it (rule #3).
-// Fail-closed on a route-table read error so a transient fault never lets a
-// delete blackhole live routes.
-func (s *NatGatewayServiceImpl) checkNatGatewayRouteRefs(record *NatGatewayRecord, accountID string) error {
-	if s.natsConn == nil {
-		return nil
-	}
-	rtbKV, err := utils.GetOrCreateKVBucket(mustJS(s.natsConn), kvBucketRouteTables, 10)
-	if err != nil {
-		slog.Error("DeleteNatGateway: route-table scan failed, blocking delete", "natGatewayId", record.NatGatewayId, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	keys, err := rtbKV.Keys()
-	if err != nil {
-		if errors.Is(err, nats.ErrNoKeysFound) {
-			return nil
-		}
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	prefix := accountID + "."
-	for _, key := range keys {
-		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := rtbKV.Get(key)
-		if err != nil {
-			if errors.Is(err, nats.ErrKeyNotFound) {
-				continue
-			}
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		var rtbData struct {
-			VpcId  string `json:"vpc_id"`
-			Routes []struct {
-				NatGatewayId string `json:"nat_gateway_id"`
-			} `json:"routes"`
-		}
-		if err := json.Unmarshal(entry.Value(), &rtbData); err != nil {
-			continue
-		}
-		if rtbData.VpcId != record.VpcId {
-			continue
-		}
-		for _, r := range rtbData.Routes {
-			if r.NatGatewayId == record.NatGatewayId {
-				return errors.New(awserrors.ErrorDependencyViolation)
-			}
-		}
-	}
-	return nil
 }
 
 // disassociateEIP clears the EIP's association to this NAT gateway, keeping the
@@ -331,11 +270,6 @@ func (s *NatGatewayServiceImpl) disassociateEIP(record *NatGatewayRecord, accoun
 	if _, err := s.eipKV.Update(key, data, entry.Revision()); err != nil {
 		slog.Warn("DeleteNatGateway: failed to disassociate EIP", "allocationId", record.AllocationId, "err", err)
 	}
-}
-
-func mustJS(nc *nats.Conn) nats.JetStreamContext {
-	js, _ := nc.JetStream()
-	return js
 }
 
 var describeNatGatewaysValidFilters = map[string]bool{

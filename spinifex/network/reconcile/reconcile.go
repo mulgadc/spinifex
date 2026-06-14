@@ -38,8 +38,15 @@ type GatewayClaimVerifier interface {
 	// gwIP (the gateway LRP IP). A claimed SB binding does not prove flows are
 	// installed: post-reboot ovn-controller can claim the chassisredirect port yet
 	// leave stale gateway/localnet flows, so every control-plane signal is green
-	// while EIPs stay unreachable.
+	// while EIPs stay unreachable. Used as a fallback for VPCs with no EIP; the LRP
+	// IP OVN answers natively, so it cannot detect a stranded EIP NAT pipeline.
 	GatewayReachable(ctx context.Context, gwIP string) (bool, error)
+	// EIPReachable reports whether the NAT external-IP datapath for eip is live, by
+	// forcing a fresh ARP resolution of the EIP. OVN answers ARP for a dnat_and_snat
+	// external IP from the gateway chassis independent of the guest behind it, so a
+	// resolved MAC proves the WAN uplink forwards and the EIP NAT flows are installed
+	// — the signal the gateway LRP IP cannot give. Preferred over GatewayReachable.
+	EIPReachable(ctx context.Context, eip string) (bool, error)
 	// RepairDatapath re-asserts the host external uplink, then forces a recompute.
 	// The post-reboot boot race that strands the datapath has two shapes: the veth
 	// gluing br-ext to the WAN bridge comes up admin-down (a recompute cannot revive

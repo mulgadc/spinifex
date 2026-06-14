@@ -80,6 +80,9 @@ func linkExists(dev string) bool {
 // so this probes host -> br-wan -> br-ext -> localnet -> OVN gateway router with no
 // guest or security-group dependency. A failed ping (non-zero exit) reports
 // unreachable, not an error; an error is reserved for the inability to run ping.
+//
+// Fallback only: the LRP IP is answered natively, so it stays reachable even when
+// the EIP NAT pipeline is stranded — prefer EIPReachable when the VPC has an EIP.
 func (p *GatewayClaimProber) GatewayReachable(ctx context.Context, gwIP string) (bool, error) {
 	if gwIP == "" {
 		return false, fmt.Errorf("GatewayReachable: gwIP required")
@@ -93,4 +96,59 @@ func (p *GatewayClaimProber) GatewayReachable(ctx context.Context, gwIP string) 
 		return false, fmt.Errorf("ping %s: %w", gwIP, err)
 	}
 	return true, nil
+}
+
+// EIPReachable reports whether the NAT external-IP datapath for eip is live by
+// forcing a fresh ARP resolution on the WAN segment. The gateway chassis answers
+// ARP for a dnat_and_snat external IP regardless of the guest behind it, so a
+// resolved MAC proves the WAN uplink forwards and the EIP NAT flows are installed —
+// unlike the gateway LRP IP, which OVN answers natively even while the EIP pipeline
+// is dead. Guest ICMP state is irrelevant; only L2 resolution is checked.
+//
+// The stale neighbour entry is dropped first (a STALE entry keeps its old MAC until
+// used, masking a dead datapath), then a single ping triggers re-resolution (the
+// echo DNATs to the guest, so its result is ignored — the preceding ARP is the
+// signal). A resolution miss reports unreachable, not an error.
+func (p *GatewayClaimProber) EIPReachable(ctx context.Context, eip string) (bool, error) {
+	if eip == "" {
+		return false, fmt.Errorf("EIPReachable: eip required")
+	}
+	dev, err := routeDev(ctx, eip)
+	if err != nil {
+		return false, err
+	}
+	_ = utils.SudoCommand("ip", "neigh", "del", eip, "dev", dev).Run()
+	_ = exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", eip).Run()
+	out, err := exec.CommandContext(ctx, "ip", "neigh", "show", eip, "dev", dev).Output()
+	if err != nil {
+		return false, fmt.Errorf("ip neigh show %s: %w", eip, err)
+	}
+	return neighResolved(string(out)), nil
+}
+
+// routeDev resolves the egress interface the kernel uses to reach addr.
+func routeDev(ctx context.Context, addr string) (string, error) {
+	out, err := exec.CommandContext(ctx, "ip", "route", "get", addr).Output()
+	if err != nil {
+		return "", fmt.Errorf("ip route get %s: %w", addr, err)
+	}
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1], nil
+		}
+	}
+	return "", fmt.Errorf("ip route get %s: no dev in %q", addr, strings.TrimSpace(string(out)))
+}
+
+// neighResolved reports whether an `ip neigh show` line carries a usable MAC.
+// Output is empty (no entry) for an unresolved address, or a line like
+// "<ip> dev br-wan lladdr 52:54:.. REACHABLE"; INCOMPLETE/FAILED entries carry no
+// usable MAC and mean the ARP went unanswered (a stranded datapath).
+func neighResolved(out string) bool {
+	out = strings.TrimSpace(out)
+	if out == "" || !strings.Contains(out, "lladdr") {
+		return false
+	}
+	return !strings.Contains(out, "FAILED") && !strings.Contains(out, "INCOMPLETE")
 }

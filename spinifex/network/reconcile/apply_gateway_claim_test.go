@@ -23,6 +23,7 @@ type fakeClaimVerifier struct {
 	reachChecks    int
 	lastPort       string // most recent port name passed to GatewayPortClaimed
 	lastGwIP       string // most recent IP passed to GatewayReachable
+	lastEIP        string // most recent IP passed to EIPReachable
 }
 
 func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (bool, error) {
@@ -53,6 +54,21 @@ func (f *fakeClaimVerifier) RepairDatapath(_ context.Context) error {
 func (f *fakeClaimVerifier) GatewayReachable(_ context.Context, gwIP string) (bool, error) {
 	f.reachChecks++
 	f.lastGwIP = gwIP
+	if f.reachErr != nil {
+		return false, f.reachErr
+	}
+	if f.reachableAfter < 0 {
+		return false, nil
+	}
+	return f.nudges >= f.reachableAfter, nil
+}
+
+// EIPReachable shares the reachableAfter/reachErr scripting with GatewayReachable
+// (the recover/give-up/error paths are identical regardless of probe target);
+// lastEIP records the target so tests can assert the EIP path was taken.
+func (f *fakeClaimVerifier) EIPReachable(_ context.Context, eip string) (bool, error) {
+	f.reachChecks++
+	f.lastEIP = eip
 	if f.reachErr != nil {
 		return false, f.reachErr
 	}
@@ -174,7 +190,7 @@ func TestEnsureGatewayClaimed_ContextCancelStops(t *testing.T) {
 
 func TestEnsureGatewayDatapath_NoVerifierIsNoop(t *testing.T) {
 	r := &reconciler{} // gwClaim nil
-	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "")
 	// Reaching here without panic is the assertion.
 }
 
@@ -182,10 +198,10 @@ func TestEnsureGatewayDatapath_EmptyIPIsNoop(t *testing.T) {
 	f := &fakeClaimVerifier{}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGatewayDatapath(context.Background(), "vpc-a", "")
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "", "")
 
 	if f.reachChecks != 0 {
-		t.Errorf("reachChecks = %d, want 0 (empty gw IP must skip the probe)", f.reachChecks)
+		t.Errorf("reachChecks = %d, want 0 (no probe target must skip the probe)", f.reachChecks)
 	}
 }
 
@@ -194,7 +210,7 @@ func TestEnsureGatewayDatapath_ReachableNoNudge(t *testing.T) {
 	f := &fakeClaimVerifier{reachableAfter: 0}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "")
 
 	if f.nudges != 0 {
 		t.Errorf("reachable datapath nudged %d times, want 0", f.nudges)
@@ -213,7 +229,7 @@ func TestEnsureGatewayDatapath_NudgeThenRecover(t *testing.T) {
 	f := &fakeClaimVerifier{reachableAfter: 1}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "")
 
 	if f.repairs != 1 {
 		t.Errorf("repairs = %d, want exactly 1 (repair once, then recover)", f.repairs)
@@ -230,7 +246,7 @@ func TestEnsureGatewayDatapath_NeverRecoversNudgesOnceThenGivesUp(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
+		r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "")
 		close(done)
 	}()
 	select {
@@ -252,7 +268,7 @@ func TestEnsureGatewayDatapath_ProbeErrorBailsOut(t *testing.T) {
 	f := &fakeClaimVerifier{reachErr: errors.New("ping unavailable")}
 	r := &reconciler{gwClaim: f}
 
-	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241")
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "")
 
 	if f.nudges != 0 {
 		t.Errorf("nudges = %d, want 0 (bail out on probe error, do not nudge blindly)", f.nudges)
@@ -271,7 +287,7 @@ func TestEnsureGatewayDatapath_ContextCancelStops(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		r.ensureGatewayDatapath(ctx, "vpc-a", "192.168.1.241")
+		r.ensureGatewayDatapath(ctx, "vpc-a", "192.168.1.241", "")
 		close(done)
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -280,5 +296,36 @@ func TestEnsureGatewayDatapath_ContextCancelStops(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ensureGatewayDatapath ignored context cancellation")
+	}
+}
+
+func TestEnsureGatewayDatapath_PrefersEIPProbe(t *testing.T) {
+	withFastDatapathBounds(t)
+	f := &fakeClaimVerifier{reachableAfter: 0}
+	r := &reconciler{gwClaim: f}
+
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "203.0.113.5")
+
+	if f.lastEIP != "203.0.113.5" {
+		t.Errorf("lastEIP = %q, want 203.0.113.5 (EIP must be the probe target when present)", f.lastEIP)
+	}
+	if f.lastGwIP != "" {
+		t.Errorf("lastGwIP = %q, want empty (LRP probe must not run when an EIP is present)", f.lastGwIP)
+	}
+}
+
+func TestEnsureGatewayDatapath_EIPUnreachableRepairs(t *testing.T) {
+	withFastDatapathBounds(t)
+	// EIP unreachable until one repair-recompute, then reachable.
+	f := &fakeClaimVerifier{reachableAfter: 1}
+	r := &reconciler{gwClaim: f}
+
+	r.ensureGatewayDatapath(context.Background(), "vpc-a", "192.168.1.241", "203.0.113.5")
+
+	if f.repairs != 1 {
+		t.Errorf("repairs = %d, want exactly 1 (a stranded EIP datapath must trigger repair)", f.repairs)
+	}
+	if f.lastEIP != "203.0.113.5" {
+		t.Errorf("lastEIP = %q, want 203.0.113.5", f.lastEIP)
 	}
 }

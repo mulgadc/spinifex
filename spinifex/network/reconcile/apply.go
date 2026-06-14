@@ -278,12 +278,25 @@ func (r *reconciler) applyIGWs(ctx context.Context, intent IntentState, actual A
 			}
 			actual.ExternalSwch[vpcID] = struct{}{}
 		}
-		r.rebindGatewayChassis(ctx, vpcID)
+		r.rebindGatewayChassis(ctx, vpcID, eipProbeIP(intent, vpcID))
 	}
 }
 
+// eipProbeIP returns an associated EIP's external IP for vpcID, or "" if the VPC
+// has none. Used as the gateway datapath probe target: an EIP exercises the NAT
+// pipeline + WAN uplink, unlike the gateway LRP IP which OVN answers natively.
+// Any associated EIP suffices; map order is irrelevant.
+func eipProbeIP(intent IntentState, vpcID string) string {
+	for _, spec := range intent.EIPs {
+		if spec.VPCID == vpcID && spec.ExternalIP != "" {
+			return spec.ExternalIP
+		}
+	}
+	return ""
+}
+
 // rebindGatewayChassis re-asserts chassis priority tuples on the gateway LRP.
-func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
+func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID, eipIP string) {
 	if len(r.chassis) == 0 {
 		return
 	}
@@ -299,7 +312,7 @@ func (r *reconciler) rebindGatewayChassis(ctx context.Context, vpcID string) {
 		}
 	}
 	r.ensureGatewayClaimed(ctx, topology.GatewayChassisRedirectPort(vpcID))
-	r.ensureGatewayDatapath(ctx, vpcID, gatewayLRPIP(lrp))
+	r.ensureGatewayDatapath(ctx, vpcID, gatewayLRPIP(lrp), eipIP)
 }
 
 // gatewayLRPIP returns the bare IPv4 of the gateway router port, parsed from its
@@ -318,40 +331,53 @@ func gatewayLRPIP(lrp *nbdb.LogicalRouterPort) string {
 
 // ensureGatewayDatapath verifies the external datapath actually forwards after the
 // SB claim converges. A claimed chassisredirect binding is not proof the flows are
-// installed: post-reboot a boot race can leave the WAN-glue veth admin-down or the
-// gateway flows stale, leaving every control-plane signal green while EIPs stay
-// unreachable. Probe the gateway LRP IP (OVN answers ICMP natively, no guest or
-// security-group dependency); on a miss repair the uplink + recompute, then re-probe
-// until a short deadline. No-op when no verifier is wired or no gateway IP resolved.
-func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP string) {
-	if r.gwClaim == nil || gwIP == "" {
+// installed: a boot race or a later ovn-controller restart can leave the WAN-glue
+// veth admin-down or the EIP NAT flows stale, leaving every control-plane signal
+// green while EIPs stay unreachable. Prefer probing an associated EIP — forcing an
+// ARP of the dnat_and_snat external IP exercises the NAT pipeline + WAN uplink
+// without a guest dependency, whereas the gateway LRP IP OVN answers natively and
+// stays green even when the EIP datapath is dead. Fall back to the LRP IP when the
+// VPC has no EIP. On a miss repair the uplink + recompute, then re-probe until a
+// short deadline. No-op when no verifier is wired or no probe target resolved.
+func (r *reconciler) ensureGatewayDatapath(ctx context.Context, vpcID, gwIP, eipIP string) {
+	if r.gwClaim == nil || (gwIP == "" && eipIP == "") {
 		return
+	}
+	target := eipIP
+	if target == "" {
+		target = gwIP
+	}
+	probe := func() (bool, error) {
+		if eipIP != "" {
+			return r.gwClaim.EIPReachable(ctx, eipIP)
+		}
+		return r.gwClaim.GatewayReachable(ctx, gwIP)
 	}
 	deadline := time.Now().Add(gatewayDatapathTimeout)
 	repaired := false
 	for {
-		reachable, err := r.gwClaim.GatewayReachable(ctx, gwIP)
+		reachable, err := probe()
 		if err != nil {
-			slog.Warn("reconcile/apply: gateway datapath probe failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
+			slog.Warn("reconcile/apply: gateway datapath probe failed", "vpc_id", vpcID, "target", target, "err", err)
 			return
 		}
 		if reachable {
 			if repaired {
-				slog.Info("reconcile/apply: gateway datapath recovered after uplink repair", "vpc_id", vpcID, "gw_ip", gwIP)
+				slog.Info("reconcile/apply: gateway datapath recovered after uplink repair", "vpc_id", vpcID, "target", target)
 			}
 			return
 		}
 		if !repaired {
 			slog.Warn("reconcile/apply: gateway datapath unreachable despite SB claim; repairing uplink + forcing recompute",
-				"vpc_id", vpcID, "gw_ip", gwIP)
+				"vpc_id", vpcID, "target", target)
 			if err := r.gwClaim.RepairDatapath(ctx); err != nil {
-				slog.Warn("reconcile/apply: gateway datapath repair failed", "vpc_id", vpcID, "gw_ip", gwIP, "err", err)
+				slog.Warn("reconcile/apply: gateway datapath repair failed", "vpc_id", vpcID, "target", target, "err", err)
 			}
 			repaired = true
 		}
 		if time.Now().After(deadline) {
 			slog.Error("reconcile/apply: gateway datapath did not recover after uplink repair; external connectivity degraded",
-				"vpc_id", vpcID, "gw_ip", gwIP, "timeout", gatewayDatapathTimeout)
+				"vpc_id", vpcID, "target", target, "timeout", gatewayDatapathTimeout)
 			return
 		}
 		select {

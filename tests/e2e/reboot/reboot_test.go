@@ -990,28 +990,52 @@ sudo journalctl -u spinifex-awsgw --no-pager --since "3 min ago" 2>/dev/null | g
 func dumpOVNDataplane(ctx context.Context, t *testing.T, fix *fixture) {
 	t.Helper()
 	bundle := fmt.Sprintf(`set +e
+EIP=%[1]s
 echo "=== ovs-vsctl show (bridges + ports) ==="
 sudo ovs-vsctl show 2>&1 | head -120
-echo "=== ovs-ofctl dump-flows br-int (forwarding flows) ==="
-sudo ovs-ofctl dump-flows br-int 2>&1 | head -200
-echo "=== ovs-ofctl dump-flows br-ext (north-south / localnet forwarding) ==="
+echo "=== ovs-ofctl show br-int (port->ofport map) ==="
+sudo ovs-ofctl show br-int 2>&1 | grep -aE '\(' | head -50
+echo "=== br-int flows: DNAT/conntrack (ct_/nat/ct) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE 'ct_|nat\(|ct\(' | head -120
+echo "=== br-int flows: EIP + guest subnet 10.210 (forwarding) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE "nw_dst=$EIP|10\.210\.1\.|192\.168\.0\.21" | head -150
+echo "=== br-int flows: terminal output: actions ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE 'output:|resubmit' | grep -avE 'table=(0|8|9|10|11),' | head -60
+echo "=== ovs-ofctl dump-flows br-ext ==="
 sudo ovs-ofctl dump-flows br-ext 2>&1 | head -120
 echo "=== ovs-appctl fdb/show br-ext (WAN-side MAC learning) ==="
 sudo ovs-appctl fdb/show br-ext 2>&1 | head -40
-echo "=== ovn-sbctl chassis + port bindings ==="
-sudo ovn-sbctl --no-leader-only show 2>&1 | head -80
 echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
 sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -80
 echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
 sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
 echo "=== host neigh (all floating IPs) ==="
 ip neigh show 2>&1 | grep -E "br-wan|br-int" | head -40
-echo "=== host->ALB floating IP %[1]s reachability (REAL ARP: flush primed neigh first) ==="
-sudo ip neigh flush %[1]s 2>&1 || true
-ping -c 2 -W 2 %[1]s 2>&1
-echo "--- neigh after real resolution attempt (INCOMPLETE/FAILED => gateway not answering ARP) ---"
-ip neigh show %[1]s 2>&1
-sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail -20 || echo "(ofproto/trace unavailable)"
+echo "=== REAL ARP to EIP $EIP (flush primed neigh first) ==="
+sudo ip neigh flush $EIP 2>&1 || true
+ping -c 2 -W 2 $EIP 2>&1
+ip neigh show $EIP 2>&1
+GWMAC=$(ip neigh show $EIP | awk '{for(i=1;i<=NF;i++) if($i=="lladdr") print $(i+1)}')
+echo "discovered cr-gw MAC for EIP: [$GWMAC]"
+echo "=== ofproto/trace north-south DNAT (real ingress per br-int patch port, dl_dst=cr-gw) ==="
+if [ -n "$GWMAC" ]; then
+  for p in $(sudo ovs-vsctl list-ports br-int 2>/dev/null | grep -aE 'patch-br-int-to-ext'); do
+    echo "--- in_port=$p ---"
+    sudo ovs-appctl ofproto/trace br-int "in_port=$p,tcp,dl_src=02:00:00:00:00:01,dl_dst=$GWMAC,nw_src=192.168.0.11,nw_dst=$EIP,tp_src=40000,tp_dst=80" 2>&1 \
+      | grep -aE 'bridge|ct_|nat|dnat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -50
+  done
+else
+  echo "(no cr-gw MAC resolved — ARP itself failed)"
+fi
+echo "=== conntrack DNAT entries (EIP/guest) ==="
+{ sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "$EIP|10\.210\.1\." | head -30 || echo "(none)"
+echo "=== tap capture: does the SYN reach the guest? (tcpdump -i any while curling EIP) ==="
+sudo timeout 6 tcpdump -i any -nn -c 25 "host $EIP or net 10.210.0.0/16" 2>&1 &
+TCPID=$!
+sleep 1
+curl -s --connect-timeout 2 --max-time 4 "http://$EIP/" >/dev/null 2>&1 &
+wait $TCPID 2>/dev/null
+echo "=== (end tap capture) ==="
 `, fix.albPublicIP)
 
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)

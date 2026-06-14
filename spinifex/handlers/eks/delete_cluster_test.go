@@ -157,6 +157,39 @@ func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
 	assert.Equal(t, "eipalloc-cp", aws.StringValue(f.eip.releaseCalls[0].AllocationId))
 }
 
+// TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC enforces the destroy-side half
+// of the Common Resource Lifecycle Contract rule #1 (AWS-faithful delete): the
+// EC2 DeleteVpc API now returns InvalidVpcID.NotFound for an absent VPC, so the
+// teardown orchestrator must converge by tolerating that NotFound (a concurrent
+// GC or a retried delete-cluster already removed it) — while a real failure
+// still surfaces so the backstop retries.
+func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
+	cpVPC := []*fakeCPVPC{{
+		id:   "vpc-cp",
+		cidr: "10.0.0.0/16",
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPVPC},
+	}}
+
+	t.Run("absent VPC (NotFound) converges to success", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+
+		require.NoErrorf(t, DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha"),
+			"RLC rule #1: teardown must tolerate DeleteVpc NotFound (resource already gone), not abort")
+	})
+
+	t.Run("a real DeleteVpc failure still surfaces", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorDependencyViolation)
+
+		err := DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha")
+		require.Error(t, err, "a non-NotFound DeleteVpc failure must surface so the teardown backstop retries")
+		assert.Contains(t, err.Error(), awserrors.ErrorDependencyViolation)
+	})
+}
+
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 

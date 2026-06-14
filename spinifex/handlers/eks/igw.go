@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -101,7 +102,7 @@ func DeleteClusterIGW(igwp igwProvisioner, accountID, vpcID, clusterName string)
 	}
 	if _, err := igwp.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
-	}, accountID); err != nil {
+	}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.Warn("DeleteClusterIGW: delete failed", "igw", igwID, "err", err)
 		return nil
 	}

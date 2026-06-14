@@ -508,11 +508,8 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(input *ec2.DeleteRouteTableInpu
 	}
 
 	rtbID := *input.RouteTableId
-	// Idempotent delete: an absent route table is success so destroy retries
-	// converge. Pre-check by key since getRouteTable maps absence to NotFound.
-	if _, err := s.rtbKV.Get(utils.AccountKey(accountID, rtbID)); errors.Is(err, nats.ErrKeyNotFound) {
-		return &ec2.DeleteRouteTableOutput{}, nil
-	}
+	// AWS-faithful: getRouteTable maps an absent route table to NotFound (the
+	// provider tolerates it on destroy); destroy orchestration tolerates it too.
 	record, err := s.getRouteTable(accountID, rtbID)
 	if err != nil {
 		return nil, err

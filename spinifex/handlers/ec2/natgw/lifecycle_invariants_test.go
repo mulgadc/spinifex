@@ -15,18 +15,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRLC1_NatGatewayDeleteIdempotentOnAbsent enforces the Common Resource
-// Lifecycle Contract rule #1 (idempotent delete): deleting an absent NAT
-// gateway is success, not NotFound, so tofu destroy retries converge.
-func TestRLC1_NatGatewayDeleteIdempotentOnAbsent(t *testing.T) {
+// TestRLC1_NatGatewayDeleteNotFoundOnAbsent enforces the Common Resource
+// Lifecycle Contract rule #1 (AWS-faithful delete, per-service): the EC2
+// DeleteNatGateway API returns InvalidNatGatewayID.NotFound for an absent NAT
+// gateway, not success. Idempotent convergence belongs to destroy orchestration, which
+// tolerates NotFound via awserrors.IsNotFound; the public API stays AWS compatible.
+func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
+	_, err := svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{
 		NatGatewayId: aws.String("nat-absent00000000"),
 	}, testAccountID)
 
-	require.NoErrorf(t, err, "DeleteNatGateway on an absent NAT gateway must return success, not NotFound (RLC rule #1 idempotent delete): return an empty output on nats.ErrKeyNotFound")
-	assert.NotNil(t, out, "DeleteNatGateway must return a non-nil output on absent (RLC rule #1)")
+	require.Errorf(t, err, "DeleteNatGateway on an absent NAT gateway must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorInvalidNatGatewayIDNotFound)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
 }
 
 // TestRLC3_NatGatewayBlocksWhileRouted enforces the Common Resource Lifecycle

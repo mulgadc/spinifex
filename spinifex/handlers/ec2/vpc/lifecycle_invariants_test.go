@@ -10,26 +10,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRLC1_VPCDeleteIdempotentOnAbsent enforces the Common Resource Lifecycle
-// Contract rule #1 (idempotent delete): deleting an absent VPC-family resource
-// is success, not NotFound, so tofu destroy retries and double-targeted graph
-// nodes converge. Every VPC-family delete endpoint must have a case here — a
-// missing case is an idempotency gap.
-func TestRLC1_VPCDeleteIdempotentOnAbsent(t *testing.T) {
+// TestRLC1_VPCDeleteNotFoundOnAbsent enforces the Common Resource Lifecycle
+// Contract rule #1 (AWS-faithful delete, per-service): the EC2/VPC delete API
+// returns the service's canonical InvalidX.NotFound for an absent resource —
+// not success. Idempotent convergence belongs to destroy orchestration, which
+// tolerates NotFound via awserrors.IsNotFound; the public API must stay AWS
+// compatible so SDK callers and account-scoping checks see the real error.
+// Every VPC-family delete endpoint must have a case here.
+func TestRLC1_VPCDeleteNotFoundOnAbsent(t *testing.T) {
 	cases := []struct {
-		name string
-		call func(svc *VPCServiceImpl) (any, error)
+		name    string
+		wantErr string
+		call    func(svc *VPCServiceImpl) (any, error)
 	}{
-		{"DeleteVpc", func(svc *VPCServiceImpl) (any, error) {
+		{"DeleteVpc", awserrors.ErrorInvalidVpcIDNotFound, func(svc *VPCServiceImpl) (any, error) {
 			return svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String("vpc-absent00000000")}, testAccountID)
 		}},
-		{"DeleteSubnet", func(svc *VPCServiceImpl) (any, error) {
+		{"DeleteSubnet", awserrors.ErrorInvalidSubnetIDNotFound, func(svc *VPCServiceImpl) (any, error) {
 			return svc.DeleteSubnet(&ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-absent0000")}, testAccountID)
 		}},
-		{"DeleteSecurityGroup", func(svc *VPCServiceImpl) (any, error) {
+		{"DeleteSecurityGroup", awserrors.ErrorInvalidGroupNotFound, func(svc *VPCServiceImpl) (any, error) {
 			return svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-absent000000000")}, testAccountID)
 		}},
-		{"DeleteNetworkInterface", func(svc *VPCServiceImpl) (any, error) {
+		{"DeleteNetworkInterface", awserrors.ErrorInvalidNetworkInterfaceIDNotFound, func(svc *VPCServiceImpl) (any, error) {
 			return svc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-absent00000000")}, testAccountID)
 		}},
 	}
@@ -37,9 +40,9 @@ func TestRLC1_VPCDeleteIdempotentOnAbsent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, _ := setupTestVPCServiceWithNC(t)
-			out, err := tc.call(svc)
-			require.NoErrorf(t, err, "%s on an absent resource must return success, not NotFound (RLC rule #1 idempotent delete): return an empty output on nats.ErrKeyNotFound", tc.name)
-			assert.NotNilf(t, out, "%s must return a non-nil output on absent (RLC rule #1)", tc.name)
+			_, err := tc.call(svc)
+			require.Errorf(t, err, "%s on an absent resource must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", tc.name, tc.wantErr)
+			assert.ErrorContainsf(t, err, tc.wantErr, "%s on an absent resource must return the canonical %s (RLC rule #1)", tc.name, tc.wantErr)
 		})
 	}
 }

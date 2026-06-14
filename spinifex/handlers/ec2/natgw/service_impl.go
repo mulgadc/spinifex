@@ -189,9 +189,9 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(input *ec2.DeleteNatGatewayInpu
 	entry, err := s.natgwKV.Get(key)
 	if err != nil {
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			// Idempotent delete: an absent NAT gateway is success so destroy
-			// retries converge.
-			return &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, nil
+			// AWS-faithful: an absent NAT gateway is NotFound (provider
+			// tolerates it on destroy); destroy orchestration tolerates it too.
+			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
 		}
 		slog.Error("Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

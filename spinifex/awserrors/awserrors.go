@@ -497,6 +497,15 @@ func IsErrorCode(err error, code string) bool {
 	return err != nil && strings.Contains(err.Error(), code)
 }
 
+// IsNotFound reports whether err carries an AWS "*.NotFound" error code — the
+// canonical "resource absent" signal. Destroy orchestration (teardown / GC /
+// reaper) uses this to treat an already-gone resource as success, so the API
+// handlers stay AWS-faithful (idempotency lives at the call site, not the
+// handler). Substring match mirrors IsErrorCode for %w-wrapped errors.
+func IsNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), ".NotFound")
+}
+
 var ErrorLookup = map[string]ErrorMessage{
 	ErrorAccountDisabled: {HTTPCode: 400, Message: "The functionality you have requested has been administratively disabled for this account."},
 	ErrorActiveVpcPeeringConnectionPerVpcLimitExceeded:         {HTTPCode: 400, Message: "You've reached the limit on the number of active VPC peering connections you can have for the specified VPC."},

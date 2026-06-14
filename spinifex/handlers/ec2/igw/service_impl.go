@@ -136,10 +136,11 @@ func (s *IGWServiceImpl) DeleteInternetGateway(input *ec2.DeleteInternetGatewayI
 
 	entry, err := s.igwKV.Get(key)
 	if err != nil {
-		// Idempotent delete: an absent internet gateway is success so destroy
-		// retries converge; a transient read error stays a server error.
+		// AWS-faithful: an absent internet gateway is NotFound (provider
+		// tolerates it on destroy); destroy orchestration tolerates it too.
+		// A transient read error stays a server error.
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			return &ec2.DeleteInternetGatewayOutput{}, nil
+			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

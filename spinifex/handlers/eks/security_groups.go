@@ -101,7 +101,7 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 		if id == "" {
 			continue
 		}
-		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil {
+		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "name", name, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete SG %s: %w", id, err)

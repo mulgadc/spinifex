@@ -313,10 +313,11 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 	key := utils.AccountKey(accountID, vpcID)
 
 	if _, err := s.vpcKV.Get(key); err != nil {
-		// Idempotent delete: an absent VPC is success so destroy retries
-		// converge; a transient read error stays a server error.
+		// AWS-faithful: an absent VPC is NotFound (the tofu/SDK provider
+		// tolerates it on destroy); destroy orchestration tolerates it too.
+		// A transient read error stays a server error.
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			return &ec2.DeleteVpcOutput{}, nil
+			return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -631,10 +632,11 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	// Read subnet record before deletion (needed for vpcd event)
 	subnetEntry, err := s.subnetKV.Get(key)
 	if err != nil {
-		// Idempotent delete: an absent subnet is success so destroy retries
-		// converge; a transient read error stays a server error.
+		// AWS-faithful: an absent subnet is NotFound (provider tolerates it on
+		// destroy); destroy orchestration tolerates it too. A transient read
+		// error stays a server error.
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			return &ec2.DeleteSubnetOutput{}, nil
+			return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

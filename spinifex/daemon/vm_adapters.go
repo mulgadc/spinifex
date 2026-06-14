@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/tags"
@@ -575,7 +576,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 		}
 		if _, err := a.d.volumeService.DeleteVolume(&ec2.DeleteVolumeInput{
 			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID); err != nil {
+		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
 			firstErr = cmp.Or(firstErr, err)

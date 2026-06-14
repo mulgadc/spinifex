@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -515,7 +516,7 @@ func DeleteClusterCPVPC(deps CPVPCDeps, accountID, clusterName string) error {
 	if err := DeleteClusterIGW(deps.IGW, accountID, vpcID, clusterName); err != nil {
 		slog.Warn("DeleteClusterCPVPC: delete IGW failed", "vpc", vpcID, "err", err)
 	}
-	if _, err := deps.VPC.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil {
+	if _, err := deps.VPC.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		return fmt.Errorf("eks: delete cp vpc %s: %w", vpcID, err)
 	}
 	slog.Info("DeleteClusterCPVPC: managed control-plane VPC removed", "cluster", clusterName, "vpc", vpcID)

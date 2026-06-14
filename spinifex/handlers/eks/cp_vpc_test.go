@@ -115,6 +115,7 @@ type fakeVPCProvisioner struct {
 
 	createVpcErr    error
 	createSubnetErr error
+	deleteVpcErr    error
 }
 
 func newFakeVPCProvisioner() *fakeVPCProvisioner { return &fakeVPCProvisioner{} }
@@ -148,6 +149,9 @@ func (f *fakeVPCProvisioner) CreateVpc(input *ec2.CreateVpcInput, accountID stri
 
 func (f *fakeVPCProvisioner) DeleteVpc(input *ec2.DeleteVpcInput, _ string) (*ec2.DeleteVpcOutput, error) {
 	f.deleteVpcCalls = append(f.deleteVpcCalls, input)
+	if f.deleteVpcErr != nil {
+		return nil, f.deleteVpcErr
+	}
 	id := aws.StringValue(input.VpcId)
 	kept := f.vpcs[:0]
 	for _, v := range f.vpcs {

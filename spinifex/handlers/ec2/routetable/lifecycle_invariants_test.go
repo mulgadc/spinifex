@@ -5,20 +5,23 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRLC1_RouteTableDeleteIdempotentOnAbsent enforces the Common Resource
-// Lifecycle Contract rule #1 (idempotent delete): deleting an absent route
-// table is success, not NotFound, so tofu destroy retries converge.
-func TestRLC1_RouteTableDeleteIdempotentOnAbsent(t *testing.T) {
+// TestRLC1_RouteTableDeleteNotFoundOnAbsent enforces the Common Resource
+// Lifecycle Contract rule #1 (AWS-faithful delete, per-service): the EC2
+// DeleteRouteTable API returns InvalidRouteTableID.NotFound for an absent route
+// table, not success. Idempotent convergence belongs to destroy orchestration,
+// which tolerates NotFound via awserrors.IsNotFound; the public API stays AWS compatible.
+func TestRLC1_RouteTableDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
-	out, err := svc.DeleteRouteTable(&ec2.DeleteRouteTableInput{
+	_, err := svc.DeleteRouteTable(&ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String("rtb-absent00000000"),
 	}, testAccountID)
 
-	require.NoErrorf(t, err, "DeleteRouteTable on an absent route table must return success, not NotFound (RLC rule #1 idempotent delete): pre-check by key and return an empty output on nats.ErrKeyNotFound")
-	assert.NotNil(t, out, "DeleteRouteTable must return a non-nil output on absent (RLC rule #1)")
+	require.Errorf(t, err, "DeleteRouteTable on an absent route table must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorInvalidRouteTableIDNotFound)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "DeleteRouteTable on an absent route table must return the canonical InvalidRouteTableID.NotFound (RLC rule #1)")
 }

@@ -338,7 +338,7 @@ func lookupEKSServerAMI(amiSvc k3sAMIResolver, accountID string) (string, error)
 func rollbackK3sENI(vpcSvc k3sVPCProvisioner, accountID, eniID string) {
 	if _, err := vpcSvc.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
-	}, accountID); err != nil {
+	}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.Warn("LaunchK3sServerVM: rollback ENI delete failed", "eniId", eniID, "err", err)
 	}
 }

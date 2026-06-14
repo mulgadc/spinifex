@@ -1292,14 +1292,11 @@ func (s *VolumeServiceImpl) DeleteVolume(input *ec2.DeleteVolumeInput, accountID
 	volumeID := *input.VolumeId
 	slog.Info("DeleteVolume request", "volumeId", volumeID)
 
-	// Fetch volume config to validate state
+	// Fetch volume config to validate state. AWS-faithful: an absent volume
+	// returns InvalidVolume.NotFound (the provider tolerates it on destroy);
+	// destroy orchestration tolerates it too.
 	cfg, err := s.GetVolumeConfig(volumeID)
 	if err != nil {
-		// Idempotent delete: an absent volume is success so destroy retries
-		// converge.
-		if err.Error() == awserrors.ErrorInvalidVolumeNotFound {
-			return &ec2.DeleteVolumeOutput{}, nil
-		}
 		slog.Error("DeleteVolume failed to get volume config", "volumeId", volumeID, "err", err)
 		return nil, err
 	}

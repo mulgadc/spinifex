@@ -1972,11 +1972,11 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 			input:   &ec2.DescribeVolumeStatusInput{},
 		},
 		{
-			name:       "DeleteVolume",
-			topic:      "ec2.test.DeleteVolume",
-			handler:    daemon.handleEC2DeleteVolume,
-			input:      &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent volume → success
+			name:         "DeleteVolume",
+			topic:        "ec2.test.DeleteVolume",
+			handler:      daemon.handleEC2DeleteVolume,
+			input:        &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVolumeNotFound,
 		},
 		{
 			name:         "CreateSnapshot",
@@ -2310,11 +2310,11 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 			input:   &ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")},
 		},
 		{
-			name:       "DeleteVpc",
-			topic:      "ec2.test.DeleteVpc",
-			handler:    daemon.handleEC2DeleteVpc,
-			input:      &ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent VPC → success
+			name:         "DeleteVpc",
+			topic:        "ec2.test.DeleteVpc",
+			handler:      daemon.handleEC2DeleteVpc,
+			input:        &ec2.DeleteVpcInput{VpcId: aws.String("vpc-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
 			name:    "DescribeVpcs",
@@ -2333,11 +2333,11 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			name:       "DeleteSubnet",
-			topic:      "ec2.test.DeleteSubnet",
-			handler:    daemon.handleEC2DeleteSubnet,
-			input:      &ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent subnet → success
+			name:         "DeleteSubnet",
+			topic:        "ec2.test.DeleteSubnet",
+			handler:      daemon.handleEC2DeleteSubnet,
+			input:        &ec2.DeleteSubnetInput{SubnetId: aws.String("subnet-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
 			name:    "DescribeSubnets",
@@ -2353,11 +2353,11 @@ func TestDelegateHandlers_VPC(t *testing.T) {
 			expectedCode: awserrors.ErrorInvalidSubnetIDNotFound,
 		},
 		{
-			name:       "DeleteNetworkInterface",
-			topic:      "ec2.test.DeleteNetworkInterface",
-			handler:    daemon.handleEC2DeleteNetworkInterface,
-			input:      &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent ENI → success
+			name:         "DeleteNetworkInterface",
+			topic:        "ec2.test.DeleteNetworkInterface",
+			handler:      daemon.handleEC2DeleteNetworkInterface,
+			input:        &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String("eni-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidNetworkInterfaceIDNotFound,
 		},
 		{
 			name:    "DescribeNetworkInterfaces",
@@ -2403,11 +2403,11 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 			input:   &ec2.CreateInternetGatewayInput{},
 		},
 		{
-			name:       "DeleteInternetGateway",
-			topic:      "ec2.test.DeleteInternetGateway",
-			handler:    daemon.handleEC2DeleteInternetGateway,
-			input:      &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String("igw-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent IGW → success
+			name:         "DeleteInternetGateway",
+			topic:        "ec2.test.DeleteInternetGateway",
+			handler:      daemon.handleEC2DeleteInternetGateway,
+			input:        &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String("igw-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidInternetGatewayIDNotFound,
 		},
 		{
 			name:    "DescribeInternetGateways",
@@ -3693,11 +3693,11 @@ func TestDelegateHandlers_SecurityGroup(t *testing.T) {
 			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 		{
-			name:       "DeleteSecurityGroup",
-			topic:      "ec2.test.DeleteSecurityGroup",
-			handler:    daemon.handleEC2DeleteSecurityGroup,
-			input:      &ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent SG → success
+			name:         "DeleteSecurityGroup",
+			topic:        "ec2.test.DeleteSecurityGroup",
+			handler:      daemon.handleEC2DeleteSecurityGroup,
+			input:        &ec2.DeleteSecurityGroupInput{GroupId: aws.String("sg-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidGroupNotFound,
 		},
 	}
 
@@ -3762,11 +3762,11 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 			expectedCode: awserrors.ErrorInvalidVpcIDNotFound,
 		},
 		{
-			name:       "DeleteRouteTable",
-			topic:      "ec2.test.DeleteRouteTable",
-			handler:    daemon.handleEC2DeleteRouteTable,
-			input:      &ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
-			allowEmpty: true, // RLC1: idempotent delete, absent route table → success
+			name:         "DeleteRouteTable",
+			topic:        "ec2.test.DeleteRouteTable",
+			handler:      daemon.handleEC2DeleteRouteTable,
+			input:        &ec2.DeleteRouteTableInput{RouteTableId: aws.String("rtb-nonexistent")},
+			expectedCode: awserrors.ErrorInvalidRouteTableIDNotFound,
 		},
 		{
 			name:    "DescribeRouteTables",

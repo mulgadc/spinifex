@@ -33,20 +33,21 @@ func seedVolume(t *testing.T, svc *VolumeServiceImpl, volID, state, attachedInst
 	require.NoError(t, svc.putVolumeConfig(volID, cfg))
 }
 
-// TestRLC1_VolumeDeleteIdempotentOnAbsent enforces the Common Resource
-// Lifecycle Contract rule #1 (idempotent delete): deleting an absent volume is
-// success, not NotFound, so tofu destroy retries converge. The attached /
-// has-snapshots live-reference guards are unaffected — only true absence is
-// idempotent.
-func TestRLC1_VolumeDeleteIdempotentOnAbsent(t *testing.T) {
+// TestRLC1_VolumeDeleteNotFoundOnAbsent enforces the Common Resource Lifecycle
+// Contract rule #1 (AWS-faithful delete, per-service): the EC2 DeleteVolume API
+// returns InvalidVolume.NotFound for an absent volume, not success. Idempotent
+// convergence belongs to destroy orchestration, which tolerates NotFound via
+// awserrors.IsNotFound; the public API stays AWS compatible. The attached /
+// has-snapshots live-reference guards are unaffected.
+func TestRLC1_VolumeDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := newTestVolumeService("ap-southeast-2a")
 
-	out, err := svc.DeleteVolume(&ec2.DeleteVolumeInput{
+	_, err := svc.DeleteVolume(&ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-absent00000000"),
 	}, "123456789012")
 
-	require.NoErrorf(t, err, "DeleteVolume on an absent volume must return success, not NotFound (RLC rule #1 idempotent delete): return an empty output when GetVolumeConfig reports InvalidVolume.NotFound")
-	assert.NotNil(t, out, "DeleteVolume must return a non-nil output on absent (RLC rule #1)")
+	require.Errorf(t, err, "DeleteVolume on an absent volume must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorInvalidVolumeNotFound)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidVolumeNotFound, "DeleteVolume on an absent volume must return the canonical InvalidVolume.NotFound (RLC rule #1)")
 }
 
 // TestRLC3_VolumeDeleteRequiresDetach enforces the Common Resource Lifecycle

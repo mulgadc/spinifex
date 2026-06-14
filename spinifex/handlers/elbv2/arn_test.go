@@ -48,8 +48,8 @@ func TestBuildLBAgentEnv(t *testing.T) {
 		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		region:          "ap-southeast-2",
 	}
-	// A customer-account LB heartbeats over the WAN GatewayURL.
-	env := svc.buildLBAgentEnv("lb-abc123", "111122223333")
+	// With no mgmt bridge, the lb-agent falls back to the WAN GatewayURL.
+	env := svc.buildLBAgentEnv("lb-abc123")
 
 	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
 	kvs := make(map[string]string, len(lines))
@@ -66,10 +66,10 @@ func TestBuildLBAgentEnv(t *testing.T) {
 	assert.Equal(t, "ap-southeast-2", kvs["LB_REGION"])
 }
 
-// TestBuildLBAgentEnv_SystemAccountUsesMgmtGateway verifies a system-account LB
-// (e.g. the EKS cluster control-plane NLB) heartbeats over the mgmt-bridge URL,
-// not the WAN GatewayURL.
-func TestBuildLBAgentEnv_SystemAccountUsesMgmtGateway(t *testing.T) {
+// TestBuildLBAgentEnv_UsesMgmtGateway verifies every lb-agent (customer or
+// system) heartbeats over the on-link mgmt-bridge URL, not the WAN GatewayURL,
+// so the control-plane heartbeat survives a reboot that strands the data plane.
+func TestBuildLBAgentEnv_UsesMgmtGateway(t *testing.T) {
 	svc := &ELBv2ServiceImpl{
 		GatewayURL:      "https://10.0.0.1:9999",
 		MgmtBridgeIP:    "192.168.50.1",
@@ -77,12 +77,12 @@ func TestBuildLBAgentEnv_SystemAccountUsesMgmtGateway(t *testing.T) {
 		SystemSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		region:          "ap-southeast-2",
 	}
-	env := svc.buildLBAgentEnv("lb-eks01", "000000000000")
+	env := svc.buildLBAgentEnv("lb-abc123")
 	assert.Contains(t, env, "LB_GATEWAY_URL=https://192.168.50.1:9999\n")
 
-	// With no mgmt bridge, a system-account LB falls back to the WAN URL.
+	// With no mgmt bridge, the lb-agent falls back to the WAN URL.
 	svc.MgmtBridgeIP = ""
-	env = svc.buildLBAgentEnv("lb-eks01", "000000000000")
+	env = svc.buildLBAgentEnv("lb-abc123")
 	assert.Contains(t, env, "LB_GATEWAY_URL=https://10.0.0.1:9999\n")
 }
 

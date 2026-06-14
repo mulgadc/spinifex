@@ -12,22 +12,22 @@ import (
 // once nudgeCount reaches it (or immediately for 0), claimed reports true.
 // reachableAfter mirrors claimedAfter for the datapath probe.
 type fakeClaimVerifier struct {
-	claimedAfter    int // nudges required before the port reports claimed; <0 never
-	reachableAfter  int // nudges required before the datapath reports reachable; <0 never
-	guestBoundAfter int // probe calls before the guest port reports bound; <0 never
-	checkErr        error
-	nudgeErr        error
-	reachErr        error
-	guestErr        error
-	checks          int
-	nudges          int
-	repairs         int
-	reachChecks     int
-	guestChecks     int
-	lastPort        string // most recent port name passed to GatewayPortClaimed
-	lastGwIP        string // most recent IP passed to GatewayReachable
-	lastEIP         string // most recent IP passed to EIPReachable
-	lastLSP         string // most recent lsp passed to GuestPortBound
+	claimedAfter   int // nudges required before the port reports claimed; <0 never
+	reachableAfter int // nudges required before the datapath reports reachable; <0 never
+	guestUpAfter   int // nudges required before the guest port reports up; <0 never
+	checkErr       error
+	nudgeErr       error
+	reachErr       error
+	guestErr       error
+	checks         int
+	nudges         int
+	repairs        int
+	reachChecks    int
+	guestChecks    int
+	lastPort       string // most recent port name passed to GatewayPortClaimed
+	lastGwIP       string // most recent IP passed to GatewayReachable
+	lastEIP        string // most recent IP passed to EIPReachable
+	lastLSP        string // most recent lsp passed to GuestPortUp
 }
 
 func (f *fakeClaimVerifier) GatewayPortClaimed(_ context.Context, port string) (bool, error) {
@@ -82,20 +82,19 @@ func (f *fakeClaimVerifier) EIPReachable(_ context.Context, eip string) (bool, e
 	return f.nudges >= f.reachableAfter, nil
 }
 
-// GuestPortBound reports bound once the probe has been called more than
-// guestBoundAfter times (immediately for 0; never for <0). It keys off the probe
-// count, not nudges: the post-reboot logic polls the bind, then recomputes once.
-// lastLSP records the probed port.
-func (f *fakeClaimVerifier) GuestPortBound(_ context.Context, lspName string) (bool, error) {
+// GuestPortUp reports up once nudges reach guestUpAfter (immediately for 0; never
+// for <0), sharing the nudge counter so the recompute-each-miss loop is scripted
+// the same way as the other gates. lastLSP records the probed port.
+func (f *fakeClaimVerifier) GuestPortUp(_ context.Context, lspName string) (bool, error) {
 	f.guestChecks++
 	f.lastLSP = lspName
 	if f.guestErr != nil {
 		return false, f.guestErr
 	}
-	if f.guestBoundAfter < 0 {
+	if f.guestUpAfter < 0 {
 		return false, nil
 	}
-	return f.guestChecks > f.guestBoundAfter, nil
+	return f.nudges >= f.guestUpAfter, nil
 }
 
 func withFastGuestPortBounds(t *testing.T) {
@@ -375,43 +374,40 @@ func TestEnsureGuestPortDatapath_EmptyLSPIsNoop(t *testing.T) {
 	}
 }
 
-func TestEnsureGuestPortDatapath_BoundRecomputesOnce(t *testing.T) {
+func TestEnsureGuestPortDatapath_UpNoNudge(t *testing.T) {
 	withFastGuestPortBounds(t)
-	f := &fakeClaimVerifier{guestBoundAfter: 0} // bound on first probe
+	f := &fakeClaimVerifier{guestUpAfter: 0}
 	r := &reconciler{gwClaim: f}
 
 	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
 
-	if f.nudges != 1 {
-		t.Errorf("bound guest port nudged %d times, want exactly 1 (recompute once after bind)", f.nudges)
+	if f.nudges != 0 {
+		t.Errorf("up guest port nudged %d times, want 0", f.nudges)
 	}
 	if f.guestChecks != 1 {
-		t.Errorf("guestChecks = %d, want 1 (single bind probe)", f.guestChecks)
+		t.Errorf("guestChecks = %d, want 1 (single up probe)", f.guestChecks)
 	}
 	if f.lastLSP != "port-eni-1" {
 		t.Errorf("lastLSP = %q, want port-eni-1", f.lastLSP)
 	}
 }
 
-func TestEnsureGuestPortDatapath_PollsThenBoundRecomputesOnce(t *testing.T) {
+func TestEnsureGuestPortDatapath_NudgeThenConverge(t *testing.T) {
 	withFastGuestPortBounds(t)
-	// Unbound for one probe, then bound. The recompute fires only after the bind.
-	f := &fakeClaimVerifier{guestBoundAfter: 1}
+	// Down until one recompute nudge, then up.
+	f := &fakeClaimVerifier{guestUpAfter: 1}
 	r := &reconciler{gwClaim: f}
 
 	r.ensureGuestPortDatapath(context.Background(), "vpc-a", "port-eni-1")
 
 	if f.nudges != 1 {
-		t.Errorf("nudges = %d, want exactly 1 (recompute once, after the port binds)", f.nudges)
-	}
-	if f.guestChecks != 2 {
-		t.Errorf("guestChecks = %d, want 2 (one miss, then bound)", f.guestChecks)
+		t.Errorf("nudges = %d, want exactly 1 (nudge once, then converge)", f.nudges)
 	}
 }
 
-func TestEnsureGuestPortDatapath_NeverBoundNoRecompute(t *testing.T) {
+func TestEnsureGuestPortDatapath_NeverConvergesRecomputesEachMiss(t *testing.T) {
 	withFastGuestPortBounds(t)
-	f := &fakeClaimVerifier{guestBoundAfter: -1} // never binds
+	f := &fakeClaimVerifier{guestUpAfter: -1} // never up
 	r := &reconciler{gwClaim: f}
 
 	done := make(chan struct{})
@@ -425,13 +421,13 @@ func TestEnsureGuestPortDatapath_NeverBoundNoRecompute(t *testing.T) {
 		t.Fatal("ensureGuestPortDatapath did not return within deadline; blocking reconcile")
 	}
 
-	// Recompute only after a real bind: a port that never binds cannot be realised,
-	// so nudging would just churn flows (the #351 EIP-darkening regression).
-	if f.nudges != 0 {
-		t.Errorf("nudges = %d, want 0 (no recompute without a bind)", f.nudges)
+	// Recompute on every miss, not once: the guest tap may appear only after the
+	// first nudge, so a single nudge would never bind it.
+	if f.nudges < 2 {
+		t.Errorf("nudges = %d, want >=2 (recompute on each miss, not once)", f.nudges)
 	}
 	if f.guestChecks < 2 {
-		t.Errorf("guestChecks = %d, want >=2 (polled to the deadline)", f.guestChecks)
+		t.Errorf("guestChecks = %d, want >=2 (polled past the first nudge)", f.guestChecks)
 	}
 }
 
@@ -453,7 +449,7 @@ func TestEnsureGuestPortDatapath_ContextCancelStops(t *testing.T) {
 	guestPortDatapathInterval = 50 * time.Millisecond
 	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
 
-	f := &fakeClaimVerifier{guestBoundAfter: -1}
+	f := &fakeClaimVerifier{guestUpAfter: -1}
 	r := &reconciler{gwClaim: f}
 	ctx, cancel := context.WithCancel(context.Background())
 

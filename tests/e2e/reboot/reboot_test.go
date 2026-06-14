@@ -1038,7 +1038,7 @@ for lp in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find P
 done
 TAP=$(sudo ovs-vsctl --bare --columns=name find Interface external_ids:iface-id="$GLSP" 2>/dev/null | head -1)
 SUBNET_GW=$(echo "$PRIV" | awk -F. '{print $1"."$2"."$3".1"}')
-LRPMAC=$(sudo ovn-nbctl --no-leader-only --bare --columns=mac find Logical_Router_Port networks~="$SUBNET_GW/" 2>/dev/null | head -1)
+LRPMAC=$(sudo ovs-ofctl dump-flows br-int 2>/dev/null | grep -a "arp_tpa=$SUBNET_GW," | grep -aoE 'mod_dl_src:[0-9a-f:]+' | head -1 | cut -d: -f2-)
 echo "PRIV=[$PRIV] CLIENT=[$CLIENT] GLSP=[$GLSP] GMAC=[$GMAC] TAP=[$TAP] LRPMAC=[$LRPMAC]"
 if [ -n "$TAP" ] && [ -n "$GMAC" ] && [ -n "$LRPMAC" ]; then
   sudo ovs-appctl ofproto/trace br-int "in_port=$TAP,tcp,dl_src=$GMAC,dl_dst=$LRPMAC,nw_src=$PRIV,nw_dst=$CLIENT,tp_src=80,tp_dst=40000,tcp_flags=ack" 2>&1 \
@@ -1055,6 +1055,17 @@ sleep 1
 curl -s --connect-timeout 2 --max-time 4 "http://$EIP/" >/dev/null 2>&1 &
 wait $TCPID 2>/dev/null
 echo "=== (end tap capture) ==="
+echo "=== REMEDIATION EXPERIMENT: which reset heals south->north? ==="
+curl -s -o /dev/null -w "before-remediation HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
+echo "--- inc-engine/recompute ---"
+sudo ovn-appctl -t ovn-controller inc-engine/recompute 2>&1 | head -3
+sleep 4
+curl -s -o /dev/null -w "after-recompute HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
+echo "--- systemctl restart ovn-controller ---"
+sudo systemctl restart ovn-controller 2>&1 | head -3
+sleep 8
+curl -s -o /dev/null -w "after-ovn-restart HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
+echo "=== (end remediation experiment) ==="
 `, fix.albPublicIP)
 
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)

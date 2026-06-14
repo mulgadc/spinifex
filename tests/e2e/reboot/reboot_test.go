@@ -1082,20 +1082,20 @@ echo "--- SB MAC_Binding (logical_port ip mac) ---"
 sudo ovn-sbctl --no-leader-only list MAC_Binding 2>&1 | grep -aE 'ip|mac|logical_port' | head -40 || echo "(none)"
 echo "--- host neigh on external subnet ---"
 ip neigh show 2>/dev/null | grep -aE '192\.168\.' | head -20 || echo "(none)"
-echo "=== REMEDIATION EXPERIMENT: which flush heals south->north? ==="
-curl -s -o /dev/null -w "before-remediation HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
-echo "--- flush kernel + OVS conntrack ---"
-sudo conntrack -F 2>&1 | head -2
-sudo ovs-appctl dpctl/flush-conntrack 2>&1 | head -2
-sleep 2
-curl -s -o /dev/null -w "after-ct-flush HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
-echo "--- destroy SB MAC_Binding (force ARP relearn of external next-hop) ---"
-sudo ovn-sbctl --no-leader-only --all destroy MAC_Binding 2>&1 | head -2
-sleep 4
-curl -s -o /dev/null -w "after-macbinding-flush HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
-sleep 3
-curl -s -o /dev/null -w "after-macbinding-flush-retry HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
-echo "=== (end remediation experiment) ==="
+echo "=== live failure marker (confirms drop is active during dump) ==="
+curl -s -o /dev/null -w "eip-probe HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
+echo "=== NB-SOURCE OF THE RETURN-PATH DROP (names what installs table-79 drop) ==="
+echo "--- SB lflow stages that DROP the guest reply (match nw_src=$PRIV) ---"
+sudo ovn-sbctl --no-leader-only lflow-list 2>/dev/null | grep -aiE 'drop' | grep -aF "$PRIV" | head -20 || echo "(none — drop is not a northd logical flow; likely ovn-controller port-security)"
+echo "--- SB lflow lines mentioning guest MAC $GMAC (stage + match context) ---"
+sudo ovn-sbctl --no-leader-only lflow-list 2>/dev/null | grep -aiF "$GMAC" | head -20 || echo "(none)"
+echo "--- NB NAT rows: type/external_mac/logical_port/options (centralised=[] vs distributed) ---"
+sudo ovn-nbctl --no-leader-only --columns=external_ip,logical_ip,type,external_mac,logical_port,options list NAT 2>/dev/null | head -60 || echo "(none)"
+echo "--- NB Logical_Router_Policy (drop-gate + per-instance reroute) ---"
+sudo ovn-nbctl --no-leader-only --columns=priority,match,action,nexthop list Logical_Router_Policy 2>/dev/null | head -40 || echo "(none)"
+echo "--- NB LSP addresses + port_security (source if drop is physical port-sec) ---"
+sudo ovn-nbctl --no-leader-only --columns=name,addresses,port_security list Logical_Switch_Port 2>/dev/null | grep -aF -A0 "$PRIV" | head -20 || echo "(none)"
+echo "=== (end NB-source dump) ==="
 `, fix.albPublicIP)
 
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)

@@ -416,6 +416,14 @@ TMPEOF
     $SUDO chown "spinifex-gw:$SPINIFEX_GROUP" /etc/spinifex/awsgw
     $SUDO chmod 0750 /etc/spinifex/awsgw
 
+    # Viperblock's at-rest encryption key dir. 0750 group-traversable; the key
+    # itself is set to root:spinifex 0640 by SetServiceOwnership because both
+    # viperblockd (spinifex-viperblock) and the awsgw handlers (spinifex-gw)
+    # load it.
+    $SUDO mkdir -p /etc/spinifex/viperblock
+    $SUDO chown "spinifex-viperblock:$SPINIFEX_GROUP" /etc/spinifex/viperblock
+    $SUDO chmod 0750 /etc/spinifex/viperblock
+
     # Per-service data directories
     $SUDO mkdir -p /var/lib/spinifex/nats
     $SUDO chown "spinifex-nats:$SPINIFEX_GROUP" /var/lib/spinifex/nats

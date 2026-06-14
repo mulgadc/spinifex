@@ -93,6 +93,9 @@ token = "{{.NatsToken}}"
 
 [nodes.{{.Node}}.viperblock]
 shardwal = false
+{{- if .EncryptionKeyFile}}
+encryption_key_file = "{{.EncryptionKeyFile}}"
+{{- end}}
 
 [nodes.{{.Node}}.vpcd]
 ovn_nb_addr = "{{.OVNNBAddr}}"

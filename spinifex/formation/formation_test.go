@@ -346,6 +346,31 @@ func TestStatusEndpointMasterKey(t *testing.T) {
 	assert.Equal(t, "dGVzdC1tYXN0ZXIta2V5LWJhc2U2NC1lbmNvZGVk", sr.MasterKey)
 }
 
+func TestStatusEndpointViperblockKey(t *testing.T) {
+	t.Parallel()
+	fs := NewFormationServer(2, testCreds(), "ca-cert", "ca-key", nil, testToken, testTokenTTL)
+	fs.SetViperblockKey("dmlwZXJibG9jay1zaGFyZWQta2V5LWJhc2U2NA==")
+	ts := testServer(t, fs)
+	defer ts.Close()
+
+	// Before completion: shared key must not leak
+	resp := authGet(t, ts.URL+"/formation/status", testToken)
+	var sr StatusResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&sr))
+	resp.Body.Close()
+	assert.Empty(t, sr.ViperblockKey)
+
+	require.NoError(t, fs.RegisterNode(testNode("node1", "10.0.0.1")))
+	require.NoError(t, fs.RegisterNode(testNode("node2", "10.0.0.2")))
+
+	// After completion: joiners receive the cluster-wide key
+	resp = authGet(t, ts.URL+"/formation/status", testToken)
+	defer resp.Body.Close()
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&sr))
+	assert.True(t, sr.Complete)
+	assert.Equal(t, "dmlwZXJibG9jay1zaGFyZWQta2V5LWJhc2U2NA==", sr.ViperblockKey)
+}
+
 func TestHealthEndpoint_NoAuth(t *testing.T) {
 	t.Parallel()
 	fs := NewFormationServer(1, testCreds(), "", "", nil, testToken, testTokenTTL)

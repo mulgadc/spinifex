@@ -252,6 +252,74 @@ func TestWritePredastoreEncryptionKey(t *testing.T) {
 	assert.NotEqual(t, key1, key2, "per-node keys must differ")
 }
 
+// The viperblock key gates at-rest encryption for every volume on a fresh
+// install. masterkey.LoadShared rejects anything that isn't exactly 32 bytes at
+// 0640-or-stricter, so a regression in size/mode would silently fall back to
+// cleartext (empty path) or fail service startup.
+func TestWriteViperblockEncryptionKey(t *testing.T) {
+	configDir := t.TempDir()
+
+	keyPath, err := writeViperblockEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
+
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(32), info.Size(), "viperblock master key must be exactly 32 bytes")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "viperblock master key must be mode 0600")
+}
+
+// Joiners persist the leader's shared key via saveViperblockEncryptionKey
+// against a configDir with no viperblock/ subdir yet. The bytes round-trip
+// verbatim — the whole cluster shares one key, so any mutation would orphan
+// volumes sealed on other nodes.
+func TestSaveViperblockEncryptionKey_RoundTrip(t *testing.T) {
+	configDir := t.TempDir()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	keyPath, err := saveViperblockEncryptionKey(configDir, key)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
+
+	got, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, key, got, "shared key must be written verbatim")
+}
+
+// A fresh install must render encryption_key_file so viperblockd enables
+// at-rest encryption; an empty field (upgrade / legacy) must omit the line
+// entirely so the volume stays in cleartext legacy mode.
+func TestSpinifexTomlTemplate_EncryptionKeyFile(t *testing.T) {
+	base := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432", Region: "ap-southeast-2",
+		BindIP: "0.0.0.0", AccessKey: "AKIATEST", SecretKey: "SECRET",
+		AccountID: "123456789012", NatsToken: "token",
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+	}
+
+	dir := t.TempDir()
+	withKey := base
+	withKey.ConfigDir = dir
+	withKey.EncryptionKeyFile = "/etc/spinifex/viperblock/encryption.key"
+	path := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, withKey))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `encryption_key_file = "/etc/spinifex/viperblock/encryption.key"`)
+
+	dir2 := t.TempDir()
+	noKey := base
+	noKey.ConfigDir = dir2
+	path2 := filepath.Join(dir2, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path2, spinifexTomlTemplate, noKey))
+	data2, err := os.ReadFile(path2)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data2), "encryption_key_file", "blank key must omit the field")
+}
+
 // Joiners run `spx admin join` against a configDir that doesn't yet contain
 // a predastore/ subdir. The helper must create it (predastore subdir is
 // owned by spinifex-storage in prod, but the helper just needs the dir to

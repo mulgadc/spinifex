@@ -484,6 +484,36 @@ func TestReconcile_PublicInstanceExemptFromDropGate(t *testing.T) {
 	}
 }
 
+// TestReconcile_PublicInstanceNoExemptionWithoutDropGate bounds the blast radius: a
+// public-IP instance in a subnet with NO drop gate (routed subnet) must not get the
+// /32 reroute — its priority-1000 subnet egress reroute already carries it, and an
+// extra policy would needlessly override routed/NATGW egress.
+func TestReconcile_PublicInstanceNoExemptionWithoutDropGate(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	port := intent.Ports["eni-a"]
+	port.PublicIP = netip.MustParseAddr("192.168.0.50")
+	intent.Ports["eni-a"] = port
+	// No DropGates entry: the subnet is routed, not gated.
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-a"))
+	if err != nil {
+		t.Fatalf("ListLogicalRouterPolicies: %v", err)
+	}
+	for _, p := range policies {
+		if p.Priority == policy.SystemInstanceEgressPriority {
+			t.Errorf("unexpected priority-%d reroute on an ungated subnet: %q", p.Priority, p.Match)
+		}
+	}
+}
+
 func TestDiffSets(t *testing.T) {
 	add, remove := diffSets([]string{"a", "b", "c"}, []string{"b", "c", "d"})
 	if !slices.Equal(sortedCopy(add), []string{"a"}) {

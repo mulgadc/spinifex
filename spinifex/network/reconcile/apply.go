@@ -472,15 +472,16 @@ func (r *reconciler) applyPublicInstanceEgress(ctx context.Context, intent Inten
 // route) drops the instance's WAN-bound traffic — including the reply leg of an
 // inbound connection, since lr_in_policy runs before lr_out un-DNAT/SNAT so the reply
 // still carries its private source at the gate. A /32 reroute above the gate restores
-// the datapath; the instance's dnat_and_snat supplies SNAT. No-op when the VPC has no
-// IGW (no drop gate) or the instance maps to no known subnet.
+// the datapath; the instance's dnat_and_snat supplies SNAT. Scoped to subnets that
+// actually carry a drop gate: routed subnets egress via their priority-1000 reroute
+// and need no exemption, so the gate presence bounds the blast radius.
 func (r *reconciler) ensureEIPEgressExemption(ctx context.Context, intent IntentState, vpcID, subnetID, instanceIP string) {
-	if _, hasIGW := intent.IGWs[vpcID]; !hasIGW {
-		return
-	}
 	if subnetID == "" {
 		slog.Warn("reconcile/apply: public instance maps to no subnet; skipping egress exemption",
 			"vpc_id", vpcID, "instance_ip", instanceIP)
+		return
+	}
+	if _, gated := intent.DropGates[subnetEgressKey(subnetID, netip.MustParsePrefix("0.0.0.0/0"))]; !gated {
 		return
 	}
 	if err := r.igw.EnsureEIPInstanceEgress(ctx, vpcID, subnetID, instanceIP); err != nil {

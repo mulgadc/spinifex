@@ -31,12 +31,17 @@ func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	assert.ErrorContains(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
 }
 
-// TestRLC3_NatGatewayBlocksWhileRouted enforces the Common Resource Lifecycle
-// Contract rule #3 (live-only dependency guards): a NAT gateway a live route
-// table still forwards to must not delete (DependencyViolation), so tofu
-// destroy ordering is driven; once nothing routes to it, delete succeeds.
-func TestRLC3_NatGatewayBlocksWhileRouted(t *testing.T) {
-	t.Run("blocked while a route forwards to it", func(t *testing.T) {
+// kvBucketRouteTables is the route-table KV bucket, seeded here to prove a live
+// route forwarding to a NAT gateway does not block its deletion.
+const kvBucketRouteTables = "spinifex-vpc-route-tables"
+
+// TestRLC3_NatGatewayDeletesWhileRouted enforces ADR-0004 §2: a NAT gateway is
+// exempt from rule #3 route-reference guards. AWS deletes a NAT gateway even
+// while a route table forwards to it (the route blackholes); the reconciler
+// drops the SNAT once the record leaves the active bucket. Delete must succeed
+// whether or not a live route still targets it.
+func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
+	t.Run("succeeds while a route forwards to it", func(t *testing.T) {
 		svc, js := setupTestServiceJS(t)
 		natgwID := createTestNatGateway(t, svc)
 
@@ -46,11 +51,11 @@ func TestRLC3_NatGatewayBlocksWhileRouted(t *testing.T) {
 		})
 
 		_, err := svc.DeleteNatGateway(&ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
-		assert.ErrorContainsf(t, err, awserrors.ErrorDependencyViolation,
-			"ADR-0004 §2: DeleteNatGateway must return DependencyViolation while a live route table forwards to it (rule #3)")
+		require.NoErrorf(t, err,
+			"ADR-0004 §2: DeleteNatGateway must succeed even while a live route table forwards to it (the route blackholes, AWS-faithful)")
 	})
 
-	t.Run("allowed once nothing routes to it", func(t *testing.T) {
+	t.Run("succeeds with no routes", func(t *testing.T) {
 		svc := setupTestService(t)
 		natgwID := createTestNatGateway(t, svc)
 

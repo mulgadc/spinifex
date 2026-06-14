@@ -54,12 +54,12 @@ type GatewayClaimVerifier interface {
 	// recompute fixes that). Bringing the veth up (a no-op in physical mode where the
 	// device is absent) then recomputing covers both, idempotently.
 	RepairDatapath(ctx context.Context) error
-	// GuestPortUp reports whether the SB Port_Binding for a guest ENI LSP is up
-	// (bound to a chassis with flows installed). A guest port that is not up means
-	// the gatewayLRP->guest flow is not installed, so the ingress EIP datapath
-	// blackholes after DNAT and the public IP is dark against an otherwise-running
-	// instance — the post-reboot state until an ovn-controller recompute binds it.
-	GuestPortUp(ctx context.Context, lspName string) (bool, error)
+	// GuestPortBound reports whether the SB Port_Binding for a guest ENI LSP is
+	// claimed by a chassis. Post-reboot the chassis reference is released until
+	// ovn-controller re-claims the replumbed tap, making it the reliable signal —
+	// unlike the up column, which stays stale-true — that the gatewayLRP->guest leg
+	// is realisable and a recompute can install the centralised DNAT flows.
+	GuestPortBound(ctx context.Context, lspName string) (bool, error)
 }
 
 // Config is the construction-time bag for the reconciler. All fields except
@@ -144,15 +144,20 @@ func New(cfg Config) (Reconciler, error) {
 // Reconcile diffs intent vs. actual OVN state and applies in topological order.
 // Per-stage errors are logged; only a scan failure is returned.
 func (r *reconciler) Reconcile(ctx context.Context, intent IntentState) error {
-	return r.reconcile(ctx, intent, true)
+	return r.reconcile(ctx, intent, true, false)
 }
 
 // ReconcileApplyOnly is documented on the Reconciler interface.
 func (r *reconciler) ReconcileApplyOnly(ctx context.Context, intent IntentState) error {
-	return r.reconcile(ctx, intent, false)
+	return r.reconcile(ctx, intent, false, true)
 }
 
-func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrphans bool) error {
+// reconcile applies intent in topological order. pruneOrphans gates orphan
+// teardown (drift only). startup marks the one-shot post-reboot apply: only then
+// does applyEIPs force the guest-datapath recompute, since the centralised gateway
+// DNAT flows need a kick once the guest taps re-bind after a host reboot — a kick
+// drift must not repeat or it darkens freshly attached EIPs.
+func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrphans, startup bool) error {
 	actual, err := scanActual(ctx, r.ovn)
 	if err != nil {
 		return fmt.Errorf("scan actual OVN state: %w", err)
@@ -177,7 +182,7 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applySGs(ctx, intent, actual, pruneOrphans)
 	r.applyPorts(ctx, intent, actual, pruneOrphans)
 	r.applyIGWs(ctx, intent, actual)
-	r.applyEIPs(ctx, intent, actual)
+	r.applyEIPs(ctx, intent, actual, startup)
 	r.applyNATGWs(ctx, intent, actual)
 	r.applyIGWRoutes(ctx, intent, actual)
 	r.applyNATGWRoutes(ctx, intent, actual)

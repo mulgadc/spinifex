@@ -1006,7 +1006,24 @@ sudo ovs-ofctl dump-flows br-ext 2>&1 | head -120
 echo "=== ovs-appctl fdb/show br-ext (WAN-side MAC learning) ==="
 sudo ovs-appctl fdb/show br-ext 2>&1 | head -40
 echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
-sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -80
+sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -400
+echo "=== DGP / chassisredirect claim state (untruncated) ==="
+echo "--- every chassisredirect Port_Binding -> resident chassis ---"
+for cr in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding type=chassisredirect 2>/dev/null); do
+  ch=$(sudo ovn-sbctl --no-leader-only --bare --columns=chassis find Port_Binding logical_port="$cr" 2>/dev/null)
+  hg=$(sudo ovn-sbctl --no-leader-only --bare --columns=ha_chassis_group find Port_Binding logical_port="$cr" 2>/dev/null)
+  echo "  CR=[$cr] chassis=[$ch] ha_chassis_group=[$hg]"
+done
+echo "--- every gw-vpc LRP -> its referenced chassis-redirect-port (does the CR row exist?) ---"
+for gp in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding 2>/dev/null | tr ' ' '\n' | grep -aE '^gw-vpc'); do
+  crp=$(sudo ovn-sbctl --no-leader-only --bare --columns=options find Port_Binding logical_port="$gp" 2>/dev/null | tr ',' '\n' | grep -a chassis-redirect-port | cut -d= -f2)
+  exists=$(sudo ovn-sbctl --no-leader-only --bare --columns=_uuid find Port_Binding logical_port="$crp" 2>/dev/null)
+  echo "  GW-LRP=[$gp] redirect-port=[$crp] CR_row_exists=[$exists]"
+done
+echo "--- NB Gateway_Chassis bindings (DGP HA) ---"
+sudo ovn-nbctl --no-leader-only list Gateway_Chassis 2>&1 | grep -aE 'name|chassis_name|priority' | head -60
+echo "--- NB Logical_Router_Port (name + gateway_chassis + networks) ---"
+sudo ovn-nbctl --no-leader-only --columns=name,gateway_chassis,networks list Logical_Router_Port 2>&1 | head -80
 echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
 sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
 echo "=== host neigh (all floating IPs) ==="

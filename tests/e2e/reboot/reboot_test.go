@@ -1055,16 +1055,29 @@ sleep 1
 curl -s --connect-timeout 2 --max-time 4 "http://$EIP/" >/dev/null 2>&1 &
 wait $TCPID 2>/dev/null
 echo "=== (end tap capture) ==="
-echo "=== REMEDIATION EXPERIMENT: which reset heals south->north? ==="
+echo "=== PERSISTED-STATE DUMP (survives ovn-controller restart) ==="
+echo "--- external next-hop MACs (regenerated each boot) ---"
+for IF in veth-wan-ovs veth-wan-br br-wan br-ext; do
+  M=$(ip link show "$IF" 2>/dev/null | grep -aoE 'link/ether [0-9a-f:]+' | awk '{print $2}')
+  echo "  $IF mac=[$M]"
+done
+echo "--- SB MAC_Binding (logical_port ip mac) ---"
+sudo ovn-sbctl --no-leader-only list MAC_Binding 2>&1 | grep -aE 'ip|mac|logical_port' | head -40 || echo "(none)"
+echo "--- host neigh on external subnet ---"
+ip neigh show 2>/dev/null | grep -aE '192\.168\.' | head -20 || echo "(none)"
+echo "=== REMEDIATION EXPERIMENT: which flush heals south->north? ==="
 curl -s -o /dev/null -w "before-remediation HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
-echo "--- inc-engine/recompute ---"
-sudo ovn-appctl -t ovn-controller inc-engine/recompute 2>&1 | head -3
+echo "--- flush kernel + OVS conntrack ---"
+sudo conntrack -F 2>&1 | head -2
+sudo ovs-appctl dpctl/flush-conntrack 2>&1 | head -2
+sleep 2
+curl -s -o /dev/null -w "after-ct-flush HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
+echo "--- destroy SB MAC_Binding (force ARP relearn of external next-hop) ---"
+sudo ovn-sbctl --no-leader-only --all destroy MAC_Binding 2>&1 | head -2
 sleep 4
-curl -s -o /dev/null -w "after-recompute HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
-echo "--- systemctl restart ovn-controller ---"
-sudo systemctl restart ovn-controller 2>&1 | head -3
-sleep 8
-curl -s -o /dev/null -w "after-ovn-restart HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
+curl -s -o /dev/null -w "after-macbinding-flush HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
+sleep 3
+curl -s -o /dev/null -w "after-macbinding-flush-retry HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 6 "http://$EIP/" 2>&1
 echo "=== (end remediation experiment) ==="
 `, fix.albPublicIP)
 

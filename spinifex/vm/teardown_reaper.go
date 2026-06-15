@@ -4,15 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
+
+// terminatedVisibilityWindow is how long a freshly terminated instance stays
+// describable before the GC backstop may reclaim its record early. It exceeds
+// the e2e terminate-then-poll budget and stays under the bucket's 1h TTL, which
+// bounds visibility regardless. Records completed within the window are left to
+// the TTL (AWS keeps terminated instances describable ~1h); only records already
+// older than the window when the GC finishes their teardown are purged inline.
+const terminatedVisibilityWindow = 15 * time.Minute
 
 // TerminatedTeardownReaper completes interrupted instance teardown (ADR-0003
 // §1/§3). It scans the terminated KV bucket for records this node owns whose
 // per-dependent teardown is not all `done`, re-drives each outstanding
 // dependent through the now-idempotent cleaner, and purges the terminated
-// record once every dependent reaches `done`. A node-down mid-cascade leaves
-// dependents `pending`/`failed`; this reaper finishes them rather than
-// abandoning them.
+// record once every dependent reaches `done` and its describe-visibility window
+// has elapsed. A node-down mid-cascade leaves dependents `pending`/`failed`;
+// this reaper finishes them rather than abandoning them.
 type TerminatedTeardownReaper struct {
 	m *Manager
 }
@@ -29,8 +38,9 @@ func (r *TerminatedTeardownReaper) Class() string      { return "instance-teardo
 func (r *TerminatedTeardownReaper) Scope() ReaperScope { return ScopeNodeLocal }
 
 // Sweep finishes outstanding teardown for this node's terminated instances.
-// Records already complete on arrival are left to the bucket's TTL (preserving
-// describe-visibility); only records this sweep brings to completion are purged.
+// A completed record is purged only once it is older than the visibility window;
+// fresher ones (and any already complete on arrival) are left to the bucket's 1h
+// TTL so a just-terminated instance stays describable, matching AWS semantics.
 func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 	if r.m.deps.StateStore == nil {
 		return 0, nil
@@ -51,12 +61,15 @@ func (r *TerminatedTeardownReaper) Sweep(context.Context) (int, error) {
 
 		r.retryOutstanding(v)
 
-		if v.TeardownComplete() {
+		if v.TeardownComplete() && time.Since(v.TerminatedAt) >= terminatedVisibilityWindow {
 			if r.purge(v) {
 				reaped++
 			}
 			continue
 		}
+		// Either still incomplete (retry next sweep), or complete but inside the
+		// describe-visibility window: persist progress and leave the record to
+		// the 1h bucket TTL so the instance stays describable as terminated.
 		if err := r.m.deps.StateStore.WriteTerminatedInstance(v.ID, v); err != nil {
 			slog.Warn("vm/gc: failed to persist advanced teardown marks",
 				"instanceId", v.ID, "err", err)

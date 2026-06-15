@@ -417,6 +417,128 @@ func TestRevokeSecurityGroupEgress_RuleNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidPermission.NotFound")
 }
 
+// --- Revoke by SecurityGroupRuleId (Terraform per-rule destroy) ---
+
+func authorizeIngressFromSG(t *testing.T, svc *VPCServiceImpl, sgID, srcSG string) {
+	t.Helper()
+	_, err := svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol:       aws.String("tcp"),
+			FromPort:         aws.Int64(443),
+			ToPort:           aws.Int64(443),
+			UserIdGroupPairs: []*ec2.UserIdGroupPair{{GroupId: aws.String(srcSG)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func ingressRuleIDReferencing(t *testing.T, svc *VPCServiceImpl, sgID, srcSG string) string {
+	t.Helper()
+	out, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	for _, r := range out.SecurityGroupRules {
+		if r.ReferencedGroupInfo != nil && aws.StringValue(r.ReferencedGroupInfo.GroupId) == srcSG {
+			return aws.StringValue(r.SecurityGroupRuleId)
+		}
+	}
+	t.Fatalf("no ingress rule on %s referencing %s", sgID, srcSG)
+	return ""
+}
+
+// TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown
+// reproduces a Terraform destroy of two mutually-referencing SGs. Modern TF
+// (aws_vpc_security_group_ingress_rule) revokes each rule by SecurityGroupRuleId
+// with empty IpPermissions; if the handler ignores SecurityGroupRuleIds the
+// cross-ref rule survives and DeleteSecurityGroup deadlocks on DependencyViolation.
+func TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgA := createTestSG(t, svc, vpcID, "tf-sg-a")
+	sgB := createTestSG(t, svc, vpcID, "tf-sg-b")
+
+	authorizeIngressFromSG(t, svc, sgA, sgB)
+	authorizeIngressFromSG(t, svc, sgB, sgA)
+
+	// Precondition: each SG is pinned undeletable while the cross-ref stands.
+	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorDependencyViolation)
+
+	ruleA := ingressRuleIDReferencing(t, svc, sgA, sgB)
+	ruleB := ingressRuleIDReferencing(t, svc, sgB, sgA)
+
+	for _, rv := range []struct{ sg, rule string }{{sgA, ruleA}, {sgB, ruleB}} {
+		_, err = svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+			GroupId:              aws.String(rv.sg),
+			SecurityGroupRuleIds: []*string{aws.String(rv.rule)},
+		}, testAccountID)
+		require.NoErrorf(t, err, "revoke %s by rule id must remove the cross-ref", rv.sg)
+	}
+
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgA)}, testAccountID)
+	require.NoError(t, err, "sgA must tear down once its cross-ref is revoked")
+	_, err = svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(sgB)}, testAccountID)
+	require.NoError(t, err, "sgB must tear down once its cross-ref is revoked")
+}
+
+func TestRevokeSecurityGroupEgress_ByRuleID_RemovesRule(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "tf-egress-byid")
+
+	rules, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	var egressID string
+	for _, r := range rules.SecurityGroupRules {
+		if aws.BoolValue(r.IsEgress) && aws.StringValue(r.GroupId) == sgID {
+			egressID = aws.StringValue(r.SecurityGroupRuleId)
+		}
+	}
+	require.NotEmpty(t, egressID, "new SG has a default all-egress rule")
+
+	_, err = svc.RevokeSecurityGroupEgress(&ec2.RevokeSecurityGroupEgressInput{
+		GroupId:              aws.String(sgID),
+		SecurityGroupRuleIds: []*string{aws.String(egressID)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	after, err := svc.DescribeSecurityGroupRules(&ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(sgID)}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	for _, r := range after.SecurityGroupRules {
+		assert.NotEqual(t, egressID, aws.StringValue(r.SecurityGroupRuleId), "revoked egress rule must be gone")
+	}
+}
+
+func TestRevokeSecurityGroupIngress_ByRuleID_NotFound(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "tf-byid-notfound")
+
+	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId:              aws.String(sgID),
+		SecurityGroupRuleIds: []*string{aws.String("sgr-00000000000000000")},
+	}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+}
+
+func TestRevokeSecurityGroupIngress_ByRuleID_Malformed(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "tf-byid-malformed")
+
+	_, err := svc.RevokeSecurityGroupIngress(&ec2.RevokeSecurityGroupIngressInput{
+		GroupId:              aws.String(sgID),
+		SecurityGroupRuleIds: []*string{aws.String("not-a-rule-id")},
+	}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+}
+
 // --- Helper function tests ---
 
 func TestIpPermissionsToSGRules_TCP(t *testing.T) {

@@ -795,6 +795,11 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(input *ec2.RevokeSecurityGro
 		slog.Warn("RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	idRules, err := resolveRuleIDsToRemove(record.IngressRules, input.SecurityGroupRuleIds)
+	if err != nil {
+		return nil, err
+	}
+	revokeRules = append(revokeRules, idRules...)
 	if len(revokeRules) == 0 {
 		return &ec2.RevokeSecurityGroupIngressOutput{Return: aws.Bool(true)}, nil
 	}
@@ -852,6 +857,11 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(input *ec2.RevokeSecurityGrou
 		slog.Warn("RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+	idRules, err := resolveRuleIDsToRemove(record.EgressRules, input.SecurityGroupRuleIds)
+	if err != nil {
+		return nil, err
+	}
+	revokeRules = append(revokeRules, idRules...)
 	if len(revokeRules) == 0 {
 		return &ec2.RevokeSecurityGroupEgressOutput{Return: aws.Bool(true)}, nil
 	}
@@ -1068,6 +1078,38 @@ func removeSGRules(existing, toRemove []SGRule) []SGRule {
 // sgRuleKey returns a string key for deduplication/matching of SG rules.
 func sgRuleKey(r SGRule) string {
 	return fmt.Sprintf("%s:%d:%d:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.SourceSG)
+}
+
+// resolveRuleIDsToRemove maps SecurityGroupRuleIds to the matching rules in the
+// SG's existing set. Modern Terraform (aws_vpc_security_group_ingress_rule)
+// revokes per-rule resources by SecurityGroupRuleId with empty IpPermissions;
+// without this the revoke silently no-ops and the leftover rule pins the SG
+// undeletable (DependencyViolation) when it references a peer SG.
+func resolveRuleIDsToRemove(existing []SGRule, ruleIDs []*string) ([]SGRule, error) {
+	if len(ruleIDs) == 0 {
+		return nil, nil
+	}
+	byID := make(map[string]SGRule, len(existing))
+	for _, r := range existing {
+		if r.RuleId != "" {
+			byID[r.RuleId] = r
+		}
+	}
+	out := make([]SGRule, 0, len(ruleIDs))
+	for _, idp := range ruleIDs {
+		if idp == nil || *idp == "" {
+			continue
+		}
+		if !SGRuleIDRegex.MatchString(*idp) {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+		}
+		r, ok := byID[*idp]
+		if !ok {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // vpcdSGEventTimeout bounds the synchronous vpcd round-trip for SG events.

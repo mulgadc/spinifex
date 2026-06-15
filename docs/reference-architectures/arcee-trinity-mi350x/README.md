@@ -31,6 +31,8 @@ sections:
 
 ## Overview
 
+Spinifex is an open-source infrastructure platform that brings core AWS services — EC2, EBS, S3, VPC — to bare-metal, edge, and on-prem environments. It exposes an EC2-compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
+
 ### About Trinity
 
 [Trinity](https://www.arcee.ai/trinity) is a family of open-weight language models from [Arcee AI](https://www.arcee.ai), built specifically for production agentic workloads: reliable tool calling, structured JSON output, coherent multi-turn conversations, and long-context reasoning. The family spans four sizes — Nano (6B), Mini (26B), Large Preview (400B), and Large Thinking (400B reasoning-optimised), with consistent capabilities and API surface across all of them. A workflow validated on Nano can be promoted to Large with no prompt changes.

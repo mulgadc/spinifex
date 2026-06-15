@@ -26,7 +26,7 @@ sections:
 
 ## Overview
 
-Spinifex is an open-source infrastructure platform that brings core AWS services — EC2, EBS, S3, VPC — to bare-metal, edge, and on-prem environments. It exposes an EC2-compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
+Spinifex is an open-source infrastructure platform that brings core AWS services including EC2, EBS and S3 to bare-metal, edge, and on-prem environments. It exposes an EC2-compatible API, so any tooling that works against AWS (the `aws` CLI, Terraform, SDKs) works against a Spinifex node unchanged, with a single profile swap.
 
 This document serves as a tutorial for setting up multi-tenant AI workloads with Spinifex. The reference architecture for this tutorial is the Supermicro H14 platform - specifications listed below.
 

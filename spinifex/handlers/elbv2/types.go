@@ -116,24 +116,31 @@ type LoadBalancerRecord struct {
 	// NLBIngressCIDRs overrides the scheme-based default client CIDRs that
 	// listener ports are opened to on NLBManagedSGID. Empty ⇒ default
 	// (internet-facing: 0.0.0.0/0; internal: the VPC CIDR).
-	NLBIngressCIDRs []string           `json:"nlb_ingress_cidrs,omitempty"`
-	Subnets         []string           `json:"subnets"`
-	AvailZones      []AvailZoneInfo    `json:"availability_zones"`
-	ENIs            []string           `json:"enis,omitempty"`           // ENI IDs created for this ALB (internal)
-	InstanceID      string             `json:"instance_id,omitempty"`    // ALB VM instance ID (system-managed)
-	VPCIP           string             `json:"vpc_ip,omitempty"`         // VPC private IP of the ALB VM
-	ConfigText      string             `json:"config_text,omitempty"`    // Pre-computed HAProxy config
-	ConfigHash      string             `json:"config_hash,omitempty"`    // SHA256 of ConfigText + cert material
-	CertFiles       map[string]string  `json:"cert_files,omitempty"`     // Absolute path → combined PEM (cert+chain+key), delivered with config
-	HealthTargets   []HealthTargetSpec `json:"health_targets,omitempty"` // NLB only: backends the nginx agent actively probes (HAProxy reports its own)
-	LastHeartbeat   time.Time          `json:"last_heartbeat"`           // Last agent heartbeat timestamp
-	HostPorts       map[int]int        `json:"host_ports,omitempty"`     // Dev mode: guest port → host port forwarding
-	NodeID          string             `json:"node_id"`                  // Daemon node running this ALB
-	IPAddressType   string             `json:"ip_address_type"`          // "ipv4"
-	Attributes      map[string]string  `json:"attributes,omitempty"`
-	Tags            map[string]string  `json:"tags,omitempty"`
-	AccountID       string             `json:"account_id"`
-	CreatedAt       time.Time          `json:"created_at"`
+	NLBIngressCIDRs []string        `json:"nlb_ingress_cidrs,omitempty"`
+	Subnets         []string        `json:"subnets"`
+	AvailZones      []AvailZoneInfo `json:"availability_zones"`
+	ENIs            []string        `json:"enis,omitempty"` // ENI IDs created for this ALB (internal)
+	// CrossAccountENIs are extra ENIs owned by a different account than the
+	// primary LB ENIs (e.g. an EKS cluster NLB whose LB VM lives in the system
+	// CP VPC but also fronts a customer-VPC Set A ENI so in-VPC clients reach the
+	// control plane privately, inheriting CP-level HA from the NLB target group).
+	// Threaded onto the LB VM at launch and re-attached on host-reboot recovery;
+	// kept out of ENIs so same-account describe/recovery stays single-account.
+	CrossAccountENIs []ExtraENIInput    `json:"cross_account_enis,omitempty"`
+	InstanceID       string             `json:"instance_id,omitempty"`    // ALB VM instance ID (system-managed)
+	VPCIP            string             `json:"vpc_ip,omitempty"`         // VPC private IP of the ALB VM
+	ConfigText       string             `json:"config_text,omitempty"`    // Pre-computed HAProxy config
+	ConfigHash       string             `json:"config_hash,omitempty"`    // SHA256 of ConfigText + cert material
+	CertFiles        map[string]string  `json:"cert_files,omitempty"`     // Absolute path → combined PEM (cert+chain+key), delivered with config
+	HealthTargets    []HealthTargetSpec `json:"health_targets,omitempty"` // NLB only: backends the nginx agent actively probes (HAProxy reports its own)
+	LastHeartbeat    time.Time          `json:"last_heartbeat"`           // Last agent heartbeat timestamp
+	HostPorts        map[int]int        `json:"host_ports,omitempty"`     // Dev mode: guest port → host port forwarding
+	NodeID           string             `json:"node_id"`                  // Daemon node running this ALB
+	IPAddressType    string             `json:"ip_address_type"`          // "ipv4"
+	Attributes       map[string]string  `json:"attributes,omitempty"`
+	Tags             map[string]string  `json:"tags,omitempty"`
+	AccountID        string             `json:"account_id"`
+	CreatedAt        time.Time          `json:"created_at"`
 }
 
 // HealthTargetSpec is a backend the nginx agent actively health-checks, computed

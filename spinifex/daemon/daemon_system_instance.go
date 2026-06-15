@@ -24,6 +24,16 @@ import (
 // Compile-time check that Daemon implements SystemInstanceLauncher.
 var _ handlers_elbv2.SystemInstanceLauncher = (*Daemon)(nil)
 
+// resolveENIAccount returns owner when set, else fallback. A cross-account ENI
+// (e.g. an EKS cluster NLB fronting a customer-VPC ENI) carries its own account;
+// same-account ENIs leave it empty and inherit the primary/system account.
+func resolveENIAccount(owner, fallback string) string {
+	if owner != "" {
+		return owner
+	}
+	return fallback
+}
+
 // LaunchSystemInstance creates and starts a system-managed VM (ELBv2 LB).
 // The VM is owned by the system account (GlobalAccountID), is not visible to
 // customer DescribeInstances calls, and always boots via direct kernel boot
@@ -36,10 +46,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	accountID := utils.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
 	// the caller's account, so lookups/updates must use that account ID.
-	eniAccountID := input.AccountID
-	if eniAccountID == "" {
-		eniAccountID = accountID
-	}
+	eniAccountID := resolveENIAccount(input.AccountID, accountID)
 
 	// Validate instance type
 	instanceType, exists := d.resourceMgr.instanceTypes[input.InstanceType]
@@ -127,7 +134,11 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		// for one of them (we clean up on failure below).
 		for idx, extra := range input.ExtraENIs {
 			if d.vpcService != nil {
-				if _, attachErr := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instance.ID, int64(idx+1)); attachErr != nil {
+				// A cross-account extra ENI (e.g. an EKS cluster NLB fronting a
+				// customer-VPC ENI) lives in its own account; the ENI record is
+				// account-keyed, so attach under extra.AccountID when set.
+				extraAccount := resolveENIAccount(extra.AccountID, eniAccountID)
+				if _, attachErr := d.vpcService.AttachENI(extraAccount, extra.ENIID, instance.ID, int64(idx+1)); attachErr != nil {
 					slog.Error("LaunchSystemInstance: failed to attach extra ENI", "eniId", extra.ENIID, "instanceId", instance.ID, "err", attachErr)
 					d.cleanupFailedSystemInstance(instance, instanceType)
 					return nil, fmt.Errorf("attach extra ENI %s: %w", extra.ENIID, attachErr)

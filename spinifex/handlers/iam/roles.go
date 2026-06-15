@@ -24,6 +24,11 @@ const (
 	defaultMaxSessionDuration = int64(3600)
 	minMaxSessionDuration     = int64(900)
 	maxMaxSessionDuration     = int64(43200)
+
+	// Bound on optimistic-concurrency retries when a concurrent writer wins the
+	// CAS race on a role record. High enough to absorb the handful of parallel
+	// AttachRolePolicy calls Terraform fans out per role.
+	roleCASMaxRetries = 16
 )
 
 func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
@@ -256,22 +261,15 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 		}
 	}
 
-	role, err := s.getRole(accountID, roleName)
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		if slices.Contains(role.AttachedPolicies, policyARN) {
+			return false, nil
+		}
+		role.AttachedPolicies = append(role.AttachedPolicies, policyARN)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if slices.Contains(role.AttachedPolicies, policyARN) {
-		return &iam.AttachRolePolicyOutput{}, nil
-	}
-
-	role.AttachedPolicies = append(role.AttachedPolicies, policyARN)
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role: %w", err)
 	}
 
 	slog.Info("IAM policy attached to role", "accountID", accountID, "roleName", roleName, "policyArn", policyARN)
@@ -282,31 +280,16 @@ func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRol
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
-	role, err := s.getRole(accountID, roleName)
+	err := s.updateRoleCAS(accountID, roleName, func(role *Role) (bool, error) {
+		idx := slices.Index(role.AttachedPolicies, policyARN)
+		if idx < 0 {
+			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
+		}
+		role.AttachedPolicies = slices.Delete(role.AttachedPolicies, idx, idx+1)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	found := false
-	remaining := make([]string, 0, len(role.AttachedPolicies))
-	for _, arn := range role.AttachedPolicies {
-		if arn == policyARN {
-			found = true
-		} else {
-			remaining = append(remaining, arn)
-		}
-	}
-	if !found {
-		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	role.AttachedPolicies = remaining
-	data, err := json.Marshal(role)
-	if err != nil {
-		return nil, fmt.Errorf("marshal role: %w", err)
-	}
-	if _, err := s.rolesBucket.Put(accountID+"."+roleName, data); err != nil {
-		return nil, fmt.Errorf("update role: %w", err)
 	}
 
 	slog.Info("IAM policy detached from role", "accountID", accountID, "roleName", roleName, "policyArn", policyARN)
@@ -400,6 +383,51 @@ func (s *IAMServiceImpl) getRole(accountID, roleName string) (*Role, error) {
 		return nil, fmt.Errorf("unmarshal role: %w", err)
 	}
 	return &role, nil
+}
+
+// updateRoleCAS applies mutate to a role under optimistic concurrency: read the
+// record with its revision, mutate, then Update guarded by that revision,
+// retrying when a concurrent writer wins the race. A blind read-modify-Put
+// loses updates when callers (e.g. Terraform attaching several managed policies
+// to one role at once) write the same record concurrently. mutate reports
+// whether it changed the record; a false return commits nothing.
+func (s *IAMServiceImpl) updateRoleCAS(accountID, roleName string, mutate func(*Role) (bool, error)) error {
+	key := accountID + "." + roleName
+	for range roleCASMaxRetries {
+		entry, err := s.rolesBucket.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return fmt.Errorf("get role: %w", err)
+		}
+
+		var role Role
+		if err := json.Unmarshal(entry.Value(), &role); err != nil {
+			return fmt.Errorf("unmarshal role: %w", err)
+		}
+
+		changed, err := mutate(&role)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+
+		data, err := json.Marshal(&role)
+		if err != nil {
+			return fmt.Errorf("marshal role: %w", err)
+		}
+		if _, err := s.rolesBucket.Update(key, data, entry.Revision()); err != nil {
+			if errors.Is(err, nats.ErrKeyExists) {
+				continue // CAS conflict — another writer won, re-read and retry.
+			}
+			return fmt.Errorf("update role: %w", err)
+		}
+		return nil
+	}
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // findInstanceProfilesForRole scans the instance-profiles bucket for any

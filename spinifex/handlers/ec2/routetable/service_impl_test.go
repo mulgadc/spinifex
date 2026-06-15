@@ -2,6 +2,7 @@ package handlers_ec2_routetable
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -428,6 +429,44 @@ func TestAssociateRouteTable_DuplicateSubnet(t *testing.T) {
 		SubnetId:     aws.String("subnet-test1"),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorResourceAlreadyAssociated)
+}
+
+// TestAssociateRouteTable_ConcurrentDistinctSubnets reproduces the env19
+// lost-update: Terraform associates two subnets with one route table in
+// parallel. A blind read-modify-Put kept only one association (the other raced
+// from the same revision and was clobbered, so the provider timed out waiting
+// for 'associated'); the CAS path must persist both.
+func TestAssociateRouteTable_ConcurrentDistinctSubnets(t *testing.T) {
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	subnets := []string{"subnet-test1", "subnet-priv1"}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(subnets))
+	for i, sn := range subnets {
+		wg.Add(1)
+		go func(i int, sn string) {
+			defer wg.Done()
+			_, errs[i] = svc.AssociateRouteTable(&ec2.AssociateRouteTableInput{
+				RouteTableId: aws.String(rtbID),
+				SubnetId:     aws.String(sn),
+			}, testAccountID)
+		}(i, sn)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "associate %s", subnets[i])
+	}
+
+	record, err := svc.getRouteTable(testAccountID, rtbID)
+	require.NoError(t, err)
+	got := make([]string, 0, len(record.Associations))
+	for _, a := range record.Associations {
+		got = append(got, a.SubnetId)
+	}
+	assert.ElementsMatch(t, subnets, got, "all concurrently-associated subnets must persist")
 }
 
 func TestDisassociateRouteTable(t *testing.T) {

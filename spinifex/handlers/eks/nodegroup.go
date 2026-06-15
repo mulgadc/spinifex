@@ -23,6 +23,15 @@ import (
 // when the caller omits instanceTypes.
 const defaultNodegroupInstanceType = "t3.medium"
 
+// defaultNodegroupReadyTimeout / defaultNodegroupReadyPoll bound how long
+// launchNodegroupInfra waits for its workers to register Ready (observed via the
+// CP state report's Ready-node count, refreshed at the reconcile cadence) before
+// marking the nodegroup CREATE_FAILED.
+const (
+	defaultNodegroupReadyTimeout = 10 * time.Minute
+	defaultNodegroupReadyPoll    = 15 * time.Second
+)
+
 // ErrNodegroupNotFound is returned by GetNodegroupRecord when the record key is
 // absent. Callers translate to the AWS shape (ResourceNotFoundException) at the
 // service boundary.
@@ -180,6 +189,10 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		slog.Error("createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
+	if meta.Endpoint == "" {
+		slog.Error("createNodegroup: cluster has no published endpoint", "cluster", cluster)
+		return nil, errors.New(awserrors.ErrorInvalidRequest)
+	}
 	if meta.ResourcesVpcConfig == nil || meta.ResourcesVpcConfig.VpcId == "" {
 		slog.Error("createNodegroup: cluster has no VPC", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
@@ -314,11 +327,53 @@ func (s *EKSServiceImpl) launchNodegroupInfra(lc nodegroupLaunchCtx) {
 		return
 	}
 
-	// v1: ACTIVE on RunInstances success; node-Ready gating is a future improvement.
+	// Gate ACTIVE on the workers registering Ready (observed via the CP state
+	// report's Ready-node count), not merely on RunInstances success — a worker
+	// that boots but never joins must surface CREATE_FAILED, not falsely ACTIVE.
+	// Baseline is the create-time node count; the workers add lc.desired Ready nodes.
+	if err := s.waitWorkersReady(acctKV, cluster, meta.NodeCount, lc.desired); err != nil {
+		rec.Status = eks.NodegroupStatusCreateFailed
+		rec.StatusReason = "workers did not become Ready: " + err.Error()
+		rec.ModifiedAt = time.Now().UTC()
+		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
+			slog.Error("createNodegroup: persist CREATE_FAILED record", "cluster", cluster, "nodegroup", ng, "err", perr)
+		}
+		return
+	}
+
 	rec.Status = eks.NodegroupStatusActive
 	rec.ModifiedAt = time.Now().UTC()
 	if err := PutNodegroupRecord(acctKV, rec); err != nil {
 		slog.Error("createNodegroup: persist ACTIVE record", "cluster", cluster, "nodegroup", ng, "err", err)
+	}
+}
+
+// waitWorkersReady blocks until the cluster's Ready-node count rises by want over
+// baseline — every nodegroup worker registered Ready — or the timeout / bgCtx
+// fires. Ready count is meta.NodeCount, which the ClusterReconciler refreshes
+// from the CP's NATS state report (Ready nodes only). Mirrors the CP reconciler's
+// healthy-observe gating: a nodegroup is ACTIVE only once its workers are observed
+// Ready, not merely launched.
+func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster string, baseline, want int) error {
+	target := baseline + want
+	deadline := time.Now().Add(s.nodegroupReadyTimeout)
+	for {
+		meta, err := GetClusterMeta(acctKV, cluster)
+		if err != nil {
+			return err
+		}
+		if meta.NodeCount >= target {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s: cluster reports %d Ready nodes, want >= %d (baseline %d + %d workers)",
+				s.nodegroupReadyTimeout, meta.NodeCount, target, baseline, want)
+		}
+		select {
+		case <-s.bgCtx.Done():
+			return s.bgCtx.Err()
+		case <-time.After(s.nodegroupReadyPoll):
+		}
 	}
 }
 
@@ -341,11 +396,11 @@ func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, r
 	for i := range count {
 		shortID := uuid.NewString()[:8]
 		userData := buildAgentUserData(agentUserDataInput{
-			ClusterName:       rec.ClusterName,
-			NodegroupName:     rec.Name,
-			ControlPlaneENIIP: meta.ControlPlaneENIIP,
-			JoinToken:         token,
-			NodeName:          fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
+			ClusterName:   rec.ClusterName,
+			NodegroupName: rec.Name,
+			ServerURL:     clusterJoinEndpoint(meta),
+			JoinToken:     token,
+			NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
 		})
 		runInput := &ec2.RunInstancesInput{
 			ImageId:          aws.String(amiID),

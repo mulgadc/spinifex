@@ -156,6 +156,16 @@ func TestBuildNetcfgBlob_MultiNIC_DefaultFlags(t *testing.T) {
 // tapNameForNIC
 // ---------------------------------------------------------------------------
 
+func TestResolveENIAccount_OwnerWhenSet(t *testing.T) {
+	// A cross-account extra ENI attaches under its own account.
+	assert.Equal(t, "999988887777", resolveENIAccount("999988887777", "000000000000"))
+}
+
+func TestResolveENIAccount_FallsBackWhenEmpty(t *testing.T) {
+	// A same-account extra ENI (empty AccountID) inherits the primary account.
+	assert.Equal(t, "000000000000", resolveENIAccount("", "000000000000"))
+}
+
 func TestTapNameForNIC_PrimaryENI(t *testing.T) {
 	input := &handlers_elbv2.SystemInstanceInput{
 		ENIID: "eni-0123456789abcdef0",

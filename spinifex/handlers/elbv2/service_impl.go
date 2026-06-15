@@ -338,8 +338,14 @@ func (s *ELBv2ServiceImpl) buildMicrovmNICs(primaryIP, primaryMAC, primarySubnet
 	for _, extra := range extraENIs {
 		extraCIDR := ""
 		extraGateway := ""
+		// Cross-account extras carry their own AccountID; the subnet record is
+		// account-keyed, so resolve under it. Empty falls back to accountID.
+		extraAccount := extra.AccountID
+		if extraAccount == "" {
+			extraAccount = accountID
+		}
 		if s.VPCService != nil && extra.SubnetID != "" {
-			if subnet, err := s.VPCService.GetSubnet(accountID, extra.SubnetID); err == nil && subnet != nil {
+			if subnet, err := s.VPCService.GetSubnet(extraAccount, extra.SubnetID); err == nil && subnet != nil {
 				extraCIDR = subnetCIDRForIP(extra.ENIIP, subnet.CidrBlock)
 				extraGateway = subnetGatewayIP(subnet.CidrBlock)
 			} else {
@@ -418,7 +424,7 @@ type lbVMLaunch struct {
 // launchLBVM boots the system VM for a load balancer. The first ENI is the
 // primary NIC; extras give multi-subnet data-plane presence. No-op when no
 // launcher is configured. Shared by CreateLoadBalancer and SetSubnets.
-func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string) lbVMLaunch {
+func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []string, accountID string, crossAccountENIs []ExtraENIInput) lbVMLaunch {
 	var res lbVMLaunch
 	if s.InstanceLauncher == nil || len(eniIDs) == 0 || len(subnets) == 0 {
 		return res
@@ -433,7 +439,11 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 		primaryMAC = aws.StringValue(primary.MacAddress)
 	}
 
+	// Same-account extras come from the (already-described) primary ENI set;
+	// cross-account extras arrive fully populated (the caller created them in the
+	// other account) and are not in eniDetails, so append them directly.
 	extraENIInputs := buildExtraENIInputs(eniIDs, eniDetails)
+	extraENIInputs = append(extraENIInputs, crossAccountENIs...)
 
 	if s.GatewayURL == "" || s.SystemAccessKey == "" || s.SystemSecretKey == "" {
 		slog.Error("launchLBVM: system credentials not configured — cannot launch LB VM", "lbId", lbID)
@@ -528,6 +538,9 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		return nil, fmt.Errorf("no MAC for primary ENI %s of lb %s", lb.ENIs[0], lb.LoadBalancerID)
 	}
 	extraENIs := buildExtraENIInputs(lb.ENIs, eniDetails)
+	// Cross-account extras live in another account and aren't in lb.ENIs/eniDetails;
+	// they were persisted fully populated, so re-attach them as-is.
+	extraENIs = append(extraENIs, lb.CrossAccountENIs...)
 
 	nics := s.buildMicrovmNICs(lb.VPCIP, primaryMAC, lb.Subnets[0], lb.ENIs[0], lb.Scheme, extraENIs, lb.AccountID)
 	// Re-inject mgmt NIC MAC/CIDR — buildMicrovmNICs leaves them blank.
@@ -1037,7 +1050,7 @@ func isCompatibleProtocol(listenerProto, tgProto string) bool {
 // need the LB's front-end address before proceeding — e.g. EKS, which bakes the
 // IP into the control-plane apiserver cert SAN — must use CreateLoadBalancerSync.
 func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
-	return s.createLoadBalancer(input, accountID, false)
+	return s.createLoadBalancer(input, accountID, false, nil)
 }
 
 // CreateLoadBalancerSync creates the LB and drives its data-plane launch
@@ -1048,10 +1061,20 @@ func (s *ELBv2ServiceImpl) CreateLoadBalancer(input *elbv2.CreateLoadBalancerInp
 // running it on the shared gateway responder would reintroduce 267.4. The LB
 // still flips provisioning → active on the lb-agent's first heartbeat.
 func (s *ELBv2ServiceImpl) CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
-	return s.createLoadBalancer(input, accountID, true)
+	return s.createLoadBalancer(input, accountID, true, nil)
 }
 
-func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string, syncLaunch bool) (*elbv2.CreateLoadBalancerOutput, error) {
+// CreateClusterNLBSync creates an NLB synchronously (like CreateLoadBalancerSync)
+// and also threads one or more cross-account ENIs onto the LB VM at launch. EKS
+// uses it to give an otherwise system-VPC cluster NLB a customer-VPC (Set A)
+// front-end, so in-VPC clients and workers reach the control plane privately
+// while inheriting CP-level HA from the NLB target group. Each ExtraENIInput
+// carries its own AccountID (the customer account that owns the Set A ENI).
+func (s *ELBv2ServiceImpl) CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
+	return s.createLoadBalancer(input, accountID, true, crossAccountENIs)
+}
+
+func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string, syncLaunch bool, crossAccountENIs []ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
 	if input.Name == nil || *input.Name == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -1216,24 +1239,25 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	// Attributes left nil — defaults derived from lb.Type on read.
 	// InstanceID/VPCIP/HostPorts are filled by the async launch.
 	record := &LoadBalancerRecord{
-		LoadBalancerArn: lbArn,
-		LoadBalancerID:  lbID,
-		DNSName:         dnsName,
-		Name:            name,
-		Scheme:          scheme,
-		Type:            lbType,
-		State:           state,
-		VpcId:           vpcID,
-		SecurityGroups:  securityGroups,
-		NLBManagedSGID:  nlbManagedSGID,
-		Subnets:         subnets,
-		AvailZones:      availZones,
-		ENIs:            eniIDs,
-		IPAddressType:   IPAddressTypeIPv4,
-		NodeID:          s.nodeID,
-		Tags:            tags,
-		AccountID:       accountID,
-		CreatedAt:       time.Now().UTC(),
+		LoadBalancerArn:  lbArn,
+		LoadBalancerID:   lbID,
+		DNSName:          dnsName,
+		Name:             name,
+		Scheme:           scheme,
+		Type:             lbType,
+		State:            state,
+		VpcId:            vpcID,
+		SecurityGroups:   securityGroups,
+		NLBManagedSGID:   nlbManagedSGID,
+		Subnets:          subnets,
+		AvailZones:       availZones,
+		ENIs:             eniIDs,
+		CrossAccountENIs: crossAccountENIs,
+		IPAddressType:    IPAddressTypeIPv4,
+		NodeID:           s.nodeID,
+		Tags:             tags,
+		AccountID:        accountID,
+		CreatedAt:        time.Now().UTC(),
 	}
 
 	if err := s.store.PutLoadBalancer(record); err != nil {
@@ -1246,7 +1270,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(input *elbv2.CreateLoadBalancerInp
 	if willLaunch {
 		// Snapshot the launch inputs; the async goroutine must not read the record
 		// the caller is about to return.
-		lc := lbLaunchCtx{lbID: lbID, lbArn: lbArn, scheme: scheme, eniIDs: eniIDs, subnets: subnets, accountID: accountID}
+		lc := lbLaunchCtx{lbID: lbID, lbArn: lbArn, scheme: scheme, eniIDs: eniIDs, subnets: subnets, accountID: accountID, crossAccountENIs: crossAccountENIs}
 		if syncLaunch {
 			// Drive the data-plane launch inline so the returned record carries the
 			// allocated front-end IP. The caller is off the gateway responder, so
@@ -1292,6 +1316,9 @@ type lbLaunchCtx struct {
 	eniIDs    []string
 	subnets   []string
 	accountID string
+	// crossAccountENIs are extra ENIs owned by a different account than eniIDs
+	// (each carries its own AccountID), threaded onto the LB VM at launch.
+	crossAccountENIs []ExtraENIInput
 }
 
 // provisionLBDataPlane boots the LB-VM and folds the result into the persisted
@@ -1303,7 +1330,7 @@ type lbLaunchCtx struct {
 // whether to run it inline (CreateLoadBalancerSync) or on a background goroutine
 // (launchLBVMAsync).
 func (s *ELBv2ServiceImpl) provisionLBDataPlane(lc lbLaunchCtx) error {
-	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID)
+	launch := s.launchLBVM(lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID, lc.crossAccountENIs)
 
 	record, err := s.store.GetLoadBalancerByArn(lc.lbArn)
 	if err != nil || record == nil {

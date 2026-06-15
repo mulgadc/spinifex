@@ -43,7 +43,13 @@ type ClusterMeta struct {
 	Endpoint     string        `json:"endpoint,omitempty"`
 	// EndpointIP is the NLB front-end IP (external-pool for public, VPC IP for private).
 	// The apiserver serving cert SANs this IP for TLS verification.
-	EndpointIP              string            `json:"endpointIp,omitempty"`
+	EndpointIP string `json:"endpointIp,omitempty"`
+	// PrivateEndpointIP is the customer-VPC (Set A) IP of the ENI threaded onto the
+	// cluster NLB's LB VM when EndpointPrivateAccess is on. In-VPC workers + kubectl
+	// reach the control plane here on :443 (no public hairpin / NAT GW). SANed on
+	// the apiserver cert. PrivateEndpointENIID is its ENI, kept for teardown.
+	PrivateEndpointIP       string            `json:"privateEndpointIp,omitempty"`
+	PrivateEndpointENIID    string            `json:"privateEndpointEniId,omitempty"`
 	OIDCIssuer              string            `json:"oidcIssuer,omitempty"`
 	CertificateAuthorityB64 string            `json:"certificateAuthorityB64,omitempty"`
 	ResourcesVpcConfig      *ClusterVpcConfig `json:"resourcesVpcConfig,omitempty"`

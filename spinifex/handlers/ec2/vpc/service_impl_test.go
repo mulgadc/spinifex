@@ -599,6 +599,28 @@ func TestCreateMainRouteTable_Idempotent(t *testing.T) {
 	assert.Equal(t, 1, mains, "exactly one IsMain=true record after duplicate call")
 }
 
+// TestDeleteVpc_ReapsMainRouteTable asserts DeleteVpc reclaims the VPC's
+// auto-created main route table. DeleteRouteTable refuses to delete a main RT
+// (AWS-faithful), so without DeleteVpc reaping it the rtbKV bucket leaks one
+// orphaned main RT per deleted VPC.
+func TestDeleteVpc_ReapsMainRouteTable(t *testing.T) {
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.77.0.0/16") // auto-creates the main RT
+
+	rtbID, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	require.NoError(t, err)
+	require.NotEmpty(t, rtbID, "CreateVpc should have created a main route table")
+	require.Equal(t, 1, countMainRouteTablesForVPC(t, svc, vpcID))
+
+	_, err = svc.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err)
+
+	gone, err := svc.findMainRouteTableID(testAccountID, vpcID)
+	require.NoError(t, err)
+	assert.Empty(t, gone, "DeleteVpc must reap the main route table, not leak it")
+	assert.Equal(t, 0, countMainRouteTablesForVPC(t, svc, vpcID))
+}
+
 // countMainRouteTablesForVPC scans rtbKV directly to surface duplicate-main
 // state in tests. Returns the number of IsMain=true records for vpcID.
 func countMainRouteTablesForVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) int {

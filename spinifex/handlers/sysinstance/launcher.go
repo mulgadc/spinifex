@@ -88,6 +88,11 @@ type ExtraENIInput struct {
 	ENIMac   string `json:"eni_mac"`
 	ENIIP    string `json:"eni_ip"`
 	SubnetID string `json:"subnet_id"`
+	// AccountID is the owner account of this ENI when it differs from the VM's
+	// primary-ENI account (cross-account attach, e.g. an EKS cluster NLB whose
+	// LB VM lives in the system CP VPC but fronts a customer-VPC ENI). Empty
+	// falls back to the primary AccountID — back-compat for same-account extras.
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // NICConfig describes a single network interface for a BootDirect microVM.

@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -98,6 +99,12 @@ type EKSServiceImpl struct {
 
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+
+	// nodegroupReadyTimeout / nodegroupReadyPoll bound how long launchNodegroupInfra
+	// waits for its workers to register Ready before marking the nodegroup
+	// CREATE_FAILED. Tests inject small values.
+	nodegroupReadyTimeout time.Duration
+	nodegroupReadyPoll    time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -122,11 +129,13 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
-		deps:     deps,
-		leaderKV: leaderKV,
-		registry: NewReconcilerRegistry(),
-		bgCtx:    ctx,
-		bgCancel: cancel,
+		deps:                  deps,
+		leaderKV:              leaderKV,
+		registry:              NewReconcilerRegistry(),
+		bgCtx:                 ctx,
+		bgCancel:              cancel,
+		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
+		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
 	}, nil
 }
 
@@ -351,6 +360,7 @@ func (s *EKSServiceImpl) CreateCluster(input *eks.CreateClusterInput, accountID,
 			subnetIDs:          subnetIDs,
 			vpcID:              vpcID,
 			publicAccess:       publicAccess,
+			privateAccess:      privateAccess,
 			publicCidrs:        publicCidrs,
 			input:              input,
 			meta:               meta,
@@ -370,6 +380,7 @@ type clusterLaunchCtx struct {
 	subnetIDs          []string
 	vpcID              string
 	publicAccess       bool
+	privateAccess      bool
 	publicCidrs        []string
 	input              *eks.CreateClusterInput
 	meta               *ClusterMeta
@@ -409,6 +420,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 	name := lc.name
 	region := lc.region
 	publicAccess := lc.publicAccess
+	privateAccess := lc.privateAccess
 	publicCidrs := lc.publicCidrs
 	input := lc.input
 	meta := lc.meta
@@ -457,22 +469,57 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		return
 	}
 
+	// Private endpoint (301): when private access is on, give the cluster NLB a
+	// customer-VPC (Set A) front-end so in-VPC workers + kubectl reach the control
+	// plane without the public hairpin / NAT GW egress. Provision the customer-
+	// account ENI (admitted by a customer-VPC SG on :443) before the NLB + CP VMs so
+	// its IP is a known cert SAN, then thread it onto the LB VM as a cross-account
+	// extra NIC. Persist its refs immediately so teardown reclaims them on any later
+	// failure. nginx(L4) on the LB VM binds all addresses, so it answers the Set A
+	// NIC and proxies to the CP target group with no data-plane change.
+	var crossAccountENIs []sysinstance.ExtraENIInput
+	if privateAccess {
+		pe, perr := EnsurePrivateEndpointENI(s.deps.VPCK3s, s.deps.VPCSG, s.deps.VPCSubnet, accountID, name, lc.subnetIDs[0], lc.vpcID)
+		if perr != nil {
+			s.failClusterLaunch(acctKV, name, accountID, meta, "ensure private endpoint ENI", perr)
+			return
+		}
+		meta.PrivateEndpointENIID = pe.ENIID
+		meta.PrivateEndpointIP = pe.ENIIP
+		if err := PutClusterMeta(acctKV, meta); err != nil {
+			s.failClusterLaunch(acctKV, name, accountID, meta, "persist private endpoint refs", err)
+			return
+		}
+		crossAccountENIs = []sysinstance.ExtraENIInput{{
+			ENIID:     pe.ENIID,
+			ENIMac:    pe.ENIMac,
+			ENIIP:     pe.ENIIP,
+			SubnetID:  lc.subnetIDs[0],
+			AccountID: accountID,
+		}}
+	}
+
 	// The cluster NLB lives in the CP VPC public subnet. publicAccess selects the
 	// scheme (internet-facing external-pool IP vs internal VPC IP); the CP VPC IGW
 	// (attached by EnsureClusterCPVPC) makes an internet-facing front-end IP
 	// answerable on the wire.
-	nlb, err := EnsureClusterNLB(s.deps.NLB, sysAcct, name, []string{cpRefs.PublicSubnetID}, publicAccess, publicCidrs)
+	nlb, err := EnsureClusterNLB(s.deps.NLB, sysAcct, name, []string{cpRefs.PublicSubnetID}, publicAccess, publicCidrs, crossAccountENIs)
 	if err != nil {
 		s.failClusterLaunch(acctKV, name, accountID, meta, "ensure cluster NLB", err)
 		return
 	}
-	// The reachable front-end IP is the kubeconfig endpoint host so the apiserver
-	// serving cert (which SANs this IP) validates with TLS verification on.
-	// EnsureClusterNLB guarantees a non-empty FrontendIP (it fails the launch
-	// otherwise), so there is no DNS-name fallback to bake an unresolvable,
-	// non-SANed endpoint.
-	meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
-	meta.EndpointIP = nlb.FrontendIP
+	// Endpoint resolution (301): publish the reachable front-end. With public access
+	// on (public-only or public+private) that is the NLB's public front-end IP. A
+	// private-only cluster publishes its Set A private endpoint instead — the
+	// internal NLB's Set B IP is unreachable from the customer VPC. Either way the
+	// host is a cert SAN, so TLS validates with verification on.
+	if publicAccess {
+		meta.Endpoint = "https://" + net.JoinHostPort(nlb.FrontendIP, strconv.FormatInt(clusterNLBListenPort, 10))
+		meta.EndpointIP = nlb.FrontendIP
+	} else {
+		meta.Endpoint = "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
+		meta.EndpointIP = meta.PrivateEndpointIP
+	}
 	meta.NLBArn = nlb.LoadBalancerArn
 	meta.NLBTargetGroupArn = nlb.TargetGroupArn
 
@@ -515,6 +562,7 @@ func (s *EKSServiceImpl) launchClusterInfra(lc clusterLaunchCtx) {
 		ControlPlaneSGID:  cpSG,
 		NLBDNS:            nlb.DNSName,
 		EndpointIP:        nlb.FrontendIP,
+		PrivateEndpointIP: meta.PrivateEndpointIP,
 		OIDCIssuer:        oidcIssuer,
 		OIDCPrivateKeyPEM: privPEM,
 		OIDCPublicKeyPEM:  pubPEM,
@@ -854,6 +902,21 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 		}
 	}
 
+	// Private endpoint (301): the Set A ENI lives in the customer VPC under the
+	// customer account and was attached to the cluster NLB's LB VM (terminated by
+	// DeleteClusterNLB above). It is an extra NIC, not the LB VM's primary ENI, so
+	// the instance-terminate cascade never reclaims it — detach (store-clear) the
+	// stale attachment first, then delete before its SG. Detach is best-effort: a
+	// missing/already-detached ENI is fine; the delete is the authoritative gate.
+	if meta.PrivateEndpointENIID != "" {
+		if err := s.deps.VPCK3s.DetachENI(accountID, meta.PrivateEndpointENIID); err != nil {
+			slog.Warn("purgeClusterInfra: detach private-endpoint ENI", "cluster", name, "eni", meta.PrivateEndpointENIID, "err", err)
+		}
+		if err := deleteENIAwaitingTerminate(s.deps.VPCK3s, accountID, meta.PrivateEndpointENIID); err != nil {
+			teardownErrs = append(teardownErrs, fmt.Errorf("delete private-endpoint ENI: %w", err))
+		}
+	}
+
 	for _, cp := range controlPlaneTeardownNodes(meta) {
 		if err := TerminateK3sServerVM(s.deps.VPCK3s, s.deps.Instance,
 			infraAcct, cp.InstanceID, cp.ENIID); err != nil {
@@ -900,6 +963,14 @@ func (s *EKSServiceImpl) purgeClusterInfra(accountID, name string, meta *Cluster
 
 	if len(teardownErrs) > 0 {
 		return errors.Join(teardownErrs...)
+	}
+
+	// Private endpoint (301): reclaim the customer-VPC SG now its ENI is gone.
+	// Best-effort — its only billable dependant (the ENI) is already deleted.
+	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
+		if err := DeletePrivateEndpointSG(s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+			slog.Warn("purgeClusterInfra: delete private-endpoint SG failed", "cluster", name, "err", err)
+		}
 	}
 
 	if meta.ManagedCPVPC != nil && meta.ManagedCPVPC.VpcId != "" {
@@ -1504,6 +1575,19 @@ func publicAccessCidrs(vpc *eks.VpcConfigRequest, public bool) []string {
 		return aws.StringValueSlice(vpc.PublicAccessCidrs)
 	}
 	return []string{defaultPublicAccessCidr}
+}
+
+// clusterJoinEndpoint is the apiserver URL nodegroup workers join through. With
+// private access on, workers prefer the customer-VPC (Set A) private endpoint on
+// :443 so a private-only cluster needs no NAT GW egress — the core 301 win.
+// Otherwise (public-only, or no provisioned private endpoint) the published
+// endpoint is used. For a private-only cluster meta.Endpoint already equals the
+// private endpoint, so the two agree.
+func clusterJoinEndpoint(meta *ClusterMeta) string {
+	if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.EndpointPrivateAccess && meta.PrivateEndpointIP != "" {
+		return "https://" + net.JoinHostPort(meta.PrivateEndpointIP, strconv.FormatInt(clusterNLBListenPort, 10))
+	}
+	return meta.Endpoint
 }
 
 func (s *EKSServiceImpl) markFailed(kv nats.KeyValue, name string) {

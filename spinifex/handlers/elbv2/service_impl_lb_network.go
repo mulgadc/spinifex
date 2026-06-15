@@ -214,7 +214,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		}
 	}
 
-	launch := s.launchLBVM(lb.LoadBalancerID, lb.Scheme, newENIs, desired, accountID)
+	launch := s.launchLBVM(lb.LoadBalancerID, lb.Scheme, newENIs, desired, accountID, lb.CrossAccountENIs)
 	availZones := rebuildAvailZones(desired, lb.AvailZones, newAZBySubnet)
 	if launch.publicIP != "" && len(availZones) > 0 {
 		availZones[0].PublicIP = launch.publicIP

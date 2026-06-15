@@ -30,6 +30,7 @@ type k3sVPCProvisioner interface {
 	CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error)
 	DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 	DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DetachENI(accountID, eniID string) error
 }
 
 // k3sInstanceLauncher is the system-instance launch surface for the K3s CP VM.
@@ -102,7 +103,11 @@ type K3sServerInput struct {
 	NLBDNS           string
 	// EndpointIP is the NLB front-end IP added to the apiserver cert SANs for TLS.
 	// Empty for an internal endpoint with no front-end IP.
-	EndpointIP        string
+	EndpointIP string
+	// PrivateEndpointIP is the customer-VPC (Set A) private-endpoint IP added to the
+	// apiserver cert SANs so in-VPC clients validate TLS via https://<ip>:443.
+	// Empty when private access is off.
+	PrivateEndpointIP string
 	OIDCIssuer        string
 	OIDCPrivateKeyPEM string
 	OIDCPublicKeyPEM  string
@@ -465,6 +470,10 @@ func buildK3sUserData(in K3sServerInput) string {
 	// EndpointIP must be a cert SAN for TLS validation via https://<EndpointIP>:443.
 	if in.EndpointIP != "" {
 		configLines = append(configLines, "  - "+in.EndpointIP)
+	}
+	// The Set A private-endpoint IP is what in-VPC clients connect to; SAN it too.
+	if in.PrivateEndpointIP != "" && in.PrivateEndpointIP != in.EndpointIP {
+		configLines = append(configLines, "  - "+in.PrivateEndpointIP)
 	}
 	configLines = append(configLines,
 		"kube-apiserver-arg:",

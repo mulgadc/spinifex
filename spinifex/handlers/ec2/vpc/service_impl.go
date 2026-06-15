@@ -403,6 +403,22 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 		}
 	}
 
+	// Reap the VPC's main route table: CreateVpc auto-creates it and
+	// DeleteRouteTable refuses to delete a main RT, so nothing else reclaims it
+	// — without this rtbKV leaks one orphaned main RT per deleted VPC.
+	rtbID, err := s.findMainRouteTableID(accountID, vpcID)
+	if err != nil {
+		slog.Error("DeleteVpc: main route table lookup failed", "vpcId", vpcID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if rtbID != "" {
+		if err := s.rtbKV.Delete(utils.AccountKey(accountID, rtbID)); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+			slog.Error("DeleteVpc: main route table reap failed", "vpcId", vpcID, "routeTableId", rtbID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.Info("DeleteVpc: reaped main route table", "vpcId", vpcID, "routeTableId", rtbID)
+	}
+
 	if err := s.vpcKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}

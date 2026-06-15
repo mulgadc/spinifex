@@ -926,3 +926,56 @@ func TestRebuildSystemInstanceInput_MultiENI(t *testing.T) {
 		assert.Equal(t, orig.ENIIP, e.ENIIP)
 	}
 }
+
+func TestCreateClusterNLBSync_CarriesCrossAccountENI(t *testing.T) {
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(&ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	subnetID := *subnets.Subnets[0].SubnetId
+
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-cluster-nlb", PrivateIP: "10.0.1.9"},
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	// The Set A ENI lives in a different (customer) account than the LB's own
+	// system-account ENIs; it arrives fully populated as the caller created it.
+	extra := ExtraENIInput{
+		ENIID:     "eni-seta-001",
+		ENIMac:    "02:0a:01:23:45:67",
+		ENIIP:     "10.20.0.5",
+		SubnetID:  "subnet-seta",
+		AccountID: "999988887777",
+	}
+
+	_, err = svc.CreateClusterNLBSync(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("eks-alpha"),
+		Type:    aws.String("network"),
+		Scheme:  aws.String("internal"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID, []ExtraENIInput{extra})
+	require.NoError(t, err)
+
+	require.Len(t, mock.launchCalls, 1)
+	launch := mock.launchCalls[0]
+
+	// The cross-account ENI must be threaded onto the LB VM with its own account.
+	require.Len(t, launch.ExtraENIs, 1)
+	assert.Equal(t, "eni-seta-001", launch.ExtraENIs[0].ENIID)
+	assert.Equal(t, "999988887777", launch.ExtraENIs[0].AccountID)
+
+	// NIC[0] primary, NIC[1] mgmt, NIC[2] the Set A extra NIC.
+	require.Len(t, launch.NICs, 3)
+	assert.Equal(t, "02:0a:01:23:45:67", launch.NICs[2].MAC)
+
+	// And it is persisted for host-reboot recovery.
+	record, err := svc.store.GetLoadBalancerByName("eks-alpha", testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Len(t, record.CrossAccountENIs, 1)
+	assert.Equal(t, "eni-seta-001", record.CrossAccountENIs[0].ENIID)
+}

@@ -5,6 +5,7 @@ package viperblockd
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -255,12 +256,16 @@ func TestIntegration_EBSUnmountRemovesSocket(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "vol-unmount-socket.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 
+	snapSocketPath := filepath.Join(tmpDir, "s.sock")
+	require.NoError(t, os.WriteFile(snapSocketPath, []byte("fake"), 0600))
+
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
 		{
-			Name:   "vol-unmount-socket",
-			Socket: socketPath,
-			PID:    99999,
+			Name:           "vol-unmount-socket",
+			Socket:         socketPath,
+			SnapshotSocket: snapSocketPath,
+			PID:            99999,
 		},
 	}
 
@@ -297,10 +302,12 @@ func TestIntegration_EBSDeleteRemovesSocket(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "vol-del-socket.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
+	snapSocketPath := filepath.Join(tmpDir, "s.sock")
+	require.NoError(t, os.WriteFile(snapSocketPath, []byte("fake"), 0600))
 
 	cfg := setupTestConfig(t, natsURL)
 	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-del-socket", Socket: socketPath, PID: 99999},
+		{Name: "vol-del-socket", Socket: socketPath, SnapshotSocket: snapSocketPath, PID: 99999},
 	}
 
 	go func() { launchService(cfg) }()
@@ -320,13 +327,39 @@ func TestIntegration_EBSDeleteRemovesSocket(t *testing.T) {
 	assert.False(t, fileExistsCheck(socketPath))
 }
 
+// startTestSnapshotSocket starts a Unix socket server that responds to every
+// snapshot request with the given canned response. The listener is closed
+// and the socket file removed when the test ends.
+func startTestSnapshotSocket(t *testing.T, socketPath string, response types.EBSSnapshotResponse) {
+	t.Helper()
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close(); os.Remove(socketPath) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				var req types.EBSSnapshotRequest
+				_ = json.NewDecoder(c).Decode(&req)
+				if response.SnapshotID == "" {
+					response.SnapshotID = req.SnapshotID
+				}
+				data, _ := json.Marshal(response)
+				_, _ = c.Write(data)
+			}(conn)
+		}
+	}()
+}
+
 // --- ebs.snapshot handler tests ---
 
 func TestIntegration_SnapshotHandler_Success(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
@@ -335,9 +368,10 @@ func TestIntegration_SnapshotHandler_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	vb := createTestVBWithState(t, "vol-snap-ok")
+	socketPath := filepath.Join(t.TempDir(), "s.sock")
+	startTestSnapshotSocket(t, socketPath, types.EBSSnapshotResponse{SnapshotID: "snap-001", Success: true})
 
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-ok", makeSnapshotHandler(vb, "vol-snap-ok"))
+	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-ok", makeSnapshotHandler(socketPath, "vol-snap-ok"))
 	require.NoError(t, err)
 	defer snapSub.Unsubscribe()
 	nc.Flush()
@@ -355,9 +389,6 @@ func TestIntegration_SnapshotHandler_Success(t *testing.T) {
 
 func TestIntegration_SnapshotHandler_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
@@ -366,9 +397,10 @@ func TestIntegration_SnapshotHandler_InvalidJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	vb := createTestVBWithState(t, "vol-snap-badjson")
+	// Bad JSON is rejected before the socket is dialed; path is never used.
+	socketPath := filepath.Join(t.TempDir(), "s.sock")
 
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-badjson", makeSnapshotHandler(vb, "vol-snap-badjson"))
+	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-badjson", makeSnapshotHandler(socketPath, "vol-snap-badjson"))
 	require.NoError(t, err)
 	defer snapSub.Unsubscribe()
 	nc.Flush()
@@ -383,9 +415,6 @@ func TestIntegration_SnapshotHandler_InvalidJSON(t *testing.T) {
 
 func TestIntegration_SnapshotHandler_CreateSnapshotFailure(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
 
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
@@ -394,13 +423,14 @@ func TestIntegration_SnapshotHandler_CreateSnapshotFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	vb := createTestVBWithState(t, "vol-snap-fail")
+	socketPath := filepath.Join(t.TempDir(), "s.sock")
+	startTestSnapshotSocket(t, socketPath, types.EBSSnapshotResponse{
+		SnapshotID: "snap-fail-001",
+		Success:    false,
+		Error:      "snapshot failed: permission denied",
+	})
 
-	// Make the base directory read-only so WriteTo fails with permission denied
-	require.NoError(t, os.Chmod(vb.BaseDir, 0555))
-	t.Cleanup(func() { os.Chmod(vb.BaseDir, 0755) })
-
-	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-fail", makeSnapshotHandler(vb, "vol-snap-fail"))
+	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-fail", makeSnapshotHandler(socketPath, "vol-snap-fail"))
 	require.NoError(t, err)
 	defer snapSub.Unsubscribe()
 	nc.Flush()
@@ -413,6 +443,77 @@ func TestIntegration_SnapshotHandler_CreateSnapshotFailure(t *testing.T) {
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.False(t, resp.Success)
 	assert.Contains(t, resp.Error, "snapshot failed:")
+}
+
+func TestIntegration_SnapshotHandler_DialFailure(t *testing.T) {
+	t.Parallel()
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	// Non-existent socket path — dial will fail immediately.
+	socketPath := filepath.Join(t.TempDir(), "s.sock")
+
+	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-dialfail", makeSnapshotHandler(socketPath, "vol-snap-dialfail"))
+	require.NoError(t, err)
+	defer snapSub.Unsubscribe()
+	nc.Flush()
+
+	reqData, _ := json.Marshal(types.EBSSnapshotRequest{Volume: "vol-snap-dialfail", SnapshotID: "snap-dialfail-001"})
+	msg, err := nc.Request("ebs.snapshot.vol-snap-dialfail", reqData, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSSnapshotResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Contains(t, resp.Error, "dial snapshot socket:")
+}
+
+func TestIntegration_SnapshotHandler_DecodeFailure(t *testing.T) {
+	t.Parallel()
+
+	ns, natsURL := setupEmbeddedNATS(t)
+	defer ns.Shutdown()
+
+	nc, err := nats.Connect(natsURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	socketPath := filepath.Join(t.TempDir(), "s.sock")
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close(); os.Remove(socketPath) })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 256)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("{not valid json"))
+			}(conn)
+		}
+	}()
+
+	snapSub, err := nc.Subscribe("ebs.snapshot.vol-snap-decode", makeSnapshotHandler(socketPath, "vol-snap-decode"))
+	require.NoError(t, err)
+	defer snapSub.Unsubscribe()
+	nc.Flush()
+
+	reqData, _ := json.Marshal(types.EBSSnapshotRequest{Volume: "vol-snap-decode", SnapshotID: "snap-decode-001"})
+	msg, err := nc.Request("ebs.snapshot.vol-snap-decode", reqData, 3*time.Second)
+	require.NoError(t, err)
+
+	var resp types.EBSSnapshotResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	assert.Contains(t, resp.Error, "decode response:")
 }
 
 // --- ebs.sync with VB instance ---

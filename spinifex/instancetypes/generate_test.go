@@ -519,8 +519,8 @@ func TestGenerateMIGTypes(t *testing.T) {
 	mig1g, ok := types["mig.1g.10gb"]
 	require.True(t, ok)
 	assert.Equal(t, "mig.1g.10gb", *mig1g.InstanceType)
-	assert.Equal(t, int64(0), *mig1g.VCpuInfo.DefaultVCpus)
-	assert.Equal(t, int64(0), *mig1g.MemoryInfo.SizeInMiB)
+	assert.Equal(t, int64(4), *mig1g.VCpuInfo.DefaultVCpus)
+	assert.Equal(t, int64(32*1024), *mig1g.MemoryInfo.SizeInMiB)
 	require.NotNil(t, mig1g.GpuInfo)
 	require.Len(t, mig1g.GpuInfo.Gpus, 1)
 	assert.Equal(t, "NVIDIA", *mig1g.GpuInfo.Gpus[0].Manufacturer)

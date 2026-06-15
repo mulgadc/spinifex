@@ -119,10 +119,10 @@ jobs:
           JSON=$(printf '%s\n' $LIST | jq -R . | jq -cs .)
           echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
 
-      - name: Prune rootless docker cache
+      - name: Reclaim docker build cache
         run: |
           docker container prune -f || true
-          docker image prune -af || true
+          docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
 
@@ -524,10 +524,10 @@ jobs:
       - name: Re-enable Go toolchain auto-download
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
-      - name: Prune rootless docker cache
+      - name: Reclaim docker build cache
         run: |
           docker container prune -f || true
-          docker image prune -af || true
+          docker image prune -f || true
           docker buildx prune -af --filter "until=24h" || true
           docker system df || true
 

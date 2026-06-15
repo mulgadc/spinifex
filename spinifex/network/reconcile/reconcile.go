@@ -34,6 +34,32 @@ type GatewayClaimVerifier interface {
 	GatewayPortClaimed(ctx context.Context, crPortName string) (bool, error)
 	// NudgeRecompute asks the local ovn-controller to re-evaluate logical flows.
 	NudgeRecompute(ctx context.Context) error
+	// GatewayReachable reports whether the external datapath actually forwards to
+	// gwIP (the gateway LRP IP). A claimed SB binding does not prove flows are
+	// installed: post-reboot ovn-controller can claim the chassisredirect port yet
+	// leave stale gateway/localnet flows, so every control-plane signal is green
+	// while EIPs stay unreachable. Used as a fallback for VPCs with no EIP; the LRP
+	// IP OVN answers natively, so it cannot detect a stranded EIP NAT pipeline.
+	GatewayReachable(ctx context.Context, gwIP string) (bool, error)
+	// EIPReachable reports whether the NAT external-IP datapath for eip is live, by
+	// forcing a fresh ARP resolution of the EIP. OVN answers ARP for a dnat_and_snat
+	// external IP from the gateway chassis independent of the guest behind it, so a
+	// resolved MAC proves the WAN uplink forwards and the EIP NAT flows are installed
+	// — the signal the gateway LRP IP cannot give. Preferred over GatewayReachable.
+	EIPReachable(ctx context.Context, eip string) (bool, error)
+	// RepairDatapath re-asserts the host external uplink, then forces a recompute.
+	// The post-reboot boot race that strands the datapath has two shapes: the veth
+	// gluing br-ext to the WAN bridge comes up admin-down (a recompute cannot revive
+	// a dead link), or its OVS ofport renumbered and the gateway flows went stale (a
+	// recompute fixes that). Bringing the veth up (a no-op in physical mode where the
+	// device is absent) then recomputing covers both, idempotently.
+	RepairDatapath(ctx context.Context) error
+	// GuestPortUp reports whether the SB Port_Binding for a guest ENI LSP is up
+	// (bound to a chassis with flows installed). A guest port that is not up means
+	// the gatewayLRP->guest flow is not installed, so the ingress EIP datapath
+	// blackholes after DNAT and the public IP is dark against an otherwise-running
+	// instance — the post-reboot state until an ovn-controller recompute binds it.
+	GuestPortUp(ctx context.Context, lspName string) (bool, error)
 }
 
 // Config is the construction-time bag for the reconciler. All fields except
@@ -149,13 +175,14 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneOrp
 	r.applyVPCs(ctx, intent, actual)
 	r.applySubnets(ctx, intent, actual)
 	r.applySGs(ctx, intent, actual, pruneOrphans)
-	r.applyPorts(ctx, intent, actual)
+	r.applyPorts(ctx, intent, actual, pruneOrphans)
 	r.applyIGWs(ctx, intent, actual)
 	r.applyEIPs(ctx, intent, actual)
 	r.applyNATGWs(ctx, intent, actual)
 	r.applyIGWRoutes(ctx, intent, actual)
 	r.applyNATGWRoutes(ctx, intent, actual)
 	r.applyDropGates(ctx, intent, actual)
+	r.applyPublicInstanceEgress(ctx, intent, actual)
 
 	slog.Info("reconcile: complete")
 	return nil

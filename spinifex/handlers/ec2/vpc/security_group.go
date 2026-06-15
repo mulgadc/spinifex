@@ -223,7 +223,13 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput
 
 	entry, err := s.sgKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		// AWS-faithful: an absent security group is InvalidGroup.NotFound, not
+		// success. Destroy orchestration tolerates it via awserrors.IsNotFound;
+		// a transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record SecurityGroupRecord

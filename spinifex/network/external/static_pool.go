@@ -140,7 +140,7 @@ func (a *StaticPoolAllocator) Allocate(_ context.Context, req AllocateRequest) (
 }
 
 // Release implements Allocator.
-func (a *StaticPoolAllocator) Release(_ context.Context, poolName string, ip netip.Addr) error {
+func (a *StaticPoolAllocator) Release(_ context.Context, poolName string, ip netip.Addr, ownerENIID string) error {
 	target := ip.String()
 	for attempt := range staticPoolCASRetries {
 		record, revision, err := a.getRecord(poolName)
@@ -150,7 +150,21 @@ func (a *StaticPoolAllocator) Release(_ context.Context, poolName string, ip net
 
 		alloc, ok := record.Allocated[target]
 		if !ok {
+			// An owner-scoped release of an already-freed IP is an idempotent
+			// no-op (a duplicated or stale teardown), not an error.
+			if ownerENIID != "" {
+				return nil
+			}
 			return fmt.Errorf("IP %s not allocated in pool %s", target, poolName)
+		}
+		// Ownership guard: when a caller names an owner, only free the lease if
+		// it still belongs to that ENI. External IPs are recycled and GC/teardown
+		// sweeps re-emit releases, so a release for a prior owner must not free an
+		// IP since reassigned to a live instance (that would double-allocate).
+		if ownerENIID != "" && alloc.ENIId != "" && alloc.ENIId != ownerENIID {
+			slog.Info("external IPAM release skip — IP reassigned to a different ENI (stale release)",
+				"pool", poolName, "ip", target, "stale_owner_eni", ownerENIID, "current_owner_eni", alloc.ENIId)
+			return nil
 		}
 		if alloc.Purpose == purposeIGWLRP {
 			return fmt.Errorf("cannot release gateway IP %s in pool %s", target, poolName)

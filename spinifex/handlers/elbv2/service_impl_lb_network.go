@@ -162,7 +162,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		for _, created := range newENIBySubnet {
 			if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 				NetworkInterfaceId: aws.String(created),
-			}, accountID); delErr != nil {
+			}, accountID); delErr != nil && !awserrors.IsNotFound(delErr) {
 				slog.Error("SetSubnets: rollback failed to delete ENI", "eni", created, "err", delErr)
 			}
 		}
@@ -209,7 +209,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(input *elbv2.SetSubnetsInput, accountID st
 		eniID := current[sn]
 		if _, delErr := s.VPCService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
 			NetworkInterfaceId: aws.String(eniID),
-		}, accountID); delErr != nil {
+		}, accountID); delErr != nil && !awserrors.IsNotFound(delErr) {
 			slog.Error("SetSubnets: failed to delete removed ENI", "subnet", sn, "eni", eniID, "err", delErr)
 		}
 	}

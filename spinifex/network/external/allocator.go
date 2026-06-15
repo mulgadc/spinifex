@@ -21,5 +21,11 @@ type AllocateRequest struct {
 // DHCPPoolAllocator (RFC 2131 DORA via vpcd, Q4).
 type Allocator interface {
 	Allocate(ctx context.Context, req AllocateRequest) (netip.Addr, error)
-	Release(ctx context.Context, poolName string, ip netip.Addr) error
+	// Release frees ip back to poolName. ownerENIID, when non-empty, scopes the
+	// release to the ENI that currently owns the lease: external IPs are recycled
+	// and teardown sweeps re-emit releases, so a release naming an owner that no
+	// longer matches the live allocation is a no-op (prevents double-freeing an
+	// IP already reassigned to another instance). Empty ownerENIID releases
+	// unconditionally.
+	Release(ctx context.Context, poolName string, ip netip.Addr, ownerENIID string) error
 }

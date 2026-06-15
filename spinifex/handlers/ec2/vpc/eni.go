@@ -62,6 +62,16 @@ type ENIRecord struct {
 	DetachForce bool `json:"detach_force,omitempty"`
 }
 
+// eniIsLiveAttachment reports whether the ENI record is a live attachment to
+// an instance — the rule #3 live reference that pins its subnet undeletable
+// and blocks a plain ENI delete. Checks every structured attachment field so a
+// single-field drift (e.g. Status cleared but AttachmentId retained) still
+// counts. A detached/available ENI is not a live ref: it is itself deletable
+// and reaped by the GC backstop, so it never pins its subnet.
+func eniIsLiveAttachment(r *ENIRecord) bool {
+	return r.Status == "in-use" || r.InstanceId != "" || r.AttachmentId != ""
+}
+
 // CreateNetworkInterface creates a new ENI in the specified subnet
 func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
 	if input.SubnetId == nil || *input.SubnetId == "" {
@@ -169,19 +179,43 @@ func (s *VPCServiceImpl) CreateNetworkInterface(input *ec2.CreateNetworkInterfac
 	}, nil
 }
 
-// DeleteNetworkInterface deletes an ENI
+// DeleteNetworkInterface deletes an ENI. An in-use ENI is rejected; instance
+// teardown of its own ENI uses ForceDeleteInstanceENI instead.
 func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	return s.deleteNetworkInterface(*input.NetworkInterfaceId, accountID, false)
+}
 
-	eniId := *input.NetworkInterfaceId
+// ForceDeleteInstanceENI deletes an instance's own ENI, bypassing the in-use
+// guard. The guard protects against deleting an ENI a *different* live instance
+// holds; an instance tearing down its own ENI is always permitted (ADR-0003 §2),
+// which breaks the un-terminable-ENI deadlock. Absent is success (idempotent).
+func (s *VPCServiceImpl) ForceDeleteInstanceENI(accountID, eniId string) error {
+	if eniId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	_, err := s.deleteNetworkInterface(eniId, accountID, true)
+	return err
+}
+
+func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force bool) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	key := utils.AccountKey(accountID, eniId)
 
 	// Get the ENI record
 	entry, err := s.eniKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			// Internal teardown (force) tolerates an already-gone ENI so
+			// instance terminate converges (ADR-0003 §2); the public API is
+			// AWS-faithful and returns NotFound.
+			if force {
+				return &ec2.DeleteNetworkInterfaceOutput{}, nil
+			}
+			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record ENIRecord
@@ -189,8 +223,10 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an in-use ENI
-	if record.Status == "in-use" {
+	// Cannot delete an ENI that is a live attachment unless the owning
+	// instance forces teardown. An ENI whose instance is gone is detached by
+	// terminate (0003 §2) and falls through as deletable.
+	if !force && eniIsLiveAttachment(&record) {
 		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
@@ -210,7 +246,7 @@ func (s *VPCServiceImpl) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 		} else {
 			portName := topology.Port(eniId)
 			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
-			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress); err != nil {
+			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
 				slog.Warn("Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
 			} else {
 				slog.Info("Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)

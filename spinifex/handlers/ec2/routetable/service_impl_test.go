@@ -78,6 +78,41 @@ func TestCreateRouteTable(t *testing.T) {
 	assert.Equal(t, "active", *rtb.Routes[0].State)
 }
 
+// TestCreateRouteTable_PersistsTagsForTagFilterDiscovery locks mulga-siv-303:
+// CreateRouteTable must persist TagSpecifications so the tag-driven CP-VPC
+// teardown can find the private route table, clear its NAT-GW route, and let
+// the NAT gateway (and its billable EIP) be reclaimed.
+func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{
+		VpcId: aws.String("vpc-test1"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeRouteTable),
+			Tags: []*ec2.Tag{
+				{Key: aws.String("spinifex:eks-cluster"), Value: aws.String("alpha")},
+				{Key: aws.String("spinifex:eks-role"), Value: aws.String("cp-private-rt")},
+			},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("tag:spinifex:eks-cluster"), Values: aws.StringSlice([]string{"alpha"})},
+			{Name: aws.String("tag:spinifex:eks-role"), Values: aws.StringSlice([]string{"cp-private-rt"})},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.RouteTables, 1, "tagged route table must be discoverable by tag filter (mulga-siv-303)")
+
+	tags := map[string]string{}
+	for _, tg := range out.RouteTables[0].Tags {
+		tags[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	assert.Equal(t, "alpha", tags["spinifex:eks-cluster"])
+	assert.Equal(t, "cp-private-rt", tags["spinifex:eks-role"])
+}
+
 func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	svc := setupTestService(t)
 	_, err := svc.CreateRouteTable(&ec2.CreateRouteTableInput{

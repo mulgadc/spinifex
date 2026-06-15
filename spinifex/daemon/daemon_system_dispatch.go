@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -113,6 +116,42 @@ func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *handlers_elbv2
 	return env.Output, nil
 }
 
+// systemTerminateRemoteTimeout caps a routed system.TerminateInstance round
+// trip. Sized for qemu stop + volume teardown + ENI cascade on a remote host.
+const systemTerminateRemoteTimeout = 90 * time.Second
+
+// terminateSystemInstanceRemote routes a terminate to the owning daemon over
+// system.TerminateInstance.{id} (only the owner subscribes). A no-responder
+// reply means no node owns the VM, so it is genuinely gone — reported as
+// ErrSystemInstanceNotFound, which callers treat as idempotent success.
+func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
+	if d.natsConn == nil {
+		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+	}
+	subject := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
+	reply, err := d.natsConn.Request(subject, nil, systemTerminateRemoteTimeout)
+	if err != nil {
+		if errors.Is(err, nats.ErrNoResponders) {
+			slog.Debug("terminateSystemInstanceRemote: no owner subscribed; VM already gone",
+				"instanceId", instanceID)
+			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		}
+		return fmt.Errorf("route terminate %s: %w", instanceID, err)
+	}
+	var env systemInstanceTerminateEnvelope
+	if err := json.Unmarshal(reply.Data, &env); err != nil {
+		return fmt.Errorf("decode routed terminate reply %s: %w", instanceID, err)
+	}
+	if env.Error != "" {
+		if strings.Contains(env.Error, sysinstance.ErrSystemInstanceNotFound.Error()) {
+			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		}
+		return fmt.Errorf("routed terminate %s: %s", instanceID, env.Error)
+	}
+	slog.Info("terminateSystemInstanceRemote: owner terminated VM", "instanceId", instanceID)
+	return nil
+}
+
 // subscribeSystemTerminate registers an owning-node subscription for
 // system.TerminateInstance.{instanceID}. Idempotent — calling for an
 // already-bound subscription is a no-op.
@@ -170,7 +209,10 @@ func (d *Daemon) serveSystemTerminateInstance(msg *nats.Msg) {
 		return
 	}
 
-	if err := d.TerminateSystemInstance(parts); err != nil {
+	// The local body, not the routing wrapper: only the owning node subscribes,
+	// so the VM is local here. Routing from the handler could loop back to this
+	// same subscription if the VM raced to gone.
+	if err := d.terminateSystemInstanceLocal(parts); err != nil {
 		slog.Error("system.TerminateInstance: failed",
 			"instanceId", parts, "err", err)
 		respondWithSystemTerminateError(msg, err.Error())

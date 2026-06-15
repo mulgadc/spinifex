@@ -61,6 +61,17 @@ func (m *JetStreamManager) SetSyncObserver(obs KVSyncObserver) {
 	m.obs = obs
 }
 
+// KVHealthy reports whether JetStream is reachable and quorate via a cheap
+// AccountInfo round-trip. The GC backstop gates every sweep on this so it never
+// reaps against a desired-state it cannot trust (ADR-0003 §3).
+func (m *JetStreamManager) KVHealthy() bool {
+	if m.js == nil {
+		return false
+	}
+	_, err := m.js.AccountInfo()
+	return err == nil
+}
+
 // NewJetStreamManager creates a new JetStreamManager from a NATS connection.
 // replicas specifies the number of replicas for the KV bucket (typically matches cluster node count).
 func NewJetStreamManager(nc *nats.Conn, replicas int) (*JetStreamManager, error) {

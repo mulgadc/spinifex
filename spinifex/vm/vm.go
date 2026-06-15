@@ -129,6 +129,11 @@ type VM struct {
 	// BootMode captures the AMI's boot mode at launch so firmware choice survives
 	// restarts. Empty for legacy VMs; treated as "bios" by the launch path.
 	BootMode string `json:"boot_mode,omitempty"`
+
+	// Teardown records per-dependent terminate progress (dependent → done|
+	// pending|failed). Stamped by terminateCleanup; the GC backstop retries
+	// pending/failed and purges the record once all dependents are done.
+	Teardown map[string]string `json:"teardown,omitempty"`
 }
 
 // ResetNodeLocalState zeroes node-specific fields after deserializing a VM

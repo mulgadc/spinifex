@@ -58,7 +58,7 @@ func TestStaticPool_GatewayReserved(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, purposeIGWLRP, alloc.Purpose)
 
-	err = a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.150"))
+	err = a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.150"), "")
 	assert.ErrorContains(t, err, "cannot release gateway IP")
 }
 
@@ -76,7 +76,7 @@ func TestStaticPool_NoInstantReuseAfterRelease(t *testing.T) {
 	require.NoError(t, err)
 
 	// Release the first IP; the very next allocation must NOT reuse it.
-	require.NoError(t, a.Release(ctx, "wan", ip1))
+	require.NoError(t, a.Release(ctx, "wan", ip1, "eni-1"))
 	ip3, err := a.Allocate(ctx, AllocateRequest{PoolName: "wan", Purpose: "eni-public", ENIID: "eni-3"})
 	require.NoError(t, err)
 	assert.NotEqual(t, ip1, ip3, "released IP must not be reused immediately")
@@ -141,8 +141,37 @@ func TestStaticPool_CASConflict(t *testing.T) {
 
 func TestStaticPool_ReleaseUnknown(t *testing.T) {
 	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
-	err := a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.200"))
+	err := a.Release(context.Background(), "wan", mustAddr(t, "192.168.1.200"), "")
 	assert.ErrorContains(t, err, "not allocated")
+}
+
+// TestStaticPool_Release_OwnershipScoped pins the recycle guard: an owner-scoped
+// release whose ENI no longer matches the live allocation is a no-op (the IP was
+// reassigned), while a release naming the current owner frees it.
+func TestStaticPool_Release_OwnershipScoped(t *testing.T) {
+	a := newStaticAllocator(t, []ExternalPoolConfig{wanPool()})
+	ctx := context.Background()
+
+	ip, err := a.Allocate(ctx, AllocateRequest{PoolName: "wan", Purpose: "eni-public", ENIID: "eni-live"})
+	require.NoError(t, err)
+
+	// Stale teardown of a prior owner must not free the live lease.
+	require.NoError(t, a.Release(ctx, "wan", ip, "eni-stale"))
+	rec, err := a.GetPoolRecord("wan")
+	require.NoError(t, err)
+	alloc, ok := rec.Allocated[ip.String()]
+	require.True(t, ok, "foreign-ENI release must not free the live lease")
+	assert.Equal(t, "eni-live", alloc.ENIId)
+
+	// The current owner releases it.
+	require.NoError(t, a.Release(ctx, "wan", ip, "eni-live"))
+	rec, err = a.GetPoolRecord("wan")
+	require.NoError(t, err)
+	_, ok = rec.Allocated[ip.String()]
+	assert.False(t, ok, "owner-scoped release must free the lease")
+
+	// Idempotent: a duplicate owner-scoped release of an already-freed IP no-ops.
+	require.NoError(t, a.Release(ctx, "wan", ip, "eni-live"))
 }
 
 // TestNextAvailableIP_SkipsGwLrpRange verifies the static allocator honors

@@ -359,6 +359,14 @@ func (c *LiveClient) GetLogicalSwitchPort(ctx context.Context, name string) (*nb
 	return &ports[0], nil
 }
 
+func (c *LiveClient) ListLogicalSwitchPorts(ctx context.Context) ([]nbdb.LogicalSwitchPort, error) {
+	var ports []nbdb.LogicalSwitchPort
+	if err := c.client.List(ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list logical switch ports: %w", err)
+	}
+	return ports, nil
+}
+
 func (c *LiveClient) UpdateLogicalSwitchPort(ctx context.Context, lsp *nbdb.LogicalSwitchPort) error {
 	if lsp.UUID == "" {
 		existing, err := c.GetLogicalSwitchPort(ctx, lsp.Name)

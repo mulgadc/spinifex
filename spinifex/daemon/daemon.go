@@ -1395,6 +1395,23 @@ func (d *Daemon) startCluster() error {
 	d.startHeartbeat()
 	d.vmMgr.StartPendingWatchdog(d.ctx)
 
+	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
+	// a node-down mid-cascade and purge completed terminated records. The volume
+	// data-safety reaper (ADR-0005 §3) rides the same backstop but only marks +
+	// alarms — it never deletes volume data.
+	if d.jsManager != nil {
+		reapers := []vm.Reaper{d.vmMgr.NewTerminatedTeardownReaper()}
+		if d.volumeService != nil {
+			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+		}
+		if d.eksService != nil {
+			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
+			reapers = append(reapers, d.eksService.NewDeletingReaper())
+		}
+		gc := vm.NewGarbageCollector(d.jsManager.KVHealthy, reapers...)
+		gc.Start(d.ctx)
+	}
+
 	d.ready.Store(true)
 	slog.Info("Daemon fully initialized", "node", d.node, "startupTime", time.Since(d.startTime).Round(time.Second))
 
@@ -1403,6 +1420,42 @@ func (d *Daemon) startCluster() error {
 	d.awaitShutdown()
 
 	return nil
+}
+
+// leakedVolumeInstances returns the set of instance IDs this node owns whose
+// teardown leaked a volume — terminated here with a failed volumes-teardown.
+// The volume data-safety reaper marks (never deletes) volumes still attached to
+// these definitively-gone instances. Keying on this node's terminated set keeps
+// the shared-store scan from false-marking another node's live-instance volume.
+func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
+	terminated, err := d.jsManager.ListTerminatedInstances()
+	if err != nil {
+		return nil, err
+	}
+	leaked := make(map[string]bool)
+	for _, v := range terminated {
+		if v.LastNode == d.node && v.Teardown[vm.TeardownVolumes] == string(vm.TeardownFailed) {
+			leaked[v.ID] = true
+		}
+	}
+	return leaked, nil
+}
+
+// nodeRunningVMs returns this node's running VMs for the EKS billable reaper to
+// scan. A nil stateStore (early init / test) yields an empty set.
+func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
+	if d.stateStore == nil {
+		return nil, nil
+	}
+	running, err := d.stateStore.LoadRunningState(d.node)
+	if err != nil {
+		return nil, err
+	}
+	vms := make([]*vm.VM, 0, len(running))
+	for _, v := range running {
+		vms = append(vms, v)
+	}
+	return vms, nil
 }
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests

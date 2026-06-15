@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,10 @@ func (a *stateStoreAdapter) WriteTerminatedInstance(id string, v *vm.VM) error {
 
 func (a *stateStoreAdapter) ListTerminatedInstances() ([]*vm.VM, error) {
 	return a.js.ListTerminatedInstances()
+}
+
+func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
+	return a.js.DeleteTerminatedInstance(id)
 }
 
 // volumeMounterAdapter satisfies vm.VolumeMounter by routing ebs.mount /
@@ -369,13 +374,15 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		}
 		d.natsSubscriptions[consoleSubKey] = consoleSub
 
-		// Re-arm the per-instance terminate subscription for system-managed VMs
-		// (ELBv2 load balancers). The launch handler binds it at first launch,
-		// but it is lost across a daemon restart; OnInstanceUp fires on both the
-		// relaunch and the reconnect-to-surviving-QEMU recovery paths, so without
-		// this system.TerminateInstance.{id} has no responder and the VM can
-		// never be torn down (SetSubnets relaunch, DeleteLoadBalancer).
-		if instance.ManagedBy == tags.ManagedByELBv2 {
+		// Bind the per-instance terminate subscription for any system-managed VM
+		// (ELBv2 load balancers, EKS K3s control-plane VMs). OnInstanceUp is the
+		// one funnel every launch path crosses — local placement on the
+		// coordinator node, the remote-launch handler, and the
+		// reconnect-to-surviving-QEMU recovery after a daemon restart. Without it
+		// system.TerminateInstance.{id} has no responder, so a cluster-wide
+		// teardown invoked on another node cannot stop this VM and deletes its
+		// still-attached ENI (InvalidNetworkInterface.InUse).
+		if tags.IsSystemManaged(instance.ManagedBy) {
 			if subErr := d.subscribeSystemTerminateLocked(instance.ID); subErr != nil {
 				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",
 					"instanceId", instance.ID, "err", subErr)
@@ -523,10 +530,11 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 // DeleteVolumes deletes EFI / cloud-init internal volumes via ebs.delete
 // and user volumes flagged DeleteOnTermination via the volume service.
 // Errors are logged per volume; partial failure is tolerated.
-func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
+func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
+	var firstErr error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
 		// Internal volumes (EFI, cloud-init) always go through ebs.delete to
 		// stop their viperblockd processes. S3 data is cleaned up via the
@@ -537,12 +545,14 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
 			if err != nil {
 				slog.Error("Failed to marshal ebs.delete request for internal volume",
 					"name", ebsRequest.Name, "err", err)
+				firstErr = cmp.Or(firstErr, err)
 				continue
 			}
 			deleteMsg, err := a.d.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
+				firstErr = cmp.Or(firstErr, err)
 			} else {
 				slog.Info("Sent ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "data", string(deleteMsg.Data))
@@ -566,14 +576,16 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) {
 		}
 		if _, err := a.d.volumeService.DeleteVolume(&ec2.DeleteVolumeInput{
 			VolumeId: &ebsRequest.Name,
-		}, instance.AccountID); err != nil {
+		}, instance.AccountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
+			firstErr = cmp.Or(firstErr, err)
 		} else {
 			slog.Info("Deleted volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID)
 		}
 	}
+	return firstErr
 }
 
 // CleanupMgmtNetwork tears down the management TAP device (derived from
@@ -593,9 +605,9 @@ func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
 // ReleasePublicIP publishes vpc.delete-nat for the OVN dnat_and_snat rule
 // and releases the public IP back to the external IPAM pool. No-op when
 // the instance has no public IP.
-func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) {
+func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 	if instance.PublicIP == "" || instance.PublicIPPool == "" || a.d.externalIPAM == nil {
-		return
+		return nil
 	}
 
 	portName := topology.Port(instance.ENIId)
@@ -611,48 +623,47 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) {
 	}
 	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
 
-	if err := a.d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP); err != nil {
+	if err := a.d.externalIPAM.ReleaseIP(instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		slog.Warn("Failed to release public IP on termination",
 			"ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
-	} else {
-		slog.Info("Released public IP on termination",
-			"ip", instance.PublicIP, "instanceId", instance.ID)
+		return err
 	}
+	slog.Info("Released public IP on termination",
+		"ip", instance.PublicIP, "instanceId", instance.ID)
+	return nil
 }
 
 // DetachAndDeleteENI detaches the auto-created ENI from the instance and
 // deletes it via the VPC service. NotFound is tolerated. Extra ENIs are
 // cleaned up by the load-balancer service via its own teardown loop and
 // are not touched here.
-func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) {
+func (a *instanceCleanerAdapter) DetachAndDeleteENI(instance *vm.VM) error {
 	if instance.ENIId == "" || a.d.vpcService == nil {
-		return
+		return nil
 	}
+	// Best-effort detach; a failure here must not block deletion — the force
+	// delete below bypasses the in-use guard for the owning instance, breaking
+	// the un-terminable-ENI deadlock (ADR-0003 §2).
 	if detachErr := a.d.vpcService.DetachENI(instance.AccountID, instance.ENIId); detachErr != nil {
 		slog.Warn("Failed to detach ENI on termination",
 			"eni", instance.ENIId, "instanceId", instance.ID, "err", detachErr)
 	}
-	if _, eniErr := a.d.vpcService.DeleteNetworkInterface(&ec2.DeleteNetworkInterfaceInput{
-		NetworkInterfaceId: &instance.ENIId,
-	}, instance.AccountID); eniErr != nil {
-		if awserrors.IsErrorCode(eniErr, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) {
-			slog.Debug("ENI already cleaned up on termination", "eni", instance.ENIId)
-		} else {
-			slog.Error("Failed to delete ENI on termination",
-				"eni", instance.ENIId, "instanceId", instance.ID, "err", eniErr)
-		}
-	} else {
-		slog.Info("Deleted ENI on termination",
-			"eni", instance.ENIId, "instanceId", instance.ID)
+	if err := a.d.vpcService.ForceDeleteInstanceENI(instance.AccountID, instance.ENIId); err != nil {
+		slog.Error("Failed to delete ENI on termination",
+			"eni", instance.ENIId, "instanceId", instance.ID, "err", err)
+		return err
 	}
+	slog.Info("Deleted ENI on termination",
+		"eni", instance.ENIId, "instanceId", instance.ID)
+	return nil
 }
 
 // RemoveFromPlacementGroup unbinds the instance from its placement group
 // if one is set. No-op for ungrouped instances and when the placement
 // group service is not configured.
-func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) {
+func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error {
 	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
-		return
+		return nil
 	}
 	if _, err := a.d.placementGroupService.RemoveInstance(&handlers_ec2_placementgroup.RemoveInstanceInput{
 		GroupName:  instance.PlacementGroupName,
@@ -661,20 +672,23 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) {
 	}, instance.AccountID); err != nil {
 		slog.Error("Failed to remove instance from placement group",
 			"instanceId", instance.ID, "groupName", instance.PlacementGroupName, "err", err)
+		return err
 	}
+	return nil
 }
 
 // ReleaseGPU unbinds the instance's GPU from vfio-pci and rebinds to its
 // original host driver. No-op for instances without a GPU allocation or
 // when GPU passthrough is disabled.
-func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) {
+func (a *instanceCleanerAdapter) ReleaseGPU(instance *vm.VM) error {
 	if a.d.gpuManager == nil || len(instance.GPUAttachments) == 0 {
-		return
+		return nil
 	}
 	if err := a.d.gpuManager.Release(instance.ID); err != nil {
 		slog.Error("Failed to release GPU on stop, device may need manual rebind",
 			"gpus", instance.GPUAttachments, "instanceId", instance.ID, "err", err)
-		return
+		return err
 	}
 	slog.Info("GPU released", "gpus", instance.GPUAttachments, "instanceId", instance.ID)
+	return nil
 }

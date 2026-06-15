@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -128,6 +129,67 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 	return &deleteClusterFixture{svc: f.svc, kv: kv, nlb: f.nlb, inst: f.inst, vpc: f.vpc, eip: f.eip}
 }
 
+// TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes locks the mulga-siv-303
+// teardown order: route tables must be torn down before the NAT gateway, because
+// the NAT GW delete is guarded against live route forwards (rule #3). Deleting it
+// while the private route table still routes to it fails with DependencyViolation
+// and strands the billable NAT-GW EIP.
+func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	f.ngw.routeGuard = f.rt
+	f.ngw.gws = []*fakeCPNatGateway{{
+		id:    "nat-cp",
+		tags:  map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPNatGW},
+		state: "available",
+		addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-cp")}},
+	}}
+	f.rt.tables = []*fakeCPRouteTable{{
+		id:   "rtb-cp",
+		vpc:  "vpc-cp",
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRolePrivateRT},
+	}}
+
+	require.NoError(t, DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha"))
+
+	require.Len(t, f.ngw.gws, 1)
+	assert.Equal(t, "deleted", f.ngw.gws[0].state, "NAT GW must delete after routes are cleared (rule #3 guard not tripped)")
+	require.Len(t, f.eip.releaseCalls, 1, "the NAT-GW EIP must be released, not stranded (mulga-siv-303)")
+	assert.Equal(t, "eipalloc-cp", aws.StringValue(f.eip.releaseCalls[0].AllocationId))
+}
+
+// TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC enforces the destroy-side half
+// of the Common Resource Lifecycle Contract rule #1 (AWS-faithful delete): the
+// EC2 DeleteVpc API now returns InvalidVpcID.NotFound for an absent VPC, so the
+// teardown orchestrator must converge by tolerating that NotFound (a concurrent
+// GC or a retried delete-cluster already removed it) — while a real failure
+// still surfaces so the backstop retries.
+func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
+	cpVPC := []*fakeCPVPC{{
+		id:   "vpc-cp",
+		cidr: "10.0.0.0/16",
+		tags: map[string]string{clusterEKSClusterTagKey: "alpha", clusterEKSRoleTagKey: clusterEKSRoleCPVPC},
+	}}
+
+	t.Run("absent VPC (NotFound) converges to success", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+
+		require.NoErrorf(t, DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha"),
+			"RLC rule #1: teardown must tolerate DeleteVpc NotFound (resource already gone), not abort")
+	})
+
+	t.Run("a real DeleteVpc failure still surfaces", func(t *testing.T) {
+		f := newEKSServiceFixture(t)
+		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorDependencyViolation)
+
+		err := DeleteClusterCPVPC(f.svc.cpVPCDeps(), testAccountID, "alpha")
+		require.Error(t, err, "a non-NotFound DeleteVpc failure must surface so the teardown backstop retries")
+		assert.Contains(t, err.Error(), awserrors.ErrorDependencyViolation)
+	})
+}
+
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 
@@ -202,4 +264,43 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
 	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
+}
+
+// TestDeleteClusterSingleFlightLoserSkipsTeardown locks mulga-siv-295.12: when a
+// concurrent handler already holds the per-cluster teardown lease (an SDK retry
+// fanned to another worker), DeleteCluster must return the cluster as DELETING
+// without running purgeClusterInfra — no duplicate ENI/NLB/EIP teardown — and
+// must leave the meta for the lease holder to sweep.
+func TestDeleteClusterSingleFlightLoserSkipsTeardown(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	// Stand in for the winning handler: hold the teardown lease.
+	_, err := f.svc.leaderKV.Create(teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
+	require.NoError(t, err)
+
+	out, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster)
+	assert.Equal(t, string(ClusterStatusDeleting), aws.StringValue(out.Cluster.Status),
+		"the loser must report the cluster as DELETING (AWS-async delete semantics)")
+
+	assert.Empty(t, f.inst.terminateCalls, "the loser must not terminate the CP VM — the lease holder owns the teardown")
+	assert.Empty(t, f.eip.releaseCalls, "the loser must not release the billable EIP")
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "the loser must leave the meta for the lease holder to sweep")
+	assert.Equal(t, ClusterStatusCreating, meta.Status, "the loser must not mutate KV state; the winner owns the DELETING transition")
+}
+
+// TestDeleteClusterWinnerReleasesTeardownLease: a successful synchronous delete
+// must release the teardown lease so a later delete or the backstop reaper can
+// re-acquire it (a leaked lease would wedge every future teardown until TTL).
+func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	_, getErr := f.svc.leaderKV.Get(teardownLeaderKey(testAccountID, "alpha"))
+	assert.ErrorIs(t, getErr, nats.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
 }

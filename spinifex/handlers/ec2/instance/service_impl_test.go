@@ -976,6 +976,7 @@ func (f *fakeStoppedStore) DeleteStoppedInstance(id string) error {
 	f.deletedStopped = append(f.deletedStopped, id)
 	return nil
 }
+func (f *fakeStoppedStore) DeleteTerminatedInstance(string) error { return nil }
 
 func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
 	svc := &InstanceServiceImpl{}
@@ -1797,14 +1798,16 @@ func (f *fakeENIDeleter) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 }
 
 type fakePublicIPReleaser struct {
-	pool string
-	ip   string
-	err  error
+	pool     string
+	ip       string
+	ownerENI string
+	err      error
 }
 
-func (f *fakePublicIPReleaser) ReleaseIP(pool, ip string) error {
+func (f *fakePublicIPReleaser) ReleaseIP(pool, ip, ownerENIID string) error {
 	f.pool = pool
 	f.ip = ip
+	f.ownerENI = ownerENIID
 	return f.err
 }
 

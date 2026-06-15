@@ -70,10 +70,10 @@ func TestAttachIGW_Distributed_LinkLocalLRP(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	// External switch + ports created.
-	_, err := m.GetLogicalSwitch(ctx, topology.ExternalSwitch("vpc-1"))
+	// Shared external switch + localnet created.
+	_, err := m.GetLogicalSwitch(ctx, topology.ExternalSwitchShared())
 	require.NoError(t, err)
-	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPort("vpc-1"))
+	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPortShared())
 	require.NoError(t, err)
 	assert.Equal(t, "external", localnet.Options["network_name"])
 	_, hasNat := localnet.Options["nat-addresses"]
@@ -125,7 +125,7 @@ func TestAttachIGW_Centralized_AllocatesGwLrpIP(t *testing.T) {
 
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPort("vpc-1"))
+	localnet, err := m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPortShared())
 	require.NoError(t, err)
 	assert.Equal(t, "router", localnet.Options["nat-addresses"], "centralized mode must set nat-addresses=router")
 
@@ -180,7 +180,7 @@ func TestAttachIGW_NoPoolNoChassis_UsesLinkLocalFallbacks(t *testing.T) {
 	assert.Equal(t, 0, m.SetGatewayChassisCalls)
 }
 
-func TestDetachIGW_RemovesEverything(t *testing.T) {
+func TestDetachIGW_RemovesVPCAttachmentPreservesSharedSwitch(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
@@ -190,13 +190,20 @@ func TestDetachIGW_RemovesEverything(t *testing.T) {
 	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 	require.NoError(t, mgr.DetachIGW(ctx, "vpc-1"))
 
-	_, err := m.GetLogicalSwitch(ctx, topology.ExternalSwitch("vpc-1"))
+	// Per-VPC attachment (gateway switch port + LRP + default route) is gone.
+	_, err := m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
 	assert.Error(t, err)
 	_, err = m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
 	assert.Error(t, err)
 	route, err := m.FindStaticRoute(ctx, topology.VPCRouter("vpc-1"), "0.0.0.0/0")
 	require.NoError(t, err)
 	assert.Nil(t, route)
+
+	// The shared external switch + localnet survive for other VPCs.
+	_, err = m.GetLogicalSwitch(ctx, topology.ExternalSwitchShared())
+	assert.NoError(t, err, "shared external switch must persist after detach")
+	_, err = m.GetLogicalSwitchPort(ctx, topology.ExternalLocalnetPortShared())
+	assert.NoError(t, err, "shared localnet must persist after detach")
 }
 
 func TestDetachIGW_IdempotentOnAbsent(t *testing.T) {
@@ -205,8 +212,8 @@ func TestDetachIGW_IdempotentOnAbsent(t *testing.T) {
 	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
 	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, nil, LinkLocalAllocator{}, nil)
 
-	err := mgr.DetachIGW(ctx, "vpc-1")
-	require.Error(t, err) // external switch absent
+	// Detaching a VPC that was never attached is a no-op, not an error.
+	require.NoError(t, mgr.DetachIGW(ctx, "vpc-1"))
 }
 
 type failingAllocator struct{}
@@ -257,7 +264,7 @@ func TestAttachIGW_Centralized_AllocatorNexthopOverridesPool(t *testing.T) {
 	assert.Equal(t, "192.168.1.254", *policies[0].Nexthop, "allocator-supplied nexthop must override pool/link-local fallback")
 }
 
-func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {
+func TestAttachIGW_AllocatorFailureLeavesNoGatewayPort(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()
 	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
@@ -266,8 +273,12 @@ func TestAttachIGW_AllocatorFailureUnwindsExtSwitch(t *testing.T) {
 
 	require.Error(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	_, err := m.GetLogicalSwitch(ctx, topology.ExternalSwitch("vpc-1"))
-	assert.Error(t, err, "external switch must be unwound on allocator failure")
+	// Allocation fails before any per-VPC object is created: no gateway LRP and
+	// no gateway switch port. The shared switch is not VPC-owned, so it may exist.
+	_, err := m.GetLogicalRouterPort(ctx, topology.GatewayRouterPort("vpc-1"))
+	assert.Error(t, err, "gateway LRP must not be created when allocation fails")
+	_, err = m.GetLogicalSwitchPort(ctx, topology.GatewaySwitchPort("vpc-1"))
+	assert.Error(t, err, "gateway switch port must not be created when allocation fails")
 }
 
 // TestEnsureNATGatewaySubnetEgress installs an LR policy at NATGW priority
@@ -402,6 +413,44 @@ func TestEnsureSystemInstanceEgress(t *testing.T) {
 	assert.Equal(t, "203.0.113.7", snat.ExternalIP)
 	assert.Equal(t, "10.0.4.10/32", snat.LogicalIP)
 	assert.Nil(t, dnat, "egress-only: no inbound dnat_and_snat may be installed")
+}
+
+// TestEnsureEIPInstanceEgress installs the /32 reroute above the drop gate WITHOUT
+// any snat row: an EIP's dnat_and_snat already SNATs the instance, so a second plain
+// snat would be redundant. The reroute alone lets the EIP's inbound-connection reply
+// bypass the subnet drop gate.
+func TestEnsureEIPInstanceEgress(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedVPCRouter(t, m, "vpc-1", "10.0.0.0/16")
+	pool := &ExternalPoolConfig{Name: "p", Gateway: "192.168.1.1", PrefixLen: 24}
+	mgr, _ := newTestIGWManager(t, m, policy.NATModeDistributed, pool, LinkLocalAllocator{}, []string{"chassis-a"})
+
+	require.NoError(t, mgr.AttachIGW(ctx, IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
+	// Drop gate first (1100), then the EIP reroute above it (1200).
+	require.NoError(t, mgr.EnsureSubnetEgressDrop(ctx, "vpc-1", "subnet-pub", netip.MustParsePrefix("0.0.0.0/0")))
+	require.NoError(t, mgr.EnsureEIPInstanceEgress(ctx, "vpc-1", "subnet-pub", "10.0.4.10"))
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
+	require.NoError(t, err)
+	var reroute, drop *nbdb.LogicalRouterPolicy
+	for i := range policies {
+		switch policies[i].Priority {
+		case policy.SystemInstanceEgressPriority:
+			reroute = &policies[i]
+		case policy.SubnetEgressPriorityDrop:
+			drop = &policies[i]
+		}
+	}
+	require.NotNil(t, reroute, "EIP /32 reroute must be installed")
+	require.NotNil(t, drop, "drop gate must remain — the reroute exempts the EIP, not the subnet")
+	assert.Equal(t, "reroute", reroute.Action)
+	assert.Contains(t, reroute.Match, "ip4.src == 10.0.4.10/32")
+	assert.Greater(t, reroute.Priority, drop.Priority, "EIP reroute must sit above the drop gate")
+
+	for _, n := range m.NATs {
+		assert.NotEqual(t, "snat", n.Type, "EIP egress is reroute-only: dnat_and_snat already SNATs, no plain snat")
+	}
 }
 
 // TestEnsureSystemInstanceEgress_IsIdempotent re-runs install; row counts stay 1.

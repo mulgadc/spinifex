@@ -243,6 +243,16 @@ func (m *Client) GetLogicalSwitchPort(_ context.Context, name string) (*nbdb.Log
 	return &result, nil
 }
 
+func (m *Client) ListLogicalSwitchPorts(_ context.Context) ([]nbdb.LogicalSwitchPort, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	result := make([]nbdb.LogicalSwitchPort, 0, len(m.Ports))
+	for _, lsp := range m.Ports {
+		result = append(result, *lsp)
+	}
+	return result, nil
+}
+
 func (m *Client) UpdateLogicalSwitchPort(_ context.Context, lsp *nbdb.LogicalSwitchPort) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

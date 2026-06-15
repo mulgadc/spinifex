@@ -389,6 +389,9 @@ func loadPorts(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[
 			slog.Warn("reconcile/intent: ENI MAC parse failed", "eni", rec.NetworkInterfaceId, "mac", rec.MacAddress, "err", err)
 			continue
 		}
+		// PublicIP (auto-assigned or ELB) marks the ENI for drop-gate exemption;
+		// zero/invalid when absent. User EIPs come from the EIP bucket instead.
+		publicIP, _ := netip.ParseAddr(rec.PublicIpAddress)
 		out[rec.NetworkInterfaceId] = topology.PortSpec{
 			PortID:    rec.NetworkInterfaceId,
 			SubnetID:  rec.SubnetId,
@@ -396,6 +399,7 @@ func loadPorts(js nats.JetStreamContext, localVPCs map[string]struct{}, out map[
 			PrivateIP: addr,
 			MAC:       mac,
 			SGIDs:     append([]string(nil), rec.SecurityGroupIds...),
+			PublicIP:  publicIP,
 		}
 	}
 	return nil

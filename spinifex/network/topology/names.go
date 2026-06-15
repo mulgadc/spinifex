@@ -32,13 +32,23 @@ func GatewaySwitchPort(vpcID string) string { return "gw-port-" + vpcID }
 // Only this binding carries the gateway-chassis claim; the LRP binding stays chassis-less.
 func GatewayChassisRedirectPort(vpcID string) string { return "cr-" + GatewayRouterPort(vpcID) }
 
-// ExternalSwitch is the OVN logical switch name for the per-VPC external
-// switch bridging the gateway LRP to the localnet.
+// ExternalSwitch is the OVN logical switch name for the legacy per-VPC external
+// switch. Retained only so the reconciler/teardown can identify and remove
+// pre-shared-switch deployments; new attaches use ExternalSwitchShared.
 func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
 
-// ExternalLocalnetPort is the OVN LSP name for the localnet bridging the
-// external switch onto the host uplink.
+// ExternalLocalnetPort is the legacy per-VPC localnet LSP name. Retained for
+// legacy cleanup only; see ExternalLocalnetPortShared.
 func ExternalLocalnetPort(vpcID string) string { return "ext-port-" + vpcID }
+
+// ExternalSwitchShared is the single shared external logical switch. Every VPC
+// gateway router port attaches here so only one untagged localnet exists per
+// physical network — multiple per-VPC localnets on one uplink collide on L2.
+func ExternalSwitchShared() string { return "ext-shared" }
+
+// ExternalLocalnetPortShared is the single localnet LSP on the shared external
+// switch bridging it onto the host uplink.
+func ExternalLocalnetPortShared() string { return "ext-port-shared" }
 
 // IMDSPort is the host-owned localport LSP that claims 169.254.169.254 on the
 // subnet switch. Bound on every chassis; serves IMDS over a single L2 hop.

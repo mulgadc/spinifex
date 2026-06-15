@@ -588,19 +588,37 @@ func phase8Asserts(t *testing.T, fix *fixture) {
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer probeCancel()
 	seen := map[string]bool{}
-	harness.Eventually(t, func() bool {
+	served := false
+	serveDeadline := time.Now().Add(180 * time.Second)
+	for time.Now().Before(serveDeadline) {
 		out, err := fix.ssh.Run(probeCtx, fix.env.WANHost,
 			fmt.Sprintf("curl -s --connect-timeout 2 --max-time 3 'http://%s:%d/' 2>/dev/null", fix.albPublicIP, httpPort))
-		if err != nil {
-			return false
+		if err == nil {
+			if id := instanceIDFromResponse(out); id != "" {
+				seen[id] = true
+			}
 		}
-		id := instanceIDFromResponse(out)
-		if id != "" {
-			seen[id] = true
+		if len(seen) >= 2 {
+			served = true
+			break
 		}
-		return len(seen) >= 2
-	}, 180*time.Second, 1*time.Second,
-		fmt.Sprintf("ALB did not serve from both backends within 180s post-reboot (saw=%v)", seen))
+		time.Sleep(1 * time.Second)
+	}
+	// 8.5 reports targets healthy via the daemon's own view, which can be green
+	// while the north-south EIP datapath is dark. Capture dataplane diagnostics on
+	// a serve failure too — otherwise this path leaves no flow/ARP evidence.
+	if !served {
+		harness.Step(t, "ALB serve FAILED — capturing datapath diagnostics")
+		dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
+		dumpALBProbe(dctx, t, fix)
+		dumpOVNDataplane(dctx, t, fix)
+		dumpOVNClaimState(dctx, t, fix)
+		dumpHeartbeatDiagnostics(dctx, t, fix)
+		dumpAppDiagnostics(t, fix)
+		dcancel()
+		t.Fatalf("ALB did not serve from both backends within 180s post-reboot (saw=%v) "+
+			"— see diag-ovn-flows.txt / diag-alb-probe.txt / diag-heartbeat.txt", seen)
+	}
 
 	runHTTPBurst(t, fix, "ALB post-reboot")
 
@@ -884,6 +902,12 @@ echo "=== ovs-vsctl show ==="
 sudo ovs-vsctl show 2>&1
 echo "=== ovs-vsctl list-ports br-int ==="
 sudo ovs-vsctl list-ports br-int 2>&1
+echo "=== ip -d link show veth-wan-ovs (admin/carrier state) ==="
+ip -d link show veth-wan-ovs 2>&1
+echo "=== ip -d link show veth-wan-br (admin/carrier state) ==="
+ip -d link show veth-wan-br 2>&1
+echo "=== ovs-ofctl show br-ext (ofport numbering) ==="
+sudo ovs-ofctl show br-ext 2>&1
 `
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)
 	harness.DumpFile(t, fix.artifacts, "diag-host-net.txt", out)
@@ -966,21 +990,112 @@ sudo journalctl -u spinifex-awsgw --no-pager --since "3 min ago" 2>/dev/null | g
 func dumpOVNDataplane(ctx context.Context, t *testing.T, fix *fixture) {
 	t.Helper()
 	bundle := fmt.Sprintf(`set +e
+EIP=%[1]s
 echo "=== ovs-vsctl show (bridges + ports) ==="
 sudo ovs-vsctl show 2>&1 | head -120
-echo "=== ovs-ofctl dump-flows br-int (forwarding flows) ==="
-sudo ovs-ofctl dump-flows br-int 2>&1 | head -200
-echo "=== ovn-sbctl chassis + port bindings ==="
-sudo ovn-sbctl --no-leader-only show 2>&1 | head -80
+echo "=== ovs-ofctl show br-int (port->ofport map) ==="
+sudo ovs-ofctl show br-int 2>&1 | grep -aE '\(' | head -50
+echo "=== br-int flows: DNAT/conntrack (ct_/nat/ct) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE 'ct_|nat\(|ct\(' | head -120
+echo "=== br-int flows: EIP + guest subnet 10.210 (forwarding) ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE "nw_dst=$EIP|10\.210\.1\.|192\.168\.0\.21" | head -150
+echo "=== br-int flows: terminal output: actions ==="
+sudo ovs-ofctl dump-flows br-int 2>&1 | grep -aE 'output:|resubmit' | grep -avE 'table=(0|8|9|10|11),' | head -60
+echo "=== ovs-ofctl dump-flows br-ext ==="
+sudo ovs-ofctl dump-flows br-ext 2>&1 | head -120
+echo "=== ovs-appctl fdb/show br-ext (WAN-side MAC learning) ==="
+sudo ovs-appctl fdb/show br-ext 2>&1 | head -40
 echo "=== ovn-sbctl Port_Binding (chassis assignment) ==="
-sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -80
+sudo ovn-sbctl --no-leader-only list Port_Binding 2>&1 | grep -E "logical_port|chassis|mac|type " | head -400
+echo "=== DGP / chassisredirect claim state (untruncated) ==="
+echo "--- every chassisredirect Port_Binding -> resident chassis ---"
+for cr in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding type=chassisredirect 2>/dev/null); do
+  ch=$(sudo ovn-sbctl --no-leader-only --bare --columns=chassis find Port_Binding logical_port="$cr" 2>/dev/null)
+  hg=$(sudo ovn-sbctl --no-leader-only --bare --columns=ha_chassis_group find Port_Binding logical_port="$cr" 2>/dev/null)
+  echo "  CR=[$cr] chassis=[$ch] ha_chassis_group=[$hg]"
+done
+echo "--- every gw-vpc LRP -> its referenced chassis-redirect-port (does the CR row exist?) ---"
+for gp in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding 2>/dev/null | tr ' ' '\n' | grep -aE '^gw-vpc'); do
+  crp=$(sudo ovn-sbctl --no-leader-only --bare --columns=options find Port_Binding logical_port="$gp" 2>/dev/null | tr ',' '\n' | grep -a chassis-redirect-port | cut -d= -f2)
+  exists=$(sudo ovn-sbctl --no-leader-only --bare --columns=_uuid find Port_Binding logical_port="$crp" 2>/dev/null)
+  echo "  GW-LRP=[$gp] redirect-port=[$crp] CR_row_exists=[$exists]"
+done
+echo "--- NB Gateway_Chassis bindings (DGP HA) ---"
+sudo ovn-nbctl --no-leader-only list Gateway_Chassis 2>&1 | grep -aE 'name|chassis_name|priority' | head -60
+echo "--- NB Logical_Router_Port (name + gateway_chassis + networks) ---"
+sudo ovn-nbctl --no-leader-only --columns=name,gateway_chassis,networks list Logical_Router_Port 2>&1 | head -80
 echo "=== ovn-nbctl dnat_and_snat NAT rows ==="
 sudo ovn-nbctl --no-leader-only list NAT 2>&1 | grep -E "external_ip|logical_ip|external_mac|type " | head -60
 echo "=== host neigh (all floating IPs) ==="
 ip neigh show 2>&1 | grep -E "br-wan|br-int" | head -40
-echo "=== host->ALB floating IP %[1]s reachability ==="
-ping -c 2 -W 2 %[1]s 2>&1
-sudo ovs-appctl ofproto/trace br-int "in_port=LOCAL,ip,nw_dst=%[1]s" 2>&1 | tail -20 || echo "(ofproto/trace unavailable)"
+echo "=== REAL ARP to EIP $EIP (flush primed neigh first) ==="
+sudo ip neigh flush $EIP 2>&1 || true
+ping -c 2 -W 2 $EIP 2>&1
+ip neigh show $EIP 2>&1
+GWMAC=$(ip neigh show $EIP | awk '{for(i=1;i<=NF;i++) if($i=="lladdr") print $(i+1)}')
+echo "discovered cr-gw MAC for EIP: [$GWMAC]"
+echo "=== ofproto/trace north-south DNAT (real ingress per br-int patch port, dl_dst=cr-gw) ==="
+if [ -n "$GWMAC" ]; then
+  for p in $(sudo ovs-vsctl list-ports br-int 2>/dev/null | grep -aE 'patch-br-int-to-ext'); do
+    echo "--- in_port=$p ---"
+    sudo ovs-appctl ofproto/trace br-int "in_port=$p,tcp,dl_src=02:00:00:00:00:01,dl_dst=$GWMAC,nw_src=192.168.0.11,nw_dst=$EIP,tp_src=40000,tp_dst=80" 2>&1 \
+      | grep -aE 'bridge|ct_|nat|dnat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -120
+  done
+else
+  echo "(no cr-gw MAC resolved — ARP itself failed)"
+fi
+echo "=== south->north RETURN trace (guest reply -> un-DNAT -> WAN) ==="
+PRIV=$(sudo ovn-nbctl --no-leader-only --bare --columns=logical_ip find NAT external_ip="\"$EIP\"" 2>/dev/null | head -1)
+CLIENT=$({ sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "dst=$EIP" | grep -aoE 'src=[0-9.]+' | head -1 | cut -d= -f2)
+[ -z "$CLIENT" ] && CLIENT=192.168.1.1
+GLSP=""; GMAC=""
+for lp in $(sudo ovn-sbctl --no-leader-only --bare --columns=logical_port find Port_Binding type='""' 2>/dev/null); do
+  m=$(sudo ovn-sbctl --no-leader-only --bare --columns=mac find Port_Binding logical_port="$lp" 2>/dev/null)
+  case "$m" in *"$PRIV"*) GLSP="$lp"; GMAC=$(echo "$m" | awk '{print $1}'); break;; esac
+done
+TAP=$(sudo ovs-vsctl --bare --columns=name find Interface external_ids:iface-id="$GLSP" 2>/dev/null | head -1)
+SUBNET_GW=$(echo "$PRIV" | awk -F. '{print $1"."$2"."$3".1"}')
+LRPMAC=$(sudo ovs-ofctl dump-flows br-int 2>/dev/null | grep -a "arp_tpa=$SUBNET_GW," | grep -aoE 'mod_dl_src:[0-9a-f:]+' | head -1 | cut -d: -f2-)
+echo "PRIV=[$PRIV] CLIENT=[$CLIENT] GLSP=[$GLSP] GMAC=[$GMAC] TAP=[$TAP] LRPMAC=[$LRPMAC]"
+if [ -n "$TAP" ] && [ -n "$GMAC" ] && [ -n "$LRPMAC" ]; then
+  sudo ovs-appctl ofproto/trace br-int "in_port=$TAP,tcp,dl_src=$GMAC,dl_dst=$LRPMAC,nw_src=$PRIV,nw_dst=$CLIENT,tp_src=80,tp_dst=40000,tcp_flags=ack" 2>&1 \
+    | grep -aE 'bridge|ct_|nat|dnat|snat|load|output|resubmit|drop|Final flow|Megaflow|Datapath actions' | head -150
+else
+  echo "(return-trace discovery incomplete — skipping)"
+fi
+echo "=== conntrack DNAT entries (EIP/guest) ==="
+{ sudo ovs-appctl dpctl/dump-conntrack 2>/dev/null || sudo conntrack -L 2>/dev/null; } | grep -aE "$EIP|10\.210\.1\." | head -30 || echo "(none)"
+echo "=== tap capture: does the SYN reach the guest? (tcpdump -i any while curling EIP) ==="
+sudo timeout 6 tcpdump -i any -nn -c 25 "host $EIP or net 10.210.0.0/16" 2>&1 &
+TCPID=$!
+sleep 1
+curl -s --connect-timeout 2 --max-time 4 "http://$EIP/" >/dev/null 2>&1 &
+wait $TCPID 2>/dev/null
+echo "=== (end tap capture) ==="
+echo "=== PERSISTED-STATE DUMP (survives ovn-controller restart) ==="
+echo "--- external next-hop MACs (regenerated each boot) ---"
+for IF in veth-wan-ovs veth-wan-br br-wan br-ext; do
+  M=$(ip link show "$IF" 2>/dev/null | grep -aoE 'link/ether [0-9a-f:]+' | awk '{print $2}')
+  echo "  $IF mac=[$M]"
+done
+echo "--- SB MAC_Binding (logical_port ip mac) ---"
+sudo ovn-sbctl --no-leader-only list MAC_Binding 2>&1 | grep -aE 'ip|mac|logical_port' | head -40 || echo "(none)"
+echo "--- host neigh on external subnet ---"
+ip neigh show 2>/dev/null | grep -aE '192\.168\.' | head -20 || echo "(none)"
+echo "=== live failure marker (confirms drop is active during dump) ==="
+curl -s -o /dev/null -w "eip-probe HTTP=%%{http_code} time=%%{time_total}\n" --connect-timeout 2 --max-time 5 "http://$EIP/" 2>&1
+echo "=== NB-SOURCE OF THE RETURN-PATH DROP (names what installs table-79 drop) ==="
+echo "--- SB lflow stages that DROP the guest reply (match nw_src=$PRIV) ---"
+sudo ovn-sbctl --no-leader-only lflow-list 2>/dev/null | grep -aiE 'drop' | grep -aF "$PRIV" | head -20 || echo "(none — drop is not a northd logical flow; likely ovn-controller port-security)"
+echo "--- SB lflow lines mentioning guest MAC $GMAC (stage + match context) ---"
+sudo ovn-sbctl --no-leader-only lflow-list 2>/dev/null | grep -aiF "$GMAC" | head -20 || echo "(none)"
+echo "--- NB NAT rows: type/external_mac/logical_port/options (centralised=[] vs distributed) ---"
+sudo ovn-nbctl --no-leader-only --columns=external_ip,logical_ip,type,external_mac,logical_port,options list NAT 2>/dev/null | head -60 || echo "(none)"
+echo "--- NB Logical_Router_Policy (drop-gate + per-instance reroute) ---"
+sudo ovn-nbctl --no-leader-only --columns=priority,match,action,nexthop list Logical_Router_Policy 2>/dev/null | head -40 || echo "(none)"
+echo "--- NB LSP addresses + port_security (source if drop is physical port-sec) ---"
+sudo ovn-nbctl --no-leader-only --columns=name,addresses,port_security list Logical_Switch_Port 2>/dev/null | grep -aF -A0 "$PRIV" | head -20 || echo "(none)"
+echo "=== (end NB-source dump) ==="
 `, fix.albPublicIP)
 
 	out, err := fix.ssh.Run(ctx, fix.env.WANHost, bundle)

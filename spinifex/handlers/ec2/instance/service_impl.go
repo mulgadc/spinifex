@@ -1071,6 +1071,13 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(instance *vm.VM, command s
 		}
 	})
 	if !ok {
+		if isTerminate {
+			// Idempotent terminate (rule #1): the instance was reclaimed/torn down
+			// between resolve and lock, so it is already gone.
+			slog.Info("StopOrTerminateInstance: instance already gone, terminate is idempotent",
+				"instanceId", instance.ID)
+			return nil
+		}
 		slog.Warn("StopOrTerminateInstance: instance no longer in running map",
 			"instanceId", instance.ID)
 		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -2629,7 +2636,7 @@ func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(accountID, instanceID
 		}
 	}
 	if s.ipReleaser != nil {
-		if err := s.ipReleaser.ReleaseIP(poolName, publicIP); err != nil {
+		if err := s.ipReleaser.ReleaseIP(poolName, publicIP, eniID); err != nil {
 			slog.Warn("PrepareRunInstances: failed to release public IP during NAT-failure rollback",
 				"publicIp", publicIP, "pool", poolName, "err", err)
 		}
@@ -2667,7 +2674,7 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(instance *vm.VM, instanceI
 	}
 	utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, logicalIP, portName, "")
 
-	if err := s.ipReleaser.ReleaseIP(instance.PublicIPPool, instance.PublicIP); err != nil {
+	if err := s.ipReleaser.ReleaseIP(instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		slog.Warn("TerminateStoppedInstance: failed to release public IP", "ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
 	} else {
 		slog.Info("TerminateStoppedInstance: released public IP", "ip", instance.PublicIP, "instanceId", instanceID)

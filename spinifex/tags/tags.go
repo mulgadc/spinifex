@@ -18,3 +18,11 @@ const (
 	// LBARNKey stores the parent LB ARN on ELBv2-managed ENIs.
 	LBARNKey = "spinifex:lb-arn"
 )
+
+// IsSystemManaged reports whether a ManagedBy value denotes a Spinifex
+// platform-owned system VM (an empty value is a customer instance). System
+// VMs bind a system.TerminateInstance.{id} subject so a cluster-wide teardown
+// invoked on any node can route a terminate to the owning node.
+func IsSystemManaged(managedBy string) bool {
+	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS
+}

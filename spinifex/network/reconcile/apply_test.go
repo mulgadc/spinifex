@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
@@ -195,6 +197,44 @@ func TestReconcile_ApplyOnlyKeepsOrphanPortGroup(t *testing.T) {
 	}
 }
 
+// ReconcileApplyOnly must not prune orphan ENI LSPs on startup (in-flight ports
+// before subscribers converge); full Reconcile must prune them.
+func TestReconcile_ApplyOnlyKeepsOrphanLSP(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	intent := freshIntent(t)
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	orphan := &nbdb.LogicalSwitchPort{
+		Name: topology.Port("eni-orphan"),
+		ExternalIDs: map[string]string{
+			"spinifex:eni_id":    "eni-orphan",
+			"spinifex:subnet_id": "subnet-a",
+			"spinifex:vpc_id":    "vpc-a",
+		},
+	}
+	if err := m.CreateLogicalSwitchPort(ctx, topology.SubnetSwitch("subnet-a"), orphan); err != nil {
+		t.Fatalf("seed orphan LSP: %v", err)
+	}
+
+	if err := rec.ReconcileApplyOnly(ctx, intent); err != nil {
+		t.Fatalf("ReconcileApplyOnly: %v", err)
+	}
+	if _, ok := m.Ports[topology.Port("eni-orphan")]; !ok {
+		t.Errorf("ReconcileApplyOnly pruned orphan LSP; startup race fix regressed")
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if _, ok := m.Ports[topology.Port("eni-orphan")]; ok {
+		t.Errorf("Reconcile failed to prune orphan LSP after ApplyOnly path")
+	}
+}
+
 func TestReconcile_ChassisRebindOnExistingIGW(t *testing.T) {
 	m := mock.New()
 	sg := policy.NewSecurityGroupManager(m)
@@ -347,8 +387,8 @@ func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if _, ok := m.Switches[topology.ExternalSwitch("vpc-a")]; !ok {
-		t.Errorf("external switch not created by reconciler AttachIGW path")
+	if _, ok := m.Switches[topology.ExternalSwitchShared()]; !ok {
+		t.Errorf("shared external switch not created by reconciler AttachIGW path")
 	}
 	gwPort := topology.GatewayRouterPort("vpc-a")
 	if _, ok := m.RouterPorts[gwPort]; !ok {
@@ -389,6 +429,88 @@ func TestReconcile_PortMembershipDriftCorrected(t *testing.T) {
 	storedPort := m.Ports["port-"+port.PortID]
 	if !slices.Contains(pgB.Ports, storedPort.UUID) {
 		t.Errorf("ENI port not joined to new SG port group on drift")
+	}
+}
+
+// TestReconcile_PublicInstanceExemptFromDropGate locks the post-reboot regression: a
+// reconcile that drop-gates an IGW-attached subnet with no 0.0.0.0/0 route must also
+// install the /32 reroute above the gate for every public-IP instance in that subnet,
+// else the gate drops the instance's inbound-connection reply and the ALB/EIP datapath
+// goes dark post-reboot while every control-plane signal stays green. The reboot suite
+// drives this via auto-assigned public IPs (ENI records), not the EIP bucket.
+func TestReconcile_PublicInstanceExemptFromDropGate(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	// Auto-assigned public IP on the ENI (MapPublicIpOnLaunch / ELB), not an EIP.
+	port := intent.Ports["eni-a"]
+	port.PublicIP = netip.MustParseAddr("192.168.0.50")
+	intent.Ports["eni-a"] = port
+	intent.DropGates[subnetEgressKey("subnet-a", netip.MustParsePrefix("0.0.0.0/0"))] = SubnetEgressIntent{
+		VPCID: "vpc-a", SubnetID: "subnet-a", DestCIDR: netip.MustParsePrefix("0.0.0.0/0"),
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-a"))
+	if err != nil {
+		t.Fatalf("ListLogicalRouterPolicies: %v", err)
+	}
+	var reroute, drop *nbdb.LogicalRouterPolicy
+	for i := range policies {
+		switch policies[i].Priority {
+		case policy.SystemInstanceEgressPriority:
+			reroute = &policies[i]
+		case policy.SubnetEgressPriorityDrop:
+			drop = &policies[i]
+		}
+	}
+	if drop == nil {
+		t.Fatalf("drop gate (priority %d) missing: a routeless IGW subnet must be gated", policy.SubnetEgressPriorityDrop)
+	}
+	if reroute == nil {
+		t.Fatalf("public-instance exemption (priority %d) missing: the drop gate kills the reply post-reboot",
+			policy.SystemInstanceEgressPriority)
+	}
+	if !strings.Contains(reroute.Match, "ip4.src == 10.0.1.10/32") {
+		t.Errorf("exemption reroute match = %q, want it to confine to ip4.src == 10.0.1.10/32", reroute.Match)
+	}
+	if reroute.Priority <= drop.Priority {
+		t.Errorf("exemption reroute priority %d must sit above drop gate %d", reroute.Priority, drop.Priority)
+	}
+}
+
+// TestReconcile_PublicInstanceNoExemptionWithoutDropGate bounds the blast radius: a
+// public-IP instance in a subnet with NO drop gate (routed subnet) must not get the
+// /32 reroute — its priority-1000 subnet egress reroute already carries it, and an
+// extra policy would needlessly override routed/NATGW egress.
+func TestReconcile_PublicInstanceNoExemptionWithoutDropGate(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+
+	intent := freshIntent(t)
+	intent.IGWs["vpc-a"] = external.IGWSpec{VPCID: "vpc-a", InternetGatewayID: "igw-a"}
+	port := intent.Ports["eni-a"]
+	port.PublicIP = netip.MustParseAddr("192.168.0.50")
+	intent.Ports["eni-a"] = port
+	// No DropGates entry: the subnet is routed, not gated.
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-a"))
+	if err != nil {
+		t.Fatalf("ListLogicalRouterPolicies: %v", err)
+	}
+	for _, p := range policies {
+		if p.Priority == policy.SystemInstanceEgressPriority {
+			t.Errorf("unexpected priority-%d reroute on an ungated subnet: %q", p.Priority, p.Match)
+		}
 	}
 }
 

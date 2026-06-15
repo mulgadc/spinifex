@@ -133,14 +133,6 @@ func TestDeleteInternetGateway(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
 }
 
-func TestDeleteInternetGateway_NotFound(t *testing.T) {
-	svc, _ := setupTestIGWService(t)
-	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{
-		InternetGatewayId: aws.String("igw-nonexistent"),
-	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
-}
-
 func TestDeleteInternetGateway_MissingID(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	_, err := svc.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{}, testAccountID)

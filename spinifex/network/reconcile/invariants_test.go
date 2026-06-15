@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 )
 
@@ -54,6 +55,50 @@ func TestI1_GuestLSPMustHavePortSecurity(t *testing.T) {
 		want := port.MAC.String() + " " + port.PrivateIP.String()
 		assertPortSecurity(t, m, topology.Port(port.PortID), want)
 	})
+}
+
+// TestRLC5_OrphanLSPPrunedAfterReconcile asserts ADR-0003 §4 "OVN LSP prune":
+// an LSP whose spinifex:eni_id has no matching intent ENI is deleted by one
+// reconcile. Without it, guest LSPs leak across instance terminate and host
+// reinstall — the orphan-LSP capacity-drift root cause.
+func TestRLC5_OrphanLSPPrunedAfterReconcile(t *testing.T) {
+	ctx := context.Background()
+	rec, m := newTestReconciler(t)
+	intent := freshIntent(t)
+
+	// First reconcile builds subnet-a, the sg_a port group, and port-eni-a.
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #1: %v", err)
+	}
+
+	// Seed an orphan ENI LSP joined to the SG port group: prune must clear its
+	// memberships then delete it (composed DeletePort cascade).
+	orphan := &nbdb.LogicalSwitchPort{
+		Name: topology.Port("eni-orphan"),
+		ExternalIDs: map[string]string{
+			"spinifex:eni_id":    "eni-orphan",
+			"spinifex:subnet_id": "subnet-a",
+			"spinifex:vpc_id":    "vpc-a",
+		},
+	}
+	if err := m.CreateLogicalSwitchPortInGroups(ctx, topology.SubnetSwitch("subnet-a"), orphan,
+		[]string{topology.SecurityGroupPortGroup("sg-a")}); err != nil {
+		t.Fatalf("seed orphan LSP: %v", err)
+	}
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #2: %v", err)
+	}
+
+	if _, ok := m.Ports[topology.Port("eni-orphan")]; ok {
+		t.Errorf("orphan LSP %s survived reconcile: ADR-0003 §4 requires an LSP "+
+			"whose spinifex:eni_id has no intent ENI to be pruned; create-only gap "+
+			"leaks OVN ports across terminate/reinstall", topology.Port("eni-orphan"))
+	}
+	if _, ok := m.Ports[topology.Port("eni-a")]; !ok {
+		t.Errorf("desired ENI LSP %s was pruned: prune must never delete an LSP "+
+			"present in intent", topology.Port("eni-a"))
+	}
 }
 
 // assertPortSecurity fails when the LSP's port_security doesn't match its addresses.

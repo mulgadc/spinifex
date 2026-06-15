@@ -107,16 +107,6 @@ func TestDeleteSecurityGroup_Success(t *testing.T) {
 	}
 }
 
-func TestDeleteSecurityGroup_NotFound(t *testing.T) {
-	svc := setupTestVPCService(t)
-
-	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
-		GroupId: aws.String("sg-nonexistent"),
-	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
-}
-
 func TestDeleteSecurityGroup_MissingGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 

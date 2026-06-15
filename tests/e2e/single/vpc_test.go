@@ -246,9 +246,9 @@ func runVPCSubnetE2E(t *testing.T, fix *Fixture) {
 
 	// --- SSH + external connectivity ---------------------------------------
 	// Use the non-fatal probe so we can dump VPC/IGW datapath diagnostics
-	// before Fatal. Same 3min budget — fresh-VPC unreachability beyond that
-	// is a real product bug, not test flake.
-	if !trySSHReady(pubIP, 22, keyPath, 3*time.Minute) {
+	// before Fatal. fresh-VPC unreachability beyond the budget is a real
+	// product bug, not test flake.
+	if !trySSHReady(pubIP, 22, keyPath, sshReadyBudget) {
 		harness.DumpVPCFlowDiagnostics(t, c, instID,
 			fmt.Sprintf("Phase 8b SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 			harness.VPCDiagnosticsOpts{
@@ -256,7 +256,7 @@ func runVPCSubnetE2E(t *testing.T, fix *Fixture) {
 				LogicalIP:   privIP,
 				ArtifactDir: fix.ArtifactDir(t),
 			})
-		t.Fatalf("SSH handshake %s:22 never completed within 3min (see diagnostics above)", pubIP)
+		t.Fatalf("SSH handshake %s:22 never completed within %s (see diagnostics above)", pubIP, sshReadyBudget)
 	}
 
 	tgt := harness.SSHTarget{User: "ec2-user", Host: pubIP, Port: 22, KeyPath: keyPath}

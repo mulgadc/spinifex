@@ -43,6 +43,11 @@ type IGWManager interface {
 	EnsureSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
 	// RemoveSystemInstanceEgress is the inverse. Idempotent.
 	RemoveSystemInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP, externalIP string) error
+	// EnsureEIPInstanceEgress installs a /32 reroute above the drop gate for an
+	// EIP-backed instance — reroute only, no SNAT. The EIP's dnat_and_snat already
+	// SNATs the instance, so the reroute alone lets the inbound connection's reply
+	// (and instance-initiated egress) bypass the subnet drop gate. Idempotent.
+	EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error
 }
 
 // IGWManagerConfig is the construction-time bag for igwManager.
@@ -101,80 +106,60 @@ func NewIGWManager(cfg IGWManagerConfig) (IGWManager, error) {
 	}, nil
 }
 
-// AttachIGW wires external connectivity for spec.VPCID: external switch +
-// localnet + gateway LRP + default route + chassis + flows barrier.
-// Idempotent: returns nil if the external switch already exists.
+// AttachIGW wires external connectivity for spec.VPCID onto the shared external
+// switch: it ensures the singleton external switch + localnet, attaches the VPC
+// gateway LRP via its own router-type switch port, installs the default route,
+// binds gateway chassis, and waits on the flows barrier. Idempotent, and
+// migration-safe: a VPC still bound to a legacy per-VPC switch re-attaches to the
+// shared switch once the legacy switch is pruned.
 func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	if spec.VPCID == "" {
 		return errors.New("AttachIGW: VPCID required")
 	}
 
-	extSwitchName := topology.ExternalSwitch(spec.VPCID)
-	extPortName := topology.ExternalLocalnetPort(spec.VPCID)
+	extSwitchName := topology.ExternalSwitchShared()
+	extPortName := topology.ExternalLocalnetPortShared()
 	gwPortName := topology.GatewayRouterPort(spec.VPCID)
 	switchGWPortName := topology.GatewaySwitchPort(spec.VPCID)
 	routerName := topology.VPCRouter(spec.VPCID)
 
-	extSwitch := &nbdb.LogicalSwitch{
-		Name: extSwitchName,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": spec.VPCID,
-			"spinifex:igw_id": spec.InternetGatewayID,
-			"spinifex:role":   "external",
-		},
-	}
-	existingSwitch, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch)
-	if err != nil {
-		return fmt.Errorf("ensure external switch %s: %w", extSwitchName, err)
-	}
-	if existingSwitch.UUID != extSwitch.UUID {
-		slog.Debug("external: IGW topology already exists, skipping",
-			"vpc_id", spec.VPCID, "ext_switch", extSwitchName)
-		return nil
+	if err := m.ensureSharedExternal(ctx, extSwitchName, extPortName); err != nil {
+		return err
 	}
 
-	localnetOpts := map[string]string{"network_name": "external"}
-	if m.natMode == policy.NATModeCentralized {
-		localnetOpts["nat-addresses"] = "router"
-	}
-	if err := m.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
-		Name:      extPortName,
-		Type:      "localnet",
-		Addresses: []string{"unknown"},
-		Options:   localnetOpts,
-		ExternalIDs: map[string]string{
-			"spinifex:vpc_id": spec.VPCID,
-			"spinifex:igw_id": spec.InternetGatewayID,
-		},
-	}); err != nil {
-		_ = m.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		return fmt.Errorf("create localnet port %s: %w", extPortName, err)
+	// The gateway switch port on the shared switch is the per-VPC attach marker.
+	if _, err := m.ovn.GetLogicalSwitchPort(ctx, switchGWPortName); err == nil {
+		slog.Debug("external: IGW already attached for VPC, skipping",
+			"vpc_id", spec.VPCID, "gw_port", switchGWPortName)
+		return nil
 	}
 
 	gwNetwork, wanNexthop, gwLrpIP, err := m.resolveGatewayNetwork(ctx, spec.VPCID)
 	if err != nil {
-		_ = m.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, extPortName)
-		_ = m.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
 		return err
 	}
 
-	lrpExtIDs := map[string]string{
-		"spinifex:vpc_id": spec.VPCID,
-		"spinifex:igw_id": spec.InternetGatewayID,
-		"spinifex:role":   "gateway",
-	}
-	if gwLrpIP != "" {
-		lrpExtIDs[gatewayIPExtIDKey] = gwLrpIP
-	}
-	if err := m.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
-		Name:        gwPortName,
-		MAC:         utils.HashMAC(gwPortName),
-		Networks:    []string{gwNetwork},
-		ExternalIDs: lrpExtIDs,
-	}); err != nil {
-		_ = m.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, extPortName)
-		_ = m.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
-		return fmt.Errorf("create gateway router port %s: %w", gwPortName, err)
+	// The gateway LRP may already exist (e.g. migrating off a legacy per-VPC
+	// switch); create it only when absent so its allocated IP is preserved.
+	createdLRP := false
+	if _, err := m.ovn.GetLogicalRouterPort(ctx, gwPortName); err != nil {
+		lrpExtIDs := map[string]string{
+			"spinifex:vpc_id": spec.VPCID,
+			"spinifex:igw_id": spec.InternetGatewayID,
+			"spinifex:role":   "gateway",
+		}
+		if gwLrpIP != "" {
+			lrpExtIDs[gatewayIPExtIDKey] = gwLrpIP
+		}
+		if err := m.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
+			Name:        gwPortName,
+			MAC:         utils.HashMAC(gwPortName),
+			Networks:    []string{gwNetwork},
+			ExternalIDs: lrpExtIDs,
+		}); err != nil {
+			return fmt.Errorf("create gateway router port %s: %w", gwPortName, err)
+		}
+		createdLRP = true
 	}
 
 	if err := m.ovn.CreateLogicalSwitchPort(ctx, extSwitchName, &nbdb.LogicalSwitchPort{
@@ -185,11 +170,12 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		ExternalIDs: map[string]string{
 			"spinifex:vpc_id": spec.VPCID,
 			"spinifex:igw_id": spec.InternetGatewayID,
+			"spinifex:role":   "gateway",
 		},
 	}); err != nil {
-		_ = m.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName)
-		_ = m.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, extPortName)
-		_ = m.ovn.DeleteLogicalSwitch(ctx, extSwitchName)
+		if createdLRP {
+			_ = m.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName)
+		}
 		return fmt.Errorf("create switch gateway port %s: %w", switchGWPortName, err)
 	}
 
@@ -223,14 +209,45 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 	return nil
 }
 
-// DetachIGW reverses AttachIGW. Idempotent.
+// ensureSharedExternal idempotently creates the singleton shared external switch
+// and its single localnet port. The localnet advertises router NAT addresses in
+// centralized mode so gateways behind it are reachable from the uplink.
+func (m *igwManager) ensureSharedExternal(ctx context.Context, switchName, portName string) error {
+	extSwitch := &nbdb.LogicalSwitch{
+		Name:        switchName,
+		ExternalIDs: map[string]string{"spinifex:role": "external"},
+	}
+	if _, err := m.ovn.EnsureLogicalSwitch(ctx, extSwitch); err != nil {
+		return fmt.Errorf("ensure shared external switch %s: %w", switchName, err)
+	}
+	if _, err := m.ovn.GetLogicalSwitchPort(ctx, portName); err == nil {
+		return nil
+	}
+	localnetOpts := map[string]string{"network_name": "external"}
+	if m.natMode == policy.NATModeCentralized {
+		localnetOpts["nat-addresses"] = "router"
+	}
+	if err := m.ovn.CreateLogicalSwitchPort(ctx, switchName, &nbdb.LogicalSwitchPort{
+		Name:        portName,
+		Type:        "localnet",
+		Addresses:   []string{"unknown"},
+		Options:     localnetOpts,
+		ExternalIDs: map[string]string{"spinifex:role": "external-localnet"},
+	}); err != nil {
+		return fmt.Errorf("create shared localnet port %s: %w", portName, err)
+	}
+	return nil
+}
+
+// DetachIGW removes the VPC's gateway attachment — its switch port on the shared
+// external switch, gateway LRP, default route, and SNAT — while preserving the
+// shared external switch and localnet for other VPCs. Idempotent.
 func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	if vpcID == "" {
 		return errors.New("DetachIGW: vpcID required")
 	}
 
-	extSwitchName := topology.ExternalSwitch(vpcID)
-	extPortName := topology.ExternalLocalnetPort(vpcID)
+	extSwitchName := topology.ExternalSwitchShared()
 	gwPortName := topology.GatewayRouterPort(vpcID)
 	switchGWPortName := topology.GatewaySwitchPort(vpcID)
 	routerName := topology.VPCRouter(vpcID)
@@ -255,12 +272,6 @@ func (m *igwManager) DetachIGW(ctx context.Context, vpcID string) error {
 	}
 	if err := m.ovn.DeleteLogicalRouterPort(ctx, routerName, gwPortName); err != nil {
 		slog.Warn("external: delete gateway router port failed", "port", gwPortName, "err", err)
-	}
-	if err := m.ovn.DeleteLogicalSwitchPort(ctx, extSwitchName, extPortName); err != nil {
-		slog.Warn("external: delete localnet port failed", "port", extPortName, "err", err)
-	}
-	if err := m.ovn.DeleteLogicalSwitch(ctx, extSwitchName); err != nil {
-		return fmt.Errorf("delete external switch %s: %w", extSwitchName, err)
 	}
 
 	if err := m.allocator.Release(ctx, vpcID); err != nil {
@@ -400,6 +411,37 @@ func (m *igwManager) RemoveSystemInstanceEgress(ctx context.Context, vpcID, subn
 		firstErr = fmt.Errorf("delete system instance egress snat: %w", err)
 	}
 	return firstErr
+}
+
+// EnsureEIPInstanceEgress installs the /32 reroute above the drop gate for an EIP
+// instance, without the plain SNAT EnsureSystemInstanceEgress adds: the EIP's
+// dnat_and_snat already SNATs the instance, so the reroute alone is what lets the
+// inbound connection's reply bypass the subnet drop gate (lr_in_policy runs before
+// lr_out un-DNAT/SNAT, so the reply still carries its private source at the gate).
+// Idempotent.
+func (m *igwManager) EnsureEIPInstanceEgress(ctx context.Context, vpcID, subnetID, instanceIP string) error {
+	if vpcID == "" || subnetID == "" {
+		return errors.New("EnsureEIPInstanceEgress: vpcID and subnetID required")
+	}
+	srcIP, err := netip.ParseAddr(instanceIP)
+	if err != nil {
+		return fmt.Errorf("EnsureEIPInstanceEgress: parse instance IP %q: %w", instanceIP, err)
+	}
+	_, nexthop, _, err := m.resolveGatewayNetwork(ctx, vpcID)
+	if err != nil {
+		return fmt.Errorf("resolve gateway network for %s: %w", vpcID, err)
+	}
+	if nexthop == "" {
+		return fmt.Errorf("EnsureEIPInstanceEgress: no gateway nexthop for %s (IGW not attached?)", vpcID)
+	}
+	return m.routes.AddSystemInstanceEgress(ctx, vpcID, policy.SystemInstanceEgressSpec{
+		SubnetID:     subnetID,
+		SrcIP:        srcIP,
+		Prefix:       defaultRoutePrefix,
+		Nexthop:      nexthop,
+		OutputPort:   topology.GatewayRouterPort(vpcID),
+		ExcludeCIDRs: m.vpcExcludeCIDRs(ctx, vpcID),
+	})
 }
 
 // linkLocalCIDR / multicastCIDR are appended to drop-policy excludes so link-local

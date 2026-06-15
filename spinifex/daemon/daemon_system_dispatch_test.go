@@ -6,6 +6,7 @@ import (
 	"time"
 
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -353,6 +354,109 @@ func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 	d := &Daemon{node: "node-a"}
 	_, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.medium"})
 	require.Error(t, err, "remote placement requires a NATS connection")
+}
+
+// TestTerminateSystemInstanceRemote_RoundTrip locks mulga-siv-295.10: terminating
+// a CP VM this node does not own routes over system.TerminateInstance.{id} to the
+// owning daemon, which stops qemu and cascade-deletes the ENI before replying —
+// so the cluster-wide teardown actually frees the remote ENI instead of deleting
+// it while still attached (InvalidNetworkInterface.InUse).
+func TestTerminateSystemInstanceRemote_RoundTrip(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	gotCh := make(chan struct{}, 1)
+	sub, err := nc.Subscribe("system.TerminateInstance.i-remote", func(msg *nats.Msg) {
+		gotCh <- struct{}{}
+		payload, _ := json.Marshal(systemInstanceTerminateEnvelope{})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	require.NoError(t, d.terminateSystemInstanceRemote("i-remote"))
+
+	select {
+	case <-gotCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owning node never received the routed terminate")
+	}
+}
+
+// TestTerminateSystemInstanceRemote_NoResponders: no node owns the VM, so the
+// request gets no responders. That means the VM is genuinely gone, reported as
+// ErrSystemInstanceNotFound — which TerminateK3sServerVM treats as idempotent.
+func TestTerminateSystemInstanceRemote_NoResponders(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	err = d.terminateSystemInstanceRemote("i-orphan")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+		"no owner means the VM is gone — caller must see idempotent NotFound, not a hang")
+}
+
+// TestTerminateSystemInstanceRemote_NotFoundPropagated: the owner replies with a
+// NotFound (it raced to gone); the routing layer normalizes it back to a typed
+// ErrSystemInstanceNotFound so the teardown still treats it as idempotent.
+func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	sub, err := nc.Subscribe("system.TerminateInstance.i-gone", func(msg *nats.Msg) {
+		payload, _ := json.Marshal(systemInstanceTerminateEnvelope{
+			Error: sysinstance.ErrSystemInstanceNotFound.Error() + ": i-gone",
+		})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	err = d.terminateSystemInstanceRemote("i-gone")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+}
+
+// TestTerminateSystemInstanceRemote_ErrorPropagated: a real teardown failure on
+// the owner surfaces to the caller (not swallowed), so the cluster delete fails
+// loudly and the backstop reaper re-drives it rather than stranding billable infra.
+func TestTerminateSystemInstanceRemote_ErrorPropagated(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	d := &Daemon{natsConn: nc, node: "node-a", natsSubscriptions: make(map[string]*nats.Subscription)}
+
+	sub, err := nc.Subscribe("system.TerminateInstance.i-stuck", func(msg *nats.Msg) {
+		payload, _ := json.Marshal(systemInstanceTerminateEnvelope{Error: "volume detach timed out"})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	err = d.terminateSystemInstanceRemote("i-stuck")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "volume detach timed out")
+	assert.NotErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+		"a real failure must not be misreported as idempotent NotFound")
+}
+
+// TestTerminateSystemInstanceRemote_WithoutConn: with no NATS connection there is
+// no way to reach an owner, so the VM is unreachable — reported as NotFound.
+func TestTerminateSystemInstanceRemote_WithoutConn(t *testing.T) {
+	d := &Daemon{node: "node-a"}
+	err := d.terminateSystemInstanceRemote("i-x")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
 }
 
 // TestHandleSystemLaunchInstance_PanicRecovered drives a valid launch against a

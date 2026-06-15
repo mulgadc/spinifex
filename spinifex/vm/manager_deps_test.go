@@ -98,6 +98,13 @@ func (f *fakeStateStore) ListTerminatedInstances() ([]*VM, error) {
 	return out, nil
 }
 
+func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.terminated, id)
+	return nil
+}
+
 var _ StateStore = (*fakeStateStore)(nil)
 
 // fakeVolumeMounter records every call so lifecycle tests can assert ordering.

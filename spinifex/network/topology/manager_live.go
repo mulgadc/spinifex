@@ -138,6 +138,14 @@ func (m *liveManager) DeleteVPC(ctx context.Context, vpcID string) error {
 		}
 	}
 
+	// The gateway switch port lives on the shared external switch, which the
+	// vpc_id cascade above intentionally skips; remove it explicitly so deleting
+	// the router below does not leave a dangling router-type LSP behind.
+	gwSwitchPort := GatewaySwitchPort(vpcID)
+	if err := m.ovn.DeleteLogicalSwitchPort(ctx, ExternalSwitchShared(), gwSwitchPort); err != nil {
+		slog.Warn("topology: DeleteVPC remove gateway switch port", "port", gwSwitchPort, "err", err)
+	}
+
 	if err := m.ovn.DeleteLogicalRouter(ctx, routerName); err != nil {
 		return fmt.Errorf("delete logical router %q: %w", routerName, err)
 	}

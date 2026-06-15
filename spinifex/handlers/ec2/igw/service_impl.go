@@ -136,7 +136,13 @@ func (s *IGWServiceImpl) DeleteInternetGateway(input *ec2.DeleteInternetGatewayI
 
 	entry, err := s.igwKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		// AWS-faithful: an absent internet gateway is NotFound (provider
+		// tolerates it on destroy); destroy orchestration tolerates it too.
+		// A transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	var record IGWRecord

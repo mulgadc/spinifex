@@ -53,6 +53,9 @@ type Client interface {
 	DeleteLogicalSwitchPort(ctx context.Context, switchName string, portName string) error
 	GetLogicalSwitchPort(ctx context.Context, name string) (*nbdb.LogicalSwitchPort, error)
 	UpdateLogicalSwitchPort(ctx context.Context, lsp *nbdb.LogicalSwitchPort) error
+	// ListLogicalSwitchPorts returns every LSP in OVN NB. The reconciler uses it
+	// to find orphan ENI ports (spinifex:eni_id with no matching intent).
+	ListLogicalSwitchPorts(ctx context.Context) ([]nbdb.LogicalSwitchPort, error)
 
 	// Logical Router (VPC router)
 	CreateLogicalRouter(ctx context.Context, lr *nbdb.LogicalRouter) error

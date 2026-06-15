@@ -187,12 +187,19 @@ func runSGToSGDatapath(t *testing.T, fix *Fixture) {
 	clientHost, clientPort := harness.InstancePublicSSHHost(t, clientInst)
 	clientTgt := harness.SSHTarget{User: "ec2-user", Host: clientHost, Port: clientPort, KeyPath: keyPath}
 	harness.Step(t, "8e-3 wait for client-vm SSH at %s:%d", clientHost, clientPort)
-	harness.EventuallyErr(t, func() error {
-		if _, err := runSSHCombined(clientTgt, "true"); err != nil {
-			return fmt.Errorf("client-vm SSH not ready: %w", err)
-		}
-		return nil
-	}, 2*time.Minute, 2*time.Second)
+	// Non-fatal probe so a timeout dumps the guest console + OVN/datapath
+	// state before Fatal. A full 2min unreachable window on a fresh public-IP
+	// VM is the flake signature; capture it from CI artifacts alone.
+	if !trySSHReady(clientHost, clientPort, keyPath, 2*time.Minute) {
+		harness.DumpVPCFlowDiagnostics(t, fix.AWS, clientID,
+			fmt.Sprintf("8e-3 client-vm SSH timeout — vpc=%s sg=%s pub=%s", def.VPCID, clientSG, clientHost),
+			harness.VPCDiagnosticsOpts{
+				ExternalIP:  clientHost,
+				LogicalIP:   clientPriv,
+				ArtifactDir: fix.ArtifactDir(t),
+			})
+		t.Fatalf("client-vm SSH %s:%d never became reachable within 2min (see diagnostics above)", clientHost, clientPort)
+	}
 
 	// Step 4: Allowed traffic — client -> target:8080 must succeed.
 	// Retry to give target's cloud-init time to start python3 -m http.server.

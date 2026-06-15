@@ -4,6 +4,7 @@ package single
 
 import (
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -23,6 +24,20 @@ import (
 // rather than re-running the same 3-minute timeout against the same
 // broken datapath.
 var sshDatapathBroken atomic.Bool
+
+// sshReadyBudget bounds the single-node SSH-handshake probes. Baremetal boots
+// q35 guests slower (OVMF + NBD disks), so the harness widens it via
+// SPINIFEX_SSH_READY_TIMEOUT (Go duration); default 3m bounds shared runners.
+var sshReadyBudget = resolveSSHReadyBudget(3 * time.Minute)
+
+func resolveSSHReadyBudget(def time.Duration) time.Duration {
+	if v := os.Getenv("SPINIFEX_SSH_READY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
 
 // requireSSHHealthy skips the calling test if a prior SSH probe on this
 // single-node VM has already failed. Cuts the cascade cost of a broken
@@ -413,11 +428,11 @@ func waitForSSHReady(t *testing.T, host string, port int, keyPath string) {
 	requireSSHHealthy(t)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	harness.Step(t, "waiting for SSH handshake %s", addr)
-	if !trySSHReady(host, port, keyPath, 3*time.Minute) {
+	if !trySSHReady(host, port, keyPath, sshReadyBudget) {
 		sshDatapathBroken.Store(true)
-		t.Fatalf("Eventually: condition not met within 3m0s: "+
+		t.Fatalf("Eventually: condition not met within %s: "+
 			"[SSH handshake %s never completed] "+
-			"(sticky-skip enabled for downstream)", addr)
+			"(sticky-skip enabled for downstream)", sshReadyBudget, addr)
 	}
 }
 

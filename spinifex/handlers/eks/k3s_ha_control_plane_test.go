@@ -76,6 +76,10 @@ func (v *seqK3sVPC) DeleteNetworkInterface(in *ec2.DeleteNetworkInterfaceInput, 
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
+func (v *seqK3sVPC) DescribeNetworkInterfaces(*ec2.DescribeNetworkInterfacesInput, string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	return &ec2.DescribeNetworkInterfacesOutput{}, nil
+}
+
 // seqK3sInst returns instance ID "i-<nodeID>" so launches map deterministically
 // back to their target host. failNodes makes a node's launch return an error.
 type seqK3sInst struct {

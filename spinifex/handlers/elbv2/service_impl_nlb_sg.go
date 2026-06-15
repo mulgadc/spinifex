@@ -72,7 +72,7 @@ func (s *ELBv2ServiceImpl) deleteNLBManagedSG(sgID, accountID string) {
 	}
 	if _, err := s.VPCService.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
-	}, accountID); err != nil {
+	}, accountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.Warn("deleteNLBManagedSG: delete failed", "sg", sgID, "err", err)
 	}
 }

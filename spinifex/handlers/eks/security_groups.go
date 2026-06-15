@@ -25,6 +25,12 @@ const clusterEKSClusterTagKey = "spinifex:eks-cluster"
 // clusterEKSRoleTagKey distinguishes the control-plane SG from the nodegroup SG.
 const clusterEKSRoleTagKey = "spinifex:eks-role"
 
+// clusterEKSAccountTagKey records the customer account that owns the cluster
+// meta. The control-plane VM/ENI run under the system account, so this tag is
+// the only link from a running CP ENI back to the KV bucket holding its cluster
+// meta — the billable GC reaper needs it to decide orphan-hood.
+const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
+
 // clusterEKSNodegroupTagKey is stamped on worker instances to identify their nodegroup.
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
@@ -95,7 +101,7 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 		if id == "" {
 			continue
 		}
-		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil {
+		if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
 			slog.Warn("DeleteClusterSGs: SG delete failed", "sg", id, "name", name, "err", err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("delete SG %s: %w", id, err)

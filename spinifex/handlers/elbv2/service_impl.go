@@ -19,7 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
@@ -247,24 +246,19 @@ func (s *ELBv2ServiceImpl) getSystemInstanceType() string {
 	return s.systemInstanceType
 }
 
-// buildLBAgentEnv returns the KEY=value blob written to /etc/conf.d/lb-agent
-// via fw_cfg on the direct-boot path. A system-account LB (e.g. the EKS
-// cluster control-plane NLB) is a hidden system instance whose only path to the
-// gateway is its on-link br-mgmt NIC, so it heartbeats over the mgmt-bridge URL
-// — the same path the EKS control-plane VM uses — rather than out the WAN and
-// back. A customer LB reaches the gateway via its VPC egress (the WAN URL).
-func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID, accountID string) string {
-	gatewayURL := s.GatewayURL
-	if accountID == admin.SystemAccountID() {
-		gatewayURL = s.mgmtGatewayURL()
-	}
+// buildLBAgentEnv returns the KEY=value blob written to /etc/conf.d/lb-agent via
+// fw_cfg on the direct-boot path. Every lb-agent heartbeats over its on-link
+// br-mgmt NIC (the mgmt-bridge URL): the heartbeat is control-plane and must
+// survive a host reboot that strands the OVN/EIP data plane, so it never rides
+// the WAN. mgmtGatewayURL falls back to the WAN URL when no mgmt bridge exists.
+func (s *ELBv2ServiceImpl) buildLBAgentEnv(lbID string) string {
 	return fmt.Sprintf("LB_LB_ID=%s\nLB_GATEWAY_URL=%s\nLB_ACCESS_KEY=%s\nLB_SECRET_KEY=%s\nLB_REGION=%s\n",
-		lbID, gatewayURL, s.SystemAccessKey, s.SystemSecretKey, s.region)
+		lbID, s.mgmtGatewayURL(), s.SystemAccessKey, s.SystemSecretKey, s.region)
 }
 
-// mgmtGatewayURL is the AWS gateway URL a system instance reaches over its
-// br-mgmt NIC (on-link to MgmtBridgeIP). The port is taken from the configured
-// WAN GatewayURL so both paths target the same AWSGW listener. Falls back to the
+// mgmtGatewayURL is the AWS gateway URL an lb-agent reaches over its on-link
+// br-mgmt NIC (MgmtBridgeIP). The port is taken from the configured WAN
+// GatewayURL so both paths target the same AWSGW listener. Falls back to the
 // WAN URL when no mgmt bridge exists (e.g. dev-shim networking).
 func (s *ELBv2ServiceImpl) mgmtGatewayURL() string {
 	if s.MgmtBridgeIP == "" {
@@ -458,7 +452,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(lbID, scheme string, eniIDs, subnets []str
 		Scheme:       scheme,
 		AccountID:    accountID,
 		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lbID, accountID),
+		LBAgentEnv:   s.buildLBAgentEnv(lbID),
 		CACert:       s.CACert,
 	}
 	// Dev-mode only: forward HTTP/HTTPS ports from host for local testing.
@@ -554,7 +548,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(ctx RecoveryContext) (*Sys
 		Scheme:       lb.Scheme,
 		AccountID:    lb.AccountID,
 		NICs:         nics,
-		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID, lb.AccountID),
+		LBAgentEnv:   s.buildLBAgentEnv(lb.LoadBalancerID),
 		CACert:       s.CACert,
 	}, nil
 }

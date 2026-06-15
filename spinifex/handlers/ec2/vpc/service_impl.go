@@ -313,7 +313,13 @@ func (s *VPCServiceImpl) DeleteVpc(input *ec2.DeleteVpcInput, accountID string) 
 	key := utils.AccountKey(accountID, vpcID)
 
 	if _, err := s.vpcKV.Get(key); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		// AWS-faithful: an absent VPC is NotFound (the tofu/SDK provider
+		// tolerates it on destroy); destroy orchestration tolerates it too.
+		// A transient read error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	// Check for dependent subnets owned by this account
@@ -626,10 +632,23 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	// Read subnet record before deletion (needed for vpcd event)
 	subnetEntry, err := s.subnetKV.Get(key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+		// AWS-faithful: an absent subnet is NotFound (provider tolerates it on
+		// destroy); destroy orchestration tolerates it too. A transient read
+		// error stays a server error.
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	var subnetRecord SubnetRecord
 	_ = json.Unmarshal(subnetEntry.Value(), &subnetRecord)
+
+	// Block while a live ENI attachment (hence a resident instance) remains in
+	// the subnet (rule #3). Orphan/available ENIs do not pin it: tofu deletes
+	// them first and the GC backstop reaps leftovers.
+	if err := s.checkSubnetResidents(accountID, subnetID); err != nil {
+		return nil, err
+	}
 
 	if err := s.subnetKV.Delete(key); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -641,6 +660,41 @@ func (s *VPCServiceImpl) DeleteSubnet(input *ec2.DeleteSubnetInput, accountID st
 	s.publishSubnetEvent("vpc.delete-subnet", subnetID, subnetRecord.VpcId, subnetRecord.CidrBlock)
 
 	return &ec2.DeleteSubnetOutput{}, nil
+}
+
+// checkSubnetResidents returns DependencyViolation if any ENI residing in the
+// subnet is a live attachment (rule #3). Fail-closed on a KV read error so a
+// transient fault never lets a delete orphan a port.
+func (s *VPCServiceImpl) checkSubnetResidents(accountID, subnetID string) error {
+	keys, err := s.eniKV.Keys()
+	if err != nil {
+		if errors.Is(err, nats.ErrNoKeysFound) {
+			return nil
+		}
+		slog.Error("DeleteSubnet: ENI scan failed, blocking delete to avoid orphaning ports", "subnetId", subnetID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	prefix := accountID + "."
+	for _, key := range keys {
+		if key == utils.VersionKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entry, err := s.eniKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				continue
+			}
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		var record ENIRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			continue
+		}
+		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
+			return errors.New(awserrors.ErrorDependencyViolation)
+		}
+	}
+	return nil
 }
 
 // DescribeSubnets describes subnets

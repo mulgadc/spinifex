@@ -198,12 +198,20 @@ type recordingInstanceCleaner struct {
 	detachAndDeleteENI  []string
 	removeFromPlacement []string
 	releaseGPU          []string
+
+	// Injectable per-method errors so tests can drive failed-teardown marks.
+	deleteVolumesErr   error
+	releasePublicIPErr error
+	detachENIErr       error
+	removePlacementErr error
+	releaseGPUErr      error
 }
 
-func (c *recordingInstanceCleaner) DeleteVolumes(v *VM) {
+func (c *recordingInstanceCleaner) DeleteVolumes(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleteVolumes = append(c.deleteVolumes, v.ID)
+	return c.deleteVolumesErr
 }
 
 func (c *recordingInstanceCleaner) CleanupMgmtNetwork(v *VM) {
@@ -212,28 +220,32 @@ func (c *recordingInstanceCleaner) CleanupMgmtNetwork(v *VM) {
 	c.cleanupMgmt = append(c.cleanupMgmt, v.ID)
 }
 
-func (c *recordingInstanceCleaner) ReleasePublicIP(v *VM) {
+func (c *recordingInstanceCleaner) ReleasePublicIP(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.releasePublicIP = append(c.releasePublicIP, v.ID)
+	return c.releasePublicIPErr
 }
 
-func (c *recordingInstanceCleaner) DetachAndDeleteENI(v *VM) {
+func (c *recordingInstanceCleaner) DetachAndDeleteENI(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.detachAndDeleteENI = append(c.detachAndDeleteENI, v.ID)
+	return c.detachENIErr
 }
 
-func (c *recordingInstanceCleaner) RemoveFromPlacementGroup(v *VM) {
+func (c *recordingInstanceCleaner) RemoveFromPlacementGroup(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.removeFromPlacement = append(c.removeFromPlacement, v.ID)
+	return c.removePlacementErr
 }
 
-func (c *recordingInstanceCleaner) ReleaseGPU(v *VM) {
+func (c *recordingInstanceCleaner) ReleaseGPU(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.releaseGPU = append(c.releaseGPU, v.ID)
+	return c.releaseGPUErr
 }
 
 func (c *recordingInstanceCleaner) deleteVolumesCount() int {

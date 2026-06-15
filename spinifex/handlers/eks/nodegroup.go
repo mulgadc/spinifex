@@ -398,7 +398,7 @@ func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, r
 		userData := buildAgentUserData(agentUserDataInput{
 			ClusterName:   rec.ClusterName,
 			NodegroupName: rec.Name,
-			ServerURL:     meta.Endpoint,
+			ServerURL:     clusterJoinEndpoint(meta),
 			JoinToken:     token,
 			NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
 		})

@@ -35,9 +35,16 @@ const clusterEKSAccountTagKey = "spinifex:eks-cluster-account"
 const clusterEKSNodegroupTagKey = "spinifex:eks-nodegroup"
 
 const (
-	clusterEKSRoleControlPlane = "control-plane"
-	clusterEKSRoleNodegroup    = "nodegroup"
+	clusterEKSRoleControlPlane    = "control-plane"
+	clusterEKSRoleNodegroup       = "nodegroup"
+	clusterEKSRolePrivateEndpoint = "private-endpoint"
 )
+
+// ClusterPrivateEndpointSGName returns the deterministic customer-VPC SG name for
+// the cluster's private-endpoint ENI (the Set A NIC on the cluster NLB's LB VM).
+func ClusterPrivateEndpointSGName(clusterName string) string {
+	return fmt.Sprintf("eks-cluster-%s-private-endpoint-sg", clusterName)
+}
 
 // ClusterControlPlaneSGName returns the deterministic control-plane SG name for a cluster.
 func ClusterControlPlaneSGName(clusterName string) string {
@@ -109,6 +116,70 @@ func DeleteClusterSGs(sgp sgProvisioner, accountID, clusterName, vpcID string) e
 		}
 	}
 	return firstErr
+}
+
+// EnsurePrivateEndpointSG creates (or reuses) the customer-VPC SG for the
+// private-endpoint ENI and admits the customer VPC CIDR on the NLB listen port
+// (:443), so in-VPC workers + kubectl reach the apiserver via the Set A NIC.
+// Idempotent: SG lookup-or-create + duplicate-tolerant ingress authorize.
+func EnsurePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID, vpcCIDR string) (string, error) {
+	if clusterName == "" {
+		return "", errors.New("eks: EnsurePrivateEndpointSG empty cluster name")
+	}
+	if vpcID == "" {
+		return "", errors.New("eks: EnsurePrivateEndpointSG empty vpc id")
+	}
+	if vpcCIDR == "" {
+		return "", errors.New("eks: EnsurePrivateEndpointSG empty vpc cidr")
+	}
+
+	sgID, err := ensureClusterSG(sgp, accountID, vpcID, clusterName,
+		ClusterPrivateEndpointSGName(clusterName),
+		fmt.Sprintf("EKS private-endpoint SG for cluster %s", clusterName),
+		clusterEKSRolePrivateEndpoint)
+	if err != nil {
+		return "", err
+	}
+
+	perm := &ec2.IpPermission{
+		IpProtocol: aws.String("tcp"),
+		FromPort:   aws.Int64(clusterNLBListenPort),
+		ToPort:     aws.Int64(clusterNLBListenPort),
+		IpRanges: []*ec2.IpRange{{
+			CidrIp:      aws.String(vpcCIDR),
+			Description: aws.String("EKS in-VPC clients to private apiserver endpoint"),
+		}},
+	}
+	_, err = sgp.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId:       aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{perm},
+	}, accountID)
+	if err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidPermissionDuplicate) {
+		return "", fmt.Errorf("authorize private-endpoint ingress on %s: %w", sgID, err)
+	}
+	return sgID, nil
+}
+
+// DeletePrivateEndpointSG removes the cluster's private-endpoint SG. Missing SG
+// is a no-op. The private-endpoint ENI must be deleted first (it references this SG).
+func DeletePrivateEndpointSG(sgp sgProvisioner, accountID, clusterName, vpcID string) error {
+	if clusterName == "" {
+		return errors.New("eks: DeletePrivateEndpointSG empty cluster name")
+	}
+	if vpcID == "" {
+		return errors.New("eks: DeletePrivateEndpointSG empty vpc id")
+	}
+	id, err := lookupSGByName(sgp, accountID, vpcID, ClusterPrivateEndpointSGName(clusterName))
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return nil
+	}
+	if _, err := sgp.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}, accountID); err != nil && !awserrors.IsNotFound(err) {
+		return fmt.Errorf("delete private-endpoint SG %s: %w", id, err)
+	}
+	return nil
 }
 
 func ensureClusterSG(sgp sgProvisioner, accountID, vpcID, clusterName, name, description, role string) (string, error) {

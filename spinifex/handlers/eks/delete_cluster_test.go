@@ -208,6 +208,31 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 	assert.Len(t, f.vpc.deleteCalls, 1)
 }
 
+// TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete locks the mulga-siv-301
+// teardown fix: the Set A private-endpoint ENI is an extra NIC on the cluster NLB's
+// LB VM, not that VM's primary ENI, so the instance-terminate cascade never reclaims
+// it. purgeClusterInfra must detach (store-clear) the stale attachment before
+// deleting, or DeleteNetworkInterface loops on InvalidNetworkInterface.InUse and the
+// cluster wedges in DELETING. The fake models that in-use-until-detached semantics,
+// so the teardown only completes if detach precedes delete.
+func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	meta, err := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, err)
+	meta.PrivateEndpointENIID = "eni-pe-001"
+	require.NoError(t, PutClusterMeta(f.kv, meta))
+	f.vpc.inUseUntilDetached = map[string]bool{"eni-pe-001": true}
+
+	out, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err, "teardown must complete: the private-endpoint ENI is detached before delete")
+	require.NotNil(t, out)
+
+	assert.Contains(t, f.vpc.detachCalls, "eni-pe-001", "private-endpoint ENI must be detached before delete")
+	_, getErr := GetClusterMeta(f.kv, "alpha")
+	assert.ErrorIs(t, getErr, ErrClusterNotFound, "successful teardown must sweep the meta")
+}
+
 func TestDeleteCluster_NLBFailureLeavesMetaAndDELETING(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 

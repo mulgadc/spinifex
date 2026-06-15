@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/tags"
 )
 
@@ -14,6 +15,9 @@ import (
 type nlbProvisioner interface {
 	CreateLoadBalancer(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
 	CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
+	// CreateClusterNLBSync is CreateLoadBalancerSync plus cross-account ENIs threaded
+	// onto the LB VM at launch (the customer-VPC Set A private-endpoint NIC).
+	CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []sysinstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	DeleteLoadBalancer(input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
 
@@ -83,7 +87,7 @@ func ClusterTargetGroupName(clusterName string) string {
 // NLB managed-SG ingress; ignored for an internal NLB (its ingress already
 // tracks the VPC CIDR) and for the wide-open default, which the LB carries out
 // of the box.
-func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string) (*ClusterNLB, error) {
+func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string, crossAccountENIs []sysinstance.ExtraENIInput) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
 	}
@@ -101,7 +105,7 @@ func EnsureClusterNLB(nlbp nlbProvisioner, accountID, clusterName string, subnet
 
 	out := &ClusterNLB{}
 
-	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, out); err != nil {
+	if err := ensureClusterLB(nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, crossAccountENIs, out); err != nil {
 		return nil, err
 	}
 	if err := ensureClusterTG(nlbp, accountID, clusterName, tgName, out); err != nil {
@@ -268,7 +272,7 @@ func deleteClusterTG(nlbp nlbProvisioner, accountID, tgName string) error {
 	return nil
 }
 
-func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, out *ClusterNLB) error {
+func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, crossAccountENIs []sysinstance.ExtraENIInput, out *ClusterNLB) error {
 	if lb, err := lookupLBByName(nlbp, accountID, lbName); err != nil {
 		return err
 	} else if lb != nil {
@@ -291,7 +295,9 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 	// awaits the data-plane launch and gets back an LB carrying its front-end IP —
 	// which must be baked into the apiserver cert SAN before the control-plane VM
 	// boots (the async CreateLoadBalancer would return before the IP is allocated).
-	created, err := nlbp.CreateLoadBalancerSync(&elbv2.CreateLoadBalancerInput{
+	// Cross-account ENIs (the Set A private-endpoint NIC) are threaded onto the LB
+	// VM at launch, so the create must carry them when present.
+	in := &elbv2.CreateLoadBalancerInput{
 		Name:    aws.String(lbName),
 		Type:    aws.String(elbv2.LoadBalancerTypeEnumNetwork),
 		Scheme:  aws.String(scheme),
@@ -300,7 +306,14 @@ func ensureClusterLB(nlbp nlbProvisioner, accountID, clusterName, lbName string,
 			{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByEKS)},
 			{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
 		},
-	}, accountID)
+	}
+	var created *elbv2.CreateLoadBalancerOutput
+	var err error
+	if len(crossAccountENIs) > 0 {
+		created, err = nlbp.CreateClusterNLBSync(in, accountID, crossAccountENIs)
+	} else {
+		created, err = nlbp.CreateLoadBalancerSync(in, accountID)
+	}
 	if err != nil {
 		return fmt.Errorf("create NLB %s: %w", lbName, err)
 	}

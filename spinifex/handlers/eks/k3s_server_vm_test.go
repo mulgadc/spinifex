@@ -19,10 +19,17 @@ import (
 type fakeK3sVPC struct {
 	createCalls []*ec2.CreateNetworkInterfaceInput
 	deleteCalls []*ec2.DeleteNetworkInterfaceInput
+	detachCalls []string
 
 	createOut *ec2.CreateNetworkInterfaceOutput
 	createErr error
 	deleteErr error
+	detachErr error
+	// inUseUntilDetached models real VPC semantics: DeleteNetworkInterface returns
+	// InvalidNetworkInterface.InUse for these ENIs until DetachENI clears the
+	// attachment. detached tracks which ENIs DetachENI has cleared.
+	inUseUntilDetached map[string]bool
+	detached           map[string]bool
 	// deleteInUseUntil models the async instance-terminate cascade: the first N
 	// DeleteNetworkInterface calls return InvalidNetworkInterface.InUse, then the
 	// cascade has force-deleted the ENI so the next call returns NotFound.
@@ -56,6 +63,9 @@ func (f *fakeK3sVPC) CreateNetworkInterface(input *ec2.CreateNetworkInterfaceInp
 
 func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
+	if id := aws.StringValue(input.NetworkInterfaceId); f.inUseUntilDetached[id] && !f.detached[id] {
+		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+	}
 	if f.deleteInUseUntil > 0 {
 		if len(f.deleteCalls) <= f.deleteInUseUntil {
 			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
@@ -66,6 +76,18 @@ func (f *fakeK3sVPC) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfaceInp
 		return nil, f.deleteErr
 	}
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+func (f *fakeK3sVPC) DetachENI(_, eniID string) error {
+	f.detachCalls = append(f.detachCalls, eniID)
+	if f.detachErr != nil {
+		return f.detachErr
+	}
+	if f.detached == nil {
+		f.detached = map[string]bool{}
+	}
+	f.detached[eniID] = true
+	return nil
 }
 
 func (f *fakeK3sVPC) DescribeNetworkInterfaces(input *ec2.DescribeNetworkInterfacesInput, _ string) (*ec2.DescribeNetworkInterfacesOutput, error) {
@@ -315,6 +337,26 @@ func TestLaunchK3sServerVM_TargetNodeIDRoutedToLauncher(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, inst.launchNodes, 1)
 	assert.Equal(t, "node-c", inst.launchNodes[0], "TargetNodeID pins placement to a specific host")
+}
+
+func TestBuildK3sUserData_TLSSANIncludesPrivateEndpointIP(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "203.0.113.9"
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	assert.Contains(t, ud, "  - "+in.NLBDNS)
+	assert.Contains(t, ud, "  - 203.0.113.9")
+	assert.Contains(t, ud, "  - 10.20.0.5", "Set A private-endpoint IP must be a cert SAN")
+}
+
+func TestBuildK3sUserData_TLSSANDedupsWhenPrivateEqualsEndpoint(t *testing.T) {
+	in := validK3sInput()
+	in.EndpointIP = "10.20.0.5"
+	in.PrivateEndpointIP = "10.20.0.5"
+
+	ud := buildK3sUserData(in)
+	assert.Equal(t, 1, strings.Count(ud, "  - 10.20.0.5"), "must not emit a duplicate SAN")
 }
 
 func TestLaunchK3sServerVM_UserDataContainsAllArtifacts(t *testing.T) {

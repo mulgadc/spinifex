@@ -18,6 +18,8 @@ func TestNameHelpers(t *testing.T) {
 		{"GatewayChassisRedirectPort", GatewayChassisRedirectPort("vpc-abc"), "cr-gw-vpc-abc"},
 		{"ExternalSwitch", ExternalSwitch("vpc-abc"), "ext-vpc-abc"},
 		{"ExternalLocalnetPort", ExternalLocalnetPort("vpc-abc"), "ext-port-vpc-abc"},
+		{"ExternalSwitchShared", ExternalSwitchShared(), "ext-shared"},
+		{"ExternalLocalnetPortShared", ExternalLocalnetPortShared(), "ext-port-shared"},
 		{"SecurityGroupPortGroup", SecurityGroupPortGroup("sg-abc-123"), "sg_abc_123"},
 		{"TransitSwitch", TransitSwitch("az-1", "vpc-abc"), "ts-az-1-vpc-abc"},
 		{"TransitRouterPort", TransitRouterPort("az-1", "vpc-abc"), "trp-az-1-vpc-abc"},

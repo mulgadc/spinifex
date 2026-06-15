@@ -387,8 +387,8 @@ func TestReconcile_IGWAttachWhenTopologyMissing(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if _, ok := m.Switches[topology.ExternalSwitch("vpc-a")]; !ok {
-		t.Errorf("external switch not created by reconciler AttachIGW path")
+	if _, ok := m.Switches[topology.ExternalSwitchShared()]; !ok {
+		t.Errorf("shared external switch not created by reconciler AttachIGW path")
 	}
 	gwPort := topology.GatewayRouterPort("vpc-a")
 	if _, ok := m.RouterPorts[gwPort]; !ok {

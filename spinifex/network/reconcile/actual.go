@@ -17,7 +17,7 @@ type ActualState struct {
 	Ports        map[string]struct{}
 	RouterPorts  map[string]struct{}
 	PortGroups   map[string]struct{}
-	ExternalSwch map[string]struct{} // vpcID → external switch present (spinifex:role=external)
+	ExternalSwch map[string]struct{} // vpcID → gateway attached to shared external switch (gw-port LSP, role=gateway)
 }
 
 func newActualState() ActualState {
@@ -50,11 +50,6 @@ func scanActual(ctx context.Context, client ovn.Client) (ActualState, error) {
 	}
 	for _, s := range switches {
 		actual.Switches[s.Name] = struct{}{}
-		if s.ExternalIDs["spinifex:role"] == "external" {
-			if vpcID := s.ExternalIDs["spinifex:vpc_id"]; vpcID != "" {
-				actual.ExternalSwch[vpcID] = struct{}{}
-			}
-		}
 		for _, port := range s.Ports {
 			actual.Ports[port] = struct{}{}
 		}
@@ -66,6 +61,13 @@ func scanActual(ctx context.Context, client ovn.Client) (ActualState, error) {
 	}
 	for _, rp := range routerPorts {
 		actual.RouterPorts[rp.Name] = struct{}{}
+		// The gateway LRP signals the VPC is attached to the shared external
+		// switch; the switch itself carries no vpc_id under the shared topology.
+		if rp.ExternalIDs["spinifex:role"] == "gateway" {
+			if vpcID := rp.ExternalIDs["spinifex:vpc_id"]; vpcID != "" {
+				actual.ExternalSwch[vpcID] = struct{}{}
+			}
+		}
 	}
 
 	portGroups, err := client.ListPortGroups(ctx)

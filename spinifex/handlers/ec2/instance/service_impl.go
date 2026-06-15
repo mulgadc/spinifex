@@ -523,11 +523,35 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		}
 	}
 
+	// Apply instance-scoped tags from TagSpecifications so DescribeInstances
+	// returns them and tag filters match. Node groups discover their workers by
+	// the spinifex:eks-cluster tag; scale-up convergence depends on it.
+	ec2Instance.Tags = instanceTagsFromSpec(input.TagSpecifications)
+
 	// Store EC2 API metadata in VM for DescribeInstances compatibility
 	instance.RunInstancesInput = input
 	instance.Instance = ec2Instance
 
 	return instance, ec2Instance, nil
+}
+
+// instanceTagsFromSpec extracts the instance-scoped tags from a RunInstances
+// TagSpecifications list. Only ResourceType "instance" applies to the launched
+// instance; volume/network-interface specs are handled elsewhere.
+func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
+	var tags []*ec2.Tag
+	for _, spec := range specs {
+		if spec == nil || aws.StringValue(spec.ResourceType) != "instance" {
+			continue
+		}
+		for _, t := range spec.Tags {
+			if t == nil || t.Key == nil {
+				continue
+			}
+			tags = append(tags, &ec2.Tag{Key: t.Key, Value: t.Value})
+		}
+	}
+	return tags
 }
 
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,

@@ -81,30 +81,46 @@ EOF
         --initdb \
         $ALPINE_PACKAGES
 
-# Strategy 2/3: container runtime (dev machines)
-else
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-        CONTAINER_TOOL=docker
-    elif command -v podman >/dev/null 2>&1; then
-        CONTAINER_TOOL=podman
-    else
-        echo "ERROR: no rootfs build tool available." >&2
-        echo "       Install one of: apk (Alpine), docker, podman" >&2
-        exit 1
-    fi
+# Strategy 2: docker -> BuildKit local export.
+# Do NOT use `docker export` here. On Docker's overlay2 driver it leaks the
+# container's overlay mount (the mount survives `docker rm`), orphaning layers
+# under /var/lib/docker that only a daemon restart reclaims; on a busy CI host
+# this grows without bound. `buildx --output type=local` writes the image
+# filesystem straight to a directory and releases every mount, so nothing leaks.
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    echo "[build-microvm-image] rootfs: docker buildx --output type=local (alpine:${ALPINE_VERSION})"
+    BUILD_CTX=$(mktemp -d)
+    cat > "$BUILD_CTX/Dockerfile" <<DOCKERFILE
+FROM alpine:${ALPINE_VERSION}
+RUN apk add --no-cache ${ALPINE_PACKAGES}
+DOCKERFILE
+    docker buildx build \
+        --platform linux/amd64 \
+        --output "type=local,dest=${CHROOT_DIR}" \
+        "$BUILD_CTX"
+    rm -rf "$BUILD_CTX"
 
-    echo "[build-microvm-image] rootfs: $CONTAINER_TOOL export (alpine:${ALPINE_VERSION})"
-    CONTAINER_CID=$($CONTAINER_TOOL run -d \
+# Strategy 3: podman -> run + export. Podman's store does not exhibit the docker
+# overlay2 export-mount leak, and podman has no buildx.
+elif command -v podman >/dev/null 2>&1; then
+    echo "[build-microvm-image] rootfs: podman export (alpine:${ALPINE_VERSION})"
+    CONTAINER_TOOL=podman
+    CONTAINER_CID=$(podman run -d \
         "alpine:${ALPINE_VERSION}" \
         sh -c "apk add --no-cache ${ALPINE_PACKAGES}")
 
-    exit_code=$($CONTAINER_TOOL wait "$CONTAINER_CID")
+    exit_code=$(podman wait "$CONTAINER_CID")
     if [ "$exit_code" != "0" ]; then
         echo "ERROR: package installation failed in container (exit $exit_code)" >&2
         exit 1
     fi
 
-    $CONTAINER_TOOL export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
+    podman export "$CONTAINER_CID" | tar -x -C "$CHROOT_DIR"
+
+else
+    echo "ERROR: no rootfs build tool available." >&2
+    echo "       Install one of: apk (Alpine), docker, podman" >&2
+    exit 1
 fi
 
 # --- /dev: empty mountpoint only ---

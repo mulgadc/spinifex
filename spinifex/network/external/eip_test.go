@@ -41,7 +41,7 @@ func TestEIPManager_AttachAndDetach(t *testing.T) {
 	require.NotNil(t, found)
 	assert.Equal(t, 1, barrierCalls)
 
-	require.NoError(t, mgr.DetachEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
+	require.NoError(t, mgr.DetachEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5", ""))
 	for _, n := range m.NATs {
 		assert.NotEqual(t, "10.0.0.5", n.LogicalIP)
 	}
@@ -59,5 +59,5 @@ func TestEIPManager_DetachIdempotent(t *testing.T) {
 	require.NoError(t, m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-1")}))
 	nm, _ := policy.NewNATManager(m, policy.NATModeDistributed)
 	mgr, _ := NewEIPManager(nm, nil)
-	require.NoError(t, mgr.DetachEIP(ctx, "vpc-1", "9.9.9.9", "10.0.0.99"))
+	require.NoError(t, mgr.DetachEIP(ctx, "vpc-1", "9.9.9.9", "10.0.0.99", ""))
 }

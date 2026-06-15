@@ -265,7 +265,7 @@ func (s *Subscriber) handleDeleteNAT(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.eip.DetachEIP(context.Background(), evt.VpcId, evt.ExternalIP, evt.LogicalIP); err != nil {
+	if err := s.eip.DetachEIP(context.Background(), evt.VpcId, evt.ExternalIP, evt.LogicalIP, evt.PortName); err != nil {
 		slog.Error("subscribers: DeleteEIP failed",
 			"vpc_id", evt.VpcId, "logical_ip", evt.LogicalIP, "err", err)
 		respond(msg, err)

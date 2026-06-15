@@ -38,9 +38,11 @@ type NATManager interface {
 
 	// DeleteEIP removes the (ExternalIP, LogicalIP) rule and flushes the host
 	// ARP entry for ExternalIP so a recycled IP is not shadowed by the stale
-	// MAC. Scoped to the pair so a stale delete for an IP since reassigned to a
-	// live owner is a no-op; idempotent.
-	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error
+	// MAC. portName, when set, owner-scopes the delete: a row whose stamped
+	// logical port differs has been reassigned to a live ENI, so the stale
+	// delete is a no-op even when the (ExternalIP, LogicalIP) pair recycles
+	// identically. Idempotent.
+	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
 	AddNATGateway(ctx context.Context, gw NATGWSpec) error
@@ -151,6 +153,12 @@ func (m *natManager) AddEIP(ctx context.Context, eip EIPSpec) error {
 			"spinifex:public_ip": eip.ExternalIP,
 		},
 	}
+	// Stamp the owning ENI port so DeleteEIP can owner-scope a stale delete.
+	// Centralised mode leaves the native LogicalPort unset, so the ExternalID
+	// is the portable discriminator across both NAT modes.
+	if eip.PortName != "" {
+		natRule.ExternalIDs["spinifex:logical_port"] = eip.PortName
+	}
 	distributed := m.mode == NATModeDistributed && eip.PortName != "" && eip.MAC != ""
 	if distributed {
 		mac := eip.MAC
@@ -225,30 +233,38 @@ func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
 	return lrp.MAC
 }
 
-func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {
+func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP, portName string) error {
 	router := topology.VPCRouter(vpcID)
 	// An empty external IP means there is no EIP and therefore no dnat_and_snat
 	// row to remove.
 	if externalIP == "" {
 		return nil
 	}
-	// Scope the delete to the (external_ip, logical_ip) pair. External IPs are
-	// recycled from the pool as instances come and go, and vpc.delete-nat is
-	// fire-and-forget plus re-emitted by the GC teardown sweep, so a stale or
-	// duplicated delete can arrive after the IP has been reassigned to a live
-	// instance. Deleting by external IP alone would tear down the new owner's
-	// rule and ARP entry. When the current row maps to a different logical IP
-	// the delete is stale — skip it and the ARP flush so the live owner survives.
-	if logicalIP != "" {
+	// Scope the delete to the (external_ip, logical_ip) pair and, when known, the
+	// owning ENI port. External IPs are recycled from the pool as instances come
+	// and go, and vpc.delete-nat is fire-and-forget plus re-emitted by the GC
+	// teardown sweep, so a stale or duplicated delete can arrive after the IP —
+	// and even the identical private IP — has been reassigned to a live instance.
+	// Deleting on a pair that recycled identically would tear down the new owner's
+	// rule and ARP entry; the stamped logical port is the discriminator that
+	// survives identical-pair reuse.
+	if logicalIP != "" || portName != "" {
 		existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", externalIP)
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("policy: DeleteEIP ownership lookup failed, proceeding with delete",
 				"external_ip", externalIP, "logical_ip", logicalIP, "err", err)
-		} else if existing == nil {
+		case existing == nil:
 			return nil
-		} else if existing.LogicalIP != logicalIP {
+		case logicalIP != "" && existing.LogicalIP != logicalIP:
 			slog.Info("policy: DeleteEIP skip — external IP reassigned to a different logical IP (stale delete)",
 				"external_ip", externalIP, "stale_logical_ip", logicalIP, "current_logical_ip", existing.LogicalIP)
+			return nil
+		case portName != "" && existing.ExternalIDs["spinifex:logical_port"] != "" &&
+			existing.ExternalIDs["spinifex:logical_port"] != portName:
+			slog.Info("policy: DeleteEIP skip — external IP reassigned to a different ENI (stale delete)",
+				"external_ip", externalIP, "stale_port", portName,
+				"current_port", existing.ExternalIDs["spinifex:logical_port"])
 			return nil
 		}
 	}

@@ -141,7 +141,7 @@ func TestNATManager_NeighPrime_OnDistributedAttach_FlushOnDetach(t *testing.T) {
 		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
 	}
 	require.NoError(t, nm.AddEIP(ctx, spec))
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5", ""))
 
 	require.Equal(t, []EIPSpec{spec}, primed,
 		"distributed attach must prime the host neighbour with the external_mac, not flush")
@@ -215,7 +215,7 @@ func TestNATManager_NeighHooks_FailureNonFatal(t *testing.T) {
 		VPCID: "vpc-1", ExternalIP: "1.2.3.4", LogicalIP: "10.0.0.5",
 		PortName: "port-eni-abc", MAC: "aa:bb:cc:dd:ee:ff",
 	}), "neigh prime failure must not propagate from AddEIP")
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"),
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5", ""),
 		"neigh flush failure must not propagate from DeleteEIP")
 }
 
@@ -316,7 +316,7 @@ func TestNATManager_DeleteEIP_IdempotentOnMissing(t *testing.T) {
 	nm, _ := NewNATManager(m, NATModeDistributed)
 
 	// No prior AddEIP — delete should still succeed.
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "1.2.3.4", "10.0.0.5", ""))
 }
 
 func TestNATManager_AddNATGateway_FlowsBarrier_Fires(t *testing.T) {
@@ -415,7 +415,7 @@ func TestNATManager_DeleteEIP_CrossRouterIsolation(t *testing.T) {
 		PortName: "port-b", MAC: "bb:bb:bb:bb:bb:bb",
 	}))
 
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "1.1.1.1", "10.0.0.5"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-a", "1.1.1.1", "10.0.0.5", ""))
 
 	var survived *nbdb.NAT
 	for _, n := range m.NATs {
@@ -444,7 +444,7 @@ func TestNATManager_DeleteEIP_RecycledLogicalIP_NoClobber(t *testing.T) {
 	}))
 
 	// Stale delete for an earlier EIP (.172) on the same recycled private IP.
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.172", "172.31.0.4"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.172", "172.31.0.4", ""))
 
 	got := findNAT(m, "dnat_and_snat", "172.31.0.4")
 	require.NotNil(t, got, "live EIP row must survive a stale delete for a recycled private IP")
@@ -475,12 +475,50 @@ func TestNATManager_DeleteEIP_RecycledExternalIP_NoClobber(t *testing.T) {
 	flushed = nil
 
 	// Stale GC teardown of the dead prior owner (172.31.0.4) of the same IP.
-	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.201", "172.31.0.4"))
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.201", "172.31.0.4", ""))
 
 	got := findNAT(m, "dnat_and_snat", "172.31.0.5")
 	require.NotNil(t, got, "live owner's row must survive a stale delete for the recycled external IP")
 	assert.Equal(t, "192.168.0.201", got.ExternalIP)
 	assert.Empty(t, flushed, "stale delete must not flush the live owner's host ARP")
+}
+
+// TestNATManager_DeleteEIP_RecycledIdenticalPair_OwnerScoped guards the residual
+// race left by the (external_ip, logical_ip) pair-key: a terminated instance and
+// a live one hold the IDENTICAL public+private pair in the same VPC, so the pair
+// matches and the logical-IP guard falls through. The stamped logical port is the
+// only discriminator — a stale delete carrying the dead instance's port must be a
+// no-op, while a delete for the live owner's own port still removes the row.
+func TestNATManager_DeleteEIP_RecycledIdenticalPair_OwnerScoped(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
+	require.NoError(t, err)
+
+	// Live owner: 192.168.1.93 → 172.31.0.4 on the live ENI's port.
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.1.93", LogicalIP: "172.31.0.4",
+		PortName: "port-live",
+	}))
+	flushed = nil
+
+	// Stale GC teardown of the terminated owner: identical pair, dead ENI port.
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.1.93", "172.31.0.4", "port-dead"))
+	got := findNAT(m, "dnat_and_snat", "172.31.0.4")
+	require.NotNil(t, got, "live owner's row must survive a stale delete for the recycled identical pair")
+	assert.Equal(t, "192.168.1.93", got.ExternalIP)
+	assert.Empty(t, flushed, "stale identical-pair delete must not flush the live owner's host ARP")
+
+	// The live owner's own delete (matching port) still removes the row.
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.1.93", "172.31.0.4", "port-live"))
+	assert.Nil(t, findNAT(m, "dnat_and_snat", "172.31.0.4"),
+		"a delete carrying the owning port must remove the row")
 }
 
 func TestNATManager_AddSNAT_AndDelete(t *testing.T) {

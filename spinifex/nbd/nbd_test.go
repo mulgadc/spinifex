@@ -233,6 +233,44 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_EncryptionKeyFileForwarded(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:            "/tmp/nbd.sock",
+		PidFile:           "/tmp/nbd.pid",
+		PluginPath:        "/plugin.so",
+		EncryptionKeyFile: "/etc/spinifex/viperblock/encryption.key",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "encryption_key_file=/etc/spinifex/viperblock/encryption.key"
+	if indexOf(args, want) < 0 {
+		t.Errorf("expected %q in args, got: %v", want, args)
+	}
+}
+
+func TestBuildArgs_EncryptionKeyFileOmittedWhenEmpty(t *testing.T) {
+	cfg := &NBDKitConfig{
+		Socket:     "/tmp/nbd.sock",
+		PidFile:    "/tmp/nbd.pid",
+		PluginPath: "/plugin.so",
+	}
+
+	args, err := cfg.buildArgs()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, arg := range args {
+		if len(arg) >= 19 && arg[:19] == "encryption_key_file" {
+			t.Errorf("encryption_key_file must be absent when unset, got: %q", arg)
+		}
+	}
+}
+
 func assertArgs(t *testing.T, expected, got []string) {
 	t.Helper()
 	if len(expected) != len(got) {

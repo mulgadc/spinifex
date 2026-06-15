@@ -290,12 +290,8 @@ github.com/muesli/termenv v0.16.0 h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc
 github.com/muesli/termenv v0.16.0/go.mod h1:ZRfOIKPFDYQoDFF4Olj7/QJbW60Ol/kL1pU3VfY/Cnk=
 github.com/mulgadc/predastore v1.7.1-0.20260612051752-c013cb87f908 h1:YJR9m17PO1ElOy+GfBg+izTy+h4v+6gZQh9/6EIUWZQ=
 github.com/mulgadc/predastore v1.7.1-0.20260612051752-c013cb87f908/go.mod h1:0334T4L4Dby54TCuugpumyOhtvHQX+WSxQ/REDNSk9o=
-github.com/mulgadc/viperblock v1.7.1-0.20260615044505-1044c2a305f6 h1:KWbWT8jOEW4+Q/WKIiRQiJkuGj2hXfoQV1jD+zoajV8=
-github.com/mulgadc/viperblock v1.7.1-0.20260615044505-1044c2a305f6/go.mod h1:F/LOVydipnyjX9QMkAuf/gjdWeYjaniGHU4emwJwq+U=
-github.com/mulgadc/viperblock v1.7.1-0.20260615070035-bf7c9bdcba58 h1:sfwW9ZK08QpWtG4AmZNAGNLUHyTRMBHNMtXQwoR+97M=
-github.com/mulgadc/viperblock v1.7.1-0.20260615070035-bf7c9bdcba58/go.mod h1:F/LOVydipnyjX9QMkAuf/gjdWeYjaniGHU4emwJwq+U=
-github.com/mulgadc/viperblock v1.7.1-0.20260615093820-b09d25e2dca6 h1:79M/6ffHjQ8/GMkAhyUcsgdpuvc2xoan8wrvtoHkZvk=
-github.com/mulgadc/viperblock v1.7.1-0.20260615093820-b09d25e2dca6/go.mod h1:F/LOVydipnyjX9QMkAuf/gjdWeYjaniGHU4emwJwq+U=
+github.com/mulgadc/viperblock v1.7.1-0.20260615121352-3ca32581b809 h1:jYcLBJGonjlMeHlR5P70AUC3Miw1U0cYs73vZ0qiFDw=
+github.com/mulgadc/viperblock v1.7.1-0.20260615121352-3ca32581b809/go.mod h1:F/LOVydipnyjX9QMkAuf/gjdWeYjaniGHU4emwJwq+U=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=

@@ -1798,14 +1798,16 @@ func (f *fakeENIDeleter) DeleteNetworkInterface(input *ec2.DeleteNetworkInterfac
 }
 
 type fakePublicIPReleaser struct {
-	pool string
-	ip   string
-	err  error
+	pool     string
+	ip       string
+	ownerENI string
+	err      error
 }
 
-func (f *fakePublicIPReleaser) ReleaseIP(pool, ip string) error {
+func (f *fakePublicIPReleaser) ReleaseIP(pool, ip, ownerENIID string) error {
 	f.pool = pool
 	f.ip = ip
+	f.ownerENI = ownerENIID
 	return f.err
 }
 

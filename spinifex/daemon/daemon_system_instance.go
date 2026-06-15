@@ -244,7 +244,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
 				}
-				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP); relErr != nil {
+				if relErr := d.externalIPAM.ReleaseIP(poolName, publicIP, instance.ENIId); relErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to release public IP during NAT-failure rollback",
 						"publicIp", publicIP, "pool", poolName, "err", relErr)
 				}

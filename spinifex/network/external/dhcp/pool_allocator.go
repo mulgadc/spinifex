@@ -82,8 +82,10 @@ func (a *DHCPPoolAllocator) Allocate(ctx context.Context, req external.AllocateR
 }
 
 // Release issues vpc.dhcp.release for ip. Errors if poolName doesn't match
-// this allocator's pool to prevent cross-pool release.
-func (a *DHCPPoolAllocator) Release(ctx context.Context, poolName string, ip netip.Addr) error {
+// this allocator's pool to prevent cross-pool release. ownerENIID is unused:
+// DHCP leases are keyed by client-ID, not ENI, so ownership scoping does not
+// apply.
+func (a *DHCPPoolAllocator) Release(ctx context.Context, poolName string, ip netip.Addr, _ string) error {
 	if a == nil || a.client == nil {
 		return errors.New("dhcp pool allocator: nil client")
 	}

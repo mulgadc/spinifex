@@ -246,7 +246,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(eniId, accountID string, force b
 		} else {
 			portName := topology.Port(eniId)
 			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
-			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress); err != nil {
+			if err := s.externalIPAM.ReleaseIP(record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
 				slog.Warn("Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
 			} else {
 				slog.Info("Released auto-assigned public IP during ENI delete", "eniId", eniId, "publicIp", record.PublicIpAddress, "pool", record.PublicIpPool)

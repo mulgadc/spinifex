@@ -60,7 +60,7 @@ func TestExternalIPAM_GatewayIPReserved(t *testing.T) {
 	assert.Equal(t, PurposeIGWLRP, alloc.Purpose)
 
 	// Cannot release gateway IP
-	err = ipam.ReleaseIP("wan", "192.168.1.150")
+	err = ipam.ReleaseIP("wan", "192.168.1.150", "")
 	assert.ErrorContains(t, err, "cannot release gateway IP")
 }
 
@@ -97,7 +97,7 @@ func TestExternalIPAM_Release(t *testing.T) {
 	assert.Equal(t, "192.168.1.152", ip2)
 
 	// Release first
-	err = ipam.ReleaseIP("wan", "192.168.1.151")
+	err = ipam.ReleaseIP("wan", "192.168.1.151", "")
 	require.NoError(t, err)
 
 	// Round-robin: a released IP is NOT reused immediately. Allocation resumes
@@ -360,7 +360,7 @@ func TestExternalIPAM_ReleaseNotAllocated(t *testing.T) {
 	pool := testPool()
 	ipam := setupTestExternalIPAM(t, []ExternalPoolConfig{pool})
 
-	err := ipam.ReleaseIP("wan", "192.168.1.200")
+	err := ipam.ReleaseIP("wan", "192.168.1.200", "")
 	assert.ErrorContains(t, err, "not allocated")
 }
 

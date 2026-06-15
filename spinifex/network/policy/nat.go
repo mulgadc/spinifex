@@ -36,9 +36,10 @@ type NATManager interface {
 	// same ExternalIP on any router first (pool reuse across VPCs).
 	AddEIP(ctx context.Context, eip EIPSpec) error
 
-	// DeleteEIP removes the rule by LogicalIP and flushes the host ARP entry
-	// for ExternalIP so a recycled IP is not shadowed by the stale MAC;
-	// idempotent.
+	// DeleteEIP removes the (ExternalIP, LogicalIP) rule and flushes the host
+	// ARP entry for ExternalIP so a recycled IP is not shadowed by the stale
+	// MAC. Scoped to the pair so a stale delete for an IP since reassigned to a
+	// live owner is a no-op; idempotent.
 	DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error
 
 	// AddNATGateway installs the (snat, SubnetCIDR) rule; rejects overlap.
@@ -226,13 +227,30 @@ func (m *natManager) gatewayPortMAC(ctx context.Context, vpcID string) string {
 
 func (m *natManager) DeleteEIP(ctx context.Context, vpcID, externalIP, logicalIP string) error {
 	router := topology.VPCRouter(vpcID)
-	// Delete the dnat_and_snat row by its external IP, not its logical IP. A row's
-	// identity on the gateway router is the EIP; private IPs are recycled as instances
-	// come and go, so a stale or retried delete keyed on logical IP clobbers whichever
-	// EIP currently holds that private IP (the next owner goes dark). An empty external
-	// IP means there is no EIP and therefore no dnat_and_snat row to remove.
+	// An empty external IP means there is no EIP and therefore no dnat_and_snat
+	// row to remove.
 	if externalIP == "" {
 		return nil
+	}
+	// Scope the delete to the (external_ip, logical_ip) pair. External IPs are
+	// recycled from the pool as instances come and go, and vpc.delete-nat is
+	// fire-and-forget plus re-emitted by the GC teardown sweep, so a stale or
+	// duplicated delete can arrive after the IP has been reassigned to a live
+	// instance. Deleting by external IP alone would tear down the new owner's
+	// rule and ARP entry. When the current row maps to a different logical IP
+	// the delete is stale — skip it and the ARP flush so the live owner survives.
+	if logicalIP != "" {
+		existing, err := m.ovn.FindNATByExternalIP(ctx, "dnat_and_snat", externalIP)
+		if err != nil {
+			slog.Warn("policy: DeleteEIP ownership lookup failed, proceeding with delete",
+				"external_ip", externalIP, "logical_ip", logicalIP, "err", err)
+		} else if existing == nil {
+			return nil
+		} else if existing.LogicalIP != logicalIP {
+			slog.Info("policy: DeleteEIP skip — external IP reassigned to a different logical IP (stale delete)",
+				"external_ip", externalIP, "stale_logical_ip", logicalIP, "current_logical_ip", existing.LogicalIP)
+			return nil
+		}
 	}
 	if err := m.ovn.DeleteNATByExternalIP(ctx, router, "dnat_and_snat", externalIP); err != nil {
 		if !errors.Is(err, ovn.ErrNATNotFound) {

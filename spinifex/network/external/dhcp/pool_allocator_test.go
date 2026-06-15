@@ -48,7 +48,7 @@ func TestDHCPPoolAllocatorAllocateAndRelease(t *testing.T) {
 	assert.Equal(t, dhcp.PurposeEIP, entry.Purpose)
 	assert.Equal(t, "wan", entry.PoolName)
 
-	require.NoError(t, allocator.Release(context.Background(), "wan", addr))
+	require.NoError(t, allocator.Release(context.Background(), "wan", addr, ""))
 	_, err = store.Get("eipalloc-1")
 	assert.Error(t, err)
 	assert.Equal(t, 1, fake.ReleaseCount())
@@ -113,6 +113,6 @@ func TestDHCPPoolAllocatorReleaseUnknownIPIsNoop(t *testing.T) {
 	allocator, _ := newPoolAllocator(t, fake, pool)
 
 	addr := netip.MustParseAddr("198.51.100.99")
-	assert.NoError(t, allocator.Release(context.Background(), "wan", addr))
+	assert.NoError(t, allocator.Release(context.Background(), "wan", addr, ""))
 	assert.Equal(t, 0, fake.ReleaseCount())
 }

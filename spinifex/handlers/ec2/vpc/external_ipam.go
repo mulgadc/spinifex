@@ -134,7 +134,9 @@ func (m *ExternalIPAM) allocateFromPool(poolName, purpose, allocID, eniID, insta
 }
 
 // ReleaseIP releases a previously allocated external IP back to its pool.
-func (m *ExternalIPAM) ReleaseIP(poolName, ip string) error {
+// ownerENIID, when non-empty, scopes the release to the ENI that currently owns
+// the lease so a stale or duplicated teardown for a recycled IP is a no-op.
+func (m *ExternalIPAM) ReleaseIP(poolName, ip, ownerENIID string) error {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return fmt.Errorf("parse release IP %q: %w", ip, err)
@@ -143,7 +145,7 @@ func (m *ExternalIPAM) ReleaseIP(poolName, ip string) error {
 	if err != nil {
 		return err
 	}
-	return alloc.Release(context.Background(), poolName, addr)
+	return alloc.Release(context.Background(), poolName, addr, ownerENIID)
 }
 
 // GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced

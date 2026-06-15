@@ -94,9 +94,10 @@ type ENIDeleter interface {
 }
 
 // PublicIPReleaser releases a previously allocated public IP back to a pool.
-// Implemented by handlers/ec2/vpc.ExternalIPAM.
+// Implemented by handlers/ec2/vpc.ExternalIPAM. ownerENIID scopes the release
+// to the ENI that owns the lease so a stale teardown for a recycled IP no-ops.
 type PublicIPReleaser interface {
-	ReleaseIP(pool, ip string) error
+	ReleaseIP(pool, ip, ownerENIID string) error
 }
 
 // AMIMetaLoader resolves an AMI ID to its metadata for ownership/validation

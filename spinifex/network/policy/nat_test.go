@@ -451,6 +451,38 @@ func TestNATManager_DeleteEIP_RecycledLogicalIP_NoClobber(t *testing.T) {
 	assert.Equal(t, "192.168.0.174", got.ExternalIP, "the surviving row must be the live EIP")
 }
 
+// TestNATManager_DeleteEIP_RecycledExternalIP_NoClobber guards the proven flake:
+// a public IP is recycled from a terminated instance to a live one, then the
+// dead instance's delayed GC teardown publishes vpc.delete-nat for that external
+// IP carrying the OLD logical IP. The delete must be a no-op — deleting by
+// external IP alone would tear down the live owner's NAT (and ARP).
+func TestNATManager_DeleteEIP_RecycledExternalIP_NoClobber(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	seedRouter(t, m, "vpc-1")
+	var flushed []string
+	nm, err := NewNATManager(m, NATModeCentralized,
+		WithNeighFlusher(func(externalIP string) error {
+			flushed = append(flushed, externalIP)
+			return nil
+		}))
+	require.NoError(t, err)
+
+	// Live instance now owns 192.168.0.201 → 172.31.0.5.
+	require.NoError(t, nm.AddEIP(ctx, EIPSpec{
+		VPCID: "vpc-1", ExternalIP: "192.168.0.201", LogicalIP: "172.31.0.5",
+	}))
+	flushed = nil
+
+	// Stale GC teardown of the dead prior owner (172.31.0.4) of the same IP.
+	require.NoError(t, nm.DeleteEIP(ctx, "vpc-1", "192.168.0.201", "172.31.0.4"))
+
+	got := findNAT(m, "dnat_and_snat", "172.31.0.5")
+	require.NotNil(t, got, "live owner's row must survive a stale delete for the recycled external IP")
+	assert.Equal(t, "192.168.0.201", got.ExternalIP)
+	assert.Empty(t, flushed, "stale delete must not flush the live owner's host ARP")
+}
+
 func TestNATManager_AddSNAT_AndDelete(t *testing.T) {
 	ctx := context.Background()
 	m := mock.New()

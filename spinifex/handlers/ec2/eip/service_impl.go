@@ -141,8 +141,9 @@ func (s *EIPServiceImpl) ReleaseAddress(input *ec2.ReleaseAddressInput, accountI
 		return nil, errors.New(awserrors.ErrorInvalidAddressLocked)
 	}
 
-	// Release IP back to IPAM pool.
-	if err := s.externalIPAM.ReleaseIP(record.PoolName, record.PublicIp); err != nil {
+	// Release IP back to IPAM pool. User-driven release of an already-detached
+	// EIP — unconditional (no owner ENI to scope to).
+	if err := s.externalIPAM.ReleaseIP(record.PoolName, record.PublicIp, ""); err != nil {
 		slog.Warn("Failed to release IP back to IPAM pool", "allocationId", allocID, "ip", record.PublicIp, "pool", record.PoolName, "err", err)
 	}
 

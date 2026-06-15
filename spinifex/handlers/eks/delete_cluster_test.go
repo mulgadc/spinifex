@@ -265,3 +265,42 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 	assert.Equal(t, ClusterStatusDeleting, meta.Status)
 	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
 }
+
+// TestDeleteClusterSingleFlightLoserSkipsTeardown locks mulga-siv-295.12: when a
+// concurrent handler already holds the per-cluster teardown lease (an SDK retry
+// fanned to another worker), DeleteCluster must return the cluster as DELETING
+// without running purgeClusterInfra — no duplicate ENI/NLB/EIP teardown — and
+// must leave the meta for the lease holder to sweep.
+func TestDeleteClusterSingleFlightLoserSkipsTeardown(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	// Stand in for the winning handler: hold the teardown lease.
+	_, err := f.svc.leaderKV.Create(teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
+	require.NoError(t, err)
+
+	out, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.Cluster)
+	assert.Equal(t, string(ClusterStatusDeleting), aws.StringValue(out.Cluster.Status),
+		"the loser must report the cluster as DELETING (AWS-async delete semantics)")
+
+	assert.Empty(t, f.inst.terminateCalls, "the loser must not terminate the CP VM — the lease holder owns the teardown")
+	assert.Empty(t, f.eip.releaseCalls, "the loser must not release the billable EIP")
+
+	meta, getErr := GetClusterMeta(f.kv, "alpha")
+	require.NoError(t, getErr, "the loser must leave the meta for the lease holder to sweep")
+	assert.Equal(t, ClusterStatusCreating, meta.Status, "the loser must not mutate KV state; the winner owns the DELETING transition")
+}
+
+// TestDeleteClusterWinnerReleasesTeardownLease: a successful synchronous delete
+// must release the teardown lease so a later delete or the backstop reaper can
+// re-acquire it (a leaked lease would wedge every future teardown until TTL).
+func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
+	f := newDeleteClusterFixture(t, "alpha")
+
+	_, err := f.svc.DeleteCluster(deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+
+	_, getErr := f.svc.leaderKV.Get(teardownLeaderKey(testAccountID, "alpha"))
+	assert.ErrorIs(t, getErr, nats.ErrKeyNotFound, "the teardown lease must be released after a successful delete")
+}

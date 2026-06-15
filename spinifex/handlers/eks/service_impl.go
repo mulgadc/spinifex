@@ -698,6 +698,19 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 		return nil, err
 	}
 
+	// Single-flight the teardown: SDK retries of the same DeleteCluster are fanned
+	// across nodes by the worker queue group, so without this gate multiple
+	// purgeClusterInfra runs race the same cluster (duplicate ENI/NLB teardown,
+	// risking a double-release on the billable NAT-GW EIP). The loser returns the
+	// cluster as DELETING — AWS-async delete semantics — and the winner (or the
+	// DELETING backstop reaper) drives the teardown to completion.
+	release, ok := s.acquireTeardownLease(accountID, name)
+	if !ok {
+		meta.Status = ClusterStatusDeleting
+		return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+	}
+	defer release()
+
 	if err := SetClusterStatus(acctKV, name, ClusterStatusDeleting); err != nil {
 		return nil, fmt.Errorf("set DELETING: %w", err)
 	}
@@ -710,6 +723,36 @@ func (s *EKSServiceImpl) DeleteCluster(input *eks.DeleteClusterInput, accountID 
 	}
 
 	return &eks.DeleteClusterOutput{Cluster: clusterMetaToAWS(meta)}, nil
+}
+
+// teardownLeaderKey is the per-cluster single-flight gate for a DELETING
+// teardown. It is distinct from reconcilerLeaderKey so a delete never contends
+// with the still-live reconciler, which holds the reconciler lease until it
+// observes DELETING and exits; only concurrent purgeClusterInfra runs meet here.
+func teardownLeaderKey(accountID, clusterName string) string {
+	return reconcilerLeaderKey(accountID, clusterName) + "/teardown"
+}
+
+// acquireTeardownLease takes the per-cluster teardown lease so only one
+// purgeClusterInfra runs at a time for a cluster — the gate against the
+// concurrent-handler herd from SDK-retried DeleteClusters fanned across nodes by
+// the worker queue group. Shared by the synchronous DeleteCluster path and the
+// DELETING backstop reaper. CAS Create fails when another holder owns it. A nil
+// leaderKV (single-node/test) skips gating; the bucket TTL reaps a lease whose
+// release never runs.
+func (s *EKSServiceImpl) acquireTeardownLease(accountID, clusterName string) (func(), bool) {
+	if s.leaderKV == nil {
+		return func() {}, true
+	}
+	key := teardownLeaderKey(accountID, clusterName)
+	if _, err := s.leaderKV.Create(key, []byte(s.deps.HolderID)); err != nil {
+		return nil, false
+	}
+	return func() {
+		if err := s.leaderKV.Delete(key); err != nil {
+			slog.Warn("eks: teardown lease release failed (TTL will reap)", "key", key, "err", err)
+		}
+	}, true
 }
 
 // claimClusterName atomically claims the cluster meta key before any launch work.

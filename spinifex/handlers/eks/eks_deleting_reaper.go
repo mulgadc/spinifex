@@ -97,9 +97,9 @@ func (r *EKSDeletingReaper) reapCluster(accountID string, acctKV nats.KeyValue, 
 		return 0, nil // still within the in-flight synchronous-delete window
 	}
 
-	release, ok := r.acquireClusterLease(accountID, cluster)
+	release, ok := r.svc.acquireTeardownLease(accountID, cluster)
 	if !ok {
-		return 0, nil // the active reconciler or another node owns this teardown
+		return 0, nil // a synchronous delete or another node's reaper owns this teardown
 	}
 	defer release()
 
@@ -110,23 +110,4 @@ func (r *EKSDeletingReaper) reapCluster(accountID string, acctKV nats.KeyValue, 
 	}
 	slog.Info("eks-deleting: teardown completed, meta swept", "cluster", cluster, "account", accountID)
 	return 1, nil
-}
-
-// acquireClusterLease takes the per-cluster reconciler leader lease so the
-// backstop never re-drives a teardown concurrently with the active reconciler or
-// another node's reaper. A nil leaderKV (single-node/test) skips gating. The
-// bucket TTL reaps the lease if release does not run.
-func (r *EKSDeletingReaper) acquireClusterLease(accountID, cluster string) (func(), bool) {
-	if r.svc.leaderKV == nil {
-		return func() {}, true
-	}
-	key := reconcilerLeaderKey(accountID, cluster)
-	if _, err := r.svc.leaderKV.Create(key, []byte(r.svc.deps.HolderID)); err != nil {
-		return nil, false
-	}
-	return func() {
-		if err := r.svc.leaderKV.Delete(key); err != nil {
-			slog.Warn("eks-deleting: lease release failed (TTL will reap)", "key", key, "err", err)
-		}
-	}, true
 }

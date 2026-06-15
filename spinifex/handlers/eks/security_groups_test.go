@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,6 +14,7 @@ import (
 )
 
 type fakeSGProvisioner struct {
+	mu             sync.Mutex
 	createCalls    []*ec2.CreateSecurityGroupInput
 	describeCalls  []*ec2.DescribeSecurityGroupsInput
 	deleteCalls    []*ec2.DeleteSecurityGroupInput
@@ -39,6 +41,8 @@ func newFakeSGProvisioner() *fakeSGProvisioner {
 }
 
 func (f *fakeSGProvisioner) CreateSecurityGroup(input *ec2.CreateSecurityGroupInput, _ string) (*ec2.CreateSecurityGroupOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.createCalls = append(f.createCalls, input)
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -55,6 +59,8 @@ func (f *fakeSGProvisioner) CreateSecurityGroup(input *ec2.CreateSecurityGroupIn
 }
 
 func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGroupsInput, _ string) (*ec2.DescribeSecurityGroupsOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.describeCalls = append(f.describeCalls, input)
 	if f.describeErr != nil {
 		return nil, f.describeErr
@@ -80,6 +86,8 @@ func (f *fakeSGProvisioner) DescribeSecurityGroups(input *ec2.DescribeSecurityGr
 }
 
 func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupInput, _ string) (*ec2.DeleteSecurityGroupOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleteCalls = append(f.deleteCalls, input)
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
@@ -88,6 +96,8 @@ func (f *fakeSGProvisioner) DeleteSecurityGroup(input *ec2.DeleteSecurityGroupIn
 }
 
 func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(input *ec2.AuthorizeSecurityGroupIngressInput, _ string) (*ec2.AuthorizeSecurityGroupIngressOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.authorizeCalls = append(f.authorizeCalls, input)
 	if f.authorizeErr != nil {
 		return nil, f.authorizeErr

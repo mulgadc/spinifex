@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -18,8 +19,10 @@ import (
 
 // fakeWorkerLauncher records RunWorkerInstance / TerminateWorkerInstances calls
 // and hands back sequential instance IDs so tests can assert on the IDs a
-// nodegroup tracks.
+// nodegroup tracks. It is mutex-guarded so concurrent-reconcile tests exercise
+// the production CAS path, not a race in the fake.
 type fakeWorkerLauncher struct {
+	mu             sync.Mutex
 	runCalls       []*ec2.RunInstancesInput
 	terminateCalls [][]string
 
@@ -35,6 +38,8 @@ func newFakeWorkerLauncher() *fakeWorkerLauncher {
 }
 
 func (f *fakeWorkerLauncher) RunWorkerInstance(input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.runCalls = append(f.runCalls, input)
 	if f.runErr != nil {
 		return nil, f.runErr
@@ -45,8 +50,28 @@ func (f *fakeWorkerLauncher) RunWorkerInstance(input *ec2.RunInstancesInput, _ s
 }
 
 func (f *fakeWorkerLauncher) TerminateWorkerInstances(ids []string, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.terminateCalls = append(f.terminateCalls, ids)
 	return f.termErr
+}
+
+// runCount / terminatedCount return the recorded call totals under the lock so
+// concurrent tests can read them safely after joining.
+func (f *fakeWorkerLauncher) runCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.runCalls)
+}
+
+func (f *fakeWorkerLauncher) terminatedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int
+	for _, ids := range f.terminateCalls {
+		n += len(ids)
+	}
+	return n
 }
 
 // seedActiveClusterWithToken lays down an ACTIVE cluster meta with the control-
@@ -410,6 +435,51 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	rec, err = GetNodegroupRecord(f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Len(t, rec.InstanceIDs, 1)
+}
+
+// TestUpdateNodegroupConfig_ConcurrentScaleUpConverges proves the CAS reconcile
+// fixes the lost-update overshoot: two overlapping scale-up requests (UI +
+// terraform retry) must converge to exactly desired, not double-launch. Pre-fix
+// each read current=1 and launched desired-current=2, yielding 5 live workers.
+func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	markWorkersReady(t, f, "c1", 1)
+	f.svc.WaitLaunches()
+	require.Len(t, f.worker.runCalls, 1)
+
+	const goroutines = 2
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, goroutines)
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, errs[idx] = f.svc.UpdateNodegroupConfig(&eks.UpdateNodegroupConfigInput{
+				ClusterName:   aws.String("c1"),
+				NodegroupName: aws.String("ng1"),
+				ScalingConfig: &eks.NodegroupScalingConfig{DesiredSize: aws.Int64(3)},
+			}, testAccountID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for _, e := range errs {
+		require.NoError(t, e)
+	}
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Len(t, rec.InstanceIDs, 3, "record must converge to desired=3, not overshoot")
+
+	// Net live workers (Run − Terminate) must equal desired: a surplus VM launched
+	// under the exact-boundary race is terminated, never left running.
+	assert.Equal(t, 3, f.worker.runCount()-f.worker.terminatedCount(),
+		"net live workers must equal desired=3")
 }
 
 func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,6 +138,7 @@ func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
 }
 
 type fakeK3sAMI struct {
+	mu            sync.Mutex
 	describeCalls []*ec2.DescribeImagesInput
 
 	describeOut *ec2.DescribeImagesOutput
@@ -146,6 +148,8 @@ type fakeK3sAMI struct {
 var _ k3sAMIResolver = (*fakeK3sAMI)(nil)
 
 func (f *fakeK3sAMI) DescribeImages(input *ec2.DescribeImagesInput, _ string) (*ec2.DescribeImagesOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.describeCalls = append(f.describeCalls, input)
 	if f.describeErr != nil {
 		return nil, f.describeErr

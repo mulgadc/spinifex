@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +32,10 @@ const (
 	defaultNodegroupReadyTimeout = 10 * time.Minute
 	defaultNodegroupReadyPoll    = 15 * time.Second
 )
+
+// ngCASMaxRetries bounds the compare-and-swap retry loop that serializes
+// concurrent nodegroup-record mutations (overlapping UpdateNodegroupConfig).
+const ngCASMaxRetries = 16
 
 // ErrNodegroupNotFound is returned by GetNodegroupRecord when the record key is
 // absent. Callers translate to the AWS shape (ResourceNotFoundException) at the
@@ -382,57 +387,17 @@ func (s *EKSServiceImpl) waitWorkersReady(acctKV nats.KeyValue, cluster string, 
 // the launched instance IDs. On a partial failure it returns the IDs that did
 // launch plus the error so the caller can persist them for teardown.
 func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
-	instanceType := defaultNodegroupInstanceType
-	if len(rec.InstanceTypes) > 0 {
-		instanceType = rec.InstanceTypes[0]
-	}
-	subnet := rec.Subnets[0]
-
 	// base is the worker set already on the record (non-empty on a scale-up).
 	// Each incremental persist below writes base+newly-launched so the durable
 	// record always reflects every live worker, never just this call's additions.
 	base := append([]string(nil), rec.InstanceIDs...)
 	ids := make([]string, 0, count)
 	for i := range count {
-		shortID := uuid.NewString()[:8]
-		userData := buildAgentUserData(agentUserDataInput{
-			ClusterName:   rec.ClusterName,
-			NodegroupName: rec.Name,
-			ServerURL:     clusterJoinEndpoint(meta),
-			JoinToken:     token,
-			NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
-		})
-		runInput := &ec2.RunInstancesInput{
-			ImageId:          aws.String(amiID),
-			InstanceType:     aws.String(instanceType),
-			MinCount:         aws.Int64(1),
-			MaxCount:         aws.Int64(1),
-			SubnetId:         aws.String(subnet),
-			SecurityGroupIds: aws.StringSlice([]string{ngSGID}),
-			UserData:         aws.String(userData),
-			TagSpecifications: []*ec2.TagSpecification{{
-				ResourceType: aws.String("instance"),
-				Tags: []*ec2.Tag{
-					{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(rec.ClusterName)},
-					{Key: aws.String(clusterEKSNodegroupTagKey), Value: aws.String(rec.Name)},
-				},
-			}},
-		}
-		if rec.DiskSize > 0 {
-			runInput.BlockDeviceMappings = []*ec2.BlockDeviceMapping{{
-				DeviceName: aws.String("/dev/vda"),
-				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
-			}}
-		}
-		res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
+		id, err := s.launchOneWorker(rec, meta, ngSGID, amiID, token, accountID)
 		if err != nil {
 			return ids, fmt.Errorf("run worker %d/%d: %w", i+1, count, err)
 		}
-		for _, inst := range res.Instances {
-			if id := aws.StringValue(inst.InstanceId); id != "" {
-				ids = append(ids, id)
-			}
-		}
+		ids = append(ids, id)
 		// Persist the launched worker IDs before issuing the next RunInstances so
 		// a crash mid-loop leaves every live worker recorded and reclaimable (by
 		// DeleteNodegroup or the boot reclaim sweep). Without this the record keeps
@@ -444,6 +409,57 @@ func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, r
 		}
 	}
 	return ids, nil
+}
+
+// launchOneWorker provisions a single tagged worker VM and returns its instance
+// ID. It performs no durable record write; the caller owns persistence (plain
+// for the single-owner create path, CAS-append for concurrent scale-up).
+func (s *EKSServiceImpl) launchOneWorker(rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token, accountID string) (string, error) {
+	instanceType := defaultNodegroupInstanceType
+	if len(rec.InstanceTypes) > 0 {
+		instanceType = rec.InstanceTypes[0]
+	}
+	subnet := rec.Subnets[0]
+	shortID := uuid.NewString()[:8]
+	userData := buildAgentUserData(agentUserDataInput{
+		ClusterName:   rec.ClusterName,
+		NodegroupName: rec.Name,
+		ServerURL:     clusterJoinEndpoint(meta),
+		JoinToken:     token,
+		NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
+	})
+	runInput := &ec2.RunInstancesInput{
+		ImageId:          aws.String(amiID),
+		InstanceType:     aws.String(instanceType),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		SubnetId:         aws.String(subnet),
+		SecurityGroupIds: aws.StringSlice([]string{ngSGID}),
+		UserData:         aws.String(userData),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("instance"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(rec.ClusterName)},
+				{Key: aws.String(clusterEKSNodegroupTagKey), Value: aws.String(rec.Name)},
+			},
+		}},
+	}
+	if rec.DiskSize > 0 {
+		runInput.BlockDeviceMappings = []*ec2.BlockDeviceMapping{{
+			DeviceName: aws.String("/dev/vda"),
+			Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(rec.DiskSize)},
+		}}
+	}
+	res, err := s.deps.Worker.RunWorkerInstance(runInput, accountID)
+	if err != nil {
+		return "", err
+	}
+	for _, inst := range res.Instances {
+		if id := aws.StringValue(inst.InstanceId); id != "" {
+			return id, nil
+		}
+	}
+	return "", errors.New("run worker returned no instance id")
 }
 
 func (s *EKSServiceImpl) describeNodegroup(acctKV nats.KeyValue, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
@@ -500,41 +516,9 @@ func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.
 		}
 		return nil, err
 	}
-	rec, err := GetNodegroupRecord(acctKV, cluster, ng)
+
+	rec, err := s.reconcileNodegroup(acctKV, accountID, cluster, ng, meta, input.ScalingConfig, input.Labels)
 	if err != nil {
-		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
-		}
-		return nil, err
-	}
-
-	if input.ScalingConfig != nil {
-		if v := input.ScalingConfig.MinSize; v != nil {
-			rec.ScalingMin = *v
-		}
-		if v := input.ScalingConfig.MaxSize; v != nil {
-			rec.ScalingMax = *v
-		}
-		if v := input.ScalingConfig.DesiredSize; v != nil {
-			rec.ScalingDesired = *v
-		}
-	}
-	if input.Labels != nil {
-		rec.Labels = applyLabelUpdate(rec.Labels, input.Labels)
-	}
-
-	if err := s.reconcileWorkerCount(acctKV, accountID, rec, meta); err != nil {
-		// Persist partial IDs so DeleteNodegroup can reclaim a failed scale-up.
-		rec.ModifiedAt = time.Now().UTC()
-		if perr := PutNodegroupRecord(acctKV, rec); perr != nil {
-			slog.Error("updateNodegroupConfig: persist after reconcile failure",
-				"cluster", cluster, "nodegroup", ng, "err", perr)
-		}
-		return nil, err
-	}
-
-	rec.ModifiedAt = time.Now().UTC()
-	if err := PutNodegroupRecord(acctKV, rec); err != nil {
 		return nil, err
 	}
 
@@ -546,42 +530,196 @@ func (s *EKSServiceImpl) updateNodegroupConfig(acctKV nats.KeyValue, input *eks.
 	}}, nil
 }
 
-// reconcileWorkerCount launches or terminates workers so len(InstanceIDs)
-// matches ScalingDesired. Surplus removal terminates the last (highest-index)
-// instance IDs so scale-down is deterministic.
-func (s *EKSServiceImpl) reconcileWorkerCount(acctKV nats.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta) error {
-	current := len(rec.InstanceIDs)
-	desired := int(rec.ScalingDesired)
-
-	switch {
-	case desired > current:
-		token, err := s.decryptNodeToken(acctKV, rec.ClusterName)
+// reconcileNodegroup applies the scaling/label deltas and converges the worker
+// count to ScalingDesired under compare-and-swap. Every durable mutation is a
+// CAS on the record revision, so two overlapping UpdateNodegroupConfig calls can
+// never both launch the same delta — the lost-update that scaled 1 worker to 5
+// (two reconciles each reading current=1 and each launching desired-current=2).
+func (s *EKSServiceImpl) reconcileNodegroup(acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, scaling *eks.NodegroupScalingConfig, labels *eks.UpdateLabelsPayload) (*NodegroupRecord, error) {
+	for range ngCASMaxRetries {
+		rec, rev, err := getNodegroupEntry(acctKV, cluster, ng)
 		if err != nil {
-			return fmt.Errorf("decrypt node token: %w", err)
-		}
-		amiID, err := lookupEKSServerAMI(s.deps.Image, accountID)
-		if err != nil {
-			if errors.Is(err, ErrEKSServerAMINotFound) {
-				return errors.New(awserrors.ErrorServiceUnavailable)
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 			}
-			return fmt.Errorf("resolve eks-node AMI: %w", err)
+			return nil, err
 		}
-		_, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, rec.ClusterName, meta.ResourcesVpcConfig.VpcId)
-		if err != nil {
-			return fmt.Errorf("ensure cluster SGs: %w", err)
+		applyScalingUpdate(rec, scaling)
+		if labels != nil {
+			rec.Labels = applyLabelUpdate(rec.Labels, labels)
 		}
-		// launchWorkers appends to and persists rec.InstanceIDs incrementally.
-		if _, err := s.launchWorkers(acctKV, accountID, rec, meta, ngSGID, amiID, token, desired-current); err != nil {
-			return fmt.Errorf("launch workers: %w", err)
+		desired := int(rec.ScalingDesired)
+		current := len(rec.InstanceIDs)
+		rec.ModifiedAt = time.Now().UTC()
+
+		switch {
+		case desired < current:
+			// Terminate surplus before shrinking the record. A crash or CAS retry
+			// between the two leaves dead IDs in the record (a stale over-count the
+			// next scale prunes), never a running VM absent from every record — an
+			// orphan that record-driven reclaim cannot reach. Terminate is
+			// idempotent, so re-terminating on a CAS retry is safe.
+			surplus := rec.InstanceIDs[desired:]
+			if err := s.deps.Worker.TerminateWorkerInstances(surplus, accountID); err != nil {
+				return nil, fmt.Errorf("terminate surplus workers: %w", err)
+			}
+			rec.InstanceIDs = rec.InstanceIDs[:desired]
+			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+				return nil, err
+			} else if !ok {
+				continue
+			}
+			return rec, nil
+
+		case desired > current:
+			// Commit the deltas + new desired first, then launch the gap one worker
+			// at a time with a per-VM CAS-append (launchWorkersCAS).
+			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+				return nil, err
+			} else if !ok {
+				continue
+			}
+			return s.launchWorkersCAS(acctKV, accountID, cluster, ng, meta, desired)
+
+		default:
+			if ok, err := s.casPutNodegroup(acctKV, rec, rev); err != nil {
+				return nil, err
+			} else if !ok {
+				continue
+			}
+			return rec, nil
 		}
-	case desired < current:
-		surplus := rec.InstanceIDs[desired:]
-		if err := s.deps.Worker.TerminateWorkerInstances(surplus, accountID); err != nil {
-			return fmt.Errorf("terminate surplus workers: %w", err)
-		}
-		rec.InstanceIDs = rec.InstanceIDs[:desired]
 	}
-	return nil
+	return nil, errors.New(awserrors.ErrorServerInternal)
+}
+
+// launchWorkersCAS converges the worker count up to desired, launching one
+// worker at a time and CAS-appending its ID only while len(InstanceIDs) <
+// desired. A worker launched into an already-full record (a concurrent reconcile
+// got there first) is terminated, so the count never overshoots desired.
+func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, cluster, ng string, meta *ClusterMeta, desired int) (*NodegroupRecord, error) {
+	token, err := s.decryptNodeToken(acctKV, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt node token: %w", err)
+	}
+	amiID, err := lookupEKSServerAMI(s.deps.Image, accountID)
+	if err != nil {
+		if errors.Is(err, ErrEKSServerAMINotFound) {
+			return nil, errors.New(awserrors.ErrorServiceUnavailable)
+		}
+		return nil, fmt.Errorf("resolve eks-node AMI: %w", err)
+	}
+	_, ngSGID, err := EnsureClusterSGs(s.deps.VPCSG, accountID, cluster, meta.ResourcesVpcConfig.VpcId)
+	if err != nil {
+		return nil, fmt.Errorf("ensure cluster SGs: %w", err)
+	}
+
+	// Each iteration records at most one worker, so bound by the gap plus CAS slack.
+	// The target is re-read from the record each pass (not the entry-time desired),
+	// so a concurrent rescale is honored rather than overrun.
+	for range desired + ngCASMaxRetries {
+		rec, _, err := getNodegroupEntry(acctKV, cluster, ng)
+		if err != nil {
+			return nil, err
+		}
+		target := int(rec.ScalingDesired)
+		if len(rec.InstanceIDs) >= target {
+			return rec, nil
+		}
+		id, err := s.launchOneWorker(rec, meta, ngSGID, amiID, token, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("launch workers: %w", err)
+		}
+		if _, err := s.recordLaunchedWorker(acctKV, accountID, cluster, ng, id); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New(awserrors.ErrorServerInternal)
+}
+
+// recordLaunchedWorker CAS-appends id while the record is below its live
+// ScalingDesired, or terminates the worker when a concurrent reconcile already
+// filled the gap (or lowered the target). Returns true when id was recorded.
+func (s *EKSServiceImpl) recordLaunchedWorker(kv nats.KeyValue, accountID, cluster, ng, id string) (bool, error) {
+	for range ngCASMaxRetries {
+		rec, rev, err := getNodegroupEntry(kv, cluster, ng)
+		if err != nil {
+			return false, err
+		}
+		if slices.Contains(rec.InstanceIDs, id) {
+			return true, nil
+		}
+		if len(rec.InstanceIDs) >= int(rec.ScalingDesired) {
+			if terr := s.deps.Worker.TerminateWorkerInstances([]string{id}, accountID); terr != nil {
+				return false, fmt.Errorf("terminate surplus worker: %w", terr)
+			}
+			return false, nil
+		}
+		rec.InstanceIDs = append(rec.InstanceIDs, id)
+		rec.ModifiedAt = time.Now().UTC()
+		if ok, err := s.casPutNodegroup(kv, rec, rev); err != nil {
+			return false, err
+		} else if ok {
+			return true, nil
+		}
+	}
+	// Could not record within the CAS budget; terminate so the VM is not orphaned.
+	if terr := s.deps.Worker.TerminateWorkerInstances([]string{id}, accountID); terr != nil {
+		return false, fmt.Errorf("terminate unrecorded worker: %w", terr)
+	}
+	return false, errors.New(awserrors.ErrorServerInternal)
+}
+
+// applyScalingUpdate copies the non-nil min/max/desired fields of an
+// UpdateNodegroupConfig scaling delta onto the record.
+func applyScalingUpdate(rec *NodegroupRecord, scaling *eks.NodegroupScalingConfig) {
+	if scaling == nil {
+		return
+	}
+	if v := scaling.MinSize; v != nil {
+		rec.ScalingMin = *v
+	}
+	if v := scaling.MaxSize; v != nil {
+		rec.ScalingMax = *v
+	}
+	if v := scaling.DesiredSize; v != nil {
+		rec.ScalingDesired = *v
+	}
+}
+
+// getNodegroupEntry reads one record with its KV revision for CAS updates.
+func getNodegroupEntry(kv nats.KeyValue, cluster, ng string) (*NodegroupRecord, uint64, error) {
+	if cluster == "" || ng == "" {
+		return nil, 0, errors.New("eks: getNodegroupEntry empty cluster or name")
+	}
+	entry, err := kv.Get(NodegroupKey(cluster, ng))
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return nil, 0, ErrNodegroupNotFound
+		}
+		return nil, 0, fmt.Errorf("kv get nodegroup: %w", err)
+	}
+	var rec NodegroupRecord
+	if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+		return nil, 0, fmt.Errorf("unmarshal nodegroup %s: %w", ng, err)
+	}
+	return &rec, entry.Revision(), nil
+}
+
+// casPutNodegroup writes rec only if the durable revision still matches rev.
+// ok=false signals a concurrent writer won; the caller re-reads and retries.
+func (s *EKSServiceImpl) casPutNodegroup(kv nats.KeyValue, rec *NodegroupRecord, rev uint64) (bool, error) {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return false, fmt.Errorf("marshal nodegroup %s: %w", rec.Name, err)
+	}
+	if _, err := kv.Update(NodegroupKey(rec.ClusterName, rec.Name), data, rev); err != nil {
+		if errors.Is(err, nats.ErrKeyExists) {
+			return false, nil
+		}
+		return false, fmt.Errorf("kv update nodegroup %s: %w", rec.Name, err)
+	}
+	return true, nil
 }
 
 func (s *EKSServiceImpl) updateNodegroupVersion(input *eks.UpdateNodegroupVersionInput) (*eks.UpdateNodegroupVersionOutput, error) {

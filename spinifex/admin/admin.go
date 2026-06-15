@@ -104,6 +104,12 @@ type ConfigSettings struct {
 	// IPSecEnabled toggles cluster-wide OVN native IPsec on intra-AZ Geneve.
 	// Written under [network] in spinifex.toml; daemon reads it via cluster config.
 	IPSecEnabled bool
+
+	// EncryptionKeyFile is the path to the cluster-wide viperblock at-rest
+	// encryption key, rendered into [nodes.X.viperblock].encryption_key_file.
+	// Empty means no key was provisioned and volumes are written cleartext
+	// (legacy mode); the template omits the field entirely in that case.
+	EncryptionKeyFile string
 }
 
 // PredastoreNodeConfig describes a single Predastore node for multi-node config generation.
@@ -308,6 +314,7 @@ func SetServiceOwnership() {
 		"/var/lib/spinifex/nats":       "spinifex-nats",
 		"/etc/spinifex/predastore":     "spinifex-storage",
 		"/var/lib/spinifex/predastore": "spinifex-storage",
+		"/etc/spinifex/viperblock":     "spinifex-viperblock",
 		"/var/lib/spinifex/spinifex":   "spinifex-daemon",
 		"/var/lib/spinifex/viperblock": "spinifex-viperblock",
 		"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
@@ -342,11 +349,12 @@ func SetServiceOwnership() {
 	// bootstrap.json lives in the awsgw data dir (not /etc/spinifex),
 	// so /etc/spinifex stays at 0750 (no group-write needed).
 	for path, mode := range map[string]os.FileMode{
-		"/etc/spinifex/spinifex.toml": 0640,
-		"/etc/spinifex/master.key":    0640,
-		"/etc/spinifex/server.pem":    0644,
-		"/etc/spinifex/server.key":    0640,
-		"/etc/spinifex/ca.pem":        0644,
+		"/etc/spinifex/spinifex.toml":             0640,
+		"/etc/spinifex/master.key":                0640,
+		"/etc/spinifex/viperblock/encryption.key": 0640,
+		"/etc/spinifex/server.pem":                0644,
+		"/etc/spinifex/server.key":                0640,
+		"/etc/spinifex/ca.pem":                    0644,
 	} {
 		if _, err := os.Stat(path); err != nil {
 			continue

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"strconv"
@@ -209,8 +210,17 @@ func (s *SnapshotServiceImpl) CreateSnapshot(input *ec2.CreateSnapshotInput, acc
 	}
 	defer volumeResult.Body.Close()
 
+	volumeBody, err := io.ReadAll(volumeResult.Body)
+	if err != nil {
+		slog.Error("CreateSnapshot failed to read volume config", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// config.json may be an at-rest encryption envelope; StateBody unwraps it to
+	// the inner VBState. Decoding the raw envelope yields a zero state
+	// (SizeGiB==0), which the size guard below would reject as a 500.
 	var volumeState viperblock.VBState
-	if err := json.NewDecoder(volumeResult.Body).Decode(&volumeState); err != nil {
+	if err := json.Unmarshal(viperblock.StateBody(volumeBody), &volumeState); err != nil {
 		slog.Error("CreateSnapshot failed to decode volume config", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -447,10 +457,15 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(snapshotID string) (bool, e
 			continue // volume may not have a config yet
 		}
 
-		var state viperblock.VBState
-		decodeErr := json.NewDecoder(result.Body).Decode(&state)
+		scanBody, readErr := io.ReadAll(result.Body)
 		_ = result.Body.Close()
-		if decodeErr != nil {
+		if readErr != nil {
+			continue
+		}
+		// Unwrap the encryption envelope so encrypted volumes are scanned too;
+		// a raw decode yields a zero state and silently drops their snapshots.
+		var state viperblock.VBState
+		if decodeErr := json.Unmarshal(viperblock.StateBody(scanBody), &state); decodeErr != nil {
 			continue
 		}
 

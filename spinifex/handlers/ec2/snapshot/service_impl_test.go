@@ -135,6 +135,85 @@ func TestCreateSnapshot_VolumeZeroSize(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
 }
 
+// createEncryptedTestVolume seeds config.json as an at-rest encryption envelope
+// ({payload, authtag}) wrapping a VBState, matching what an encrypted volume
+// persists. The snapshot handler must unwrap it via StateBody, not decode raw.
+func createEncryptedTestVolume(t *testing.T, store *objectstore.MemoryObjectStore, volumeID string, sizeGiB int) {
+	inner := viperblock.VBState{
+		EncryptionEnabled: true,
+		VolumeConfig: viperblock.VolumeConfig{
+			VolumeMetadata: viperblock.VolumeMetadata{
+				SizeGiB:          uint64(sizeGiB),
+				AvailabilityZone: "us-east-1a",
+			},
+		},
+	}
+	payload, err := json.Marshal(inner)
+	require.NoError(t, err)
+
+	envelope, err := json.Marshal(map[string]any{
+		"payload": json.RawMessage(payload),
+		"authtag": "deadbeefdeadbeefdeadbeefdeadbeef",
+	})
+	require.NoError(t, err)
+
+	_, err = store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(volumeID + "/config.json"),
+		Body:   strings.NewReader(string(envelope)),
+	})
+	require.NoError(t, err)
+}
+
+// TestCreateSnapshot_EncryptedVolumeEnvelope verifies an encrypted volume (whose
+// config.json is an envelope) snapshots successfully instead of 500ing on a
+// zero-decoded VBState.
+func TestCreateSnapshot_EncryptedVolumeEnvelope(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	volumeID := "vol-enc-snap"
+	createEncryptedTestVolume(t, store, volumeID, 100)
+
+	result, err := svc.CreateSnapshot(&ec2.CreateSnapshotInput{
+		VolumeId: aws.String(volumeID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int64(100), *result.VolumeSize)
+	assert.True(t, *result.Encrypted)
+}
+
+// TestSnapshotInUseByVolumes_EncryptedVolume verifies the membership scan sees an
+// encrypted volume's source SnapshotID through the envelope (a raw decode would
+// miss it, letting an in-use snapshot be deleted).
+func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	inner := viperblock.VBState{
+		EncryptionEnabled: true,
+		VolumeConfig: viperblock.VolumeConfig{
+			VolumeMetadata: viperblock.VolumeMetadata{SizeGiB: 50, SnapshotID: "snap-src"},
+		},
+	}
+	payload, err := json.Marshal(inner)
+	require.NoError(t, err)
+	envelope, err := json.Marshal(map[string]any{
+		"payload": json.RawMessage(payload),
+		"authtag": "deadbeefdeadbeefdeadbeefdeadbeef",
+	})
+	require.NoError(t, err)
+	_, err = store.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("vol-fromsnap/config.json"),
+		Body:   strings.NewReader(string(envelope)),
+	})
+	require.NoError(t, err)
+
+	inUse, err := svc.snapshotInUseByVolumes("snap-src")
+	require.NoError(t, err)
+	assert.True(t, inUse, "encrypted volume's SnapshotID must be visible through the envelope")
+}
+
 // TestCreateSnapshot_VolumeNotFound tests creating a snapshot from non-existent volume
 func TestCreateSnapshot_VolumeNotFound(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)

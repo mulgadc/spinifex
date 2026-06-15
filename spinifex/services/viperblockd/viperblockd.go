@@ -596,6 +596,8 @@ func launchService(cfg *Config) (err error) {
 			SecretKey:  cfg.SecretKey,
 			CacheSize:  nbdCacheSize,
 			ShardWAL:   cfg.ShardWAL,
+
+			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}
 
 		// Create a unique error channel for this specific mount request

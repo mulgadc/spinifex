@@ -3,6 +3,7 @@ package handlers_eks
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -89,6 +90,10 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		Scheduler:        &fakeHostScheduler{},
 	})
 	require.NoError(t, err)
+	// Tight Ready-gating knobs so nodegroup launches resolve in tests without the
+	// production 10m timeout; tests drive meta.NodeCount to simulate the reconciler.
+	svc.nodegroupReadyTimeout = 1 * time.Second
+	svc.nodegroupReadyPoll = 2 * time.Millisecond
 	t.Cleanup(svc.Shutdown)
 
 	return &eksServiceFixture{svc: svc, kv: kv, nlb: nlb, inst: inst, vpc: vpc, ami: ami, eip: eip, sg: sg, worker: worker, vpcMgr: vpcMgr, igw: igw, ngw: ngw, rt: rt}

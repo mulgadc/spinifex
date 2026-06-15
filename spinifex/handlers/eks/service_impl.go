@@ -98,6 +98,12 @@ type EKSServiceImpl struct {
 
 	// launchWG tracks in-flight async create launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+
+	// nodegroupReadyTimeout / nodegroupReadyPoll bound how long launchNodegroupInfra
+	// waits for its workers to register Ready before marking the nodegroup
+	// CREATE_FAILED. Tests inject small values.
+	nodegroupReadyTimeout time.Duration
+	nodegroupReadyPoll    time.Duration
 }
 
 var _ EKSService = (*EKSServiceImpl)(nil)
@@ -122,11 +128,13 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
-		deps:     deps,
-		leaderKV: leaderKV,
-		registry: NewReconcilerRegistry(),
-		bgCtx:    ctx,
-		bgCancel: cancel,
+		deps:                  deps,
+		leaderKV:              leaderKV,
+		registry:              NewReconcilerRegistry(),
+		bgCtx:                 ctx,
+		bgCancel:              cancel,
+		nodegroupReadyTimeout: defaultNodegroupReadyTimeout,
+		nodegroupReadyPoll:    defaultNodegroupReadyPoll,
 	}, nil
 }
 

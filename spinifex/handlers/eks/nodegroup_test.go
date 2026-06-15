@@ -73,6 +73,15 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 	require.NoError(t, err)
 }
 
+// markWorkersReady simulates the cluster reconciler observing n Ready nodes from
+// the CP state report, so launchNodegroupInfra's Ready-gate (waitWorkersReady)
+// can resolve. Seed clusters start at NodeCount 0, so n is the create baseline
+// (0) plus the worker count the test expects Ready.
+func markWorkersReady(t *testing.T, f *eksServiceFixture, cluster string, n int) {
+	t.Helper()
+	require.NoError(t, SetClusterHealthState(f.kv, cluster, "", n))
+}
+
 func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput {
 	return &eks.CreateNodegroupInput{
 		ClusterName:   aws.String(cluster),
@@ -235,6 +244,8 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	assert.Equal(t, int64(2), aws.Int64Value(out.Nodegroup.ScalingConfig.DesiredSize))
 	assert.Contains(t, aws.StringValue(out.Nodegroup.NodegroupArn), ":nodegroup/c1/ng1/")
 
+	// Both workers register Ready → the Ready-gate lets the nodegroup go ACTIVE.
+	markWorkersReady(t, f, "c1", 2)
 	f.svc.WaitLaunches()
 
 	// The async launch transitions the record to ACTIVE once workers run.
@@ -267,6 +278,26 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorEKSResourceInUse)
 }
 
+// Workers that launch but never register Ready (no rise in the cluster's Ready-
+// node count) must drive the nodegroup to CREATE_FAILED, not a falsely-ACTIVE
+// record. Instance IDs are retained so the reclaim path tears the workers down.
+func TestCreateNodegroup_WorkersNeverReady_CreateFailed(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 2), testAccountID)
+	require.NoError(t, err)
+
+	// No markWorkersReady → NodeCount stays at the baseline; the Ready-gate times out.
+	f.svc.WaitLaunches()
+
+	rec, err := GetNodegroupRecord(f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
+	assert.Contains(t, rec.StatusReason, "did not become Ready")
+	assert.Len(t, rec.InstanceIDs, 2, "launched workers retained for the reclaim path")
+}
+
 func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
@@ -276,6 +307,7 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(in, testAccountID)
 	require.NoError(t, err)
 
+	markWorkersReady(t, f, "c1", 1)
 	f.svc.WaitLaunches()
 
 	require.Len(t, f.worker.runCalls, 1)
@@ -292,6 +324,7 @@ func TestCreateNodegroup_NoDiskSizeOmitsBlockDeviceMapping(t *testing.T) {
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
 
+	markWorkersReady(t, f, "c1", 1)
 	f.svc.WaitLaunches()
 
 	require.Len(t, f.worker.runCalls, 1)
@@ -323,6 +356,7 @@ func TestDescribeAndListNodegroups(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
+	markWorkersReady(t, f, "c1", 1)
 	f.svc.WaitLaunches()
 
 	desc, err := f.svc.DescribeNodegroup(&eks.DescribeNodegroupInput{
@@ -347,6 +381,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
 	require.NoError(t, err)
+	markWorkersReady(t, f, "c1", 1)
 	f.svc.WaitLaunches()
 	require.Len(t, f.worker.runCalls, 1)
 
@@ -382,6 +417,7 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 2), testAccountID)
 	require.NoError(t, err)
+	markWorkersReady(t, f, "c1", 2)
 	f.svc.WaitLaunches()
 
 	_, err = f.svc.DeleteNodegroup(&eks.DeleteNodegroupInput{

@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,14 +68,13 @@ func loadStateWithRetry(vb *viperblock.VB, volume string) error {
 var serviceName = "viperblock"
 
 type MountedVolume struct {
-	Name           string
-	Port           int    // TCP port (when using TCP transport)
-	Socket         string // Unix socket path (when using socket transport)
-	NBDURI         string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
-	PID            int
-	VB             *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	SnapshotSub    *nats.Subscription // Per-volume snapshot NATS subscription (ebs.snapshot.{volumeID})
-	SnapshotSocket string             // Unix socket path for IPC with the nbdkit plugin process
+	Name        string
+	Port        int    // TCP port (when using TCP transport)
+	Socket      string // Unix socket path (when using socket transport)
+	NBDURI      string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
+	PID         int
+	VB          *viperblock.VB     // Reference to viperblock instance for state sync/flush
+	SnapshotSub *nats.Subscription // Per-volume snapshot NATS subscription (ebs.snapshot.{volumeID})
 }
 
 type Config struct {
@@ -132,46 +129,6 @@ func New(config any) (svc *Service, err error) {
 	}
 
 	return svc, nil
-}
-
-// makeSnapshotHandler returns a NATS handler for volume-specific snapshot requests
-// (ebs.snapshot.{volumeID}). The handler forwards the request over a Unix socket
-// to the nbdkit plugin process, which owns the live WAL for the volume.
-func makeSnapshotHandler(socketPath, volumeName string) nats.MsgHandler {
-	return func(msg *nats.Msg) {
-		var snapRequest types.EBSSnapshotRequest
-		if err := json.Unmarshal(msg.Data, &snapRequest); err != nil {
-			slog.Error("ebs.snapshot: bad request", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		slog.Info("ebs.snapshot: forwarding to nbdkit plugin", "volume", volumeName, "snapshotId", snapRequest.SnapshotID)
-
-		conn, err := net.DialTimeout("unix", socketPath, 30*time.Second)
-		if err != nil {
-			slog.Error("ebs.snapshot: dial snapshot socket", "volume", volumeName, "socket", socketPath, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("dial snapshot socket: %v", err)})
-			return
-		}
-		defer conn.Close()
-
-		reqData, _ := json.Marshal(snapRequest)
-		if _, err := conn.Write(reqData); err != nil {
-			slog.Error("ebs.snapshot: write to socket", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("write to socket: %v", err)})
-			return
-		}
-
-		var snapResponse types.EBSSnapshotResponse
-		if err := json.NewDecoder(conn).Decode(&snapResponse); err != nil {
-			slog.Error("ebs.snapshot: decode plugin response", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("decode response: %v", err)})
-			return
-		}
-
-		respondJSON(msg, snapResponse)
-	}
 }
 
 // respondJSON marshals data and sends it as a NATS response. On marshal
@@ -233,6 +190,87 @@ func (svc *Service) Shutdown() (err error) {
 
 func (svc *Service) Reload() (err error) {
 	return nil
+}
+
+// makeSnapshotHandler returns the NATS message handler for ebs.snapshot.{volume}.
+// Flow: SIGTERM nbdkit (triggers vb.Close flush) → LoadState → CreateSnapshot → restart nbdkit.
+func makeSnapshotHandler(cfg *Config, vb *viperblock.VB, volName string, nbdCfg nbd.NBDKitConfig) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		var snapRequest types.EBSSnapshotRequest
+		if err := json.Unmarshal(msg.Data, &snapRequest); err != nil {
+			slog.Error("ebs.snapshot: bad request", "volume", volName, "err", err)
+			respondJSON(msg, types.EBSSnapshotResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			return
+		}
+
+		cfg.mu.Lock()
+		currentPID := 0
+		for _, v := range cfg.MountedVolumes {
+			if v.Name == volName {
+				currentPID = v.PID
+				break
+			}
+		}
+		cfg.mu.Unlock()
+
+		if currentPID == 0 {
+			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: "volume not mounted"})
+			return
+		}
+
+		slog.Info("ebs.snapshot: stopping nbdkit for snapshot", "volume", volName, "pid", currentPID)
+		if err := utils.KillProcess(currentPID); err != nil {
+			slog.Error("ebs.snapshot: stop nbdkit", "volume", volName, "err", err)
+			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("stop nbdkit: %v", err)})
+			return
+		}
+
+		// LoadState reloads block map; OpenFromSnapshot is called automatically for COW clones.
+		if err := vb.LoadState(); err != nil {
+			slog.Error("ebs.snapshot: LoadState after stop", "volume", volName, "err", err)
+			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("reload state: %v", err)})
+			return
+		}
+
+		snap, snapErr := vb.CreateSnapshot(snapRequest.SnapshotID)
+
+		// Restart nbdkit regardless of snapshot outcome so QEMU can reconnect.
+		go func() {
+			// nbdkit does not remove its unix socket on SIGTERM exit; remove it
+			// before restarting so the new process can bind the same path.
+			if nbdCfg.Socket != "" {
+				if rmErr := os.Remove(nbdCfg.Socket); rmErr != nil && !os.IsNotExist(rmErr) {
+					slog.Warn("ebs.snapshot: remove stale nbd socket", "socket", nbdCfg.Socket, "err", rmErr)
+				}
+			}
+			cmd, startErr := nbdCfg.Execute()
+			if startErr != nil {
+				slog.Error("ebs.snapshot: restart nbdkit", "volume", volName, "err", startErr)
+				return
+			}
+			newPID := cmd.Process.Pid
+			slog.Info("ebs.snapshot: nbdkit restarted", "volume", volName, "pid", newPID)
+			cfg.mu.Lock()
+			for i := range cfg.MountedVolumes {
+				if cfg.MountedVolumes[i].Name == volName {
+					cfg.MountedVolumes[i].PID = newPID
+					break
+				}
+			}
+			cfg.mu.Unlock()
+			if waitErr := cmd.Wait(); waitErr != nil {
+				slog.Error("ebs.snapshot: nbdkit exited after restart", "volume", volName, "err", waitErr)
+			}
+		}()
+
+		if snapErr != nil {
+			slog.Error("ebs.snapshot: CreateSnapshot", "volume", volName, "err", snapErr)
+			respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snapRequest.SnapshotID, Error: fmt.Sprintf("create snapshot: %v", snapErr)})
+			return
+		}
+
+		respondJSON(msg, types.EBSSnapshotResponse{SnapshotID: snap.SnapshotID, Success: true})
+	}
 }
 
 func launchService(cfg *Config) (err error) {
@@ -303,11 +341,6 @@ func launchService(cfg *Config) (err error) {
 				slog.Info("Removing socket file", "socket", matched.Socket)
 				if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
 					slog.Error("Failed to delete nbd socket", "err", err, "socket", matched.Socket)
-				}
-			}
-			if matched.SnapshotSocket != "" {
-				if err := os.Remove(matched.SnapshotSocket); err != nil && !os.IsNotExist(err) {
-					slog.Error("Failed to remove snapshot socket", "socket", matched.SnapshotSocket, "err", err)
 				}
 			}
 			slog.Info("ebs.delete: cleaned up mounted volume", "volume", ebsRequest.Volume, "pid", matched.PID)
@@ -385,11 +418,6 @@ func launchService(cfg *Config) (err error) {
 				slog.Info("Removing socket file", "socket", matched.Socket)
 				if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
 					slog.Error("Failed to delete nbd socket", "err", err, "socket", matched.Socket)
-				}
-			}
-			if matched.SnapshotSocket != "" {
-				if err := os.Remove(matched.SnapshotSocket); err != nil && !os.IsNotExist(err) {
-					slog.Error("Failed to remove snapshot socket", "socket", matched.SnapshotSocket, "err", err)
 				}
 			}
 		}
@@ -599,26 +627,23 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		snapshotSocket := filepath.Join(utils.NBDSocketDir(), fmt.Sprintf("snapshot-%s.sock", ebsRequest.Name))
-
 		nbdConfig := nbd.NBDKitConfig{
-			Port:           nbdPort,
-			Socket:         nbdSocket,
-			UseTCP:         useTCP,
-			PidFile:        nbdPidFile,
-			PluginPath:     cfg.PluginPath,
-			BaseDir:        cfg.BaseDir,
-			Host:           admin.DialTarget(cfg.S3Host),
-			Verbose:        false,
-			Size:           utils.SafeUint64ToInt64(vb.GetVolumeSize()),
-			Volume:         ebsRequest.Name,
-			Bucket:         cfg.Bucket,
-			Region:         cfg.Region,
-			AccessKey:      cfg.AccessKey,
-			SecretKey:      cfg.SecretKey,
-			CacheSize:      nbdCacheSize,
-			ShardWAL:       cfg.ShardWAL,
-			SnapshotSocket: snapshotSocket,
+			Port:       nbdPort,
+			Socket:     nbdSocket,
+			UseTCP:     useTCP,
+			PidFile:    nbdPidFile,
+			PluginPath: cfg.PluginPath,
+			BaseDir:    cfg.BaseDir,
+			Host:       admin.DialTarget(cfg.S3Host),
+			Verbose:    false,
+			Size:       utils.SafeUint64ToInt64(vb.GetVolumeSize()),
+			Volume:     ebsRequest.Name,
+			Bucket:     cfg.Bucket,
+			Region:     cfg.Region,
+			AccessKey:  cfg.AccessKey,
+			SecretKey:  cfg.SecretKey,
+			CacheSize:  nbdCacheSize,
+			ShardWAL:   cfg.ShardWAL,
 		}
 
 		// Create a unique error channel for this specific mount request
@@ -689,23 +714,24 @@ func launchService(cfg *Config) (err error) {
 		ebsResponse.Mounted = true
 		ebsResponse.URI = nbdURI
 
-		// Subscribe to the per-volume snapshot topic. The handler forwards the
-		// request over the Unix socket to the nbdkit plugin (which owns the WAL).
-		snapSub, err := nc.Subscribe(fmt.Sprintf("ebs.snapshot.%s", ebsRequest.Name), makeSnapshotHandler(snapshotSocket, ebsRequest.Name))
+		volName := ebsRequest.Name
+		// Capture nbdConfig for use in the snapshot handler (restart after SIGTERM).
+		snapNBDConfig := nbdConfig
+
+		snapSub, err := nc.Subscribe(fmt.Sprintf("ebs.snapshot.%s", volName), makeSnapshotHandler(cfg, vb, volName, snapNBDConfig))
 		if err != nil {
-			slog.Error("ebs.mount: failed to subscribe snapshot topic", "volume", ebsRequest.Name, "err", err)
+			slog.Error("ebs.mount: failed to subscribe snapshot topic", "volume", volName, "err", err)
 		}
 
 		cfg.mu.Lock()
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
-			Name:           ebsRequest.Name,
-			Port:           nbdPort,
-			Socket:         nbdSocket,
-			NBDURI:         nbdURI,
-			PID:            pid,
-			VB:             vb,
-			SnapshotSub:    snapSub,
-			SnapshotSocket: snapshotSocket,
+			Name:        volName,
+			Port:        nbdPort,
+			Socket:      nbdSocket,
+			NBDURI:      nbdURI,
+			PID:         pid,
+			VB:          vb,
+			SnapshotSub: snapSub,
 		})
 		cfg.mu.Unlock()
 

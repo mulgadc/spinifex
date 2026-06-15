@@ -233,46 +233,6 @@ func TestBuildArgs_ArgOrdering(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_SnapshotSocket(t *testing.T) {
-	cfg := &NBDKitConfig{
-		Socket:         "/tmp/nbd.sock",
-		PidFile:        "/tmp/nbd.pid",
-		PluginPath:     "/plugin.so",
-		Volume:         "vol-test",
-		SnapshotSocket: "/run/spinifex/nbd/snapshot-vol-test.sock",
-	}
-
-	args, err := cfg.buildArgs()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	want := "snapshot_socket=/run/spinifex/nbd/snapshot-vol-test.sock"
-	if indexOf(args, want) < 0 {
-		t.Errorf("expected arg %q not found in %v", want, args)
-	}
-}
-
-func TestBuildArgs_SnapshotSocketOmittedWhenEmpty(t *testing.T) {
-	cfg := &NBDKitConfig{
-		Socket:     "/tmp/nbd.sock",
-		PidFile:    "/tmp/nbd.pid",
-		PluginPath: "/plugin.so",
-		Volume:     "vol-test",
-	}
-
-	args, err := cfg.buildArgs()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, a := range args {
-		if len(a) > len("snapshot_socket") && a[:len("snapshot_socket")] == "snapshot_socket" {
-			t.Errorf("unexpected snapshot_socket arg %q when SnapshotSocket is empty", a)
-		}
-	}
-}
-
 func assertArgs(t *testing.T, expected, got []string) {
 	t.Helper()
 	if len(expected) != len(got) {

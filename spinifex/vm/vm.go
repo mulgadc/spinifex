@@ -171,6 +171,9 @@ type Drive struct {
 	Unit int `json:"unit,omitempty"`
 	// ReadOnly emits readonly=on; used for the pflash CODE blob.
 	ReadOnly bool `json:"readonly,omitempty"`
+	// ReconnectDelay, when > 0, emits reconnect-delay=N. Used for NBD drives
+	// so QEMU retries the connection for N seconds after the server restarts.
+	ReconnectDelay int `json:"reconnect_delay,omitempty"`
 }
 
 type IOThread struct {
@@ -299,12 +302,31 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	for _, drive := range drives {
 		var opts []string
 
-		if drive.File != "" {
-			opts = append(opts, fmt.Sprintf("file=%s", drive.File))
+		// NBD unix-socket drives with reconnect-delay must use the property-chain
+		// form (file.driver=nbd,...) because the raw block driver wrapper does not
+		// forward reconnect-delay to the NBD layer when the nbd:unix: URI shorthand
+		// is used. All other drives use the normal file= URI path.
+		nbdUnixPath := ""
+		if drive.ReconnectDelay > 0 && strings.HasPrefix(drive.File, "nbd:unix:") {
+			nbdUnixPath = strings.TrimPrefix(drive.File, "nbd:unix:")
 		}
 
-		if drive.Format != "" {
-			opts = append(opts, fmt.Sprintf("format=%s", drive.Format))
+		if nbdUnixPath != "" {
+			// Property-chain form: driver=raw wraps the NBD blockdev inline.
+			if drive.Format != "" {
+				opts = append(opts, fmt.Sprintf("driver=%s", drive.Format))
+			}
+			opts = append(opts, "file.driver=nbd")
+			opts = append(opts, "file.server.type=unix")
+			opts = append(opts, fmt.Sprintf("file.server.path=%s", nbdUnixPath))
+			opts = append(opts, fmt.Sprintf("file.reconnect-delay=%d", drive.ReconnectDelay))
+		} else {
+			if drive.File != "" {
+				opts = append(opts, fmt.Sprintf("file=%s", drive.File))
+			}
+			if drive.Format != "" {
+				opts = append(opts, fmt.Sprintf("format=%s", drive.Format))
+			}
 		}
 
 		if drive.If != "" {

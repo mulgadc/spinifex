@@ -145,6 +145,51 @@ func TestExecute_IOThreadAndCache(t *testing.T) {
 	assert.Equal(t, "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1", args[deviceIdx+1])
 }
 
+func TestExecute_ReconnectDelayUsesPropertyChain(t *testing.T) {
+	// When an NBD unix-socket drive has ReconnectDelay set, Execute must emit
+	// the QEMU property-chain form (driver=raw,file.driver=nbd,...) so that
+	// reconnect-delay reaches the NBD layer. The raw block driver rejects
+	// top-level reconnect-delay when the nbd:unix: URI shorthand is used.
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+		Drives: []Drive{
+			{
+				File:           "nbd:unix:/run/nbd/boot.sock",
+				Format:         "raw",
+				If:             "none",
+				Media:          "disk",
+				ID:             "os",
+				Cache:          "none",
+				ReconnectDelay: 30,
+			},
+		},
+	}
+
+	cmd, err := cfg.Execute()
+	require.NoError(t, err)
+
+	driveIdx := -1
+	for i, a := range cmd.Args[1:] {
+		if a == "-drive" {
+			driveIdx = i
+			break
+		}
+	}
+	require.Greater(t, driveIdx, -1, "-drive flag not found")
+	driveStr := cmd.Args[driveIdx+2]
+
+	assert.Contains(t, driveStr, "driver=raw", "property-chain must use driver=raw instead of format=raw")
+	assert.Contains(t, driveStr, "file.driver=nbd")
+	assert.Contains(t, driveStr, "file.server.type=unix")
+	assert.Contains(t, driveStr, "file.server.path=/run/nbd/boot.sock")
+	assert.Contains(t, driveStr, "file.reconnect-delay=30")
+	assert.NotContains(t, driveStr, "file=nbd:unix:", "URI shorthand must not appear with reconnect-delay")
+	// Ensure reconnect-delay is nested under file.* and not emitted at the drive level.
+	assert.NotContains(t, driveStr, ",reconnect-delay=", "top-level reconnect-delay must not appear")
+}
+
 func TestExecute_NoCacheWhenEmpty(t *testing.T) {
 	cfg := Config{
 		CPUCount:     1,

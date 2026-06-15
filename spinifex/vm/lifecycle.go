@@ -716,6 +716,7 @@ func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) 
 			drive.Media = "disk"
 			drive.ID = "os"
 			drive.Cache = "none"
+			drive.ReconnectDelay = 30
 
 			iothreadID := "ioth-os"
 			iothreads = append(iothreads, IOThread{ID: iothreadID})

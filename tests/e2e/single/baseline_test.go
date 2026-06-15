@@ -153,7 +153,7 @@ func runDefaultSGReachabilityBaseline(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
 	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	require.Truef(t, trySSHReady(pubIP, 22, keyPath, 3*time.Minute),
+	require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
 		"tcp/22 to %s never became reachable after authorizing ingress — "+
 			"default subnet egress/IGW datapath is broken", pubIP)
 
@@ -272,7 +272,7 @@ func runNewVPCEgressBaseline(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "instance", instanceID, "public_ip", pubIP)
 
 	harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
-	if !trySSHReady(pubIP, 22, keyPath, 3*time.Minute) {
+	if !trySSHReady(pubIP, 22, keyPath, sshReadyBudget) {
 		harness.DumpVPCFlowDiagnostics(t, c, instanceID,
 			fmt.Sprintf("fresh-VPC egress baseline SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 			harness.VPCDiagnosticsOpts{

@@ -491,6 +491,14 @@ func ValidErrorCode(code string) string {
 	return ErrorServerInternal
 }
 
+// HasErrorCode reports whether s is exactly a registered AWS error code.
+// Use it to decide whether an error string may be surfaced to clients verbatim
+// (mapped to its real HTTP status) rather than wrapped/sanitized to 500.
+func HasErrorCode(s string) bool {
+	_, ok := ErrorLookup[s]
+	return ok
+}
+
 // IsErrorCode reports whether err carries the named AWS error code.
 // Uses substring matching because handlers return codes as plain strings, sometimes wrapped with %w.
 func IsErrorCode(err error, code string) bool {

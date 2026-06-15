@@ -628,6 +628,12 @@ func (s *EKSServiceImpl) launchWorkersCAS(acctKV nats.KeyValue, accountID, clust
 		}
 		id, err := s.launchOneWorker(rec, meta, ngSGID, amiID, token, accountID)
 		if err != nil {
+			// Surface a client-facing code (e.g. InsufficientInstanceCapacity)
+			// verbatim so the gateway maps its real status; wrap only opaque
+			// internal failures, which stay 500.
+			if awserrors.HasErrorCode(err.Error()) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("launch workers: %w", err)
 		}
 		if _, err := s.recordLaunchedWorker(acctKV, accountID, cluster, ng, id); err != nil {

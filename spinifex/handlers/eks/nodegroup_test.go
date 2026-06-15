@@ -482,6 +482,42 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 		"net live workers must equal desired=3")
 }
 
+// TestUpdateNodegroupConfig_CapacityErrorSurfacesCode proves an out-of-capacity
+// scale returns the bare InsufficientInstanceCapacity code (gateway maps to 400),
+// not a wrapped string the gateway sanitizes to 500. A generic launcher failure
+// still wraps, staying an opaque 500.
+func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
+	scaleUpWithRunErr := func(t *testing.T, runErr error) error {
+		f := newEKSServiceFixture(t)
+		seedActiveClusterWithToken(t, f, "c1")
+		_, err := f.svc.CreateNodegroup(createNGInput("c1", "ng1", 1), testAccountID)
+		require.NoError(t, err)
+		markWorkersReady(t, f, "c1", 1)
+		f.svc.WaitLaunches()
+
+		f.worker.runErr = runErr
+		_, err = f.svc.UpdateNodegroupConfig(&eks.UpdateNodegroupConfigInput{
+			ClusterName:   aws.String("c1"),
+			NodegroupName: aws.String("ng1"),
+			ScalingConfig: &eks.NodegroupScalingConfig{DesiredSize: aws.Int64(3)},
+		}, testAccountID)
+		return err
+	}
+
+	t.Run("capacity code preserved", func(t *testing.T) {
+		err := scaleUpWithRunErr(t, errors.New(awserrors.ErrorInsufficientInstanceCapacity))
+		require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
+		assert.True(t, awserrors.HasErrorCode(err.Error()))
+	})
+
+	t.Run("opaque error wrapped", func(t *testing.T) {
+		err := scaleUpWithRunErr(t, errors.New("kvm: out of host memory"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "launch workers:")
+		assert.False(t, awserrors.HasErrorCode(err.Error()))
+	})
+}
+
 func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")

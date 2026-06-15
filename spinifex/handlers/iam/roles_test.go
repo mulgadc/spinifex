@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -588,6 +589,50 @@ func TestDetachRolePolicy_NotAttached(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+// TestAttachRolePolicy_ConcurrentDistinctPolicies reproduces the env19
+// lost-update: Terraform attaches the three EKS managed policies to one node
+// role in parallel. A blind read-modify-Put kept only one (the others raced
+// from the same revision and clobbered each other); the CAS path must persist
+// all three.
+func TestAttachRolePolicy_ConcurrentDistinctPolicies(t *testing.T) {
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "eks-node-role")
+
+	arns := []string{
+		"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+		"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+		"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(arns))
+	for i, arn := range arns {
+		wg.Add(1)
+		go func(i int, arn string) {
+			defer wg.Done()
+			_, errs[i] = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+				RoleName:  role.RoleName,
+				PolicyArn: aws.String(arn),
+			})
+		}(i, arn)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "attach %s", arns[i])
+	}
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	got := make([]string, 0, len(out.AttachedPolicies))
+	for _, p := range out.AttachedPolicies {
+		got = append(got, *p.PolicyArn)
+	}
+	assert.ElementsMatch(t, arns, got, "all concurrently-attached policies must persist")
 }
 
 func TestListAttachedRolePolicies_Empty(t *testing.T) {

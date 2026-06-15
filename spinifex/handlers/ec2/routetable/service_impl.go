@@ -115,6 +115,60 @@ func (s *RouteTableServiceImpl) putRouteTable(accountID string, record *RouteTab
 	return nil
 }
 
+// rtbCASMaxRetries bounds optimistic-concurrency retries when a concurrent
+// writer wins the CAS race on a route table record. High enough to absorb the
+// parallel AssociateRouteTable calls Terraform fans out per route table.
+const rtbCASMaxRetries = 16
+
+// mutateRouteTableCAS applies mutate to a route table under optimistic
+// concurrency: read with revision, mutate, then Update guarded by that
+// revision, retrying when a concurrent writer wins. A blind read-modify-Put
+// loses updates when callers associate several subnets with one route table at
+// once. mutate reports whether it changed the record; a false return commits
+// nothing.
+func (s *RouteTableServiceImpl) mutateRouteTableCAS(accountID, rtbID string, mutate func(*RouteTableRecord) (bool, error)) error {
+	key := utils.AccountKey(accountID, rtbID)
+	for range rtbCASMaxRetries {
+		entry, err := s.rtbKV.Get(key)
+		if err != nil {
+			if errors.Is(err, nats.ErrKeyNotFound) {
+				return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+			}
+			slog.Error("Failed to read route table from KV", "routeTableId", rtbID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+
+		var record RouteTableRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.Error("Corrupt route table record in KV", "routeTableId", rtbID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+
+		changed, err := mutate(&record)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+
+		data, err := json.Marshal(&record)
+		if err != nil {
+			slog.Error("Failed to marshal route table record", "routeTableId", rtbID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		if _, err := s.rtbKV.Update(key, data, entry.Revision()); err != nil {
+			if errors.Is(err, nats.ErrKeyExists) {
+				continue // CAS conflict — another writer won, re-read and retry.
+			}
+			slog.Error("Failed to write route table to KV", "routeTableId", rtbID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		return nil
+	}
+	return errors.New(awserrors.ErrorServerInternal)
+}
+
 // getVPCCidr looks up a VPC's CIDR block from the VPC KV bucket
 func (s *RouteTableServiceImpl) getVPCCidr(accountID, vpcID string) (string, error) {
 	entry, err := s.vpcKV.Get(utils.AccountKey(accountID, vpcID))
@@ -892,13 +946,21 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(input *ec2.AssociateRouteTab
 	}
 
 	assocID := utils.GenerateResourceID("rtbassoc")
-	record.Associations = append(record.Associations, AssociationRecord{
-		AssociationId: assocID,
-		SubnetId:      subnetID,
-		Main:          false,
-	})
-
-	if err := s.putRouteTable(accountID, record); err != nil {
+	if err := s.mutateRouteTableCAS(accountID, rtbID, func(rec *RouteTableRecord) (bool, error) {
+		// Re-check same-table association under the fresh read: a concurrent
+		// associate for this subnet may have landed since the precheck.
+		for _, assoc := range rec.Associations {
+			if assoc.SubnetId == subnetID && !assoc.Main {
+				return false, errors.New(awserrors.ErrorResourceAlreadyAssociated)
+			}
+		}
+		rec.Associations = append(rec.Associations, AssociationRecord{
+			AssociationId: assocID,
+			SubnetId:      subnetID,
+			Main:          false,
+		})
+		return true, nil
+	}); err != nil {
 		return nil, err
 	}
 
@@ -971,14 +1033,21 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(input *ec2.DisassociateRo
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 
-		for i, assoc := range record.Associations {
+		for _, assoc := range record.Associations {
 			if assoc.AssociationId == assocID {
 				if assoc.Main {
 					return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 				}
 				departingSubnetID := assoc.SubnetId
-				record.Associations = append(record.Associations[:i], record.Associations[i+1:]...)
-				if err := s.putRouteTable(accountID, &record); err != nil {
+				if err := s.mutateRouteTableCAS(accountID, record.RouteTableId, func(rec *RouteTableRecord) (bool, error) {
+					for j, a := range rec.Associations {
+						if a.AssociationId == assocID {
+							rec.Associations = append(rec.Associations[:j], rec.Associations[j+1:]...)
+							return true, nil
+						}
+					}
+					return false, nil // already removed by a concurrent writer — idempotent
+				}); err != nil {
 					return nil, err
 				}
 

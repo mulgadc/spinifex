@@ -75,6 +75,7 @@ type MountedVolume struct {
 	PID         int
 	VB          *viperblock.VB     // Reference to viperblock instance for state sync/flush
 	SnapshotSub *nats.Subscription // Per-volume snapshot subscription (ebs.snapshot.{volumeID})
+	ConfigSub   *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
 }
 
 type Config struct {
@@ -155,6 +156,79 @@ func makeSnapshotHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
 
 		respondJSON(msg, snapResponse)
 	}
+}
+
+// applyConfigUpdate writes a control-plane VolumeConfig onto a viperblock
+// instance and reseals its state. For encrypted volumes SaveState recomputes the
+// AES-GCM tag under the volume's current StateSeqNum, so the caller MUST own the
+// volume exclusively (live mounted VB, or a freshly opened detached one) to keep
+// the GCM nonce unique.
+func applyConfigUpdate(vb *viperblock.VB, req types.EBSConfigUpdateRequest) error {
+	var vc viperblock.VolumeConfig
+	if err := json.Unmarshal(req.VolumeConfig, &vc); err != nil {
+		return fmt.Errorf("unmarshal VolumeConfig: %w", err)
+	}
+	vb.VolumeConfig = vc
+	// Reconcile grow-only volume size (mirrors the EC2 handler merge path).
+	if sz := vc.VolumeMetadata.SizeGiB * 1024 * 1024 * 1024; sz > vb.VolumeSize {
+		vb.VolumeSize = sz
+	}
+	return vb.SaveState()
+}
+
+// makeConfigUpdateHandler returns a NATS handler for volume-specific config
+// updates (ebs.config.{volumeID}). It runs against the live mounted VB, which is
+// the single writer that owns the volume's StateSeqNum.
+func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
+	return func(msg *nats.Msg) {
+		var req types.EBSConfigUpdateRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			slog.Error("Failed to unmarshal ebs.config message", "volume", volumeName, "err", err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: fmt.Sprintf("bad request: %v", err)})
+			return
+		}
+		if err := applyConfigUpdate(vb, req); err != nil {
+			slog.Error("ebs.config: live VB update failed", "volume", volumeName, "err", err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: err.Error()})
+			return
+		}
+		slog.Info("ebs.config: live VB state updated", "volume", volumeName)
+		respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Success: true})
+	}
+}
+
+// openVolumeVB opens an existing viperblock volume for a short-lived, exclusive
+// state update (detached-volume config reseal). The caller MUST Close the
+// returned VB. Construction mirrors the ebs.mount path so encrypted volumes open
+// with the master key and matching encryption state.
+func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
+	s3cfg := s3.S3Config{
+		VolumeName: volumeName,
+		Bucket:     cfg.Bucket,
+		Region:     cfg.Region,
+		AccessKey:  cfg.AccessKey,
+		SecretKey:  cfg.SecretKey,
+		Host:       admin.DialTarget(cfg.S3Host),
+	}
+	vbconfig := viperblock.VB{
+		VolumeName:        volumeName,
+		VolumeSize:        1, // Recalculated on LoadState.
+		BaseDir:           cfg.BaseDir,
+		VolumeConfig:      viperblock.VolumeConfig{},
+		MasterKey:         cfg.masterKey,
+		EncryptionEnabled: cfg.masterKey != nil,
+	}
+	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
+	if err != nil {
+		return nil, fmt.Errorf("new viperblock: %w", err)
+	}
+	if err := vb.Backend.Init(); err != nil {
+		return nil, fmt.Errorf("backend init: %w", err)
+	}
+	if err := loadStateWithRetry(vb, volumeName); err != nil {
+		return nil, fmt.Errorf("load state: %w", err)
+	}
+	return vb, nil
 }
 
 // respondJSON marshals data and sends it as a NATS response. On marshal
@@ -277,6 +351,12 @@ func launchService(cfg *Config) (err error) {
 					slog.Error("Failed to unsubscribe snapshot topic", "volume", ebsRequest.Volume, "err", err)
 				}
 			}
+			// Unsubscribe from volume-specific config-update topic
+			if matched.ConfigSub != nil {
+				if err := matched.ConfigSub.Unsubscribe(); err != nil {
+					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Volume, "err", err)
+				}
+			}
 			// Stop WAL syncer and kill nbdkit process
 			if matched.VB != nil {
 				matched.VB.StopWALSyncer()
@@ -355,6 +435,13 @@ func launchService(cfg *Config) (err error) {
 				}
 			}
 
+			// Unsubscribe from volume-specific config-update topic
+			if matched.ConfigSub != nil {
+				if err := matched.ConfigSub.Unsubscribe(); err != nil {
+					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Name, "err", err)
+				}
+			}
+
 			// Clean up the VB instance's background goroutine.
 			// This VB is state-only (LoadState/sync) — actual I/O is in the nbdkit plugin process.
 			if matched.VB != nil {
@@ -424,6 +511,61 @@ func launchService(cfg *Config) (err error) {
 		respondJSON(msg, syncResponse)
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to ebs.sync: %w", err)
+	}
+
+	// ebs.config is the fallback for encrypted-volume config updates whose
+	// per-volume ebs.config.{volumeID} topic had no responder (volume not
+	// mounted anywhere). A detached volume has no live writer, so any worker may
+	// open it exclusively and reseal. A mount that raced in is still handled by
+	// preferring the live VB when this node happens to own it.
+	if _, err := nc.QueueSubscribe("ebs.config", "spinifex-workers", func(msg *nats.Msg) {
+		var req types.EBSConfigUpdateRequest
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			slog.Error("Failed to unmarshal ebs.config message", "err", err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			return
+		}
+
+		cfg.mu.Lock()
+		var live *viperblock.VB
+		for _, volume := range cfg.MountedVolumes {
+			if volume.Name == req.Volume && volume.VB != nil {
+				live = volume.VB
+				break
+			}
+		}
+		cfg.mu.Unlock()
+
+		if live != nil {
+			if err := applyConfigUpdate(live, req); err != nil {
+				slog.Error("ebs.config: live VB update failed", "volume", req.Volume, "err", err)
+				respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
+				return
+			}
+			slog.Info("ebs.config: live VB state updated (fallback path)", "volume", req.Volume)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
+			return
+		}
+
+		vb, err := openVolumeVB(cfg, req.Volume)
+		if err != nil {
+			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
+			return
+		}
+		applyErr := applyConfigUpdate(vb, req)
+		if closeErr := vb.Close(); closeErr != nil {
+			slog.Error("ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
+		}
+		if applyErr != nil {
+			slog.Error("ebs.config: detached volume update failed", "volume", req.Volume, "err", applyErr)
+			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: applyErr.Error()})
+			return
+		}
+		slog.Info("ebs.config: detached volume state updated", "volume", req.Volume)
+		respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
+	}); err != nil {
+		return fmt.Errorf("failed to subscribe to ebs.config: %w", err)
 	}
 
 	// Note: ebs.snapshot is handled per-volume via ebs.snapshot.{volumeID} topics,
@@ -674,6 +816,13 @@ func launchService(cfg *Config) (err error) {
 			slog.Error("Failed to subscribe to volume snapshot topic", "volume", ebsRequest.Name, "err", err)
 		}
 
+		// Subscribe to volume-specific config-update topic so encrypted-volume
+		// metadata writes route to this node's live VB (the StateSeqNum owner).
+		configSub, err := nc.Subscribe(fmt.Sprintf("ebs.config.%s", ebsRequest.Name), makeConfigUpdateHandler(vb, ebsRequest.Name))
+		if err != nil {
+			slog.Error("Failed to subscribe to volume config topic", "volume", ebsRequest.Name, "err", err)
+		}
+
 		cfg.mu.Lock()
 		cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
 			Name:        ebsRequest.Name,
@@ -683,6 +832,7 @@ func launchService(cfg *Config) (err error) {
 			PID:         pid,
 			VB:          vb,
 			SnapshotSub: snapSub,
+			ConfigSub:   configSub,
 		})
 		cfg.mu.Unlock()
 

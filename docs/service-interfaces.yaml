@@ -139,6 +139,8 @@ services:
       - "ebs.delete"
       - "ebs.sync"
       - "ebs.snapshot.*"
+      - "ebs.config"
+      - "ebs.config.*"
       # → predastore (S3 / AMI / keypair store)
       - "s3.*"
       # IAM lifecycle event
@@ -187,6 +189,8 @@ services:
       - "ebs.delete"
       - "ebs.sync"
       - "ebs.snapshot.*"
+      - "ebs.config"
+      - "ebs.config.*"
     publishes:
       - "ebs.mount.response"
       - "ebs.unmount.response"

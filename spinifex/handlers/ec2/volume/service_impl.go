@@ -1026,6 +1026,18 @@ func (s *VolumeServiceImpl) getVolumeConfigAndEncryption(volumeID string) (*vipe
 func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.VolumeConfig) error {
 	configKey := volumeID + "/config.json"
 
+	// config.json for an encrypted volume is a sealed VBState whose AES-GCM tag
+	// and StateSeqNum-derived nonce can only be advanced by the master-key holder
+	// that owns the volume. Rewriting it here would strip the tag or — racing the
+	// live VB — reuse a nonce, so route the update through viperblockd instead.
+	encrypted, err := s.configIsEncrypted(volumeID)
+	if err != nil {
+		return err
+	}
+	if encrypted {
+		return s.putVolumeConfigViaKeyholder(volumeID, cfg)
+	}
+
 	data, err := s.mergeVolumeConfig(configKey, cfg)
 	if err != nil {
 		return err
@@ -1040,6 +1052,72 @@ func (s *VolumeServiceImpl) putVolumeConfig(volumeID string, cfg *viperblock.Vol
 		return fmt.Errorf("failed to write config to S3: %w", err)
 	}
 
+	return nil
+}
+
+// configIsEncrypted reports whether the persisted config.json for volumeID is a
+// sealed (encrypted) VBState. A missing object (new volume) reports false.
+func (s *VolumeServiceImpl) configIsEncrypted(volumeID string) (bool, error) {
+	getResult, err := s.store.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(volumeID + "/config.json"),
+	})
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to read config for encryption check: %w", err)
+	}
+	defer getResult.Body.Close()
+
+	body, err := io.ReadAll(getResult.Body)
+	if err != nil {
+		return false, fmt.Errorf("failed to read config body: %w", err)
+	}
+
+	var state viperblock.VBState
+	if decodeErr := json.Unmarshal(viperblock.StateBody(body), &state); decodeErr == nil && state.BlockSize != 0 {
+		return state.EncryptionEnabled, nil
+	}
+	return false, nil
+}
+
+// putVolumeConfigViaKeyholder routes an encrypted-volume config update through
+// viperblockd, the master-key holder. The owning node answers
+// ebs.config.{volumeID} and updates its live VB. If no node owns the volume
+// (detached), ErrNoResponders routes to the ebs.config queue group, where a
+// worker opens the volume exclusively and reseals. A detached volume has no
+// concurrent writer, so the reopen is nonce-safe.
+func (s *VolumeServiceImpl) putVolumeConfigViaKeyholder(volumeID string, cfg *viperblock.VolumeConfig) error {
+	if s.natsConn == nil {
+		return fmt.Errorf("encrypted volume %s requires NATS to reach the viperblock keyholder, but no connection is configured", volumeID)
+	}
+
+	cfgData, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal VolumeConfig: %w", err)
+	}
+	reqData, err := json.Marshal(types.EBSConfigUpdateRequest{Volume: volumeID, VolumeConfig: cfgData})
+	if err != nil {
+		return fmt.Errorf("marshal config update request: %w", err)
+	}
+
+	msg, err := s.natsConn.Request("ebs.config."+volumeID, reqData, 30*time.Second)
+	if errors.Is(err, nats.ErrNoResponders) {
+		// Volume not mounted anywhere -- fall back to the queue group.
+		msg, err = s.natsConn.Request("ebs.config", reqData, 30*time.Second)
+	}
+	if err != nil {
+		return fmt.Errorf("ebs.config request for %s: %w", volumeID, err)
+	}
+
+	var resp types.EBSConfigUpdateResponse
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return fmt.Errorf("unmarshal config update response: %w", err)
+	}
+	if !resp.Success || resp.Error != "" {
+		return fmt.Errorf("ebs.config update for %s failed: %s", volumeID, resp.Error)
+	}
 	return nil
 }
 

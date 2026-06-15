@@ -2,26 +2,27 @@ package handlers_eks
 
 import (
 	"fmt"
-	"net"
 	"strings"
 )
 
-// agentUserDataInput is the input shape for buildAgentUserData. ControlPlaneENIIP
-// is the cluster's in-VPC control-plane ENI private IP (the K3s join target);
+// agentUserDataInput is the input shape for buildAgentUserData. ServerURL is the
+// cluster's published apiserver endpoint (the NLB front-end, https://<ip>:443),
+// the K3s join target reachable from the customer VPC under the Set-B topology;
 // JoinToken is the decrypted K3s node token.
 type agentUserDataInput struct {
-	ClusterName       string
-	NodegroupName     string
-	ControlPlaneENIIP string
-	JoinToken         string
-	NodeName          string
+	ClusterName   string
+	NodegroupName string
+	ServerURL     string
+	JoinToken     string
+	NodeName      string
 }
 
 // buildAgentUserData renders the cloud-config YAML for a nodegroup worker VM.
 // Mirrors buildK3sUserData structure; SPINIFEX_K3S_ROLE=agent enables k3s-agent.
 func buildAgentUserData(in agentUserDataInput) string {
-	// K3S_URL uses the CP ENI IP directly (NLB DNS not yet resolvable in-VPC).
-	k3sURL := "https://" + net.JoinHostPort(in.ControlPlaneENIIP, "6443")
+	// K3S_URL is the published NLB endpoint (:443→:6443); the in-VPC CP ENI IP
+	// lives in the unpeered managed CP VPC and is unreachable from the worker VPC.
+	k3sURL := in.ServerURL
 	nodeLabel := "eks.amazonaws.com/nodegroup=" + in.NodegroupName
 
 	envBody := strings.Join([]string{

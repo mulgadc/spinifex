@@ -59,6 +59,7 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 		Status:            ClusterStatusActive,
 		Version:           "1.32",
 		ControlPlaneENIIP: "10.0.1.42",
+		Endpoint:          "https://10.254.0.9:443",
 		ResourcesVpcConfig: &ClusterVpcConfig{
 			SubnetIds: []string{"subnet-aaa"},
 			VpcId:     "vpc-aaa",
@@ -170,16 +171,16 @@ func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
 
 func TestBuildAgentUserData_Shape(t *testing.T) {
 	ud := buildAgentUserData(agentUserDataInput{
-		ClusterName:       "c1",
-		NodegroupName:     "ng1",
-		ControlPlaneENIIP: "10.0.1.42",
-		JoinToken:         "K10secret::server:xyz",
-		NodeName:          "c1-ng1-abc123de",
+		ClusterName:   "c1",
+		NodegroupName: "ng1",
+		ServerURL:     "https://10.254.0.9:443",
+		JoinToken:     "K10secret::server:xyz",
+		NodeName:      "c1-ng1-abc123de",
 	})
 
 	assert.True(t, strings.HasPrefix(ud, "#cloud-config\n"))
 	assert.Contains(t, ud, "SPINIFEX_K3S_ROLE=agent")
-	assert.Contains(t, ud, "K3S_URL=https://10.0.1.42:6443")
+	assert.Contains(t, ud, "K3S_URL=https://10.254.0.9:443")
 	assert.Contains(t, ud, "K3S_TOKEN=K10secret::server:xyz")
 	assert.Contains(t, ud, "K3S_NODE_NAME=c1-ng1-abc123de")
 	assert.Contains(t, ud, "eks.amazonaws.com/nodegroup=ng1")

@@ -180,6 +180,10 @@ func (s *EKSServiceImpl) createNodegroup(acctKV nats.KeyValue, input *eks.Create
 		slog.Error("createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
 	}
+	if meta.Endpoint == "" {
+		slog.Error("createNodegroup: cluster has no published endpoint", "cluster", cluster)
+		return nil, errors.New(awserrors.ErrorInvalidRequest)
+	}
 	if meta.ResourcesVpcConfig == nil || meta.ResourcesVpcConfig.VpcId == "" {
 		slog.Error("createNodegroup: cluster has no VPC", "cluster", cluster)
 		return nil, errors.New(awserrors.ErrorInvalidRequest)
@@ -341,11 +345,11 @@ func (s *EKSServiceImpl) launchWorkers(acctKV nats.KeyValue, accountID string, r
 	for i := range count {
 		shortID := uuid.NewString()[:8]
 		userData := buildAgentUserData(agentUserDataInput{
-			ClusterName:       rec.ClusterName,
-			NodegroupName:     rec.Name,
-			ControlPlaneENIIP: meta.ControlPlaneENIIP,
-			JoinToken:         token,
-			NodeName:          fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
+			ClusterName:   rec.ClusterName,
+			NodegroupName: rec.Name,
+			ServerURL:     meta.Endpoint,
+			JoinToken:     token,
+			NodeName:      fmt.Sprintf("%s-%s-%s", rec.ClusterName, rec.Name, shortID),
 		})
 		runInput := &ec2.RunInstancesInput{
 			ImageId:          aws.String(amiID),

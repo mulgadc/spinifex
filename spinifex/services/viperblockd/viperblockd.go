@@ -76,8 +76,7 @@ type MountedVolume struct {
 	NBDURI    string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
 	PID       int
 	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
-}
+	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})}
 
 type Config struct {
 	ConfigPath     string
@@ -177,8 +176,7 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 // the ebs.mount path so encrypted volumes open with the master key and matching
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
-// flushes it back to predastore.
-func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
+// flushes it back to predastore.func openVolumeVB(cfg *Config, volumeName string) (*viperblock.VB, error) {
 	s3cfg := s3.S3Config{
 		VolumeName: volumeName,
 		Bucket:     cfg.Bucket,
@@ -271,7 +269,6 @@ func sealVolumeVB(cfg *Config, volumeName string) error {
 	}
 	return nil
 }
-
 // respondJSON marshals data and sends it as a NATS response. On marshal
 // failure a raw JSON error string is sent instead.
 func respondJSON(msg *nats.Msg, data any) {
@@ -470,6 +467,13 @@ func launchService(cfg *Config) (err error) {
 				}
 			}
 
+			// Unsubscribe from volume-specific config-update topic
+			if matched.ConfigSub != nil {
+				if err := matched.ConfigSub.Unsubscribe(); err != nil {
+					slog.Error("Failed to unsubscribe config topic", "volume", ebsRequest.Name, "err", err)
+				}
+			}
+
 			// Clean up the VB instance's background goroutine.
 			// This VB is state-only (LoadState/sync) — actual I/O is in the nbdkit plugin process.
 			if matched.VB != nil {
@@ -593,8 +597,7 @@ func launchService(cfg *Config) (err error) {
 			return
 		}
 
-		vb, err := openLoadedVolumeVB(cfg, req.Volume)
-		if err != nil {
+		vb, err := openLoadedVolumeVB(cfg, req.Volume)		if err != nil {
 			slog.Error("ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
@@ -871,8 +874,7 @@ func launchService(cfg *Config) (err error) {
 			NBDURI:    nbdURI,
 			PID:       pid,
 			VB:        vb,
-			ConfigSub: configSub,
-		})
+			ConfigSub: configSub,		})
 		cfg.mu.Unlock()
 
 		respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
